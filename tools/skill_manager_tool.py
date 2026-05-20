@@ -371,8 +371,17 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # =============================================================================
 
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
-    """Create a new user skill with SKILL.md content."""
-    # Validate name
+    """Propose a new skill into the quarantine for operator review.
+
+    Per Sprint 06a (jidoka-andon-implementation-v1): every agent-authored
+    skill lands in ~/.grove/skills/.andon/<name>/SKILL.md, not in the active
+    skills directory. The security scan still runs; the verdict and findings
+    are recorded in the proposal's frontmatter; the operator promotes (or
+    rejects) via the ``sovereignty`` CLI. See docs/design/andon-design-v1.md.
+
+    ``category`` is accepted for API compatibility but ignored — proposals
+    use the flat structure documented in the design contract.
+    """
     err = _validate_name(name)
     if err:
         return {"success": False, "error": err}
@@ -381,7 +390,6 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    # Validate content
     err = _validate_frontmatter(content)
     if err:
         return {"success": False, "error": err}
@@ -390,41 +398,85 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    # Check for name collisions across all directories
+    # Collision check: ACTIVE skills only. A re-proposal in .andon/ overwrites
+    # the prior proposal — promotion is the irreversible step. ``.andon`` is
+    # listed in EXCLUDED_SKILL_DIRS so _find_skill naturally skips it.
     existing = _find_skill(name)
     if existing:
         return {
             "success": False,
-            "error": f"A skill named '{name}' already exists at {existing['path']}."
+            "error": (
+                f"An active skill named '{name}' already exists at "
+                f"{existing['path']}. Choose a different name, or ask the "
+                f"operator to revoke the active skill first "
+                f"(`hermes andon revoke {name}`)."
+            ),
         }
 
-    # Create the skill directory
-    skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write SKILL.md atomically
-    skill_md = skill_dir / "SKILL.md"
-    _atomic_write_text(skill_md, content)
-
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
-    if scan_error:
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return {"success": False, "error": scan_error}
-
-    result = {
-        "success": True,
-        "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
-        "skill_md": str(skill_md),
-    }
-    if category:
-        result["category"] = category
-    result["hint"] = (
-        "To add reference files, templates, or scripts, use "
-        "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
+    from grove.skills import (
+        proposal_path,
+        stamp_proposal_frontmatter,
+        write_proposal,
     )
-    return result
+
+    # Write the proposal body to .andon/ first so the scanner has files on disk.
+    proposal_dir = write_proposal(name, content)
+    skill_md = proposal_dir / "SKILL.md"
+
+    # Always scan agent-created proposals (no config gate — operator is the gate).
+    scan_verdict = "unknown"
+    scan_findings: list = []
+    if _GUARD_AVAILABLE:
+        try:
+            scan_result = scan_skill(proposal_dir, source="agent-created")
+            scan_verdict = scan_result.verdict
+            scan_findings = [
+                {
+                    "pattern_id": f.pattern_id,
+                    "severity": f.severity,
+                    "category": f.category,
+                    "file": f.file,
+                    "line": f.line,
+                    "description": f.description,
+                }
+                for f in scan_result.findings
+            ]
+        except Exception as exc:
+            logger.warning(
+                "Security scan failed for proposal %s: %s",
+                proposal_dir, exc, exc_info=True,
+            )
+
+    # Stamp Grove proposal frontmatter (created_by, proposed_at, zone, provenance)
+    # and rewrite the SKILL.md so the verdict is visible in `sovereignty diff`.
+    stamped = stamp_proposal_frontmatter(
+        content, scan_verdict=scan_verdict, scan_findings=scan_findings,
+    )
+    _atomic_write_text(skill_md, stamped)
+
+    message = (
+        f"Proposed skill '{name}' to your review queue. "
+        f"Run `hermes andon list` to see all pending proposals, "
+        f"or `hermes andon diff {name}` to review this one. "
+        f"Promotion to active skills requires an explicit "
+        f"`hermes andon promote {name}`."
+    )
+    if scan_verdict in ("caution", "dangerous") and scan_findings:
+        message += (
+            f"\n\nScan verdict: {scan_verdict} "
+            f"({len(scan_findings)} findings — recorded in frontmatter)."
+        )
+
+    return {
+        "success": True,
+        "message": message,
+        "path": str(proposal_dir),
+        "skill_md": str(skill_md),
+        "zone": "yellow",
+        "quarantined": True,
+        "scan_verdict": scan_verdict,
+        "scan_findings_count": len(scan_findings),
+    }
 
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
