@@ -132,10 +132,10 @@ class TestGmiModelCatalog:
 
 class TestGmiProvidersModule:
     def test_overlay_exists(self):
-        from hermes_cli.providers import HERMES_OVERLAYS
+        from hermes_cli.providers import GROVE_OVERLAYS
 
-        assert "gmi" in HERMES_OVERLAYS
-        overlay = HERMES_OVERLAYS["gmi"]
+        assert "gmi" in GROVE_OVERLAYS
+        overlay = GROVE_OVERLAYS["gmi"]
         assert overlay.transport == "openai_chat"
         assert overlay.extra_env_vars == ("GMI_API_KEY",)
         assert overlay.base_url_override == "https://api.gmi-serving.com/v1"
@@ -155,14 +155,14 @@ class TestGmiDoctor:
     def test_run_doctor_checks_gmi_models_endpoint(self, monkeypatch, tmp_path):
         from hermes_cli import doctor as doctor_mod
 
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".grove"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
         (home / ".env").write_text("GMI_API_KEY=***\n", encoding="utf-8")
         project = tmp_path / "project"
         project.mkdir(exist_ok=True)
 
-        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "GROVE_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
         monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")

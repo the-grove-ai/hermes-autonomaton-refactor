@@ -65,8 +65,8 @@ class MemoryProvider(ABC):
         establish connections, start background threads, etc.
 
         kwargs always include:
-          - hermes_home (str): The active HERMES_HOME directory path. Use this
-            for profile-scoped storage instead of hardcoding ``~/.hermes``.
+          - hermes_home (str): The active GROVE_HOME directory path. Use this
+            for profile-scoped storage instead of hardcoding ``~/.grove``.
           - platform (str): "cli", "telegram", "discord", "cron", etc.
 
         kwargs may also include:
@@ -247,7 +247,7 @@ class MemoryProvider(ABC):
 
         Called by 'hermes memory setup' after collecting user inputs.
         ``values`` contains only non-secret fields (secrets go to .env).
-        ``hermes_home`` is the active HERMES_HOME directory path.
+        ``hermes_home`` is the active GROVE_HOME directory path.
 
         Providers with native config files (JSON, YAML) should override
         this to write to their expected location. Providers that use only

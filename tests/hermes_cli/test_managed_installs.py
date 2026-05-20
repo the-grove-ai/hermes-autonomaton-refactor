@@ -11,14 +11,14 @@ from tools.skills_hub import OptionalSkillSource
 
 
 def test_get_managed_system_homebrew(monkeypatch):
-    monkeypatch.setenv("HERMES_MANAGED", "homebrew")
+    monkeypatch.setenv("GROVE_MANAGED", "homebrew")
 
     assert get_managed_system() == "Homebrew"
     assert recommended_update_command() == "brew upgrade hermes-agent"
 
 
 def test_format_managed_message_homebrew(monkeypatch):
-    monkeypatch.setenv("HERMES_MANAGED", "homebrew")
+    monkeypatch.setenv("GROVE_MANAGED", "homebrew")
 
     message = format_managed_message("update Hermes Agent")
 
@@ -27,14 +27,14 @@ def test_format_managed_message_homebrew(monkeypatch):
 
 
 def test_recommended_update_command_defaults_to_hermes_update(monkeypatch):
-    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.delenv("GROVE_MANAGED", raising=False)
 
     with patch("hermes_cli.config.detect_install_method", return_value="git"):
         assert recommended_update_command() == "hermes update"
 
 
 def test_cmd_update_blocks_managed_homebrew(monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_MANAGED", "homebrew")
+    monkeypatch.setenv("GROVE_MANAGED", "homebrew")
 
     with patch("hermes_cli.main.subprocess.run") as mock_run:
         cmd_update(SimpleNamespace())
@@ -48,7 +48,7 @@ def test_cmd_update_blocks_managed_homebrew(monkeypatch, capsys):
 def test_optional_skill_source_honors_env_override(monkeypatch, tmp_path):
     optional_dir = tmp_path / "optional-skills"
     optional_dir.mkdir()
-    monkeypatch.setenv("HERMES_OPTIONAL_SKILLS", str(optional_dir))
+    monkeypatch.setenv("GROVE_OPTIONAL_SKILLS", str(optional_dir))
 
     source = OptionalSkillSource()
 

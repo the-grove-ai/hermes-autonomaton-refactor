@@ -48,7 +48,7 @@ def test_get_adapter_unknown_provider_raises():
 
 
 def _write_auth_store(hermes_home: Path, nous_state: Dict[str, Any]) -> Path:
-    """Write an auth.json with the given nous state into a hermetic HERMES_HOME."""
+    """Write an auth.json with the given nous state into a hermetic GROVE_HOME."""
     auth_path = hermes_home / "auth.json"
     auth_path.write_text(json.dumps({
         "version": 1,
@@ -68,14 +68,14 @@ def test_nous_adapter_metadata():
 
 
 def test_nous_adapter_not_authenticated_when_no_auth_file(tmp_path, monkeypatch):
-    # HERMES_HOME is already set by conftest, but make doubly sure
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # GROVE_HOME is already set by conftest, but make doubly sure
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     adapter = NousPortalAdapter()
     assert not adapter.is_authenticated()
 
 
 def test_nous_adapter_not_authenticated_when_provider_missing(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     (tmp_path / "auth.json").write_text(json.dumps({
         "version": 1,
         "providers": {},
@@ -84,7 +84,7 @@ def test_nous_adapter_not_authenticated_when_provider_missing(tmp_path, monkeypa
 
 
 def test_nous_adapter_authenticated_with_agent_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "agent_key": "ov-test-key",
         "agent_key_expires_at": "2099-01-01T00:00:00Z",
@@ -95,7 +95,7 @@ def test_nous_adapter_authenticated_with_agent_key(tmp_path, monkeypatch):
 
 def test_nous_adapter_authenticated_with_refresh_token_only(tmp_path, monkeypatch):
     """If access_token+refresh_token exist but no agent_key yet, we can still mint."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
         "refresh_token": "refresh-tok",
@@ -104,7 +104,7 @@ def test_nous_adapter_authenticated_with_refresh_token_only(tmp_path, monkeypatc
 
 
 def test_nous_adapter_get_credential_refreshes_and_persists(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
         "refresh_token": "refresh-tok",
@@ -142,14 +142,14 @@ def test_nous_adapter_get_credential_refreshes_and_persists(tmp_path, monkeypatc
 
 
 def test_nous_adapter_get_credential_raises_when_not_logged_in(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     adapter = NousPortalAdapter()
     with pytest.raises(RuntimeError, match="hermes login nous"):
         adapter.get_credential()
 
 
 def test_nous_adapter_get_credential_raises_on_refresh_failure(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
         "refresh_token": "refresh-tok",
@@ -166,7 +166,7 @@ def test_nous_adapter_get_credential_raises_on_refresh_failure(tmp_path, monkeyp
 
 def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path, monkeypatch):
     """If the refresh helper succeeds but produces no agent_key, we surface a clear error."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
         "refresh_token": "refresh-tok",
@@ -183,7 +183,7 @@ def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path,
 
 def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
     """Two parallel get_credential() calls must serialize through the lock."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "a", "refresh_token": "r",
     })
@@ -462,7 +462,7 @@ def test_server_strips_client_auth_header():
 
 
 def test_cmd_proxy_status_runs(capsys, tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     from hermes_cli.proxy.cli import cmd_proxy_status
 
     args = MagicMock()
@@ -499,7 +499,7 @@ def test_cmd_proxy_start_refuses_unknown_provider(capsys):
 
 
 def test_cmd_proxy_start_refuses_when_unauthenticated(capsys, tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     from hermes_cli.proxy.cli import cmd_proxy_start
 
     args = MagicMock()

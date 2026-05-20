@@ -19,7 +19,7 @@ from hermes_state import SessionDB
 
 @pytest.fixture
 def db(tmp_path):
-    return SessionDB(tmp_path / "state.db")
+    return SessionDB(tmp_path / "telemetry.db")
 
 
 def _make_chain(db: SessionDB, ids_with_parent):

@@ -257,11 +257,11 @@ def test_check_website_access_uses_dynamic_hermes_home(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("GROVE_HOME", str(hermes_home))
 
-    # Invalidate the module-level cache so the new HERMES_HOME is picked up.
+    # Invalidate the module-level cache so the new GROVE_HOME is picked up.
     # A prior test may have cached a default policy (enabled=False) under the
-    # old HERMES_HOME set by the autouse _isolate_hermes_home fixture.
+    # old GROVE_HOME set by the autouse _isolate_hermes_home fixture.
     from tools.website_policy import invalidate_cache
     invalidate_cache()
 
@@ -392,8 +392,8 @@ def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypat
     with pytest.raises(WebsitePolicyError):
         check_website_access("https://example.com", config_path=config_path)
 
-    # Simulate default path by pointing HERMES_HOME to tmp_path
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Simulate default path by pointing GROVE_HOME to tmp_path
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     from tools import website_policy
     website_policy.invalidate_cache()
 

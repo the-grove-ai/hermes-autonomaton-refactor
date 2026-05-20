@@ -794,13 +794,13 @@ class TestStripUnmanagedPluginTables:
         assert '[plugins."tasks@openai-curated"]' in new_text
 
 
-# ---- Bug C: HERMES_HOME tempdir leak into ~/.codex/config.toml ----
+# ---- Bug C: GROVE_HOME tempdir leak into ~/.codex/config.toml ----
 
 
 class TestHermesHomeLeakGuard:
     """Regression tests for issue #26250 Bug C.
 
-    Previously ``_build_hermes_tools_mcp_entry()`` read ``HERMES_HOME``
+    Previously ``_build_hermes_tools_mcp_entry()`` read ``GROVE_HOME``
     directly from ``os.environ``, so a pytest ``monkeypatch.setenv`` would
     leak a transient tempdir path into the user's real ``~/.codex/config.toml``
     once codex spawned the hermes-tools MCP subprocess.
@@ -818,48 +818,48 @@ class TestHermesHomeLeakGuard:
         )
 
     def test_tempdir_detector_accepts_real_hermes_home(self):
-        assert not _looks_like_test_tempdir("/Users/alice/.hermes")
-        assert not _looks_like_test_tempdir("/home/bob/.hermes")
+        assert not _looks_like_test_tempdir("/Users/alice/.grove")
+        assert not _looks_like_test_tempdir("/home/bob/.grove")
         assert not _looks_like_test_tempdir("/opt/hermes")
         assert not _looks_like_test_tempdir("")
 
     def test_pytest_tempdir_not_burned_into_mcp_env(self, monkeypatch):
-        """The headline regression: even when HERMES_HOME points at a pytest
+        """The headline regression: even when GROVE_HOME points at a pytest
         tempdir, _build_hermes_tools_mcp_entry() must NOT propagate it."""
         monkeypatch.setenv(
-            "HERMES_HOME",
+            "GROVE_HOME",
             "/private/var/folders/xx/pytest-of-user/pytest-99/test_x/hermes_test",
         )
         entry = _build_hermes_tools_mcp_entry()
         env = entry.get("env", {})
-        assert "HERMES_HOME" not in env, (
-            f"pytest-tempdir HERMES_HOME leaked into codex MCP entry: "
-            f"{env.get('HERMES_HOME')!r}"
+        assert "GROVE_HOME" not in env, (
+            f"pytest-tempdir GROVE_HOME leaked into codex MCP entry: "
+            f"{env.get('GROVE_HOME')!r}"
         )
 
     def test_real_hermes_home_propagates(self, monkeypatch, tmp_path):
-        """A legitimate HERMES_HOME (not a tempdir path) DOES propagate so the
+        """A legitimate GROVE_HOME (not a tempdir path) DOES propagate so the
         MCP subprocess sees the same config as the parent CLI."""
         # Use a path that looks real — under /Users or /home, not /var/folders.
         # We can't easily create one in the test, so just use a stable path
         # outside any tempdir-detector needle. The detector checks for tempdir
         # markers, not for path existence.
-        real_path = "/Users/alice/.hermes"
-        monkeypatch.setenv("HERMES_HOME", real_path)
+        real_path = "/Users/alice/.grove"
+        monkeypatch.setenv("GROVE_HOME", real_path)
         entry = _build_hermes_tools_mcp_entry()
         env = entry.get("env", {})
-        assert env.get("HERMES_HOME") == real_path
+        assert env.get("GROVE_HOME") == real_path
 
     def test_unset_hermes_home_omits_env_key(self, monkeypatch):
-        """When HERMES_HOME is unset in the environment, the MCP entry MUST
+        """When GROVE_HOME is unset in the environment, the MCP entry MUST
         NOT bake in a resolved-default path. The codex subprocess should
-        inherit whatever HERMES_HOME its launcher (systemd, gateway, shell)
+        inherit whatever GROVE_HOME its launcher (systemd, gateway, shell)
         sets at runtime, rather than being pinned to migrate-time defaults.
         Regression guard for issue #26250 follow-up review."""
-        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("GROVE_HOME", raising=False)
         entry = _build_hermes_tools_mcp_entry()
         env = entry.get("env", {})
-        assert "HERMES_HOME" not in env, (
-            f"HERMES_HOME should not be set when env var is unset, got: "
-            f"{env.get('HERMES_HOME')!r}"
+        assert "GROVE_HOME" not in env, (
+            f"GROVE_HOME should not be set when env var is unset, got: "
+            f"{env.get('GROVE_HOME')!r}"
         )

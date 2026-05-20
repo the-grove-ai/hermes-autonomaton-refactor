@@ -24,10 +24,10 @@ class TestHandoffStateDB:
 
     @pytest.fixture
     def db(self, tmp_path, monkeypatch):
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".grove"
         home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        return SessionDB(db_path=home / "state.db")
+        monkeypatch.setenv("GROVE_HOME", str(home))
+        return SessionDB(db_path=home / "telemetry.db")
 
     def _make_session(self, db, session_id, source="cli", title=None):
         """Insert a session row directly for testing."""

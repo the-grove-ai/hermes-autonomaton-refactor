@@ -1,7 +1,7 @@
 """Tests for the Kanban tool surface (tools/kanban_tools.py).
 
 Verifies:
-  - Tools are gated on HERMES_KANBAN_TASK: a normal chat session sees
+  - Tools are gated on GROVE_KANBAN_TASK: a normal chat session sees
     zero kanban tools in its schema; a worker session sees the kanban set.
   - Each handler's happy path.
   - Error paths (missing required args, bad metadata type, etc).
@@ -19,12 +19,12 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
-    """Normal `hermes chat` sessions (no HERMES_KANBAN_TASK) must have
+    """Normal `hermes chat` sessions (no GROVE_KANBAN_TASK) must have
     zero kanban_* tools in their schema."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    home = tmp_path / ".hermes"
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
+    home = tmp_path / ".grove"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
     from tools.registry import invalidate_check_fn_cache, registry
@@ -41,10 +41,10 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
 
 def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     """Worker sessions get task lifecycle tools, not board-routing tools."""
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
-    home = tmp_path / ".hermes"
+    monkeypatch.setenv("GROVE_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".grove"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
     from tools.registry import invalidate_check_fn_cache, registry
@@ -65,14 +65,14 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     """Task scope wins over profile config for board-routing tools.
 
     Even if a worker process happens to also have ``toolsets: [kanban]``
-    in its config, the HERMES_KANBAN_TASK env var means it's a focused
+    in its config, the GROVE_KANBAN_TASK env var means it's a focused
     worker and must not see kanban_list / kanban_unblock.
     """
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
-    home = tmp_path / ".hermes"
+    monkeypatch.setenv("GROVE_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".grove"
     home.mkdir()
     (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
     from tools.registry import invalidate_check_fn_cache, registry
@@ -93,11 +93,11 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
 
 def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     """Orchestrator profiles with toolsets: [kanban] see all kanban tools."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    home = tmp_path / ".hermes"
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
+    home = tmp_path / ".grove"
     home.mkdir()
     (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
     from tools.registry import invalidate_check_fn_cache, registry
@@ -122,12 +122,12 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
 
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
-    """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
+    """Simulate being a worker: GROVE_HOME isolated, GROVE_KANBAN_TASK set
     after we've created the task."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".grove"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.setenv("GROVE_HOME", str(home))
+    monkeypatch.setenv("GROVE_PROFILE", "test-worker")
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
@@ -140,7 +140,7 @@ def worker_env(monkeypatch, tmp_path):
         kb.claim_task(conn, tid)
     finally:
         conn.close()
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("GROVE_KANBAN_TASK", tid)
     return tid
 
 
@@ -171,7 +171,7 @@ def test_show_explicit_task_id(worker_env):
 
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -201,21 +201,21 @@ def test_list_filters_tasks(monkeypatch, worker_env):
 
 
 def test_list_rejects_invalid_status(monkeypatch, worker_env):
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt
     out = kt._handle_list({"status": "not-a-state"})
     assert "status must be one of" in json.loads(out).get("error", "")
 
 
 def test_list_rejects_bad_limit(monkeypatch, worker_env):
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_list({"limit": "nope"})).get("error")
     assert json.loads(kt._handle_list({"limit": 0})).get("error")
 
 
 def test_list_parses_include_archived_string_false(monkeypatch, worker_env):
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -236,7 +236,7 @@ def test_list_parses_include_archived_string_false(monkeypatch, worker_env):
 
 
 def test_list_parses_include_archived_string_true(monkeypatch, worker_env):
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -257,7 +257,7 @@ def test_list_parses_include_archived_string_true(monkeypatch, worker_env):
 
 
 def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt
     out = kt._handle_list({"include_archived": "sometimes"})
     assert "include_archived must be" in json.loads(out).get("error", "")
@@ -534,7 +534,7 @@ def test_comment_happy_path(worker_env):
     try:
         comments = kb.list_comments(conn, worker_env)
         assert len(comments) == 1
-        # Author defaults to HERMES_PROFILE env we set in the fixture
+        # Author defaults to GROVE_PROFILE env we set in the fixture
         assert comments[0].author == "test-worker"
         assert comments[0].body == "hello thread"
     finally:
@@ -549,7 +549,7 @@ def test_comment_rejects_empty_body(worker_env):
 
 def test_comment_ignores_caller_supplied_author(worker_env):
     """``args["author"]`` is no longer honored — the author is always
-    derived from ``HERMES_PROFILE`` so a worker can't forge a comment
+    derived from ``GROVE_PROFILE`` so a worker can't forge a comment
     under an authoritative-looking name like ``hermes-system`` and
     poison the next worker's prompt context. Cross-task commenting
     itself remains unrestricted (see #19713); only the author override
@@ -564,7 +564,7 @@ def test_comment_ignores_caller_supplied_author(worker_env):
     conn = kb.connect()
     try:
         comments = kb.list_comments(conn, worker_env)
-        # Author comes from HERMES_PROFILE in the fixture, not the
+        # Author comes from GROVE_PROFILE in the fixture, not the
         # caller-supplied "hermes-system" override.
         assert comments[0].author == "test-worker"
     finally:
@@ -756,7 +756,7 @@ def test_link_rejects_cycle(worker_env):
 
 
 def test_unblock_happy_path(monkeypatch, worker_env):
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -779,7 +779,7 @@ def test_unblock_happy_path(monkeypatch, worker_env):
 
 
 def test_unblock_rejects_non_blocked_task(monkeypatch, worker_env):
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt
     out = kt._handle_unblock({"task_id": worker_env})
     assert json.loads(out).get("error")
@@ -849,12 +849,12 @@ def test_worker_lifecycle_through_tools(worker_env):
 # ---------------------------------------------------------------------------
 
 def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
-    """A normal chat session (no HERMES_KANBAN_TASK) must NOT have
+    """A normal chat session (no GROVE_KANBAN_TASK) must NOT have
     KANBAN_GUIDANCE in its system prompt."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    home = tmp_path / ".hermes"
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
+    home = tmp_path / ".grove"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
@@ -872,12 +872,12 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
 
 
 def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
-    """A worker session (HERMES_KANBAN_TASK set) MUST have the full
+    """A worker session (GROVE_KANBAN_TASK set) MUST have the full
     lifecycle guidance in its system prompt."""
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
-    home = tmp_path / ".hermes"
+    monkeypatch.setenv("GROVE_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".grove"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
@@ -904,10 +904,10 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     """Sanity: the guidance block is under 4 KB so it doesn't blow
     up the cached prompt."""
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
-    home = tmp_path / ".hermes"
+    monkeypatch.setenv("GROVE_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".grove"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
@@ -921,7 +921,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
 # Worker task-ownership enforcement (regression tests for #19534)
 # ---------------------------------------------------------------------------
 #
-# A worker process has HERMES_KANBAN_TASK set to its own task id. The
+# A worker process has GROVE_KANBAN_TASK set to its own task id. The
 # destructive tools (kanban_complete, kanban_block, kanban_heartbeat,
 # kanban_unblock) must refuse to operate
 # on any OTHER task id, even if the caller supplies an explicit `task_id`
@@ -929,7 +929,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
 # kanban_comment / kanban_create / kanban_link on other tasks, so those
 # are unrestricted.
 #
-# Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
+# Orchestrator profiles (no GROVE_KANBAN_TASK in env) are intentionally
 # exempt — their job is routing, and they sometimes close out child
 # tasks on behalf of the child.
 
@@ -1025,7 +1025,7 @@ def test_worker_can_comment_on_foreign_task(worker_env):
     assert d.get("ok") is True, f"cross-task comment must succeed: {d}"
 
     # The comment lands on the foreign task, attributed to the worker's
-    # HERMES_PROFILE — never to a caller-controlled string.
+    # GROVE_PROFILE — never to a caller-controlled string.
     conn = kb.connect()
     try:
         comments = kb.list_comments(conn, other)
@@ -1095,7 +1095,7 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
         conn.close()
 
     from tools import kanban_tools as kt
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run1.id))
+    monkeypatch.setenv("GROVE_KANBAN_RUN_ID", str(run1.id))
     out = kt._handle_complete({"summary": "late stale completion"})
     d = json.loads(out)
     assert d.get("ok") is not True
@@ -1108,19 +1108,19 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     finally:
         conn.close()
 
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run2.id))
+    monkeypatch.setenv("GROVE_KANBAN_RUN_ID", str(run2.id))
     out = kt._handle_complete({"summary": "current completion"})
     d = json.loads(out)
     assert d.get("ok") is True
 
 
 def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
-    """Orchestrator profiles (no HERMES_KANBAN_TASK) can still complete
+    """Orchestrator profiles (no GROVE_KANBAN_TASK) can still complete
     any task via explicit task_id. The check only applies to workers."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    home = tmp_path / ".hermes"
+    monkeypatch.delenv("GROVE_KANBAN_TASK", raising=False)
+    home = tmp_path / ".grove"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 

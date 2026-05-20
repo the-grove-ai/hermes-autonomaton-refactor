@@ -1,6 +1,6 @@
 """Nous Portal upstream adapter.
 
-Reads the user's Nous OAuth state from ``~/.hermes/auth.json``, refreshes
+Reads the user's Nous OAuth state from ``~/.grove/auth.json``, refreshes
 the access token and mints a fresh agent key when needed, and exposes the
 upstream base URL plus minted bearer for the proxy server to forward to.
 

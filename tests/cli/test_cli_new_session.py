@@ -87,7 +87,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     }
     if config_overrides:
         _clean_config.update(config_overrides)
-    clean_env = {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}
+    clean_env = {"LLM_MODEL": "", "GROVE_MAX_ITERATIONS": ""}
     if env_overrides:
         clean_env.update(env_overrides)
     prompt_toolkit_stubs = {
@@ -121,7 +121,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
 
 def _prepare_cli_with_active_session(tmp_path):
     cli = _make_cli()
-    cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+    cli._session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     cli._session_db.create_session(session_id=cli.session_id, source="cli", model=cli.model)
 
     cli.agent = _FakeAgent(cli.session_id, cli.session_start)

@@ -102,7 +102,7 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
 #   eval "$(hermes completion bash)"
 
 _hermes_profiles() {{
-    local profiles_dir="$HOME/.hermes/profiles"
+    local profiles_dir="$HOME/.grove/profiles"
     local profiles="default"
     if [ -d "$profiles_dir" ]; then
         profiles="$profiles $(ls "$profiles_dir" 2>/dev/null)"
@@ -205,8 +205,8 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
 _hermes_profiles() {{
     local -a profiles
     profiles=(default)
-    if [[ -d "$HOME/.hermes/profiles" ]]; then
-        profiles+=("${{(@f)$(ls $HOME/.hermes/profiles 2>/dev/null)}}")
+    if [[ -d "$HOME/.grove/profiles" ]]; then
+        profiles+=("${{(@f)$(ls $HOME/.grove/profiles 2>/dev/null)}}")
     fi
     _describe 'profile' profiles
 }}
@@ -259,8 +259,8 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
         "# Helper: list available profiles",
         "function __hermes_profiles",
         "    echo default",
-        "    if test -d $HOME/.hermes/profiles",
-        "        ls $HOME/.hermes/profiles 2>/dev/null",
+        "    if test -d $HOME/.grove/profiles",
+        "        ls $HOME/.grove/profiles 2>/dev/null",
         "    end",
         "end",
         "",

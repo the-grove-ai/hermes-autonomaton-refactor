@@ -108,7 +108,7 @@ def slack_manifest_command(args) -> int:
 
     Flags (all parsed in ``hermes_cli/main.py``):
       --write [PATH]  Write to file instead of stdout (default path:
-                      ``$HERMES_HOME/slack-manifest.json``)
+                      ``$GROVE_HOME/slack-manifest.json``)
       --name NAME     Override the bot display name (default: "Hermes")
       --description DESC  Override the bot description
       --slashes-only  Emit only the ``features.slash_commands`` array (for
@@ -135,7 +135,7 @@ def slack_manifest_command(args) -> int:
 
                 target = Path(get_hermes_home()) / "slack-manifest.json"
             except Exception:
-                target = Path(os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")) / "slack-manifest.json"
+                target = Path(os.environ.get("GROVE_HOME") or str(Path.home() / ".grove")) / "slack-manifest.json"
         else:
             target = Path(write_target).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)

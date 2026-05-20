@@ -147,7 +147,7 @@ class TestSessionKeyContext:
     def test_context_session_key_overrides_process_env(self):
         token = approval_module.set_current_session_key("alice")
         try:
-            with mock_patch.dict("os.environ", {"HERMES_SESSION_KEY": "bob"}, clear=False):
+            with mock_patch.dict("os.environ", {"GROVE_SESSION_KEY": "bob"}, clear=False):
                 assert approval_module.get_current_session_key() == "alice"
         finally:
             approval_module.reset_current_session_key(token)
@@ -362,17 +362,17 @@ class TestTeePattern:
         assert key is not None
 
     def test_tee_hermes_env(self):
-        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.hermes/.env")
+        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.grove/.env")
         assert dangerous is True
         assert key is not None
 
     def test_tee_custom_hermes_home_env(self):
-        dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/.env")
+        dangerous, key, desc = detect_dangerous_command("echo x | tee $GROVE_HOME/.env")
         assert dangerous is True
         assert key is not None
 
     def test_tee_quoted_custom_hermes_home_env(self):
-        dangerous, key, desc = detect_dangerous_command('echo x | tee "$HERMES_HOME/.env"')
+        dangerous, key, desc = detect_dangerous_command('echo x | tee "$GROVE_HOME/.env"')
         assert dangerous is True
         assert key is not None
 
@@ -415,7 +415,7 @@ class TestSensitiveRedirectPattern:
     """Detect shell redirection writes to sensitive user-managed paths."""
 
     def test_redirect_to_custom_hermes_home_env(self):
-        dangerous, key, desc = detect_dangerous_command("echo x > $HERMES_HOME/.env")
+        dangerous, key, desc = detect_dangerous_command("echo x > $GROVE_HOME/.env")
         assert dangerous is True
         assert key is not None
 
@@ -611,7 +611,7 @@ class TestGatewayProtection:
     """Prevent agents from starting the gateway outside systemd management."""
 
     def test_gateway_run_with_disown_detected(self):
-        cmd = "kill 1605 && cd ~/.hermes/hermes-agent && source venv/bin/activate && python -m hermes_cli.main gateway run --replace &disown; echo done"
+        cmd = "kill 1605 && cd ~/.grove/hermes-agent && source venv/bin/activate && python -m hermes_cli.main gateway run --replace &disown; echo done"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
         assert "systemctl" in desc

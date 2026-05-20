@@ -126,7 +126,7 @@ def _profile_author() -> str:
     """Mirror of ``hermes_cli.kanban._profile_author``. Kept local to
     avoid a circular import when kanban.py imports this module."""
     return (
-        os.environ.get("HERMES_PROFILE")
+        os.environ.get("GROVE_PROFILE")
         or os.environ.get("USER")
         or "specifier"
     )

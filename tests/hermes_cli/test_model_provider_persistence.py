@@ -14,7 +14,7 @@ import pytest
 
 @pytest.fixture
 def config_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with a minimal string-format config."""
+    """Isolated GROVE_HOME with a minimal string-format config."""
     home = tmp_path / "hermes"
     home.mkdir()
     config_yaml = home / "config.yaml"
@@ -22,11 +22,11 @@ def config_home(tmp_path, monkeypatch):
     config_yaml.write_text("model: some-old-model\n")
     env_file = home / ".env"
     env_file.write_text("")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
     # Clear env vars that could interfere
-    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("GROVE_MODEL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    monkeypatch.delenv("GROVE_INFERENCE_PROVIDER", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -341,7 +341,7 @@ class TestBaseUrlValidation:
         # User types a shell command instead of a URL at the base URL prompt
         with patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
              patch("hermes_cli.auth.deactivate_provider"), \
-             patch("builtins.input", return_value="nano ~/.hermes/.env"):
+             patch("builtins.input", return_value="nano ~/.grove/.env"):
             _model_flow_api_key_provider(load_config(), "zai", "old-model")
 
         # The garbage value should NOT have been saved

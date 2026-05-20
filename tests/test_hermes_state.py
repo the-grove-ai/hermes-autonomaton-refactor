@@ -10,7 +10,7 @@ from hermes_state import SessionDB
 @pytest.fixture()
 def db(tmp_path):
     """Create a SessionDB with a temp database file."""
-    db_path = tmp_path / "test_state.db"
+    db_path = tmp_path / "test_telemetry.db"
     session_db = SessionDB(db_path=db_path)
     yield session_db
     session_db.close()
@@ -1602,7 +1602,7 @@ class TestSchemaInit:
         db.close()
 
     def test_telegram_topic_binding_roundtrip_requires_explicit_schema(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session(
             session_id="topic-session",
             source="telegram",
@@ -1630,7 +1630,7 @@ class TestSchemaInit:
         db.close()
 
     def test_telegram_topic_binding_refuses_to_relink_session_to_another_topic(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session(
             session_id="topic-session",
             source="telegram",
@@ -1655,7 +1655,7 @@ class TestSchemaInit:
         db.close()
 
     def test_list_unlinked_telegram_sessions_for_user_excludes_bound_and_other_users(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session(
             session_id="old-unlinked",
             source="telegram",
@@ -2847,7 +2847,7 @@ class TestFTS5ToolCallIndexing:
 
 
 class TestFTS5ToolCallMigration:
-    """v11 migration: pre-existing state.db with old external-content FTS tables
+    """v11 migration: pre-existing telemetry.db with old external-content FTS tables
     must be re-indexed so tool_name / tool_calls become searchable after upgrade."""
 
     def test_v10_to_v11_upgrade_backfills_tool_fields(self, tmp_path):

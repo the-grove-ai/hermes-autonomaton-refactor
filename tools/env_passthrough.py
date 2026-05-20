@@ -47,7 +47,7 @@ _config_passthrough: frozenset[str] | None = None
 
 def _is_hermes_provider_credential(name: str) -> bool:
     """True if ``name`` is a Hermes-managed provider credential (API key,
-    token, or similar) per ``_HERMES_PROVIDER_ENV_BLOCKLIST``.
+    token, or similar) per ``_GROVE_PROVIDER_ENV_BLOCKLIST``.
 
     Skill-declared ``required_environment_variables`` frontmatter must
     not be able to override this list — that was the bypass in
@@ -61,10 +61,10 @@ def _is_hermes_provider_credential(name: str) -> bool:
     wrap third-party APIs still work.
     """
     try:
-        from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+        from tools.environments.local import _GROVE_PROVIDER_ENV_BLOCKLIST
     except Exception:
         return False
-    return name in _HERMES_PROVIDER_ENV_BLOCKLIST
+    return name in _GROVE_PROVIDER_ENV_BLOCKLIST
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -73,7 +73,7 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
     Typically called when a skill declares ``required_environment_variables``.
 
     Variables that are Hermes-managed provider credentials (from
-    ``_HERMES_PROVIDER_ENV_BLOCKLIST``) are rejected here to preserve
+    ``_GROVE_PROVIDER_ENV_BLOCKLIST``) are rejected here to preserve
     the ``execute_code`` sandbox's credential-scrubbing guarantee per
     GHSA-rhgp-j443-p4rf. A skill that needs to talk to a Hermes-managed
     provider should do so via the agent's main-process tools (web_search,
@@ -90,7 +90,7 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
         if _is_hermes_provider_credential(name):
             logger.warning(
                 "env passthrough: refusing to register Hermes provider "
-                "credential %r (blocked by _HERMES_PROVIDER_ENV_BLOCKLIST). "
+                "credential %r (blocked by _GROVE_PROVIDER_ENV_BLOCKLIST). "
                 "Skills must not override the execute_code sandbox's "
                 "credential scrubbing; see GHSA-rhgp-j443-p4rf.",
                 name,

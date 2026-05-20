@@ -48,14 +48,14 @@ def test_resolve_last_session_prefers_last_active_over_started_at(monkeypatch):
 
 def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
     # End-to-end: SessionDB must surface last_active and order by MRU.
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
     import hermes_state
 
     from pathlib import Path
 
-    db = hermes_state.SessionDB(db_path=Path(tmp_path / "state.db"))
+    db = hermes_state.SessionDB(db_path=Path(tmp_path / "telemetry.db"))
     try:
         db.create_session("s_started_later", source="cli")
         db.create_session("s_active_later", source="cli")
@@ -121,14 +121,14 @@ def test_resolve_last_session_falls_back_to_started_at(monkeypatch):
 def test_resolve_last_session_not_limited_to_newest_started_20(tmp_path, monkeypatch):
     # Regression: when sampling by started_at, -c could miss the true MRU if
     # it was older than the newest 20 started sessions.
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
     import hermes_state
 
     from pathlib import Path
 
-    state_db = Path(tmp_path / "state.db")
+    state_db = Path(tmp_path / "telemetry.db")
     real_session_db = hermes_state.SessionDB
     db = real_session_db(db_path=state_db)
     try:

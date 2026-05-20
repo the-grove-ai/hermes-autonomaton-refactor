@@ -115,7 +115,7 @@ class TestTelegramAllowedChats:
         """slack-style config.yaml → env var bridge works."""
         from gateway.config import load_gateway_config
 
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".grove"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
             "telegram:\n"
@@ -124,7 +124,7 @@ class TestTelegramAllowedChats:
             "    - -200\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GROVE_HOME", str(hermes_home))
         monkeypatch.setenv("TELEGRAM_ALLOWED_CHATS", "__sentinel__")
         monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS")
 
@@ -136,14 +136,14 @@ class TestTelegramAllowedChats:
     def test_config_bridge_env_takes_precedence(self, monkeypatch, tmp_path):
         from gateway.config import load_gateway_config
 
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".grove"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
             "telegram:\n"
             "  allowed_chats: -100\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GROVE_HOME", str(hermes_home))
         monkeypatch.setenv("TELEGRAM_ALLOWED_CHATS", "-999")
 
         load_gateway_config()
@@ -208,7 +208,7 @@ class TestDingTalkAllowedChats:
     def test_config_bridge(self, monkeypatch, tmp_path):
         from gateway.config import load_gateway_config
 
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".grove"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
             "dingtalk:\n"
@@ -217,7 +217,7 @@ class TestDingTalkAllowedChats:
             "    - cidDEF\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GROVE_HOME", str(hermes_home))
         monkeypatch.setenv("DINGTALK_ALLOWED_CHATS", "__sentinel__")
         monkeypatch.delenv("DINGTALK_ALLOWED_CHATS")
 
@@ -280,7 +280,7 @@ class TestMattermostAllowedChannels:
     def test_config_bridge(self, monkeypatch, tmp_path):
         from gateway.config import load_gateway_config
 
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".grove"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
             "mattermost:\n"
@@ -289,7 +289,7 @@ class TestMattermostAllowedChannels:
             "    - chanDEF\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GROVE_HOME", str(hermes_home))
         # Pre-register the key with monkeypatch so teardown cleans it up
         # even though load_gateway_config mutates os.environ directly
         # (monkeypatch only restores keys it's touched via setenv/delenv;
@@ -345,7 +345,7 @@ class TestMatrixAllowedRooms:
     def test_config_bridge(self, monkeypatch, tmp_path):
         from gateway.config import load_gateway_config
 
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".grove"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
             "matrix:\n"
@@ -354,7 +354,7 @@ class TestMatrixAllowedRooms:
             "    - '!room2:srv'\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GROVE_HOME", str(hermes_home))
         monkeypatch.setenv("MATRIX_ALLOWED_ROOMS", "__sentinel__")
         monkeypatch.delenv("MATRIX_ALLOWED_ROOMS")
 

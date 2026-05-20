@@ -38,21 +38,21 @@ from hermes_cli.profiles import (
 
 
 # ---------------------------------------------------------------------------
-# Shared fixture: redirect Path.home() and HERMES_HOME for profile tests
+# Shared fixture: redirect Path.home() and GROVE_HOME for profile tests
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def profile_env(tmp_path, monkeypatch):
     """Set up an isolated environment for profile tests.
 
-    * Path.home() -> tmp_path  (so _get_profiles_root() = tmp_path/.hermes/profiles)
-    * HERMES_HOME  -> tmp_path/.hermes  (so get_hermes_home() agrees)
-    * Creates the bare-minimum ~/.hermes directory.
+    * Path.home() -> tmp_path  (so _get_profiles_root() = tmp_path/.grove/profiles)
+    * GROVE_HOME  -> tmp_path/.hermes  (so get_hermes_home() agrees)
+    * Creates the bare-minimum ~/.grove directory.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    default_home = tmp_path / ".hermes"
+    default_home = tmp_path / ".grove"
     default_home.mkdir(exist_ok=True)
-    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("GROVE_HOME", str(default_home))
     return tmp_path
 
 
@@ -133,16 +133,16 @@ class TestGetProfileDir:
     def test_default_returns_hermes_home(self, profile_env):
         tmp_path = profile_env
         result = get_profile_dir("default")
-        assert result == tmp_path / ".hermes"
+        assert result == tmp_path / ".grove"
 
     def test_named_profile_returns_profiles_subdir(self, profile_env):
         tmp_path = profile_env
         result = get_profile_dir("coder")
-        assert result == tmp_path / ".hermes" / "profiles" / "coder"
+        assert result == tmp_path / ".grove" / "profiles" / "coder"
 
     def test_named_profile_matching_is_case_insensitive(self, profile_env):
         tmp_path = profile_env
-        assert get_profile_dir("Coder") == tmp_path / ".hermes" / "profiles" / "coder"
+        assert get_profile_dir("Coder") == tmp_path / ".grove" / "profiles" / "coder"
 
 
 # ===================================================================
@@ -174,7 +174,7 @@ class TestCreateProfile:
 
     def test_clone_config_copies_files(self, profile_env):
         tmp_path = profile_env
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".grove"
         # Create source config files in default profile
         (default_home / "config.yaml").write_text("model: test")
         (default_home / ".env").write_text("KEY=val")
@@ -188,7 +188,7 @@ class TestCreateProfile:
 
     def test_clone_config_copies_source_skills(self, profile_env):
         tmp_path = profile_env
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".grove"
         skill_dir = default_home / "skills" / "custom" / "installed-skill"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("---\nname: installed-skill\n---\n")
@@ -205,7 +205,7 @@ class TestCreateProfile:
 
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".grove"
         # Populate default with some content
         (default_home / "memories").mkdir(exist_ok=True)
         (default_home / "memories" / "note.md").write_text("remember this")
@@ -226,9 +226,9 @@ class TestCreateProfile:
         assert not (profile_dir / "processes.json").exists()
 
     def test_clone_all_excludes_sibling_profiles_tree(self, profile_env):
-        """--clone-all from default ~/.hermes must not copy profiles/* (nested explosion)."""
+        """--clone-all from default ~/.grove must not copy profiles/* (nested explosion)."""
         tmp_path = profile_env
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".grove"
         profiles_root = default_home / "profiles"
         profiles_root.mkdir(exist_ok=True)
         (profiles_root / "other").mkdir(parents=True, exist_ok=True)
@@ -246,11 +246,11 @@ class TestCreateProfile:
         """--clone-all from default profile excludes hermes-agent, .worktrees,
         bin, node_modules at root, plus __pycache__/*.pyc/*.pyo/*.sock/*.tmp
         at any depth.  Profile data (config, env, skills, sessions, logs,
-        state.db) must be preserved — clone-all means "complete snapshot
+        telemetry.db) must be preserved — clone-all means "complete snapshot
         minus infrastructure."
         """
         tmp_path = profile_env
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".grove"
         # Simulate infrastructure dirs that only the default profile has
         (default_home / "hermes-agent" / ".git").mkdir(parents=True)
         (default_home / "hermes-agent" / "venv" / "bin").mkdir(parents=True)
@@ -273,7 +273,7 @@ class TestCreateProfile:
         (default_home / "skills" / "my-skill" / "SKILL.md").write_text("skill")
         (default_home / "config.yaml").write_text("model: gpt-4")
         (default_home / ".env").write_text("KEY=val")
-        (default_home / "state.db").write_text("sessions-data")
+        (default_home / "telemetry.db").write_text("sessions-data")
         (default_home / "sessions").mkdir(exist_ok=True)
         (default_home / "logs").mkdir(exist_ok=True)
         (default_home / "logs" / "gateway.log").write_text("log")
@@ -296,7 +296,7 @@ class TestCreateProfile:
         assert (profile_dir / "skills" / "my-skill" / "SKILL.md").read_text() == "skill"
         assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
         assert (profile_dir / ".env").read_text() == "KEY=val"
-        assert (profile_dir / "state.db").read_text() == "sessions-data"
+        assert (profile_dir / "telemetry.db").read_text() == "sessions-data"
         assert (profile_dir / "sessions").exists()
         assert (profile_dir / "logs" / "gateway.log").read_text() == "log"
 
@@ -496,7 +496,7 @@ class TestActiveProfile:
 
     def test_empty_file_returns_default(self, profile_env):
         tmp_path = profile_env
-        active_path = tmp_path / ".hermes" / "active_profile"
+        active_path = tmp_path / ".grove" / "active_profile"
         active_path.write_text("")
         assert get_active_profile() == "default"
 
@@ -504,7 +504,7 @@ class TestActiveProfile:
         tmp_path = profile_env
         create_profile("coder", no_alias=True)
         set_active_profile("coder")
-        active_path = tmp_path / ".hermes" / "active_profile"
+        active_path = tmp_path / ".grove" / "active_profile"
         assert active_path.exists()
 
         set_active_profile("default")
@@ -523,23 +523,23 @@ class TestGetActiveProfileName:
     """Tests for get_active_profile_name()."""
 
     def test_default_hermes_home_returns_default(self, profile_env):
-        # HERMES_HOME points to tmp_path/.hermes which is the default
+        # GROVE_HOME points to tmp_path/.hermes which is the default
         assert get_active_profile_name() == "default"
 
     def test_profile_path_returns_profile_name(self, profile_env, monkeypatch):
         tmp_path = profile_env
         create_profile("coder", no_alias=True)
-        profile_dir = tmp_path / ".hermes" / "profiles" / "coder"
-        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        profile_dir = tmp_path / ".grove" / "profiles" / "coder"
+        monkeypatch.setenv("GROVE_HOME", str(profile_dir))
         assert get_active_profile_name() == "coder"
 
     def test_custom_path_returns_default(self, profile_env, monkeypatch):
-        """A custom HERMES_HOME (Docker, etc.) IS the default root."""
+        """A custom GROVE_HOME (Docker, etc.) IS the default root."""
         tmp_path = profile_env
         custom = tmp_path / "some" / "other" / "path"
         custom.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(custom))
-        # With Docker-aware roots, a custom HERMES_HOME is the default —
+        monkeypatch.setenv("GROVE_HOME", str(custom))
+        # With Docker-aware roots, a custom GROVE_HOME is the default —
         # not "custom".  The user is on the default profile of their
         # custom deployment.
         assert get_active_profile_name() == "default"
@@ -556,12 +556,12 @@ class TestResolveProfileEnv:
         tmp_path = profile_env
         create_profile("coder", no_alias=True)
         result = resolve_profile_env("coder")
-        assert result == str(tmp_path / ".hermes" / "profiles" / "coder")
+        assert result == str(tmp_path / ".grove" / "profiles" / "coder")
 
     def test_default_returns_default_home(self, profile_env):
         tmp_path = profile_env
         result = resolve_profile_env("default")
-        assert result == str(tmp_path / ".hermes")
+        assert result == str(tmp_path / ".grove")
 
     def test_nonexistent_raises_file_not_found(self, profile_env):
         with pytest.raises(FileNotFoundError):
@@ -612,7 +612,7 @@ class TestRenameProfile:
     def test_renames_directory(self, profile_env):
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
-        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+        old_dir = tmp_path / ".grove" / "profiles" / "oldname"
         assert old_dir.is_dir()
 
         # Mock alias collision to avoid subprocess calls
@@ -621,12 +621,12 @@ class TestRenameProfile:
 
         assert not old_dir.is_dir()
         assert new_dir.is_dir()
-        assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
+        assert new_dir == tmp_path / ".grove" / "profiles" / "newname"
 
     def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
         tmp_path = profile_env
         create_profile("ssi_health", no_alias=True)
-        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path = tmp_path / ".grove" / "honcho.json"
         honcho_path.write_text(json.dumps({
             "hosts": {
                 "hermes.ssi_health": {
@@ -653,7 +653,7 @@ class TestRenameProfile:
     def test_pins_ai_peer_when_absent_on_honcho_host_rename(self, profile_env):
         tmp_path = profile_env
         create_profile("ssi_health", no_alias=True)
-        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path = tmp_path / ".grove" / "honcho.json"
         honcho_path.write_text(json.dumps({
             "hosts": {
                 "hermes.ssi_health": {"workspace": "hermes", "enabled": True}
@@ -671,7 +671,7 @@ class TestRenameProfile:
     def test_does_not_overwrite_existing_honcho_host_on_rename(self, profile_env):
         tmp_path = profile_env
         create_profile("ssi_health", no_alias=True)
-        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path = tmp_path / ".grove" / "honcho.json"
         honcho_path.write_text(json.dumps({
             "hosts": {
                 "hermes.ssi_health": {"aiPeer": "ssi_health"},
@@ -886,7 +886,7 @@ class TestExportImport:
             sub.mkdir(exist_ok=True)
             (sub / "marker.txt").write_text("excluded")
 
-        for f in ("state.db", "gateway.pid", "gateway_state.json",
+        for f in ("telemetry.db", "gateway.pid", "gateway_state.json",
                   "processes.json", "errors.log", ".hermes_history",
                   "active_profile", ".update_check", "auth.lock"):
             (default_dir / f).write_text("excluded")
@@ -912,7 +912,7 @@ class TestExportImport:
                 f"Expected {prefix} to be excluded but found it in archive"
 
         excluded_files = [
-            "default/state.db", "default/gateway.pid",
+            "default/telemetry.db", "default/gateway.pid",
             "default/gateway_state.json", "default/processes.json",
             "default/errors.log", "default/.hermes_history",
             "default/active_profile", "default/.update_check",
@@ -998,7 +998,7 @@ class TestProfileIsolation:
     def test_separate_state_db_paths(self, profile_env):
         alpha_dir = get_profile_dir("alpha")
         beta_dir = get_profile_dir("beta")
-        assert alpha_dir / "state.db" != beta_dir / "state.db"
+        assert alpha_dir / "telemetry.db" != beta_dir / "telemetry.db"
 
     def test_separate_skills_paths(self, profile_env):
         create_profile("alpha", no_alias=True)
@@ -1021,57 +1021,57 @@ class TestInternalHelpers:
     def test_profiles_root_under_home(self, profile_env):
         tmp_path = profile_env
         root = _get_profiles_root()
-        assert root == tmp_path / ".hermes" / "profiles"
+        assert root == tmp_path / ".grove" / "profiles"
 
     def test_default_hermes_home(self, profile_env):
         tmp_path = profile_env
         home = _get_default_hermes_home()
-        assert home == tmp_path / ".hermes"
+        assert home == tmp_path / ".grove"
 
     def test_profiles_root_docker_deployment(self, tmp_path, monkeypatch):
-        """In Docker (HERMES_HOME outside ~/.hermes), profiles go under HERMES_HOME."""
+        """In Docker (GROVE_HOME outside ~/.grove), profiles go under GROVE_HOME."""
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        monkeypatch.setenv("GROVE_HOME", str(docker_home))
         root = _get_profiles_root()
         assert root == docker_home / "profiles"
 
     def test_default_hermes_home_docker(self, tmp_path, monkeypatch):
-        """In Docker, _get_default_hermes_home() returns HERMES_HOME itself."""
+        """In Docker, _get_default_hermes_home() returns GROVE_HOME itself."""
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        monkeypatch.setenv("GROVE_HOME", str(docker_home))
         home = _get_default_hermes_home()
         assert home == docker_home
 
     def test_profiles_root_profile_mode(self, tmp_path, monkeypatch):
-        """In profile mode (HERMES_HOME under ~/.hermes), profiles root is still ~/.hermes/profiles."""
-        native = tmp_path / ".hermes"
+        """In profile mode (GROVE_HOME under ~/.grove), profiles root is still ~/.grove/profiles."""
+        native = tmp_path / ".grove"
         profile_dir = native / "profiles" / "coder"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setenv("GROVE_HOME", str(profile_dir))
         root = _get_profiles_root()
         assert root == native / "profiles"
 
     def test_active_profile_path_docker(self, tmp_path, monkeypatch):
-        """In Docker, active_profile file lives under HERMES_HOME."""
+        """In Docker, active_profile file lives under GROVE_HOME."""
         from hermes_cli.profiles import _get_active_profile_path
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        monkeypatch.setenv("GROVE_HOME", str(docker_home))
         path = _get_active_profile_path()
         assert path == docker_home / "active_profile"
 
     def test_create_profile_docker(self, tmp_path, monkeypatch):
-        """Profile created in Docker lands under HERMES_HOME/profiles/."""
+        """Profile created in Docker lands under GROVE_HOME/profiles/."""
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        monkeypatch.setenv("GROVE_HOME", str(docker_home))
         result = create_profile("orchestrator", no_alias=True)
         expected = docker_home / "profiles" / "orchestrator"
         assert result == expected
@@ -1082,7 +1082,7 @@ class TestInternalHelpers:
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        monkeypatch.setenv("GROVE_HOME", str(docker_home))
         assert get_active_profile_name() == "default"
 
     def test_active_profile_name_docker_profile(self, tmp_path, monkeypatch):
@@ -1091,7 +1091,7 @@ class TestInternalHelpers:
         profile = docker_home / "profiles" / "orchestrator"
         profile.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setenv("GROVE_HOME", str(profile))
         assert get_active_profile_name() == "orchestrator"
 
 
@@ -1105,7 +1105,7 @@ class TestEdgeCases:
     def test_create_profile_returns_correct_path(self, profile_env):
         tmp_path = profile_env
         result = create_profile("mybot", no_alias=True)
-        expected = tmp_path / ".hermes" / "profiles" / "mybot"
+        expected = tmp_path / ".grove" / "profiles" / "mybot"
         assert result == expected
 
     def test_list_profiles_default_info_fields(self, profile_env):
@@ -1119,7 +1119,7 @@ class TestEdgeCases:
         """Verify _check_gateway_running uses the shared gateway PID validator."""
         from hermes_cli.profiles import _check_gateway_running
         tmp_path = profile_env
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".grove"
 
         with patch("gateway.status.get_running_pid", return_value=99999) as mock_get_running_pid:
             assert _check_gateway_running(default_home) is True
@@ -1132,7 +1132,7 @@ class TestEdgeCases:
         """Shared PID validator returning None means the profile is not running."""
         from hermes_cli.profiles import _check_gateway_running
         tmp_path = profile_env
-        default_home = tmp_path / ".hermes"
+        default_home = tmp_path / ".grove"
 
         with patch("gateway.status.get_running_pid", return_value=None) as mock_get_running_pid:
             assert _check_gateway_running(default_home) is False
