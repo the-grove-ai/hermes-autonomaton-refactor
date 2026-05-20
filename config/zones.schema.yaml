@@ -32,23 +32,22 @@
 #
 # Action pattern syntax
 # ---------------------
-# Glob-style with dot-notation namespacing:
+# Pure dot-notation, glob-style:
 #   calendar.read       — exact match
 #   calendar.read.*     — matches calendar.read and all descendants
-#   calendar.*          — matches calendar.<anything> one level deep
+#   calendar.*          — matches calendar.<anything> and descendants
 #   command.execute.*   — matches all command executions
 #
-# No regex. Keeps the schema editable by non-technical operators.
+# Only trailing ``.*`` is supported. Mid-pattern wildcards raise
+# ValueError at load time (fail loud). No regex.
 #
-# Variable interpolation
-# ----------------------
-# Supported variables (closed set, v0.1):
-#   ${HOME}       — operator home directory
-#   ${GROVE_HOME} — ~/.grove/ or $GROVE_HOME override
-#   ${SUDO}       — matches sudo/su/doas invocations
-#
-# Unrecognized ${VAR} is a load-time error (fail loud).
-# No recursive expansion.
+# Action identifiers are opaque dot-notation strings. The tool
+# dispatch layer (Sprint 06a wires this) maps filesystem paths,
+# command lines, and other tool inputs into pure-dot-notation
+# action identifiers before calling classify(). The classifier
+# itself never inspects paths or commands — only dot-segmented
+# strings. This keeps the matcher simple, the schema editable
+# by non-technical operators, and the policy surface auditable.
 #
 # Precedence
 # ----------
@@ -127,7 +126,7 @@ zones:
       - skill.create.*
       - skill.edit.*
       - skill.promote.*
-      - file.write.${GROVE_HOME}/skills/.andon/*
+      - file.write.andon_quarantine.*
       - command.dangerous.*
     review_required: synchronous
 
@@ -139,10 +138,12 @@ zones:
       exact file and line to edit, and confirms the change took
       effect after a manual edit + SIGHUP.
     sovereign:
-      - file.write.${GROVE_HOME}/zones.schema.yaml
-      - file.write.${GROVE_HOME}/routing.config.yaml
+      - file.write.zones_schema
+      - file.write.routing_config
       - skill.self_promote.*
-      - command.execute.*${SUDO}*
+      - command.execute.sudo
+      - command.execute.su
+      - command.execute.doas
     enforcement: os_permission_level
     surface:
       - read access to the protected resource (always green)
