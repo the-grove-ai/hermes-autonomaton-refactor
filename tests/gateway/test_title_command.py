@@ -58,7 +58,7 @@ class TestHandleTitleCommand:
     async def test_set_title(self, tmp_path):
         """Setting a title returns confirmation."""
         from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session("test_session_123", "telegram")
 
         runner = _make_runner(session_db=db)
@@ -75,7 +75,7 @@ class TestHandleTitleCommand:
     async def test_show_title_when_set(self, tmp_path):
         """Showing title when one is set returns the title."""
         from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session("test_session_123", "telegram")
         db.set_session_title("test_session_123", "Existing Title")
 
@@ -90,7 +90,7 @@ class TestHandleTitleCommand:
     async def test_show_title_when_not_set(self, tmp_path):
         """Showing title when none is set returns usage hint."""
         from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session("test_session_123", "telegram")
 
         runner = _make_runner(session_db=db)
@@ -104,7 +104,7 @@ class TestHandleTitleCommand:
     async def test_title_conflict(self, tmp_path):
         """Setting a title already used by another session returns error."""
         from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session("other_session", "telegram")
         db.set_session_title("other_session", "Taken Title")
         db.create_session("test_session_123", "telegram")
@@ -128,7 +128,7 @@ class TestHandleTitleCommand:
     async def test_title_too_long(self, tmp_path):
         """Setting a title that exceeds max length returns error."""
         from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session("test_session_123", "telegram")
 
         runner = _make_runner(session_db=db)
@@ -143,7 +143,7 @@ class TestHandleTitleCommand:
     async def test_title_control_chars_sanitized(self, tmp_path):
         """Control characters are stripped and sanitized title is stored."""
         from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session("test_session_123", "telegram")
 
         runner = _make_runner(session_db=db)
@@ -157,7 +157,7 @@ class TestHandleTitleCommand:
     async def test_title_only_control_chars(self, tmp_path):
         """Title with only control chars returns empty error."""
         from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         db.create_session("test_session_123", "telegram")
 
         runner = _make_runner(session_db=db)

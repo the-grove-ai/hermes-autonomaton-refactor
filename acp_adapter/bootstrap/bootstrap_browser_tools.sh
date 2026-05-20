@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # bootstrap_browser_tools.sh — install agent-browser + Playwright Chromium
-# into ~/.hermes/node/ for use by Hermes Agent's browser tools.
+# into ~/.grove/node/ for use by Hermes Agent's browser tools.
 #
 # Targets the registry-install path: users who got Hermes via
 # `uvx --from 'hermes-agent[acp]==X' hermes-acp` don't have a repo clone,
@@ -14,7 +14,7 @@
 #   bootstrap_browser_tools.sh           # use defaults
 #   bootstrap_browser_tools.sh --yes     # accept the ~400MB Chromium download
 #   bootstrap_browser_tools.sh --skip-chromium    # only install Node + agent-browser
-#   HERMES_HOME=/custom/path bootstrap_browser_tools.sh
+#   GROVE_HOME=/custom/path bootstrap_browser_tools.sh
 #
 # Idempotent: re-running this is safe and fast. Each step checks whether
 # the work is already done.
@@ -26,8 +26,8 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────────────
 
 NODE_VERSION="22"
-HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-NODE_PREFIX="$HERMES_HOME/node"
+GROVE_HOME="${GROVE_HOME:-$HOME/.hermes}"
+NODE_PREFIX="$GROVE_HOME/node"
 
 SKIP_CHROMIUM=false
 ASSUME_YES=false
@@ -63,7 +63,7 @@ while [ $# -gt 0 ]; do
             cat <<EOF
 Bootstrap Hermes Agent browser tools.
 
-Installs Node.js (into ~/.hermes/node/), the agent-browser npm package,
+Installs Node.js (into ~/.grove/node/), the agent-browser npm package,
 and the Playwright Chromium browser engine.
 
 Options:
@@ -72,7 +72,7 @@ Options:
   -h, --help        Show this help
 
 Environment:
-  HERMES_HOME       Override Hermes data dir (default: \$HOME/.hermes)
+  GROVE_HOME       Override Hermes data dir (default: \$HOME/.hermes)
 EOF
             exit 0
             ;;
@@ -191,7 +191,7 @@ ensure_node() {
         return 1
     fi
 
-    mkdir -p "$HERMES_HOME"
+    mkdir -p "$GROVE_HOME"
     rm -rf "$NODE_PREFIX"
     mv "$extracted_dir" "$NODE_PREFIX"
 
@@ -212,7 +212,7 @@ ensure_agent_browser() {
         return 1
     fi
 
-    # _find_agent_browser() in tools/browser_tool.py walks ~/.hermes/node/bin
+    # _find_agent_browser() in tools/browser_tool.py walks ~/.grove/node/bin
     # plus a few standard prefixes, so installing globally into the managed
     # Node prefix is enough — no PATH manipulation needed from the agent side.
     if [ -x "$NODE_PREFIX/bin/agent-browser" ] || command -v agent-browser >/dev/null 2>&1; then
@@ -292,8 +292,8 @@ find_system_browser() {
 
 write_browser_env() {
     local browser_path="$1"
-    local env_file="$HERMES_HOME/.env"
-    mkdir -p "$HERMES_HOME"
+    local env_file="$GROVE_HOME/.env"
+    mkdir -p "$GROVE_HOME"
     if [ -f "$env_file" ] && grep -q "^AGENT_BROWSER_EXECUTABLE_PATH=" "$env_file"; then
         return 0
     fi
@@ -385,7 +385,7 @@ ensure_chromium() {
 
 main() {
     log_info "Hermes Agent: bootstrapping browser tools"
-    log_info "  HERMES_HOME = $HERMES_HOME"
+    log_info "  GROVE_HOME = $GROVE_HOME"
     log_info "  OS / arch   = $NODE_OS-$NODE_ARCH ${DISTRO:+($DISTRO)}"
 
     ensure_node

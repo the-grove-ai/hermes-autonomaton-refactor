@@ -267,7 +267,7 @@ class TestPersistence:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
-        db = SessionDB(tmp_path / "state.db")
+        db = SessionDB(tmp_path / "telemetry.db")
 
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             manager = SessionManager(db=db)
@@ -543,7 +543,7 @@ class TestPersistence:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
-        db = SessionDB(tmp_path / "state.db")
+        db = SessionDB(tmp_path / "telemetry.db")
 
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             manager = SessionManager(db=db)
@@ -583,7 +583,7 @@ class TestPersistence:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
-        db = SessionDB(tmp_path / "state.db")
+        db = SessionDB(tmp_path / "telemetry.db")
 
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             manager = SessionManager(db=db)

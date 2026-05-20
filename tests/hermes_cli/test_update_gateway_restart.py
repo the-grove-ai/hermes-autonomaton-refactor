@@ -155,7 +155,7 @@ class TestLaunchdPlistPath:
         assert "<key>EnvironmentVariables</key>" in plist
         assert "<key>PATH</key>" in plist
         assert "<key>VIRTUAL_ENV</key>" in plist
-        assert "<key>HERMES_HOME</key>" in plist
+        assert "<key>GROVE_HOME</key>" in plist
 
     def test_plist_path_includes_venv_bin(self):
         plist = gateway_cli.generate_launchd_plist()
@@ -415,7 +415,7 @@ class TestCmdUpdateLaunchdRestart:
         )
         process = gateway_cli.ProfileGatewayProcess(
             profile="coder",
-            path=tmp_path / ".hermes" / "profiles" / "coder",
+            path=tmp_path / ".grove" / "profiles" / "coder",
             pid=12345,
         )
 
@@ -459,7 +459,7 @@ class TestCmdUpdateLaunchdRestart:
         )
         process = gateway_cli.ProfileGatewayProcess(
             profile="coder",
-            path=tmp_path / ".hermes" / "profiles" / "coder",
+            path=tmp_path / ".grove" / "profiles" / "coder",
             pid=12345,
         )
 
@@ -1121,7 +1121,7 @@ class TestFindGatewayPidsExclude:
         assert 200 in pids
 
     def test_filters_to_current_profile(self, monkeypatch, tmp_path):
-        profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
+        profile_dir = tmp_path / ".grove" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
@@ -1134,8 +1134,8 @@ class TestFindGatewayPidsExclude:
             return subprocess.CompletedProcess(
                 cmd, 0,
                 stdout=(
-                    "100 /Users/dgrieco/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile orcha gateway run --replace\n"
-                    "200 /Users/dgrieco/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile other gateway run --replace\n"
+                    "100 /Users/dgrieco/.grove/hermes-agent/venv/bin/python -m hermes_cli.main --profile orcha gateway run --replace\n"
+                    "200 /Users/dgrieco/.grove/hermes-agent/venv/bin/python -m hermes_cli.main --profile other gateway run --replace\n"
                 ),
                 stderr="",
             )
@@ -1173,10 +1173,10 @@ class TestGatewayModeWritesExitCodeEarly:
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
-        # Point HERMES_HOME at a temp dir so the marker file lands there
-        hermes_home = tmp_path / ".hermes"
+        # Point GROVE_HOME at a temp dir so the marker file lands there
+        hermes_home = tmp_path / ".grove"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GROVE_HOME", str(hermes_home))
         import hermes_cli.config as _cfg
         monkeypatch.setattr(_cfg, "get_hermes_home", lambda: hermes_home)
         # Also patch the module-level ref used by cmd_update
@@ -1204,9 +1204,9 @@ class TestGatewayModeWritesExitCodeEarly:
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".grove"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GROVE_HOME", str(hermes_home))
         import hermes_cli.config as _cfg
         monkeypatch.setattr(_cfg, "get_hermes_home", lambda: hermes_home)
         import hermes_cli.main as _main_mod
@@ -1232,9 +1232,9 @@ class TestGatewayModeWritesExitCodeEarly:
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
-        hermes_home = tmp_path / ".hermes"
+        hermes_home = tmp_path / ".grove"
         hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GROVE_HOME", str(hermes_home))
         import hermes_cli.config as _cfg
         monkeypatch.setattr(_cfg, "get_hermes_home", lambda: hermes_home)
         import hermes_cli.main as _main_mod

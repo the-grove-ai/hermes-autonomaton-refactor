@@ -114,10 +114,10 @@ def test_make_agent_honors_tui_launch_env_flags():
         patch.dict(
             os.environ,
             {
-                "HERMES_TUI_MAX_TURNS": "7",
-                "HERMES_TUI_CHECKPOINTS": "1",
-                "HERMES_TUI_PASS_SESSION_ID": "1",
-                "HERMES_IGNORE_RULES": "1",
+                "GROVE_TUI_MAX_TURNS": "7",
+                "GROVE_TUI_CHECKPOINTS": "1",
+                "GROVE_TUI_PASS_SESSION_ID": "1",
+                "GROVE_IGNORE_RULES": "1",
             },
         ),
         patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
@@ -168,7 +168,7 @@ def test_probe_config_health_flags_null_personalities_with_active_personality():
 
 
 def test_make_agent_tolerates_null_config_sections():
-    """Bare `agent:` / `display:` keys in ~/.hermes/config.yaml parse as
+    """Bare `agent:` / `display:` keys in ~/.grove/config.yaml parse as
     None. cfg.get("agent", {}) returns None (default only fires on missing
     key), so downstream .get() chains must be guarded. Reported via Twitter
     against the new TUI."""

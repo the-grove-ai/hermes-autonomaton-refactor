@@ -276,38 +276,38 @@ class TestHermesConstantsFallback:
         return module
 
     def test_fallback_uses_hermes_home_env_var(self, monkeypatch, tmp_path):
-        """When hermes_constants is missing, HERMES_HOME comes from env var."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "custom-hermes"))
+        """When hermes_constants is missing, GROVE_HOME comes from env var."""
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path / "custom-hermes"))
         module = self._load_helper(monkeypatch)
         assert module.get_hermes_home() == tmp_path / "custom-hermes"
 
     def test_fallback_defaults_to_dot_hermes(self, monkeypatch):
-        """When hermes_constants is missing and HERMES_HOME unset, default to ~/.hermes."""
-        monkeypatch.delenv("HERMES_HOME", raising=False)
+        """When hermes_constants is missing and GROVE_HOME unset, default to ~/.grove."""
+        monkeypatch.delenv("GROVE_HOME", raising=False)
         module = self._load_helper(monkeypatch)
-        assert module.get_hermes_home() == Path.home() / ".hermes"
+        assert module.get_hermes_home() == Path.home() / ".grove"
 
     def test_fallback_ignores_empty_hermes_home(self, monkeypatch):
-        """Empty/whitespace HERMES_HOME is treated as unset."""
-        monkeypatch.setenv("HERMES_HOME", "  ")
+        """Empty/whitespace GROVE_HOME is treated as unset."""
+        monkeypatch.setenv("GROVE_HOME", "  ")
         module = self._load_helper(monkeypatch)
-        assert module.get_hermes_home() == Path.home() / ".hermes"
+        assert module.get_hermes_home() == Path.home() / ".grove"
 
     def test_fallback_display_hermes_home_shortens_path(self, monkeypatch):
         """Fallback display_hermes_home() uses ~/ shorthand like the real one."""
-        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("GROVE_HOME", raising=False)
         module = self._load_helper(monkeypatch)
-        assert module.display_hermes_home() == "~/.hermes"
+        assert module.display_hermes_home() == "~/.grove"
 
     def test_fallback_display_hermes_home_profile_path(self, monkeypatch):
         """Fallback display_hermes_home() handles profile paths under ~/."""
-        monkeypatch.setenv("HERMES_HOME", str(Path.home() / ".hermes/profiles/coder"))
+        monkeypatch.setenv("GROVE_HOME", str(Path.home() / ".grove/profiles/coder"))
         module = self._load_helper(monkeypatch)
-        assert module.display_hermes_home() == "~/.hermes/profiles/coder"
+        assert module.display_hermes_home() == "~/.grove/profiles/coder"
 
     def test_fallback_display_hermes_home_custom_path(self, monkeypatch):
         """Fallback display_hermes_home() returns full path for non-home locations."""
-        monkeypatch.setenv("HERMES_HOME", "/opt/hermes-custom")
+        monkeypatch.setenv("GROVE_HOME", "/opt/hermes-custom")
         module = self._load_helper(monkeypatch)
         assert module.display_hermes_home() == "/opt/hermes-custom"
 

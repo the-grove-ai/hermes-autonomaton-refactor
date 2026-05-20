@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+DEFAULT_DB_PATH = get_hermes_home() / "telemetry.db"
 
 SCHEMA_VERSION = 11
 
@@ -45,7 +45,7 @@ SCHEMA_VERSION = 11
 #
 # On those filesystems ``PRAGMA journal_mode=WAL`` raises
 # ``sqlite3.OperationalError: locking protocol`` (SQLITE_PROTOCOL).  If we
-# propagate that, every feature backed by state.db / kanban.db breaks
+# propagate that, every feature backed by telemetry.db / kanban.db breaks
 # silently — /resume, /title, /history, /branch, kanban dispatcher, etc.
 #
 # Instead, fall back to ``journal_mode=DELETE`` (the pre-WAL default) which
@@ -75,7 +75,7 @@ _wal_fallback_warned_lock = threading.Lock()
 
 
 def _set_last_init_error(msg: Optional[str]) -> None:
-    """Record (or clear) the most recent state.db init failure.
+    """Record (or clear) the most recent telemetry.db init failure.
 
     Thread-safe via _last_init_error_lock.  Callers pass a message to
     record a failure or None to clear.  SessionDB.__init__ only calls
@@ -92,7 +92,7 @@ def _set_last_init_error(msg: Optional[str]) -> None:
 
 
 def get_last_init_error() -> Optional[str]:
-    """Return the most recent state.db init failure, if any.
+    """Return the most recent telemetry.db init failure, if any.
 
     Slash-command handlers (``/resume``, ``/title``, ``/history``, ``/branch``)
     call this to surface the underlying cause in their error messages when
@@ -113,7 +113,7 @@ def format_session_db_unavailable(prefix: str = "Session database not available"
     culprit so they can fix it themselves.
 
     Example output:
-        Session database not available: locking protocol (state.db may be
+        Session database not available: locking protocol (telemetry.db may be
         on NFS/SMB — see https://www.sqlite.org/wal.html).
     """
     cause = get_last_init_error()
@@ -121,14 +121,14 @@ def format_session_db_unavailable(prefix: str = "Session database not available"
         return f"{prefix}."
     hint = ""
     if any(marker in cause.lower() for marker in _WAL_INCOMPAT_MARKERS):
-        hint = " (state.db may be on NFS/SMB/FUSE — see https://www.sqlite.org/wal.html)"
+        hint = " (telemetry.db may be on NFS/SMB/FUSE — see https://www.sqlite.org/wal.html)"
     return f"{prefix}: {cause}{hint}."
 
 
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
-    db_label: str = "state.db",
+    db_label: str = "telemetry.db",
 ) -> str:
     """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
 
@@ -142,7 +142,7 @@ def apply_wal_with_fallback(
     The WARNING is deduplicated per ``db_label``: repeated connections
     to the same underlying DB (e.g. kanban_db.connect() which is called
     on every kanban operation) log once per process, not once per call.
-    Different db_labels log independently, so state.db and kanban.db
+    Different db_labels log independently, so telemetry.db and kanban.db
     each get one warning on the same NFS mount.
 
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
@@ -316,7 +316,7 @@ class SessionDB:
 
     # ── Write-contention tuning ──
     # With multiple hermes processes (gateway + CLI sessions + worktree agents)
-    # all sharing one state.db, WAL write-lock contention causes visible TUI
+    # all sharing one telemetry.db, WAL write-lock contention causes visible TUI
     # freezes.  SQLite's built-in busy handler uses a deterministic sleep
     # schedule that causes convoy effects under high concurrency.
     #
@@ -350,7 +350,7 @@ class SessionDB:
                 isolation_level=None,
             )
             self._conn.row_factory = sqlite3.Row
-            apply_wal_with_fallback(self._conn, db_label="state.db")
+            apply_wal_with_fallback(self._conn, db_label="telemetry.db")
             self._conn.execute("PRAGMA foreign_keys=ON")
 
             self._init_schema()
@@ -2844,7 +2844,7 @@ class SessionDB:
                     self.vacuum()
                     result["vacuumed"] = True
                 except Exception as exc:
-                    logger.warning("state.db VACUUM failed: %s", exc)
+                    logger.warning("telemetry.db VACUUM failed: %s", exc)
 
             # Record the attempt even if pruned == 0, so we don't retry
             # every startup within the min_interval_hours window.
@@ -2852,14 +2852,14 @@ class SessionDB:
 
             if pruned > 0:
                 logger.info(
-                    "state.db auto-maintenance: pruned %d session(s) older than %d days%s",
+                    "telemetry.db auto-maintenance: pruned %d session(s) older than %d days%s",
                     pruned,
                     retention_days,
                     " + VACUUM" if result["vacuumed"] else "",
                 )
         except Exception as exc:
             # Maintenance must never block startup. Log and return error marker.
-            logger.warning("state.db auto-maintenance failed: %s", exc)
+            logger.warning("telemetry.db auto-maintenance failed: %s", exc)
             result["error"] = str(exc)
 
         return result

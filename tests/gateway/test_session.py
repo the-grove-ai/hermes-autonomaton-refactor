@@ -323,10 +323,10 @@ class TestBuildSessionContextPrompt:
         )
         ctx = build_session_context(source, config)
 
-        with patch("hermes_constants.display_hermes_home", return_value="~/.hermes/profiles/coder"):
+        with patch("hermes_constants.display_hermes_home", return_value="~/.grove/profiles/coder"):
             prompt = build_session_context_prompt(ctx)
 
-        assert "~/.hermes/profiles/coder/cron/output/" in prompt
+        assert "~/.grove/profiles/coder/cron/output/" in prompt
 
     def test_whatsapp_prompt(self):
         config = GatewayConfig(
@@ -607,7 +607,7 @@ class TestLoadTranscriptPreferLongerSource:
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = SessionDB(db_path=tmp_path / "state.db")
+        s._db = SessionDB(db_path=tmp_path / "telemetry.db")
         s._loaded = True
         return s
 
@@ -698,7 +698,7 @@ class TestSessionStoreSwitchSession:
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = SessionDB(db_path=tmp_path / "telemetry.db")
         store._db = db
         store._loaded = True
 
@@ -759,7 +759,7 @@ class TestWhatsAppSessionKeyConsistency:
             json.dumps("15551234567@s.whatsapp.net"),
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+        monkeypatch.setenv("GROVE_HOME", str(tmp_home))
 
         lid_source = SessionSource(
             platform=Platform.WHATSAPP,
@@ -788,7 +788,7 @@ class TestWhatsAppSessionKeyConsistency:
             json.dumps("15551234567@s.whatsapp.net"),
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+        monkeypatch.setenv("GROVE_HOME", str(tmp_home))
 
         lid_source = SessionSource(
             platform=Platform.WHATSAPP,
@@ -1070,7 +1070,7 @@ class TestWhatsAppIdentifierPublicHelpers:
 
     def test_canonical_without_mapping_returns_normalized(self, tmp_path, monkeypatch):
         """With no bridge mapping files, the normalized input is returned."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path))
         assert canonical_whatsapp_identifier("60123456789@lid") == "60123456789"
 
     def test_canonical_walks_lid_mapping(self, tmp_path, monkeypatch):
@@ -1081,14 +1081,14 @@ class TestWhatsAppIdentifierPublicHelpers:
             json.dumps("15551234567@s.whatsapp.net"),
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path))
 
         canonical = canonical_whatsapp_identifier("999999999999999@lid")
         assert canonical == "15551234567"
         assert canonical_whatsapp_identifier("15551234567@s.whatsapp.net") == "15551234567"
 
     def test_canonical_empty_input(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path))
         assert canonical_whatsapp_identifier("") == ""
 
 

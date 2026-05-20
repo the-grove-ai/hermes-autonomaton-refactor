@@ -1,5 +1,5 @@
 # bootstrap_browser_tools.ps1 — install agent-browser + Playwright Chromium
-# into ~/.hermes/node/ for use by Hermes Agent's browser tools on Windows.
+# into ~/.grove/node/ for use by Hermes Agent's browser tools on Windows.
 #
 # Targets the registry-install path: users who got Hermes via
 # `uvx --from 'hermes-agent[acp]==X' hermes-acp` don't have a repo clone,
@@ -35,9 +35,9 @@ function Write-Err     { param([string]$msg) Write-Host "[x] $msg" -ForegroundCo
 # Paths
 # ─────────────────────────────────────────────────────────────────────────
 
-$HermesHome = $env:HERMES_HOME
+$HermesHome = $env:GROVE_HOME
 if (-not $HermesHome) {
-    $HermesHome = Join-Path $env:USERPROFILE ".hermes"
+    $HermesHome = Join-Path $env:USERPROFILE ".grove"
 }
 $NodePrefix = Join-Path $HermesHome "node"
 
@@ -277,7 +277,7 @@ function Ensure-Chromium {
 # ─────────────────────────────────────────────────────────────────────────
 
 Write-Info "Hermes Agent: bootstrapping browser tools"
-Write-Info "  HERMES_HOME = $HermesHome"
+Write-Info "  GROVE_HOME = $HermesHome"
 Write-Info "  OS          = Windows"
 
 Ensure-Node

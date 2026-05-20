@@ -35,7 +35,7 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import HermesACPAgent, GROVE_VERSION
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -70,7 +70,7 @@ class TestInitialize:
         assert resp.agent_info is not None
         assert isinstance(resp.agent_info, Implementation)
         assert resp.agent_info.name == "hermes-agent"
-        assert resp.agent_info.version == HERMES_VERSION
+        assert resp.agent_info.version == GROVE_VERSION
 
     @pytest.mark.asyncio
     async def test_initialize_returns_capabilities(self, agent):
@@ -668,7 +668,7 @@ class TestSessionConfiguration:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
-        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+        manager = SessionManager(db=SessionDB(tmp_path / "telemetry.db"))
 
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             acp_agent = HermesACPAgent(session_manager=manager)
@@ -997,7 +997,7 @@ class TestSlashCommands:
     def test_version(self, agent, mock_manager):
         state = self._make_state(mock_manager)
         result = agent._handle_slash_command("/version", state)
-        assert HERMES_VERSION in result
+        assert GROVE_VERSION in result
 
     def test_compact_compresses_context(self, agent, mock_manager):
         state = self._make_state(mock_manager)
@@ -1124,7 +1124,7 @@ class TestSlashCommands:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
-        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+        manager = SessionManager(db=SessionDB(tmp_path / "telemetry.db"))
 
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             acp_agent = HermesACPAgent(session_manager=manager)

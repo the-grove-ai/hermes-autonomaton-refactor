@@ -15,9 +15,9 @@ from hermes_cli import kanban_db as kb
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".grove"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("GROVE_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
@@ -397,8 +397,8 @@ def test_run_slash_missing_required_arg_friendly_error(kanban_home):
 def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")
-    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+    monkeypatch.setenv("GROVE_KANBAN_BOARD", "beta")
 
     kc.run_slash("--board alpha list")
 
-    assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+    assert os.environ.get("GROVE_KANBAN_BOARD") == "beta"

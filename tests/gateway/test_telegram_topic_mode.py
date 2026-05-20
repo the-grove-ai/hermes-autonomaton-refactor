@@ -227,7 +227,7 @@ async def test_managed_topic_binding_reuses_restored_session_over_static_lane_se
 ):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     session_db.create_session(
         session_id="restored-session",
@@ -272,7 +272,7 @@ async def test_telegram_group_prompt_is_not_topic_lobby_even_when_dm_topic_mode_
 ):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=session_db)
     runner._handle_message_with_agent = AsyncMock(return_value="group agent response")
@@ -294,7 +294,7 @@ async def test_topic_command_is_private_dm_only_and_does_not_enable_group_topic_
 ):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     runner = _make_runner(session_db=session_db)
     runner._run_agent = AsyncMock(
         side_effect=AssertionError("group /topic must not enter the agent loop")
@@ -317,7 +317,7 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 ):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=session_db)
     group_source = _make_group_source(thread_id="555")
@@ -397,7 +397,7 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
     """
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     session_db.create_session(
         session_id="old-topic-session",
@@ -452,7 +452,7 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
 async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     runner = _make_runner(session_db=session_db)
     runner._run_agent = AsyncMock(
         side_effect=AssertionError("/topic activation must not enter the agent loop")
@@ -481,7 +481,7 @@ async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp
 async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     session_db.create_session(
         session_id="old-unlinked",
@@ -534,7 +534,7 @@ async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, 
 async def test_topic_root_command_handles_no_unlinked_sessions(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     runner = _make_runner(session_db=session_db)
     runner._run_agent = AsyncMock(
         side_effect=AssertionError("root /topic status must not enter the agent loop")
@@ -556,7 +556,7 @@ async def test_topic_root_command_handles_no_unlinked_sessions(tmp_path, monkeyp
 async def test_topic_command_inside_bound_topic_shows_current_session(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.create_session(
         session_id="sess-topic",
         source="telegram",
@@ -594,7 +594,7 @@ async def test_topic_restore_inside_topic_binds_old_session_and_returns_last_ass
 ):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     session_db.create_session(
         session_id="old-session",
@@ -630,7 +630,7 @@ async def test_topic_restore_inside_topic_binds_old_session_and_returns_last_ass
 async def test_topic_restore_refuses_session_owned_by_another_telegram_user(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     session_db.create_session(
         session_id="other-session",
@@ -653,7 +653,7 @@ async def test_topic_restore_refuses_session_owned_by_another_telegram_user(tmp_
 async def test_topic_restore_refuses_already_linked_session(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     session_db.create_session(
         session_id="linked-session",
@@ -683,7 +683,7 @@ async def test_topic_restore_refuses_already_linked_session(tmp_path, monkeypatc
 async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     session_db.create_session(
         session_id="sess-topic",
@@ -717,7 +717,7 @@ async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkey
 async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = SessionDB(db_path=tmp_path / "telemetry.db")
     runner = _make_runner(session_db=session_db)
     adapter = runner.adapters[Platform.TELEGRAM]
     adapter._create_dm_topic.return_value = 4242
@@ -751,7 +751,7 @@ async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     db.apply_telegram_topic_migration()
     db.create_session("sess-topic", source="telegram", user_id="208214988")
     db.bind_telegram_topic(
@@ -779,7 +779,7 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
 
 @pytest.mark.asyncio
 async def test_auto_generated_title_does_not_rename_topic_bound_to_other_session(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     db.apply_telegram_topic_migration()
     db.create_session("sess-other", source="telegram", user_id="208214988")
     db.bind_telegram_topic(
@@ -804,7 +804,7 @@ async def test_auto_generated_title_does_not_rename_topic_bound_to_other_session
 @pytest.mark.asyncio
 async def test_operator_declared_topic_is_not_auto_renamed(tmp_path):
     """Topics registered in extra.dm_topics keep their operator-chosen name."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     db.create_session(session_id="sess-topic", source="telegram", user_id="208214988")
     db.bind_telegram_topic(
@@ -842,7 +842,7 @@ async def test_operator_declared_topic_is_not_auto_renamed(tmp_path):
 
 def test_general_topic_is_treated_as_root_lobby(tmp_path):
     """Messages in the Telegram General topic (thread_id=1) route to the lobby, not a lane."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=db)
 
@@ -861,7 +861,7 @@ def test_general_topic_is_treated_as_root_lobby(tmp_path):
 
 def test_lobby_reminder_is_debounced_per_chat(tmp_path):
     """Consecutive root-DM prompts should only surface one lobby reminder per cooldown."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=db)
 
@@ -882,7 +882,7 @@ def test_lobby_reminder_is_debounced_per_chat(tmp_path):
 def test_binding_survives_session_deletion_via_cascade(tmp_path):
     """Deleting a session with a topic binding must not raise FK errors."""
     import sqlite3
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     db.create_session(session_id="sess-to-delete", source="telegram", user_id="208214988")
     db.bind_telegram_topic(
@@ -910,7 +910,7 @@ def test_binding_survives_session_deletion_via_cascade(tmp_path):
 def test_migration_rebuilds_v1_binding_table_with_cascade_fk(tmp_path):
     """v1 → v2 migration rebuilds the bindings table when FK lacks ON DELETE CASCADE."""
     import sqlite3
-    db_path = tmp_path / "state.db"
+    db_path = tmp_path / "telemetry.db"
     db = SessionDB(db_path=db_path)
 
     # Simulate a v1-shaped DB: migration ran without ON DELETE CASCADE.
@@ -962,7 +962,7 @@ def test_migration_rebuilds_v1_binding_table_with_cascade_fk(tmp_path):
 @pytest.mark.asyncio
 async def test_topic_help_subcommand_returns_usage(tmp_path):
     """/topic help surfaces usage without activating anything."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     runner = _make_runner(session_db=db)
 
     result = await runner._handle_topic_command(_make_event("/topic help"))
@@ -985,7 +985,7 @@ async def test_topic_off_disables_mode_and_clears_bindings(tmp_path, monkeypatch
     """/topic off flips the row off AND deletes bindings for this chat."""
     import gateway.run as gateway_run
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     db.create_session(session_id="topic-sess", source="telegram", user_id="208214988")
     db.bind_telegram_topic(
@@ -1016,7 +1016,7 @@ async def test_topic_off_disables_mode_and_clears_bindings(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_topic_off_is_idempotent_when_never_enabled(tmp_path):
     """/topic off against a chat that never ran /topic is a no-op message."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     runner = _make_runner(session_db=db)
 
     result = await runner._handle_topic_command(_make_event("/topic off"))
@@ -1029,7 +1029,7 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     """Unauthorized DMs cannot flip multi-session mode on."""
     import gateway.run as gateway_run
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "telemetry.db")
     runner = _make_runner(session_db=db)
     runner._is_user_authorized = lambda _source: False  # Deny
 

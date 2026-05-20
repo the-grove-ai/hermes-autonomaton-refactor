@@ -156,7 +156,7 @@ def get_task_script_path() -> Path:
     """The generated ``gateway.cmd`` wrapper that the schtasks entry invokes.
 
     Lives under ``%LOCALAPPDATA%\\hermes\\gateway-service\\<task_name>.cmd``
-    (or ``<HERMES_HOME>/gateway-service/<task_name>.cmd`` so per-profile
+    (or ``<GROVE_HOME>/gateway-service/<task_name>.cmd`` so per-profile
     Hermes installs stay self-contained).
     """
     _assert_windows()
@@ -205,7 +205,7 @@ def _build_gateway_cmd_script(
 
     The script:
       - cd's into the project directory
-      - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
+      - exports GROVE_HOME, PYTHONIOENCODING, VIRTUAL_ENV
       - invokes ``python -m hermes_cli.main [--profile X] gateway run --replace``
 
     We intentionally do NOT inline PATH overrides here — cmd.exe inherits
@@ -214,9 +214,9 @@ def _build_gateway_cmd_script(
     """
     lines = ["@echo off", f"rem {_TASK_DESCRIPTION}"]
     lines.append(f"cd /d {_quote_cmd_script_arg(working_dir)}")
-    lines.append(f'set "HERMES_HOME={hermes_home}"')
+    lines.append(f'set "GROVE_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
-    lines.append('set "HERMES_GATEWAY_DETACHED=1"')
+    lines.append('set "GROVE_GATEWAY_DETACHED=1"')
     # VIRTUAL_ENV lets the gateway's own python detection find the venv
     # if someone imports hermes_constants-based logic during startup.
     venv_dir = str(Path(python_path).resolve().parent.parent)
@@ -370,9 +370,9 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     argv.extend(["gateway", "run", "--replace"])
 
     env_overlay = {
-        "HERMES_HOME": hermes_home,
+        "GROVE_HOME": hermes_home,
         "PYTHONIOENCODING": "utf-8",
-        "HERMES_GATEWAY_DETACHED": "1",
+        "GROVE_GATEWAY_DETACHED": "1",
         "VIRTUAL_ENV": str(Path(python_exe).resolve().parent.parent),
     }
     return argv, working_dir, env_overlay

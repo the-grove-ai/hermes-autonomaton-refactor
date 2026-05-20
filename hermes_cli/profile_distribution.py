@@ -54,7 +54,7 @@ Update semantics:
   distribution.yaml) are replaced from the new source.
 * ``config.yaml`` is distribution-owned but preserved on update unless
   ``--force-config`` is passed (user overrides typically live here).
-* User-owned paths (memories/, sessions/, state.db, auth.json, .env,
+* User-owned paths (memories/, sessions/, telemetry.db, auth.json, .env,
   logs/, workspace/, home/, plans/, *_cache/, and anything under
   ``local/``) are never touched.
 """
@@ -99,7 +99,7 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
     # Credentials & runtime secrets
     "auth.json", ".env",
     # Databases & runtime state
-    "state.db", "state.db-shm", "state.db-wal",
+    "telemetry.db", "telemetry.db-shm", "telemetry.db-wal",
     "hermes_state.db", "response_store.db",
     "response_store.db-shm", "response_store.db-wal",
     "gateway.pid", "gateway_state.json", "processes.json",
@@ -497,7 +497,7 @@ def plan_install(
     if canon == "default":
         raise DistributionError(
             "Cannot install a distribution as 'default' — that is the built-in "
-            "root profile (~/.hermes).  Pass --name <name> to install under a "
+            "root profile (~/.grove).  Pass --name <name> to install under a "
             "new profile."
         )
     manifest.name = canon

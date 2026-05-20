@@ -2,7 +2,7 @@
 # Docker/Podman entrypoint: bootstrap config files into the mounted volume, then run hermes.
 set -e
 
-HERMES_HOME="${HERMES_HOME:-/opt/data}"
+GROVE_HOME="${GROVE_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
 # --- Privilege dropping via gosu ---
@@ -10,34 +10,34 @@ INSTALL_DIR="/opt/hermes"
 # optionally remap the hermes user/group to match host-side ownership, fix volume
 # permissions, then re-exec as hermes.
 if [ "$(id -u)" = "0" ]; then
-    if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
-        echo "Changing hermes UID to $HERMES_UID"
-        usermod -u "$HERMES_UID" hermes
+    if [ -n "$GROVE_UID" ] && [ "$GROVE_UID" != "$(id -u hermes)" ]; then
+        echo "Changing hermes UID to $GROVE_UID"
+        usermod -u "$GROVE_UID" hermes
     fi
 
-    if [ -n "$HERMES_GID" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
-        echo "Changing hermes GID to $HERMES_GID"
+    if [ -n "$GROVE_GID" ] && [ "$GROVE_GID" != "$(id -g hermes)" ]; then
+        echo "Changing hermes GID to $GROVE_GID"
         # -o allows non-unique GID (e.g. macOS GID 20 "staff" may already exist
         # as "dialout" in the Debian-based container image)
-        groupmod -o -g "$HERMES_GID" hermes 2>/dev/null || true
+        groupmod -o -g "$GROVE_GID" hermes 2>/dev/null || true
     fi
 
-    # Fix ownership of the data volume. When HERMES_UID remaps the hermes user,
+    # Fix ownership of the data volume. When GROVE_UID remaps the hermes user,
     # files created by previous runs (under the old UID) become inaccessible.
     # Always chown -R when UID was remapped; otherwise only if top-level is wrong.
     actual_hermes_uid=$(id -u hermes)
     needs_chown=false
-    if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "10000" ]; then
+    if [ -n "$GROVE_UID" ] && [ "$GROVE_UID" != "10000" ]; then
         needs_chown=true
-    elif [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+    elif [ "$(stat -c %u "$GROVE_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
         needs_chown=true
     fi
     if [ "$needs_chown" = true ]; then
-        echo "Fixing ownership of $HERMES_HOME to hermes ($actual_hermes_uid)"
+        echo "Fixing ownership of $GROVE_HOME to hermes ($actual_hermes_uid)"
         # In rootless Podman the container's "root" is mapped to an unprivileged
         # host UID — chown will fail.  That's fine: the volume is already owned
         # by the mapped user on the host side.
-        chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || \
+        chown -R hermes:hermes "$GROVE_HOME" 2>/dev/null || \
             echo "Warning: chown failed (rootless container?) — continuing anyway"
         # The .venv must also be re-chowned when UID is remapped, otherwise
         # lazy_deps.py cannot install platform packages (discord.py, etc.).
@@ -49,9 +49,9 @@ if [ "$(id -u)" = "0" ]; then
     # edited on the host after initial ownership setup. Must run here (as root)
     # rather than after the gosu drop, otherwise a non-root caller like
     # `docker run -u $(id -u):$(id -g)` hits "Operation not permitted" (#15865).
-    if [ -f "$HERMES_HOME/config.yaml" ]; then
-        chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
-        chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    if [ -f "$GROVE_HOME/config.yaml" ]; then
+        chown hermes:hermes "$GROVE_HOME/config.yaml" 2>/dev/null || true
+        chmod 640 "$GROVE_HOME/config.yaml" 2>/dev/null || true
     fi
 
     echo "Dropping root privileges"
@@ -68,21 +68,21 @@ source "${INSTALL_DIR}/.venv/bin/activate"
 # The "home/" subdirectory is a per-profile HOME for subprocesses (git,
 # ssh, gh, npm …).  Without it those tools write to /root which is
 # ephemeral and shared across profiles.  See issue #4426.
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
+mkdir -p "$GROVE_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
 
 # .env
-if [ ! -f "$HERMES_HOME/.env" ]; then
-    cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
+if [ ! -f "$GROVE_HOME/.env" ]; then
+    cp "$INSTALL_DIR/.env.example" "$GROVE_HOME/.env"
 fi
 
 # config.yaml
-if [ ! -f "$HERMES_HOME/config.yaml" ]; then
-    cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+if [ ! -f "$GROVE_HOME/config.yaml" ]; then
+    cp "$INSTALL_DIR/cli-config.yaml.example" "$GROVE_HOME/config.yaml"
 fi
 
 # SOUL.md
-if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
-    cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
+if [ ! -f "$GROVE_HOME/SOUL.md" ]; then
+    cp "$INSTALL_DIR/docker/SOUL.md" "$GROVE_HOME/SOUL.md"
 fi
 
 # auth.json: bootstrap from env on first boot only.  Used by orchestrators
@@ -94,9 +94,9 @@ fi
 # boot.  The `[ ! -f ... ]` guard is critical: without it, a container
 # restart would clobber a rotated refresh token with the now-stale value
 # the orchestrator originally seeded.
-if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "$HERMES_AUTH_JSON_BOOTSTRAP" ]; then
-    printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
-    chmod 600 "$HERMES_HOME/auth.json"
+if [ ! -f "$GROVE_HOME/auth.json" ] && [ -n "$GROVE_AUTH_JSON_BOOTSTRAP" ]; then
+    printf '%s' "$GROVE_AUTH_JSON_BOOTSTRAP" > "$GROVE_HOME/auth.json"
+    chmod 600 "$GROVE_HOME/auth.json"
 fi
 
 # Sync bundled skills (manifest-based so user edits are preserved)
@@ -106,21 +106,21 @@ fi
 
 # Optionally start `hermes dashboard` as a side-process.
 #
-# Toggled by HERMES_DASHBOARD=1 (also accepts "true"/"yes", case-insensitive).
+# Toggled by GROVE_DASHBOARD=1 (also accepts "true"/"yes", case-insensitive).
 # Host/port/TUI can be overridden via:
-#   HERMES_DASHBOARD_HOST  (default 0.0.0.0 — exposed outside the container)
-#   HERMES_DASHBOARD_PORT  (default 9119, matches `hermes dashboard` default)
-#   HERMES_DASHBOARD_TUI   (already honored by `hermes dashboard` itself)
+#   GROVE_DASHBOARD_HOST  (default 0.0.0.0 — exposed outside the container)
+#   GROVE_DASHBOARD_PORT  (default 9119, matches `hermes dashboard` default)
+#   GROVE_DASHBOARD_TUI   (already honored by `hermes dashboard` itself)
 #
 # The dashboard is a long-lived server.  We background it *before* the final
 # `exec hermes "$@"` so the user's chosen foreground command (chat, gateway,
 # sleep infinity, …) remains PID-of-interest for the container runtime.  When
 # the container stops the whole process tree is torn down, so no explicit
 # cleanup is needed.
-case "${HERMES_DASHBOARD:-}" in
+case "${GROVE_DASHBOARD:-}" in
     1|true|TRUE|True|yes|YES|Yes)
-        dash_host="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
-        dash_port="${HERMES_DASHBOARD_PORT:-9119}"
+        dash_host="${GROVE_DASHBOARD_HOST:-0.0.0.0}"
+        dash_port="${GROVE_DASHBOARD_PORT:-9119}"
         dash_args=(--host "$dash_host" --port "$dash_port" --no-open)
         # Binding to anything other than localhost requires --insecure — the
         # dashboard refuses otherwise because it exposes API keys.  Inside a

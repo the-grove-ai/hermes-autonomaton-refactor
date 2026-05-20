@@ -626,9 +626,9 @@ class TestToolsetInclusion:
         assert "discord_admin" in TOOLSETS["hermes-discord"]["tools"]
 
     def test_discord_tools_not_in_core_tools(self):
-        from toolsets import _HERMES_CORE_TOOLS
-        assert "discord" not in _HERMES_CORE_TOOLS
-        assert "discord_admin" not in _HERMES_CORE_TOOLS
+        from toolsets import _GROVE_CORE_TOOLS
+        assert "discord" not in _GROVE_CORE_TOOLS
+        assert "discord_admin" not in _GROVE_CORE_TOOLS
 
     def test_discord_tools_not_in_other_toolsets(self):
         from toolsets import TOOLSETS

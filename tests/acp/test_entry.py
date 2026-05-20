@@ -190,7 +190,7 @@ def test_bootstrap_scripts_ship_with_package():
     ps1_text = ps1.read_text(encoding="utf-8")
 
     # Sanity: scripts know how to find the Hermes-managed Node prefix.
-    assert "HERMES_HOME" in sh_text
+    assert "GROVE_HOME" in sh_text
     assert "agent-browser" in sh_text
     assert "HermesHome" in ps1_text
     assert "agent-browser" in ps1_text

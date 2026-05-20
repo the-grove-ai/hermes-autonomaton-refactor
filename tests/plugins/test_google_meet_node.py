@@ -19,9 +19,9 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_home(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".grove"
     hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("GROVE_HOME", str(hermes_home))
     yield hermes_home
 
 
@@ -215,11 +215,11 @@ def test_registry_resolve_by_name(tmp_path):
 def test_registry_defaults_to_hermes_home(tmp_path, monkeypatch):
     from plugins.google_meet.node.registry import NodeRegistry
 
-    # _isolate_home already set HERMES_HOME to tmp_path/.hermes; the
+    # _isolate_home already set GROVE_HOME to tmp_path/.hermes; the
     # registry default path must live inside that tree.
     r = NodeRegistry()
     r.add("x", "ws://x", "t")
-    expected = Path(tmp_path) / ".hermes" / "workspace" / "meetings" / "nodes.json"
+    expected = Path(tmp_path) / ".grove" / "workspace" / "meetings" / "nodes.json"
     assert expected.is_file()
 
 
