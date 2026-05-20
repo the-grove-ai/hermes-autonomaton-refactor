@@ -1,0 +1,175 @@
+# ============================================================================
+# Grove Autonomaton — Sovereignty Guardrails Schema
+# ============================================================================
+#
+# Location:     ~/.grove/zones.schema.yaml (operator copy)
+#               config/zones.schema.yaml   (repo default template)
+#
+# Purpose:      Declarative zone boundaries for the Autonomaton pipeline.
+#               The Sovereignty Gate reads this file to classify every
+#               action as Green (autonomous), Yellow (supervised), or
+#               Red (sovereign — operator holds directly).
+#
+#               This is how a non-technical domain expert alters the
+#               system's behavior by editing a config file, without a
+#               deploy. The schema shapes the butler's posture, not a
+#               permission system.
+#
+# Canonical ref: GRV-001 §III Commitment 2, Draft 1.3 Part IV Stage 04
+#
+# Schema version
+# --------------
+# Integer. The loader rejects files with unrecognized versions.
+# Bump only when the schema structure changes (new keys, removed keys,
+# changed semantics). Adding entries to existing lists is NOT a version
+# bump — it's normal operator configuration.
+#
+# Hot-reload
+# ----------
+# Send SIGHUP to the running Autonomaton process. The loader re-reads
+# this file and rebuilds the in-memory zone map without restart.
+# On Windows v0.1: restart required after edit. File-watch is v0.2.
+#
+# Action pattern syntax
+# ---------------------
+# Glob-style with dot-notation namespacing:
+#   calendar.read       — exact match
+#   calendar.read.*     — matches calendar.read and all descendants
+#   calendar.*          — matches calendar.<anything> one level deep
+#   command.execute.*   — matches all command executions
+#
+# No regex. Keeps the schema editable by non-technical operators.
+#
+# Variable interpolation
+# ----------------------
+# Supported variables (closed set, v0.1):
+#   ${HOME}       — operator home directory
+#   ${GROVE_HOME} — ~/.grove/ or $GROVE_HOME override
+#   ${SUDO}       — matches sudo/su/doas invocations
+#
+# Unrecognized ${VAR} is a load-time error (fail loud).
+# No recursive expansion.
+#
+# Precedence
+# ----------
+# 1. tool_zones exact match (highest)
+# 2. Zone rules: sovereign > proposes > auto_approve
+# 3. Red > Yellow > Green (most restrictive wins on conflict)
+# 4. Unmatched actions default to Yellow (supervised)
+#
+# How the zones feel to the operator
+# ----------------------------------
+# Green:  invisible. The system acts. The operator asked, it happened.
+#         This trust was earned — prior Andon approvals promoted these
+#         categories here. The system gets faster with use.
+#
+# Yellow: a conversation. Jidoka detects the action; Andon surfaces it
+#         as the assistant, not as a system interrupt. "I can set this
+#         up. Here's what it does. Want me to save it for your review?"
+#         The four-choice prompt (once / session / always / deny) IS
+#         the promotion mechanism — "always" moves the category to
+#         Green. Pattern-Based Approval: approve categories, not
+#         instances. Kaizen watches these approvals; after repeated
+#         confirmations, it proposes promoting the whole category.
+#
+# Red:    sovereign. The operator holds this directly. The system does
+#         not act — but it does not withhold. It surfaces what it
+#         knows (read access is always green), tells the operator
+#         exactly where to edit and how, and confirms the change took
+#         effect. The register is: "That's in your direct control —
+#         here's how." Never "access denied." Never "forbidden."
+#         Per GRV-003 §4: the code path to execute does not exist.
+#         Not will not. Cannot. The architecture holds; the butler
+#         hands you the pen and tells you where to sign.
+#
+# Kaizen and the zone boundaries
+# ------------------------------
+# Kaizen watches every boundary interaction.
+# - Yellow→Green promotion: after N approvals of the same category,
+#   Kaizen proposes: "You've approved every calendar write. Promote
+#   to Green?" The operator confirms; the schema updates.
+# - Red boundary friction: if the operator keeps asking about a
+#   red-zone resource, Kaizen proposes a green-zone READ skill that
+#   surfaces the information more fluently. The architecture holds;
+#   the experience improves. Kaizen never proposes weakening a red
+#   boundary — it proposes better information delivery around it.
+#
+# Backward-compatibility
+# ----------------------
+# Skills without a zone field in SKILL.md frontmatter default to
+# Yellow. Conservative: unclassified actions require approval.
+# Promote to Green via auto_approve entries or SKILL.md frontmatter.
+# Schema override takes precedence over frontmatter.
+#
+# ============================================================================
+
+schema_version: 1
+
+zones:
+  green:
+    description: |
+      Autonomous. The operator earned this — prior Pattern-Based
+      Approvals promoted these categories here. The system acts
+      without prompting. Approve categories, not instances.
+    auto_approve:
+      - calendar.read.*
+      - file.read.*
+      - skill.invoke.*
+
+  yellow:
+    description: |
+      Supervised. Jidoka detects; Andon surfaces as a conversation,
+      not an interrupt. The four-choice prompt (once / session /
+      always / deny) is the promotion mechanism — "always" moves
+      the category to Green. Kaizen watches approval patterns and
+      proposes category-level promotions after repeated confirms.
+    proposes:
+      - skill.create.*
+      - skill.edit.*
+      - skill.promote.*
+      - file.write.${GROVE_HOME}/skills/.andon/*
+      - command.dangerous.*
+    review_required: synchronous
+
+  red:
+    description: |
+      Sovereign. The operator holds this directly. The system cannot
+      act here — not will not, cannot. But it does not withhold: it
+      surfaces full read access to the protected resource, names the
+      exact file and line to edit, and confirms the change took
+      effect after a manual edit + SIGHUP.
+    sovereign:
+      - file.write.${GROVE_HOME}/zones.schema.yaml
+      - file.write.${GROVE_HOME}/routing.config.yaml
+      - skill.self_promote.*
+      - command.execute.*${SUDO}*
+    enforcement: os_permission_level
+    surface:
+      - read access to the protected resource (always green)
+      - exact file path and line to edit
+      - SIGHUP or restart instruction after manual edit
+    register: |
+      That's in your direct control — here's how.
+
+# Tool-zone mapping
+# -----------------
+# Maps tool identifiers to zone classifications. Tool identifiers are
+# the string names tools register with in the tool registry. This map
+# is the operator's primary configuration surface for zone control.
+#
+# A tool not listed here inherits its zone from the action pattern
+# matching above, or defaults to Yellow if unmatched.
+#
+# Kaizen observes tool-zone friction. If a tool consistently triggers
+# Andon prompts that the operator always approves, Kaizen proposes
+# promoting that tool's zone from yellow to green.
+
+tool_zones:
+  terminal:                  yellow
+  skill_manage.create:       yellow
+  skill_manage.promote:      red
+  file_operations.write:     yellow
+  calendar.read:             green
+  honcho.dialectic.read:     green
+  cron.create:               yellow
+  cron.delete:               yellow
