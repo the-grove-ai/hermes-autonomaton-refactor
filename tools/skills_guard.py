@@ -43,11 +43,11 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    # Agent-created: "ask" on dangerous surfaces as an error to the agent,
-    # which can retry without the flagged content. This gate only runs when
-    # skills.guard_agent_created is enabled (off by default) — see
-    # tools/skill_manager_tool.py::_guard_agent_created_enabled.
-    "agent-created": ("allow",  "allow",   "ask"),
+    # Agent-created: ALWAYS quarantine. Per Sprint 06a (jidoka-andon-implementation-v1)
+    # every agent-authored skill lands in ~/.grove/skills/.andon/ regardless of
+    # scan verdict. The verdict is recorded in the proposal's frontmatter; the
+    # operator is the gate, not the scan. See docs/design/andon-design-v1.md.
+    "agent-created": ("andon",  "andon",   "andon"),
 }
 
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
@@ -660,6 +660,17 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
 
     if decision == "allow":
         return True, f"Allowed ({result.trust_level} source, {result.verdict} verdict)"
+
+    if decision == "andon":
+        # Sprint 06a: agent-created skills always land in ~/.grove/skills/.andon/
+        # regardless of verdict. The caller (skill_manager_tool._create_skill)
+        # is expected to handle the quarantine write; this return value just
+        # signals "allowed but operator-gated downstream."
+        return True, (
+            f"Quarantined for operator review "
+            f"({result.trust_level} source, {result.verdict} verdict, "
+            f"{len(result.findings)} findings)"
+        )
 
     if force:
         return True, (
