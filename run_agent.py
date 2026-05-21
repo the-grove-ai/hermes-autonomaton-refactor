@@ -160,7 +160,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -6074,18 +6074,34 @@ class AIAgent:
         # ── Stable tier ────────────────────────────────────────────────
         stable_parts: List[str] = []
 
-        # Try SOUL.md as primary identity unless the caller explicitly skipped it.
-        # Some execution modes (cron) still want GROVE_HOME persona while keeping
-        # cwd project instructions disabled.
-        _soul_loaded = False
+        # Sprint 07 (persona-soul-retrofit-v1): compose the operator's
+        # declared identity into the stable tier — constitution → soul →
+        # operator → goals (design D4 precedence order).
+        #
+        # constitution and soul are Jidoka-tier: load_identity() raises
+        # IdentityError if either is missing AND cannot be seeded from
+        # config/identity/. That exception is allowed to propagate — the
+        # Autonomaton must not start without sovereignty guardrails or an
+        # identity. No silent degradation.
+        #
+        # The gate preserves existing skip behavior: batch / trajectory
+        # modes (skip_context_files=True, load_soul_identity=False) compose
+        # no identity, so load_identity() is not called and no Jidoka check
+        # fires for them. memory.md and agents.md keep their existing
+        # delivery mechanisms (MemoryStore volatile tier, context-files
+        # prompt); the identity layer loads them into the composition
+        # object but Phase 3 injects only the four stable-tier files.
+        _identity_loaded = False
         if self.load_soul_identity or not self.skip_context_files:
-            _soul_content = load_soul_md()
-            if _soul_content:
-                stable_parts.append(_soul_content)
-                _soul_loaded = True
+            from grove.identity import load_identity
+            _identity_block = load_identity().compose_stable()
+            if _identity_block:
+                stable_parts.append(_identity_block)
+                _identity_loaded = True
 
-        if not _soul_loaded:
-            # Fallback to hardcoded identity
+        if not _identity_loaded:
+            # No identity composed (batch / trajectory mode). Fall back to
+            # the hardcoded identity.
             stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
@@ -6217,7 +6233,7 @@ class AIAgent:
             # other dev files — inflating token usage by ~10k for no benefit.
             _context_cwd = os.getenv("TERMINAL_CWD") or None
             context_files_prompt = build_context_files_prompt(
-                cwd=_context_cwd, skip_soul=_soul_loaded)
+                cwd=_context_cwd, skip_soul=_identity_loaded)
             if context_files_prompt:
                 context_parts.append(context_files_prompt)
 
