@@ -1083,6 +1083,105 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("GROVE_EXEC_ASK")
 
+    # Sprint 06a (jidoka-andon-implementation-v1): zone-classifier pre-check.
+    #
+    # TPS sequence:
+    #   Jidoka (zone classifier) detects
+    #   → Andon (this gate) halts the line
+    #   → Kaizen (the sovereign prompt) proposes go-forward options at red.
+    #
+    # Green-zone actions skip the existing approval flow (auto-approve).
+    # Red-zone actions are halted by Andon. In interactive CLI sessions
+    # Kaizen presents a three-option prompt (Cancel / Operator handles /
+    # Try de-scoped alternative); in gateway/async sessions or with
+    # GROVE_ZONE_STRICT=1 the prompt is skipped and the system returns
+    # the surface message directly (no operator present, or strict mode
+    # opt-in for the full architectural guarantee).
+    #
+    # Yellow and default actions fall through to the existing
+    # dangerous-pattern / tirith / smart-approval flow, preserving
+    # post-condition 9 (existing DANGEROUS_PATTERNS behavior).
+    #
+    # Classifier failures (init errors, malformed schema) are logged
+    # loudly and fall through — the existing approval flow IS the safety
+    # net, so falling through preserves established behavior.
+    try:
+        from grove.dispatch import (
+            classify_command,
+            descope_command,
+            kaizen_sovereign_prompt,
+            render_red_surface,
+        )
+
+        _zone = classify_command(command, env_type)
+        if _zone.zone == "green":
+            return {
+                "approved": True,
+                "message": None,
+                "zone_classified": "green",
+                "matched_rule": _zone.matched_rule,
+            }
+        if _zone.zone == "red":
+            _strict = is_truthy_value(os.getenv("GROVE_ZONE_STRICT"))
+            _interactive = is_cli and not is_gateway and not is_ask
+            if _strict or not _interactive:
+                return {
+                    "approved": False,
+                    "message": render_red_surface(command, _zone),
+                    "zone_classified": "red",
+                    "matched_rule": _zone.matched_rule,
+                    "sovereign_red": True,
+                    "strict": _strict,
+                }
+            # Interactive CLI: Andon halted; Kaizen offers three options.
+            _descoped = descope_command(command)
+            _choice = kaizen_sovereign_prompt(command, _zone, _descoped)
+            if _choice == "cancel":
+                return {
+                    "approved": False,
+                    "message": "Cancelled. (Red-zone sovereignty held by operator.)",
+                    "zone_classified": "red",
+                    "matched_rule": _zone.matched_rule,
+                    "sovereign_choice": "cancel",
+                }
+            if _choice == "operator_handles":
+                return {
+                    "approved": False,
+                    "message": render_red_surface(command, _zone),
+                    "zone_classified": "red",
+                    "matched_rule": _zone.matched_rule,
+                    "sovereign_choice": "operator_handles",
+                }
+            if _choice == "alternative" and _descoped:
+                # Re-classify the de-scoped command through the normal
+                # flow. It may land yellow (four-choice prompt) or default
+                # (no prompt). Set ``alternative_command`` so the caller
+                # (terminal_tool) executes the de-scoped form instead of
+                # the original.
+                alt_result = check_all_command_guards(
+                    _descoped, env_type, approval_callback
+                )
+                if alt_result.get("approved"):
+                    alt_result["alternative_command"] = _descoped
+                    alt_result.setdefault("sovereign_choice", "alternative")
+                    alt_result.setdefault(
+                        "message",
+                        f"Kaizen-approved de-scoped alternative: `{_descoped[:120]}`",
+                    )
+                return alt_result
+            # Defensive fallback — should be unreachable.
+            return {
+                "approved": False,
+                "message": f"Unknown sovereign choice {_choice!r}. Cancelled.",
+                "zone_classified": "red",
+            }
+        # yellow / default → fall through to existing approval flow
+    except Exception as _exc:
+        logger.error(
+            "[zones] classifier pre-check failed for %r: %r — falling through",
+            command[:80], _exc,
+        )
+
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:

@@ -1893,6 +1893,19 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
+            # Sprint 06a (jidoka-andon-implementation-v1): if Kaizen's
+            # sovereign prompt redirected to a de-scoped alternative, execute
+            # the de-scoped command instead of the original (which was held
+            # by the operator at the red boundary).
+            if approval.get("alternative_command"):
+                _original_command = command
+                command = approval["alternative_command"]
+                approval_note = (
+                    f"Sovereign zone redirected to Kaizen's de-scoped "
+                    f"alternative: `{command[:80]}` "
+                    f"(original `{_original_command[:80]}` held by operator)."
+                )
+
         # Validate workdir against shell injection
         if workdir:
             workdir_error = _validate_workdir(workdir)

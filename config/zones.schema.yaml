@@ -71,15 +71,21 @@
 #         instances. Kaizen watches these approvals; after repeated
 #         confirmations, it proposes promoting the whole category.
 #
-# Red:    sovereign. The operator holds this directly. The system does
-#         not act — but it does not withhold. It surfaces what it
-#         knows (read access is always green), tells the operator
-#         exactly where to edit and how, and confirms the change took
-#         effect. The register is: "That's in your direct control —
-#         here's how." Never "access denied." Never "forbidden."
-#         Per GRV-003 §4: the code path to execute does not exist.
-#         Not will not. Cannot. The architecture holds; the butler
-#         hands you the pen and tells you where to sign.
+# Red:    sovereign. Andon halts execution at the boundary; Kaizen
+#         then steps in as the butler with three go-forward options:
+#         Cancel, Operator handles, or Try de-scoped alternative
+#         (re-classified through the normal flow — may land yellow).
+#         The system never executes the red action — the code path
+#         to execute it through tool dispatch does not exist by design.
+#         Read access is always green; the surface fields below name
+#         what to read, where to edit, and how to reload. The register
+#         is: "That's in your direct control — here's how." Never
+#         "access denied." Never "forbidden."
+#         GROVE_ZONE_STRICT=1 and gateway sessions without an interactive
+#         operator skip Kaizen's prompt and return the surface message
+#         directly (hard block).
+#         Per GRV-003 §4: Andon's "cannot" holds. Kaizen's "here's how"
+#         carries the conversation forward.
 #
 # Kaizen and the zone boundaries
 # ------------------------------
