@@ -9630,7 +9630,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "fallback", "gateway", "hooks", "import", "index", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -10795,6 +10795,20 @@ Examples:
     )
     from hermes_cli.checkpoints import register_cli as _register_checkpoints_cli
     _register_checkpoints_cli(checkpoints_parser)
+
+    # =========================================================================
+    # index command
+    # =========================================================================
+    index_parser = subparsers.add_parser(
+        "index",
+        help="Manage the cellar retrieval index (~/.grove/index/)",
+        description="The cellar retrieval index powers RAG over the operator's "
+        "cellar (~/.grove/) — skills, identity, config, memory. It builds "
+        "lazily on first query and refreshes by file mtime; 'rebuild' forces "
+        "a full rebuild.",
+    )
+    from hermes_cli.index_command import register_cli as _register_index_cli
+    _register_index_cli(index_parser)
 
     # =========================================================================
     # import command
