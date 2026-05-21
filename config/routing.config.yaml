@@ -103,6 +103,47 @@ routing:
       better answers, higher cost. Lower it to hold work on cheaper
       tiers — lower cost, more risk of a thin answer.
 
+  # ----------------------------------------------------------------------
+  # Declarative routing rules. After operator overrides (--tier / --model)
+  # are checked, each enabled rule below is tested in order — downward,
+  # then upward, then escalation — against the telemetry classifier's read
+  # of the request. The first rule that matches decides the tier; if none
+  # match, the request runs on default_tier.
+  #
+  # This is the dial that makes routing yours: change a threshold, an
+  # intent list, or an `enabled` flag and the Autonomaton routes
+  # differently on the next request. No code change, no restart of intent.
+  # ----------------------------------------------------------------------
+  routing_rules:
+
+    # Send easy, high-confidence work DOWN to the cheap tier. Off by
+    # default — turn it on once you trust the classifier on your work.
+    downward:
+      enabled: false
+      match:
+        complexity: simple
+        min_confidence: 0.85
+      target_tier: T1
+
+    # Send hard work UP to the apex tier: complex or novel requests that
+    # are also planning, analysis, code generation, or debugging.
+    upward:
+      enabled: true
+      match:
+        complexity: [complex, novel]
+        intents: [planning, analysis, code_generation, debugging]
+      target_tier: T3
+
+    # When the classifier is not confident it has the right tier, step
+    # the request up one rung rather than risk a weak answer on a cheaper
+    # model. `max_confidence` here overrides escalation.threshold above;
+    # drop it to fall back to that value.
+    escalation:
+      enabled: true
+      match:
+        max_confidence: 0.6
+      action: step_up
+
   telemetry:
     tier: T1
     description: |
