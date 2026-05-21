@@ -1,0 +1,275 @@
+"""Tests for grove.identity — Atlas-pattern layered identity composition.
+
+Covers the Sprint 07 contract: tiered failure (constitution/soul hard-fail;
+operator/goals/memory graceful; agents silent), composition order, soul.md
+frontmatter parsing, first-run seeding, the persona parameter, and the
+backward-compatible legacy-filename fallbacks.
+
+Every test uses tmp_path — no test touches the real ~/.grove/.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import pytest
+
+from grove import identity as gid
+from grove.identity import IdentityComposition, IdentityError, load_identity
+
+
+# ----- minimal valid file bodies ---------------------------------------------
+
+_CONSTITUTION = "# Constitution\n\nThe operator controls the system.\n"
+_SOUL_WITH_FM = (
+    "---\n"
+    "name: test-autonomaton\n"
+    "register: strategic-concise\n"
+    "declared_identity: \"test partner\"\n"
+    "---\n"
+    "# Soul\n\nStrategic, concise, direct.\n"
+)
+_SOUL_NO_FM = "# Soul\n\nStrategic, concise, direct.\n"
+_OPERATOR = "# Operator\n\nThe operator is a test fixture.\n"
+_GOALS = "# Goals\n\nShip Sprint 07.\n"
+
+
+def _make_ref_dir(tmp_path: Path, files: dict[str, str]) -> Path:
+    """Build a fake config/identity/ containing only the given files."""
+    ref = tmp_path / "ref_identity"
+    ref.mkdir(exist_ok=True)
+    for name, content in files.items():
+        (ref / name).write_text(content, encoding="utf-8")
+    return ref
+
+
+@pytest.fixture
+def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An empty ~/.grove/ pointed at tmp; reference dir = the real config/identity/."""
+    home = tmp_path / "grove_home"
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    return home
+
+
+# ----- first-run seeding -----------------------------------------------------
+
+def test_first_run_seeds_all_four_templated_files(fake_home: Path) -> None:
+    """A fresh ~/.grove/ gets constitution / soul / operator / goals seeded
+    from the real config/identity/ reference templates."""
+    comp = load_identity()
+    assert comp.constitution is not None
+    assert comp.soul is not None
+    assert comp.operator is not None
+    assert comp.goals is not None
+    for name in ("constitution.md", "soul.md", "operator.md", "goals.md"):
+        assert (fake_home / name).exists(), f"{name} not seeded"
+
+
+def test_first_run_does_not_seed_memory_or_agents(fake_home: Path) -> None:
+    """memory.md / agents.md have no reference template — they are not seeded."""
+    comp = load_identity()
+    assert comp.memory is None
+    assert comp.agents is None
+    assert not (fake_home / "memory.md").exists()
+    assert not (fake_home / "agents.md").exists()
+
+
+# ----- tiered failure: Jidoka hard-fail --------------------------------------
+
+def test_missing_constitution_hard_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """constitution.md missing AND unseedable → IdentityError (Jidoka-tier)."""
+    home = tmp_path / "grove_home"
+    empty_ref = tmp_path / "empty_ref"
+    empty_ref.mkdir()
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gid, "_reference_dir", lambda: empty_ref)
+    with pytest.raises(IdentityError, match="constitution.md"):
+        load_identity()
+
+
+def test_missing_soul_hard_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """soul.md missing AND unseedable → IdentityError, even when constitution
+    resolves fine."""
+    home = tmp_path / "grove_home"
+    ref = _make_ref_dir(tmp_path, {"constitution.md": _CONSTITUTION})
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gid, "_reference_dir", lambda: ref)
+    with pytest.raises(IdentityError, match="soul.md"):
+        load_identity()
+
+
+def test_empty_constitution_hard_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A constitution.md that exists but is empty also hard-fails — an empty
+    constitution is no constitution."""
+    home = tmp_path / "grove_home"
+    home.mkdir()
+    (home / "constitution.md").write_text("   \n", encoding="utf-8")
+    (home / "soul.md").write_text(_SOUL_NO_FM, encoding="utf-8")
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    with pytest.raises(IdentityError, match="constitution.md"):
+        load_identity()
+
+
+# ----- tiered failure: graceful + silent -------------------------------------
+
+def test_missing_operator_warns_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """operator.md missing AND unseedable → warning logged, composition
+    continues (graceful-tier)."""
+    home = tmp_path / "grove_home"
+    # Reference dir has the Jidoka files but NOT operator/goals.
+    ref = _make_ref_dir(
+        tmp_path, {"constitution.md": _CONSTITUTION, "soul.md": _SOUL_NO_FM}
+    )
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gid, "_reference_dir", lambda: ref)
+    with caplog.at_level(logging.WARNING, logger="grove.identity"):
+        comp = load_identity()
+    assert comp.operator is None
+    assert comp.goals is None
+    assert comp.constitution is not None and comp.soul is not None
+    assert any("operator.md" in r.getMessage() for r in caplog.records)
+
+
+def test_missing_agents_is_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """agents.md missing → silent skip, no warning."""
+    home = tmp_path / "grove_home"
+    ref = _make_ref_dir(
+        tmp_path, {"constitution.md": _CONSTITUTION, "soul.md": _SOUL_NO_FM}
+    )
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gid, "_reference_dir", lambda: ref)
+    with caplog.at_level(logging.WARNING, logger="grove.identity"):
+        comp = load_identity()
+    assert comp.agents is None
+    assert not any("agents.md" in r.getMessage() for r in caplog.records)
+
+
+# ----- composition order -----------------------------------------------------
+
+def test_compose_stable_order_constitution_then_soul(fake_home: Path) -> None:
+    composed = load_identity().compose_stable()
+    assert "# Constitution" in composed
+    assert "# Soul" in composed
+    assert composed.index("# Constitution") < composed.index("# Soul")
+
+
+def test_compose_full_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """compose() assembles all six in D4 order, skipping absent layers."""
+    comp = IdentityComposition(
+        constitution="C", soul="S", operator="O",
+        goals="G", memory="M", agents="A",
+    )
+    assert comp.compose() == "C\n\nS\n\nO\n\nG\n\nM\n\nA"
+
+
+def test_compose_skips_absent_layers() -> None:
+    comp = IdentityComposition(constitution="C", soul="S", operator=None,
+                               goals=None, memory="M", agents=None)
+    assert comp.compose() == "C\n\nS\n\nM"
+
+
+# ----- frontmatter -----------------------------------------------------------
+
+def test_soul_frontmatter_parsed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "grove_home"
+    home.mkdir()
+    (home / "constitution.md").write_text(_CONSTITUTION, encoding="utf-8")
+    (home / "soul.md").write_text(_SOUL_WITH_FM, encoding="utf-8")
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    comp = load_identity()
+    assert comp.frontmatter.get("name") == "test-autonomaton"
+    assert comp.frontmatter.get("register") == "strategic-concise"
+
+
+def test_soul_without_frontmatter_yields_empty_dict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "grove_home"
+    home.mkdir()
+    (home / "constitution.md").write_text(_CONSTITUTION, encoding="utf-8")
+    (home / "soul.md").write_text(_SOUL_NO_FM, encoding="utf-8")
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    comp = load_identity()
+    assert comp.frontmatter == {}
+    assert comp.soul is not None  # prose body still loaded
+
+
+# ----- persona parameter -----------------------------------------------------
+
+def test_persona_none_is_flat(fake_home: Path) -> None:
+    """persona=None composes from flat ~/.grove/ files — the v0.1 path."""
+    comp = load_identity(persona=None)
+    assert isinstance(comp, IdentityComposition)
+
+
+def test_persona_string_raises_not_implemented(fake_home: Path) -> None:
+    """A persona string is the v0.1.5 multi-persona path — not implemented."""
+    with pytest.raises(NotImplementedError, match="v0.1.5"):
+        load_identity(persona="research-analyst")
+
+
+# ----- backward compatibility ------------------------------------------------
+
+def test_legacy_soul_md_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An install with old SOUL.md (not soul.md) uses its content — no forced
+    migration, no seed of a fresh template over the operator's real identity.
+
+    Note: on a case-insensitive filesystem (macOS default) ``soul.md`` and
+    ``SOUL.md`` are the same path, so this test asserts on content, not on
+    filename casing — the content check is the real backward-compat proof.
+    """
+    home = tmp_path / "grove_home"
+    home.mkdir()
+    (home / "constitution.md").write_text(_CONSTITUTION, encoding="utf-8")
+    (home / "SOUL.md").write_text("# Legacy Soul\n\nOld identity.\n", encoding="utf-8")
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    comp = load_identity()
+    assert comp.soul is not None
+    # The operator's real legacy content is used — NOT the fresh reference
+    # template (which would say "This file is who the Autonomaton IS...").
+    assert "Legacy Soul" in comp.soul
+    assert "Old identity." in comp.soul
+
+
+def test_legacy_user_md_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "grove_home"
+    home.mkdir()
+    (home / "constitution.md").write_text(_CONSTITUTION, encoding="utf-8")
+    (home / "soul.md").write_text(_SOUL_NO_FM, encoding="utf-8")
+    (home / "USER.md").write_text("# Legacy User\n\nOld operator.\n", encoding="utf-8")
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    comp = load_identity()
+    assert comp.operator is not None
+    assert "Legacy User" in comp.operator
+
+
+def test_legacy_memory_and_agents_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "grove_home"
+    home.mkdir()
+    (home / "constitution.md").write_text(_CONSTITUTION, encoding="utf-8")
+    (home / "soul.md").write_text(_SOUL_NO_FM, encoding="utf-8")
+    (home / "MEMORY.md").write_text("# Legacy Memory\n", encoding="utf-8")
+    (home / "AGENTS.md").write_text("# Legacy Agents\n", encoding="utf-8")
+    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
+    comp = load_identity()
+    assert comp.memory is not None and "Legacy Memory" in comp.memory
+    assert comp.agents is not None and "Legacy Agents" in comp.agents

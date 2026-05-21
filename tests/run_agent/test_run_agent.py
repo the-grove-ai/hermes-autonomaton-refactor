@@ -949,11 +949,19 @@ class TestBuildSystemPrompt:
         assert DEFAULT_AGENT_IDENTITY in prompt
 
     def test_can_use_soul_identity_even_when_context_files_are_skipped(self):
+        # Sprint 07 (persona-soul-retrofit-v1): identity is composed via
+        # grove.identity.load_identity() rather than the old load_soul_md().
+        # A composition carrying only a soul exercises the same path —
+        # load_soul_identity=True keeps identity loading on even with
+        # skip_context_files=True.
+        from grove.identity import IdentityComposition
+
+        fake_identity = IdentityComposition(soul="SOUL IDENTITY")
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
-            patch("run_agent.load_soul_md", return_value="SOUL IDENTITY"),
+            patch("grove.identity.load_identity", return_value=fake_identity),
         ):
             agent = AIAgent(
                 api_key="test-k...7890",
