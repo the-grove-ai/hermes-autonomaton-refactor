@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 ANDON_DIRNAME = ".andon"
 ARCHIVE_DIRNAME = ".archive"
 
+# Soul-alignment tags for proposal frontmatter (Sprint 14 D2).
+SOUL_ALIGNMENT_TAGS = ("aligned", "neutral", "tension")
+
 
 # ----- path helpers ----------------------------------------------------------
 
@@ -115,17 +118,44 @@ def serialize_frontmatter(frontmatter: dict, body: str) -> str:
     return f"---\n{fm_text}\n---\n{body}"
 
 
+def _normalize_soul_alignment(value: Optional[str]) -> str:
+    """Return a valid soul-alignment tag (Sprint 14 D2).
+
+    ``None`` defaults to ``neutral`` — an un-assessed proposal genuinely
+    is neutral. An unrecognized non-None value is a real problem: log it
+    loudly and normalize to ``neutral`` rather than write garbage into
+    the operator's review queue.
+    """
+    if value is None:
+        return "neutral"
+    if isinstance(value, str) and value.strip().lower() in SOUL_ALIGNMENT_TAGS:
+        return value.strip().lower()
+    logger.warning(
+        "[skills] invalid soul_alignment %r; normalizing to 'neutral'", value
+    )
+    return "neutral"
+
+
 def stamp_proposal_frontmatter(
     content: str,
     *,
     scan_verdict: str = "safe",
     scan_findings: Optional[list] = None,
+    soul_alignment: Optional[str] = None,
+    tension_note: Optional[str] = None,
+    goals_served: Optional[list] = None,
 ) -> str:
     """Add Grove proposal fields to SKILL.md's YAML frontmatter.
 
     Idempotent on the additive fields — re-stamping rewrites ``proposed_at``
-    and the provenance scan results but preserves the operator's existing
-    name/description.
+    and the provenance scan / soul-alignment results but preserves the
+    operator's existing name/description.
+
+    ``soul_alignment`` / ``tension_note`` / ``goals_served`` are the
+    Sprint 14 identity fields (D6): every proposal carries all three so
+    ``hermes andon diff`` always shows identity context. An un-assessed
+    proposal defaults to ``soul_alignment: neutral``, ``tension_note:
+    null``, ``goals_served: []``.
     """
     fm, body = parse_frontmatter(content)
     fm["created_by"] = "autonomaton"
@@ -138,6 +168,13 @@ def stamp_proposal_frontmatter(
     provenance["created_by"] = "autonomaton"
     provenance["scan_verdict"] = scan_verdict
     provenance["scan_findings"] = list(scan_findings or [])
+    provenance["soul_alignment"] = _normalize_soul_alignment(soul_alignment)
+    provenance["tension_note"] = (
+        tension_note.strip()
+        if isinstance(tension_note, str) and tension_note.strip()
+        else None
+    )
+    provenance["goals_served"] = list(goals_served or [])
     fm["provenance"] = provenance
 
     return serialize_frontmatter(fm, body)
@@ -198,3 +235,103 @@ def write_proposal(skill_name: str, content: str) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "SKILL.md").write_text(content, encoding="utf-8")
     return dest
+
+
+# ----- soul-alignment heuristic (Sprint 14 Phase 1.5) ------------------------
+
+# Words a goal or refusal shares with almost any skill — too generic to
+# signal real alignment. Pruned before keyword matching.
+_ALIGNMENT_STOPWORDS = frozenset({
+    "this", "that", "with", "from", "into", "your", "what", "when",
+    "will", "have", "find", "keep", "make", "more", "than", "then",
+    "they", "them", "over", "such", "also", "just", "like", "some",
+    "each", "both", "skill", "skills", "system", "work", "using",
+    "used", "able", "need", "want", "help",
+})
+
+
+def _alignment_keywords(phrase: str) -> set:
+    """Significant lowercased words of a phrase — len > 3, minus stopwords."""
+    words = re.findall(r"[a-z0-9]+", phrase.lower())
+    return {w for w in words if len(w) > 3 and w not in _ALIGNMENT_STOPWORDS}
+
+
+def _split_goal_lines(goals_text: Optional[str]) -> list:
+    """Extract goal statements from goals.md — markdown bullet items, with
+    wrapped continuation lines joined. Bracketed template placeholders
+    (e.g. '[fill in ...]') are skipped."""
+    if not goals_text:
+        return []
+    goals: list = []
+    current: Optional[list] = None
+    for line in goals_text.splitlines():
+        stripped = line.strip()
+        bullet = re.match(r"[-*]\s+(.+)", stripped)
+        if bullet:
+            if current:
+                goals.append(" ".join(current))
+            current = [bullet.group(1).strip()]
+        elif current is not None and stripped and not stripped.startswith("#"):
+            current.append(stripped)  # continuation of the current bullet
+        else:
+            if current:
+                goals.append(" ".join(current))
+            current = None
+    if current:
+        goals.append(" ".join(current))
+    return [g for g in goals if g and not (g.startswith("[") and g.endswith("]"))]
+
+
+def assess_soul_alignment(skill_name: str, description: str) -> tuple:
+    """Heuristically assess a proposed skill against the operator's identity.
+
+    For agent-created skills outside the Curator review cycle (Sprint 14
+    Phase 1.5): the agent does not assess soul-alignment, so the code
+    does — the operator sees identity metadata on ``hermes andon diff``
+    immediately, not after a 7-day Curator cycle.
+
+    Keyword match of the skill's name and description against the
+    operator's declared goals (goals.md) and refusals (soul.md
+    frontmatter):
+
+      - overlaps a declared refusal   -> ("tension", <note>, goals_served)
+      - else overlaps a declared goal -> ("aligned", None, goals_served)
+      - else                          -> ("neutral", None, [])
+
+    Returns ``(soul_alignment, tension_note, goals_served)``. On any
+    identity-load failure: a loud log, then ``("neutral", None, [])`` —
+    the commanded graceful degradation (Sprint 14 PC6).
+    """
+    from grove.identity import load_identity  # local: breaks an import cycle
+
+    try:
+        identity = load_identity()
+    except Exception as exc:
+        logger.warning(
+            "[skills] identity unavailable; proposal '%s' tagged "
+            "soul_alignment=neutral. Cause: %r",
+            skill_name, exc,
+        )
+        return "neutral", None, []
+
+    skill_words = _alignment_keywords(f"{skill_name} {description}")
+
+    goals_served = [
+        goal for goal in _split_goal_lines(identity.goals)
+        if _alignment_keywords(goal) & skill_words
+    ]
+
+    refusals = identity.frontmatter.get("refusals")
+    if isinstance(refusals, list):
+        for refusal in refusals:
+            if isinstance(refusal, str) and _alignment_keywords(refusal) & skill_words:
+                note = (
+                    "The skill overlaps the operator's declared refusal: "
+                    f'"{refusal.strip()}". Surfaced for the operator to '
+                    "weigh — not suppressed."
+                )
+                return "tension", note, goals_served
+
+    if goals_served:
+        return "aligned", None, goals_served
+    return "neutral", None, goals_served

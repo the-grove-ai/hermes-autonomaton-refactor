@@ -370,7 +370,15 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # Core actions
 # =============================================================================
 
-def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
+def _create_skill(
+    name: str,
+    content: str,
+    category: str = None,
+    *,
+    soul_alignment: Optional[str] = None,
+    tension_note: Optional[str] = None,
+    goals_served: Optional[list] = None,
+) -> Dict[str, Any]:
     """Propose a new skill into the quarantine for operator review.
 
     Per Sprint 06a (jidoka-andon-implementation-v1): every agent-authored
@@ -414,6 +422,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         }
 
     from grove.skills import (
+        assess_soul_alignment,
+        parse_frontmatter,
         proposal_path,
         stamp_proposal_frontmatter,
         write_proposal,
@@ -447,10 +457,29 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
                 proposal_dir, exc, exc_info=True,
             )
 
+    # Soul-alignment (Sprint 14). The Curator review model assesses and
+    # passes the soul-alignment tool args; a normal foreground create
+    # passes none, so the code assesses heuristically — the operator
+    # still sees identity metadata on `hermes andon diff`.
+    if soul_alignment is None:
+        try:
+            _fm, _ = parse_frontmatter(content)
+            _description = str(_fm.get("description", ""))
+        except ValueError:
+            _description = ""
+        soul_alignment, tension_note, goals_served = assess_soul_alignment(
+            name, _description
+        )
+
     # Stamp Grove proposal frontmatter (created_by, proposed_at, zone, provenance)
     # and rewrite the SKILL.md so the verdict is visible in `sovereignty diff`.
     stamped = stamp_proposal_frontmatter(
-        content, scan_verdict=scan_verdict, scan_findings=scan_findings,
+        content,
+        scan_verdict=scan_verdict,
+        scan_findings=scan_findings,
+        soul_alignment=soul_alignment,
+        tension_note=tension_note,
+        goals_served=goals_served,
     )
     _atomic_write_text(skill_md, stamped)
 
@@ -773,6 +802,9 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    soul_alignment: str = None,
+    tension_note: str = None,
+    goals_served: list = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -782,7 +814,12 @@ def skill_manage(
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+        result = _create_skill(
+            name, content, category,
+            soul_alignment=soul_alignment,
+            tension_note=tension_note,
+            goals_served=goals_served,
+        )
 
     elif action == "edit":
         if not content:
@@ -955,6 +992,37 @@ SKILL_MANAGE_SCHEMA = {
                     "rewriting) will have to guess at intent."
                 )
             },
+            "soul_alignment": {
+                "type": "string",
+                "enum": ["aligned", "neutral", "tension"],
+                "description": (
+                    "For 'create' by the skill curator only — your "
+                    "assessment of how the new skill fits the operator's "
+                    "declared identity (see the OPERATOR IDENTITY preamble). "
+                    "'aligned': fits the identity and serves a current goal. "
+                    "'neutral': useful but not identity-specific. "
+                    "'tension': in tension with a declared boundary or "
+                    "refusal. Omit on a foreground create — the code "
+                    "assesses alignment heuristically when this is absent."
+                )
+            },
+            "tension_note": {
+                "type": "string",
+                "description": (
+                    "For 'create' with soul_alignment='tension' — one or "
+                    "two sentences naming the conflict so the operator can "
+                    "weigh it. Omit otherwise."
+                )
+            },
+            "goals_served": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "For 'create' by the skill curator only — the "
+                    "operator's current goals (quoted from <current_goals>) "
+                    "that this skill advances. Empty or omitted if none."
+                )
+            },
         },
         "required": ["action", "name"],
     },
@@ -978,6 +1046,9 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        soul_alignment=args.get("soul_alignment"),
+        tension_note=args.get("tension_note"),
+        goals_served=args.get("goals_served")),
     emoji="📝",
 )

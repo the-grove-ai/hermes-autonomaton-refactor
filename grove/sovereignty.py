@@ -95,8 +95,38 @@ def list_proposals() -> list[dict[str, Any]]:
     return proposals
 
 
+def _render_identity_alignment(content: str) -> str:
+    """Render a proposal's soul-alignment metadata as a review block.
+
+    Returns "" when the SKILL.md has no frontmatter or no soul_alignment
+    field — e.g. a proposal created before Sprint 14.
+    """
+    try:
+        fm, _ = parse_frontmatter(content)
+    except ValueError:
+        return ""
+    provenance = fm.get("provenance") or {}
+    if not isinstance(provenance, dict) or "soul_alignment" not in provenance:
+        return ""
+    lines = [
+        "----- identity alignment -----",
+        f"  soul_alignment: {provenance.get('soul_alignment')}",
+    ]
+    note = provenance.get("tension_note")
+    if note:
+        lines.append(f"  tension_note:   {note}")
+    goals = provenance.get("goals_served") or []
+    if goals:
+        lines.append("  goals_served:")
+        lines.extend(f"    - {g}" for g in goals)
+    else:
+        lines.append("  goals_served:   (none)")
+    return "\n".join(lines)
+
+
 def show_diff(skill_name: str) -> Optional[str]:
-    """Return the full SKILL.md text of a proposal plus a list of supporting files.
+    """Return a proposal's identity-alignment summary, full SKILL.md text,
+    and a list of supporting files.
 
     Returns ``None`` if no proposal by that name exists.
     """
@@ -105,6 +135,8 @@ def show_diff(skill_name: str) -> Optional[str]:
     if not skill_md.exists():
         return None
     content = skill_md.read_text(encoding="utf-8")
+    alignment = _render_identity_alignment(content)
+    head = f"{alignment}\n\n{content}" if alignment else content
     supporting = sorted(
         p.relative_to(dest)
         for p in dest.rglob("*")
@@ -112,8 +144,8 @@ def show_diff(skill_name: str) -> Optional[str]:
     )
     if supporting:
         files_block = "\n".join(f"  {p}" for p in supporting)
-        return f"{content}\n\n----- supporting files -----\n{files_block}\n"
-    return content
+        return f"{head}\n\n----- supporting files -----\n{files_block}\n"
+    return head
 
 
 def promote(skill_name: str, replace: bool = False) -> dict[str, Any]:
