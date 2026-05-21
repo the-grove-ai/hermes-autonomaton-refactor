@@ -130,30 +130,6 @@ def classify_for_routing(message: str) -> Optional[ClassificationResult]:
         return None
 
 
-def log_turn_classification(message: str) -> None:
-    """Classify-to-learn: classify one turn and log it, no routing.
-
-    The per-turn telemetry hook for the interactive loop (Sprint 12). It
-    classifies the operator's message and emits a ``classification``
-    event so the Ratchet sees every interaction — not only the opening
-    turn that drove routing. It never re-routes; the session's tier is
-    fixed at construction. A failed or skipped classification logs
-    nothing here (classify_for_routing already logged loudly).
-    """
-    result = classify_for_routing(message)
-    if result is None:
-        return
-    from grove.telemetry import log_classification
-
-    log_classification(
-        intent_class=result.intent_class,
-        pattern_hash=result.pattern_hash,
-        confidence=result.confidence,
-        register_class=result.register_class,
-        complexity_signal=result.complexity_signal,
-    )
-
-
 # ----- internals --------------------------------------------------------------
 
 
