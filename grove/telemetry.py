@@ -51,3 +51,59 @@ def log_sovereignty_decision(
     }
     logger.info("sovereignty_decision %s", json.dumps(event, sort_keys=True))
     return event
+
+
+def log_routing_decision(
+    *,
+    tier: str,
+    reason: str,
+    model: Optional[str],
+    action: Optional[str] = None,
+    zone: Optional[str] = None,
+    confidence: Optional[float] = None,
+    pattern_cache_hit: bool = False,
+) -> dict[str, Any]:
+    """Emit a ``routing_decision`` event and return the event dict.
+
+    One event per route() call in the live pipeline (Sprint 11 D9).
+    ``action`` and ``zone`` are null for v0.1 construction-time routing —
+    they populate once Sprint 12 routes per-action.
+    """
+    event: dict[str, Any] = {
+        "event_type": "routing_decision",
+        "tier": tier,
+        "reason": reason,
+        "action": action,
+        "zone": zone,
+        "confidence": confidence,
+        "pattern_cache_hit": pattern_cache_hit,
+        "model": model,
+        "timestamp": utc_now_iso(),
+    }
+    logger.info("routing_decision %s", json.dumps(event, sort_keys=True))
+    return event
+
+
+def log_ratchet_candidate(
+    *,
+    tier: str,
+    model: Optional[str],
+    action: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    """Emit a ``ratchet_candidate`` event and return the event dict.
+
+    A routing decision that landed on a premium tier (T2/T3). v0.1 logs
+    the raw signal only — no pattern matching, no downgrade. Kaizen's
+    Ratchet (v0.2 functional) consumes these to propose tier downgrades.
+    """
+    event: dict[str, Any] = {
+        "event_type": "ratchet_candidate",
+        "tier": tier,
+        "model": model,
+        "action": action,
+        "reason": reason,
+        "timestamp": utc_now_iso(),
+    }
+    logger.info("ratchet_candidate %s", json.dumps(event, sort_keys=True))
+    return event
