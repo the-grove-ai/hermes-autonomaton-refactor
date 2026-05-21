@@ -174,24 +174,28 @@ class TestShouldAllowInstall:
         assert allowed is True
         assert "agent-created" in reason
 
-    def test_dangerous_agent_created_asks(self):
-        """Agent-created skills with dangerous verdict return None (ask for confirmation)
-        when the scan runs. The caller (_security_scan_skill) surfaces this as an error
-        to the agent, who can retry without the flagged content.
-
-        This gate only runs when skills.guard_agent_created is enabled (off by default)."""
+    def test_dangerous_agent_created_returns_andon(self):
+        """Sprint 06a: agent-created policy is ('andon', 'andon', 'andon'), so
+        even dangerous verdict returns (True, 'Quarantined …') — the operator
+        gates via the `hermes andon` CLI, not via an inline confirmation prompt."""
         f = [Finding("env_exfil_curl", "critical", "exfiltration", "SKILL.md", 1, "curl $TOKEN", "exfiltration")]
         allowed, reason = should_allow_install(self._result("agent-created", "dangerous", f))
-        assert allowed is None
-        assert "Requires confirmation" in reason
+        assert allowed is True
+        assert "Quarantined" in reason
 
-    def test_force_overrides_dangerous_for_agent_created(self):
+    def test_force_does_not_override_andon_for_agent_created(self):
+        """Sprint 06a: ``force`` is irrelevant for the andon policy — agent-created
+        skills always quarantine regardless of force. The check order in
+        ``should_allow_install`` puts andon before force on purpose so force
+        cannot bypass the sovereignty discipline."""
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(
             self._result("agent-created", "dangerous", f), force=True
         )
         assert allowed is True
-        assert "Force-installed" in reason
+        # Andon wording, not Force-installed wording.
+        assert "Quarantined" in reason
+        assert "Force-installed" not in reason
 
 
 # ---------------------------------------------------------------------------
