@@ -461,6 +461,107 @@ CURATOR_REVIEW_PROMPT = (
 )
 
 
+def _compose_identity_preamble() -> str:
+    """Compose the operator's declared identity into a review-prompt preamble.
+
+    Loaded once per review cycle (Sprint 14 D5): the constitution, soul,
+    operator context, and current goals are placed in front of the
+    curator's task so its proposals fit who the operator has declared
+    themselves to be — aligned with their register, serving their goals,
+    inside their boundaries.
+
+    Returns the preamble (ending in a blank line) or "" when identity
+    cannot be loaded. A missing identity is the commanded graceful
+    degradation (Sprint 14 PC6): the curator still runs; proposals just
+    carry no soul composition and default to soul_alignment: neutral.
+    """
+    from grove.identity import load_identity  # local: avoid import coupling
+
+    try:
+        identity = load_identity()
+    except Exception as exc:
+        logger.warning(
+            "[curator] identity unavailable; running the review without "
+            "soul composition. Proposals will default to "
+            "soul_alignment=neutral. Cause: %r",
+            exc,
+        )
+        return ""
+
+    blocks: List[str] = []
+    if identity.constitution:
+        blocks.append(f"<constitution>\n{identity.constitution}\n</constitution>")
+    if identity.soul:
+        blocks.append(f"<soul>\n{identity.soul}\n</soul>")
+    if identity.operator:
+        blocks.append(f"<operator_context>\n{identity.operator}\n</operator_context>")
+    if identity.goals:
+        blocks.append(f"<current_goals>\n{identity.goals}\n</current_goals>")
+
+    register = identity.frontmatter.get("register")
+    if isinstance(register, str) and register.strip():
+        register_line = (
+            f"Write every proposal in the operator's declared register: "
+            f'"{register.strip()}". Match their voice, not a generic one.'
+        )
+    else:
+        register_line = (
+            "Write every proposal in the operator's declared voice — see "
+            "the <soul> section above."
+        )
+
+    refusals = identity.frontmatter.get("refusals")
+    if isinstance(refusals, list) and refusals:
+        listed = "\n".join(f"  - {item}" for item in refusals)
+        refusal_block = (
+            "The operator has declared these refusals — boundaries on what "
+            "the Autonomaton should not do:\n" + listed
+        )
+    else:
+        refusal_block = (
+            "The operator has declared no explicit refusals; the "
+            "<constitution> is the boundary of record."
+        )
+
+    bar = "═" * 63
+    return (
+        f"{bar}\n"
+        "OPERATOR IDENTITY — compose your review against this\n"
+        f"{bar}\n\n"
+        "You are reviewing the skill library of an Autonomaton whose "
+        "operator has declared the identity below. Every proposal you make "
+        "must fit who they have declared themselves to be.\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n"
+        "When proposing improvements, align with:\n"
+        "  - The operator's declared working style and register.\n"
+        "  - The operator's current goals — a proposal that serves an "
+        "active goal matters more than a generically reasonable one.\n"
+        "  - The operator's declared boundaries — never propose a "
+        "capability the constitution or a declared refusal forbids.\n\n"
+        + register_line + "\n\n"
+        + refusal_block + "\n\n"
+        "SOUL-ALIGNMENT TAGGING — required on every skill you create.\n"
+        "For each skill you create with `skill_manage action=create`, pass "
+        "these three arguments alongside `name` and `content`:\n\n"
+        "  soul_alignment — how the new skill fits the declared identity. "
+        "Exactly one of:\n"
+        "    aligned  — fits the declared identity and serves a current goal.\n"
+        "    neutral  — useful, but not tied to the declared identity or an "
+        "active goal.\n"
+        "    tension  — serves a purpose in tension with a declared boundary "
+        "or refusal.\n\n"
+        "  tension_note — when soul_alignment is `tension`, one or two "
+        "sentences naming the conflict so the operator can weigh it; null "
+        "otherwise. Never suppress a proposal for being in tension — surface "
+        "it with the note and let the operator decide.\n\n"
+        "  goals_served — the operator's current goals (quoted exactly from "
+        "<current_goals>) that this skill advances; an empty list if the "
+        "skill is general-purpose or no goals are declared.\n\n"
+        f"{bar}\n\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-run reports — {YYYYMMDD-HHMMSS}/run.json + REPORT.md under logs/curator/
 # ---------------------------------------------------------------------------
@@ -1481,14 +1582,19 @@ def run_curator_review(
                     "error": None,
                 }
             else:
+                identity_preamble = _compose_identity_preamble()
                 if dry_run:
                     prompt = (
                         f"{CURATOR_DRY_RUN_BANNER}\n\n"
+                        f"{identity_preamble}"
                         f"{CURATOR_REVIEW_PROMPT}\n\n"
                         f"{candidate_list}"
                     )
                 else:
-                    prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+                    prompt = (
+                        f"{identity_preamble}"
+                        f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+                    )
                 llm_meta = _run_llm_review(prompt)
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
