@@ -231,6 +231,7 @@ def _run_agent(
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
+    from grove.providers import route_for_agent
 
     cfg = load_config()
 
@@ -286,6 +287,15 @@ def _run_agent(
                 detected = detect_provider_for_model(explicit_model, current_provider)
                 if detected:
                     effective_provider, effective_model = detected
+
+    # Cognitive Router: --model feeds INTO the router, which resolves it
+    # to a tier. The router runs whenever routing.config.yaml is present;
+    # the legacy chain above is the vanilla-install fallback.
+    _routed = route_for_agent(explicit_model=model)
+    if _routed is not None:
+        effective_model = _routed.tier_config.model
+        effective_provider = _routed.tier_config.provider
+        explicit_base_url_from_alias = None
 
     runtime = resolve_runtime_provider(
         requested=effective_provider,

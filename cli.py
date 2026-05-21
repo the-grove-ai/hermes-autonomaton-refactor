@@ -2620,6 +2620,10 @@ class HermesCLI:
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        # Raw --model flag, distinct from the config-merged self.model:
+        # config.yaml model.default does not feed the router; an explicit
+        # operator --model does.
+        self._operator_model_arg = model
         # Auto-detect model from local server if still on default
         if self.model == _DEFAULT_CONFIG_MODEL:
             _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""
@@ -4358,6 +4362,8 @@ class HermesCLI:
         if self.agent is not None:
             return True
 
+        from grove.providers import route_for_agent, resolve_tier_to_runtime
+
         if not self._ensure_runtime_credentials():
             return False
 
@@ -4425,6 +4431,16 @@ class HermesCLI:
                 pass
         
         try:
+            # Cognitive Router: every construction runs through the router.
+            # The operator's model — the --model flag, or a /model switch's
+            # model_override — feeds in as operator_model; the router
+            # resolves it to a tier. None only on a vanilla install.
+            _routed = route_for_agent(
+                explicit_model=model_override or self._operator_model_arg
+            )
+            if _routed is not None:
+                runtime_override = resolve_tier_to_runtime(_routed.tier_config)
+                model_override = _routed.tier_config.model
             runtime = runtime_override or {
                 "api_key": self.api_key,
                 "base_url": self.base_url,
