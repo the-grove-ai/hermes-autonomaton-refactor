@@ -312,6 +312,12 @@ def _run_agent(
 
     session_db = _create_session_db_for_oneshot()
 
+    # Cognitive Router RAG (Sprint 13): retrieve cellar context for this
+    # one-shot request. ephemeral_system_prompt is injected at API-call
+    # time only — never cached, never saved to trajectories.
+    from grove.cellar import retrieve_cellar_context
+    _cellar_context = retrieve_cellar_context(prompt)
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -335,6 +341,7 @@ def _run_agent(
         #   - dangerous-command approval → bypassed via GROVE_YOLO_MODE=1
         #   - skill secret capture → returns gracefully when no callback set
         clarify_callback=_oneshot_clarify_callback,
+        ephemeral_system_prompt=_cellar_context or None,
     )
 
     # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
