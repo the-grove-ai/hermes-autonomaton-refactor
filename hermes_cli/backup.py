@@ -130,7 +130,7 @@ def run_backup(args) -> None:
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
-        print(f"Error: Hermes home directory not found at {hermes_root}")
+        print(f"Error: Autonomaton home directory not found at {hermes_root}")
         sys.exit(1)
 
     # Determine output path
@@ -341,7 +341,7 @@ def run_import(args) -> None:
 
         if (has_config or has_env) and not args.force:
             print()
-            print("Warning: Target directory already has Hermes configuration.")
+            print("Warning: Target directory already has Autonomaton configuration.")
             print("Importing will overwrite existing files with backup contents.")
             print()
             try:
@@ -451,7 +451,7 @@ def run_import(args) -> None:
         # Guidance
         print()
         if not (hermes_root / "hermes-agent").is_dir():
-            print("Note: The hermes-agent codebase was not included in the backup.")
+            print("Note: The grove-autonomaton codebase was not included in the backup.")
             print("  If this is a fresh install, run: hermes update")
 
         if restored_profiles:
@@ -460,7 +460,7 @@ def run_import(args) -> None:
             for pname in gw_profiles:
                 print(f"  hermes -p {pname} gateway install")
 
-        print("Done. Your Hermes configuration has been restored.")
+        print("Done. Your Autonomaton configuration has been restored.")
 
 
 # ---------------------------------------------------------------------------

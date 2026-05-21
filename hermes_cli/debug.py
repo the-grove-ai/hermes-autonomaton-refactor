@@ -687,7 +687,7 @@ def run_debug_share(args):
     # Manual delete fallback
     print(f"To delete now:  hermes debug delete <url>")
 
-    print(f"\nShare these links with the Hermes team for support.")
+    print(f"\nShare these links with the Autonomaton team for support.")
 
 
 def run_debug_delete(args):

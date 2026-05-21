@@ -2958,19 +2958,19 @@ class Migrator:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Migrate OpenClaw user state into Hermes Agent.")
+    parser = argparse.ArgumentParser(description="Migrate OpenClaw user state into grove-autonomaton.")
     parser.add_argument("--source", default=str(Path.home() / ".openclaw"), help="OpenClaw home directory")
-    parser.add_argument("--target", default=os.environ.get("GROVE_HOME") or str(Path.home() / ".grove"), help="Hermes home directory")
+    parser.add_argument("--target", default=os.environ.get("GROVE_HOME") or str(Path.home() / ".grove"), help="Autonomaton home directory")
     parser.add_argument(
         "--workspace-target",
         help="Optional workspace root where the workspace instructions file should be copied",
     )
     parser.add_argument("--execute", action="store_true", help="Apply changes instead of reporting a dry run")
-    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing Hermes targets after backing them up")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing Autonomaton targets after backing them up")
     parser.add_argument(
         "--migrate-secrets",
         action="store_true",
-        help="Import a narrow allowlist of Hermes-compatible secrets into the target env file",
+        help="Import a narrow allowlist of Autonomaton-compatible secrets into the target env file",
     )
     parser.add_argument(
         "--skill-conflict",
@@ -3044,7 +3044,7 @@ def main() -> int:
 
     print()
     print(f"  ╔══════════════════════════════════════════════════════╗")
-    print(f"  ║   OpenClaw -> Hermes Migration   [{mode_label:>8s}]   ║")
+    print(f"  ║   OpenClaw -> Autonomaton Migration   [{mode_label:>8s}]   ║")
     print(f"  ╠══════════════════════════════════════════════════════╣")
     print(f"  ║  Source:  {str(report['source_root'])[:42]:<42s}  ║")
     print(f"  ║  Target:  {str(report['target_root'])[:42]:<42s}  ║")

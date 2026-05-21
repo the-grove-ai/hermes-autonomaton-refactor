@@ -1082,7 +1082,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     auth_url = f"https://claude.ai/oauth/authorize?{urlencode(params)}"
 
     print()
-    print("Authorize Hermes with your Claude Pro/Max subscription.")
+    print("Authorize Autonomaton with your Claude Pro/Max subscription.")
     print()
     print("╭─ Claude Pro/Max Authorization ────────────────────╮")
     print("│                                                   │")
