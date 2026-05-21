@@ -5484,6 +5484,34 @@ def cmd_auth(args):
     auth_command(args)
 
 
+def cmd_andon(args):
+    """Operator-facing skill quarantine review (Sprint 06a).
+
+    Dispatches `hermes andon {list,diff,promote,reject,revoke}` to
+    ``grove.sovereignty`` CLI renderers. Each renderer handles its own
+    exit codes and stderr messaging.
+    """
+    from grove import sovereignty
+
+    action = getattr(args, "andon_action", None)
+    if action == "list":
+        sovereignty.cli_list()
+    elif action == "diff":
+        sovereignty.cli_diff(args.skill)
+    elif action == "promote":
+        sovereignty.cli_promote(args.skill, replace=bool(getattr(args, "replace", False)))
+    elif action == "reject":
+        sovereignty.cli_reject(args.skill, reason=getattr(args, "reason", None))
+    elif action == "revoke":
+        sovereignty.cli_revoke(args.skill)
+    else:
+        print(
+            "Usage: hermes andon {list,diff,promote,reject,revoke} [--help]",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
 def cmd_status(args):
     """Show status of all components."""
     from hermes_cli.status import show_status
@@ -10259,6 +10287,65 @@ def main():
         "--timeout", type=float, help="Callback/token exchange timeout in seconds"
     )
     auth_parser.set_defaults(func=cmd_auth)
+
+    # =========================================================================
+    # andon command — skill quarantine review (Sprint 06a)
+    # =========================================================================
+    andon_parser = subparsers.add_parser(
+        "andon",
+        help="Review and promote agent-authored skill proposals",
+        description=(
+            "Operator-facing review of agent-authored skill proposals "
+            "waiting in ~/.grove/skills/.andon/. Each promote/reject/revoke "
+            "is a deliberate sovereignty act and writes a structured "
+            "telemetry event."
+        ),
+    )
+    andon_subparsers = andon_parser.add_subparsers(dest="andon_action")
+
+    andon_subparsers.add_parser(
+        "list", help="Show all pending skill proposals"
+    )
+
+    andon_diff_p = andon_subparsers.add_parser(
+        "diff",
+        help="Show the full SKILL.md and supporting files for a proposal",
+    )
+    andon_diff_p.add_argument(
+        "skill", help="Skill name (directory under ~/.grove/skills/.andon/)"
+    )
+
+    andon_promote_p = andon_subparsers.add_parser(
+        "promote", help="Promote a proposal to the active skill set"
+    )
+    andon_promote_p.add_argument(
+        "skill", help="Skill name (directory under ~/.grove/skills/.andon/)"
+    )
+    andon_promote_p.add_argument(
+        "--replace",
+        action="store_true",
+        help="Archive an existing active skill of the same name first",
+    )
+
+    andon_reject_p = andon_subparsers.add_parser(
+        "reject", help="Reject a proposal — deletes from .andon/ permanently"
+    )
+    andon_reject_p.add_argument(
+        "skill", help="Skill name (directory under ~/.grove/skills/.andon/)"
+    )
+    andon_reject_p.add_argument(
+        "--reason",
+        help="Optional rejection reason (recorded in telemetry)",
+    )
+
+    andon_revoke_p = andon_subparsers.add_parser(
+        "revoke", help="Move an active skill back to .andon/ for re-review"
+    )
+    andon_revoke_p.add_argument(
+        "skill", help="Skill name (currently active in ~/.grove/skills/)"
+    )
+
+    andon_parser.set_defaults(func=cmd_andon)
 
     # =========================================================================
     # status command
