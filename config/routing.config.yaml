@@ -34,6 +34,14 @@ routing:
   # elsewhere. Most interactions run here.
   default_tier: T2
 
+  # Optional. Pin a tier for every action the zone classifier places in a
+  # given zone (green / yellow / red). An empty map — the default — means
+  # zones do not influence routing. Example: route every red-zone action
+  # (sovereignty-boundary work) to the apex tier —
+  #   zone_overrides:
+  #     red: T3
+  zone_overrides: {}
+
   # Price figures below are May 2026 list prices. The "per average
   # interaction" estimates are rough — real cost scales with how much
   # context a request carries.
