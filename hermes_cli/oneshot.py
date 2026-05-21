@@ -291,7 +291,7 @@ def _run_agent(
     # Cognitive Router: --model feeds INTO the router, which resolves it
     # to a tier. The router runs whenever routing.config.yaml is present;
     # the legacy chain above is the vanilla-install fallback.
-    _routed = route_for_agent(explicit_model=model)
+    _routed = route_for_agent(message=prompt, explicit_model=model)
     if _routed is not None:
         effective_model = _routed.tier_config.model
         effective_provider = _routed.tier_config.provider
