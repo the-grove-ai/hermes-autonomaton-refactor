@@ -2763,10 +2763,13 @@ class HermesCLI:
             fb = [fb] if fb.get("provider") and fb.get("model") else []
         self._fallback_model = fb
 
-        # Signature of the currently-initialised agent's runtime.  Used to
-        # rebuild the agent when provider / model / base_url changes across
-        # turns (e.g. after /model or credential rotation).
-        self._active_agent_route_signature = None
+        # Identity of the currently-initialised agent, split in two so a
+        # model-only change need not rebuild the agent.  The client
+        # signature (provider / base_url / api_mode / ACP command) forces a
+        # full rebuild when it changes; a same-client model change is a
+        # tier swap via AIAgent.apply_tier() with no reconstruction.
+        self._active_client_signature = None
+        self._active_agent_model = None
 
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
@@ -4303,7 +4306,8 @@ class HermesCLI:
         # routing, or the effective model changed.
         if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
             self.agent = None
-            self._active_agent_route_signature = None
+            self._active_client_signature = None
+            self._active_agent_model = None
 
         return True
 
@@ -4328,9 +4332,9 @@ class HermesCLI:
         }
         route = {
             "model": self.model,
+            "max_tokens": None,  # tier token budget when one is routed in
             "runtime": runtime,
-            "signature": (
-                self.model,
+            "client_signature": (
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
@@ -4505,14 +4509,14 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
-            self._active_agent_route_signature = (
-                effective_model,
+            self._active_client_signature = (
                 runtime.get("provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
             )
+            self._active_agent_model = effective_model
 
             # Force-create DB row on /title intent, then apply title.
             if self._pending_title and self._session_db and self.agent:
@@ -10722,8 +10726,18 @@ class HermesCLI:
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
-        if turn_route["signature"] != self._active_agent_route_signature:
-            self.agent = None
+        if self.agent is not None:
+            if turn_route["client_signature"] != self._active_client_signature:
+                # Client identity changed (provider / base_url / api_mode /
+                # ACP command) — the SDK client and cached system prompt are
+                # stale.  Full reconstruction below.
+                self.agent = None
+            elif turn_route["model"] != self._active_agent_model:
+                # Same client, different model — swap the tier in place. No
+                # client rebuild, no system-prompt rebuild (D1/D4).
+                self.agent.apply_tier(turn_route["model"], turn_route["max_tokens"])
+                self._active_agent_model = turn_route["model"]
+            # else: nothing changed — reuse the agent as-is.
 
         # Initialize agent if needed. If the agent will be (re)constructed
         # this turn, route_for_agent() classifies the message during
@@ -14130,8 +14144,6 @@ def main(
                         announce=False,
                     )
                 turn_route = cli._resolve_turn_agent_config(effective_query)
-                if turn_route["signature"] != cli._active_agent_route_signature:
-                    cli.agent = None
                 if cli._init_agent(
                     message=effective_query,
                     model_override=turn_route["model"],
