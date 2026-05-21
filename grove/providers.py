@@ -24,6 +24,7 @@ import os
 from typing import Optional
 
 from grove import router as _router
+from grove.classify import ClassificationResult
 from grove.router import CognitiveRouter, RoutingDecision, TierConfig
 from grove.telemetry import log_ratchet_candidate, log_routing_decision
 
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 def route_for_agent(
     *,
+    message: Optional[str] = None,
     explicit_tier: Optional[str] = None,
     explicit_model: Optional[str] = None,
 ) -> Optional[RoutingDecision]:
@@ -42,19 +44,26 @@ def route_for_agent(
     model-selection chain unchanged. A routing config that exists but is
     malformed raises loudly; absence is the only fallback trigger.
 
-    ``explicit_tier`` / ``explicit_model`` are the ``--tier`` / ``--model``
-    flag values; when unset, ``GROVE_TIER`` / ``GROVE_INFERENCE_MODEL`` are
-    consulted. Both are passed into route() — the operator's model feeds
-    *into* the router, never around it.
+    ``message`` is the operator's request; it is classified (T-telemetry)
+    so route() can escalate on low confidence. ``explicit_tier`` /
+    ``explicit_model`` are the ``--tier`` / ``--model`` flag values; when
+    unset, ``GROVE_TIER`` / ``GROVE_INFERENCE_MODEL`` are consulted.
     """
     router = _ensure_router()
     if router is None:
         return None
+    # T-telemetry: classify the request so route() can escalate on low
+    # confidence. None on any failure — route() then falls back cleanly.
+    from grove.classify import classify_for_routing  # local: avoid circular
+
+    classification = classify_for_routing(message)
     decision = router.route(
         operator_tier=_resolve_operator_tier(explicit_tier),
         operator_model=_resolve_operator_model(explicit_model),
+        intent=classification.intent_class if classification else None,
+        confidence=classification.confidence if classification else None,
     )
-    _log_routing(decision)
+    _log_routing(decision, classification)
     return decision
 
 
@@ -96,8 +105,12 @@ def resolve_tier_to_runtime(tier_config: TierConfig) -> dict:
 # ----- internals --------------------------------------------------------------
 
 
-def _log_routing(decision: RoutingDecision) -> None:
+def _log_routing(
+    decision: RoutingDecision,
+    classification: Optional[ClassificationResult] = None,
+) -> None:
     """Emit routing telemetry: a routing_decision event for every call,
+    enriched with the T-telemetry classification when one is available,
     plus a ratchet_candidate when the decision lands on a premium tier."""
     log_routing_decision(
         tier=decision.tier,
@@ -105,6 +118,12 @@ def _log_routing(decision: RoutingDecision) -> None:
         model=decision.tier_config.model,
         confidence=decision.confidence,
         pattern_cache_hit=decision.pattern_cache_hit,
+        intent_class=classification.intent_class if classification else None,
+        pattern_hash=classification.pattern_hash if classification else None,
+        register_class=classification.register_class if classification else None,
+        complexity_signal=(
+            classification.complexity_signal if classification else None
+        ),
     )
     if decision.tier in ("T2", "T3"):
         log_ratchet_candidate(

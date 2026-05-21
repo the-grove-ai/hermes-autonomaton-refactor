@@ -62,12 +62,18 @@ def log_routing_decision(
     zone: Optional[str] = None,
     confidence: Optional[float] = None,
     pattern_cache_hit: bool = False,
+    intent_class: Optional[str] = None,
+    pattern_hash: Optional[str] = None,
+    register_class: Optional[str] = None,
+    complexity_signal: Optional[str] = None,
 ) -> dict[str, Any]:
     """Emit a ``routing_decision`` event and return the event dict.
 
-    One event per route() call in the live pipeline (Sprint 11 D9).
-    ``action`` and ``zone`` are null for v0.1 construction-time routing —
-    they populate once Sprint 12 routes per-action.
+    One event per route() call in the live pipeline (Sprint 11 D9),
+    enriched with the T-telemetry classification fields (Sprint 12 D10)
+    when a classification is available. ``action`` and ``zone`` are null
+    for v0.1 construction-time routing; the classification fields are
+    null for a vanilla install or a failed classification.
     """
     event: dict[str, Any] = {
         "event_type": "routing_decision",
@@ -77,6 +83,10 @@ def log_routing_decision(
         "zone": zone,
         "confidence": confidence,
         "pattern_cache_hit": pattern_cache_hit,
+        "intent_class": intent_class,
+        "pattern_hash": pattern_hash,
+        "register_class": register_class,
+        "complexity_signal": complexity_signal,
         "model": model,
         "timestamp": utc_now_iso(),
     }
@@ -106,4 +116,32 @@ def log_ratchet_candidate(
         "timestamp": utc_now_iso(),
     }
     logger.info("ratchet_candidate %s", json.dumps(event, sort_keys=True))
+    return event
+
+
+def log_classification(
+    *,
+    intent_class: str,
+    pattern_hash: str,
+    confidence: float,
+    register_class: str,
+    complexity_signal: str,
+) -> dict[str, Any]:
+    """Emit a ``classification`` event and return the event dict.
+
+    The per-turn T-telemetry record (Sprint 12). Turns that drive a
+    routing decision log ``routing_decision``; turns that do not re-route
+    log this — so Kaizen's Ratchet sees every interaction, not only the
+    opening turn.
+    """
+    event: dict[str, Any] = {
+        "event_type": "classification",
+        "intent_class": intent_class,
+        "pattern_hash": pattern_hash,
+        "confidence": confidence,
+        "register_class": register_class,
+        "complexity_signal": complexity_signal,
+        "timestamp": utc_now_iso(),
+    }
+    logger.info("classification %s", json.dumps(event, sort_keys=True))
     return event
