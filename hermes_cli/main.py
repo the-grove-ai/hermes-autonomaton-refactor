@@ -12437,6 +12437,12 @@ Examples:
                 exc_info=True,
             )
 
+    # --tier flag -> GROVE_TIER env: one signal both CLI paths' router
+    # consult reads. --tier and GROVE_TIER are the same operation (force a
+    # Cognitive Router tier); the flag just sets the env var.
+    if getattr(args, "tier", None):
+        os.environ["GROVE_TIER"] = args.tier
+
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.
     if getattr(args, "oneshot", None):

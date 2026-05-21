@@ -132,6 +132,18 @@ def build_top_level_parser():
             "Applies to -z/--oneshot and --tui. Also settable via GROVE_INFERENCE_PROVIDER env var."
         ),
     )
+    _inherited_flag(
+        parser,
+        "--tier",
+        default=None,
+        choices=["T0", "T1", "T2", "T3"],
+        metavar="TIER",
+        help=(
+            "Force a Cognitive Router tier for this invocation (T0-T3), "
+            "bypassing routing. Applies to -z/--oneshot and --tui. Also "
+            "settable via the GROVE_TIER env var."
+        ),
+    )
     parser.add_argument(
         "-t",
         "--toolsets",
