@@ -5,6 +5,7 @@ import logging
 import pytest
 
 import grove.router
+from grove.classify import ClassificationResult
 from grove.providers import resolve_tier_to_runtime, route_for_agent
 from grove.router import TierConfig
 
@@ -145,3 +146,48 @@ def test_route_for_agent_logs_ratchet_candidate(tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger="grove.telemetry"):
         route_for_agent()  # default -> T2, a premium tier
     assert "ratchet_candidate" in caplog.text
+
+
+# ----- Sprint 12: classification feeds routing --------------------------------
+
+
+def test_route_for_agent_classification_escalates(tmp_path, monkeypatch):
+    """A low-confidence classification escalates the default tier."""
+    _init_router(tmp_path)
+    low_conf = ClassificationResult(
+        intent_class="analysis",
+        pattern_hash="abc123",
+        confidence=0.3,  # below the 0.6 escalation threshold
+        register_class="technical",
+        complexity_signal="complex",
+    )
+    monkeypatch.setattr("grove.classify.classify_for_routing", lambda _m: low_conf)
+    decision = route_for_agent(message="analyze this codebase")
+    assert decision.tier == "T3"  # T2 default escalated one step
+    assert decision.reason == "escalation"
+
+
+def test_route_for_agent_no_classification_default_routing(tmp_path, monkeypatch):
+    """A failed/absent classification falls back to default routing."""
+    _init_router(tmp_path)
+    monkeypatch.setattr("grove.classify.classify_for_routing", lambda _m: None)
+    decision = route_for_agent(message="something")
+    assert decision.tier == "T2"
+    assert decision.reason == "default"  # no confidence -> no escalation
+
+
+def test_route_for_agent_logs_classification_fields(tmp_path, monkeypatch, caplog):
+    """The routing_decision event is enriched with the classification fields."""
+    _init_router(tmp_path)
+    classified = ClassificationResult(
+        intent_class="code_generation",
+        pattern_hash="deadbeef0000",
+        confidence=0.9,  # high — no escalation
+        register_class="technical",
+        complexity_signal="moderate",
+    )
+    monkeypatch.setattr("grove.classify.classify_for_routing", lambda _m: classified)
+    with caplog.at_level(logging.INFO, logger="grove.telemetry"):
+        route_for_agent(message="write a parser")
+    assert "code_generation" in caplog.text  # intent_class enriches the event
+    assert "deadbeef0000" in caplog.text  # pattern_hash enriches the event
