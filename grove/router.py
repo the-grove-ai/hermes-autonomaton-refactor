@@ -54,9 +54,8 @@ class RoutingDecision:
 
     ``reason`` is one of ``"operator_override"``,
     ``"operator_model_preference"``, ``"operator_model_untiered"``,
-    ``"zone_override"``, ``"default"``, ``"escalation"``. ``confidence``
-    and ``pattern_cache_hit`` are wired for Sprint 12 / Sprint 13 and
-    inert in v0.1.
+    ``"downward"``, ``"upward"``, ``"escalation"``, ``"zone_override"``,
+    or ``"default"`` — the rule or fallback that selected the tier.
     """
 
     tier: str
@@ -66,6 +65,27 @@ class RoutingDecision:
     pattern_cache_hit: bool
 
 
+@dataclass(frozen=True)
+class RoutingRule:
+    """One declarative routing rule loaded from the ``routing_rules`` block.
+
+    ``downward`` and ``upward`` carry a ``target_tier``; ``escalation``
+    carries ``action="step_up"``. The match criteria are AND-ed — a rule
+    fires only when every criterion it declares holds against the
+    telemetry classification. A criterion left empty (an empty frozenset,
+    or ``None``) is simply not tested.
+    """
+
+    name: str
+    enabled: bool
+    target_tier: Optional[str]
+    action: Optional[str]
+    complexity: frozenset
+    intents: frozenset
+    min_confidence: Optional[float]
+    max_confidence: Optional[float]
+
+
 class CognitiveRouter:
     """Loads, queries, and routes against a routing.config.yaml file."""
 
@@ -73,6 +93,7 @@ class CognitiveRouter:
         self._config_path = Path(config_path)
         self._tiers: dict[str, TierConfig] = {}
         self._zone_overrides: dict[str, str] = {}
+        self._routing_rules: list[RoutingRule] = []
         self._default_tier: str = ""
         self._escalation_threshold: float = 0.0
         self._telemetry_tier: str = ""
@@ -114,6 +135,7 @@ class CognitiveRouter:
         action: Optional[str] = None,
         intent: Optional[str] = None,
         confidence: Optional[float] = None,
+        complexity_signal: Optional[str] = None,
         zone: Optional[str] = None,
         operator_tier: Optional[str] = None,
         operator_model: Optional[str] = None,
@@ -121,20 +143,21 @@ class CognitiveRouter:
         """Select a cognitive tier for an interaction.
 
         Every interaction runs through this method when a routing config
-        is loaded — there is no bypass. Precedence:
+        is loaded — there is no bypass. Precedence, first match wins:
 
         1. operator_tier (--tier / GROVE_TIER) — forces a tier.
         2. operator_model (--model / GROVE_INFERENCE_MODEL) — resolved to
-           a tier: the tier that binds the model if one does
-           (operator_model_preference), else the default tier's provider
-           carrying the operator's model as-is (operator_model_untiered).
-        3. Rule-based: T0 pattern cache (always a miss in v0.1 — no cellar
-           until Sprint 13), then zone_overrides, then default_tier.
+           a tier, or carried as-is on the default tier's provider.
+        3. Declarative routing_rules — downward, upward, escalation, in
+           that order. The first enabled rule whose match criteria all
+           hold against the classification decides the tier.
+        4. zone_overrides — a tier pinned for a classified zone.
+        5. default_tier.
 
-        Escalation applies only to the rule-based path and is inert until
-        Sprint 12 supplies ``confidence``. ``action`` and ``intent`` are
-        accepted for the Sprint 12 signature and the telemetry record;
-        v0.1 routing does not read them.
+        ``intent``, ``confidence`` and ``complexity_signal`` are the
+        telemetry classifier's read of the request; the routing_rules
+        match against them. ``action`` is accepted for the telemetry
+        record and is not matched on.
         """
         # 1. Operator tier override — forces a tier.
         if operator_tier:
@@ -169,35 +192,57 @@ class CognitiveRouter:
                 pattern_cache_hit=False,
             )
 
-        # 3. Rule-based selection: T0 pattern cache (always a miss in
-        #    v0.1), then zone_overrides, then default_tier.
-        pattern_cache_hit = False
+        # 3. Declarative routing rules — downward, upward, escalation in
+        #    config order. The first enabled rule that matches wins.
+        for rule in self._routing_rules:
+            if not rule.enabled:
+                continue
+            if not _rule_matches(
+                rule,
+                intent=intent,
+                confidence=confidence,
+                complexity=complexity_signal,
+            ):
+                continue
+            if rule.action == "step_up":
+                # Escalation steps the default tier up one rung of the
+                # ladder; T3 is the ceiling. Inlined — the old
+                # _escalate_one helper is gone.
+                try:
+                    _idx = _TIER_LADDER.index(self._default_tier)
+                    tier = _TIER_LADDER[min(_idx + 1, len(_TIER_LADDER) - 1)]
+                except ValueError:
+                    tier = self._default_tier
+                reason = "escalation"
+            else:
+                tier = rule.target_tier
+                reason = rule.name
+            return RoutingDecision(
+                tier=tier,
+                tier_config=self.get_tier_config(tier),
+                reason=reason,
+                confidence=confidence,
+                pattern_cache_hit=False,
+            )
+
+        # 4. Zone override — a tier pinned for a classified zone.
         if zone is not None and zone in self._zone_overrides:
             tier = self._zone_overrides[zone]
-            reason = "zone_override"
-        else:
-            tier = self._default_tier
-            reason = "default"
+            return RoutingDecision(
+                tier=tier,
+                tier_config=self.get_tier_config(tier),
+                reason="zone_override",
+                confidence=confidence,
+                pattern_cache_hit=False,
+            )
 
-        # Escalation: one step up on low classification confidence. Inert
-        # in v0.1 (confidence is None until Sprint 12). Disabled when the
-        # threshold is 0.0 — the circuit breaker.
-        if (
-            confidence is not None
-            and self._escalation_threshold > 0.0
-            and confidence < self._escalation_threshold
-        ):
-            escalated = _escalate_one(tier)
-            if escalated != tier:
-                tier = escalated
-                reason = "escalation"
-
+        # 5. Default tier.
         return RoutingDecision(
-            tier=tier,
-            tier_config=self.get_tier_config(tier),
-            reason=reason,
+            tier=self._default_tier,
+            tier_config=self.get_tier_config(self._default_tier),
+            reason="default",
             confidence=confidence,
-            pattern_cache_hit=pattern_cache_hit,
+            pattern_cache_hit=False,
         )
 
     def reload(self) -> None:
@@ -205,6 +250,7 @@ class CognitiveRouter:
         snapshot = (
             dict(self._tiers),
             dict(self._zone_overrides),
+            list(self._routing_rules),
             self._default_tier,
             self._escalation_threshold,
             self._telemetry_tier,
@@ -218,6 +264,7 @@ class CognitiveRouter:
             (
                 self._tiers,
                 self._zone_overrides,
+                self._routing_rules,
                 self._default_tier,
                 self._escalation_threshold,
                 self._telemetry_tier,
@@ -297,9 +344,22 @@ class CognitiveRouter:
                 f"routing config at {self._config_path} missing 'telemetry.tier'"
             )
 
+        # Declarative routing rules. Optional: a config predating this
+        # section yields downward/upward absent and a synthesized
+        # escalation rule carrying the top-level escalation.threshold.
+        routing_rules = _parse_routing_rules(routing, float(threshold))
+        for rule in routing_rules:
+            if rule.target_tier is not None and rule.target_tier not in tiers:
+                raise ValueError(
+                    f"routing config at {self._config_path}: routing_rules."
+                    f"{rule.name}.target_tier {rule.target_tier!r} is not a"
+                    f" declared tier"
+                )
+
         # All-or-nothing swap (mutation only after validation succeeds).
         self._tiers = tiers
         self._zone_overrides = dict(zone_overrides)
+        self._routing_rules = routing_rules
         self._default_tier = default_tier
         self._escalation_threshold = float(threshold)
         self._telemetry_tier = telemetry_tier
@@ -309,17 +369,154 @@ class CognitiveRouter:
 
 _default_router: Optional[CognitiveRouter] = None
 
-# Tier ordering, lowest to highest — the escalation ladder.
+# Tier ordering, lowest to highest — the ladder the escalation rule
+# steps a request up.
 _TIER_LADDER = ("T0", "T1", "T2", "T3")
 
 
-def _escalate_one(tier: str) -> str:
-    """Return the next tier up the ladder; T3 is the ceiling."""
-    try:
-        idx = _TIER_LADDER.index(tier)
-    except ValueError:
-        return tier
-    return _TIER_LADDER[min(idx + 1, len(_TIER_LADDER) - 1)]
+def _rule_matches(
+    rule: RoutingRule,
+    *,
+    intent: Optional[str],
+    confidence: Optional[float],
+    complexity: Optional[str],
+) -> bool:
+    """True when every match criterion the rule declares is satisfied.
+
+    A criterion the rule does not declare is not tested. A criterion the
+    rule declares but the classification cannot supply (a ``None``
+    signal) counts as unsatisfied — an unclassifiable request never
+    matches a rule that needs the classification.
+    """
+    if rule.complexity and complexity not in rule.complexity:
+        return False
+    if rule.intents and intent not in rule.intents:
+        return False
+    if rule.min_confidence is not None:
+        if confidence is None or confidence < rule.min_confidence:
+            return False
+    if rule.max_confidence is not None:
+        if confidence is None or confidence >= rule.max_confidence:
+            return False
+    return True
+
+
+def _as_frozenset(value) -> frozenset:
+    """Normalize a YAML scalar, list, or absent value into a frozenset."""
+    if value is None:
+        return frozenset()
+    if isinstance(value, str):
+        return frozenset({value})
+    if isinstance(value, (list, tuple)):
+        return frozenset(value)
+    raise ValueError(f"expected a string or list of strings, got {value!r}")
+
+
+def _as_float(value, label: str) -> Optional[float]:
+    """Coerce a numeric YAML value to float; ``None`` passes through."""
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a number, got {value!r}")
+    return float(value)
+
+
+def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
+    """Build the ordered [downward, upward, escalation] routing-rule list.
+
+    ``downward`` and ``upward`` exist only when ``routing_rules`` declares
+    them. ``escalation`` is always present: when the config omits it (a
+    config predating routing_rules), it is synthesized enabled with the
+    top-level ``escalation.threshold`` as its ``max_confidence`` — the
+    backward-compatible migration path.
+    """
+    raw = routing.get("routing_rules") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("'routing_rules' must be a mapping")
+
+    rules: list = []
+
+    for name in ("downward", "upward"):
+        spec = raw.get(name)
+        if spec is None:
+            continue
+        if not isinstance(spec, dict):
+            raise ValueError(f"routing_rules.{name} must be a mapping")
+        target = spec.get("target_tier")
+        if not isinstance(target, str) or not target:
+            raise ValueError(
+                f"routing_rules.{name} needs a string 'target_tier'"
+            )
+        match = spec.get("match") or {}
+        if not isinstance(match, dict):
+            raise ValueError(f"routing_rules.{name}.match must be a mapping")
+        rules.append(
+            RoutingRule(
+                name=name,
+                enabled=bool(spec.get("enabled", False)),
+                target_tier=target,
+                action=None,
+                complexity=_as_frozenset(match.get("complexity")),
+                intents=_as_frozenset(match.get("intents")),
+                min_confidence=_as_float(
+                    match.get("min_confidence"),
+                    f"routing_rules.{name}.match.min_confidence",
+                ),
+                max_confidence=_as_float(
+                    match.get("max_confidence"),
+                    f"routing_rules.{name}.match.max_confidence",
+                ),
+            )
+        )
+
+    esc = raw.get("escalation")
+    if esc is None:
+        rules.append(
+            RoutingRule(
+                name="escalation",
+                enabled=True,
+                target_tier=None,
+                action="step_up",
+                complexity=frozenset(),
+                intents=frozenset(),
+                min_confidence=None,
+                max_confidence=default_threshold,
+            )
+        )
+    else:
+        if not isinstance(esc, dict):
+            raise ValueError("routing_rules.escalation must be a mapping")
+        esc_action = esc.get("action") or "step_up"
+        if esc_action != "step_up":
+            raise ValueError(
+                f"routing_rules.escalation.action must be 'step_up', got"
+                f" {esc_action!r}"
+            )
+        esc_match = esc.get("match") or {}
+        if not isinstance(esc_match, dict):
+            raise ValueError("routing_rules.escalation.match must be a mapping")
+        raw_max = esc_match.get("max_confidence")
+        max_confidence = (
+            default_threshold
+            if raw_max is None
+            else _as_float(
+                raw_max, "routing_rules.escalation.match.max_confidence"
+            )
+        )
+        rules.append(
+            RoutingRule(
+                name="escalation",
+                enabled=bool(esc.get("enabled", True)),
+                target_tier=None,
+                action="step_up",
+                complexity=frozenset(),
+                intents=frozenset(),
+                min_confidence=None,
+                max_confidence=max_confidence,
+            )
+        )
+
+    return rules
 
 
 def initialize(config_path: Optional[Path] = None) -> CognitiveRouter:

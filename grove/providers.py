@@ -62,6 +62,9 @@ def route_for_agent(
         operator_model=_resolve_operator_model(explicit_model),
         intent=classification.intent_class if classification else None,
         confidence=classification.confidence if classification else None,
+        complexity_signal=(
+            classification.complexity_signal if classification else None
+        ),
     )
     _log_routing(decision, classification)
     return decision
