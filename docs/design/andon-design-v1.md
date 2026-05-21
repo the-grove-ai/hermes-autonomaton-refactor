@@ -108,15 +108,44 @@ v0.1: structured JSON log. Future: migrates to stages table rows.
 7. No new UX invented. The four-choice prompt IS the Andon
    surface for command actions.
 
-## Red zone UX — the butler
+## Red zone UX — Andon halts, Kaizen proposes
 
-1. Never say "access denied" or "forbidden."
-2. Read and display the resource content (read access is green).
-3. Name the exact file and line to edit.
-4. Name the reload method (restart in v0.1, SIGHUP when wired).
-5. Register: "That's in your direct control — here's how."
-6. Kaizen watches boundary friction. Proposes read skills for
-   repeated red-zone inquiries. Never proposes weakening red.
+At a red boundary, the TPS sequence is explicit:
+
+> Jidoka (zone classifier) detects → Andon (the gate) halts execution
+> → Kaizen (the sovereign prompt) proposes go-forward options.
+
+**Andon's job is to stop the line.** The code path to execute does not
+exist by design. **Kaizen's job is to step in as the butler** with three
+choices for the operator:
+
+1. **Cancel** — do nothing.
+2. **Operator handles** — surface the exact command and the relevant
+   resource. Render the `surface` and `register` fields from
+   `zones.schema.yaml`'s red zone. Read access is always green; show
+   the operator what's there. Name the file and line to edit. Name the
+   reload method (restart in v0.1, SIGHUP when wired). Register:
+   "That's in your direct control — here's how." Never say "access
+   denied" or "forbidden."
+3. **Try de-scoped alternative** — Kaizen proposes a version within the
+   system's authority (e.g., the same command without sudo). If the
+   operator picks this, re-classify the de-scoped command through the
+   normal flow. It may land in yellow and trigger the four-choice
+   prompt — that's correct. The system never silently weakens the red
+   boundary; Kaizen offers a within-authority path *adjacent* to it.
+
+In strict mode (`GROVE_ZONE_STRICT=1`) and in gateway/async sessions
+where no operator is present interactively, Kaizen's three-option
+prompt is skipped and the system returns option 2's surface message
+directly. Hard block by default; sovereign prompt by default in CLI;
+strict mode opt-in for operators who want the full architectural
+guarantee.
+
+Kaizen also watches longer-term boundary friction. If the operator
+keeps asking about a red-zone resource, Kaizen proposes a green-zone
+read skill that surfaces the information more fluently. Kaizen never
+proposes weakening a red boundary — it proposes better information
+delivery around it.
 
 ## Security scan integration
 
