@@ -76,7 +76,7 @@ def cmd_proxy_start(args: Any) -> int:
 
 def cmd_proxy_status(args: Any) -> int:
     """Print the status of each configured upstream adapter."""
-    print("Hermes proxy upstream adapters\n")
+    print("Autonomaton proxy upstream adapters\n")
     for name in sorted(ADAPTERS):
         adapter = get_adapter(name)
         if not adapter.is_authenticated():

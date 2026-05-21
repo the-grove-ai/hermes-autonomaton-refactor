@@ -1506,7 +1506,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Hermes Agent Release Tool")
+    parser = argparse.ArgumentParser(description="grove-autonomaton Release Tool")
     parser.add_argument("--bump", choices=["major", "minor", "patch"],
                         help="Which semver component to bump")
     parser.add_argument("--publish", action="store_true",
@@ -1554,7 +1554,7 @@ def main():
             return
 
     print(f"{'='*60}")
-    print(f"  Hermes Agent Release Preview")
+    print(f"  grove-autonomaton Release Preview")
     print(f"{'='*60}")
     print(f"  CalVer tag:      {tag_name}")
     print(f"  SemVer:          v{current_version} → v{new_version}")

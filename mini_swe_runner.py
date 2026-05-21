@@ -679,7 +679,7 @@ def main(
         # Batch from file
         python mini_swe_runner.py --prompts_file tasks.jsonl --output_file results.jsonl
     """
-    print("🚀 Mini-SWE Runner with Hermes Trajectory Format")
+    print("🚀 Mini-SWE Runner with Autonomaton Trajectory Format")
     print("=" * 60)
     
     # Initialize runner

@@ -4433,5 +4433,5 @@ def start_server(
                 "(headless Linux). Pass --no-open to suppress this detection."
             )
 
-    print(f"  Hermes Web UI → http://{host}:{port}")
+    print(f"  Autonomaton Web UI → http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")

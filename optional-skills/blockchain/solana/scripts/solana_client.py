@@ -643,7 +643,7 @@ def cmd_price(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="solana_client.py",
-        description="Solana blockchain query tool for Hermes Agent",
+        description="Solana blockchain query tool for grove-autonomaton",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

@@ -312,5 +312,5 @@ def register(ctx) -> None:
     ctx.register_command(
         "disk-cleanup",
         handler=_handle_slash,
-        description="Track and clean up ephemeral Hermes session files.",
+        description="Track and clean up ephemeral Autonomaton session files.",
     )

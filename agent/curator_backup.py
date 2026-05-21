@@ -275,7 +275,7 @@ def snapshot_skills(reason: str = "manual") -> Optional[Path]:
         return None
 
     _prune_old(keep=get_keep())
-    logger.info("Curator snapshot created: %s (%s)", snap_id, reason)
+    logger.info("Kaizen snapshot created: %s (%s)", snap_id, reason)
     return dest
 
 
@@ -660,7 +660,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
                 parts.append(f"{cron_report['unchanged']} already matched")
             summary_bits.append("cron links: " + ", ".join(parts))
 
-    logger.info("Curator rollback: restored from %s (cron_report=%s)",
+    logger.info("Kaizen rollback: restored from %s (cron_report=%s)",
                 target.name, cron_report)
     return (True, "; ".join(summary_bits), target)
 
