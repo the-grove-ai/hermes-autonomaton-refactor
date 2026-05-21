@@ -4314,32 +4314,51 @@ class HermesCLI:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        The Cognitive Router runs here — once per turn. route_for_agent()
+        classifies the message and selects a tier; the turn is built from
+        the routed (provider, model, max_tokens). When no routing config
+        is present the session's primary model/provider is used unchanged.
+        If `/fast` is on and the model supports Priority Processing /
+        Anthropic fast mode, `request_overrides` marks the API call.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from grove.providers import route_for_agent, resolve_tier_to_runtime
 
-        runtime = {
-            "api_key": self.api_key,
-            "base_url": self.base_url,
-            "provider": self.provider,
-            "api_mode": self.api_mode,
-            "command": self.acp_command,
-            "args": list(self.acp_args or []),
-            "credential_pool": getattr(self, "_credential_pool", None),
-        }
+        # Cognitive Router: classify this turn and select a tier. One
+        # route_for_agent() call — one classification, one routing
+        # decision per turn. None only on a vanilla install with no
+        # routing config, which leaves the session's model unchanged.
+        _routed = route_for_agent(
+            message=user_message,
+            explicit_model=self._operator_model_arg,
+        )
+        if _routed is not None:
+            runtime = resolve_tier_to_runtime(_routed.tier_config)
+            model = _routed.tier_config.model
+            max_tokens = _routed.tier_config.max_tokens
+        else:
+            runtime = {
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+                "provider": self.provider,
+                "api_mode": self.api_mode,
+                "command": self.acp_command,
+                "args": list(self.acp_args or []),
+                "credential_pool": getattr(self, "_credential_pool", None),
+            }
+            model = self.model
+            max_tokens = None
+
         route = {
-            "model": self.model,
-            "max_tokens": None,  # tier token budget when one is routed in
+            "model": model,
+            "max_tokens": max_tokens,
             "runtime": runtime,
             "client_signature": (
-                runtime["provider"],
-                runtime["base_url"],
-                runtime["api_mode"],
-                runtime["command"],
-                tuple(runtime["args"]),
+                runtime.get("provider"),
+                runtime.get("base_url"),
+                runtime.get("api_mode"),
+                runtime.get("command"),
+                tuple(runtime.get("args") or ()),
             ),
         }
 
@@ -4355,18 +4374,16 @@ class HermesCLI:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, message: str = None, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None, max_tokens: int | None = None) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
-        
+
         Returns:
             bool: True if successful, False otherwise
         """
         if self.agent is not None:
             return True
-
-        from grove.providers import route_for_agent, resolve_tier_to_runtime
 
         if not self._ensure_runtime_credentials():
             return False
@@ -4435,17 +4452,10 @@ class HermesCLI:
                 pass
         
         try:
-            # Cognitive Router: every construction runs through the router.
-            # The operator's model — the --model flag, or a /model switch's
-            # model_override — feeds in as operator_model; the router
-            # resolves it to a tier. None only on a vanilla install.
-            _routed = route_for_agent(
-                message=message,
-                explicit_model=model_override or self._operator_model_arg,
-            )
-            if _routed is not None:
-                runtime_override = resolve_tier_to_runtime(_routed.tier_config)
-                model_override = _routed.tier_config.model
+            # The Cognitive Router has already run for this turn in
+            # _resolve_turn_agent_config; this method consumes its result.
+            # model_override / runtime_override / max_tokens carry the
+            # routed tier — each falls back to session state when unset.
             runtime = runtime_override or {
                 "api_key": self.api_key,
                 "base_url": self.base_url,
@@ -4458,6 +4468,7 @@ class HermesCLI:
             effective_model = model_override or self.model
             self.agent = AIAgent(
                 model=effective_model,
+                max_tokens=max_tokens,
                 api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
@@ -8144,6 +8155,7 @@ class HermesCLI:
             try:
                 bg_agent = AIAgent(
                     model=turn_route["model"],
+                    max_tokens=turn_route["max_tokens"],
                     api_key=turn_route["runtime"].get("api_key"),
                     base_url=turn_route["runtime"].get("base_url"),
                     provider=turn_route["runtime"].get("provider"),
@@ -10739,28 +10751,19 @@ class HermesCLI:
                 self._active_agent_model = turn_route["model"]
             # else: nothing changed — reuse the agent as-is.
 
-        # Initialize agent if needed. If the agent will be (re)constructed
-        # this turn, route_for_agent() classifies the message during
-        # construction; if not, the classify-to-learn hook below covers it
-        # — exactly one classification per turn.
-        _router_classifies_this_turn = self.agent is None
+        # Initialize the agent if this turn (re)constructed it. The
+        # Cognitive Router has already classified the message and chosen
+        # the tier in _resolve_turn_agent_config — one classification and
+        # one routing decision per turn.
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(
-            message=message,
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
+            max_tokens=turn_route["max_tokens"],
         ):
             return None
-
-        # Classify-to-learn: turns that did not (re)construct the agent are
-        # not classified by routing — classify them here for the telemetry
-        # feed. Log only; the session's tier is fixed.
-        if not _router_classifies_this_turn:
-            from grove.classify import log_turn_classification
-
-            log_turn_classification(message)
         
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
@@ -14145,10 +14148,10 @@ def main(
                     )
                 turn_route = cli._resolve_turn_agent_config(effective_query)
                 if cli._init_agent(
-                    message=effective_query,
                     model_override=turn_route["model"],
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
+                    max_tokens=turn_route["max_tokens"],
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True

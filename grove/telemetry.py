@@ -119,34 +119,6 @@ def log_ratchet_candidate(
     return event
 
 
-def log_classification(
-    *,
-    intent_class: str,
-    pattern_hash: str,
-    confidence: float,
-    register_class: str,
-    complexity_signal: str,
-) -> dict[str, Any]:
-    """Emit a ``classification`` event and return the event dict.
-
-    The per-turn T-telemetry record (Sprint 12). Turns that drive a
-    routing decision log ``routing_decision``; turns that do not re-route
-    log this — so Kaizen's Ratchet sees every interaction, not only the
-    opening turn.
-    """
-    event: dict[str, Any] = {
-        "event_type": "classification",
-        "intent_class": intent_class,
-        "pattern_hash": pattern_hash,
-        "confidence": confidence,
-        "register_class": register_class,
-        "complexity_signal": complexity_signal,
-        "timestamp": utc_now_iso(),
-    }
-    logger.info("classification %s", json.dumps(event, sort_keys=True))
-    return event
-
-
 def log_retrieval(
     *,
     sources: list[str],
