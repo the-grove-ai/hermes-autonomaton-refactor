@@ -1,0 +1,104 @@
+# ============================================================================
+# routing.config.yaml — Cognitive Router tier bindings
+# ============================================================================
+#
+# This file declares the four tiers of cognition the Autonomaton routes work
+# across, and the model bound to each. Edit it to change which model handles
+# which kind of work — or to point a tier at a different provider entirely.
+#
+# THE FOUR TIERS
+#   T0  Pattern Cache      Deterministic recall from your cellar. No model
+#                          call, no cost.
+#   T1  Cheap Cognition    A small, fast model for quick, simple work.
+#   T2  Premium Cognition  The default. Most interactions land here.
+#   T3  Apex Cognition     The strongest, slowest, costliest model, for
+#                          the hardest problems.
+#
+# CHANGING A BINDING
+#   A binding is just config. To move a tier to a different model — or a
+#   different provider, including a local one — edit its `provider` and
+#   `model` values and restart. No code change is required; nothing here is
+#   locked to one vendor.
+#
+# OWNERSHIP
+#   The Autonomaton seeds this file into ~/.grove/routing.config.yaml on
+#   first run. That copy is yours. The system reads it; it cannot write to
+#   it. Tier bindings change only by your hand.
+# ============================================================================
+
+routing:
+  # The shape of this file. Leave it at 1.
+  schema_version: 1
+
+  # The tier used for ordinary work, when nothing routes a request
+  # elsewhere. Most interactions run here.
+  default_tier: T2
+
+  # Price figures below are May 2026 list prices. The "per average
+  # interaction" estimates are rough — real cost scales with how much
+  # context a request carries.
+  tier_preferences:
+    T0:
+      handler: pattern_cache
+      description: |
+        Deterministic recall — answers resolved from cached patterns in
+        your cellar (~/.grove/cellar/) with no model call. Instant, and
+        free. As the Autonomaton learns your recurring work, more of it
+        is answered here.
+      max_latency_ms: 50
+
+    T1:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+      description: |
+        Cheap, fast cognition — a small model for quick, well-scoped
+        work: classification, triage, short transformations. Also scores
+        incoming requests to decide where they should run.
+        Speed: fastest tier.
+        Price: ~$1 / ~$5 per million input / output tokens —
+        roughly $0.003 per average interaction.
+      max_tokens: 4096
+
+    T2:
+      provider: anthropic
+      model: claude-sonnet-4-6
+      description: |
+        Premium cognition — the default for most of your work: real
+        reasoning, code, analysis, drafting. The balance of capability
+        and cost most interactions should run on.
+        Speed: fast.
+        Price: ~$3 / ~$15 per million input / output tokens —
+        roughly $0.02 per average interaction.
+      max_tokens: 8192
+
+    T3:
+      provider: anthropic
+      model: claude-opus-4-6   # 4.6, not 4.7 — predictable tokenization
+      description: |
+        Apex cognition — the strongest model, for the hardest problems:
+        multi-step planning, novel synthesis, architecture-level
+        reasoning. Slower and several times costlier than T2, so it is
+        used sparingly, only when the work needs it.
+        Speed: slowest tier.
+        Price: ~$5 / ~$25 per million input / output tokens —
+        roughly $0.08 per average interaction, about four times the
+        cost of a T2 interaction.
+      max_tokens: 16384
+
+  escalation:
+    threshold: 0.6
+    description: |
+      A confidence dial from 0.0 to 1.0. When the Autonomaton is less
+      than this sure it has picked the right tier for a request, it
+      moves the request up a tier rather than risk a weak answer on a
+      cheaper model. Raise it toward 1.0 to escalate more readily —
+      better answers, higher cost. Lower it to hold work on cheaper
+      tiers — lower cost, more risk of a thin answer.
+
+  telemetry:
+    tier: T1
+    description: |
+      Which tier scores incoming requests — judging what kind of work
+      each one is, and how confident that judgment is. T1 is the natural
+      home: the scoring is fast, high-volume, well-scoped work, and a
+      cheap model keeps the overhead negligible.
