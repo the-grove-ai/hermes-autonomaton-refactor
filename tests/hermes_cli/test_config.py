@@ -45,12 +45,13 @@ class TestEnsureHermesHome:
             assert (tmp_path / "logs").is_dir()
             assert (tmp_path / "memories").is_dir()
 
-    def test_creates_default_soul_md_if_missing(self, tmp_path):
+    def test_skips_legacy_soul_md_when_grove_template_present(self, tmp_path):
+        """ensure_hermes_home() skips legacy SOUL.md seeding when the Grove
+        identity template exists — load_identity() seeds soul.md from the
+        Atlas-pattern template instead (persona-soul-retrofit-v1)."""
         with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):
             ensure_hermes_home()
-            soul_path = tmp_path / "SOUL.md"
-            assert soul_path.exists()
-            assert soul_path.read_text(encoding="utf-8").strip() != ""
+            assert not (tmp_path / "SOUL.md").exists()
 
     def test_does_not_overwrite_existing_soul_md(self, tmp_path):
         with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):
