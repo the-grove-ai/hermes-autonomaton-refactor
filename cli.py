@@ -10948,6 +10948,21 @@ class HermesCLI:
                 if _srn:
                     agent_message = _srn + "\n\n" + agent_message
                     self._pending_skills_reload_note = None
+                # Cognitive Router RAG (Sprint 13): retrieve cellar
+                # context for THIS turn and attach it via the agent's
+                # per-call ephemeral channel — out of the frozen cached
+                # system prompt, out of conversation history, so every
+                # turn carries only its own fresh retrieval. Combined
+                # with any operator --system prompt already on the agent.
+                from grove.cellar import retrieve_cellar_context
+                _cellar_context = retrieve_cellar_context(message)
+                self.agent.ephemeral_system_prompt = (
+                    "\n\n".join(
+                        p for p in (self.system_prompt, _cellar_context)
+                        if p
+                    )
+                    or None
+                )
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
