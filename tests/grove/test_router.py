@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from grove.router import CognitiveRouter, TierConfig
+from grove.router import CognitiveRouter, RoutingDecision, TierConfig
 
 VALID_CONFIG = """\
 routing:
@@ -127,3 +127,94 @@ def test_t10_bad_schema_version_raises_valueerror(tmp_path):
     bad = VALID_CONFIG.replace("schema_version: 1", "schema_version: 2")
     with pytest.raises(ValueError):
         CognitiveRouter(_write(tmp_path, bad))
+
+
+# ----- Sprint 11: route() ------------------------------------------------------
+
+ZONE_OVERRIDE_CONFIG = VALID_CONFIG.replace(
+    "  tier_preferences:",
+    "  zone_overrides:\n    red: T3\n  tier_preferences:",
+)
+
+
+def test_route_default_returns_t2(tmp_path):
+    router = CognitiveRouter(_write(tmp_path))
+    d = router.route()
+    assert isinstance(d, RoutingDecision)
+    assert d.tier == "T2"
+    assert d.reason == "default"
+    assert d.tier_config.model == "claude-sonnet-4-6"
+    assert d.pattern_cache_hit is False
+
+
+def test_route_operator_tier_overrides(tmp_path):
+    router = CognitiveRouter(_write(tmp_path))
+    d = router.route(operator_tier="T3")
+    assert d.tier == "T3"
+    assert d.reason == "operator_override"
+    assert d.tier_config.model == "claude-opus-4-6"
+
+
+def test_route_operator_model_preference(tmp_path):
+    router = CognitiveRouter(_write(tmp_path))
+    d = router.route(operator_model="claude-opus-4-6")
+    assert d.tier == "T3"
+    assert d.reason == "operator_model_preference"
+    assert d.tier_config.model == "claude-opus-4-6"
+
+
+def test_route_operator_model_untiered(tmp_path):
+    router = CognitiveRouter(_write(tmp_path))
+    d = router.route(operator_model="some-unlisted-model")
+    assert d.tier == "T2"  # runs in the default tier's slot
+    assert d.reason == "operator_model_untiered"
+    assert d.tier_config.model == "some-unlisted-model"
+    assert d.tier_config.provider == "anthropic"  # default tier's provider
+
+
+def test_route_operator_tier_beats_operator_model(tmp_path):
+    router = CognitiveRouter(_write(tmp_path))
+    d = router.route(operator_tier="T1", operator_model="claude-opus-4-6")
+    assert d.tier == "T1"
+    assert d.reason == "operator_override"
+
+
+def test_route_model_to_tier(tmp_path):
+    router = CognitiveRouter(_write(tmp_path))
+    assert router.model_to_tier("claude-sonnet-4-6") == "T2"
+    assert router.model_to_tier("claude-opus-4-6") == "T3"
+    assert router.model_to_tier("not-a-bound-model") is None
+
+
+def test_route_zone_override(tmp_path):
+    router = CognitiveRouter(_write(tmp_path, ZONE_OVERRIDE_CONFIG))
+    d = router.route(zone="red")
+    assert d.tier == "T3"
+    assert d.reason == "zone_override"
+    d_green = router.route(zone="green")
+    assert d_green.tier == "T2"
+    assert d_green.reason == "default"
+
+
+def test_route_escalation_on_low_confidence(tmp_path):
+    router = CognitiveRouter(_write(tmp_path))
+    d = router.route(confidence=0.4)  # below threshold 0.6
+    assert d.tier == "T3"  # T2 default escalated one step
+    assert d.reason == "escalation"
+    d_ok = router.route(confidence=0.9)  # above threshold
+    assert d_ok.tier == "T2"
+    assert d_ok.reason == "default"
+
+
+def test_route_t0_pattern_cache_always_miss(tmp_path):
+    router = CognitiveRouter(_write(tmp_path))
+    for kwargs in ({}, {"operator_tier": "T3"}, {"confidence": 0.4}):
+        assert router.route(**kwargs).pattern_cache_hit is False
+
+
+def test_route_circuit_breaker_threshold_zero(tmp_path):
+    cfg = VALID_CONFIG.replace("threshold: 0.6", "threshold: 0.0")
+    router = CognitiveRouter(_write(tmp_path, cfg))
+    d = router.route(confidence=0.01)  # would escalate if enabled
+    assert d.tier == "T2"
+    assert d.reason == "default"  # escalation disabled at threshold 0.0
