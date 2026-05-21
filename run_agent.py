@@ -2639,6 +2639,24 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
+    def apply_tier(self, model, max_tokens):
+        """Swap the active cognitive tier in place — model and token budget only.
+
+        The lightweight counterpart to ``switch_model``: it assigns
+        ``self.model`` (and ``self.max_tokens`` when the tier declares a
+        budget) and nothing else — no client rebuild, no transport-cache
+        flush, no cached-system-prompt rebuild. ``_build_api_kwargs`` reads
+        both fields per call, so the swap lands on the next request.
+
+        For same-client tier changes only (e.g. T2 -> T3 between turns); a
+        provider / base_url / api_mode change is a client change and must
+        go through ``switch_model``. ``max_tokens=None`` keeps the current
+        budget rather than clearing it.
+        """
+        self.model = model
+        if max_tokens is not None:
+            self.max_tokens = max_tokens
+
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
 
