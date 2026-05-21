@@ -168,7 +168,11 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
 
     assert shell._init_agent() is False
     assert shell._init_agent() is True
-    assert calls["count"] == 2
+    # >= 2: a transient failure must be retried, not cached. The exact
+    # count is not the contract — the Cognitive Router resolves the tier
+    # runtime in _init_agent in addition to the legacy credential check,
+    # so a successful construction makes more than one resolution call.
+    assert calls["count"] >= 2
     assert shell.agent is not None
 
 
