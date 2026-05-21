@@ -145,3 +145,29 @@ def log_classification(
     }
     logger.info("classification %s", json.dumps(event, sort_keys=True))
     return event
+
+
+def log_retrieval(
+    *,
+    sources: list[str],
+    content_types: list[str],
+    scores: list[float],
+) -> dict[str, Any]:
+    """Emit a ``retrieval`` event and return the event dict.
+
+    One event per turn whose cellar retrieval produced a
+    ``<cellar_context>`` block (Sprint 13 D8). It records *what* was
+    retrieved — source paths, content types, relevance scores — and
+    never the retrieved content itself: the cellar's contents stay local
+    and out of the telemetry log.
+    """
+    event: dict[str, Any] = {
+        "event_type": "retrieval",
+        "result_count": len(sources),
+        "sources": list(sources),
+        "content_types": list(content_types),
+        "scores": list(scores),
+        "timestamp": utc_now_iso(),
+    }
+    logger.info("retrieval %s", json.dumps(event, sort_keys=True))
+    return event
