@@ -1210,13 +1210,82 @@ def build_skills_system_prompt(
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────
+    # Cache only the active-skills section. The .andon/ proposals section is
+    # appended on every call (no cache) because proposals appear/disappear
+    # asynchronously via `skill_manage` and `hermes andon` — caching them
+    # would surface stale review-queue state to the agent.
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
         while len(_SKILLS_PROMPT_CACHE) > _SKILLS_PROMPT_CACHE_MAX:
             _SKILLS_PROMPT_CACHE.popitem(last=False)
 
+    # ── Sprint 06a: append "Proposed by you, awaiting promotion" ──────
+    andon_section = _build_andon_proposals_section()
+    if andon_section:
+        result = f"{result}\n\n{andon_section}" if result else andon_section
+
     return result
+
+
+def _build_andon_proposals_section() -> str:
+    """Render proposals waiting in ``~/.grove/skills/.andon/`` for the system prompt.
+
+    Sprint 06a (jidoka-andon-implementation-v1): when the Autonomaton creates a
+    skill via `skill_manage`, it lands in the quarantine instead of the active
+    skill set. This section surfaces those pending proposals to the agent so
+    it knows what's awaiting operator review — and stays disciplined about
+    not self-promoting (``skill.self_promote.*`` classifies red).
+
+    Returns an empty string when ``.andon/`` is missing or empty.
+    """
+    try:
+        from grove.skills import andon_dir, parse_frontmatter
+    except ImportError:
+        return ""
+
+    root = andon_dir()
+    if not root.exists():
+        return ""
+
+    proposals: list[tuple[str, str]] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        skill_md = child / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        try:
+            fm, _body = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        name = fm.get("name") or child.name
+        desc = fm.get("description") or ""
+        proposals.append((str(name), str(desc)))
+
+    if not proposals:
+        return ""
+
+    lines = [
+        "## Proposed by you, awaiting promotion",
+        "",
+        "These are skills you (the Autonomaton) drafted into the operator's "
+        "review queue at `~/.grove/skills/.andon/`. They are NOT active — "
+        "they cannot be loaded with `skill_view` and they do not run when "
+        "matched by a task description. The operator promotes them with "
+        "`hermes andon promote <skill>` after review. You cannot self-promote: "
+        "`skill.self_promote.*` is a red-zone sovereignty action held directly "
+        "by the operator.",
+        "",
+        "<proposed_skills>",
+    ]
+    for name, desc in proposals:
+        if desc:
+            lines.append(f"  - {name}: {desc}")
+        else:
+            lines.append(f"  - {name}")
+    lines.append("</proposed_skills>")
+    return "\n".join(lines)
 
 
 def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
