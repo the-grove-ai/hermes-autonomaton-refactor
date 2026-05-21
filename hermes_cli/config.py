@@ -411,6 +411,13 @@ def _ensure_default_soul_md(home: Path) -> None:
     soul_path = home / "SOUL.md"
     if soul_path.exists():
         return
+    # Skip legacy seeding when the Grove identity template exists — a legacy
+    # SOUL.md here shadows the Atlas-pattern soul.md that load_identity() seeds.
+    grove_soul_template = (
+        Path(__file__).resolve().parent.parent / "config" / "identity" / "soul.md"
+    )
+    if grove_soul_template.exists():
+        return
     soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
     _secure_file(soul_path)
 
