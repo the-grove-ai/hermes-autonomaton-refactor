@@ -3232,7 +3232,7 @@ def run_setup_wizard(args):
     )
     print(
         color(
-            "│             ⚕ Hermes Agent Setup Wizard                │", Colors.MAGENTA
+            "│             ⚕ grove-autonomaton Setup Wizard                │", Colors.MAGENTA
         )
     )
     print(

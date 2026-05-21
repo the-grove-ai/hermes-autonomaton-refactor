@@ -2376,7 +2376,7 @@ class AIAgent:
             raise ValueError(
                 f"Model {self.model} has a context window of {_ctx:,} tokens, "
                 f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
-                f"by Hermes Agent.  Choose a model with at least "
+                f"by grove-autonomaton.  Choose a model with at least "
                 f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
                 f"model.context_length in config.yaml to override."
             )
@@ -3317,7 +3317,7 @@ class AIAgent:
                 raise ValueError(
                     f"Auxiliary compression model {aux_model} has a context "
                     f"window of {aux_context:,} tokens, which is below the "
-                    f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hermes "
+                    f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Autonomaton "
                     f"Agent.  Choose a compression model with at least "
                     f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
                     f"auxiliary.compression.model in config.yaml), or set "
@@ -14217,7 +14217,7 @@ class AIAgent:
                             force=True,
                         )
                         self._vprint(
-                            f"{self.log_prefix}      request at ~8K tokens. Hermes' system prompt + tool schemas baseline",
+                            f"{self.log_prefix}      request at ~8K tokens. Autonomaton' system prompt + tool schemas baseline",
                             force=True,
                         )
                         self._vprint(

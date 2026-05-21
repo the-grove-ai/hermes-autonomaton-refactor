@@ -443,7 +443,7 @@ TOOLSETS = {
     },
 
     "hermes-email": {
-        "description": "Email bot toolset - interact with Hermes via email (IMAP/SMTP)",
+        "description": "Email bot toolset - interact with Autonomaton via email (IMAP/SMTP)",
         "tools": _GROVE_CORE_TOOLS,
         "includes": []
     },
@@ -516,7 +516,7 @@ TOOLSETS = {
     },
 
     "hermes-sms": {
-        "description": "SMS bot toolset - interact with Hermes via SMS (Twilio)",
+        "description": "SMS bot toolset - interact with Autonomaton via SMS (Twilio)",
         "tools": _GROVE_CORE_TOOLS,
         "includes": []
     },
