@@ -4351,7 +4351,7 @@ class HermesCLI:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, message: str = None, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -4436,7 +4436,8 @@ class HermesCLI:
             # model_override — feeds in as operator_model; the router
             # resolves it to a tier. None only on a vanilla install.
             _routed = route_for_agent(
-                explicit_model=model_override or self._operator_model_arg
+                message=message,
+                explicit_model=model_override or self._operator_model_arg,
             )
             if _routed is not None:
                 runtime_override = resolve_tier_to_runtime(_routed.tier_config)
@@ -10724,15 +10725,28 @@ class HermesCLI:
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 
-        # Initialize agent if needed
+        # Initialize agent if needed. If the agent will be (re)constructed
+        # this turn, route_for_agent() classifies the message during
+        # construction; if not, the classify-to-learn hook below covers it
+        # — exactly one classification per turn.
+        _router_classifies_this_turn = self.agent is None
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(
+            message=message,
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
+
+        # Classify-to-learn: turns that did not (re)construct the agent are
+        # not classified by routing — classify them here for the telemetry
+        # feed. Log only; the session's tier is fixed.
+        if not _router_classifies_this_turn:
+            from grove.classify import log_turn_classification
+
+            log_turn_classification(message)
         
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
@@ -14104,6 +14118,7 @@ def main(
                 if turn_route["signature"] != cli._active_agent_route_signature:
                     cli.agent = None
                 if cli._init_agent(
+                    message=effective_query,
                     model_override=turn_route["model"],
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
