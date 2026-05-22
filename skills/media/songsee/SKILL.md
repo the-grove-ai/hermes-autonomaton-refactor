@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: songsee
 description: "Audio spectrograms/features (mel, chroma, MFCC) via CLI."
 version: 1.0.0

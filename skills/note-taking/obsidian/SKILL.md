@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: obsidian
 description: Read, search, create, and edit notes in the Obsidian vault.
 platforms: [linux, macos, windows]

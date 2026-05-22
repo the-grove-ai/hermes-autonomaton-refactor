@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: memento-flashcards
 description: >-
   Spaced-repetition flashcard system. Create cards from facts or text,

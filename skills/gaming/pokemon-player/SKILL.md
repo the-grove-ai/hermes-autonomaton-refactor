@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: pokemon-player
 description: "Play Pokemon via headless emulator + RAM reads."
 tags: [gaming, pokemon, emulator, pyboy, gameplay, gameboy]

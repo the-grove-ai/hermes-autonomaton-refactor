@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: macos-computer-use
 description: |
   Drive the macOS desktop in the background — screenshots, mouse, keyboard,

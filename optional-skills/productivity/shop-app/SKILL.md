@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: shop-app
 description: "Shop.app: product search, order tracking, returns, reorder."
 version: 0.0.28

@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: subagent-driven-development
 description: "Execute plans via delegate_task subagents (2-stage review)."
 version: 1.1.0

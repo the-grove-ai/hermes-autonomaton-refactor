@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: rest-graphql-debug
 description: "Debug REST/GraphQL APIs: status codes, auth, schemas, repro."
 version: 1.2.0

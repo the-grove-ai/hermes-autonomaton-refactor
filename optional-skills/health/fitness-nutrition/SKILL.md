@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: fitness-nutrition
 description: >
   Gym workout planner and nutrition tracker. Search 690+ exercises by muscle,

@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: axolotl
 description: "Axolotl: YAML LLM fine-tuning (LoRA, DPO, GRPO)."
 version: 1.0.0

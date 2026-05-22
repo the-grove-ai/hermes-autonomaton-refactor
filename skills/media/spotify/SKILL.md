@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: spotify
 description: "Spotify: play, search, queue, manage playlists and devices."
 version: 1.0.0

@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: webhook-subscriptions
 description: "Webhook subscriptions: event-driven agent runs."
 version: 1.1.0

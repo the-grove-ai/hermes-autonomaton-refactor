@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: oss-forensics
 description: |
   Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories.

@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: sherlock
 description: OSINT username search across 400+ social networks. Hunt down social media accounts by username.
 version: 1.0.0

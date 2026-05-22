@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: outlines
 description: "Outlines: structured JSON/regex/Pydantic LLM generation."
 version: 1.0.0

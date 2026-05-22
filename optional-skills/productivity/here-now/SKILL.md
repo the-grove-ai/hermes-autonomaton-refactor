@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: here.now
 description: Publish static sites to {slug}.here.now and store private files in cloud Drives for agent-to-agent handoff.
 version: 1.15.3

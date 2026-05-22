@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: design-md
 description: Author/validate/export Google's DESIGN.md token spec files.
 version: 1.0.0

@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: gif-search
 description: "Search/download GIFs from Tenor via curl + jq."
 version: 1.1.0

@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: hyperliquid
 description: Hyperliquid market data, account history, trade review.
 version: 0.1.0
