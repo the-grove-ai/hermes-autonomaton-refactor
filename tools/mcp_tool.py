@@ -2221,6 +2221,93 @@ def _registry_remove(pids) -> None:
     _registry_update(_rm)
 
 
+def reap_dead_owner_children() -> int:
+    """Reap MCP stdio children whose owning hermes process is dead.
+
+    Called at gateway startup, before discover_mcp_tools() spawns fresh
+    servers, so a hard-killed predecessor's children (or a dead CLI
+    session's) are cleaned up rather than left running with stale config.
+    Live-owner entries are left untouched — a running sibling (CLI
+    session, cron job, live gateway) still needs them.
+
+    Returns the count of dead-owner entries processed (best-effort —
+    counts both reaped and already-dead).
+
+    Guard against PID reuse: even when an entry's owner is dead, we only
+    signal the child if its live pgid still matches the recorded pgid.
+    If the kernel has recycled that PID for an unrelated process, the
+    pgid will have drifted and we skip it.
+    """
+    import signal as _signal
+    import time as _time
+    from gateway.status import _pid_exists
+
+    to_reap: list = []
+    already_dead: list = []
+
+    def _partition(current):
+        keep: list = []
+        for e in current:
+            owner = int(e.get("owner_pid") or 0)
+            pid = int(e.get("pid") or 0)
+            if owner and _pid_exists(owner):
+                keep.append(e)
+                continue
+            if pid and _pid_exists(pid):
+                to_reap.append(e)
+            else:
+                already_dead.append(e)
+        return keep
+
+    # Atomic partition + writeback under the registry flock — a concurrent
+    # _registry_add from a live sibling can't be silently dropped.
+    _registry_update(_partition)
+
+    if not to_reap:
+        return len(already_dead)
+
+    # Phase 1: SIGTERM the recorded process group, with PID-reuse guard.
+    for e in to_reap:
+        pid = int(e["pid"]); pgid = int(e.get("pgid") or pid)
+        try:
+            live_pgid = os.getpgid(pid)
+        except (ProcessLookupError, OSError):
+            continue
+        if live_pgid != pgid:
+            logger.info(
+                "Skip reap of MCP pid %d: pgid drift (recorded %d, live %d) — PID likely reused",
+                pid, pgid, live_pgid,
+            )
+            continue
+        logger.info(
+            "Reaping orphaned MCP process group %d (pid %d, %s) — owner_pid %s is dead",
+            pgid, pid, e.get("server"), e.get("owner_pid"),
+        )
+        _safe_killpg_or_kill(pid, pgid, _signal.SIGTERM)
+
+    _time.sleep(2)
+
+    # Phase 3: SIGKILL survivors, same guards.
+    _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+    for e in to_reap:
+        pid = int(e["pid"]); pgid = int(e.get("pgid") or pid)
+        if not _pid_exists(pid):
+            continue
+        try:
+            live_pgid = os.getpgid(pid)
+        except (ProcessLookupError, OSError):
+            continue
+        if live_pgid != pgid:
+            continue
+        _safe_killpg_or_kill(pid, pgid, _sigkill)
+        logger.warning(
+            "Force-killed orphaned MCP process group %d (pid %d, %s) after SIGTERM timeout",
+            pgid, pid, e.get("server"),
+        )
+
+    return len(to_reap) + len(already_dead)
+
+
 def _mcp_loop_exception_handler(loop, context):
     """Suppress benign 'Event loop is closed' noise during shutdown.
 
