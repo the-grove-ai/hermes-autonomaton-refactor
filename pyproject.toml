@@ -202,6 +202,11 @@ all = [
 ]
 
 [project.scripts]
+# Primary binary names. The hermes* aliases below point at the same
+# entry points — backward compatibility for one release cycle.
+autonomaton = "hermes_cli.main:main"
+grove-autonomaton = "run_agent:main"
+autonomaton-acp = "acp_adapter.entry:main"
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"

@@ -60,7 +60,7 @@ PYTHON_VERSION="3.11"
 NODE_VERSION="22"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
-#   code at /usr/local/lib/hermes-agent, command at /usr/local/bin/hermes,
+#   code at /usr/local/lib/hermes-agent, command at /usr/local/bin/autonomaton,
 #   data still at /root/.hermes (GROVE_HOME).  Matches Claude Code / Codex CLI
 #   and keeps Docker bind-mounted /root/ volumes lean.
 ROOT_FHS_LAYOUT=false
@@ -138,7 +138,7 @@ while [[ $# -gt 0 ]]; do
             echo "Notes:"
             echo "  When running as root on Linux, Hermes installs the code under"
             echo "  /usr/local/lib/hermes-agent and links the command into"
-            echo "  /usr/local/bin/hermes (FHS layout — matches Claude Code / Codex CLI)."
+            echo "  /usr/local/bin/autonomaton (FHS layout — matches Claude Code / Codex CLI)."
             echo "  Data, config, sessions, and logs still live in \$GROVE_HOME"
             echo "  (default /root/.hermes).  This keeps Docker bind-mounted volumes"
             echo "  small and ensures the command is on PATH for all shells."
@@ -147,7 +147,7 @@ while [[ $# -gt 0 ]]; do
             echo "                   Supported: node, browser, ripgrep, ffmpeg"
             echo "                   Does NOT clone repo or create venv"
             echo "  --postinstall  Run post-install setup only (for pip users)"
-            echo "                   Installs optional deps + runs hermes setup"
+            echo "                   Installs optional deps + runs autonomaton setup"
             echo "                   Does NOT clone repo or create venv"
             exit 0
             ;;
@@ -230,7 +230,7 @@ is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
-# Decide where the repo checkout + venv live, and where the `hermes` command
+# Decide where the repo checkout + venv live, and where the `autonomaton` command
 # symlink goes.  Called after detect_os so $OS/$DISTRO are known.
 #
 # Defaults:
@@ -270,7 +270,7 @@ resolve_install_layout() {
         ROOT_FHS_LAYOUT=true
         log_info "Root install on Linux — using FHS layout"
         log_info "  Code:    $INSTALL_DIR"
-        log_info "  Command: /usr/local/bin/hermes"
+        log_info "  Command: /usr/local/bin/autonomaton"
         log_info "  Data:    $GROVE_HOME (unchanged)"
         return 0
     fi
@@ -302,10 +302,10 @@ get_command_link_display_dir() {
 get_hermes_command_path() {
     local link_dir
     link_dir="$(get_command_link_dir)"
-    if [ -x "$link_dir/hermes" ]; then
-        echo "$link_dir/hermes"
+    if [ -x "$link_dir/autonomaton" ]; then
+        echo "$link_dir/autonomaton"
     else
-        echo "hermes"
+        echo "autonomaton"
     fi
 }
 
@@ -1258,21 +1258,21 @@ PY
 }
 
 setup_path() {
-    log_info "Setting up hermes command..."
+    log_info "Setting up autonomaton command..."
 
     if [ "$USE_VENV" = true ]; then
-        GROVE_BIN="$INSTALL_DIR/venv/bin/hermes"
+        GROVE_BIN="$INSTALL_DIR/venv/bin/autonomaton"
     else
-        GROVE_BIN="$(which hermes 2>/dev/null || echo "")"
+        GROVE_BIN="$(which autonomaton 2>/dev/null || echo "")"
         if [ -z "$GROVE_BIN" ]; then
-            log_warn "hermes not found on PATH after install"
+            log_warn "autonomaton not found on PATH after install"
             return 0
         fi
     fi
 
     # Verify the entry point script was actually generated
     if [ ! -x "$GROVE_BIN" ]; then
-        log_warn "hermes entry point not found at $GROVE_BIN"
+        log_warn "autonomaton entry point not found at $GROVE_BIN"
         log_info "This usually means the pip install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
             log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
@@ -1287,27 +1287,32 @@ setup_path() {
     command_link_dir="$(get_command_link_dir)"
     command_link_display_dir="$(get_command_link_display_dir)"
 
-    # Create a user-facing shim for the hermes command.
-    # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
-    # can't make this launcher import modules from another checkout.
+    # Install a user-facing shim for each CLI name: autonomaton (the
+    # primary command) and hermes (backward-compat alias, one release
+    # cycle). Both shims exec the same venv entry point.
+    # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env
+    # vars can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
-    # Older installs created this path as a symlink to $GROVE_BIN. Without
-    # the rm, `cat >` follows the symlink and overwrites the venv pip entry
-    # point with this shim — making `exec "$GROVE_BIN"` self-recurse. (#21454)
-    rm -f "$command_link_dir/hermes"
-    cat > "$command_link_dir/hermes" <<EOF
+    for _cli_name in autonomaton hermes; do
+        # Older installs created this path as a symlink to $GROVE_BIN.
+        # Without the rm, `cat >` follows the symlink and overwrites the
+        # venv pip entry point with this shim — making `exec "$GROVE_BIN"`
+        # self-recurse. (#21454)
+        rm -f "$command_link_dir/$_cli_name"
+        cat > "$command_link_dir/$_cli_name" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$GROVE_BIN" "\$@"
 EOF
-    chmod +x "$command_link_dir/hermes"
-    log_success "Installed hermes launcher → $command_link_display_dir/hermes"
+        chmod +x "$command_link_dir/$_cli_name"
+        log_success "Installed $_cli_name launcher → $command_link_display_dir/$_cli_name"
+    done
 
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"
         log_info "$command_link_display_dir is the native Termux command path"
-        log_success "hermes command ready"
+        log_success "autonomaton command ready"
         return 0
     fi
 
@@ -1322,14 +1327,14 @@ EOF
         # Probe a fresh non-login interactive bash the way the user will use it.
         # `bash -i -c` sources ~/.bashrc but NOT ~/.bash_profile or /etc/profile,
         # which is the exact scenario where RHEL root loses /usr/local/bin.
-        if env -i HOME="$HOME" TERM="${TERM:-dumb}" bash -i -c 'command -v hermes' \
+        if env -i HOME="$HOME" TERM="${TERM:-dumb}" bash -i -c 'command -v autonomaton' \
                 >/dev/null 2>&1; then
             log_info "/usr/local/bin is already on PATH for all shells"
-            log_success "hermes command ready"
+            log_success "autonomaton command ready"
             return 0
         fi
 
-        log_info "hermes not on PATH in non-login shells (common on RHEL-family)"
+        log_info "autonomaton not on PATH in non-login shells (common on RHEL-family)"
         PATH_LINE='export PATH="/usr/local/bin:$PATH"'
         PATH_COMMENT='# Hermes Agent — ensure /usr/local/bin is on PATH (RHEL non-login shells)'
         for SHELL_CONFIG in "$HOME/.bashrc" "$HOME/.bash_profile"; do
@@ -1342,7 +1347,7 @@ EOF
                 log_success "Added /usr/local/bin to PATH in $SHELL_CONFIG"
             fi
         done
-        log_success "hermes command ready"
+        log_success "autonomaton command ready"
         return 0
     fi
 
@@ -1412,10 +1417,10 @@ EOF
         log_info "~/.local/bin already on PATH"
     fi
 
-    # Export for current session so hermes works immediately
+    # Export for current session so autonomaton works immediately
     export PATH="$command_link_dir:$PATH"
 
-    log_success "hermes command ready"
+    log_success "autonomaton command ready"
 }
 
 copy_config_templates() {
