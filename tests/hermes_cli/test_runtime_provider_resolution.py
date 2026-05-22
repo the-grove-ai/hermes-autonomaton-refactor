@@ -2321,3 +2321,60 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
     assert resolved["provider"] == "minimax-oauth"
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
+# --- Sprint 20: local-tier-binding — bare "ollama" is the on-device endpoint ---
+
+
+def test_resolve_runtime_provider_ollama_local(monkeypatch):
+    """Bare provider 'ollama' resolves to the local OpenAI-compatible endpoint."""
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    resolved = rp.resolve_runtime_provider(requested="ollama", target_model="gemma4")
+    assert resolved["provider"] == "ollama"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://localhost:11434/v1"
+    assert resolved["api_key"]  # non-empty — the OpenAI SDK requires it
+
+
+def test_resolve_runtime_provider_ollama_base_url_env_override(monkeypatch):
+    """OLLAMA_BASE_URL points the local tier at a non-default host."""
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://192.168.1.50:11434/v1")
+    resolved = rp.resolve_runtime_provider(requested="ollama", target_model="gemma4")
+    assert resolved["provider"] == "ollama"
+    assert resolved["base_url"] == "http://192.168.1.50:11434/v1"
+
+
+def test_resolve_runtime_provider_ollama_appends_v1(monkeypatch):
+    """A base URL without the /v1 suffix gets it — Ollama's OpenAI-compat path."""
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    resolved = rp.resolve_runtime_provider(
+        requested="ollama", target_model="gemma4",
+        explicit_base_url="http://localhost:11434",
+    )
+    assert resolved["base_url"] == "http://localhost:11434/v1"
+
+
+def test_resolve_runtime_provider_ollama_never_silently_reroutes(monkeypatch):
+    """Regression: bare 'ollama' must resolve to a local endpoint, never to
+    the OpenRouter cloud default.
+
+    Before Sprint 20 the alias map sent 'ollama' to 'custom', which had no
+    registry entry and fell through to the OpenRouter base_url — local work
+    was silently shipped to a cloud endpoint with no key. The fix routes
+    'ollama' to localhost, so an unreachable Ollama fails loudly at the
+    endpoint rather than being masked by a cloud fallback.
+    """
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    resolved = rp.resolve_runtime_provider(requested="ollama", target_model="gemma4")
+    assert resolved["provider"] == "ollama"
+    assert "openrouter" not in resolved["base_url"].lower()
+    assert "11434" in resolved["base_url"]
+
+
+def test_resolve_runtime_provider_ollama_cloud_not_hijacked(monkeypatch):
+    """Regression: the bare-'ollama' branch is exact-match — 'ollama-cloud'
+    (the cloud provider) is not captured by it."""
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    resolved = rp.resolve_runtime_provider(requested="ollama-cloud", target_model="x")
+    assert resolved.get("source") != "ollama-local"
+    assert resolved["base_url"] != "http://localhost:11434/v1"
