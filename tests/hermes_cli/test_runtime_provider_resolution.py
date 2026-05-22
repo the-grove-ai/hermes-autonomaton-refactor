@@ -2378,3 +2378,59 @@ def test_resolve_runtime_provider_ollama_cloud_not_hijacked(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="ollama-cloud", target_model="x")
     assert resolved.get("source") != "ollama-local"
     assert resolved["base_url"] != "http://localhost:11434/v1"
+
+
+# --- Sprint 20 follow-up: oMLX as a sibling local provider (Apple Silicon) -----
+
+
+def test_resolve_runtime_provider_omlx_local(monkeypatch):
+    """Bare provider 'omlx' resolves to the on-device MLX endpoint."""
+    monkeypatch.delenv("OMLX_BASE_URL", raising=False)
+    resolved = rp.resolve_runtime_provider(requested="omlx", target_model="gemma4")
+    assert resolved["provider"] == "omlx"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://localhost:8000/v1"
+    assert resolved["api_key"]  # non-empty — the OpenAI SDK requires it
+
+
+def test_resolve_runtime_provider_omlx_base_url_env_override(monkeypatch):
+    """OMLX_BASE_URL points the local tier at a non-default host."""
+    monkeypatch.setenv("OMLX_BASE_URL", "http://192.168.1.50:8000/v1")
+    resolved = rp.resolve_runtime_provider(requested="omlx", target_model="gemma4")
+    assert resolved["provider"] == "omlx"
+    assert resolved["base_url"] == "http://192.168.1.50:8000/v1"
+
+
+def test_resolve_runtime_provider_omlx_appends_v1(monkeypatch):
+    """A base URL without the /v1 suffix gets it — oMLX's OpenAI-compat path."""
+    monkeypatch.delenv("OMLX_BASE_URL", raising=False)
+    resolved = rp.resolve_runtime_provider(
+        requested="omlx", target_model="gemma4",
+        explicit_base_url="http://localhost:8000",
+    )
+    assert resolved["base_url"] == "http://localhost:8000/v1"
+
+
+def test_resolve_runtime_provider_omlx_never_silently_reroutes(monkeypatch):
+    """Regression: bare 'omlx' must resolve to a local endpoint, never to
+    the OpenRouter cloud default — same fail-loud guarantee the Ollama
+    branch establishes for its sibling local provider."""
+    monkeypatch.delenv("OMLX_BASE_URL", raising=False)
+    resolved = rp.resolve_runtime_provider(requested="omlx", target_model="gemma4")
+    assert resolved["provider"] == "omlx"
+    assert "openrouter" not in resolved["base_url"].lower()
+    assert "8000" in resolved["base_url"]
+
+
+def test_resolve_runtime_provider_omlx_does_not_collide_with_ollama(monkeypatch):
+    """The two local-provider branches are exact-match and route to their
+    own endpoints — 'omlx' never lands at Ollama's port, 'ollama' never
+    lands at oMLX's."""
+    monkeypatch.delenv("OMLX_BASE_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    omlx_runtime = rp.resolve_runtime_provider(requested="omlx", target_model="x")
+    ollama_runtime = rp.resolve_runtime_provider(requested="ollama", target_model="x")
+    assert omlx_runtime["base_url"] == "http://localhost:8000/v1"
+    assert ollama_runtime["base_url"] == "http://localhost:11434/v1"
+    assert omlx_runtime["source"] == "omlx-local"
+    assert ollama_runtime["source"] == "ollama-local"
