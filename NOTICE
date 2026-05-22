@@ -9,10 +9,31 @@ Upstream tag: v2026.5.16 (Hermes Agent v0.14.0, "The Foundation Release")
 Modifications copyright (c) 2026 The Grove Foundation, licensed
 under the MIT License (see LICENSE).
 
-The architectural patterns implemented in this fork — the Cognitive
-Router, Skill Flywheel, Sovereignty Guardrails, and the five-stage
-pipeline — are specified in The Grove Foundation's published open
-standards (GRV-001, GRV-002, GRV-003, GRV-004) at https://the-grove.ai
-under CC BY 4.0.
+
+Modifications
+
+The v0.1 retrofit adapts the upstream codebase to the Grove Autonomaton
+Pattern. The changes span:
+
+  - Architecture: the Cognitive Router (Tier 0-3 dispatch), the Skill
+    Flywheel with Pattern-Based Approval, declarative Sovereignty
+    Guardrails, and the five-stage invariant pipeline.
+  - Configuration namespace: the data directory moved from ~/.hermes
+    to ~/.grove, and HERMES_* environment variables to GROVE_*.
+  - Operator surface: the CLI binary is `autonomaton`, with `hermes`
+    retained as a backward-compatible alias, and operator-facing
+    vocabulary aligned to the Grove canon.
+  - Bundled skills: Grove provenance frontmatter on every bundled
+    skill, with two skills removed as inconsistent with the Pattern's
+    sovereignty commitments.
+
+CHANGELOG.md records the change history sprint by sprint.
+MODIFICATIONS.md enumerates the divergence from the upstream fork
+point per MIT convention.
+
+
+The architectural patterns implemented in this fork are specified in
+The Grove Foundation's published open standards (GRV-001, GRV-002,
+GRV-003, GRV-004) at https://the-grove.ai under CC BY 4.0.
 
 AUTONOMATON is a trademark of The Grove Foundation (registration pending).
