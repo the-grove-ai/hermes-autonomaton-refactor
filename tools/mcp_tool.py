@@ -1234,6 +1234,7 @@ class MCPServerTask:
                 # Capture the newly spawned subprocess PID for force-kill cleanup.
                 new_pids = _snapshot_child_pids() - pids_before
                 if new_pids:
+                    _captured: dict[int, int] = {}
                     with _lock:
                         for _pid in new_pids:
                             # Record the child's process group id so cleanup
@@ -1244,6 +1245,11 @@ class MCPServerTask:
                             except (ProcessLookupError, OSError):
                                 _pgid = _pid  # exited between snapshot and getpgid
                             _stdio_pids[_pid] = (self.name, _pgid)
+                            _captured[_pid] = _pgid
+                    # Persist outside the in-process lock — cross-process safety
+                    # is the registry's own flock; the two locks are orthogonal.
+                    for _p, _pg in _captured.items():
+                        _registry_add(_p, _pg, self.name, _OWNER_PID)
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
@@ -1262,6 +1268,7 @@ class MCPServerTask:
             # on Linux, where setsid() children escape the parent cgroup).
             # Mark them as orphans so the next cleanup sweep can reap them.
             if new_pids:
+                _confirmed_dead: list[int] = []
                 with _lock:
                     # Capture pgid before popping so the orphan record keeps it.
                     _entries = {p: _stdio_pids.pop(p, None) for p in new_pids}
@@ -1270,11 +1277,17 @@ class MCPServerTask:
                         # (bpo-14484). Use the cross-platform check.
                         from gateway.status import _pid_exists
                         if not _pid_exists(pid):
-                            continue  # process already exited — nothing to do
+                            _confirmed_dead.append(pid)
+                            continue  # process already exited — clean teardown
                         entry = _entries.get(pid)
                         if entry is None:
                             continue  # already cleaned up by a concurrent sweep
                         _orphan_stdio_pids[pid] = entry
+                # Drop cleanly-torn-down children from the persisted registry.
+                # Orphans stay in the registry — if WE die before reaping them,
+                # a later gateway's startup sweep will catch them.
+                if _confirmed_dead:
+                    _registry_remove(_confirmed_dead)
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -2012,6 +2025,13 @@ _lock = threading.Lock()
 # PIDs are added after connection and removed on normal server shutdown.
 _stdio_pids: Dict[int, tuple[str, int]] = {}  # pid -> (server_name, pgid)
 
+# The PID of THIS process, captured at import time. Stamped onto every
+# entry we write into the persisted MCP-children registry so a later
+# gateway can identify which entries are ours and which belong to a still-
+# live sibling (live CLI session, cron job). The owner-PID check is what
+# keeps the cross-restart reap from killing a sibling's MCP children.
+_OWNER_PID = os.getpid()
+
 # Children that survived their session context exit (SDK teardown failed to
 # terminate them).  These are detected in _run_stdio's finally block and
 # can be cleaned up asynchronously by _kill_orphaned_mcp_children().
@@ -2080,6 +2100,125 @@ def _safe_killpg_or_kill(pid: int, pgid: int, sig) -> None:
             os.kill(pid, sig)
     except (ProcessLookupError, PermissionError, OSError):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Persisted MCP-children registry
+# ---------------------------------------------------------------------------
+# `_stdio_pids` is in-memory only and dies with the process. When the
+# gateway is hard-killed (launchctl kickstart -k, --replace, SIGKILL), its
+# in-memory registry is lost and no later process can reap the MCP
+# children it stranded — they accumulate across restarts. The persisted
+# registry below mirrors `_stdio_pids` to ~/.grove/mcp-children.json so
+# that a later gateway, at startup, can read it and reap any entry whose
+# owner process is dead. Live-owner entries (a running CLI session, cron
+# job, or live gateway) are left alone — the owner_pid stamp is the key
+# that prevents cross-process sibling kills.
+
+_REGISTRY_FILENAME = "mcp-children.json"
+_REGISTRY_LOCK_FILENAME = ".mcp-children.lock"
+
+
+def _registry_dir() -> str:
+    grove_home = os.path.expanduser(
+        os.environ.get(
+            "GROVE_HOME", os.path.join(os.path.expanduser("~"), ".grove")
+        )
+    )
+    return grove_home
+
+
+def _registry_path() -> str:
+    return os.path.join(_registry_dir(), _REGISTRY_FILENAME)
+
+
+def _registry_load() -> list:
+    """Load the persisted MCP-children registry; [] on missing or corrupt."""
+    import json as _json
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            data = _json.load(f)
+    except (FileNotFoundError, OSError, _json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict)]
+
+
+def _registry_update(mutator) -> None:
+    """Read-modify-write the registry under a cross-process flock.
+
+    ``mutator(entries) -> new_entries`` runs while the file lock is held.
+    Falls back to a best-effort non-locked read-modify-write on platforms
+    without ``fcntl.flock`` (Windows). The registry is written via temp
+    file + ``os.replace`` so partial writes can never corrupt it.
+    """
+    import json as _json
+    reg_path = _registry_path()
+    try:
+        os.makedirs(_registry_dir(), exist_ok=True)
+    except OSError:
+        return
+
+    def _write(entries) -> None:
+        tmp = f"{reg_path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(entries, f, indent=2)
+        os.replace(tmp, reg_path)
+
+    try:
+        import fcntl as _fcntl
+    except ImportError:
+        # Windows: no flock; best-effort, accept the tiny cross-process race.
+        try:
+            _write(mutator(_registry_load()))
+        except OSError:
+            pass
+        return
+
+    lock_path = os.path.join(_registry_dir(), _REGISTRY_LOCK_FILENAME)
+    try:
+        lf = open(lock_path, "a+")
+    except OSError:
+        return
+    try:
+        _fcntl.flock(lf.fileno(), _fcntl.LOCK_EX)
+        try:
+            _write(mutator(_registry_load()))
+        finally:
+            _fcntl.flock(lf.fileno(), _fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        try:
+            lf.close()
+        except OSError:
+            pass
+
+
+def _registry_add(pid: int, pgid: int, server: str, owner_pid: int) -> None:
+    """Append an entry for an MCP stdio child, replacing any prior entry for the same pid."""
+    from datetime import datetime, timezone
+    entry = {
+        "pid": pid,
+        "pgid": pgid,
+        "server": server,
+        "owner_pid": owner_pid,
+        "spawned_at": datetime.now(timezone.utc).isoformat(),
+    }
+    def _add(entries):
+        return [e for e in entries if e.get("pid") != pid] + [entry]
+    _registry_update(_add)
+
+
+def _registry_remove(pids) -> None:
+    """Remove entries by pid from the persisted registry."""
+    pids_set = {p for p in pids}
+    if not pids_set:
+        return
+    def _rm(entries):
+        return [e for e in entries if e.get("pid") not in pids_set]
+    _registry_update(_rm)
 
 
 def _mcp_loop_exception_handler(loop, context):
@@ -3508,6 +3647,9 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
             "Force-killed MCP process group %d (pid %d, %s) after SIGTERM timeout",
             pgid, pid, server_name,
         )
+
+    # Reaped — drop them from the persisted registry too.
+    _registry_remove(pids.keys())
 
 
 def _stop_mcp_loop():
