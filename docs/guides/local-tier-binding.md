@@ -53,19 +53,23 @@ brew install ollama
 Start the server (the macOS app does this for you when it is open):
 
 ```sh
-OLLAMA_CONTEXT_LENGTH=131072 ollama serve
+OLLAMA_CONTEXT_LENGTH=32768 ollama serve
 ```
 
 By default it listens on `http://localhost:11434`.
 
-Set `OLLAMA_CONTEXT_LENGTH=131072` before starting Ollama — the default
-4K context is too small for the autonomaton's system prompt (~11K
-tokens) and Ollama silently truncates anything larger, dropping the
-operator context entirely. 128K matches Gemma 4's nominal window. To
-make it persistent, add the export to your shell profile:
+Set `OLLAMA_CONTEXT_LENGTH=32768` before starting Ollama. The default 4K
+context is too small for the autonomaton's system prompt (~11K tokens)
+and Ollama silently truncates anything larger, dropping the operator
+context entirely. 32K leaves room for the system prompt plus turn
+history and generation. Going higher — Gemma 4's nominal 128K, for
+example — forces Ollama to allocate the full KV cache up front, and on
+a Mac that pushes first-token latency past two minutes per turn. Match
+the window to the workload, not the model's theoretical max. To make it
+persistent, add the export to your shell profile:
 
 ```sh
-echo 'export OLLAMA_CONTEXT_LENGTH=131072' >> ~/.zshrc
+echo 'export OLLAMA_CONTEXT_LENGTH=32768' >> ~/.zshrc
 ```
 
 ## Step 2 — Pull the model
