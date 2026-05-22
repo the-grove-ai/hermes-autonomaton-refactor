@@ -584,7 +584,7 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
 def cli_main(argv=None) -> int:
     """Standalone entry (also usable by hermes_cli.main fallthrough)."""
-    parser = argparse.ArgumentParser(prog="hermes curator")
+    parser = argparse.ArgumentParser(prog="autonomaton curator")
     register_cli(parser)
     args = parser.parse_args(argv)
     fn = getattr(args, "func", None)

@@ -710,7 +710,7 @@ function Install-Repository {
             } catch {
                 Write-Err "Could not remove $InstallDir : $_"
                 Write-Info "Close any programs that might be using files in $InstallDir (editors,"
-                Write-Info "terminals, running hermes processes) and try again."
+                Write-Info "terminals, running autonomaton processes) and try again."
                 throw
             }
         }
@@ -1011,7 +1011,7 @@ except Exception:
 }
 
 function Set-PathVariable {
-    Write-Info "Setting up hermes command..."
+    Write-Info "Setting up autonomaton command..."
     
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
@@ -1019,8 +1019,8 @@ function Set-PathVariable {
         $hermesBin = "$InstallDir\venv\Scripts"
     }
     
-    # Add the venv Scripts dir to user PATH so hermes is globally available
-    # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
+    # Add the venv Scripts dir to user PATH so autonomaton is globally available
+    # On Windows, the autonomaton.exe in venv\Scripts\ has the venv Python baked in
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     
     if ($currentPath -notlike "*$hermesBin*") {

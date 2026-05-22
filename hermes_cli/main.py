@@ -3,44 +3,44 @@
 Hermes CLI - Main entry point.
 
 Usage:
-    hermes                     # Interactive chat (default)
-    hermes chat                # Interactive chat
-    hermes gateway             # Run gateway in foreground
-    hermes gateway start       # Start gateway as service
-    hermes gateway stop        # Stop gateway service
-    hermes gateway status      # Show gateway status
-    hermes gateway install     # Install gateway service
-    hermes gateway uninstall   # Uninstall gateway service
-    hermes setup               # Interactive setup wizard
-    hermes logout              # Clear stored authentication
-    hermes status              # Show status of all components
-    hermes cron                # Manage cron jobs
-    hermes cron list           # List cron jobs
-    hermes cron status         # Check if cron scheduler is running
-    hermes doctor              # Check configuration and dependencies
-    hermes honcho setup                    # Configure Honcho AI memory integration
-    hermes honcho status                   # Show Honcho config and connection status
-    hermes honcho sessions                 # List directory → session name mappings
-    hermes honcho map <name>               # Map current directory to a session name
-    hermes honcho peer                     # Show peer names and dialectic settings
-    hermes honcho peer --user NAME         # Set user peer name
-    hermes honcho peer --ai NAME           # Set AI peer name
-    hermes honcho peer --reasoning LEVEL   # Set dialectic reasoning level
-    hermes honcho mode                     # Show current memory mode
-    hermes honcho mode [hybrid|honcho|local]  # Set memory mode
-    hermes honcho tokens                   # Show token budget settings
-    hermes honcho tokens --context N       # Set session.context() token cap
-    hermes honcho tokens --dialectic N     # Set dialectic result char cap
-    hermes honcho identity                 # Show AI peer identity representation
-    hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
-    hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
-    hermes version             Show version
-    hermes update              Update to latest version
-    hermes uninstall           Uninstall Hermes Agent
-    hermes acp                 Run as an ACP server for editor integration
-    hermes sessions browse     Interactive session picker with search
+    autonomaton                     # Interactive chat (default)
+    autonomaton chat                # Interactive chat
+    autonomaton gateway             # Run gateway in foreground
+    autonomaton gateway start       # Start gateway as service
+    autonomaton gateway stop        # Stop gateway service
+    autonomaton gateway status      # Show gateway status
+    autonomaton gateway install     # Install gateway service
+    autonomaton gateway uninstall   # Uninstall gateway service
+    autonomaton setup               # Interactive setup wizard
+    autonomaton logout              # Clear stored authentication
+    autonomaton status              # Show status of all components
+    autonomaton cron                # Manage cron jobs
+    autonomaton cron list           # List cron jobs
+    autonomaton cron status         # Check if cron scheduler is running
+    autonomaton doctor              # Check configuration and dependencies
+    autonomaton honcho setup                    # Configure Honcho AI memory integration
+    autonomaton honcho status                   # Show Honcho config and connection status
+    autonomaton honcho sessions                 # List directory → session name mappings
+    autonomaton honcho map <name>               # Map current directory to a session name
+    autonomaton honcho peer                     # Show peer names and dialectic settings
+    autonomaton honcho peer --user NAME         # Set user peer name
+    autonomaton honcho peer --ai NAME           # Set AI peer name
+    autonomaton honcho peer --reasoning LEVEL   # Set dialectic reasoning level
+    autonomaton honcho mode                     # Show current memory mode
+    autonomaton honcho mode [hybrid|honcho|local]  # Set memory mode
+    autonomaton honcho tokens                   # Show token budget settings
+    autonomaton honcho tokens --context N       # Set session.context() token cap
+    autonomaton honcho tokens --dialectic N     # Set dialectic result char cap
+    autonomaton honcho identity                 # Show AI peer identity representation
+    autonomaton honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
+    autonomaton honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
+    autonomaton version             Show version
+    autonomaton update              Update to latest version
+    autonomaton uninstall           Uninstall Hermes Agent
+    autonomaton acp                 Run as an ACP server for editor integration
+    autonomaton sessions browse     Interactive session picker with search
 
-    hermes claw migrate --dry-run  # Preview migration without changes
+    autonomaton claw migrate --dry-run  # Preview migration without changes
 """
 
 # IMPORTANT: hermes_bootstrap must be the very first import — it sets up

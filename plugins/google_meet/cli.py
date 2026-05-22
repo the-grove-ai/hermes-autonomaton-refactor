@@ -472,7 +472,7 @@ def _cmd_stop() -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    parser = argparse.ArgumentParser(prog="hermes meet")
+    parser = argparse.ArgumentParser(prog="autonomaton meet")
     register_cli(parser)
     ns = parser.parse_args()
     sys.exit(meet_command(ns))
