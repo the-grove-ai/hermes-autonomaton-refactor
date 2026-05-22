@@ -2178,7 +2178,7 @@ def _registry_update(mutator) -> None:
 
     lock_path = os.path.join(_registry_dir(), _REGISTRY_LOCK_FILENAME)
     try:
-        lf = open(lock_path, "a+")
+        lf = open(lock_path, "a+", encoding="utf-8")
     except OSError:
         return
     try:
