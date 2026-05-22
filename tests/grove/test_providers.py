@@ -49,11 +49,13 @@ def _reset_router(monkeypatch):
     clean GROVE_* env."""
     grove.router._default_router = None
     grove.providers._last_routed_tier = None
+    grove.providers._last_classification = None
     monkeypatch.delenv("GROVE_TIER", raising=False)
     monkeypatch.delenv("GROVE_INFERENCE_MODEL", raising=False)
     yield
     grove.router._default_router = None
     grove.providers._last_routed_tier = None
+    grove.providers._last_classification = None
 
 
 def _init_router(tmp_path):
@@ -82,6 +84,23 @@ def test_route_for_agent_operator_tier(tmp_path):
     _init_router(tmp_path)
     decision = route_for_agent(explicit_tier="T1")
     assert decision.tier == "T1"
+    assert decision.reason == "operator_override"
+
+
+def test_route_for_agent_session_override_reason(tmp_path):
+    """A /tier in-session override (tier_source='session') is re-stamped
+    operator_session_override — the correction signal the Ratchet reads."""
+    _init_router(tmp_path)
+    decision = route_for_agent(explicit_tier="T3", tier_source="session")
+    assert decision.tier == "T3"
+    assert decision.reason == "operator_session_override"
+
+
+def test_route_for_agent_flag_override_stays_operator_override(tmp_path):
+    """Without tier_source the override keeps reason operator_override —
+    only the in-session /tier path is distinguished."""
+    _init_router(tmp_path)
+    decision = route_for_agent(explicit_tier="T1", tier_source=None)
     assert decision.reason == "operator_override"
 
 

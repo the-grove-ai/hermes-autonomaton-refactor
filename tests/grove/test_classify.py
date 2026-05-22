@@ -146,3 +146,18 @@ def test_cost_warns_past_budget(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="grove.classify"):
         classify_for_routing("expensive")
     assert "spend has passed" in caplog.text
+
+
+def test_cumulative_cost_usd_accessor():
+    """cumulative_cost_usd() exposes the module's running T-telemetry spend
+    so the CLI session summary can report classification cost."""
+    from grove.classify import cumulative_cost_usd
+
+    original = classify._cumulative_cost_usd
+    try:
+        classify._cumulative_cost_usd = 0.0
+        assert cumulative_cost_usd() == 0.0
+        classify._cumulative_cost_usd = 0.025
+        assert cumulative_cost_usd() == 0.025
+    finally:
+        classify._cumulative_cost_usd = original

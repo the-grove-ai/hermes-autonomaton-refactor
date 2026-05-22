@@ -31,6 +31,8 @@ class TestCliTurnRoutePool:
             _credential_pool=fake_pool,
             service_tier=None,
             _operator_model_arg=None,
+            _tier_override=None,
+            _current_tier=None,
         )
 
         from cli import HermesCLI

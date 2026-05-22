@@ -78,3 +78,28 @@ def test_run_oneshot_model_config_error_returns_2(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "autonomaton -z:" in err
     assert "No model configured" in err
+
+
+def test_tier_cost_summary_none_routing_returns_none():
+    """No routing decision (vanilla install) → no summary; stdout stays pure."""
+    from hermes_cli.oneshot import _tier_cost_summary
+
+    assert _tier_cost_summary(None, object()) is None
+
+
+def test_tier_cost_summary_local_model_is_zero():
+    """A local-provider tier reads 'local ($0)' in the stderr summary."""
+    from types import SimpleNamespace
+
+    from hermes_cli.oneshot import _tier_cost_summary
+
+    routed = SimpleNamespace(
+        tier="T2",
+        tier_config=SimpleNamespace(model="gemma4", provider="ollama"),
+    )
+    agent = SimpleNamespace(session_input_tokens=1000, session_output_tokens=500)
+    summary = _tier_cost_summary(routed, agent)
+
+    assert "T2 Gemma 4" in summary
+    assert "1,500 tokens" in summary
+    assert "local ($0)" in summary
