@@ -30,6 +30,36 @@ GRV-001:
 - The Cognitive Router with Tier 0/1/2/3 dispatch.
 - Feed-First telemetry with Grove-compliant audit trails.
 
+## Model Independence
+
+Principle 7 of the Grove Autonomaton Pattern holds that no tier of
+cognition may be bound to a single vendor. In grove-autonomaton this is
+not a claim in prose — it is a property of the Cognitive Router's
+configuration. Each of the four tiers is a declarative binding in
+`~/.grove/routing.config.yaml`; the system reads that file and never
+writes to it.
+
+Moving a tier to a different model — or a different provider, including a
+local one — is an edit to that file. To swap Tier 1 (Cheap Cognition)
+from Anthropic's Haiku to a local Gemma model running under Ollama:
+
+```diff
+   tier_preferences:
+     T1:
+-      provider: anthropic
+-      model: claude-haiku-4-5-20251001
++      provider: ollama
++      model: gemma4
+       max_tokens: 4096
+```
+
+Restart, and Tier 1 routes to the local model. No code change, no
+rebuild. Local providers may also need a `base_url` in the tier config;
+see the file's header for the full set of fields. The same two-line edit
+moves any tier to any provider — another cloud vendor, a self-hosted
+endpoint, an on-device model. Model independence is not theater; it is a
+diff.
+
 ## Upstream relationship
 
 Hermes Agent is upstream. grove-autonomaton derives from upstream tag
