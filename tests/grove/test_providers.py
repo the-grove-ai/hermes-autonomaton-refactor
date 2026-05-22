@@ -4,9 +4,10 @@ import logging
 
 import pytest
 
+import grove.providers
 import grove.router
 from grove.classify import ClassificationResult
-from grove.providers import resolve_tier_to_runtime, route_for_agent
+from grove.providers import current_tier, resolve_tier_to_runtime, route_for_agent
 from grove.router import TierConfig
 
 VALID_CONFIG = """\
@@ -44,12 +45,15 @@ routing:
 
 @pytest.fixture(autouse=True)
 def _reset_router(monkeypatch):
-    """Each test starts with no module router and a clean GROVE_* env."""
+    """Each test starts with no module router, no recorded tier, and a
+    clean GROVE_* env."""
     grove.router._default_router = None
+    grove.providers._last_routed_tier = None
     monkeypatch.delenv("GROVE_TIER", raising=False)
     monkeypatch.delenv("GROVE_INFERENCE_MODEL", raising=False)
     yield
     grove.router._default_router = None
+    grove.providers._last_routed_tier = None
 
 
 def _init_router(tmp_path):
@@ -191,3 +195,17 @@ def test_route_for_agent_logs_classification_fields(tmp_path, monkeypatch, caplo
         route_for_agent(message="write a parser")
     assert "code_generation" in caplog.text  # intent_class enriches the event
     assert "deadbeef0000" in caplog.text  # pattern_hash enriches the event
+
+
+# ----- Sprint 15: current_tier --------------------------------------------------
+
+
+def test_current_tier_none_before_routing():
+    assert current_tier() is None
+
+
+def test_current_tier_records_last_routed(tmp_path):
+    _init_router(tmp_path)
+    decision = route_for_agent(explicit_model="claude-opus-4-6")
+    assert decision.tier == "T3"
+    assert current_tier() == "T3"

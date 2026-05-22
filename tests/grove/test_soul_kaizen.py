@@ -4,6 +4,7 @@ Identity is mocked; no real ~/.grove, no real Curator LLM calls.
 """
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -294,3 +295,59 @@ def test_create_skill_normal_path_uses_heuristic(tmp_path, monkeypatch, mock_ide
     fm, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
     assert fm["provenance"]["soul_alignment"] == "aligned"
     assert any("Ship grove" in g for g in fm["provenance"]["goals_served"])
+
+
+# ----- _create_skill — Sprint 15 extension fields ----------------------------
+
+
+def test_create_skill_writes_grove_extension_fields(tmp_path, monkeypatch):
+    """tier comes from the router, register from soul.md, lineage from the arg."""
+    monkeypatch.setattr("grove.skills.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("grove.providers._last_routed_tier", "T3")
+    monkeypatch.setattr(
+        "grove.identity.load_identity",
+        lambda: SimpleNamespace(frontmatter={"register": "strategic-concise"}),
+    )
+    from tools.skill_manager_tool import _create_skill
+
+    content = (
+        "---\nname: tier-register-demo\ndescription: A demo skill.\n"
+        "---\n# Body\ntext"
+    )
+    result = _create_skill(
+        "tier-register-demo", content,
+        soul_alignment="neutral", tension_note=None, goals_served=[],
+        lineage=["calendar-check"],
+    )
+    assert result["success"]
+    md = tmp_path / "skills" / ".andon" / "tier-register-demo" / "SKILL.md"
+    fm, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
+    assert fm["tier"] == "T3"
+    assert fm["register"] == "strategic-concise"
+    assert fm["lineage"] == ["calendar-check"]
+
+
+def test_create_skill_extension_fields_take_defaults(tmp_path, monkeypatch):
+    """No routed tier, no register in soul.md, no lineage arg — defaults apply."""
+    monkeypatch.setattr("grove.skills.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("grove.providers._last_routed_tier", None)
+    monkeypatch.setattr(
+        "grove.identity.load_identity",
+        lambda: SimpleNamespace(frontmatter={}),
+    )
+    from tools.skill_manager_tool import _create_skill
+
+    content = (
+        "---\nname: lineage-default-demo\ndescription: A standalone skill.\n"
+        "---\n# Body\ntext"
+    )
+    result = _create_skill(
+        "lineage-default-demo", content,
+        soul_alignment="neutral", tension_note=None, goals_served=[],
+    )
+    assert result["success"]
+    md = tmp_path / "skills" / ".andon" / "lineage-default-demo" / "SKILL.md"
+    fm, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
+    assert fm["lineage"] == []
+    assert fm["tier"] is None
+    assert fm["register"] is None

@@ -124,3 +124,78 @@ def test_write_proposal_overwrites_existing(fake_grove_home: Path) -> None:
     gskills.write_proposal("weekly", src1)
     dest = gskills.write_proposal("weekly", src2)
     assert (dest / "SKILL.md").read_text(encoding="utf-8") == src2
+
+
+# ----- Sprint 15: tier / register / lineage + promotion_history --------------
+
+def test_stamp_proposal_frontmatter_writes_extension_fields() -> None:
+    src = "---\nname: weekly\ndescription: x\n---\n# body\n"
+    stamped = gskills.stamp_proposal_frontmatter(
+        src,
+        tier="T2",
+        register="strategic-concise",
+        lineage=["calendar-check", "weekly-sync"],
+    )
+    fm, _ = gskills.parse_frontmatter(stamped)
+    assert fm["tier"] == "T2"
+    assert fm["register"] == "strategic-concise"
+    assert fm["lineage"] == ["calendar-check", "weekly-sync"]
+
+
+def test_stamp_proposal_frontmatter_extension_defaults() -> None:
+    src = "---\nname: weekly\ndescription: x\n---\n# body\n"
+    fm, _ = gskills.parse_frontmatter(gskills.stamp_proposal_frontmatter(src))
+    assert fm["tier"] is None
+    assert fm["register"] is None
+    assert fm["lineage"] == []
+
+
+def test_append_promotion_history_creates_list() -> None:
+    src = "---\nname: weekly\ndescription: x\n---\n# body\n"
+    out = gskills.append_promotion_history(
+        src, action="promote", operator="jim@the-grove.ai",
+        timestamp="2026-05-20T09:11:44Z",
+    )
+    fm, _ = gskills.parse_frontmatter(out)
+    assert fm["promotion_history"] == [
+        {
+            "action": "promote",
+            "timestamp": "2026-05-20T09:11:44Z",
+            "operator": "jim@the-grove.ai",
+        }
+    ]
+
+
+def test_append_promotion_history_accumulates() -> None:
+    src = "---\nname: weekly\ndescription: x\n---\n# body\n"
+    out = gskills.append_promotion_history(
+        src, action="promote", operator="jim@the-grove.ai",
+        timestamp="2026-05-20T09:00:00Z",
+    )
+    out = gskills.append_promotion_history(
+        out, action="revoke", operator="jim@the-grove.ai",
+        timestamp="2026-05-21T14:30:00Z",
+    )
+    fm, _ = gskills.parse_frontmatter(out)
+    history = fm["promotion_history"]
+    assert [e["action"] for e in history] == ["promote", "revoke"]
+    assert history[1]["timestamp"] == "2026-05-21T14:30:00Z"
+
+
+def test_unknown_frontmatter_keys_preserved() -> None:
+    """The validator is permissive — Grove and upstream fields both survive
+    a stamp + history round-trip (Andon A2: keys preserved, not stripped)."""
+    src = (
+        "---\nname: weekly\ndescription: x\n"
+        "license: MIT\nmetadata:\n  custom_upstream_key: keep-me\n"
+        "---\n# body\n"
+    )
+    stamped = gskills.stamp_proposal_frontmatter(src, tier="T2")
+    out = gskills.append_promotion_history(
+        stamped, action="promote", operator="jim@the-grove.ai",
+    )
+    fm, _ = gskills.parse_frontmatter(out)
+    assert fm["license"] == "MIT"
+    assert fm["metadata"] == {"custom_upstream_key": "keep-me"}
+    assert fm["tier"] == "T2"
+    assert fm["promotion_history"][0]["action"] == "promote"
