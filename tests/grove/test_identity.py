@@ -207,6 +207,40 @@ def test_soul_without_frontmatter_yields_empty_dict(
     assert comp.soul is not None  # prose body still loaded
 
 
+# ----- PL-2: frontmatter must not leak into composed output ------------------
+
+def test_compose_stable_strips_soul_frontmatter() -> None:
+    """compose_stable() must not emit soul.md's YAML frontmatter as prose.
+    The frontmatter is parsed into .frontmatter; emitting it again in the
+    composed system prompt is PL-2."""
+    comp = IdentityComposition(constitution="# Constitution", soul=_SOUL_WITH_FM)
+    composed = comp.compose_stable()
+    assert "---" not in composed
+    assert "name: test-autonomaton" not in composed
+    assert "register: strategic-concise" not in composed
+    # the soul prose body survives the strip
+    assert "# Soul" in composed
+    assert "Strategic, concise, direct." in composed
+
+
+def test_compose_strips_soul_frontmatter() -> None:
+    """compose() strips soul frontmatter on the same terms as compose_stable()."""
+    comp = IdentityComposition(constitution="# Constitution", soul=_SOUL_WITH_FM)
+    composed = comp.compose()
+    assert "---" not in composed
+    assert "declared_identity" not in composed
+    assert "# Soul" in composed
+
+
+def test_compose_stable_soul_without_frontmatter_is_unchanged() -> None:
+    """A soul with no frontmatter passes through compose_stable() intact —
+    the strip is a no-op when there is nothing to strip."""
+    comp = IdentityComposition(constitution="# Constitution", soul=_SOUL_NO_FM)
+    composed = comp.compose_stable()
+    assert "# Soul" in composed
+    assert "Strategic, concise, direct." in composed
+
+
 # ----- persona parameter -----------------------------------------------------
 
 def test_persona_none_is_flat(fake_home: Path) -> None:
