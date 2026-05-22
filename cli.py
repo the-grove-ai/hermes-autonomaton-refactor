@@ -99,6 +99,39 @@ from hermes_cli.banner import _format_context_length, format_banner_version_labe
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
+# --- Cognitive Router tier UX (tier-ux-composition-v1) -----------------------
+# Human-readable model names for the tier label / cost line. The operator
+# sees "Sonnet", not "claude-sonnet-4-6". Unmapped models display as-is.
+_MODEL_DISPLAY_NAMES = {
+    "claude-haiku-4-5-20251001": "Haiku",
+    "claude-sonnet-4-6": "Sonnet",
+    "claude-opus-4-6": "Opus",
+    "gemma4": "Gemma 4",
+}
+
+# Tier rank for the transition line — a higher rank is the costlier, more
+# capable tier. Used only to choose the ↑ / ↓ glyph.
+_TIER_RANK = {"T0": 0, "T1": 1, "T2": 2, "T3": 3}
+
+
+def _model_display_name(model):
+    """Human-readable name for a model string; the raw string when unmapped."""
+    if not model:
+        return ""
+    return _MODEL_DISPLAY_NAMES.get(model, model)
+
+
+def _format_tier_suffix(tier, model):
+    """Build the ' [T2 Sonnet]' response-label suffix from a tier + model.
+
+    Returns '' when there is no tier (a vanilla install with no routing
+    config, or before the first routed turn) — the label is unchanged.
+    """
+    if not tier:
+        return ""
+    name = _model_display_name(model)
+    return f" [{tier} {name}]" if name else f" [{tier}]"
+
 
 # Load .env from ~/.grove/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -2857,6 +2890,22 @@ class HermesCLI:
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
 
+        # Cognitive Router tier-UX state (tier-ux-composition-v1). The
+        # routing decision + classification for the current turn, and the
+        # tier the previous turn used — the transition line compares the
+        # two; /why reads them back. None until the first routed turn.
+        self._current_tier = None
+        self._previous_tier = None
+        self._last_routing_decision = None
+        self._last_classification = None
+        # /tier session override (None = automatic routing); the last
+        # turn's token counts, kept so /why can show that turn's cost.
+        self._tier_override = None
+        self._last_turn_input_tokens = 0
+        self._last_turn_output_tokens = 0
+        # Per-tier {turns, tokens} tally for the session-exit summary.
+        self._session_tier_stats = {}
+
         # Voice mode state (also reinitialized inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
         self._voice_mode = False
@@ -3964,6 +4013,7 @@ class HermesCLI:
             except Exception:
                 label = "⚕ Autonomaton"
                 _text_hex = "#FFF8DC"
+            label = f"{label}{self._tier_label_suffix()}"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
             try:
@@ -4322,15 +4372,22 @@ class HermesCLI:
         Anthropic fast mode, `request_overrides` marks the API call.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
-        from grove.providers import route_for_agent, resolve_tier_to_runtime
+        from grove.providers import (
+            current_classification,
+            route_for_agent,
+            resolve_tier_to_runtime,
+        )
 
         # Cognitive Router: classify this turn and select a tier. One
         # route_for_agent() call — one classification, one routing
         # decision per turn. None only on a vanilla install with no
         # routing config, which leaves the session's model unchanged.
+        _tier_override = self._tier_override
         _routed = route_for_agent(
             message=user_message,
             explicit_model=self._operator_model_arg,
+            explicit_tier=_tier_override,
+            tier_source="session" if _tier_override else None,
         )
         if _routed is not None:
             runtime = resolve_tier_to_runtime(_routed.tier_config)
@@ -4349,8 +4406,17 @@ class HermesCLI:
             model = self.model
             max_tokens = None
 
+        # tier-ux: store the routing decision so the rendering layer and the
+        # /why command can read it back. _previous_tier rotates here so the
+        # transition line can compare this turn to the last.
+        self._previous_tier = self._current_tier
+        self._current_tier = _routed.tier if _routed is not None else None
+        self._last_routing_decision = _routed
+        self._last_classification = current_classification()
+
         route = {
             "model": model,
+            "tier": self._current_tier,
             "max_tokens": max_tokens,
             "runtime": runtime,
             "client_signature": (
@@ -4373,6 +4439,225 @@ class HermesCLI:
             overrides = None
         route["request_overrides"] = overrides
         return route
+
+    def _tier_label_suffix(self) -> str:
+        """The ' [T2 Sonnet]' suffix for the live response label."""
+        decision = self._last_routing_decision
+        model = decision.tier_config.model if decision else None
+        return _format_tier_suffix(self._current_tier, model)
+
+    def _render_transition_line(self) -> None:
+        """Print a one-line dim note when the router moved this turn to a
+        different tier than the previous turn used.
+
+        Shown only on a genuine router-driven tier change — never the first
+        turn, never an unchanged tier, never an operator /tier override
+        (the operator set it; they don't need telling). A glance, not a
+        read — the explanation is /why's job.
+        """
+        prev, cur = self._previous_tier, self._current_tier
+        if not prev or not cur or prev == cur:
+            return
+        decision = self._last_routing_decision
+        if decision is not None and decision.reason in (
+            "operator_override", "operator_session_override",
+        ):
+            return
+        model = _model_display_name(
+            decision.tier_config.model if decision else ""
+        )
+        reason = decision.reason if decision else ""
+        if _TIER_RANK.get(cur, -1) > _TIER_RANK.get(prev, -1):
+            tail = {
+                "upward": "complex work routed up",
+                "escalation": "low classifier confidence",
+            }.get(reason, "harder work")
+            _cprint(f"  {_DIM}↑ Escalating to {cur} ({model}) — {tail}{_RST}")
+        else:
+            tail = {
+                "downward": "simple, high-confidence turn",
+            }.get(reason, "lighter work")
+            _cprint(f"  {_DIM}↓ Routing to {cur} ({model}) — {tail}{_RST}")
+
+    def _render_turn_cost_line(self, input_tokens: int, output_tokens: int) -> None:
+        """Print the dim per-turn cost line: tier · model · tokens · cost.
+
+        Cost is computed through agent/usage_pricing.py — the same path the
+        /usage command uses; this sprint adds no separate pricing table.
+        Local-provider tiers (Ollama / MLX) bill nothing and read 'local
+        ($0)'.
+        """
+        self._last_turn_input_tokens = input_tokens or 0
+        self._last_turn_output_tokens = output_tokens or 0
+        decision = self._last_routing_decision
+        if decision is None:
+            return
+        total = (input_tokens or 0) + (output_tokens or 0)
+        if total <= 0:
+            return
+        model = decision.tier_config.model
+        provider = (decision.tier_config.provider or "").strip().lower()
+        if provider in ("ollama", "mlx"):
+            cost_str = "local ($0)"
+        else:
+            from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+            cost = estimate_usage_cost(
+                model,
+                CanonicalUsage(
+                    input_tokens=input_tokens or 0,
+                    output_tokens=output_tokens or 0,
+                ),
+                provider=provider or None,
+            )
+            cost_str = cost.label or "n/a"
+        _cprint(
+            f"  {_DIM}↳ {decision.tier} {_model_display_name(model)} · "
+            f"{total:,} tokens · {cost_str}{_RST}"
+        )
+
+    def _handle_why_command(self) -> None:
+        """Explain the most recent routing decision — sovereignty as UX.
+
+        A pure read of the RoutingDecision + ClassificationResult stored
+        on the CLI object by the last _resolve_turn_agent_config call.
+        No API call.
+        """
+        decision = self._last_routing_decision
+        if decision is None:
+            _cprint(f"  {_DIM}No routing decision yet for this session.{_RST}")
+            return
+        model = _model_display_name(decision.tier_config.model)
+        _cprint(f"  {_ACCENT}Last turn routed to {decision.tier} ({model}):{_RST}")
+        classification = self._last_classification
+        if classification is not None:
+            conf = (
+                f"{classification.confidence:.2f}"
+                if classification.confidence is not None else "n/a"
+            )
+            _cprint(
+                f"  {_DIM}Classifier: intent={classification.intent_class}, "
+                f"complexity={classification.complexity_signal}, "
+                f"confidence={conf}{_RST}"
+            )
+        _cprint(f"  {_DIM}Reason: {decision.reason}{_RST}")
+        _cprint(f"  {_DIM}Target tier: {decision.tier}{_RST}")
+        in_tok = self._last_turn_input_tokens
+        out_tok = self._last_turn_output_tokens
+        if in_tok or out_tok:
+            self._render_turn_cost_line(in_tok, out_tok)
+
+    def _handle_tier_command(self, cmd_original: str) -> None:
+        """/tier — operator override of the Cognitive Router.
+
+        ``/tier T3`` forces every turn to T3 until ``/tier reset``;
+        ``/tier`` with no argument reports the current routing mode. The
+        override is a session-level signal — telemetry records the forced
+        turns as ``operator_session_override`` (see route_for_agent).
+        """
+        parts = cmd_original.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        if not arg:
+            if self._tier_override:
+                _cprint(
+                    f"  Routing mode: forced to {self._tier_override} "
+                    f"(operator override)."
+                )
+                _cprint(f"  {_DIM}/tier reset returns to automatic routing.{_RST}")
+            else:
+                _cprint(
+                    "  Routing mode: automatic "
+                    "(the Cognitive Router decides each turn)."
+                )
+            return
+        if arg.lower() == "reset":
+            if self._tier_override:
+                self._tier_override = None
+                _cprint("  Routing override cleared — back to automatic routing.")
+            else:
+                _cprint("  Routing is already automatic.")
+            return
+        tier = arg.upper()
+        if tier == "T0":
+            _cprint("  T0 is the Pattern Cache — it cannot be forced as a turn tier.")
+            return
+        if tier not in _TIER_RANK:
+            _cprint(f"  Unknown tier {arg!r}. Use T1, T2, T3, or reset.")
+            return
+        self._tier_override = tier
+        _cprint(f"  Routing forced to {tier} — every turn until /tier reset.")
+
+    def _accumulate_turn(self, input_tokens: int, output_tokens: int) -> None:
+        """Tally this turn into the per-tier session totals for the exit
+        summary. Pure counting — cost is computed once, on teardown."""
+        decision = self._last_routing_decision
+        if decision is None:
+            return
+        stats = self._session_tier_stats.setdefault(
+            decision.tier,
+            {
+                "turns": 0,
+                "input": 0,
+                "output": 0,
+                "model": decision.tier_config.model,
+                "provider": (decision.tier_config.provider or "").strip().lower(),
+            },
+        )
+        stats["turns"] += 1
+        stats["input"] += input_tokens or 0
+        stats["output"] += output_tokens or 0
+
+    def _render_session_summary(self) -> None:
+        """Print the per-tier turn + cost breakdown for the session.
+
+        The Reverse Tax made legible: which tiers ran the work, and what
+        each cost. Tiers list cheap-to-apex; local-provider tiers read
+        'local ($0)'. Cost is computed here, once per tier, from the
+        accumulated tokens — via agent/usage_pricing.py, no separate table.
+        """
+        stats = self._session_tier_stats
+        if not stats:
+            return
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        from grove.classify import cumulative_cost_usd
+
+        total_turns = sum(s["turns"] for s in stats.values())
+        tier_count = len(stats)
+        print()
+        print(
+            f"Session summary: {total_turns} turn{'s' if total_turns != 1 else ''}"
+            f" · {tier_count} tier{'s' if tier_count != 1 else ''} used"
+        )
+        total_cost = 0.0
+        for tier in sorted(stats, key=lambda t: _TIER_RANK.get(t, 99)):
+            s = stats[tier]
+            turns = s["turns"]
+            turn_word = "turn" if turns == 1 else "turns"
+            if s["provider"] in ("ollama", "mlx"):
+                cost_str = "local ($0)"
+            else:
+                cost = estimate_usage_cost(
+                    s["model"],
+                    CanonicalUsage(input_tokens=s["input"], output_tokens=s["output"]),
+                    provider=s["provider"] or None,
+                )
+                if cost.amount_usd is not None:
+                    total_cost += float(cost.amount_usd)
+                cost_str = cost.label or "n/a"
+            print(
+                f"  {tier} {_model_display_name(s['model'])}: "
+                f"{turns} {turn_word} · {cost_str}"
+            )
+        # Classification (T-telemetry) — one Haiku call per turn, a
+        # separate workload from the T1 turns above.
+        classify_cost = cumulative_cost_usd()
+        if classify_cost > 0:
+            cls_word = "turn" if total_turns == 1 else "turns"
+            print(
+                f"  classification: {total_turns} {cls_word} · "
+                f"~${classify_cost:.3f}"
+            )
+            total_cost += classify_cost
+        print(f"  Total: ~${total_cost:.2f}")
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None, max_tokens: int | None = None) -> bool:
         """
@@ -7846,6 +8131,10 @@ class HermesCLI:
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "why":
+            self._handle_why_command()
+        elif canonical == "tier":
+            self._handle_tier_command(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":
@@ -8224,6 +8513,7 @@ class HermesCLI:
                         label = "⚕ Autonomaton"
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
+                    label = f"{label}{_format_tier_suffix(turn_route.get('tier'), turn_route.get('model'))}"
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
@@ -10764,7 +11054,13 @@ class HermesCLI:
             max_tokens=turn_route["max_tokens"],
         ):
             return None
-        
+
+        # tier-ux: narrate a router tier change before the turn runs, and
+        # baseline the token counters so the per-turn cost line can report
+        # this turn's delta (set for real just before run_conversation).
+        self._render_transition_line()
+        _tok_in_before = _tok_out_before = 0
+
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
         #            translate for Anthropic/Gemini/Bedrock).
@@ -10910,7 +11206,7 @@ class HermesCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self._scrollback_box_width(getattr(self.console, "width", 80))
-                        label = " ⚕ Autonomaton "
+                        label = f" ⚕ Autonomaton{self._tier_label_suffix()} "
                         if self.show_timestamps:
                             label = f"{label}{datetime.now().strftime('%H:%M')} "
                         fill = w - 2 - HermesCLI._status_bar_display_width(label)
@@ -10980,6 +11276,8 @@ class HermesCLI:
                     )
                     or None
                 )
+                _tok_in_before = getattr(self.agent, "session_input_tokens", 0) or 0
+                _tok_out_before = getattr(self.agent, "session_output_tokens", 0) or 0
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
@@ -11235,6 +11533,7 @@ class HermesCLI:
                     label = "⚕ Autonomaton"
                     _resp_color = _maybe_remap_for_light_mode("#CD7F32")
                     _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
+                label = f"{label}{self._tier_label_suffix()}"
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
@@ -11259,6 +11558,14 @@ class HermesCLI:
                         width=self._scrollback_box_width(),
                     ))
 
+            # tier-ux: per-turn cost line (D2) + session tally (D3).
+            if response:
+                _tok_in_after = getattr(self.agent, "session_input_tokens", 0) or 0
+                _tok_out_after = getattr(self.agent, "session_output_tokens", 0) or 0
+                _turn_in = _tok_in_after - _tok_in_before
+                _turn_out = _tok_out_after - _tok_out_before
+                self._render_turn_cost_line(_turn_in, _turn_out)
+                self._accumulate_turn(_turn_in, _turn_out)
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
@@ -11369,6 +11676,7 @@ class HermesCLI:
                 print(f"Title:          {session_title}")
             print(f"Duration:       {duration_str}")
             print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
+            self._render_session_summary()
         else:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye

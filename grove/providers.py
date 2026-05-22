@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from typing import Optional
 
 from grove import router as _router
@@ -35,12 +36,18 @@ logger = logging.getLogger(__name__)
 # cognitive tier authored a skill. None until the first routing call.
 _last_routed_tier: Optional[str] = None
 
+# The T-telemetry classification from the most recent route_for_agent()
+# call. Best-effort runtime metadata, read by the CLI tier-UX surface
+# (the /why command, the transition line). None until the first call.
+_last_classification: Optional[ClassificationResult] = None
+
 
 def route_for_agent(
     *,
     message: Optional[str] = None,
     explicit_tier: Optional[str] = None,
     explicit_model: Optional[str] = None,
+    tier_source: Optional[str] = None,
 ) -> Optional[RoutingDecision]:
     """Consult the Cognitive Router for the tier an agent should run on.
 
@@ -53,6 +60,9 @@ def route_for_agent(
     so route() can escalate on low confidence. ``explicit_tier`` /
     ``explicit_model`` are the ``--tier`` / ``--model`` flag values; when
     unset, ``GROVE_TIER`` / ``GROVE_INFERENCE_MODEL`` are consulted.
+    ``tier_source="session"`` marks an ``explicit_tier`` that came from
+    the in-session ``/tier`` override, so telemetry records it as
+    ``operator_session_override`` rather than ``operator_override``.
     """
     router = _ensure_router()
     if router is None:
@@ -71,8 +81,16 @@ def route_for_agent(
             classification.complexity_signal if classification else None
         ),
     )
-    global _last_routed_tier
+    # tier-ux: a /tier session override and a --tier flag both reach
+    # route() as operator_tier and yield reason="operator_override".
+    # Re-stamp the session case so telemetry — and the v0.2 Ratchet —
+    # can tell "operator corrected the router mid-session" apart from
+    # "operator forced a tier from the command line".
+    if tier_source == "session" and decision.reason == "operator_override":
+        decision = replace(decision, reason="operator_session_override")
+    global _last_routed_tier, _last_classification
     _last_routed_tier = decision.tier
+    _last_classification = classification
     _log_routing(decision, classification)
     return decision
 
@@ -86,6 +104,18 @@ def current_tier() -> Optional[str]:
     record of the routing decision, never the model's self-report.
     """
     return _last_routed_tier
+
+
+def current_classification() -> Optional[ClassificationResult]:
+    """The T-telemetry classification the most recent route_for_agent()
+    call produced.
+
+    Best-effort runtime metadata: None before the first routing call, or
+    on a vanilla install with no routing config. The CLI tier-UX surface
+    reads this to explain a routing decision (/why) and to label the
+    transition line — without spending a second classification call.
+    """
+    return _last_classification
 
 
 def resolve_tier_to_runtime(tier_config: TierConfig) -> dict:

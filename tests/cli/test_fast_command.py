@@ -231,6 +231,8 @@ class TestFastModeRouting(unittest.TestCase):
             _credential_pool=None,
             service_tier="priority",
             _operator_model_arg=None,
+            _tier_override=None,
+            _current_tier=None,
         )
 
         with patch("grove.providers.route_for_agent", return_value=None):
@@ -255,6 +257,8 @@ class TestFastModeRouting(unittest.TestCase):
             _credential_pool=None,
             service_tier="priority",
             _operator_model_arg=None,
+            _tier_override=None,
+            _current_tier=None,
         )
 
         with patch("grove.providers.route_for_agent", return_value=None):
@@ -403,6 +407,8 @@ class TestAnthropicFastMode(unittest.TestCase):
             _credential_pool=None,
             service_tier="priority",
             _operator_model_arg=None,
+            _tier_override=None,
+            _current_tier=None,
         )
 
         with patch("grove.providers.route_for_agent", return_value=None):

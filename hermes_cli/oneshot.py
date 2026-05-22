@@ -1,7 +1,8 @@
 """Oneshot (-z) mode: send a prompt, get the final content block, exit.
 
-Bypasses cli.py entirely.  No banner, no spinner, no session_id line,
-no stderr chatter.  Just the agent's final text to stdout.
+Bypasses cli.py entirely.  No banner, no spinner, no session_id line.
+Just the agent's final text to stdout; a one-line tier + cost summary
+goes to stderr, so stdout stays pure for piping.
 
 Toolsets = explicit --toolsets when provided, otherwise whatever the user has
 configured for "cli" in `hermes tools`.
@@ -33,6 +34,46 @@ class ModelConfigError(RuntimeError):
     """No model could be resolved for a oneshot (-z) run — not from --model,
     GROVE_INFERENCE_MODEL, config, or the Cognitive Router. Fail loud: the
     agent must not run with an empty model string (PL-1)."""
+
+
+# Human-readable model names for the oneshot tier/cost summary. Mirrors
+# cli.py's _MODEL_DISPLAY_NAMES — oneshot deliberately does not import the
+# 14k-line cli module (the -z fast path must stay cheap). Unmapped models
+# display as their raw API string.
+_MODEL_DISPLAY_NAMES = {
+    "claude-haiku-4-5-20251001": "Haiku",
+    "claude-sonnet-4-6": "Sonnet",
+    "claude-opus-4-6": "Opus",
+    "gemma4": "Gemma 4",
+}
+
+
+def _tier_cost_summary(routed, agent) -> Optional[str]:
+    """Build the one-line tier + cost summary for oneshot's stderr.
+
+    Returns None when there is no routing decision (a vanilla install with
+    no routing config) — nothing to report. The summary goes to stderr so
+    stdout stays the pure, pipeable response.
+    """
+    if routed is None:
+        return None
+    model = routed.tier_config.model
+    provider = (routed.tier_config.provider or "").strip().lower()
+    name = _MODEL_DISPLAY_NAMES.get(model, model) or model
+    in_tok = getattr(agent, "session_input_tokens", 0) or 0
+    out_tok = getattr(agent, "session_output_tokens", 0) or 0
+    total = in_tok + out_tok
+    if provider in ("ollama", "mlx"):
+        cost_str = "local ($0)"
+    else:
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        cost = estimate_usage_cost(
+            model,
+            CanonicalUsage(input_tokens=in_tok, output_tokens=out_tok),
+            provider=provider or None,
+        )
+        cost_str = cost.label or "n/a"
+    return f"  ↳ {routed.tier} {name} · {total:,} tokens · {cost_str}"
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -185,7 +226,7 @@ def run_oneshot(
 
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(
+            response, tier_summary = _run_agent(
                 prompt,
                 model=model,
                 provider=provider,
@@ -210,6 +251,12 @@ def run_oneshot(
         if not response.endswith("\n"):
             real_stdout.write("\n")
         real_stdout.flush()
+    # Tier + cost to stderr (Option A): stdout stays the pure, pipeable
+    # response; the routing summary is informational, on the operator's
+    # terminal. Plain text — oneshot's stderr style carries no ANSI.
+    if tier_summary:
+        real_stderr.write(tier_summary + "\n")
+        real_stderr.flush()
     return 0
 
 
@@ -235,9 +282,13 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
-) -> str:
+) -> tuple[str, Optional[str]]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
-    run a single conversation.  Returns the final response string."""
+    run a single conversation.
+
+    Returns ``(response, tier_summary)`` — the final response string and a
+    one-line tier + cost summary for stderr (None on a vanilla install with
+    no routing config). stdout carries only the response."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
@@ -376,7 +427,8 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    response = agent.chat(prompt) or ""
+    return response, _tier_cost_summary(_routed, agent)
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

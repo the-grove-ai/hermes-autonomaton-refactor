@@ -264,3 +264,12 @@ def _track_cost(usage) -> None:
             threshold,
             _cumulative_cost_usd,
         )
+
+
+def cumulative_cost_usd() -> float:
+    """The cumulative T-telemetry (classification) spend this process.
+
+    A fresh process starts at zero. The CLI session summary reads this to
+    report classification cost alongside the per-tier turn costs.
+    """
+    return _cumulative_cost_usd
