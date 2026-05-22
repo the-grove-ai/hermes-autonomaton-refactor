@@ -1012,6 +1012,33 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
+    # Local Ollama: bare provider="ollama" is the on-device endpoint
+    # (provider="ollama-cloud" handles ollama.com). The provider alias map
+    # sends bare "ollama" to "custom", which has no PROVIDER_REGISTRY entry
+    # and falls through to the OpenRouter default base_url — a silent
+    # misroute that ships local work to a cloud endpoint with no key.
+    # Resolve it here to the local OpenAI-compatible endpoint so the
+    # chat_completions transport reaches Ollama directly. Ollama-down then
+    # surfaces as a real connection error, not a misleading OpenRouter 401.
+    if requested_provider == "ollama":
+        ollama_base_url = (
+            (explicit_base_url or "").strip()
+            or os.getenv("OLLAMA_BASE_URL", "").strip()
+            or "http://localhost:11434/v1"
+        ).rstrip("/")
+        if not ollama_base_url.endswith("/v1"):
+            ollama_base_url += "/v1"
+        return {
+            "provider": "ollama",
+            "api_mode": "chat_completions",
+            "base_url": ollama_base_url,
+            # The OpenAI SDK requires a non-empty api_key; local Ollama
+            # ignores it. This sentinel is sent only to localhost.
+            "api_key": (explicit_api_key or "").strip() or "ollama-local",
+            "source": "ollama-local",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,

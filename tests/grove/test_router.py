@@ -355,3 +355,51 @@ def test_route_rule_unknown_target_tier_raises(tmp_path):
     bad = RULES_CONFIG.replace("target_tier: T1", "target_tier: T9")
     with pytest.raises(ValueError):
         CognitiveRouter(_write(tmp_path, bad))
+
+
+# --- Sprint 20: local-tier-binding MVP config (T2 bound to local Gemma 4) ---
+# The daily-driver shape: T1 Haiku classify, T2 Gemma 4 local, T3 Opus apex.
+# downward is disabled, so simple work holds on the local T2 tier.
+MVP_CONFIG = RULES_CONFIG.replace(
+    "    T2:\n      provider: anthropic\n      model: claude-sonnet-4-6",
+    "    T2:\n      provider: ollama\n      model: gemma4",
+).replace(
+    "    downward:\n      enabled: true",
+    "    downward:\n      enabled: false",
+)
+
+
+def test_route_mvp_simple_stays_on_local_t2(tmp_path):
+    """Simple, high-confidence work holds on T2 — the local Gemma 4 tier."""
+    router = CognitiveRouter(_write(tmp_path, MVP_CONFIG))
+    d = router.route(complexity_signal="simple", intent="factual_retrieval",
+                     confidence=0.95)
+    assert d.tier == "T2"
+    assert d.reason == "default"
+    assert d.tier_config.provider == "ollama"
+    assert d.tier_config.model == "gemma4"
+
+
+def test_route_mvp_complex_escalates_to_opus_t3(tmp_path):
+    """Complex planning work escalates to T3 — the cloud apex model."""
+    router = CognitiveRouter(_write(tmp_path, MVP_CONFIG))
+    d = router.route(complexity_signal="complex", intent="planning", confidence=0.9)
+    assert d.tier == "T3"
+    assert d.reason == "upward"
+    assert d.tier_config.model == "claude-opus-4-6"
+
+
+def test_route_mvp_tier_swap_gemma_opus_gemma_per_turn(tmp_path):
+    """Per-turn routing: one turn on local Gemma 4, the next on Opus, then
+    back. route() carries no state — each turn is decided fresh, so the
+    binding is never sticky across a swap."""
+    router = CognitiveRouter(_write(tmp_path, MVP_CONFIG))
+    simple = dict(complexity_signal="simple", intent="factual_retrieval",
+                  confidence=0.95)
+    hard = dict(complexity_signal="complex", intent="planning", confidence=0.9)
+    models = [
+        router.route(**simple).tier_config.model,
+        router.route(**hard).tier_config.model,
+        router.route(**simple).tier_config.model,
+    ]
+    assert models == ["gemma4", "claude-opus-4-6", "gemma4"]
