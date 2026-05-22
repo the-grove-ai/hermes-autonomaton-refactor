@@ -16970,8 +16970,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # heartbeats (Discord shard, Telegram polling) until it returned.
     # See #16856.
     try:
-        from tools.mcp_tool import discover_mcp_tools
+        from tools.mcp_tool import discover_mcp_tools, reap_dead_owner_children
         _loop = asyncio.get_running_loop()
+        # Reap MCP children stranded by any dead-predecessor gateway (or
+        # hard-killed CLI session) before we spawn fresh ones. Live-owner
+        # entries are left untouched, so a running sibling's MCP servers
+        # are never disturbed. run_in_executor keeps the 2s SIGTERM/SIGKILL
+        # dance off the asyncio loop.
+        try:
+            _reaped = await _loop.run_in_executor(None, reap_dead_owner_children)
+            if _reaped:
+                logger.info(
+                    "Reaped %d stranded MCP child process(es) at gateway startup",
+                    _reaped,
+                )
+        except Exception as _reap_exc:
+            logger.debug("MCP orphan reap at startup failed: %s", _reap_exc)
         await _loop.run_in_executor(None, discover_mcp_tools)
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
