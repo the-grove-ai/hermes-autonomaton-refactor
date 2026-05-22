@@ -144,6 +144,9 @@ def stamp_proposal_frontmatter(
     soul_alignment: Optional[str] = None,
     tension_note: Optional[str] = None,
     goals_served: Optional[list] = None,
+    tier: Optional[str] = None,
+    register: Optional[str] = None,
+    lineage: Optional[list] = None,
 ) -> str:
     """Add Grove proposal fields to SKILL.md's YAML frontmatter.
 
@@ -156,11 +159,20 @@ def stamp_proposal_frontmatter(
     ``hermes andon diff`` always shows identity context. An un-assessed
     proposal defaults to ``soul_alignment: neutral``, ``tension_note:
     null``, ``goals_served: []``.
+
+    ``tier`` / ``register`` / ``lineage`` are the Grove provenance
+    fields: which cognitive tier authored the proposal, the operator's
+    communication register from soul.md, and the skills this one
+    composes with. All optional — ``tier`` / ``register`` default to
+    ``null`` when unavailable, ``lineage`` to ``[]``.
     """
     fm, body = parse_frontmatter(content)
     fm["created_by"] = "autonomaton"
     fm["proposed_at"] = utc_now_iso()
     fm["zone"] = "yellow"
+    fm["tier"] = tier
+    fm["register"] = register
+    fm["lineage"] = list(lineage or [])
 
     provenance = fm.get("provenance") or {}
     if not isinstance(provenance, dict):
@@ -216,6 +228,37 @@ def strip_promotion_frontmatter(content: str) -> str:
     if isinstance(provenance, dict):
         provenance.pop("approved_by", None)
         fm["provenance"] = provenance
+    return serialize_frontmatter(fm, body)
+
+
+def append_promotion_history(
+    content: str,
+    *,
+    action: str,
+    operator: str,
+    timestamp: Optional[str] = None,
+) -> str:
+    """Append a sovereignty action to SKILL.md's ``promotion_history``.
+
+    Each entry — ``action`` / ``timestamp`` / ``operator`` — mirrors the
+    ``sovereignty_decision`` telemetry event, so a skill that has been
+    promoted, revoked, and re-promoted carries the full audit trail.
+    ``sovereignty promote`` and ``revoke`` call this; ``reject`` does not
+    — it deletes the skill, leaving the telemetry event as the only
+    record. The list is created on first append.
+    """
+    fm, body = parse_frontmatter(content)
+    history = fm.get("promotion_history")
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "action": action,
+            "timestamp": timestamp or utc_now_iso(),
+            "operator": operator,
+        }
+    )
+    fm["promotion_history"] = history
     return serialize_frontmatter(fm, body)
 
 
