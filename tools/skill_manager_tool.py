@@ -378,6 +378,7 @@ def _create_skill(
     soul_alignment: Optional[str] = None,
     tension_note: Optional[str] = None,
     goals_served: Optional[list] = None,
+    lineage: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Propose a new skill into the quarantine for operator review.
 
@@ -471,8 +472,27 @@ def _create_skill(
             name, _description
         )
 
-    # Stamp Grove proposal frontmatter (created_by, proposed_at, zone, provenance)
-    # and rewrite the SKILL.md so the verdict is visible in `sovereignty diff`.
+    # Grove provenance: the cognitive tier that authored this proposal
+    # (recorded at routing time — the system's truth, not the model's
+    # self-report) and the operator's register from soul.md.
+    from grove.providers import current_tier
+
+    tier = current_tier()
+    register = None
+    try:
+        from grove.identity import load_identity
+
+        register = load_identity().frontmatter.get("register")
+    except Exception as exc:
+        logger.warning(
+            "[skills] identity unavailable; proposal '%s' register=null. "
+            "Cause: %r",
+            name, exc,
+        )
+
+    # Stamp Grove proposal frontmatter (created_by, proposed_at, zone,
+    # tier, register, lineage, provenance) and rewrite the SKILL.md so
+    # the verdict is visible in `sovereignty diff`.
     stamped = stamp_proposal_frontmatter(
         content,
         scan_verdict=scan_verdict,
@@ -480,6 +500,9 @@ def _create_skill(
         soul_alignment=soul_alignment,
         tension_note=tension_note,
         goals_served=goals_served,
+        tier=tier,
+        register=register,
+        lineage=lineage,
     )
     _atomic_write_text(skill_md, stamped)
 
@@ -805,6 +828,7 @@ def skill_manage(
     soul_alignment: str = None,
     tension_note: str = None,
     goals_served: list = None,
+    lineage: list = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -819,6 +843,7 @@ def skill_manage(
             soul_alignment=soul_alignment,
             tension_note=tension_note,
             goals_served=goals_served,
+            lineage=lineage,
         )
 
     elif action == "edit":
@@ -1023,6 +1048,15 @@ SKILL_MANAGE_SCHEMA = {
                     "that this skill advances. Empty or omitted if none."
                 )
             },
+            "lineage": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "For 'create' — names of other skills this one "
+                    "composes with, depends on, or extends. Omit or leave "
+                    "empty if the skill stands alone."
+                )
+            },
         },
         "required": ["action", "name"],
     },
@@ -1049,6 +1083,7 @@ registry.register(
         absorbed_into=args.get("absorbed_into"),
         soul_alignment=args.get("soul_alignment"),
         tension_note=args.get("tension_note"),
-        goals_served=args.get("goals_served")),
+        goals_served=args.get("goals_served"),
+        lineage=args.get("lineage")),
     emoji="📝",
 )

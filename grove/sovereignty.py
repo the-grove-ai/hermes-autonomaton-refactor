@@ -22,6 +22,7 @@ from typing import Any, Optional
 from grove.skills import (
     active_path,
     andon_dir,
+    append_promotion_history,
     archive_path,
     operator_email,
     parse_frontmatter,
@@ -187,6 +188,9 @@ def promote(skill_name: str, replace: bool = False) -> dict[str, Any]:
     skill_md = source / "SKILL.md"
     content = skill_md.read_text(encoding="utf-8")
     promoted = stamp_promotion_frontmatter(content, operator=operator)
+    promoted = append_promotion_history(
+        promoted, action="promote", operator=operator
+    )
     skill_md.write_text(promoted, encoding="utf-8")
 
     fm, _ = parse_frontmatter(promoted)
@@ -255,11 +259,15 @@ def revoke(skill_name: str) -> dict[str, Any]:
             f"before revoking the active skill."
         )
 
+    operator = operator_email()
     skill_md = source / "SKILL.md"
     if skill_md.exists():
         content = skill_md.read_text(encoding="utf-8")
         try:
             reverted = strip_promotion_frontmatter(content)
+            reverted = append_promotion_history(
+                reverted, action="revoke", operator=operator
+            )
             skill_md.write_text(reverted, encoding="utf-8")
         except ValueError:
             logger.warning(
@@ -268,7 +276,6 @@ def revoke(skill_name: str) -> dict[str, Any]:
 
     content, _fm, verdict = _read_skill_md(source)
     skill_hash = _sha256_short(content) if content else ""
-    operator = operator_email()
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source), str(dest))

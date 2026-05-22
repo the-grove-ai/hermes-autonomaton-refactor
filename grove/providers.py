@@ -30,6 +30,11 @@ from grove.telemetry import log_ratchet_candidate, log_routing_decision
 
 logger = logging.getLogger(__name__)
 
+# The tier the most recent route_for_agent() call selected. Best-effort
+# runtime metadata, read by skill-proposal stamping to record which
+# cognitive tier authored a skill. None until the first routing call.
+_last_routed_tier: Optional[str] = None
+
 
 def route_for_agent(
     *,
@@ -66,8 +71,21 @@ def route_for_agent(
             classification.complexity_signal if classification else None
         ),
     )
+    global _last_routed_tier
+    _last_routed_tier = decision.tier
     _log_routing(decision, classification)
     return decision
+
+
+def current_tier() -> Optional[str]:
+    """The cognitive tier the most recent route_for_agent() call selected.
+
+    Best-effort runtime metadata: None before the first routing call, or
+    on a vanilla install with no routing config. Skill-proposal stamping
+    reads this to record which tier authored a skill — the system's own
+    record of the routing decision, never the model's self-report.
+    """
+    return _last_routed_tier
 
 
 def resolve_tier_to_runtime(tier_config: TierConfig) -> dict:
