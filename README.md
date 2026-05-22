@@ -26,15 +26,29 @@ GRV-001:
 - Declarative Sovereignty Guardrails (~/.grove/zones.schema.yaml).
 - Pattern-Based Approval at the Skill Flywheel boundary: agent-authored
   skills land in ~/.grove/skills/.andon/ and never execute until the
-  operator runs `autonomaton sovereignty promote`.
+  operator runs `autonomaton andon promote`.
 - The Cognitive Router with Tier 0/1/2/3 dispatch.
 - Feed-First telemetry with Grove-compliant audit trails.
 
 ## Upstream relationship
 
-Hermes Agent is upstream. We rebase against tagged Hermes releases on a
-deliberate cadence (see CONTRIBUTING.md). We do not push retrofit changes
-upstream; the architectural divergence is the point of the fork.
+Hermes Agent is upstream. grove-autonomaton derives from upstream tag
+v2026.5.16 (Hermes Agent v0.14.0) and rebases against tagged Hermes
+releases on a deliberate cadence (see CONTRIBUTING.md). Retrofit changes
+are not pushed upstream; the architectural divergence is the point of
+the fork.
+
+### Modifications
+
+The v0.1 retrofit adapts the upstream codebase to the Grove Autonomaton
+Pattern: the Cognitive Router, the Andon quarantine and Pattern-Based
+Approval, declarative Sovereignty Guardrails, the `~/.grove`
+configuration namespace, identity composition, and the `autonomaton`
+CLI. The upstream substrate — SQLite + FTS5 telemetry, the multi-platform
+gateway, the terminal backends, the agentskills.io SKILL.md format — is
+preserved; the fork changes what the Pattern requires and no more.
+MODIFICATIONS.md enumerates the divergence from the fork point;
+CHANGELOG.md records it sprint by sprint.
 
 ## License
 
