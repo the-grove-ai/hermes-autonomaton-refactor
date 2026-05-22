@@ -83,10 +83,12 @@ class IdentityComposition:
         """Assemble all six layers in D4 precedence order.
 
         constitution → soul → operator → goals → memory → agents.
-        Absent layers are skipped. Returns the joined prompt text.
+        Absent layers are skipped. The soul layer's YAML frontmatter is
+        stripped — it is parsed into ``frontmatter`` and must not also
+        appear as prose (PL-2). Returns the joined prompt text.
         """
         layers = [
-            self.constitution, self.soul, self.operator,
+            self.constitution, _strip_frontmatter(self.soul), self.operator,
             self.goals, self.memory, self.agents,
         ]
         return "\n\n".join(p.strip() for p in layers if p and p.strip())
@@ -97,10 +99,15 @@ class IdentityComposition:
 
         Sprint 07 injects this subset into the system prompt's stable tier;
         memory and agents keep their existing delivery mechanisms (the
-        MemoryStore volatile tier and the context-files prompt). Returns the
-        joined prompt text.
+        MemoryStore volatile tier and the context-files prompt). The soul
+        layer's YAML frontmatter is stripped — it is parsed into
+        ``frontmatter`` and must not also appear as prose (PL-2). Returns
+        the joined prompt text.
         """
-        layers = [self.constitution, self.soul, self.operator, self.goals]
+        layers = [
+            self.constitution, _strip_frontmatter(self.soul),
+            self.operator, self.goals,
+        ]
         return "\n\n".join(p.strip() for p in layers if p and p.strip())
 
 
@@ -156,6 +163,24 @@ def load_identity(persona: Optional[str] = None) -> IdentityComposition:
 
 
 # ----- internals -------------------------------------------------------------
+
+def _strip_frontmatter(content: Optional[str]) -> Optional[str]:
+    """Return *content* with any leading YAML frontmatter block removed.
+
+    soul.md's frontmatter is parsed separately into
+    IdentityComposition.frontmatter; emitting it again as prose in the
+    composed prompt is PL-2 — the frontmatter would be injected twice.
+    Reuses parse_frontmatter so the strip matches the parse exactly;
+    content with no (or unparseable) frontmatter is returned unchanged.
+    """
+    if not content or not content.startswith("---"):
+        return content
+    try:
+        _fm, body = parse_frontmatter(content)
+    except ValueError:
+        return content
+    return body
+
 
 def _reference_dir() -> Path:
     """Return ``config/identity/`` in the repo — the first-run template source."""

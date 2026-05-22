@@ -29,6 +29,12 @@ from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
 
+class ModelConfigError(RuntimeError):
+    """No model could be resolved for a oneshot (-z) run — not from --model,
+    GROVE_INFERENCE_MODEL, config, or the Cognitive Router. Fail loud: the
+    agent must not run with an empty model string (PL-1)."""
+
+
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     if not toolsets:
         return None
@@ -55,7 +61,7 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     try:
         from toolsets import validate_toolset
     except Exception as exc:
-        return None, f"hermes -z: failed to validate --toolsets: {exc}\n"
+        return None, f"autonomaton -z: failed to validate --toolsets: {exc}\n"
 
     built_in = [name for name in normalized if validate_toolset(name)]
     unresolved = [name for name in normalized if name not in built_in]
@@ -77,7 +83,7 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
         ignored = [name for name in normalized if name not in {"all", "*"}]
         if ignored:
             sys.stderr.write(
-                "hermes -z: --toolsets all enables every toolset; "
+                "autonomaton -z: --toolsets all enables every toolset; "
                 f"ignoring additional entries: {', '.join(ignored)}\n"
             )
         return None, None
@@ -108,15 +114,15 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     valid = built_in + mcp_valid
 
     if unknown:
-        sys.stderr.write(f"hermes -z: ignoring unknown --toolsets entries: {', '.join(unknown)}\n")
+        sys.stderr.write(f"autonomaton -z: ignoring unknown --toolsets entries: {', '.join(unknown)}\n")
     if disabled:
         sys.stderr.write(
-            "hermes -z: ignoring disabled MCP servers (set enabled: true in config.yaml to use): "
+            "autonomaton -z: ignoring disabled MCP servers (set enabled: true in config.yaml to use): "
             f"{', '.join(disabled)}\n"
         )
 
     if not valid:
-        return None, "hermes -z: --toolsets did not contain any valid toolsets.\n"
+        return None, "autonomaton -z: --toolsets did not contain any valid toolsets.\n"
 
     return valid, None
 
@@ -155,7 +161,7 @@ def run_oneshot(
     env_model_early = os.getenv("GROVE_INFERENCE_MODEL", "").strip()
     if provider and not ((model or "").strip() or env_model_early):
         sys.stderr.write(
-            "hermes -z: --provider requires --model (or GROVE_INFERENCE_MODEL). "
+            "autonomaton -z: --provider requires --model (or GROVE_INFERENCE_MODEL). "
             "Pass both explicitly, or neither to use your configured defaults.\n"
         )
         return 2
@@ -174,6 +180,7 @@ def run_oneshot(
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
+    real_stderr = sys.stderr
     devnull = open(os.devnull, "w", encoding="utf-8")
 
     try:
@@ -185,6 +192,13 @@ def run_oneshot(
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
             )
+    except ModelConfigError as exc:
+        # PL-1: a fatal config error must survive the devnull redirect.
+        # The redirect context managers restore the real streams as the
+        # exception unwinds; write the message plainly and exit non-zero
+        # instead of returning 0 with no output.
+        real_stderr.write(f"autonomaton -z: {exc}\n")
+        return 2
     finally:
         try:
             devnull.close()
@@ -296,6 +310,18 @@ def _run_agent(
         effective_model = _routed.tier_config.model
         effective_provider = _routed.tier_config.provider
         explicit_base_url_from_alias = None
+
+    # PL-1: fail loud on an empty model. If none of --model, the env var,
+    # config, or the Cognitive Router resolved a model, the agent would run
+    # with model="" and fail deep inside the provider call — where the
+    # oneshot devnull redirect swallows the error and run_oneshot returns 0
+    # with no output. Raise here, before the agent runs: the symmetric
+    # partner of the AuthError raised for a missing API key.
+    if not (effective_model or "").strip():
+        raise ModelConfigError(
+            "No model configured. Run `autonomaton model` to set one, "
+            "or pass --model."
+        )
 
     runtime = resolve_runtime_provider(
         requested=effective_provider,
