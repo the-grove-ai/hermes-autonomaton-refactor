@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: canvas
 description: Canvas LMS integration — fetch enrolled courses and assignments using API token authentication.
 version: 1.0.0

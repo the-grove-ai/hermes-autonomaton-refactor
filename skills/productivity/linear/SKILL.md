@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: linear
 description: "Linear: manage issues, projects, teams via GraphQL + curl."
 version: 1.0.0

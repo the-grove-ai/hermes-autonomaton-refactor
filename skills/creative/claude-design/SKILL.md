@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: claude-design
 description: Design one-off HTML artifacts (landing, deck, prototype).
 version: 1.0.0

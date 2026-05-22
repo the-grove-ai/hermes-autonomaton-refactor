@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: teams-meeting-pipeline
 description: "Operate the Teams meeting summary pipeline via Hermes CLI — summarize meetings, inspect pipeline status, replay jobs, manage Microsoft Graph subscriptions."
 version: 1.1.0

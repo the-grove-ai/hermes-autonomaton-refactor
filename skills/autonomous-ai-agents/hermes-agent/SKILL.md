@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: hermes-agent
 description: "Configure, extend, or contribute to Hermes Agent."
 version: 2.1.0

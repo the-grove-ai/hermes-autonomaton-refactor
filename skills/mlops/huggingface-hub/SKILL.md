@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: huggingface-hub
 description: "HuggingFace hf CLI: search/download/upload models, datasets."
 version: 1.0.0

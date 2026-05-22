@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: neuroskill-bci
 description: >
   Connect to a running NeuroSkill instance and incorporate the user's real-time

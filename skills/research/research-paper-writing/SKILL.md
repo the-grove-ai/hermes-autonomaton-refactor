@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: research-paper-writing
 title: Research Paper Writing Pipeline
 description: "Write ML papers for NeurIPS/ICML/ICLR: design→submit."

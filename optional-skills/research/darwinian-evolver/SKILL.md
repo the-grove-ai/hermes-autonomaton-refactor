@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: darwinian-evolver
 description: Evolve prompts/regex/SQL/code with Imbue's evolution loop.
 version: 0.1.0

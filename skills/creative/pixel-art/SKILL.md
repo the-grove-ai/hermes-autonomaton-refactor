@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: pixel-art
 description: "Pixel art w/ era palettes (NES, Game Boy, PICO-8)."
 version: 2.0.0

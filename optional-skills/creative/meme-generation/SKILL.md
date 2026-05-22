@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: meme-generation
 description: Generate real meme images by picking a template and overlaying text with Pillow. Produces actual .png meme files.
 version: 2.0.0

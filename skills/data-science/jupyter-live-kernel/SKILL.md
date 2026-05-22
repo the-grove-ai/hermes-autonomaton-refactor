@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: jupyter-live-kernel
 description: "Iterative Python via live Jupyter kernel (hamelnb)."
 version: 1.0.0

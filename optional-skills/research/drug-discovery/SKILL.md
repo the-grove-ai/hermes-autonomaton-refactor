@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: drug-discovery
 description: >
   Pharmaceutical research assistant for drug discovery workflows. Search

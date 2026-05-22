@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: native-mcp
 description: "MCP client: connect servers, register tools (stdio/HTTP)."
 version: 1.0.0

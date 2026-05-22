@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: stocks
 description: Stock quotes, history, search, compare, crypto via Yahoo.
 version: 0.1.0

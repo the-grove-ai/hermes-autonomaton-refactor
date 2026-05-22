@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: songwriting-and-ai-music
 description: "Songwriting craft and Suno AI music prompts."
 tags: [songwriting, music, suno, parody, lyrics, creative]

@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: weights-and-biases
 description: "W&B: log ML experiments, sweeps, model registry, dashboards."
 version: 1.0.0

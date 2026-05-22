@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: youtube-content
 description: "YouTube transcripts to summaries, threads, blogs."
 platforms: [linux, macos, windows]

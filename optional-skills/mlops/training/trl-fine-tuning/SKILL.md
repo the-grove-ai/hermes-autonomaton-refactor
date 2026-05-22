@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: fine-tuning-with-trl
 description: "TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF."
 version: 1.0.0

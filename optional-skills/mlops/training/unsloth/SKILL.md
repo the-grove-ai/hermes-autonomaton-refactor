@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: unsloth
 description: "Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM."
 version: 1.0.0

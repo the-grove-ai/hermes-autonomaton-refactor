@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: spike
 description: "Throwaway experiments to validate an idea before build."
 version: 1.0.0

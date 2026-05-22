@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: dspy
 description: "DSPy: declarative LM programs, auto-optimize prompts, RAG."
 version: 1.0.0

@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: maps
 description: "Geocode, POIs, routes, timezones via OpenStreetMap/OSRM."
 version: 1.2.0

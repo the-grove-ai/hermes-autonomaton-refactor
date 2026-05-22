@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: audiocraft-audio-generation
 description: "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound."
 version: 1.0.0

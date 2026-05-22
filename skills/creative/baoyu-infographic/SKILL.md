@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: baoyu-infographic
 description: "Infographics: 21 layouts x 21 styles (信息图, 可视化)."
 version: 1.56.1

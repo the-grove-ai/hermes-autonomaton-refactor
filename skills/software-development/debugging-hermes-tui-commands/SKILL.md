@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: debugging-hermes-tui-commands
 description: "Debug Hermes TUI slash commands: Python, gateway, Ink UI."
 version: 1.0.0

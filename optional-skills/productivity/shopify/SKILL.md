@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: shopify
 description: Shopify Admin & Storefront GraphQL APIs via curl. Products, orders, customers, inventory, metafields.
 version: 1.0.0

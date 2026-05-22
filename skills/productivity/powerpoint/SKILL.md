@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: powerpoint
 description: "Create, read, edit .pptx decks, slides, notes, templates."
 license: Proprietary. LICENSE.txt has complete terms

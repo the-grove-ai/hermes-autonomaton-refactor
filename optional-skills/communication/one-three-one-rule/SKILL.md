@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T0
 name: one-three-one-rule
 description: >
   Structured decision-making framework for technical proposals and trade-off analysis.
