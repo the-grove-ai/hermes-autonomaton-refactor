@@ -1039,6 +1039,29 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # Local oMLX: bare provider="omlx" is the on-device MLX endpoint
+    # (Apple Silicon — the oMLX Mac app at localhost:8000/v1, OpenAI-compat).
+    # Same shape as the Ollama branch above: resolve to the local endpoint
+    # so the chat_completions transport reaches the MLX runner directly,
+    # and an unreachable oMLX surfaces as a real connection error rather
+    # than being masked by a cloud fallback.
+    if requested_provider == "omlx":
+        omlx_base_url = (
+            (explicit_base_url or "").strip()
+            or os.getenv("OMLX_BASE_URL", "").strip()
+            or "http://localhost:8000/v1"
+        ).rstrip("/")
+        if not omlx_base_url.endswith("/v1"):
+            omlx_base_url += "/v1"
+        return {
+            "provider": "omlx",
+            "api_mode": "chat_completions",
+            "base_url": omlx_base_url,
+            "api_key": (explicit_api_key or "").strip() or "omlx-local",
+            "source": "omlx-local",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
