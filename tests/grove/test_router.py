@@ -218,3 +218,140 @@ def test_route_circuit_breaker_threshold_zero(tmp_path):
     d = router.route(confidence=0.01)  # would escalate if enabled
     assert d.tier == "T2"
     assert d.reason == "default"  # escalation disabled at threshold 0.0
+
+
+# ----- Sprint 14.1: declarative routing rules ---------------------------------
+
+RULES_CONFIG = VALID_CONFIG.replace(
+    "  telemetry:",
+    """\
+  routing_rules:
+    downward:
+      enabled: true
+      match:
+        complexity: simple
+        min_confidence: 0.85
+      target_tier: T1
+    upward:
+      enabled: true
+      match:
+        complexity: [complex, novel]
+        intents: [planning, analysis, code_generation, debugging]
+      target_tier: T3
+    escalation:
+      enabled: true
+      match:
+        max_confidence: 0.6
+      action: step_up
+  telemetry:""",
+)
+
+
+def test_route_upward_to_t3(tmp_path):
+    router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
+    d = router.route(complexity_signal="complex", intent="planning", confidence=0.9)
+    assert d.tier == "T3"
+    assert d.reason == "upward"
+
+
+def test_route_upward_matches_novel_complexity(tmp_path):
+    router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
+    d = router.route(complexity_signal="novel", intent="debugging", confidence=0.8)
+    assert d.tier == "T3"
+    assert d.reason == "upward"
+
+
+def test_route_upward_needs_both_complexity_and_intent(tmp_path):
+    """A complex request with a non-matching intent does not go up."""
+    router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
+    d = router.route(complexity_signal="complex", intent="conversation", confidence=0.9)
+    assert d.tier == "T2"
+    assert d.reason == "default"
+
+
+def test_route_downward_to_t1(tmp_path):
+    router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
+    d = router.route(complexity_signal="simple", intent="conversation", confidence=0.95)
+    assert d.tier == "T1"
+    assert d.reason == "downward"
+
+
+def test_route_downward_needs_min_confidence(tmp_path):
+    """Simple work below the confidence floor does not go down."""
+    router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
+    d = router.route(complexity_signal="simple", confidence=0.7)
+    assert d.tier == "T2"
+    assert d.reason == "default"
+
+
+def test_route_downward_disabled_holds_default(tmp_path):
+    disabled = RULES_CONFIG.replace(
+        "    downward:\n      enabled: true",
+        "    downward:\n      enabled: false",
+    )
+    router = CognitiveRouter(_write(tmp_path, disabled))
+    d = router.route(complexity_signal="simple", confidence=0.95)
+    assert d.tier == "T2"
+    assert d.reason == "default"
+
+
+def test_route_escalation_rule_steps_up(tmp_path):
+    router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
+    d = router.route(confidence=0.4)
+    assert d.tier == "T3"  # default T2 stepped up one rung
+    assert d.reason == "escalation"
+
+
+def test_route_first_matching_rule_wins(tmp_path):
+    """upward is evaluated before escalation — a request matching both
+    resolves as upward."""
+    router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
+    d = router.route(complexity_signal="complex", intent="planning", confidence=0.4)
+    assert d.tier == "T3"
+    assert d.reason == "upward"  # not "escalation", though 0.4 < 0.6 too
+
+
+def test_route_rules_skipped_without_classification(tmp_path):
+    """No classification signals — every rule abstains, default holds."""
+    router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
+    d = router.route()
+    assert d.tier == "T2"
+    assert d.reason == "default"
+
+
+def test_route_operator_override_beats_rules(tmp_path):
+    router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
+    d = router.route(
+        operator_tier="T1", complexity_signal="complex",
+        intent="planning", confidence=0.9,
+    )
+    assert d.tier == "T1"
+    assert d.reason == "operator_override"
+
+
+def test_route_escalation_max_confidence_overrides_threshold(tmp_path):
+    """routing_rules.escalation.match.max_confidence wins over the
+    top-level escalation.threshold."""
+    cfg = RULES_CONFIG.replace("max_confidence: 0.6", "max_confidence: 0.3")
+    router = CognitiveRouter(_write(tmp_path, cfg))
+    # 0.5 < 0.6 (top-level) but >= 0.3 (the rule) — must NOT escalate.
+    assert router.route(confidence=0.5).reason == "default"
+    assert router.route(confidence=0.2).reason == "escalation"
+
+
+def test_route_downward_missing_target_tier_raises(tmp_path):
+    bad = RULES_CONFIG.replace("      target_tier: T1\n", "")
+    with pytest.raises(ValueError):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_route_escalation_bad_action_raises(tmp_path):
+    bad = RULES_CONFIG.replace("action: step_up", "action: teleport")
+    with pytest.raises(ValueError):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_route_rule_unknown_target_tier_raises(tmp_path):
+    bad = RULES_CONFIG.replace("target_tier: T1", "target_tier: T9")
+    with pytest.raises(ValueError):
+        CognitiveRouter(_write(tmp_path, bad))
