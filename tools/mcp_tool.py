@@ -1236,7 +1236,14 @@ class MCPServerTask:
                 if new_pids:
                     with _lock:
                         for _pid in new_pids:
-                            _stdio_pids[_pid] = self.name
+                            # Record the child's process group id so cleanup
+                            # can killpg the whole group — wrapper + the real
+                            # MCP server it spawned (e.g. `npm exec` + `node`).
+                            try:
+                                _pgid = os.getpgid(_pid)
+                            except (ProcessLookupError, OSError):
+                                _pgid = _pid  # exited between snapshot and getpgid
+                            _stdio_pids[_pid] = (self.name, _pgid)
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
@@ -1256,15 +1263,18 @@ class MCPServerTask:
             # Mark them as orphans so the next cleanup sweep can reap them.
             if new_pids:
                 with _lock:
-                    for _pid in new_pids:
-                        _stdio_pids.pop(_pid, None)
+                    # Capture pgid before popping so the orphan record keeps it.
+                    _entries = {p: _stdio_pids.pop(p, None) for p in new_pids}
                     for pid in new_pids:
                         # ``os.kill(pid, 0)`` is NOT a no-op on Windows
                         # (bpo-14484). Use the cross-platform check.
                         from gateway.status import _pid_exists
                         if not _pid_exists(pid):
                             continue  # process already exited — nothing to do
-                        _orphan_stdio_pids.add(pid)
+                        entry = _entries.get(pid)
+                        if entry is None:
+                            continue  # already cleaned up by a concurrent sweep
+                        _orphan_stdio_pids[pid] = entry
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -1991,18 +2001,23 @@ _mcp_thread: Optional[threading.Thread] = None
 # Protects _mcp_loop, _mcp_thread, _servers, _parallel_safe_servers, and _stdio_pids.
 _lock = threading.Lock()
 
-# PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
-# them on shutdown if the graceful cleanup (SDK context-manager teardown)
-# fails or times out.  PIDs are added after connection and removed on
-# normal server shutdown.
-_stdio_pids: Dict[int, str] = {}  # pid -> server_name
+# PIDs of stdio MCP server subprocesses, paired with the recorded process
+# group id of each.  Tracked so we can force-kill them on shutdown if the
+# graceful cleanup (SDK context-manager teardown) fails or times out.
+# The pgid matters: stdio_client spawns each subprocess with
+# start_new_session=True, so the direct child is its own group leader and
+# the real MCP server (e.g. `node …/notion-mcp-server`) lives in the same
+# group as the wrapper (`npm exec …`).  Killing by group reaps both;
+# killing the wrapper PID alone leaves the server orphaned.
+# PIDs are added after connection and removed on normal server shutdown.
+_stdio_pids: Dict[int, tuple[str, int]] = {}  # pid -> (server_name, pgid)
 
-# PIDs that survived their session context exit (SDK teardown failed to
+# Children that survived their session context exit (SDK teardown failed to
 # terminate them).  These are detected in _run_stdio's finally block and
 # can be cleaned up asynchronously by _kill_orphaned_mcp_children().
 # Separate from _stdio_pids so cleanup sweeps never race with active
 # sessions (e.g. concurrent cron jobs or live user chats).
-_orphan_stdio_pids: set = set()
+_orphan_stdio_pids: Dict[int, tuple[str, int]] = {}  # pid -> (server_name, pgid)
 
 
 def _snapshot_child_pids() -> set:
@@ -2029,6 +2044,42 @@ def _snapshot_child_pids() -> set:
         pass
 
     return set()
+
+
+def _safe_killpg_or_kill(pid: int, pgid: int, sig) -> None:
+    """Signal the recorded process group, with defensive fallback to a
+    single-PID kill.
+
+    Each stdio MCP child is a session/group leader (the MCP SDK spawns with
+    start_new_session=True), so its pgid equals its own pid and is distinct
+    from our own group. Killing by group reaps the wrapper (e.g. ``npm
+    exec``) and the real server it spawned (``node …/notion-mcp-server``)
+    together; killing the wrapper alone leaves the server orphaned.
+
+    Falls back to ``os.kill(pid, sig)`` on platforms without killpg
+    (Windows), when no valid pgid was recorded, or — defensively — when
+    pgid would target the current process's own group or pid. The
+    defensive fallback should never fire under normal operation; it exists
+    so a bookkeeping accident cannot kill the caller.
+    """
+    use_killpg = (
+        hasattr(os, "killpg")
+        and pgid > 0
+        and pgid != os.getpid()
+    )
+    if use_killpg:
+        try:
+            if pgid == os.getpgrp():
+                use_killpg = False
+        except OSError:
+            use_killpg = False
+    try:
+        if use_killpg:
+            os.killpg(pgid, sig)
+        else:
+            os.kill(pid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def _mcp_loop_exception_handler(loop, context):
@@ -3418,12 +3469,11 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     import time as _time
 
     with _lock:
-        pids: Dict[int, str] = {}
-        for opid in _orphan_stdio_pids:
-            pids[opid] = "orphan"
+        pids: Dict[int, tuple[str, int]] = {}
+        pids.update(_orphan_stdio_pids)
         _orphan_stdio_pids.clear()
         if include_active:
-            pids.update(dict(_stdio_pids))
+            pids.update(_stdio_pids)
             _stdio_pids.clear()
 
     # Fast path: no tracked stdio PIDs to reap. Skip the SIGTERM/sleep/SIGKILL
@@ -3431,33 +3481,33 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     if not pids:
         return
 
-    # Phase 1: SIGTERM (graceful)
-    for pid, server_name in pids.items():
-        try:
-            os.kill(pid, _signal.SIGTERM)
-            logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+    # Phase 1: SIGTERM the process group (graceful).
+    # killpg reaps the wrapper + the real server together; the wrapper alone
+    # (npm/npx) does not reliably forward signals to the node child it
+    # spawned, so killing only the wrapper PID strands the server.
+    for pid, (server_name, pgid) in pids.items():
+        _safe_killpg_or_kill(pid, pgid, _signal.SIGTERM)
+        logger.debug(
+            "Sent SIGTERM to MCP process group %d (pid %d, %s)",
+            pgid, pid, server_name,
+        )
 
     # Phase 2: Wait for graceful exit
     _time.sleep(2)
 
-    # Phase 3: SIGKILL any survivors
+    # Phase 3: SIGKILL any survivors (still the group)
     _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
     # ``os.kill(pid, 0)`` is NOT a no-op on Windows. Use the cross-platform
     # existence check before escalating to SIGKILL.
     from gateway.status import _pid_exists
-    for pid, server_name in pids.items():
+    for pid, (server_name, pgid) in pids.items():
         if not _pid_exists(pid):
             continue  # Good — exited after SIGTERM
-        try:
-            os.kill(pid, _sigkill)
-            logger.warning(
-                "Force-killed MCP process %d (%s) after SIGTERM timeout",
-                pid, server_name,
-            )
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        _safe_killpg_or_kill(pid, pgid, _sigkill)
+        logger.warning(
+            "Force-killed MCP process group %d (pid %d, %s) after SIGTERM timeout",
+            pgid, pid, server_name,
+        )
 
 
 def _stop_mcp_loop():
