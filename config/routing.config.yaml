@@ -79,6 +79,33 @@ routing:
         roughly $0.02 per average interaction.
       max_tokens: 8192
 
+    # ----- LOCAL BINDING — run T2 on-device with Ollama -------------------
+    # The T2 block above runs on a cloud model. To make the daily driver
+    # local — most interactions on-device, at zero marginal cost — install
+    # Ollama, pull a model, and replace the T2 block above with this one:
+    #
+    #   T2:
+    #     provider: ollama
+    #     model: gemma4
+    #     description: |
+    #       Daily driver. Most interactions run on-device at zero marginal
+    #       cost. Gemma 4 (Apache 2.0-licensed, large context) handles
+    #       drafting, analysis, code, and conversation. The GPU serves the
+    #       operator; the API bill drops to near-zero for routine work.
+    #     max_tokens: 8192
+    #
+    # The endpoint defaults to http://localhost:11434/v1. For Ollama on a
+    # different host or port, set OLLAMA_BASE_URL in the environment — the
+    # tier block carries no base_url field of its own.
+    #
+    # Keep T1 on an Anthropic-native provider. T1 runs the telemetry
+    # classifier, which the v0.1 build binds to the Anthropic Messages
+    # protocol; an Ollama T1 would route every request on default-tier
+    # behaviour with no classification.
+    #
+    # Full walkthrough: docs/guides/local-tier-binding.md
+    # ---------------------------------------------------------------------
+
     T3:
       provider: anthropic
       model: claude-opus-4-6   # 4.6, not 4.7 — predictable tokenization
