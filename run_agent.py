@@ -1058,7 +1058,7 @@ def _routermint_headers() -> dict:
     from hermes_cli import __version__ as _GROVE_VERSION
 
     return {
-        "User-Agent": f"HermesAgent/{_GROVE_VERSION}",
+        "User-Agent": f"grove-autonomaton/{_GROVE_VERSION}",
     }
 
 

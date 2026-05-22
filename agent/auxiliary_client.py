@@ -310,7 +310,7 @@ _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
 # reads; the previous `X-OpenRouter-Title` label was not recognized there.
 _OR_HEADERS_BASE = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-    "X-Title": "Hermes Agent",
+    "X-Title": "grove-autonomaton",
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
 
@@ -373,7 +373,7 @@ def build_or_headers(or_config: dict | None = None) -> dict:
 # NVIDIA NIM cloud billing attribution.  Keep this host-gated because the
 # nvidia provider also supports local/on-prem NIM endpoints via NVIDIA_BASE_URL.
 _NVIDIA_NIM_CLOUD_HEADERS = {
-    "X-BILLING-INVOKE-ORIGIN": "HermesAgent",
+    "X-BILLING-INVOKE-ORIGIN": "grove-autonomaton",
 }
 
 
@@ -390,8 +390,8 @@ from hermes_cli import __version__ as _GROVE_VERSION
 
 _AI_GATEWAY_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-    "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_GROVE_VERSION}",
+    "X-Title": "grove-autonomaton",
+    "User-Agent": f"grove-autonomaton/{_GROVE_VERSION}",
 }
 
 # Nous Portal extra_body for product attribution.
