@@ -176,3 +176,41 @@ def test_revoke_collision_when_andon_already_has_proposal(fake_grove_home: Path)
 def test_revoke_missing_raises(fake_grove_home: Path) -> None:
     with pytest.raises(FileNotFoundError):
         gsov.revoke("never-existed")
+
+
+# ----- promotion_history (Sprint 15) -----------------------------------------
+
+def test_promote_appends_promotion_history(fake_grove_home: Path) -> None:
+    _write_proposal("weekly", fake_grove_home)
+    gsov.promote("weekly")
+    active = fake_grove_home / "skills" / "weekly" / "SKILL.md"
+    fm, _ = gskills.parse_frontmatter(active.read_text())
+    history = fm["promotion_history"]
+    assert len(history) == 1
+    assert history[0]["action"] == "promote"
+    assert history[0]["operator"] == "jim@the-grove.ai"
+    assert history[0]["timestamp"]
+
+
+def test_revoke_appends_promotion_history(fake_grove_home: Path) -> None:
+    _write_proposal("weekly", fake_grove_home)
+    gsov.promote("weekly")
+    gsov.revoke("weekly")
+    proposal = fake_grove_home / "skills" / ".andon" / "weekly" / "SKILL.md"
+    fm, _ = gskills.parse_frontmatter(proposal.read_text())
+    actions = [e["action"] for e in fm["promotion_history"]]
+    assert actions == ["promote", "revoke"]
+
+
+def test_promotion_history_survives_promote_revoke_cycle(
+    fake_grove_home: Path,
+) -> None:
+    """A promote -> revoke -> promote cycle carries the full audit trail."""
+    _write_proposal("weekly", fake_grove_home)
+    gsov.promote("weekly")
+    gsov.revoke("weekly")
+    gsov.promote("weekly")
+    active = fake_grove_home / "skills" / "weekly" / "SKILL.md"
+    fm, _ = gskills.parse_frontmatter(active.read_text())
+    actions = [e["action"] for e in fm["promotion_history"]]
+    assert actions == ["promote", "revoke", "promote"]
