@@ -30,11 +30,15 @@ class TestCliTurnRoutePool:
             acp_args=[],
             _credential_pool=fake_pool,
             service_tier=None,
+            _operator_model_arg=None,
         )
 
         from cli import HermesCLI
         bound = HermesCLI._resolve_turn_agent_config.__get__(shell)
-        route = bound("test message")
+        # No routing config — the turn falls back to session runtime, which
+        # must still carry the credential pool through to the agent.
+        with patch("grove.providers.route_for_agent", return_value=None):
+            route = bound("test message")
 
         assert route["runtime"]["credential_pool"] is fake_pool
 

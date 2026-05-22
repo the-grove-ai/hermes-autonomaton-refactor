@@ -212,10 +212,53 @@ def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     shell.base_url = "https://openrouter.ai/api/v1"
     shell.api_key = "sk-primary"
 
+    # No routing config loaded — route_for_agent() returns None and the
+    # turn falls back to the session's primary model/provider.
+    monkeypatch.setattr("grove.providers.route_for_agent", lambda **kwargs: None)
     result = shell._resolve_turn_agent_config("what time is it in tokyo?")
 
     assert result["model"] == "gpt-5"
     assert result["runtime"]["provider"] == "openrouter"
+
+
+def test_cli_turn_routing_uses_routed_tier(monkeypatch):
+    """When the router returns a decision, the turn config carries the
+    routed tier's model, token budget, and runtime."""
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://openrouter.ai/api/v1"
+    shell.api_key = "sk-primary"
+
+    from grove.router import RoutingDecision, TierConfig
+
+    t3 = TierConfig(
+        tier="T3", handler=None, provider="anthropic",
+        model="claude-opus-4-6", max_tokens=16384,
+        max_latency_ms=None, description="Apex cognition.",
+    )
+    decision = RoutingDecision(
+        tier="T3", tier_config=t3, reason="upward",
+        confidence=0.9, pattern_cache_hit=False,
+    )
+    monkeypatch.setattr(
+        "grove.providers.route_for_agent", lambda **kwargs: decision
+    )
+    monkeypatch.setattr(
+        "grove.providers.resolve_tier_to_runtime",
+        lambda tc: {
+            "model": tc.model, "provider": tc.provider, "api_key": "k",
+            "base_url": None, "api_mode": "anthropic_messages",
+            "credential_pool": None,
+        },
+    )
+
+    result = shell._resolve_turn_agent_config("design the architecture")
+
+    assert result["model"] == "claude-opus-4-6"
+    assert result["max_tokens"] == 16384
+    assert result["runtime"]["provider"] == "anthropic"
 
 
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):

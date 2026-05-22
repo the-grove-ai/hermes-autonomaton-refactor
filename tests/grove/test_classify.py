@@ -11,7 +11,6 @@ import grove.classify as classify
 from grove.classify import (
     ClassificationResult,
     classify_for_routing,
-    log_turn_classification,
 )
 
 _FAKE_RUNTIME = {
@@ -147,10 +146,3 @@ def test_cost_warns_past_budget(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="grove.classify"):
         classify_for_routing("expensive")
     assert "spend has passed" in caplog.text
-
-
-def test_log_turn_classification_emits_event(monkeypatch, caplog):
-    _install_fake_anthropic(monkeypatch, text=_VALID_BODY)
-    with caplog.at_level(logging.INFO, logger="grove.telemetry"):
-        log_turn_classification("Write a function")
-    assert "classification" in caplog.text

@@ -230,9 +230,11 @@ class TestFastModeRouting(unittest.TestCase):
             acp_args=[],
             _credential_pool=None,
             service_tier="priority",
+            _operator_model_arg=None,
         )
 
-        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+        with patch("grove.providers.route_for_agent", return_value=None):
+            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         # Provider should NOT have changed
         assert route["runtime"]["provider"] == "openrouter"
@@ -252,9 +254,11 @@ class TestFastModeRouting(unittest.TestCase):
             acp_args=[],
             _credential_pool=None,
             service_tier="priority",
+            _operator_model_arg=None,
         )
 
-        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+        with patch("grove.providers.route_for_agent", return_value=None):
+            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         assert route["runtime"]["provider"] == "openrouter"
         assert route.get("request_overrides") is None
@@ -398,9 +402,11 @@ class TestAnthropicFastMode(unittest.TestCase):
             acp_args=[],
             _credential_pool=None,
             service_tier="priority",
+            _operator_model_arg=None,
         )
 
-        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+        with patch("grove.providers.route_for_agent", return_value=None):
+            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         assert route["runtime"]["provider"] == "anthropic"
         assert route["request_overrides"] == {"speed": "fast"}
