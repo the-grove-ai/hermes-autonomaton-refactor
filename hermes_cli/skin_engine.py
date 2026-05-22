@@ -698,6 +698,15 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     branding = dict(default.get("branding", {}))
     branding.update(branding_overrides)
 
+    # Support banner and hero either as top-level keys or in branding section
+    banner_logo = data.get("banner_logo", "")
+    if not banner_logo and "branding" in data:
+        banner_logo = data.get("branding", {}).get("banner", "")
+
+    banner_hero = data.get("banner_hero", "")
+    if not banner_hero and "branding" in data:
+        banner_hero = data.get("branding", {}).get("hero", "")
+
     return SkinConfig(
         name=skin_name,
         description=data.get("description", ""),
@@ -706,8 +715,8 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
         tool_emojis=emoji_overrides,
-        banner_logo=data.get("banner_logo", ""),
-        banner_hero=data.get("banner_hero", ""),
+        banner_logo=banner_logo,
+        banner_hero=banner_hero,
     )
 
 

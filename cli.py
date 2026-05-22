@@ -2386,6 +2386,14 @@ def _build_compact_banner() -> str:
     title_color = _skin.get_color("banner_title", "#FFBF00") if _skin else "#FFBF00"
     dim_color = _skin.get_color("banner_dim", "#B8860B") if _skin else "#B8860B"
 
+    # Check if skin has a custom banner ASCII art
+    if _skin:
+        custom_banner = _skin.get_branding("banner")
+        if custom_banner:
+            # Render the custom banner directly, with optional coloring
+            banner_color = _skin.get_color("banner_text", "#F0FFF0") if _skin else "#F0FFF0"
+            return f"\n[{banner_color}]{custom_banner}[/]\n"
+
     if skin_name == "default":
         line1 = "⚕ NOUS HERMES - AI Agent Framework"
         tiny_line = "⚕ NOUS HERMES"
