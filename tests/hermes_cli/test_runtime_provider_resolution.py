@@ -2422,6 +2422,27 @@ def test_resolve_runtime_provider_omlx_never_silently_reroutes(monkeypatch):
     assert "8000" in resolved["base_url"]
 
 
+def test_resolve_runtime_provider_omlx_api_key_from_env(monkeypatch):
+    """OMLX requires real auth by default — OMLX_API_KEY env var takes
+    precedence over the sentinel so the agent's requests authenticate
+    against ~/.omlx/settings.json's configured api_key."""
+    monkeypatch.delenv("OMLX_BASE_URL", raising=False)
+    monkeypatch.setenv("OMLX_API_KEY", "omlx-real-key-xyz")
+    resolved = rp.resolve_runtime_provider(requested="omlx", target_model="x")
+    assert resolved["api_key"] == "omlx-real-key-xyz"
+
+
+def test_resolve_runtime_provider_omlx_explicit_key_beats_env(monkeypatch):
+    """An explicit api_key argument wins over OMLX_API_KEY (caller intent
+    wins over environment, matching the Ollama / lmstudio precedence)."""
+    monkeypatch.delenv("OMLX_BASE_URL", raising=False)
+    monkeypatch.setenv("OMLX_API_KEY", "from-env")
+    resolved = rp.resolve_runtime_provider(
+        requested="omlx", target_model="x", explicit_api_key="from-call",
+    )
+    assert resolved["api_key"] == "from-call"
+
+
 def test_resolve_runtime_provider_omlx_does_not_collide_with_ollama(monkeypatch):
     """The two local-provider branches are exact-match and route to their
     own endpoints — 'omlx' never lands at Ollama's port, 'ollama' never
