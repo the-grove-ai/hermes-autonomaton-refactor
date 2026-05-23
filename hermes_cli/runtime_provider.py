@@ -1053,11 +1053,20 @@ def resolve_runtime_provider(
         ).rstrip("/")
         if not omlx_base_url.endswith("/v1"):
             omlx_base_url += "/v1"
+        # Unlike Ollama, oMLX enforces API-key auth by default
+        # (~/.omlx/settings.json: skip_api_key_verification: false). Honor
+        # an explicit override, then OMLX_API_KEY from the environment,
+        # then fall back to the sentinel for setups that have auth
+        # disabled — same env-var pattern as lmstudio (LM_API_KEY).
         return {
             "provider": "omlx",
             "api_mode": "chat_completions",
             "base_url": omlx_base_url,
-            "api_key": (explicit_api_key or "").strip() or "omlx-local",
+            "api_key": (
+                (explicit_api_key or "").strip()
+                or os.getenv("OMLX_API_KEY", "").strip()
+                or "omlx-local"
+            ),
             "source": "omlx-local",
             "requested_provider": requested_provider,
         }
