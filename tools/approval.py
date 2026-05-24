@@ -1117,12 +1117,23 @@ def check_all_command_guards(command: str, env_type: str,
         )
 
         _zone = classify_command(command, env_type)
+        # S22: hierarchical rule matches populate `reason` and
+        # `pattern_key`; the legacy dot-notation path leaves both
+        # None. Carry both into every zone-branch return so the
+        # webui (and any future caller) can persist allowlist
+        # entries keyed on the specific regex pattern rather than
+        # the rule-level category. None values are harmless to
+        # downstream consumers.
+        _zone_reason = getattr(_zone, "reason", None)
+        _zone_pattern_key = getattr(_zone, "pattern_key", None)
         if _zone.zone == "green":
             return {
                 "approved": True,
                 "message": None,
                 "zone_classified": "green",
                 "matched_rule": _zone.matched_rule,
+                "zone_reason": _zone_reason,
+                "pattern_key": _zone_pattern_key,
             }
         if _zone.zone == "red":
             _strict = is_truthy_value(os.getenv("GROVE_ZONE_STRICT"))
@@ -1133,6 +1144,8 @@ def check_all_command_guards(command: str, env_type: str,
                     "message": render_red_surface(command, _zone),
                     "zone_classified": "red",
                     "matched_rule": _zone.matched_rule,
+                    "zone_reason": _zone_reason,
+                    "pattern_key": _zone_pattern_key,
                     "sovereign_red": True,
                     "strict": _strict,
                 }
@@ -1145,6 +1158,8 @@ def check_all_command_guards(command: str, env_type: str,
                     "message": "Cancelled. (Red-zone sovereignty held by operator.)",
                     "zone_classified": "red",
                     "matched_rule": _zone.matched_rule,
+                    "zone_reason": _zone_reason,
+                    "pattern_key": _zone_pattern_key,
                     "sovereign_choice": "cancel",
                 }
             if _choice == "operator_handles":
@@ -1153,6 +1168,8 @@ def check_all_command_guards(command: str, env_type: str,
                     "message": render_red_surface(command, _zone),
                     "zone_classified": "red",
                     "matched_rule": _zone.matched_rule,
+                    "zone_reason": _zone_reason,
+                    "pattern_key": _zone_pattern_key,
                     "sovereign_choice": "operator_handles",
                 }
             if _choice == "alternative" and _descoped:
