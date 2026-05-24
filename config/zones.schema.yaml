@@ -170,6 +170,61 @@ zones:
 # Kaizen observes tool-zone friction. If a tool consistently triggers
 # Andon prompts that the operator always approves, Kaizen proposes
 # promoting that tool's zone from yellow to green.
+#
+# Two forms (Sprint 22)
+# ---------------------
+# Each tool's entry may be EITHER a bare zone string (the original
+# Sprint 04 form) OR a mapping with `default_zone` plus an ordered list
+# of argument-level rules. Both forms coexist; bare-string entries
+# behave identically to pre-Sprint-22.
+#
+#   1. Bare string (legacy):
+#        terminal: yellow
+#
+#      Every command flowing through this tool is classified
+#      `yellow`. The classifier never inspects the command's
+#      arguments.
+#
+#   2. Hierarchical (Sprint 22):
+#        terminal:
+#          default_zone: yellow
+#          rules:
+#            - match_pattern: "^rm\\s+(-[fir]+\\s+)?/tmp/.*"
+#              zone: green
+#              reason: "Temporary directory cleanup is inherently safe."
+#            - match_pattern: "^rm\\s+-rf\\s+/$"
+#              zone: red
+#              reason: "Catastrophic system destruction."
+#
+#      The classifier evaluates `rules` top-to-bottom against the
+#      full command string with `re.fullmatch`. First match wins.
+#      A command that matches no rule falls through to
+#      `default_zone`. Write your most specific patterns FIRST.
+#
+# Pattern syntax (hierarchical rules only)
+# ----------------------------------------
+# Standard Python regex via `re.fullmatch`. Anchored implicitly —
+# you do NOT need `^` and `$`. Examples:
+#
+#   ^sudo\s+.*                       # any sudo invocation
+#   ^rm\s+(-[fir]+\s+)?/tmp/.*       # rm of anything under /tmp
+#   ^chmod\s+\d+\s+/home/user/.*     # chmod within /home/user
+#   ^pip\s+install\s+requests$       # exact: only this command
+#
+# Safety guardrails (Sprint 22)
+# -----------------------------
+# The loader rejects per-rule, with a loud log, if a pattern:
+#   - exceeds 200 characters
+#   - matches everything (`.*`, `^.*`, `.*/.*`, `.+`)
+#   - contains nested quantifiers (`(a+)+`, `(.*)*`) — classic
+#     ReDoS shape
+#   - has more than 10 alternation branches in a single group
+#   - is not a syntactically valid Python regex
+#
+# The rest of the schema continues to load with the bad rule dropped.
+# Synthesised patterns (from "Approve Always" in any of the 13 paths)
+# are produced conservatively — directory-scoped, anchored, no
+# nested quantifiers — and pass the same check.
 
 tool_zones:
   terminal:                  yellow
@@ -180,3 +235,28 @@ tool_zones:
   honcho.dialectic.read:     green
   cron.create:               yellow
   cron.delete:               yellow
+
+  # ── Hierarchical example (commented out — zero behavior change) ──
+  # Uncomment + edit to opt your terminal tool into argument-level
+  # rules. The example below replaces the bare `terminal: yellow`
+  # above (delete the bare line if you uncomment this block).
+  #
+  # terminal:
+  #   default_zone: yellow
+  #   rules:
+  #     # Sovereign: privilege escalation always goes through Kaizen.
+  #     - match_pattern: '^sudo\s+.*'
+  #       zone: red
+  #       reason: "Privilege escalation requires sovereign approval."
+  #
+  #     # Catastrophic: hard-no, no operator dialog.
+  #     - match_pattern: '^rm\s+-rf\s+/$'
+  #       zone: red
+  #       reason: "Catastrophic root-filesystem deletion."
+  #
+  #     # Green: cleanup within /tmp is safe.
+  #     - match_pattern: '^rm\s+(-[fir]+\s+)?/tmp/.*'
+  #       zone: green
+  #       reason: "Temporary directory cleanup is inherently safe."
+  #
+  #     # Anything else flowing through terminal → yellow (default_zone).
