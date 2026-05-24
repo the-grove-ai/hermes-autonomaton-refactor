@@ -427,7 +427,10 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    response = agent.chat(prompt) or ""
+    # _run_agent has already called route_for_agent above (the _routed
+    # variable) and constructed AIAgent with the routed runtime. Skip
+    # run_conversation's self-route so T-telemetry fires exactly once.
+    response = agent.chat(prompt, already_routed=True) or ""
     return response, _tier_cost_summary(_routed, agent)
 
 

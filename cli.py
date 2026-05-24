@@ -11293,6 +11293,11 @@ class HermesCLI:
                         stream_callback=stream_callback,
                         task_id=self.session_id,
                         persist_user_message=message if _voice_prefix else None,
+                        # CLI's _resolve_turn_agent_config already routed
+                        # this turn and called apply_tier() above (line
+                        # ~11048); skip run_conversation's self-route so
+                        # T-telemetry fires exactly once per turn.
+                        already_routed=True,
                     )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
@@ -14479,6 +14484,10 @@ def main(
                     result = cli.agent.run_conversation(
                         user_message=effective_query,
                         conversation_history=cli.conversation_history,
+                        # cli._resolve_turn_agent_config already routed
+                        # this turn just above; skip self-route in
+                        # run_conversation so T-telemetry fires once.
+                        already_routed=True,
                     )
                     # Sync session_id if mid-run compression created a
                     # continuation session. The exit line below reports
