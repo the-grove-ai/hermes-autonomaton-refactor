@@ -142,7 +142,11 @@ def test_route_default_returns_t2(tmp_path):
     d = router.route()
     assert isinstance(d, RoutingDecision)
     assert d.tier == "T2"
-    assert d.reason == "default"
+    # No classifier inputs — the pipeline still routes to default tier
+    # but tags the decision as degraded (W3.0) so classifier outages
+    # are observable in telemetry.
+    assert d.reason == "classifier_unavailable"
+    assert d.confidence == 0.0
     assert d.tier_config.model == "claude-sonnet-4-6"
     assert d.pattern_cache_hit is False
 
@@ -193,7 +197,9 @@ def test_route_zone_override(tmp_path):
     assert d.reason == "zone_override"
     d_green = router.route(zone="green")
     assert d_green.tier == "T2"
-    assert d_green.reason == "default"
+    # Zone passes through (no override for green) and lands on default
+    # tier; with no classifier inputs the decision is tagged degraded.
+    assert d_green.reason == "classifier_unavailable"
 
 
 def test_route_escalation_on_low_confidence(tmp_path):
@@ -312,11 +318,14 @@ def test_route_first_matching_rule_wins(tmp_path):
 
 
 def test_route_rules_skipped_without_classification(tmp_path):
-    """No classification signals — every rule abstains, default holds."""
+    """No classification signals — every rule abstains, the pipeline
+    routes to the default tier and tags the decision as degraded so
+    classifier outages are observable downstream (W3.0)."""
     router = CognitiveRouter(_write(tmp_path, RULES_CONFIG))
     d = router.route()
     assert d.tier == "T2"
-    assert d.reason == "default"
+    assert d.reason == "classifier_unavailable"
+    assert d.confidence == 0.0
 
 
 def test_route_operator_override_beats_rules(tmp_path):
