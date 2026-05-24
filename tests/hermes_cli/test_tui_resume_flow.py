@@ -433,8 +433,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
 
-        def chat(self, prompt):
+        def chat(self, prompt, *, already_routed=False):
             captured["prompt"] = prompt
+            captured["already_routed"] = already_routed
             return "ok"
 
     class FakeSessionDB:

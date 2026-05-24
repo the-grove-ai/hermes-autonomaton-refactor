@@ -69,7 +69,11 @@ def test_route_for_agent_returns_decision(tmp_path):
     decision = route_for_agent()
     assert decision is not None
     assert decision.tier == "T2"
-    assert decision.reason == "default"
+    # No message → no classification → the pipeline tags the decision
+    # as degraded (reason='classifier_unavailable') rather than the
+    # legacy 'default' so classifier outages are observable downstream.
+    assert decision.reason == "classifier_unavailable"
+    assert decision.confidence == 0.0
     assert decision.tier_config.model == "claude-sonnet-4-6"
 
 
@@ -191,12 +195,19 @@ def test_route_for_agent_classification_escalates(tmp_path, monkeypatch):
 
 
 def test_route_for_agent_no_classification_default_routing(tmp_path, monkeypatch):
-    """A failed/absent classification falls back to default routing."""
+    """A failed/absent classification produces a degraded RoutingDecision.
+
+    Per W3.0 the pipeline is immutable — it runs on every turn. When
+    T-telemetry classification fails the router still routes (to the
+    default tier) but tags the decision with reason='classifier_
+    unavailable' and confidence=0.0 so the degraded state is
+    observable in telemetry."""
     _init_router(tmp_path)
     monkeypatch.setattr("grove.classify.classify_for_routing", lambda _m: None)
     decision = route_for_agent(message="something")
     assert decision.tier == "T2"
-    assert decision.reason == "default"  # no confidence -> no escalation
+    assert decision.reason == "classifier_unavailable"
+    assert decision.confidence == 0.0
 
 
 def test_route_for_agent_logs_classification_fields(tmp_path, monkeypatch, caplog):
