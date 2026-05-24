@@ -236,12 +236,22 @@ class CognitiveRouter:
                 pattern_cache_hit=False,
             )
 
-        # 5. Default tier.
+        # 5. Default tier. When no classifier input was available
+        #    (intent / confidence / complexity_signal all None — the
+        #    T-telemetry classifier failed or was suppressed), the
+        #    decision is degraded: the pipeline still routes (to the
+        #    default tier) so the turn is governed, but the reason
+        #    distinguishes this from a normal default-tier landing.
+        #    Telemetry consumers and the v0.2 Ratchet can filter on
+        #    reason="classifier_unavailable" to see classifier outages.
+        _classifier_unavailable = (
+            intent is None and confidence is None and complexity_signal is None
+        )
         return RoutingDecision(
             tier=self._default_tier,
             tier_config=self.get_tier_config(self._default_tier),
-            reason="default",
-            confidence=confidence,
+            reason="classifier_unavailable" if _classifier_unavailable else "default",
+            confidence=0.0 if _classifier_unavailable else confidence,
             pattern_cache_hit=False,
         )
 

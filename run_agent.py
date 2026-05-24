@@ -1274,6 +1274,14 @@ class AIAgent:
         # would mangle the escape sequences.  None = use builtins.print.
         self._print_fn = None
         self.background_review_callback = None  # Optional sync callback for gateway delivery
+        # Governance: the per-turn RoutingDecision and ClassificationResult.
+        # Set by run_conversation() either from a pre-route (CLI passes
+        # already_routed=True after _resolve_turn_agent_config) or by
+        # self-routing when the caller didn't pre-route (webui path).
+        # Exposed in run_conversation()'s return dict for callers that
+        # render tier badges / cost lines / /why explanations.
+        self._last_routing_decision = None
+        self._last_classification_result = None
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
@@ -2638,6 +2646,89 @@ class AIAgent:
                     )
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
+
+    def _maybe_route_for_turn(self, user_message) -> None:
+        """Self-route this turn unless the caller pre-routed.
+
+        Closes the governance bypass that direct callers of
+        ``run_conversation`` would otherwise create. Calls
+        ``grove.providers.route_for_agent`` — which runs T-telemetry
+        classification, applies the routing rules, and emits the
+        ``routing_decision`` telemetry — and then applies the routed
+        tier to the live agent via ``apply_tier`` (same-provider swap)
+        or ``switch_model`` (provider/base_url/api_mode change).
+
+        Returns silently in the vanilla-install case (no
+        ``routing.config.yaml`` → route_for_agent returns None) so the
+        caller's chosen model is used unchanged. Non-string user
+        messages skip routing because the T-telemetry classifier
+        requires text input.
+        """
+        if not isinstance(user_message, str):
+            return
+        from grove.providers import (
+            route_for_agent,
+            current_classification,
+            resolve_tier_to_runtime,
+        )
+
+        # explicit_model is for OPERATOR overrides (CLI's --model flag,
+        # GROVE_INFERENCE_MODEL env, /model session command). self.model
+        # is the agent's currently-configured model, which may be a
+        # config.yaml default rather than an operator choice — passing
+        # it as explicit_model would inject a phantom operator preference
+        # and shadow escalation / upward-routing rules. The pipeline
+        # decides the tier from classification alone; if the webui (or
+        # any future caller) gains an operator-preference signal, plumb
+        # it in explicitly here.
+        decision = route_for_agent(
+            message=user_message,
+            explicit_model=None,
+            explicit_tier=None,
+        )
+        if decision is None:
+            return
+
+        # The pipeline is immutable — it runs on every turn, no
+        # exceptions. When classification fails, the router still
+        # produces a degraded RoutingDecision (reason ∈ {"default",
+        # "classifier_unavailable"} per grove/router.py) routed to the
+        # default tier with confidence=None. The turn is governed by a
+        # degraded decision, NOT ungoverned. Apply it regardless.
+        classification = current_classification()
+        self._last_routing_decision = decision
+        self._last_classification_result = classification
+
+        # Apply the routed tier to the live agent. apply_tier() is the
+        # lightweight same-client swap (model + max_tokens);
+        # switch_model() rebuilds the client when provider / base_url /
+        # api_mode change. An empty current provider means the agent
+        # wasn't bound to a specific provider's client semantics at
+        # construction (or the fixture replaced self.client wholesale,
+        # which is the test pattern) — apply_tier is the safe choice.
+        # Cross-provider rebuild only fires when BOTH providers are
+        # known AND differ, so a real cross-provider routing change
+        # (e.g. local-profile T2 omlx → T3 anthropic Opus) still goes
+        # through switch_model and gets a fresh client.
+        _cur_provider = (self.provider or "").strip().lower()
+        _dec_provider = (decision.tier_config.provider or "").strip().lower()
+        _same_provider = (not _cur_provider) or (_cur_provider == _dec_provider)
+        if _same_provider:
+            self.apply_tier(
+                decision.tier_config.model,
+                decision.tier_config.max_tokens,
+            )
+        else:
+            runtime = resolve_tier_to_runtime(decision.tier_config)
+            self.switch_model(
+                new_model=runtime["model"],
+                new_provider=runtime["provider"] or "",
+                api_key=runtime.get("api_key") or "",
+                base_url=runtime.get("base_url") or "",
+                api_mode=runtime.get("api_mode") or "",
+            )
+            if decision.tier_config.max_tokens is not None:
+                self.max_tokens = decision.tier_config.max_tokens
 
     def apply_tier(self, model, max_tokens):
         """Swap the active cognitive tier in place — model and token budget only.
@@ -12133,6 +12224,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        already_routed: bool = False,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -12199,6 +12291,18 @@ class AIAgent:
             user_message = _sanitize_surrogates(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
+
+        # ── Governance pipeline ─────────────────────────────────────────
+        # The webui (and any other direct caller) reaches run_conversation
+        # without going through CLI's _resolve_turn_agent_config and
+        # therefore bypasses route_for_agent — the T-telemetry classifier,
+        # the tier escalation rules, and the routing telemetry. Close that
+        # bypass here. Both paths converge on grove.providers.route_for_agent;
+        # the CLI sets already_routed=True after pre-routing in
+        # _resolve_turn_agent_config so T-telemetry classification fires
+        # exactly once per turn (A2).
+        if not already_routed:
+            self._maybe_route_for_turn(user_message)
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
@@ -16059,20 +16163,40 @@ class AIAgent:
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)
 
+        # Governance: surface the per-turn RoutingDecision and
+        # ClassificationResult so webui-side renderers (and any future
+        # caller) can show tier badges, cost lines, and /why-style
+        # explanations without re-running classification.
+        if isinstance(result, dict):
+            if self._last_routing_decision is not None:
+                result.setdefault("routing_decision", self._last_routing_decision)
+            if self._last_classification_result is not None:
+                result.setdefault(
+                    "classification_result", self._last_classification_result
+                )
+
         return result
 
-    def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
+    def chat(self, message: str, stream_callback: Optional[callable] = None, *, already_routed: bool = False) -> str:
         """
         Simple chat interface that returns just the final response.
 
         Args:
             message (str): User message
             stream_callback: Optional callback invoked with each text delta during streaming.
+            already_routed: Pass True when the caller has already run
+                route_for_agent() and applied the routed tier (oneshot's
+                _run_agent does this). Skips run_conversation's self-route
+                so T-telemetry classification fires exactly once per turn.
 
         Returns:
             str: Final assistant response
         """
-        result = self.run_conversation(message, stream_callback=stream_callback)
+        result = self.run_conversation(
+            message,
+            stream_callback=stream_callback,
+            already_routed=already_routed,
+        )
         return result["final_response"]
 
     def _run_codex_app_server_turn(
