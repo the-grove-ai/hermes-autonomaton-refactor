@@ -1102,9 +1102,12 @@ def check_all_command_guards(command: str, env_type: str,
     # dangerous-pattern / tirith / smart-approval flow, preserving
     # post-condition 9 (existing DANGEROUS_PATTERNS behavior).
     #
-    # Classifier failures (init errors, malformed schema) are logged
-    # loudly and fall through — the existing approval flow IS the safety
-    # net, so falling through preserves established behavior.
+    # Classifier failures (init errors, malformed schema, dispatch
+    # import errors) BLOCK the action — fail-closed (W3.0a I4). The
+    # legacy approval flow is NOT a safety net for an absent zone
+    # check; treating it as one is silent degradation. Operators
+    # see an actionable diagnostic and fix the classifier; they
+    # never get a permissive action they would have been denied.
     try:
         from grove.dispatch import (
             classify_command,
@@ -1177,10 +1180,35 @@ def check_all_command_guards(command: str, env_type: str,
             }
         # yellow / default → fall through to existing approval flow
     except Exception as _exc:
+        # W3.0a I4: zone-classifier failure BLOCKS the action. The
+        # legacy approval flow is not a permissive fallback when
+        # governance fails — that is the silent-degradation pattern
+        # the architectural prime directive forbids. Operators see
+        # an actionable diagnostic naming the failure mode so the
+        # classifier can be fixed; the action does not proceed.
         logger.error(
-            "[zones] classifier pre-check failed for %r: %r — falling through",
+            "[zones] classifier failed for %r: %r — BLOCKING (fail-closed)",
             command[:80], _exc,
         )
+        return {
+            "approved": False,
+            "message": (
+                f"Action blocked: Zone classifier unavailable.\n\n"
+                f"The Grove zone classifier errored while evaluating this "
+                f"command. Per the Grove Autonomaton architectural "
+                f"guarantee, actions do not proceed when the classifier "
+                f"fails — there is no silent fallback to a legacy "
+                f"permissive flow.\n\n"
+                f"Root cause: {type(_exc).__name__}: {_exc}\n\n"
+                f"Mitigation: investigate the classifier "
+                f"(config/zones.schema.yaml, grove/dispatch.py, "
+                f"grove/zones.py); re-run the command after fixing."
+            ),
+            "zone_classified": "error",
+            "matched_rule": None,
+            "classifier_failed": True,
+            "sovereign_red": False,
+        }
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
