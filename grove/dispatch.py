@@ -108,10 +108,42 @@ def command_to_action(command: str, env_type: str = "local") -> str:
 
 # ----- classifier wrapper ----------------------------------------------------
 
-def classify_command(command: str, env_type: str = "local") -> "ZoneResult":
-    """Map ``command`` to an action identifier and classify it."""
+def classify_command(
+    command: str,
+    env_type: str = "local",
+    *,
+    tool_id: Optional[str] = None,
+) -> "ZoneResult":
+    """Classify a command — Sprint 22 hierarchical-first.
+
+    Maps ``command`` to a dot-notation action identifier, then asks
+    the classifier to evaluate any hierarchical argument-level rules
+    for the resolved tool before falling through to the legacy
+    ``classify(action)`` path. The legacy path is unchanged for tools
+    whose ``tool_zones`` entry is a bare string (or absent).
+
+    Args:
+        command: the shell command line as passed to ``bash -c``.
+        env_type: execution environment (``local``, ``docker``, …) —
+            reserved for future use.
+        tool_id: which tool's hierarchical rules to consult. When
+            ``None``, derive from the action prefix (v0.1 ships a
+            single mapping: ``command.execute.* → terminal``). Future
+            tools that want hierarchical rules should pass this
+            explicitly rather than expanding the derivation map —
+            see the note in ``grove/zones.py``.
+
+    Returns:
+        A ``ZoneResult``. Backward compatible — callers reading only
+        ``.zone`` / ``.matched_rule`` / ``.source`` continue to work;
+        the new ``reason`` and ``pattern_key`` fields are ``None``
+        for legacy (dot-notation) classifications and populated for
+        hierarchical rule matches.
+    """
     action = command_to_action(command, env_type)
-    return get_classifier().classify(action)
+    return get_classifier().classify_command_string(
+        command, action, tool_id=tool_id,
+    )
 
 
 # ----- de-scoping (Kaizen's third option) ------------------------------------
