@@ -232,6 +232,50 @@ class CompressionProbe:
     aux_cfg_provider: str
 
 
+# ── Andon halt exception (Sprint 26 Phase 4) ──────────────────────────────
+
+
+class AndonHalt(RuntimeError):
+    """Pipeline halt fired by the Dispatcher when a ToolIntent batch
+    crosses the Yellow/Red zone boundary at intent-yield (GRV-005 § V).
+
+    Phase 4 wires the classification + halt mechanism. Phase 5 adds the
+    Sovereign Prompt UX and disposition semantics (Skip / Drop) that
+    determine what the operator sees and how dispatch resumes. For
+    Phase 4 MVP, the halt is internal: ``Dispatcher.dispatch_turn``
+    catches the exception and returns a result dict carrying the halt
+    metadata; no operator interaction yet.
+
+    Per the D6 lock: classification applies to the entire batch. If a
+    single ``ToolIntent`` in the batch hits Yellow or Red, the whole
+    batch halts. The exception carries every intent in the batch (so
+    Phase 5's Sovereign Prompt can show the full context) plus the
+    index + ZoneResult of the triggering intent.
+    """
+
+    def __init__(
+        self,
+        intents: List[Any],
+        zone_results: List[Any],
+        triggering_index: int,
+    ):
+        self.intents = intents
+        self.zone_results = zone_results
+        self.triggering_index = triggering_index
+        triggering = zone_results[triggering_index]
+        self.zone = triggering.zone
+        self.matched_rule = triggering.matched_rule
+        self.source = triggering.source
+        self.reason = getattr(triggering, "reason", None)
+        self.pattern_key = getattr(triggering, "pattern_key", None)
+        tool = intents[triggering_index].tool_name
+        super().__init__(
+            f"Andon halt: tool {tool!r} (intent #{triggering_index}) "
+            f"classified as {self.zone} zone "
+            f"(rule={self.matched_rule!r}, source={self.source})"
+        )
+
+
 # ── Dispatcher ────────────────────────────────────────────────────────────
 
 
@@ -661,11 +705,19 @@ class Dispatcher:
             yielded = gen.send(None)  # advance to first yield
             while True:
                 if isinstance(yielded, list):
+                    # ── Sprint 26 Phase 4 — tool-zone classification at intent-yield ──
+                    # Per GRV-005 § V: classification fires per ToolIntent
+                    # batch at the yield boundary, before execution. Per the
+                    # D6 lock, the batch is the unit — if ANY intent crosses
+                    # Yellow / Red, the whole batch halts via AndonHalt.
+                    # Phase 5 adds the Sovereign Prompt + disposition
+                    # semantics (Skip/Drop); Phase 4 just fires + halts.
+                    self._classify_intents_batch_and_halt_or_raise(yielded)
+
+                    # ── Phase 3 path — execute the batch ──
                     # ToolIntent batch — execute via the Agent's existing
                     # _execute_tool_calls (which mutates the messages list
                     # the generator exposed on agent._current_messages).
-                    # Phase 4 will gate this with zone classification at
-                    # intent-yield; Phase 5 will route through Andon halt.
                     asst = agent._current_assistant_message
                     msgs = agent._current_messages
                     task = agent._current_effective_task_id
@@ -700,6 +752,141 @@ class Dispatcher:
                     yielded = gen.send(None)
         except StopIteration as stop:
             return stop.value
+        except AndonHalt as halt:
+            # Close the generator cleanly so its `finally` blocks run
+            # (clears agent._current_* stash etc.). Phase 5 will replace
+            # this close() with the Sovereign Prompt + disposition routing
+            # (Skip: resume with denial Observation; Drop: close + flush).
+            gen.close()
+            return self._format_andon_halt_result(agent, halt)
+
+    # ── Phase 4 helpers ──────────────────────────────────────────────────
+
+    def _classify_intents_batch_and_halt_or_raise(
+        self,
+        intents: List[Any],
+    ) -> None:
+        """Classify every ToolIntent in the yielded batch; raise AndonHalt
+        on the first Yellow or Red zone hit.
+
+        Per the D6 lock, the batch is the unit of disposition: a single
+        Red/Yellow intent halts the whole batch. Classification of each
+        intent is best-effort — for terminal-style tools we use the
+        existing Sprint 06a command classifier (which handles arg-level
+        denylists per Sprint 22); for other tools we use the generic
+        ``classify(action)`` path with a derived dot-notation action.
+        Tools with no schema entry default to ``yellow`` per the
+        classifier's design — Phase 4 surfaces that as a halt so the
+        operator can decide whether to whitelist or block.
+
+        Sprint 27 may add per-tool classification rules so non-terminal
+        tools have explicit Green coverage; for v1 the default-Yellow
+        means the operator approves anything not on the auto_approve
+        list. That matches Sprint 06a's design intent.
+        """
+        from grove import dispatch as _grove_dispatch
+        from grove.zones import ZoneResult
+
+        zone_results: List[ZoneResult] = []
+        for intent in intents:
+            zone_result = self._classify_one_intent(intent, _grove_dispatch)
+            zone_results.append(zone_result)
+            # First Yellow or Red halts the batch. Green continues.
+            if zone_result.zone in ("yellow", "red"):
+                # Continue classifying remaining intents for visibility,
+                # then raise after collecting the full batch result so
+                # Phase 5's Sovereign Prompt can show every intent's zone.
+                pass
+
+        triggering_index: Optional[int] = None
+        for idx, zr in enumerate(zone_results):
+            if zr.zone in ("yellow", "red"):
+                triggering_index = idx
+                break
+        if triggering_index is not None:
+            raise AndonHalt(
+                intents=intents,
+                zone_results=zone_results,
+                triggering_index=triggering_index,
+            )
+
+    @staticmethod
+    def _classify_one_intent(intent: Any, _grove_dispatch: Any) -> Any:
+        """Classify a single ToolIntent via the Sprint 06a zone classifier.
+
+        For ``terminal``-style intents (those whose tool_name is in the
+        shell-runner set AND whose arguments carry a ``command`` string),
+        derives the action via ``command_to_action`` and runs the
+        hierarchical classifier (Sprint 22). For other intents, uses
+        the generic ``classify(action)`` path with a derived
+        ``tool.<tool_name>`` action.
+        """
+        from grove.zones import classify as _classify
+
+        tool_name = getattr(intent, "tool_name", "") or ""
+        args = getattr(intent, "arguments", None) or {}
+        # Shell-runner detection: terminal-family tools with a `command`
+        # argument route through the command-string classifier so
+        # Sprint 22's argument-pattern denylists apply.
+        if tool_name in {"terminal", "execute_code"} and isinstance(args, dict):
+            command = args.get("command")
+            if isinstance(command, str) and command.strip():
+                return _grove_dispatch.classify_command(
+                    command, tool_id=tool_name,
+                )
+        # Generic path: derive a dot-notation action from the tool name.
+        action = f"tool.{tool_name}" if tool_name else "tool.unknown"
+        return _classify(action)
+
+    @staticmethod
+    def _format_andon_halt_result(
+        agent: Any, halt: "AndonHalt",
+    ) -> Dict[str, Any]:
+        """Build a result dict for a Phase 4 internal AndonHalt.
+
+        Phase 5 will replace this with the Sovereign Prompt + disposition
+        flow. Phase 4 just returns a shape compatible with the legacy
+        result dict so existing callers don't crash on a halt.
+        """
+        triggering_intent = halt.intents[halt.triggering_index]
+        msgs = getattr(agent, "_current_messages", None) or []
+        return {
+            "final_response": (
+                f"⚠ Andon halt: tool '{triggering_intent.tool_name}' "
+                f"classified as {halt.zone} zone "
+                f"(rule={halt.matched_rule!r})."
+            ),
+            "completed": False,
+            "interrupted": False,
+            "partial": True,
+            "messages": list(msgs),
+            "api_calls": getattr(agent, "_current_api_call_count", 0) or 0,
+            "turn_exit_reason": "andon_halt",
+            "andon_halt": {
+                "zone": halt.zone,
+                "matched_rule": halt.matched_rule,
+                "source": halt.source,
+                "reason": halt.reason,
+                "pattern_key": halt.pattern_key,
+                "triggering_index": halt.triggering_index,
+                "triggering_intent": {
+                    "tool_name": triggering_intent.tool_name,
+                    "arguments": dict(triggering_intent.arguments),
+                    "call_id": triggering_intent.call_id,
+                },
+                "batch_size": len(halt.intents),
+                "zone_results": [
+                    {
+                        "zone": zr.zone,
+                        "matched_rule": zr.matched_rule,
+                        "source": zr.source,
+                    }
+                    for zr in halt.zone_results
+                ],
+            },
+            "model": getattr(agent, "model", ""),
+            "provider": getattr(agent, "provider", ""),
+        }
 
     def _get_or_build_context_length(self, model: str) -> Optional[int]:
         """Build (or return cached) model context-length probe result.
