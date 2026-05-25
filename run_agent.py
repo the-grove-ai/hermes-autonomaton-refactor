@@ -12437,7 +12437,7 @@ class AIAgent:
 
         return final_response
 
-    def run_conversation(
+    def _run_turn_generator(
         self,
         user_message: str,
         system_message: str = None,
@@ -12446,25 +12446,59 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
         already_routed: bool = False,
-    ) -> Dict[str, Any]:
-        """
-        Run a complete conversation with tool calling until completion.
+    ):
+        """Generator-shaped turn loop per GRV-005 § IV (Sprint 26 Phase 3).
 
-        Args:
-            user_message (str): The user's message/question
-            system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
-            conversation_history (List[Dict]): Previous conversation messages (optional)
-            task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional, auto-generated if not provided)
-            stream_callback: Optional callback invoked with each text delta during streaming.
-                Used by the TTS pipeline to start audio generation before the full response.
-                When None (default), API calls use the standard non-streaming path.
-            persist_user_message: Optional clean user message to store in
-                transcripts/history when user_message contains API-only
-                synthetic prefixes.
-                    or queuing follow-up prefetch work.
+        Yields intents from the ``grove.intents`` v1 protocol; the
+        consumer (the in-process ``run_conversation`` wrapper for
+        backward compat, OR ``grove.dispatcher.Dispatcher.dispatch_turn``
+        for the GRV-005-conformant runtime) executes them and sends
+        ``Observation`` instances back via ``.send()``. Returns the
+        legacy result dict via ``StopIteration.value`` when the turn
+        completes.
 
-        Returns:
-            Dict: Complete conversation result with final response and message history
+        At the tool-dispatch boundary (the single site where the legacy
+        method called ``self._execute_tool_calls``), this method now
+        yields a ``List[ToolIntent]`` matching the batch of tool_calls
+        the LLM produced in a single assistant message. The consumer
+        executes the batch (legacy wrapper preserves parallelism via
+        ``_execute_tool_calls``; Dispatcher applies its own policy in
+        Phase 4+) and sends a ``List[Observation]`` back.
+
+        At the turn's final exit, this method yields a
+        ``FinalResponse(content=..., metadata=...)`` BEFORE returning
+        the legacy result dict, so consumers tracking the GRV-005 § IV
+        protocol see a clean turn-completion signal.
+
+        Phase 3 design notes:
+
+        * The Agent NO LONGER executes tools directly at the L15629
+          dispatch site. The Dispatcher (or the in-process wrapper)
+          owns execution per GRV-005 § II/III.
+        * Tool-zone classification at intent-yield is Phase 4. The
+          Andon halt is Phase 5. The Phase 3 generator yields raw
+          intents; the consumer's executor handles them unconditionally.
+        * Per the D6 lock, intents are yielded as batches when the
+          LLM produces parallel tool_calls. The consumer can choose
+          sequential or parallel execution per its policy.
+        * ``self._current_messages`` exposes the active messages list
+          while the generator is paused at a yield; the consumer reads
+          it to mutate via ``_execute_tool_calls`` (legacy) or its own
+          path (Dispatcher). Cleared on resume.
+
+        See ``run_conversation`` (now a thin wrapper) for the public
+        sync API and the in-process drive loop that preserves legacy
+        callers (cli.py, oneshot.py, gateway). See
+        ``grove.dispatcher.Dispatcher.dispatch_turn`` for the
+        Dispatcher-driven path.
+
+        Args: identical to the legacy ``run_conversation`` signature
+            (user_message, system_message, conversation_history, task_id,
+            stream_callback, persist_user_message, already_routed).
+
+        Returns: legacy result dict via ``StopIteration.value``. Yields
+            ``List[ToolIntent]`` at the tool-dispatch boundary and
+            ``FinalResponse`` before turn completion.
         """
         # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
         # Installed once, transparent when streams are healthy, prevents crash on write.
@@ -15626,7 +15660,38 @@ class AIAgent:
                         except Exception:
                             pass
 
-                    self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                    # ── Sprint 26 Phase 3 — generator-shaped tool dispatch ──
+                    # Yield the batch of ToolIntents to the consumer
+                    # (run_conversation wrapper or Dispatcher.dispatch_turn).
+                    # The consumer executes the batch — for the legacy
+                    # wrapper, that means re-calling
+                    # self._execute_tool_calls under its authority via the
+                    # state stashed on self below. The consumer sends back
+                    # a List[Observation]; in Phase 3 MVP these are
+                    # informational because the messages list is mutated
+                    # by the consumer's executor.
+                    _intents = self._extract_tool_intents(assistant_message)
+                    if _intents:
+                        # Expose state for the consumer's executor. The
+                        # consumer reads these immediately after the yield;
+                        # they are cleared on resume.
+                        self._current_assistant_message = assistant_message
+                        self._current_messages = messages
+                        self._current_effective_task_id = effective_task_id
+                        self._current_api_call_count = api_call_count
+                        try:
+                            _observations = yield _intents
+                        finally:
+                            self._current_assistant_message = None
+                            self._current_messages = None
+                            self._current_effective_task_id = None
+                            self._current_api_call_count = None
+                        # Observation list is informational in Phase 3 MVP
+                        # — the consumer's executor mutated `messages` via
+                        # _execute_tool_calls (legacy) or its own path
+                        # (Dispatcher). Phase 4 adds zone classification +
+                        # may make Observations drive denial messages.
+                        del _observations
 
                     if self._tool_guardrail_halt_decision is not None:
                         decision = self._tool_guardrail_halt_decision
@@ -16396,7 +16461,151 @@ class AIAgent:
                     "classification_result", self._last_classification_result
                 )
 
+        # Sprint 26 Phase 3 — emit FinalResponse per GRV-005 § IV before
+        # returning the legacy result dict. Consumers tracking the v1
+        # intent protocol see this as the turn-completion signal.
+        # Per GATE-D: no try/except. If grove.intents fails to import,
+        # the runtime is fundamentally corrupted — fail loud.
+        from grove.intents import FinalResponse as _FinalResponse
+        yield _FinalResponse(
+            content=str(result.get("final_response") or "") if isinstance(result, dict) else "",
+            metadata={
+                "completed": (result.get("completed") if isinstance(result, dict) else None),
+                "api_calls": (result.get("api_calls") if isinstance(result, dict) else None),
+                "model": getattr(self, "model", ""),
+                "provider": getattr(self, "provider", ""),
+            },
+        )
+
         return result
+
+    # ── Sprint 26 Phase 3 — generator-shaped dispatch infrastructure ─────
+
+    def _extract_tool_intents(self, assistant_message) -> List[Any]:
+        """Convert an assistant message's tool_calls into ToolIntent objects.
+
+        Sprint 26 Phase 3. Handles both dict-style and object-style
+        assistant messages (the LLM provider adapters in this codebase
+        return both shapes depending on the API). Empty / malformed
+        tool_calls return an empty list — the dispatch site checks for
+        non-empty before yielding.
+        """
+        from grove.intents import ToolIntent
+        import json as _json
+        tool_calls = (
+            assistant_message.get("tool_calls")
+            if isinstance(assistant_message, dict)
+            else getattr(assistant_message, "tool_calls", None)
+        )
+        if not tool_calls:
+            return []
+        intents: List[Any] = []
+        for tc in tool_calls:
+            # Function name + arguments + call_id can come from dict or attr
+            if isinstance(tc, dict):
+                fn = tc.get("function") or {}
+                name = (fn.get("name") if isinstance(fn, dict) else "") or ""
+                args_raw = (fn.get("arguments") if isinstance(fn, dict) else "") or ""
+                call_id = tc.get("id")
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", "") if fn is not None else ""
+                args_raw = getattr(fn, "arguments", "") if fn is not None else ""
+                call_id = getattr(tc, "id", None)
+            try:
+                args = _json.loads(args_raw) if isinstance(args_raw, str) and args_raw else {}
+            except (ValueError, TypeError):
+                args = {}
+            intents.append(ToolIntent(
+                tool_name=str(name or ""),
+                arguments=args if isinstance(args, dict) else {},
+                call_id=str(call_id) if call_id is not None else None,
+            ))
+        return intents
+
+    def run_conversation(
+        self,
+        user_message: str,
+        system_message: str = None,
+        conversation_history: List[Dict[str, Any]] = None,
+        task_id: str = None,
+        stream_callback: Optional[callable] = None,
+        persist_user_message: Optional[str] = None,
+        already_routed: bool = False,
+    ) -> Dict[str, Any]:
+        """Public synchronous turn entry point — drives the generator in-process.
+
+        Sprint 26 Phase 3 wrapper. Existing callers (cli.py, oneshot.py,
+        gateway, batch_runner, tests) continue to use this method
+        unchanged. Internally, the wrapper drives ``_run_turn_generator``
+        and executes each yielded ``List[ToolIntent]`` via the legacy
+        ``_execute_tool_calls`` path — preserving parallelism, tool
+        guardrails, telemetry, and every other edge-case behavior of
+        the pre-Phase-3 implementation.
+
+        Per GRV-005 § II/III, true GRV-005-conformant dispatch lives
+        in ``grove.dispatcher.Dispatcher.dispatch_turn`` (the
+        Dispatcher consumes the same generator but executes under its
+        own authority). Phase 7 cleanup will migrate legacy callers
+        from this wrapper to the Dispatcher and remove the wrapper.
+        """
+        from grove.intents import FinalResponse, Observation
+        gen = self._run_turn_generator(
+            user_message=user_message,
+            system_message=system_message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+            stream_callback=stream_callback,
+            persist_user_message=persist_user_message,
+            already_routed=already_routed,
+        )
+        yielded: Any = None
+        send_value: Any = None
+        try:
+            yielded = gen.send(None)  # advance to first yield
+            while True:
+                if isinstance(yielded, list):
+                    # Batch of ToolIntents — execute via legacy path,
+                    # which mutates self._current_messages directly.
+                    asst = self._current_assistant_message
+                    msgs = self._current_messages
+                    task = self._current_effective_task_id
+                    api_n = self._current_api_call_count
+                    self._execute_tool_calls(asst, msgs, task, api_n)
+                    # Package informational Observations for the generator.
+                    # Observation values reflect the tool messages just
+                    # appended to msgs (last N entries). Phase 4 may tighten
+                    # the matching when zone-classification denials need
+                    # to be reflected back through Observations.
+                    observations: List[Any] = []
+                    for intent in yielded:
+                        tool_msg = None
+                        cid = intent.call_id
+                        if cid:
+                            for m in reversed(msgs):
+                                if isinstance(m, dict) and m.get("tool_call_id") == cid:
+                                    tool_msg = m
+                                    break
+                        value = ""
+                        if isinstance(tool_msg, dict):
+                            value = tool_msg.get("content", "")
+                        observations.append(Observation(
+                            intent_id=intent.call_id,
+                            success=True,
+                            value=value,
+                        ))
+                    send_value = observations
+                elif isinstance(yielded, FinalResponse):
+                    # Informational — the generator returns next.
+                    send_value = None
+                else:
+                    # Unrecognized payload (defensive — Phase 3 only yields
+                    # List[ToolIntent] and FinalResponse). Pass None to
+                    # advance the generator without crashing.
+                    send_value = None
+                yielded = gen.send(send_value)
+        except StopIteration as stop:
+            return stop.value  # legacy result dict
 
     def chat(self, message: str, stream_callback: Optional[callable] = None, *, already_routed: bool = False) -> str:
         """
