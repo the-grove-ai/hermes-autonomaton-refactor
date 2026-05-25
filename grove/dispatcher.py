@@ -417,6 +417,9 @@ class Dispatcher:
         layer and returns one of ``"skip"`` or ``"drop"``.
         """
         config = self._load_config_safely()
+        # Sprint 26 Phase 7 hotfix: prime the zone classifier singleton so
+        # Phase 4's classify() at ToolIntent yield has it ready.
+        import grove.zones as _zones; _zones.initialize()
         self._base_runtime_ctx = RuntimeContext(
             env=dict(os.environ),
             config=config,
