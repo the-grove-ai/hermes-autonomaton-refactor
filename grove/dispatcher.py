@@ -1,26 +1,32 @@
 """Grove Dispatcher — runtime entry point per GRV-005.
 
-Sprint 26 Phase 1a (dispatch-pipeline-implementation-v1) lands the
-structural seam: a Dispatcher class that captures substrate (env vars
-+ config snapshot) into a typed RuntimeContext, and an injection
-parameter on ``AIAgent.__init__`` that lets the Agent read from the
-context instead of touching substrate directly.
+Sprint 26 (dispatch-pipeline-implementation-v1). The Dispatcher owns
+the pre-agent pipeline per GRV-005 § II: substrate capture, heavy-
+resource caching, tier selection, agent construction, intent-yield
+classification, tool execution, and the Sovereign-Prompt disposition
+flow at Andon halts.
 
-Phase 1a is structural only. The Dispatcher does NOT yet:
-
-* Build heavy singletons (LLM client, tool registry, context compressor,
-  memory store). That lands in Phase 1b.
-* Invert tool execution. That lands in Phase 3.
-* Wire into ``cli.py`` as the runtime entry point. That lands when
-  the generator-shaped agent loop is in place.
-
-The full GRV-005 § II Dispatcher responsibilities — message-zone
-classification, tier selection before agent construction, tool
-execution authority, escalation decisions, post-turn Kaizen observation
-— populate across Phases 1b through 7. This Phase 1a module exists so
-the substrate extraction (Sprint 26 D4: 14 violations of the Agent
-contract that the GRV-005 inversion otherwise breaks) can land without
-also rewriting the heavy-resource construction path.
+Sprint 26 phase reference:
+  * Phase 1a — structural seam (RuntimeContext + Dispatcher skeleton)
+    landed the substrate snapshot the Agent reads through instead of
+    touching ``os.environ`` / config directly.
+  * Phase 1b — heavy-resource caching (LLM client, tool registry,
+    memory store, compression-feasibility probe) dropped per-turn
+    construction cost from 176ms → ~24ms (A7 averted).
+  * Phase 2 — intent protocol types in grove.intents.
+  * Phase 3 — generator-shaped agent loop. The Agent yields
+    ``List[ToolIntent]`` and ``FinalResponse``; the Dispatcher's
+    ``dispatch_turn`` consumes the generator under GRV-005 § II/III
+    authority.
+  * Phase 4 — tool-zone classification at intent yield. The Dispatcher
+    classifies every yielded batch; Yellow / Red triggers AndonHalt
+    (raised internally; caught by the dispatch loop).
+  * Phase 5 — mid-execution Andon disposition. AndonHalt is caught
+    and routed through the Sovereign Prompt; operator picks Skip
+    (inject denial Observation; generator continues) or Drop
+    (gen.close() flushes volatile turn state; persistent state
+    unchanged). The ``pending_andon`` persistent marker survives a
+    process restart so a session killed mid-prompt is recoverable.
 
 Backward compatibility: existing callers (cli.py, oneshot.py, gateway
 paths, tests) construct ``AIAgent(...)`` directly without going through
@@ -31,10 +37,14 @@ removes the fallback once every caller routes through the Dispatcher.
 
 from __future__ import annotations
 
+import json as _json_mod
 import logging
 import os
+import sys as _sys
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, TypeVar
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +242,79 @@ class CompressionProbe:
     aux_cfg_provider: str
 
 
+# ── Sovereign Prompt (Sprint 26 Phase 5) ──────────────────────────────────
+
+
+def _default_sovereign_prompt(halt: "AndonHalt") -> str:
+    """The Phase 5 MVP TTY Sovereign Prompt.
+
+    GRV-005 § IX(3) requires the Sovereign Prompt to "decouple the
+    decision payload from standard conversational text, presenting the
+    intent, arguments, and disposition options in a structured,
+    deterministic interface." This function prints the structured
+    block to stderr and reads the operator's disposition via input().
+
+    Returns one of:
+      * ``"skip"`` — the operator wants to skip this batch; the
+        Dispatcher injects a denial Observation and the Agent re-reasons.
+      * ``"drop"`` — the operator wants to abandon the turn entirely;
+        the Dispatcher calls ``gen.close()`` to flush volatile state.
+
+    Defaults to ``"drop"`` on EOF / KeyboardInterrupt (safest default
+    when stdin is unavailable). Non-TTY callers (gateway, web) must
+    inject a custom handler via the Dispatcher's constructor.
+    """
+    triggering = halt.intents[halt.triggering_index]
+    print(file=_sys.stderr)
+    print(
+        "─── Andon Halt — Sovereign Disposition Required ──────────",
+        file=_sys.stderr,
+    )
+    print(f"  Zone:        {halt.zone}", file=_sys.stderr)
+    print(f"  Matched:     {halt.matched_rule}", file=_sys.stderr)
+    print(f"  Source:      {halt.source}", file=_sys.stderr)
+    if halt.reason:
+        print(f"  Reason:      {halt.reason}", file=_sys.stderr)
+    print(file=_sys.stderr)
+    print(
+        f"  Batch ({len(halt.intents)} intent"
+        f"{'s' if len(halt.intents) != 1 else ''}):",
+        file=_sys.stderr,
+    )
+    for idx, (intent, zr) in enumerate(zip(halt.intents, halt.zone_results)):
+        marker = "→" if idx == halt.triggering_index else " "
+        args_preview = str(dict(intent.arguments))[:80]
+        print(
+            f"  {marker} #{idx} [{zr.zone:6}] {intent.tool_name}: {args_preview}",
+            file=_sys.stderr,
+        )
+    print(file=_sys.stderr)
+    print("  Dispositions:", file=_sys.stderr)
+    print(
+        "    [1] Skip — inject denial; let the agent re-reason or pivot",
+        file=_sys.stderr,
+    )
+    print(
+        "    [2] Drop — flush this turn; persistent state unchanged",
+        file=_sys.stderr,
+    )
+    print(file=_sys.stderr)
+    while True:
+        try:
+            choice = input("Choose [1/2 or skip/drop]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("(no input — defaulting to Drop)", file=_sys.stderr)
+            return "drop"
+        if choice in ("1", "skip"):
+            return "skip"
+        if choice in ("2", "drop"):
+            return "drop"
+        print(
+            f"Unknown choice {choice!r}; pick 1/skip or 2/drop.",
+            file=_sys.stderr,
+        )
+
+
 # ── Andon halt exception (Sprint 26 Phase 4) ──────────────────────────────
 
 
@@ -307,8 +390,12 @@ class Dispatcher:
     add a ``/reload`` slash command that rebuilds the Dispatcher.)
     """
 
-    def __init__(self) -> None:
-        """Capture the substrate snapshot.
+    def __init__(
+        self,
+        *,
+        sovereign_prompt_handler: Optional[Callable[["AndonHalt"], str]] = None,
+    ) -> None:
+        """Capture the substrate snapshot and install Phase 5 disposition handler.
 
         Reads ``os.environ`` and calls ``hermes_cli.config.load_config()``
         — the two substrate surfaces D4 audited. The Agent constructed
@@ -320,11 +407,21 @@ class Dispatcher:
         via ``runtime_context_for(...)``. Construction at Dispatcher
         ``__init__`` time stays light so the Dispatcher itself does not
         impose a startup tax.
+
+        Phase 5 disposition: ``sovereign_prompt_handler`` is the function
+        the Dispatcher calls when an AndonHalt fires during
+        ``dispatch_turn``. Defaults to the TTY-mode
+        ``_default_sovereign_prompt``. Non-TTY callers (gateway, web)
+        inject a callback that surfaces the prompt through their UX
+        layer and returns one of ``"skip"`` or ``"drop"``.
         """
         config = self._load_config_safely()
         self._base_runtime_ctx = RuntimeContext(
             env=dict(os.environ),
             config=config,
+        )
+        self._sovereign_prompt_handler: Callable[["AndonHalt"], str] = (
+            sovereign_prompt_handler or _default_sovereign_prompt
         )
         # ── Sprint 26 Phase 1b — heavy resource caches ───────────────
         # Keyed by deterministic call-shape tuples. Each entry holds the
@@ -698,39 +795,80 @@ class Dispatcher:
             ``StopIteration.value``. Shape matches the pre-Phase-3
             ``run_conversation`` return value byte-for-byte.
         """
+        gen = agent._run_turn_generator(user_message=user_message, **kwargs)
+        try:
+            return self._drive_generator(agent, gen)
+        finally:
+            # Ensure the generator is closed even if _drive_generator
+            # raised an unexpected exception. gen.close() is idempotent;
+            # if Drop disposition already closed it, this is a no-op.
+            # Python 3 raises GeneratorExit at the yield point, which
+            # propagates cleanly through this codebase's `except
+            # Exception` blocks (A6 audit confirmed zero bare-except /
+            # except-BaseException sites in _run_turn_generator body).
+            gen.close()
+
+    def _drive_generator(self, agent: Any, gen: Any) -> Dict[str, Any]:
+        """Consume the agent's generator under GRV-005 § II/III authority.
+
+        Sprint 26 Phase 5 routes AndonHalt through the Sovereign Prompt;
+        on Skip, denial Observations resume the generator; on Drop, the
+        Dispatcher closes the generator and returns a drop result.
+        """
         from grove.intents import FinalResponse, Observation
 
-        gen = agent._run_turn_generator(user_message=user_message, **kwargs)
         try:
             yielded = gen.send(None)  # advance to first yield
             while True:
                 if isinstance(yielded, list):
-                    # ── Sprint 26 Phase 4 — tool-zone classification at intent-yield ──
-                    # Per GRV-005 § V: classification fires per ToolIntent
-                    # batch at the yield boundary, before execution. Per the
-                    # D6 lock, the batch is the unit — if ANY intent crosses
-                    # Yellow / Red, the whole batch halts via AndonHalt.
-                    # Phase 5 adds the Sovereign Prompt + disposition
-                    # semantics (Skip/Drop); Phase 4 just fires + halts.
-                    self._classify_intents_batch_and_halt_or_raise(yielded)
-
-                    # ── Phase 3 path — execute the batch ──
-                    # ToolIntent batch — execute via the Agent's existing
-                    # _execute_tool_calls (which mutates the messages list
-                    # the generator exposed on agent._current_messages).
+                    # Phase 4 — classify the batch at intent-yield
+                    try:
+                        self._classify_intents_batch_and_halt_or_raise(yielded)
+                    except AndonHalt as halt:
+                        # Phase 5 — Sovereign Prompt + disposition flow
+                        disposition = self._handle_andon_halt(agent, halt)
+                        if disposition == "skip":
+                            # Inject denial Observations + append denial
+                            # tool messages to the messages list so the
+                            # LLM context stays consistent (every
+                            # assistant tool_call has a paired tool
+                            # response message — required by every
+                            # provider's API).
+                            observations = self._build_skip_observations(
+                                agent, halt.intents,
+                            )
+                            yielded = gen.send(observations)
+                            continue
+                        if disposition == "drop":
+                            # Phase 5 Drop: close the generator (raises
+                            # GeneratorExit at the yield, generator's
+                            # finally clears agent._current_*); flush
+                            # volatile turn state; persistent state stays
+                            # at its pre-turn snapshot.
+                            return self._format_drop_result(agent, halt)
+                        raise ValueError(
+                            f"Sovereign prompt returned unknown disposition: "
+                            f"{disposition!r} (expected 'skip' or 'drop')"
+                        )
+                    # Green path: execute the batch via the Agent's
+                    # legacy executor (preserves parallelism, guardrails,
+                    # telemetry). Phase 7 cleanup will move this into
+                    # the Dispatcher itself.
                     asst = agent._current_assistant_message
                     msgs = agent._current_messages
                     task = agent._current_effective_task_id
                     api_n = agent._current_api_call_count
                     agent._execute_tool_calls(asst, msgs, task, api_n)
-                    # Package informational Observations for the generator.
                     observations: List[Any] = []
                     for intent in yielded:
                         tool_msg = None
                         cid = intent.call_id
                         if cid:
                             for m in reversed(msgs):
-                                if isinstance(m, dict) and m.get("tool_call_id") == cid:
+                                if (
+                                    isinstance(m, dict)
+                                    and m.get("tool_call_id") == cid
+                                ):
                                     tool_msg = m
                                     break
                         value = ""
@@ -743,22 +881,11 @@ class Dispatcher:
                         ))
                     yielded = gen.send(observations)
                 elif isinstance(yielded, FinalResponse):
-                    # The generator's contract: FinalResponse signals
-                    # the turn is ending; the next .send() drives it to
-                    # the return statement and raises StopIteration.
                     yielded = gen.send(None)
                 else:
-                    # Unrecognized payload (defensive). Advance with None.
                     yielded = gen.send(None)
         except StopIteration as stop:
             return stop.value
-        except AndonHalt as halt:
-            # Close the generator cleanly so its `finally` blocks run
-            # (clears agent._current_* stash etc.). Phase 5 will replace
-            # this close() with the Sovereign Prompt + disposition routing
-            # (Skip: resume with denial Observation; Drop: close + flush).
-            gen.close()
-            return self._format_andon_halt_result(agent, halt)
 
     # ── Phase 4 helpers ──────────────────────────────────────────────────
 
@@ -837,6 +964,257 @@ class Dispatcher:
         # Generic path: derive a dot-notation action from the tool name.
         action = f"tool.{tool_name}" if tool_name else "tool.unknown"
         return _classify(action)
+
+    # ── Phase 5 helpers (disposition flow + pending_andon marker) ────────
+
+    def _handle_andon_halt(self, agent: Any, halt: "AndonHalt") -> str:
+        """Write the pending_andon marker, prompt the operator, clear marker.
+
+        Returns the operator's disposition: ``"skip"`` or ``"drop"``.
+
+        The marker write happens BEFORE the prompt so a process killed
+        mid-prompt leaves a recoverable trail. The marker clear runs in
+        a ``finally`` so it always fires, including when the prompt
+        raises.
+
+        Per D3 lock: pending_andon is a structural persistent marker —
+        not a serialization of the generator state (which contains
+        unpicklable references like LLM clients and thread locks). On
+        process restart, ``check_pending_andon()`` surfaces the marker
+        so the operator can acknowledge the lost turn (Phase 5 MVP) or
+        — in a future sprint — invoke a recovery flow.
+        """
+        marker_path = self._write_pending_andon(agent, halt)
+        try:
+            disposition = self._sovereign_prompt_handler(halt)
+        finally:
+            self._clear_pending_andon(agent, marker_path)
+        return disposition
+
+    def _build_skip_observations(
+        self, agent: Any, intents: List[Any],
+    ) -> List[Any]:
+        """Phase 5 Skip — append denial tool messages + build Observations.
+
+        For each intent in the halted batch:
+          * Append a tool message to the agent's messages list with a
+            denial body (so the next LLM call sees a paired tool
+            response for every assistant tool_call — required by every
+            provider's API).
+          * Build an Observation carrying ``success=False`` and the
+            denial body as ``value``; the generator's downstream
+            consumer (Phase 4 says Observations are informational
+            because messages is the source of truth — Phase 5's Skip
+            keeps that invariant).
+        """
+        from grove.intents import Observation
+
+        # CAREFUL: `or []` here would replace the agent's empty messages
+        # list with a fresh detached list; mutations would not propagate
+        # back to the generator's local. Use an explicit None check.
+        msgs = getattr(agent, "_current_messages", None)
+        if msgs is None:
+            msgs = []
+        observations: List[Any] = []
+        for intent in intents:
+            denial = (
+                f"⚠ Operator skipped tool '{intent.tool_name}' at Andon halt. "
+                f"This call did not execute; the operator declined to run it."
+            )
+            tool_call_id = intent.call_id or ""
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": denial,
+            })
+            observations.append(Observation(
+                intent_id=intent.call_id,
+                success=False,
+                value=denial,
+                metadata={"disposition": "skip", "reason": "andon_skip"},
+            ))
+        return observations
+
+    @staticmethod
+    def _format_drop_result(
+        agent: Any, halt: "AndonHalt",
+    ) -> Dict[str, Any]:
+        """Phase 5 Drop — flush volatile turn state; persistent unchanged.
+
+        Per § IX(3): "Disposition: Drop — The Dispatcher MUST forcefully
+        terminate the generator. The volatile context array MUST be
+        flushed. The persistent state MUST remain identical to the
+        millisecond before the operator initiated the turn."
+
+        The ``gen.close()`` call in the outer ``dispatch_turn`` (via the
+        ``finally`` block) raises GeneratorExit at the yield point, the
+        generator's own finally clears ``agent._current_*``, and the
+        in-flight messages list (volatile) is discarded — it was never
+        committed to the persistent session store because the legacy
+        code path only persists at specific commit points that haven't
+        been reached when an intent-yield halt fires.
+
+        For Phase 5 MVP, this method returns a result dict carrying the
+        Drop outcome. The caller's persistent session_db is unchanged
+        (no writes happen here).
+        """
+        triggering_intent = halt.intents[halt.triggering_index]
+        return {
+            "final_response": (
+                f"⚠ Turn dropped by operator (Andon: tool "
+                f"'{triggering_intent.tool_name}' classified as "
+                f"{halt.zone} zone)."
+            ),
+            "completed": False,
+            "interrupted": False,
+            "partial": True,
+            "messages": [],  # volatile state flushed per § IX(3)
+            "api_calls": getattr(agent, "_current_api_call_count", 0) or 0,
+            "turn_exit_reason": "andon_drop",
+            "andon_disposition": {
+                "disposition": "drop",
+                "zone": halt.zone,
+                "matched_rule": halt.matched_rule,
+                "triggering_intent": {
+                    "tool_name": triggering_intent.tool_name,
+                    "arguments": dict(triggering_intent.arguments),
+                    "call_id": triggering_intent.call_id,
+                },
+            },
+            "model": getattr(agent, "model", ""),
+            "provider": getattr(agent, "provider", ""),
+        }
+
+    # ── D3 pending_andon marker (Phase 5 — process-restart resilience) ───
+
+    @staticmethod
+    def _pending_andon_dir() -> Path:
+        """The directory holding pending_andon markers.
+
+        Operator-side path: ``~/.grove/.pending_andon/<session_id>.json``.
+        A separate directory (not the session_db) keeps the marker
+        independent of any specific DB schema and makes Phase 6/7
+        startup recovery a trivial file-listing operation.
+        """
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home()) / ".pending_andon"
+
+    @classmethod
+    def _write_pending_andon(
+        cls, agent: Any, halt: "AndonHalt",
+    ) -> Path:
+        """Write a pending_andon marker for D3 process-restart resilience.
+
+        The marker carries the minimum information needed to acknowledge
+        the lost turn on a restart: session_id, the triggering halt's
+        zone + rule, the intent batch's tool names and call_ids, and a
+        timestamp. The full generator state is NOT serialized —
+        ``_run_turn_generator`` holds references to LLM clients,
+        thread-local context, and other unpicklable objects, and
+        re-creating that state cleanly is a horizon problem.
+
+        On startup, ``check_pending_andon()`` surfaces these markers so
+        the operator can acknowledge them (recovery from a paused turn
+        is a Phase 6/7 capability; Phase 5 just records the marker and
+        ensures the Dispatcher knows it exists).
+        """
+        marker_dir = cls._pending_andon_dir()
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        session_id = getattr(agent, "session_id", None) or "unknown"
+        # Sanitize session_id for filename use (defensive — session IDs
+        # are typically safe but we don't want a malformed id to break
+        # the marker write).
+        safe_id = "".join(
+            c if c.isalnum() or c in ("-", "_") else "_"
+            for c in str(session_id)
+        )[:128]
+        marker_path = marker_dir / f"{safe_id}.json"
+        payload = {
+            "session_id": session_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "halt": {
+                "zone": halt.zone,
+                "matched_rule": halt.matched_rule,
+                "source": halt.source,
+                "reason": halt.reason,
+                "triggering_index": halt.triggering_index,
+            },
+            "intents": [
+                {
+                    "tool_name": i.tool_name,
+                    "call_id": i.call_id,
+                }
+                for i in halt.intents
+            ],
+        }
+        marker_path.write_text(
+            _json_mod.dumps(payload, indent=2), encoding="utf-8",
+        )
+        logger.debug(
+            "[grove.dispatcher] pending_andon marker written: %s",
+            marker_path,
+        )
+        return marker_path
+
+    @classmethod
+    def _clear_pending_andon(
+        cls, agent: Any, marker_path: Optional[Path] = None,
+    ) -> None:
+        """Remove a pending_andon marker after disposition completes.
+
+        Best-effort: a missing file or unlink failure is logged at debug
+        but does not raise. The marker is informational; failing to
+        clear it leaves a stale entry the operator can see on restart
+        (worst case: an extra prompt to acknowledge).
+        """
+        if marker_path is None:
+            session_id = getattr(agent, "session_id", None) or "unknown"
+            safe_id = "".join(
+                c if c.isalnum() or c in ("-", "_") else "_"
+                for c in str(session_id)
+            )[:128]
+            marker_path = cls._pending_andon_dir() / f"{safe_id}.json"
+        try:
+            if marker_path.exists():
+                marker_path.unlink()
+        except OSError as exc:
+            logger.debug(
+                "[grove.dispatcher] could not clear pending_andon "
+                "marker at %s: %r",
+                marker_path, exc,
+            )
+
+    @classmethod
+    def check_pending_andon(cls) -> List[Dict[str, Any]]:
+        """Return any pending_andon markers from prior sessions.
+
+        A Dispatcher / CLI starting fresh calls this to detect turns
+        abandoned during a Sovereign Prompt (e.g., the process was
+        killed while waiting for operator input). Phase 5 MVP just
+        surfaces them; a future sprint can wire actual recovery
+        (replay the user message that triggered the paused turn, or
+        ack-and-discard).
+
+        Returns a list of marker payload dicts, one per marker file.
+        Markers that fail to parse are skipped (logged at debug).
+        """
+        marker_dir = cls._pending_andon_dir()
+        if not marker_dir.exists():
+            return []
+        markers: List[Dict[str, Any]] = []
+        for path in sorted(marker_dir.glob("*.json")):
+            try:
+                content = path.read_text(encoding="utf-8")
+                payload = _json_mod.loads(content)
+                payload["_marker_path"] = str(path)
+                markers.append(payload)
+            except (OSError, ValueError) as exc:
+                logger.debug(
+                    "[grove.dispatcher] could not read pending_andon "
+                    "marker at %s: %r",
+                    path, exc,
+                )
+        return markers
 
     @staticmethod
     def _format_andon_halt_result(
