@@ -520,10 +520,12 @@ class TestPhase4ZoneClassification:
         from grove.zones import ZoneResult
 
         def _by_tool(action: str):
-            # Synthetic: tool.read → green, tool.write → red
-            if action == "tool.read":
+            # Synthetic: read → green, write → red. The classifier
+            # receives the bare tool_name (no ``tool.`` prefix) per
+            # zones.schema.yaml::tool_zones convention.
+            if action == "read":
                 return ZoneResult(zone="green", matched_rule=action, source="t")
-            if action == "tool.write":
+            if action == "write":
                 return ZoneResult(zone="red", matched_rule=action, source="t")
             return ZoneResult(zone="green", matched_rule=action, source="t")
         monkeypatch.setattr(_zones, "classify", _by_tool)

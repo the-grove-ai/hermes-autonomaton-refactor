@@ -236,6 +236,115 @@ tool_zones:
   cron.create:               yellow
   cron.delete:               yellow
 
+  # ── Daily-driver tool surface (hotfix: read-green, write-yellow) ──
+  # Operator trust model: GREEN = reads/context-gathering execute
+  # silently; YELLOW = external writes go through Sovereign Prompt;
+  # RED = destructive or security-sensitive actions cannot execute.
+  # Tool-name lookups are exact-match against the bare name yielded
+  # in ToolIntent.tool_name (see grove/dispatcher._classify_one_intent).
+  #
+  # ── Native tools: READ / context-gathering → GREEN ──
+  browser_back:                              green
+  browser_console:                           green
+  browser_get_images:                        green
+  browser_navigate:                          green
+  browser_scroll:                            green
+  browser_snapshot:                          green
+  browser_vision:                            green
+  clarify:                                   green
+  feishu_doc_read:                           green
+  feishu_drive_list_comment_replies:         green
+  feishu_drive_list_comments:                green
+  ha_get_state:                              green
+  ha_list_entities:                          green
+  ha_list_services:                          green
+  kanban_list:                               green
+  kanban_show:                               green
+  memory:                                    green
+  read_file:                                 green
+  search_files:                              green
+  session_search:                            green
+  skill_view:                                green
+  skills_list:                               green
+  todo:                                      green
+  video_analyze:                             green
+  vision_analyze:                            green
+  web_extract:                               green
+  web_search:                                green
+  x_search:                                  green
+  yb_query_group_info:                       green
+  yb_query_group_members:                    green
+  yb_search_sticker:                         green
+
+  # ── Native tools: WRITE / external modification → YELLOW ──
+  browser_cdp:                               yellow
+  browser_click:                             yellow
+  browser_dialog:                            yellow
+  browser_press:                             yellow
+  browser_type:                              yellow
+  cronjob:                                   yellow
+  delegate_task:                             yellow
+  discord:                                   yellow
+  execute_code:                              yellow
+  feishu_drive_add_comment:                  yellow
+  feishu_drive_reply_comment:                yellow
+  ha_call_service:                           yellow
+  image_generate:                            yellow
+  kanban_block:                              yellow
+  kanban_comment:                            yellow
+  kanban_complete:                           yellow
+  kanban_create:                             yellow
+  kanban_heartbeat:                          yellow
+  kanban_link:                               yellow
+  kanban_unblock:                            yellow
+  mixture_of_agents:                         yellow
+  patch:                                     yellow
+  process:                                   yellow
+  send_message:                              yellow
+  skill_manage:                              yellow
+  text_to_speech:                            yellow
+  video_generate:                            yellow
+  write_file:                                yellow
+  yb_send_dm:                                yellow
+  yb_send_sticker:                           yellow
+
+  # ── Native tools: SECURITY / SYSTEM → RED ──
+  # OS-level UI automation; keystroke-injection territory.
+  computer_use:                              red
+  # Role/permission management on a shared service.
+  discord_admin:                             red
+
+  # ── Notion MCP bridge: READ → GREEN ──
+  # Names follow `mcp_<server>_<operation>` per tools/mcp_tool.py.
+  # Notion is the only MCP server on the grove-autonomaton CLI;
+  # Google Workspace runs through Claude Desktop, not this CLI.
+  mcp_notion_API_get_block_children:         green
+  mcp_notion_API_get_self:                   green
+  mcp_notion_API_get_user:                   green
+  mcp_notion_API_get_users:                  green
+  mcp_notion_API_list_data_source_templates: green
+  mcp_notion_API_post_search:                green
+  mcp_notion_API_query_data_source:          green
+  mcp_notion_API_retrieve_a_block:           green
+  mcp_notion_API_retrieve_a_comment:         green
+  mcp_notion_API_retrieve_a_database:        green
+  mcp_notion_API_retrieve_a_data_source:     green
+  mcp_notion_API_retrieve_a_page:            green
+  mcp_notion_API_retrieve_a_page_property:   green
+
+  # ── Notion MCP bridge: WRITE → YELLOW ──
+  mcp_notion_API_create_a_comment:           yellow
+  mcp_notion_API_create_a_data_source:       yellow
+  mcp_notion_API_move_page:                  yellow
+  mcp_notion_API_patch_block_children:       yellow
+  mcp_notion_API_patch_page:                 yellow
+  mcp_notion_API_post_page:                  yellow
+  mcp_notion_API_update_a_block:             yellow
+  mcp_notion_API_update_a_data_source:       yellow
+
+  # ── Notion MCP bridge: DELETE → RED ──
+  mcp_notion_API_delete_a_block:             red
+
   # ── Hierarchical example (commented out — zero behavior change) ──
   # Uncomment + edit to opt your terminal tool into argument-level
   # rules. The example below replaces the bare `terminal: yellow`

@@ -1188,8 +1188,13 @@ class Dispatcher:
                 return _grove_dispatch.classify_command(
                     command, tool_id=tool_name,
                 )
-        # Generic path: derive a dot-notation action from the tool name.
-        action = f"tool.{tool_name}" if tool_name else "tool.unknown"
+        # Generic path: the action string IS the bare tool_name, matching
+        # the convention in zones.schema.yaml::tool_zones (entries like
+        # ``terminal``, ``calendar.read``, ``notion_search``). The earlier
+        # ``tool.<name>`` prefix was a Phase 4 defect — it produced action
+        # strings no schema entry could ever match, making every non-
+        # terminal tool default-yellow regardless of configuration.
+        action = tool_name if tool_name else "unknown"
         return _classify(action)
 
     # ── Phase 5 helpers (disposition flow + pending_andon marker) ────────
