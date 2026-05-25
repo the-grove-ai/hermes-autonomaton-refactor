@@ -6039,6 +6039,126 @@ class HermesCLI:
         except OSError as exc:
             _cprint(f"  {_DIM}(snapshot write failed: {exc}){_RST}")
 
+    def _handle_register_command(self, command: str) -> None:
+        """Sprint 23 — show or switch the session's register overlay.
+
+        Forms:
+            /register             — show the active register + source.
+            /register list        — enumerate available registers.
+            /register reset       — clear the session override; revert
+                                    to soul.md's declared default on
+                                    the next turn.
+            /register <name>      — set the session override; next turn
+                                    composes with that overlay.
+
+        Session-state only. No file writes; the override evaporates at
+        session end and the next session re-reads soul.md. The Sprint 23
+        D7 anti-canon constraint: this command modulates voice within
+        the soul's authority — it does NOT hot-swap the entire identity.
+        Hermes ``/personality`` is rejected; ``/register`` is its
+        sovereignty-respecting replacement.
+        """
+        if not getattr(self, "agent", None):
+            _cprint(f"  {_DIM}/register requires an active agent.{_RST}")
+            return
+        try:
+            from grove.register import list_registers, validate_soul_register
+            from grove.identity import IdentityError
+            from grove.skills import parse_frontmatter
+            from hermes_constants import get_hermes_home
+        except ImportError as exc:
+            _cprint(f"  {_DIM}/register unavailable: {exc}{_RST}")
+            return
+
+        parts = command.strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        arg_lower = arg.lower()
+
+        home = get_hermes_home()
+
+        if arg_lower == "list":
+            registers = list_registers(home)
+            if registers:
+                print(f"  Available registers: {', '.join(registers)}")
+            else:
+                _cprint(
+                    f"  {_DIM}(no registers found — reference templates may be missing){_RST}"
+                )
+            return
+
+        if arg_lower == "reset":
+            override = getattr(self.agent, "session_register", None)
+            if override is None:
+                _cprint(
+                    f"  {_DIM}No session override active; already using soul-declared default.{_RST}"
+                )
+                return
+            self.agent.set_session_register(None)
+            print("  Session register override cleared. Soul-declared default active on next turn.")
+            return
+
+        # Determine the soul-declared default by reading soul.md frontmatter
+        # directly. Cheaper than calling load_identity() (which also runs
+        # introspection) and the handler only needs the raw declared value
+        # for the display branch.
+        soul_default: Optional[str] = None
+        soul_path = home / "soul.md"
+        soul_text = ""
+        if soul_path.exists():
+            try:
+                soul_text = soul_path.read_text(encoding="utf-8")
+            except OSError:
+                soul_text = ""
+        if not soul_text:
+            ref = Path(__file__).resolve().parent / "config" / "identity" / "soul.md"
+            if ref.exists():
+                try:
+                    soul_text = ref.read_text(encoding="utf-8")
+                except OSError:
+                    soul_text = ""
+        if soul_text:
+            try:
+                fm, _body = parse_frontmatter(soul_text)
+                raw = fm.get("register") if isinstance(fm, dict) else None
+                try:
+                    soul_default = validate_soul_register(raw, home)
+                except IdentityError:
+                    soul_default = None
+            except ValueError:
+                soul_default = None
+
+        if arg == "":
+            override = getattr(self.agent, "session_register", None)
+            if override:
+                print(f"  Active register: {override}")
+                print("  Source: session overlay (use /register reset to revert)")
+                if soul_default and soul_default != override:
+                    print(f"  Soul default: {soul_default}")
+            elif soul_default:
+                print(f"  Active register: {soul_default}")
+                print("  Source: soul.md frontmatter")
+            else:
+                print("  Active register: (none)")
+                _cprint(
+                    f"  {_DIM}Source: soul.md has no register field; composition skips the overlay.{_RST}"
+                )
+            return
+
+        # /register <name> — validate then switch.
+        try:
+            canonical = validate_soul_register(arg, home)
+        except IdentityError as exc:
+            _cprint(f"  {_DIM}{exc}{_RST}")
+            return
+        if canonical is None:
+            _cprint(f"  {_DIM}Invalid register name.{_RST}")
+            return
+        self.agent.set_session_register(canonical)
+        if canonical != arg:
+            print(f"  Register switched to '{canonical}' (mapped from '{arg}'). Active on next turn.")
+        else:
+            print(f"  Register switched to '{canonical}'. Active on next turn.")
+
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
@@ -8200,6 +8320,8 @@ class HermesCLI:
             self._handle_why_command()
         elif canonical == "tier":
             self._handle_tier_command(cmd_original)
+        elif canonical == "register":
+            self._handle_register_command(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":
