@@ -618,6 +618,89 @@ class Dispatcher:
         self._compression_probe_cache = probe
         return probe
 
+    # ── Sprint 26 Phase 3 — generator-shaped turn dispatch ──────────────
+
+    def dispatch_turn(
+        self,
+        agent: Any,
+        user_message: str,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Drive the Agent's ``_run_turn_generator`` under GRV-005 § II authority.
+
+        The GRV-005-conformant entry point for running a turn. The
+        Agent yields intents; the Dispatcher executes them and sends
+        ``Observation`` instances back. The Agent never executes a
+        tool directly — that authority lives here (§ II/III).
+
+        Phase 3 MVP scope: executes ``List[ToolIntent]`` batches via
+        ``agent._execute_tool_calls``, preserving the existing
+        parallel-or-sequential semantics, tool guardrails, and
+        telemetry the legacy ``run_conversation`` path uses.
+        Tool-zone classification at intent-yield (§ V) is Phase 4;
+        Andon halt + disposition handling (§ VI) is Phase 5;
+        EscalationRequest decisions (§ VII) are Sprint 27.
+
+        Args:
+            agent: an ``AIAgent`` instance whose
+                ``_run_turn_generator`` will be driven.
+            user_message: the operator's input for this turn.
+            **kwargs: forwarded to ``_run_turn_generator`` (system_message,
+                conversation_history, task_id, stream_callback,
+                persist_user_message, already_routed).
+
+        Returns:
+            The legacy result dict the Agent's generator produces via
+            ``StopIteration.value``. Shape matches the pre-Phase-3
+            ``run_conversation`` return value byte-for-byte.
+        """
+        from grove.intents import FinalResponse, Observation
+
+        gen = agent._run_turn_generator(user_message=user_message, **kwargs)
+        try:
+            yielded = gen.send(None)  # advance to first yield
+            while True:
+                if isinstance(yielded, list):
+                    # ToolIntent batch — execute via the Agent's existing
+                    # _execute_tool_calls (which mutates the messages list
+                    # the generator exposed on agent._current_messages).
+                    # Phase 4 will gate this with zone classification at
+                    # intent-yield; Phase 5 will route through Andon halt.
+                    asst = agent._current_assistant_message
+                    msgs = agent._current_messages
+                    task = agent._current_effective_task_id
+                    api_n = agent._current_api_call_count
+                    agent._execute_tool_calls(asst, msgs, task, api_n)
+                    # Package informational Observations for the generator.
+                    observations: List[Any] = []
+                    for intent in yielded:
+                        tool_msg = None
+                        cid = intent.call_id
+                        if cid:
+                            for m in reversed(msgs):
+                                if isinstance(m, dict) and m.get("tool_call_id") == cid:
+                                    tool_msg = m
+                                    break
+                        value = ""
+                        if isinstance(tool_msg, dict):
+                            value = tool_msg.get("content", "")
+                        observations.append(Observation(
+                            intent_id=intent.call_id,
+                            success=True,
+                            value=value,
+                        ))
+                    yielded = gen.send(observations)
+                elif isinstance(yielded, FinalResponse):
+                    # The generator's contract: FinalResponse signals
+                    # the turn is ending; the next .send() drives it to
+                    # the return statement and raises StopIteration.
+                    yielded = gen.send(None)
+                else:
+                    # Unrecognized payload (defensive). Advance with None.
+                    yielded = gen.send(None)
+        except StopIteration as stop:
+            return stop.value
+
     def _get_or_build_context_length(self, model: str) -> Optional[int]:
         """Build (or return cached) model context-length probe result.
 
