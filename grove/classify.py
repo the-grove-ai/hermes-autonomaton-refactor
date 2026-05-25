@@ -155,11 +155,39 @@ def _telemetry_tier_runtime() -> dict:
 
 
 def _call_classifier(runtime: dict, message: str) -> str:
-    """Make the Haiku classification call; return the raw JSON text."""
-    import anthropic
+    """Make the Haiku classification call; return the raw JSON text.
 
-    client = anthropic.Anthropic(
-        api_key=runtime.get("api_key"),
+    S22.1 — credential-aware client construction. The bare
+    ``anthropic.Anthropic(api_key=...)`` constructor always sends the
+    token in the ``x-api-key`` header, which is correct for
+    ``sk-ant-api*`` keys but produces 401 ``invalid x-api-key`` for
+    OAuth bearer tokens (Claude Code subscriptions, setup-tokens,
+    JWTs). The canonical agent-side client builder
+    ``agent.anthropic_adapter.build_anthropic_client`` already
+    auto-detects token shape and routes OAuth tokens through
+    ``auth_token=`` (Bearer + the oauth-2025-04-20 beta + Claude
+    Code identity headers). Reuse it here so the classifier has
+    parity with every other agent call site and so any future auth
+    scheme added to ``build_anthropic_client`` is picked up
+    automatically.
+
+    ``auth_type`` from the runtime dict (S22.1 — threaded through
+    ``resolve_tier_to_runtime``) is logged at debug level so an
+    operator inspecting routing telemetry can see which path the
+    classifier took without inspecting the token itself.
+    """
+    from agent.anthropic_adapter import build_anthropic_client
+
+    api_key = runtime.get("api_key") or ""
+    auth_type = runtime.get("auth_type") or "unspecified"
+    logger.debug(
+        "[classify] T-telemetry runtime: model=%r base_url=%r auth_type=%r",
+        runtime.get("model"),
+        runtime.get("base_url"),
+        auth_type,
+    )
+    client = build_anthropic_client(
+        api_key=api_key,
         base_url=runtime.get("base_url") or None,
     )
     response = client.messages.create(
