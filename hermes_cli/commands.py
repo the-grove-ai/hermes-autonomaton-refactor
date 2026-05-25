@@ -108,6 +108,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
+    CommandDef("context", "Show per-section token breakdown for the current turn (writes JSON snapshot to ~/.grove/.context_snapshots/)", "Info",
+               cli_only=True),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
