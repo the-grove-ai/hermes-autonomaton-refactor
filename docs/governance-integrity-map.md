@@ -96,6 +96,47 @@ now block tool calls instead of silently permitting them. The block message
 names the failure mode and points at `config/zones.schema.yaml`, `grove/dispatch.py`,
 and `grove/zones.py` for diagnosis.
 
+### I4 preserved through S22 zone-parameter evolution
+
+Sprint 22 evolved `tool_zones` from a flat mapping (`terminal: yellow`)
+to optional hierarchical entries with argument-level rules
+(`terminal: {default_zone: yellow, rules: [...]}`). The new
+`grove.zones.ZoneClassifier.classify_command_string` method and the
+new `grove.zone_rules.synthesize_pattern` / `save_zone_rule` write
+path enlarged the surface, but the I4 fail-closed envelope at
+`tools/approval.py:1182-1211` is unchanged — any exception inside
+the classifier (legacy `classify(action)` path OR the new
+hierarchical path) still produces `approved=False, classifier_failed=True`.
+
+Additional Sprint 22 protections that reinforce I4 without modifying
+its definition:
+
+- **Per-rule load-time rejection** of ReDoS-vulnerable patterns
+  (`(a+)+`, `(.*)*`), universe-matchers (`.*`), excessive
+  alternation, over-long patterns, and syntactically invalid regex.
+  Bad rules are dropped with a loud log; the rest of the schema
+  still loads. A vulnerable pattern cannot reach the matcher in
+  production.
+- **Synthesis denylists** — `synthesize_pattern` refuses to produce
+  permanent allowlist patterns for privilege-escalation verbs
+  (`sudo` / `su` / `doas` / `pkexec`), root-level catastrophic
+  shapes (`rm -rf /`, `chmod 777 /`, `dd of=/dev/sda`), and
+  sensitive system directories (`/etc`, `/bin`, `/usr`, `/var`,
+  `/sys`, …). These shapes never make it into a written `save_zone_rule`
+  call.
+- **Last-known-good snapshot on reload** (existing Sprint 04
+  behaviour, now snapshotting the richer `_tool_zones_rich` map too)
+  so a botched operator edit doesn't wipe the in-memory zone
+  configuration.
+
+Test coverage: the existing W3.0a invariant tests
+(`tests/test_w3_0a_governance_invariants.py`) cover I4 at the
+classifier-error level. S22-specific verification lives in
+`tests/grove/test_s22_zone_evolution.py::TestI4Preserved` (3 tests:
+last-known-good restore on bad reload, unknown-tool yellow default,
+classifier-exception fail-closed). See
+`docs/design/zone-model-s22.md` for the full S22 reference.
+
 ## Boundary instrumentation reference
 
 For future invariant tests:
