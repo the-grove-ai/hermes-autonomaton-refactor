@@ -1954,6 +1954,13 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
+
+        # Sprint 23 (soul-affordances-register-v1) — session-overlay
+        # register name. None means "compose with the soul.md frontmatter
+        # default." The /register slash command updates this via
+        # set_session_register(), which also invalidates the prompt cache
+        # so the next turn recomposes with the new overlay.
+        self.session_register: Optional[str] = None
         
         # Filesystem checkpoint manager (transparent — not a tool)
         from tools.checkpoint_manager import CheckpointManager
@@ -6210,7 +6217,14 @@ class AIAgent:
         _identity_loaded = False
         if self.load_soul_identity or not self.skip_context_files:
             from grove.identity import load_identity
-            _identity_block = load_identity().compose_stable()
+            # Sprint 23 D6 — thread the session-overlay register through.
+            # When self.session_register is None (the default), composition
+            # defers to soul.md frontmatter. When the /register slash
+            # command has set an override, the explicit value wins for
+            # this and subsequent turns until /register reset.
+            _identity_block = load_identity(
+                session_register=self.session_register,
+            ).compose_stable()
             if _identity_block:
                 stable_parts.append(("identity", _identity_block))
                 _identity_loaded = True
@@ -6797,13 +6811,34 @@ class AIAgent:
     def _invalidate_system_prompt(self):
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
-        
+
         Called after context compression events. Also reloads memory from disk
         so the rebuilt prompt captures any writes from this session.
         """
         self._cached_system_prompt = None
         if self._memory_store:
             self._memory_store.load_from_disk()
+
+    def set_session_register(self, name: Optional[str]) -> None:
+        """Sprint 23 — set or clear the session-overlay register.
+
+        Callers MUST validate via ``grove.register.validate_soul_register``
+        before invoking; this setter trusts input. Updates the agent's
+        ``session_register`` attribute and invalidates the cached system
+        prompt so the next turn recomposes with the new overlay active.
+        Passing ``None`` clears the override, reverting composition to
+        the soul.md frontmatter default.
+
+        Validation happens at the call site (the /register slash command
+        does this) so a bad name is rejected before it invalidates the
+        cache. ``load_identity`` will re-validate at compose time as
+        defense in depth, but by then the cache is already gone — if
+        the call site skipped validation, the operator would see a
+        silent next-turn IdentityError rather than an immediate verb
+        rejection.
+        """
+        self.session_register = name
+        self._cached_system_prompt = None
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
