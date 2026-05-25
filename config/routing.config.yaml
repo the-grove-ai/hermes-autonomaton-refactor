@@ -145,11 +145,18 @@ routing:
 
     # Send easy, high-confidence work DOWN to the cheap tier. Off by
     # default — turn it on once you trust the classifier on your work.
+    # The `intents` filter restricts which kinds of "simple" requests
+    # route down: chat and prose drafting are T1's strengths. Tool-
+    # needing categories (factual_retrieval, system_admin) classify
+    # as simple but require skill loading + tool calls a lighter model
+    # is less reliable about — keep those on T2. Widen the list as you
+    # build confidence in the classifier on your own workload.
     downward:
       enabled: false
       match:
         complexity: simple
         min_confidence: 0.85
+        intents: [conversation, creative_writing]
       target_tier: T1
 
     # Send hard work UP to the apex tier: complex or novel requests that
