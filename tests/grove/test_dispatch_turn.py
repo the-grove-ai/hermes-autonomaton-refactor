@@ -24,6 +24,16 @@ from grove.dispatcher import Dispatcher, RuntimeContext
 from grove.intents import FinalResponse, Observation, ToolIntent
 
 
+# Sprint 26 Phase 6 — every test in this file constructs Dispatchers
+# which now eagerly create per-session Kaizen Ledger files. Redirect
+# the substrate home to tmp so no test pollutes ~/.grove/.kaizen_ledger.
+@pytest.fixture(autouse=True)
+def _redirect_grove_home(tmp_path, monkeypatch):
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    yield tmp_path
+
+
 # ── _extract_tool_intents ─────────────────────────────────────────────────
 
 
@@ -1017,3 +1027,218 @@ class TestPhase5SovereignPromptDefault:
         zr = [ZoneResult(zone="red", matched_rule="r", source="s")]
         halt = AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
         assert _default_sovereign_prompt(halt) == "drop"
+
+
+# ── Phase 6 — Kaizen Ledger wiring + Tier Override ────────────────────────
+
+
+class TestPhase6KaizenLedgerWiring:
+    """The Dispatcher writes structured events to a per-session Kaizen
+    Ledger at every observable turn moment, per GRV-005 § IX(4)'s
+    foreground/background split. The Agent's reasoning loop never
+    reads from the ledger (no mid-stream injection)."""
+
+    def _bare_agent(self, msgs):
+        import run_agent
+        agent = object.__new__(run_agent.AIAgent)
+        agent._current_assistant_message = {"role": "assistant"}
+        agent._current_messages = msgs
+        agent._current_effective_task_id = "t"
+        agent._current_api_call_count = 1
+        agent._execute_tool_calls = lambda *a, **k: None
+        agent.model = "m"
+        agent.provider = "p"
+        agent.session_id = "phase6_session"
+        return agent
+
+    def test_green_batch_records_tool_batch_executed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        _patch_classifier_green(monkeypatch)
+        msgs: List[Dict] = []
+        agent = self._bare_agent(msgs)
+        intents = [
+            ToolIntent(tool_name="x", arguments={}, call_id="c1"),
+            ToolIntent(tool_name="y", arguments={}, call_id="c2"),
+        ]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
+        )
+        d = Dispatcher()
+        d.dispatch_turn(agent, user_message="hi")
+
+        ledger = d.ledger_for(agent)
+        assert ledger is not None
+        batch_events = ledger.events_by_type("tool_batch_executed")
+        assert len(batch_events) == 1
+        assert batch_events[0]["batch_size"] == 2
+        assert "latency_ms" in batch_events[0]
+        # Final response also recorded for completeness
+        final_events = ledger.events_by_type("final_response")
+        assert len(final_events) == 1
+        assert final_events[0]["content_length"] == len("ok")
+
+    def test_andon_halt_drop_records_three_events(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Red intent + Drop disposition produces: andon_halt,
+        # andon_disposition (disposition=drop), turn_dropped.
+        _force_red(monkeypatch)
+        msgs: List[Dict] = []
+        agent = self._bare_agent(msgs)
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
+        )
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
+        d.dispatch_turn(agent, user_message="hi")
+
+        ledger = d.ledger_for(agent)
+        types = [e["event_type"] for e in ledger.events()]
+        assert types == ["andon_halt", "andon_disposition", "turn_dropped"]
+        disposition_event = ledger.events_by_type("andon_disposition")[0]
+        assert disposition_event["disposition"] == "drop"
+        assert disposition_event["zone"] == "red"
+
+    def test_andon_halt_skip_records_disposition_then_executes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Red + Skip produces: andon_halt, andon_disposition(skip),
+        # final_response (since the generator continues past the skip).
+        _force_red(monkeypatch)
+        msgs: List[Dict] = []
+        agent = self._bare_agent(msgs)
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "recovered"})
+        )
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "skip")
+        d.dispatch_turn(agent, user_message="hi")
+
+        ledger = d.ledger_for(agent)
+        types = [e["event_type"] for e in ledger.events()]
+        # No tool_batch_executed (skip bypassed execution); no
+        # turn_dropped (skip is a recovery flow, not a drop).
+        assert "andon_halt" in types
+        assert "andon_disposition" in types
+        assert "tool_batch_executed" not in types
+        assert "turn_dropped" not in types
+        assert "final_response" in types
+        assert ledger.events_by_type("andon_disposition")[0]["disposition"] == "skip"
+
+    def test_ledger_persists_across_turns_in_same_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Two dispatch_turn calls for the same session_id append to the
+        # same ledger file.
+        _patch_classifier_green(monkeypatch)
+        msgs: List[Dict] = []
+        agent = self._bare_agent(msgs)
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
+        )
+        d = Dispatcher()
+        d.dispatch_turn(agent, user_message="turn 1")
+        d.dispatch_turn(agent, user_message="turn 2")
+
+        ledger = d.ledger_for(agent)
+        batch_events = ledger.events_by_type("tool_batch_executed")
+        # Two turns = two batch_executed events on the same ledger
+        assert len(batch_events) == 2
+
+    def test_ledger_isolated_per_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Concurrent sessions get distinct ledgers; events don't leak.
+        _patch_classifier_green(monkeypatch)
+        d = Dispatcher()
+
+        for sid in ("session_a", "session_b"):
+            msgs: List[Dict] = []
+            agent = self._bare_agent(msgs)
+            agent.session_id = sid
+            intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+            agent._run_turn_generator = (
+                lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
+            )
+            d.dispatch_turn(agent, user_message=f"hi from {sid}")
+
+        led_a = d.ledger_for("session_a")
+        led_b = d.ledger_for("session_b")
+        assert led_a is not None and led_b is not None
+        assert led_a is not led_b
+        assert led_a.session_id == "session_a"
+        assert led_b.session_id == "session_b"
+        assert led_a.path != led_b.path
+
+    def test_no_mid_stream_injection_into_agent_messages(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Per § IX(4) "No Mid-Stream Injection": ledger writes never
+        # leak into agent._current_messages.
+        _patch_classifier_green(monkeypatch)
+        msgs: List[Dict] = []
+        agent = self._bare_agent(msgs)
+
+        def _exec(asst, messages, task_id, api_n):
+            for tc in (asst.get("tool_calls") or []):
+                messages.append({
+                    "role": "tool", "tool_call_id": tc.get("id"),
+                    "content": "result",
+                })
+        agent._execute_tool_calls = _exec
+        agent._current_assistant_message = {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "function": {"name": "x", "arguments": "{}"}}],
+        }
+
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
+        )
+        d = Dispatcher()
+        d.dispatch_turn(agent, user_message="hi")
+
+        # The agent's messages list MUST contain only tool execution
+        # responses, never any ledger metadata (latency_ms, batch_size,
+        # zone classifications, etc.).
+        for msg in msgs:
+            assert "latency_ms" not in str(msg)
+            assert "event_type" not in str(msg)
+
+
+class TestPhase6TierOverride:
+    """Tier Override pathway per § IX(4) — process-scoped per-session
+    state the Dispatcher exposes for Sprint 27's escalation handler
+    and operator-facing slash commands."""
+
+    def test_override_tier_stores_per_session(self):
+        d = Dispatcher()
+        d.override_tier("session_a", "T3", reason="apex tier needed")
+        d.override_tier("session_b", "T2", reason="cheaper tier requested")
+        assert d.get_tier_override("session_a") == "T3"
+        assert d.get_tier_override("session_b") == "T2"
+
+    def test_get_tier_override_returns_none_when_unset(self):
+        d = Dispatcher()
+        assert d.get_tier_override("session_unset") is None
+
+    def test_override_tier_writes_ledger_entry(self):
+        d = Dispatcher()
+        d.override_tier("session_x", "T3", reason="user requested apex")
+        ledger = d.ledger_for("session_x")
+        assert ledger is not None
+        overrides = ledger.events_by_type("tier_override")
+        assert len(overrides) == 1
+        assert overrides[0]["target_tier"] == "T3"
+        assert overrides[0]["reason"] == "user requested apex"
+
+    def test_override_tier_accepts_agent_or_session_id(self):
+        import run_agent
+        d = Dispatcher()
+        agent = object.__new__(run_agent.AIAgent)
+        agent.session_id = "from_agent_session"
+        d.override_tier(agent, "T3", reason="via agent")
+        assert d.get_tier_override(agent) == "T3"
+        assert d.get_tier_override("from_agent_session") == "T3"

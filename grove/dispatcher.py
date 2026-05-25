@@ -394,6 +394,7 @@ class Dispatcher:
         self,
         *,
         sovereign_prompt_handler: Optional[Callable[["AndonHalt"], str]] = None,
+        kaizen_ledger_dir: Optional[Path] = None,
     ) -> None:
         """Capture the substrate snapshot and install Phase 5 disposition handler.
 
@@ -423,6 +424,20 @@ class Dispatcher:
         self._sovereign_prompt_handler: Callable[["AndonHalt"], str] = (
             sovereign_prompt_handler or _default_sovereign_prompt
         )
+        # ── Sprint 26 Phase 6 — Kaizen Ledger (foreground/background split) ──
+        # Per GRV-005 § IX(4): operational telemetry routes out-of-band
+        # to an isolated ledger; conversational payload stays on the
+        # active context. One ledger per session — instantiated lazily
+        # in dispatch_turn since session_id is per-agent, not per-
+        # dispatcher.
+        self._kaizen_ledger_dir = kaizen_ledger_dir
+        self._kaizen_ledgers: Dict[str, Any] = {}
+        # Phase 6 tier-override pathway. Sprint 27's escalation handler
+        # writes here when granting an EscalationRequest; for v1 the
+        # operator can also set it directly (via a future /tier slash
+        # command wiring). Keyed by session_id so concurrent sessions
+        # don't share overrides.
+        self._tier_overrides: Dict[str, str] = {}
         # ── Sprint 26 Phase 1b — heavy resource caches ───────────────
         # Keyed by deterministic call-shape tuples. Each entry holds the
         # built resource; the cache survives the Dispatcher's lifetime.
@@ -795,9 +810,10 @@ class Dispatcher:
             ``StopIteration.value``. Shape matches the pre-Phase-3
             ``run_conversation`` return value byte-for-byte.
         """
+        ledger = self._get_or_create_ledger(agent)
         gen = agent._run_turn_generator(user_message=user_message, **kwargs)
         try:
-            return self._drive_generator(agent, gen)
+            return self._drive_generator(agent, gen, ledger)
         finally:
             # Ensure the generator is closed even if _drive_generator
             # raised an unexpected exception. gen.close() is idempotent;
@@ -808,14 +824,21 @@ class Dispatcher:
             # except-BaseException sites in _run_turn_generator body).
             gen.close()
 
-    def _drive_generator(self, agent: Any, gen: Any) -> Dict[str, Any]:
+    def _drive_generator(
+        self, agent: Any, gen: Any, ledger: Any,
+    ) -> Dict[str, Any]:
         """Consume the agent's generator under GRV-005 § II/III authority.
 
         Sprint 26 Phase 5 routes AndonHalt through the Sovereign Prompt;
         on Skip, denial Observations resume the generator; on Drop, the
         Dispatcher closes the generator and returns a drop result.
+
+        Sprint 26 Phase 6 routes every Dispatcher-observable event
+        out-of-band to the Kaizen Ledger per § IX(4). The agent's
+        active reasoning loop never sees ledger writes.
         """
         from grove.intents import FinalResponse, Observation
+        import time as _time
 
         try:
             yielded = gen.send(None)  # advance to first yield
@@ -825,40 +848,72 @@ class Dispatcher:
                     try:
                         self._classify_intents_batch_and_halt_or_raise(yielded)
                     except AndonHalt as halt:
+                        # Phase 6 — record the halt in the Kaizen Ledger
+                        ledger.record(
+                            "andon_halt",
+                            zone=halt.zone,
+                            matched_rule=halt.matched_rule,
+                            source=halt.source,
+                            reason=halt.reason,
+                            triggering_index=halt.triggering_index,
+                            intents=[
+                                {"tool_name": i.tool_name, "call_id": i.call_id}
+                                for i in halt.intents
+                            ],
+                            zone_results=[
+                                {
+                                    "zone": zr.zone,
+                                    "matched_rule": zr.matched_rule,
+                                    "source": zr.source,
+                                }
+                                for zr in halt.zone_results
+                            ],
+                        )
                         # Phase 5 — Sovereign Prompt + disposition flow
                         disposition = self._handle_andon_halt(agent, halt)
+                        ledger.record(
+                            "andon_disposition",
+                            disposition=disposition,
+                            zone=halt.zone,
+                            matched_rule=halt.matched_rule,
+                            triggering_tool=halt.intents[halt.triggering_index].tool_name,
+                        )
                         if disposition == "skip":
-                            # Inject denial Observations + append denial
-                            # tool messages to the messages list so the
-                            # LLM context stays consistent (every
-                            # assistant tool_call has a paired tool
-                            # response message — required by every
-                            # provider's API).
                             observations = self._build_skip_observations(
                                 agent, halt.intents,
                             )
                             yielded = gen.send(observations)
                             continue
                         if disposition == "drop":
-                            # Phase 5 Drop: close the generator (raises
-                            # GeneratorExit at the yield, generator's
-                            # finally clears agent._current_*); flush
-                            # volatile turn state; persistent state stays
-                            # at its pre-turn snapshot.
+                            ledger.record(
+                                "turn_dropped",
+                                triggering_tool=halt.intents[halt.triggering_index].tool_name,
+                                zone=halt.zone,
+                                matched_rule=halt.matched_rule,
+                            )
                             return self._format_drop_result(agent, halt)
                         raise ValueError(
                             f"Sovereign prompt returned unknown disposition: "
                             f"{disposition!r} (expected 'skip' or 'drop')"
                         )
-                    # Green path: execute the batch via the Agent's
-                    # legacy executor (preserves parallelism, guardrails,
-                    # telemetry). Phase 7 cleanup will move this into
-                    # the Dispatcher itself.
+                    # Green path: execute the batch
                     asst = agent._current_assistant_message
                     msgs = agent._current_messages
                     task = agent._current_effective_task_id
                     api_n = agent._current_api_call_count
+                    _exec_t0 = _time.monotonic()
                     agent._execute_tool_calls(asst, msgs, task, api_n)
+                    _exec_latency_ms = (_time.monotonic() - _exec_t0) * 1000.0
+                    # Phase 6 — record successful batch execution
+                    ledger.record(
+                        "tool_batch_executed",
+                        intents=[
+                            {"tool_name": i.tool_name, "call_id": i.call_id}
+                            for i in yielded
+                        ],
+                        batch_size=len(yielded),
+                        latency_ms=round(_exec_latency_ms, 2),
+                    )
                     observations: List[Any] = []
                     for intent in yielded:
                         tool_msg = None
@@ -881,11 +936,112 @@ class Dispatcher:
                         ))
                     yielded = gen.send(observations)
                 elif isinstance(yielded, FinalResponse):
+                    # Phase 6 — Foreground/Background split per § IX(4):
+                    # the conversational payload (FinalResponse.content)
+                    # is what the operator sees in the active context;
+                    # the operational metadata routes to the Ledger.
+                    ledger.record(
+                        "final_response",
+                        content_length=len(yielded.content or ""),
+                        metadata=dict(yielded.metadata),
+                    )
                     yielded = gen.send(None)
                 else:
                     yielded = gen.send(None)
         except StopIteration as stop:
             return stop.value
+
+    # ── Phase 6 helpers (Kaizen Ledger + Tier Override) ─────────────────
+
+    def _get_or_create_ledger(self, agent: Any) -> Any:
+        """Return (creating if needed) the KaizenLedger for the agent's session.
+
+        Ledgers are keyed by session_id and persist across turns within
+        the same session. A Dispatcher serving multiple concurrent
+        sessions (gateway path) holds one ledger per session_id.
+        """
+        from grove.kaizen_ledger import KaizenLedger
+        session_id = getattr(agent, "session_id", None) or "unknown"
+        ledger = self._kaizen_ledgers.get(session_id)
+        if ledger is None:
+            ledger = KaizenLedger(
+                session_id=session_id,
+                ledger_dir=self._kaizen_ledger_dir,
+            )
+            self._kaizen_ledgers[session_id] = ledger
+        return ledger
+
+    def ledger_for(self, agent_or_session_id: Any) -> Optional[Any]:
+        """Return the KaizenLedger for an agent or session_id, or None.
+
+        Operator / test query interface. Returns None when no ledger
+        exists for the given session yet (i.e., dispatch_turn has not
+        been called for that session).
+        """
+        if isinstance(agent_or_session_id, str):
+            session_id = agent_or_session_id
+        else:
+            session_id = getattr(agent_or_session_id, "session_id", None) or "unknown"
+        return self._kaizen_ledgers.get(session_id)
+
+    def override_tier(
+        self,
+        agent_or_session_id: Any,
+        target_tier: str,
+        reason: str,
+    ) -> None:
+        """Phase 6 Tier Override pathway per GRV-005 § IX(4).
+
+        Records an explicit tier override for the named session and
+        writes a ``tier_override`` event to the session's Kaizen Ledger.
+        Sprint 27's escalation handler will call this when granting an
+        EscalationRequest; for v1 operators may also call it directly
+        via a slash-command surface (Phase 7 wires that).
+
+        The override is process-scoped — restart resets it. Persistent
+        per-operator tier preferences belong in config.yaml's routing
+        section, not here.
+
+        Args:
+            agent_or_session_id: an AIAgent (reads .session_id) or a
+                session_id string directly.
+            target_tier: the tier the next turn should use (e.g. "T3").
+            reason: operator-visible explanation (e.g. "user requested
+                apex for novel synthesis"). Stored in the ledger entry.
+        """
+        if isinstance(agent_or_session_id, str):
+            session_id = agent_or_session_id
+        else:
+            session_id = getattr(agent_or_session_id, "session_id", None) or "unknown"
+        self._tier_overrides[session_id] = target_tier
+        # Best-effort ledger entry. If no ledger exists yet for this
+        # session, create one so the override is captured.
+        from grove.kaizen_ledger import KaizenLedger
+        ledger = self._kaizen_ledgers.get(session_id)
+        if ledger is None:
+            ledger = KaizenLedger(
+                session_id=session_id,
+                ledger_dir=self._kaizen_ledger_dir,
+            )
+            self._kaizen_ledgers[session_id] = ledger
+        ledger.record(
+            "tier_override",
+            target_tier=target_tier,
+            reason=reason,
+        )
+
+    def get_tier_override(self, agent_or_session_id: Any) -> Optional[str]:
+        """Return the currently-set tier override for a session, or None.
+
+        Sprint 27's escalation handler / the CognitiveRouter consumer
+        reads this when deciding the next turn's tier. None means no
+        override; the routing policy's default applies.
+        """
+        if isinstance(agent_or_session_id, str):
+            session_id = agent_or_session_id
+        else:
+            session_id = getattr(agent_or_session_id, "session_id", None) or "unknown"
+        return self._tier_overrides.get(session_id)
 
     # ── Phase 4 helpers ──────────────────────────────────────────────────
 
