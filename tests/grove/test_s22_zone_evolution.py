@@ -212,17 +212,33 @@ class TestBackwardCompat:
 
     def test_bare_string_terminal_classifies_yellow(self, legacy_classifier):
         # `classify_command_string` on a tool with a bare-string entry
-        # falls through to the legacy classify(action) path.
+        # honors the entry per the schema contract: every command
+        # flowing through this tool is classified at the bare-string
+        # zone, regardless of arguments. The previous fall-through to
+        # ``classify(action)`` with a ``command.execute.<verb>`` key
+        # silently ignored the bare-string entry and produced
+        # default-yellow with ``source="default"`` — a contract
+        # violation corrected in the ``terminal``-routing fix.
         r = legacy_classifier.classify_command_string(
             "rm -rf /tmp/x", "command.execute.rm", tool_id="terminal",
         )
-        # No hierarchical rules → default yellow via legacy fall-through.
         assert r.zone == "yellow"
-        assert r.matched_rule == "default"
-        assert r.source == "default"
+        assert r.matched_rule == "terminal"
+        assert r.source == "tool_zones"
         # Enriched fields are None for legacy classifications.
         assert r.reason is None
         assert r.pattern_key is None
+
+    def test_bare_string_terminal_sudo_still_red(self, legacy_classifier):
+        # Sovereign patterns on the action survive the bare-string
+        # fall-through path: ``command.execute.sudo`` matches the
+        # ``zones.red.sovereign`` list and is returned RED before the
+        # bare-string entry can swallow it as yellow.
+        r = legacy_classifier.classify_command_string(
+            "sudo apt update", "command.execute.sudo", tool_id="terminal",
+        )
+        assert r.zone == "red"
+        assert r.source == "sovereign"
 
     def test_bare_string_calendar_read_classifies_green(self, legacy_classifier):
         r = legacy_classifier.classify("calendar.read")
@@ -332,11 +348,23 @@ class TestSaveZoneRule:
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
         target = tmp_path / ".grove" / "zones.schema.yaml"
-        shutil.copy(
-            Path(__file__).resolve().parent.parent.parent
-            / "config" / "zones.schema.yaml",
-            target,
-        )
+        # Inline a minimal bare-string schema rather than copying the
+        # repo template. The template's ``terminal`` entry is now
+        # hierarchical (with operator-directed sudo/su/doas/GAPI rules),
+        # so coupling this test to it would mean asserting the count of
+        # those rules. This test's invariant is narrower: when
+        # ``save_zone_rule`` is called against a bare-string entry, it
+        # normalises that entry to the dict form. Build the bare-string
+        # state explicitly.
+        target.write_text(textwrap.dedent("""
+            schema_version: 1
+            zones:
+              green: {auto_approve: []}
+              yellow: {proposes: []}
+              red: {sovereign: []}
+            tool_zones:
+              terminal: yellow
+        """).lstrip())
         # Reset singletons so initialize() re-resolves under the patched HOME.
         gz._singleton = None
         gz.initialize(target)
