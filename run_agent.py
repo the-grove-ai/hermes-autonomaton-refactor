@@ -51,7 +51,14 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Sprint 26 Phase 1a — RuntimeContext is the Dispatcher's substrate
+    # snapshot, threaded into AIAgent.__init__ as an optional injection.
+    # TYPE_CHECKING guard avoids module-load-time circulars; the runtime
+    # access pattern is duck-typed through _env_or / _config_load_or.
+    from grove.dispatcher import RuntimeContext
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -1199,6 +1206,14 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        # ── Sprint 26 Phase 1a (D4 substrate extraction) ──────────────
+        # When provided by a Dispatcher, env-var reads and config loads
+        # the Agent's code paths historically did directly route through
+        # this snapshot instead. When None (existing callers), the
+        # Agent's helper methods (_env_or / _config_load_or) fall back
+        # to direct substrate reads — backward-compat path removed at
+        # Phase 7 cleanup once every caller routes through the Dispatcher.
+        runtime_ctx: Optional["RuntimeContext"] = None,
     ):
         """
         Initialize the AI Agent.
@@ -1248,7 +1263,20 @@ class AIAgent:
                 identity even when skip_context_files=True. Project context files from the cwd
                 remain skipped.
         """
+        # ── Sprint 26 Phase 1 — D5 baseline instrumentation ─────────────
+        # Captures total AIAgent.__init__ wall time. Operator sets
+        # GROVE_INIT_TIMING=1 to print to stderr; otherwise the timing
+        # logs at DEBUG. Andon A7 fires if post-refactor cost >50ms.
+        _init_t0 = time.monotonic()
         _install_safe_stdio()
+
+        # ── Sprint 26 Phase 1a — D4 substrate extraction ───────────────
+        # Store the injected RuntimeContext (or None for backward compat).
+        # All env / config reads in this class route through the helper
+        # methods _env_or / _env_or_int / _env_or_float / _config_load_or
+        # which read from runtime_ctx when set, otherwise fall through to
+        # direct substrate access. Phase 7 removes the fallback.
+        self._runtime_ctx = runtime_ctx
 
         self.model = model
         self.max_iterations = max_iterations
@@ -1769,7 +1797,7 @@ class AIAgent:
                             if not _fb_explicit_key:
                                 _fb_key_env = (_fb.get("key_env") or _fb.get("api_key_env") or "").strip()
                                 if _fb_key_env:
-                                    _fb_explicit_key = os.getenv(_fb_key_env, "").strip() or None
+                                    _fb_explicit_key = self._env_or(_fb_key_env, "").strip() or None
                             _fb_client, _fb_model = resolve_provider_client(
                                 _fb["provider"], model=_fb["model"], raw_codex=True,
                                 explicit_base_url=_fb.get("base_url"),
@@ -1934,6 +1962,11 @@ class AIAgent:
         # session_context.py for concurrency safety (gateway runs multiple
         # sessions in one process).  Also writes os.environ as fallback for
         # CLI mode where ContextVars aren't used.
+        # TODO(Sprint26-Phase7): env-write under Dispatcher authority per
+        # GRV-005 § II. Substrate writes are Dispatcher-owned; the Agent
+        # MUST NOT touch os.environ. Migration: Dispatcher broadcasts the
+        # session_id to subprocess descendants via its own env-management
+        # surface; the Agent merely declares its session_id.
         os.environ["GROVE_SESSION_ID"] = self.session_id
         try:
             from gateway.session_context import _SESSION_ID
@@ -1986,12 +2019,9 @@ class AIAgent:
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
         
-        # Load config once for memory, skills, and compression sections
-        try:
-            from hermes_cli.config import load_config as _load_agent_config
-            _agent_cfg = _load_agent_config()
-        except Exception:
-            _agent_cfg = {}
+        # Load config once for memory, skills, and compression sections.
+        # Sprint 26 Phase 1a: routes through runtime_ctx when Dispatcher-injected.
+        _agent_cfg = self._config_load_or()
         try:
             self._tool_guardrails = ToolCallGuardrailController(
                 ToolCallGuardrailConfig.from_mapping(
@@ -2436,7 +2466,7 @@ class AIAgent:
                 logger.debug("Context engine on_session_start: %s", _ce_err)
 
         self._subdirectory_hints = SubdirectoryHintTracker(
-            working_dir=os.getenv("TERMINAL_CWD") or None,
+            working_dir=self._env_or("TERMINAL_CWD") or None,
         )
         self._user_turn_count = 0
 
@@ -2541,6 +2571,67 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
+        # ── Sprint 26 Phase 1 — D5 baseline log ────────────────────────
+        _init_elapsed_ms = (time.monotonic() - _init_t0) * 1000.0
+        logger.debug(
+            "[grove.dispatcher] AIAgent.__init__ wall time: %.1f ms",
+            _init_elapsed_ms,
+        )
+        if os.environ.get("GROVE_INIT_TIMING") == "1":
+            import sys as _sys_t
+            print(
+                f"[grove.dispatcher] AIAgent.__init__: {_init_elapsed_ms:.1f}ms",
+                file=_sys_t.stderr,
+            )
+
+    # ── Sprint 26 Phase 1a — D4 substrate-extraction helpers ──────────────
+    # Every env / config read in this class routes through these wrappers.
+    # When self._runtime_ctx is set (Dispatcher path), reads come from the
+    # frozen snapshot. When None (existing callers that haven't been
+    # migrated), reads fall through to direct substrate access — backward
+    # compat removed at Phase 7 cleanup.
+
+    def _env_or(self, key: str, default: str = "") -> str:
+        """Read one env var via runtime_ctx, falling back to os.environ."""
+        if self._runtime_ctx is not None:
+            return self._runtime_ctx.env_get(key, default)
+        return os.environ.get(key, default)
+
+    def _env_or_int(self, key: str, default: int) -> int:
+        """Read an env var as int; default on missing or unparseable."""
+        if self._runtime_ctx is not None:
+            return self._runtime_ctx.env_get_int(key, default)
+        raw = os.environ.get(key)
+        if raw is None or raw == "":
+            return default
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return default
+
+    def _env_or_float(self, key: str, default: float) -> float:
+        """Read an env var as float; default on missing or unparseable."""
+        if self._runtime_ctx is not None:
+            return self._runtime_ctx.env_get_float(key, default)
+        raw = os.environ.get(key)
+        if raw is None or raw == "":
+            return default
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return default
+
+    def _config_load_or(self) -> Dict[str, Any]:
+        """Return config snapshot via runtime_ctx; else live load_config()."""
+        if self._runtime_ctx is not None:
+            return self._runtime_ctx.config
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            return cfg if isinstance(cfg, dict) else {}
+        except Exception:
+            return {}
+
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
 
@@ -2567,7 +2658,7 @@ class AIAgent:
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
-                source=self.platform or os.environ.get("GROVE_SESSION_SOURCE", "cli"),
+                source=self.platform or self._env_or("GROVE_SESSION_SOURCE", "cli"),
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
@@ -2870,10 +2961,11 @@ class AIAgent:
             # Re-read custom_providers from live config so per-model
             # context_length overrides are honored when switching to a
             # custom provider mid-session (closes #15779).
+            # Sprint 26 Phase 1a: routes through runtime_ctx when injected.
             _sm_custom_providers = None
             try:
-                from hermes_cli.config import load_config, get_compatible_custom_providers
-                _sm_cfg = load_config()
+                from hermes_cli.config import get_compatible_custom_providers
+                _sm_cfg = self._config_load_or()
                 _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
             except Exception:
                 _sm_custom_providers = None
@@ -3598,7 +3690,7 @@ class AIAgent:
         cfg = get_provider_request_timeout(self.provider, self.model)
         if cfg is not None:
             return cfg
-        return float(os.getenv("GROVE_API_TIMEOUT", 1800.0))
+        return self._env_or_float("GROVE_API_TIMEOUT", 1800.0)
 
     def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
         """Resolve the base non-stream stale timeout and whether it is implicit.
@@ -4635,7 +4727,7 @@ class AIAgent:
             ),
             "session_id": self.session_id or "",
             "parent_session_id": self._parent_session_id or "",
-            "platform": self.platform or os.environ.get("GROVE_SESSION_SOURCE", "cli"),
+            "platform": self.platform or self._env_or("GROVE_SESSION_SOURCE", "cli"),
             "tool_name": "memory",
         }
         if task_id:
@@ -5743,12 +5835,9 @@ class AIAgent:
             if env is not None:
                 return env.strip().lower() not in ("0", "false", "no", "off")
             # Read from the persisted config.yaml so gateway and CLI share
-            # the same setting.  Import lazily to avoid a startup-time cycle.
-            try:
-                from hermes_cli.config import load_config as _load_config
-                _cfg = _load_config() or {}
-            except Exception:
-                _cfg = {}
+            # the same setting. Sprint 26 Phase 1a: routes through
+            # runtime_ctx when Dispatcher-injected.
+            _cfg = self._config_load_or() or {}
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "file_mutation_verifier" in _display:
                 return bool(_display.get("file_mutation_verifier"))
@@ -7593,7 +7682,7 @@ class AIAgent:
             from hermes_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(60, int(os.getenv("GROVE_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                min_key_ttl_seconds=max(60, self._env_or_int("GROVE_NOUS_MIN_KEY_TTL_SECONDS", 1800)),
                 timeout_seconds=float(os.getenv("GROVE_NOUS_TIMEOUT_SECONDS", "15")),
                 force_mint=force,
             )
@@ -9222,12 +9311,12 @@ class AIAgent:
                 # _normalize_custom_provider_entry in hermes_cli/config.py).
                 fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
                 if fb_key_env:
-                    fb_api_key_hint = os.getenv(fb_key_env, "").strip() or None
+                    fb_api_key_hint = self._env_or(fb_key_env, "").strip() or None
             # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
             # when no explicit key is in the fallback config. Host match
             # (not substring) — see GHSA-76xc-57q6-vm5m.
             if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
-                fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
+                fb_api_key_hint = self._env_or("OLLAMA_API_KEY") or None
             fb_client, _resolved_fb_model = resolve_provider_client(
                 fb_provider, model=fb_model, raw_codex=True,
                 explicit_base_url=fb_base_url_hint,
@@ -10920,6 +11009,8 @@ class AIAgent:
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                # TODO(Sprint26-Phase7): env-write under Dispatcher authority
+                # per GRV-005 § II. See twin TODO at AIAgent.__init__ ~L1965.
                 os.environ["GROVE_SESSION_ID"] = self.session_id
                 try:
                     from gateway.session_context import _SESSION_ID
@@ -10931,7 +11022,7 @@ class AIAgent:
                 self._session_db_created = False
                 self._session_db.create_session(
                     session_id=self.session_id,
-                    source=self.platform or os.environ.get("GROVE_SESSION_SOURCE", "cli"),
+                    source=self.platform or self._env_or("GROVE_SESSION_SOURCE", "cli"),
                     model=self.model,
                     model_config=self._session_init_model_config,
                     parent_session_id=old_session_id,
