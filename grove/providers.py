@@ -124,7 +124,20 @@ def resolve_tier_to_runtime(tier_config: TierConfig) -> dict:
     Reuses the existing ``resolve_runtime_provider()`` chain to turn the
     tier's ``(provider, model)`` into credentials. Returns the keys the
     agent constructor consumes: ``model``, ``provider``, ``api_key``,
-    ``base_url``, ``api_mode``, ``credential_pool``.
+    ``base_url``, ``api_mode``, ``credential_pool``, and (S22.1)
+    ``auth_type``.
+
+    ``auth_type`` is the credential's authentication scheme as recorded
+    by the credential pool: ``"api_key"`` for ``sk-ant-api*`` keys,
+    ``"oauth"`` for OAuth bearer tokens (Claude Code subscriptions,
+    setup-tokens, JWTs). The classifier branch in ``grove.classify``
+    uses this to construct the Anthropic SDK client correctly —
+    OAuth tokens sent via ``x-api-key`` return 401, OAuth tokens sent
+    via ``auth_token`` (Bearer + the oauth-2025-04-20 beta) succeed.
+    Threaded explicitly through the result dict so any consumer can
+    audit the auth path the classifier took, even though the
+    downstream ``build_anthropic_client`` also detects the token
+    shape directly.
 
     Raises ValueError for a handler-backed tier (e.g. T0 pattern_cache) —
     those resolve no inference provider and must not reach this bridge.
@@ -150,6 +163,7 @@ def resolve_tier_to_runtime(tier_config: TierConfig) -> dict:
         "base_url": runtime.get("base_url"),
         "api_mode": runtime.get("api_mode"),
         "credential_pool": runtime.get("credential_pool"),
+        "auth_type": runtime.get("auth_type"),
     }
 
 
