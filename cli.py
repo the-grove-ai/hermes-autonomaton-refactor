@@ -2941,6 +2941,32 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
+        # ── Sprint 26 Phase 7 — D3 pending_andon startup recovery ──
+        # If the prior session was killed mid-Sovereign-Prompt, the
+        # Dispatcher left a pending_andon marker. Acknowledge and
+        # discard with notice (operator-locked Option 1 at GATE-H).
+        # Stderr keeps this out of the prompt-toolkit scroll buffer.
+        try:
+            from grove.dispatcher import Dispatcher as _Dispatcher
+
+            def _notice(marker):
+                import sys as _sys_a
+                sid = marker.get("session_id", "?")
+                halt = marker.get("halt") or {}
+                zone = halt.get("zone", "?")
+                rule = halt.get("matched_rule", "?")
+                ts = marker.get("timestamp", "?")
+                print(
+                    f"⚠ Pending Andon from prior session {sid} ({ts}): "
+                    f"zone={zone} rule={rule} — discarded.",
+                    file=_sys_a.stderr,
+                )
+            _Dispatcher.acknowledge_pending_andon(notice_callback=_notice)
+        except Exception:
+            # Startup recovery is best-effort; do not block CLI boot
+            # on a marker-acknowledgment failure.
+            pass
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
         if getattr(self, "_resize_recovery_pending", False):

@@ -811,6 +811,13 @@ class Dispatcher:
             ``run_conversation`` return value byte-for-byte.
         """
         ledger = self._get_or_create_ledger(agent)
+        # Sprint 26 Phase 7 — Dispatcher broadcasts GROVE_SESSION_ID to
+        # subprocess descendants on every turn. Authority moved here
+        # from AIAgent.__init__ per GRV-005 § II/III: substrate writes
+        # are Dispatcher-owned. Idempotent — safe to re-write per turn.
+        session_id = getattr(agent, "session_id", None)
+        if session_id:
+            self.broadcast_session_id(str(session_id))
         gen = agent._run_turn_generator(user_message=user_message, **kwargs)
         try:
             return self._drive_generator(agent, gen, ledger)
@@ -1029,6 +1036,67 @@ class Dispatcher:
             target_tier=target_tier,
             reason=reason,
         )
+
+    @staticmethod
+    def broadcast_session_id(session_id: str) -> None:
+        """Sprint 26 Phase 7 — write GROVE_SESSION_ID for subprocess descendants.
+
+        Authority moved here from AIAgent per GRV-005 § II/III: env
+        writes are Dispatcher-owned. Subprocess descendants (terminal
+        tool, execute_code tool, etc.) read GROVE_SESSION_ID to
+        correlate their telemetry with the parent session. The
+        Dispatcher writes on every dispatch_turn entry; the Agent
+        also calls this when session_id rotates mid-conversation
+        (compression-driven session split).
+        """
+        os.environ["GROVE_SESSION_ID"] = str(session_id)
+
+    @classmethod
+    def acknowledge_pending_andon(
+        cls,
+        notice_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Sprint 26 Phase 7 — startup recovery hook for D3 markers.
+
+        Called once at CLI / gateway boot. Reads every pending_andon
+        marker left over from prior sessions (process killed mid-
+        Sovereign-Prompt), invokes ``notice_callback`` for each marker
+        so the caller can surface a user-facing message, then deletes
+        the markers (Option 1: Discard with notice, per the operator's
+        Phase 7 lock).
+
+        Returns the list of marker payloads that were acknowledged
+        (and deleted from disk). When no markers exist, returns an
+        empty list and ``notice_callback`` is not invoked.
+
+        Default ``notice_callback`` is None → no surfacing; the CLI
+        wiring at startup passes a callback that prints to stderr.
+        """
+        markers = cls.check_pending_andon()
+        if not markers:
+            return []
+        for marker in markers:
+            if notice_callback is not None:
+                try:
+                    notice_callback(marker)
+                except Exception as exc:
+                    logger.debug(
+                        "[grove.dispatcher] pending_andon notice callback "
+                        "raised on marker %r: %r",
+                        marker.get("session_id"), exc,
+                    )
+            # Delete the marker (Option 1: Discard with notice).
+            marker_path = marker.get("_marker_path")
+            if marker_path:
+                try:
+                    Path(marker_path).unlink()
+                except OSError as exc:
+                    logger.debug(
+                        "[grove.dispatcher] could not unlink acknowledged "
+                        "pending_andon marker %s: %r",
+                        marker_path, exc,
+                    )
+        return markers
 
     def get_tier_override(self, agent_or_session_id: Any) -> Optional[str]:
         """Return the currently-set tier override for a session, or None.

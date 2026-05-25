@@ -141,109 +141,100 @@ def _synthetic_generator(intents_batch: List[ToolIntent], result: Dict[str, Any]
     return gen()
 
 
-class TestRunConversationWrapper:
-    """The in-process wrapper drives _run_turn_generator. Verifies the
-    drive loop returns StopIteration.value as the legacy result dict and
-    invokes _execute_tool_calls on yielded batches."""
+class TestPhase7RunConversationDelegation:
+    """Phase 7: AIAgent.run_conversation no longer drives the generator
+    in-process. It delegates to a lazily-created Dispatcher singleton
+    held on the Agent. The previous in-process drive loop was deleted;
+    all execution now flows through Dispatcher.dispatch_turn under
+    GRV-005 § II/III authority."""
 
     def _bare_agent_with_state(self, msgs: List[Dict]):
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
-        agent._current_assistant_message = {"role": "assistant"}
+        agent._current_assistant_message = {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
+        }
         agent._current_messages = msgs
         agent._current_effective_task_id = "task_t"
         agent._current_api_call_count = 1
-        # Stub _execute_tool_calls so we can assert it was called and
-        # observe its mutation of messages (mirrors the legacy contract).
-        agent._execute_tool_calls_called_with = None
-
-        def _stub_execute(asst, messages, task_id, api_n):
-            agent._execute_tool_calls_called_with = {
-                "asst": asst, "messages": messages,
-                "task_id": task_id, "api_n": api_n,
-            }
-            # Mirror the real method's side effect: append tool messages
-            # for each tool_call in asst.
-            tool_calls = (asst.get("tool_calls") if isinstance(asst, dict) else []) or []
-            for tc in tool_calls:
+        agent.session_id = "phase7_delegation_session"
+        agent.model = "m"
+        agent.provider = "p"
+        agent._execute_tool_calls = (
+            lambda asst, messages, task_id, api_n: [
                 messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": f"result-for-{tc.get('id', '')}",
+                    "role": "tool", "tool_call_id": tc.get("id", ""),
+                    "content": "stub-result",
                 })
-        agent._execute_tool_calls = _stub_execute
-        # Stub _run_turn_generator to return the synthetic generator.
+                for tc in (asst.get("tool_calls") or [])
+            ]
+        )
         return agent
 
-    def test_wrapper_returns_stop_iteration_value(self, monkeypatch: pytest.MonkeyPatch):
+    def test_run_conversation_creates_dispatcher_singleton(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The Agent lazily creates a Dispatcher on first call. The
+        # same instance is reused on subsequent calls.
+        _patch_classifier_green(monkeypatch)
         msgs: List[Dict] = []
         agent = self._bare_agent_with_state(msgs)
-        agent._current_assistant_message = {
-            "role": "assistant",
-            "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
-        }
         intents = [ToolIntent(tool_name="t", arguments={}, call_id="c1")]
-        expected_result = {"final_response": "ok", "messages": msgs}
         agent._run_turn_generator = (
-            lambda **kw: _synthetic_generator(intents, expected_result)
+            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
         )
         import run_agent
-        # Call the real wrapper method by binding
+        run_agent.AIAgent.run_conversation(agent, user_message="hi")
+        first_dispatcher = agent._dispatcher_singleton
+        assert first_dispatcher is not None
+
+        # Second call reuses the same dispatcher
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
+        )
+        run_agent.AIAgent.run_conversation(agent, user_message="hi again")
+        assert agent._dispatcher_singleton is first_dispatcher
+
+    def test_run_conversation_returns_dispatcher_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The delegation returns whatever dispatch_turn returns.
+        _patch_classifier_green(monkeypatch)
+        msgs: List[Dict] = []
+        agent = self._bare_agent_with_state(msgs)
+        intents = [ToolIntent(tool_name="t", arguments={}, call_id="c1")]
+        expected = {"final_response": "delegated-ok"}
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, expected)
+        )
+        import run_agent
         result = run_agent.AIAgent.run_conversation(agent, user_message="hi")
-        assert result == expected_result
+        assert result == expected
 
-    def test_wrapper_executes_yielded_batch_via_execute_tool_calls(self):
+    def test_run_conversation_routes_through_dispatcher_classification(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Phase 7 verification: the wrapper now goes through the
+        # Dispatcher's classification gate, so a Red-zoned tool halts
+        # the turn (where the pre-Phase-7 wrapper would have executed).
+        _force_red(monkeypatch)
         msgs: List[Dict] = []
         agent = self._bare_agent_with_state(msgs)
-        agent._current_assistant_message = {
-            "role": "assistant",
-            "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
-        }
         intents = [ToolIntent(tool_name="t", arguments={}, call_id="c1")]
         agent._run_turn_generator = (
-            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
+            lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
+        )
+        # Inject a Drop disposition so the default TTY prompt doesn't block
+        agent._dispatcher_singleton = Dispatcher(
+            sovereign_prompt_handler=lambda halt: "drop",
         )
         import run_agent
-        run_agent.AIAgent.run_conversation(agent, user_message="hi")
-        # The stub recorded that _execute_tool_calls was called with
-        # the stashed state.
-        assert agent._execute_tool_calls_called_with is not None
-        assert agent._execute_tool_calls_called_with["task_id"] == "task_t"
-        # The stub appended a tool message for c1.
-        assert any(
-            m.get("tool_call_id") == "c1" for m in msgs
-        )
-
-    def test_wrapper_builds_observations_from_appended_tool_messages(self):
-        # The wrapper packages an Observation for each intent whose
-        # call_id matches a freshly-appended tool message. The
-        # synthetic generator's assertion (intents → Observations
-        # round-trip) verifies the packaging shape.
-        msgs: List[Dict] = []
-        agent = self._bare_agent_with_state(msgs)
-        agent._current_assistant_message = {
-            "role": "assistant",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "t1", "arguments": "{}"}},
-                {"id": "c2", "function": {"name": "t2", "arguments": "{}"}},
-            ],
-        }
-        intents = [
-            ToolIntent(tool_name="t1", arguments={}, call_id="c1"),
-            ToolIntent(tool_name="t2", arguments={}, call_id="c2"),
-        ]
-        agent._run_turn_generator = (
-            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
-        )
-        import run_agent
-        run_agent.AIAgent.run_conversation(agent, user_message="hi")
-        # The stub appended one tool message per intent; the wrapper
-        # should have built two Observations matching them by call_id.
-        tool_msg_ids = [
-            m.get("tool_call_id") for m in msgs if m.get("role") == "tool"
-        ]
-        assert "c1" in tool_msg_ids
-        assert "c2" in tool_msg_ids
+        result = run_agent.AIAgent.run_conversation(agent, user_message="hi")
+        # Classification fired and halted the turn — the pre-Phase-7
+        # wrapper would have returned the executed result instead.
+        assert result["turn_exit_reason"] == "andon_drop"
+        assert result["andon_disposition"]["disposition"] == "drop"
 
 
 # ── Dispatcher.dispatch_turn ──────────────────────────────────────────────
@@ -347,11 +338,12 @@ class TestProtocolRoundTrip:
     package observations correctly, the generator's internal asserts
     raise and the test fails."""
 
-    def test_wrapper_round_trip(self):
-        # The legacy wrapper does NOT run zone classification (per
-        # Phase 3/4 design: classification is added to the Dispatcher's
-        # path; the wrapper preserves legacy unzoned behavior via
-        # _execute_tool_calls). So no classifier patch is needed here.
+    def test_wrapper_round_trip(self, monkeypatch: pytest.MonkeyPatch):
+        # Phase 7: the wrapper delegates to Dispatcher.dispatch_turn,
+        # which means classification fires. With synthetic intents this
+        # would default-yellow halt — force green to exercise the
+        # round-trip protocol shape.
+        _patch_classifier_green(monkeypatch)
         msgs: List[Dict] = []
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
@@ -362,6 +354,9 @@ class TestProtocolRoundTrip:
         agent._current_messages = msgs
         agent._current_effective_task_id = "t"
         agent._current_api_call_count = 1
+        agent.session_id = "round_trip_session"
+        agent.model = "m"
+        agent.provider = "p"
 
         def _exec(asst, messages, task_id, api_n):
             for tc in (asst.get("tool_calls") or []):
@@ -376,7 +371,7 @@ class TestProtocolRoundTrip:
         )
         result = run_agent.AIAgent.run_conversation(agent, user_message="hi")
         # No assertion failure in the synthetic generator means the
-        # wrapper sent List[Observation] back correctly.
+        # delegation sent List[Observation] back correctly.
         assert result["final_response"] == "ok"
 
     def test_dispatcher_round_trip(self, monkeypatch: pytest.MonkeyPatch):
@@ -1242,3 +1237,118 @@ class TestPhase6TierOverride:
         d.override_tier(agent, "T3", reason="via agent")
         assert d.get_tier_override(agent) == "T3"
         assert d.get_tier_override("from_agent_session") == "T3"
+
+
+# ── Phase 7 — env broadcast + acknowledge_pending_andon ──────────────────
+
+
+class TestPhase7BroadcastSessionId:
+    """Sprint 26 Phase 7 — GROVE_SESSION_ID env-write authority moved
+    from AIAgent to Dispatcher.broadcast_session_id per GRV-005 § II/III.
+    The Agent declares; the Dispatcher writes."""
+
+    def test_broadcast_session_id_writes_env(self, monkeypatch: pytest.MonkeyPatch):
+        # Start with the env unset to verify the broadcast writes it.
+        monkeypatch.delenv("GROVE_SESSION_ID", raising=False)
+        Dispatcher.broadcast_session_id("test_session_123")
+        import os
+        assert os.environ.get("GROVE_SESSION_ID") == "test_session_123"
+
+    def test_dispatch_turn_broadcasts_session_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # When dispatch_turn runs, GROVE_SESSION_ID is set to the
+        # agent's session_id. This replaces the deleted AIAgent.__init__
+        # write site (Phase 1a TODO swept).
+        _patch_classifier_green(monkeypatch)
+        monkeypatch.delenv("GROVE_SESSION_ID", raising=False)
+        import run_agent
+        agent = object.__new__(run_agent.AIAgent)
+        agent._current_assistant_message = {"role": "assistant"}
+        agent._current_messages = []
+        agent._current_effective_task_id = "t"
+        agent._current_api_call_count = 1
+        agent._execute_tool_calls = lambda *a, **k: None
+        agent.model = "m"
+        agent.provider = "p"
+        agent.session_id = "phase7_env_test"
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
+        )
+        d = Dispatcher()
+        d.dispatch_turn(agent, user_message="hi")
+        import os
+        assert os.environ.get("GROVE_SESSION_ID") == "phase7_env_test"
+
+
+class TestPhase7AcknowledgePendingAndon:
+    """Sprint 26 Phase 7 — startup recovery hook. Acknowledges and
+    discards any pending_andon markers left from prior sessions, per
+    the operator-locked Option 1 (discard with notice)."""
+
+    def test_acknowledge_returns_empty_when_no_markers(self):
+        # tmp_path autouse-redirected; no markers present.
+        result = Dispatcher.acknowledge_pending_andon()
+        assert result == []
+
+    def test_acknowledge_surfaces_and_deletes_markers(self, tmp_path: Path):
+        # Pre-create two pending_andon markers, then acknowledge.
+        marker_dir = tmp_path / ".pending_andon"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        (marker_dir / "session_a.json").write_text(
+            _json.dumps({"session_id": "a", "halt": {"zone": "red"}}),
+            encoding="utf-8",
+        )
+        (marker_dir / "session_b.json").write_text(
+            _json.dumps({"session_id": "b", "halt": {"zone": "yellow"}}),
+            encoding="utf-8",
+        )
+        notices: List[Dict[str, Any]] = []
+        result = Dispatcher.acknowledge_pending_andon(
+            notice_callback=lambda m: notices.append(m),
+        )
+        # All markers surfaced via callback
+        assert len(notices) == 2
+        sids = {n["session_id"] for n in notices}
+        assert sids == {"a", "b"}
+        # Result mirrors what was acknowledged
+        assert len(result) == 2
+        # Markers deleted from disk (Option 1: Discard with notice)
+        assert list(marker_dir.glob("*.json")) == []
+
+    def test_acknowledge_notice_callback_exception_doesnt_block_cleanup(
+        self, tmp_path: Path,
+    ):
+        # A buggy notice callback shouldn't prevent the marker from
+        # being deleted — clean up the file anyway.
+        marker_dir = tmp_path / ".pending_andon"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        marker_path = marker_dir / "session_buggy.json"
+        marker_path.write_text(
+            _json.dumps({"session_id": "buggy", "halt": {"zone": "red"}}),
+            encoding="utf-8",
+        )
+
+        def _crashing(marker):
+            raise RuntimeError("notice callback exploded")
+
+        # Should not raise — the callback failure is swallowed
+        Dispatcher.acknowledge_pending_andon(notice_callback=_crashing)
+        # Marker still deleted despite callback failure
+        assert not marker_path.exists()
+
+    def test_acknowledge_works_without_callback(self, tmp_path: Path):
+        # No callback → markers silently acknowledged and deleted.
+        marker_dir = tmp_path / ".pending_andon"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        (marker_dir / "silent_session.json").write_text(
+            _json.dumps({"session_id": "silent", "halt": {"zone": "red"}}),
+            encoding="utf-8",
+        )
+        result = Dispatcher.acknowledge_pending_andon()
+        assert len(result) == 1
+        assert list(marker_dir.glob("*.json")) == []
