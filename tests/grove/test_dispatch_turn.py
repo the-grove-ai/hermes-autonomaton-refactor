@@ -443,10 +443,13 @@ class TestPhase4ZoneClassification:
         assert agent._exec_called is True
         assert result["final_response"] == "ok"
 
-    def test_red_intent_halts_batch_without_executing(
+    def test_red_intent_halts_batch_and_routes_through_drop_disposition(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        # Patch classifier to flag this specific batch as Red.
+        # Phase 5: AndonHalt is caught and routed through the Sovereign
+        # Prompt. With a "drop" disposition injected, the dispatcher
+        # closes the generator, flushes volatile state, and returns a
+        # drop result. The executor is NEVER called.
         from grove import zones as _zones
         from grove.zones import ZoneResult
 
@@ -463,21 +466,25 @@ class TestPhase4ZoneClassification:
         agent._run_turn_generator = (
             lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
         )
-        d = Dispatcher()
+        # Inject a Drop disposition handler so the test is deterministic
+        # (the default TTY handler would call input() and block).
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
         result = d.dispatch_turn(agent, user_message="hi")
-        # Halt: execution was bypassed; result carries halt metadata.
         assert agent._exec_called is False
-        assert "andon_halt" in result
-        assert result["andon_halt"]["zone"] == "red"
-        assert result["andon_halt"]["matched_rule"] == "test_red_rule"
+        assert result["turn_exit_reason"] == "andon_drop"
+        assert result["andon_disposition"]["disposition"] == "drop"
+        assert result["andon_disposition"]["zone"] == "red"
+        assert result["andon_disposition"]["matched_rule"] == "test_red_rule"
         assert result["completed"] is False
-        assert result["turn_exit_reason"] == "andon_halt"
+        # § IX(3): volatile state flushed on Drop.
+        assert result["messages"] == []
 
     def test_yellow_intent_also_halts_batch(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         # Per Phase 4 scope, BOTH Yellow and Red halt the batch.
-        # Phase 5 differentiates dispositions (Red blocks; Yellow asks).
+        # Phase 5 differentiates dispositions via operator choice; this
+        # test injects "drop" to verify the gate fires for Yellow.
         from grove import zones as _zones
         from grove.zones import ZoneResult
 
@@ -493,10 +500,11 @@ class TestPhase4ZoneClassification:
         agent._run_turn_generator = (
             lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
         )
-        d = Dispatcher()
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
         result = d.dispatch_turn(agent, user_message="hi")
         assert agent._exec_called is False
-        assert result["andon_halt"]["zone"] == "yellow"
+        assert result["andon_disposition"]["zone"] == "yellow"
+        assert result["andon_disposition"]["disposition"] == "drop"
 
     def test_first_red_in_mixed_batch_halts_whole_batch(
         self, monkeypatch: pytest.MonkeyPatch
@@ -524,16 +532,26 @@ class TestPhase4ZoneClassification:
         agent._run_turn_generator = (
             lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
         )
-        d = Dispatcher()
+        # Capture the AndonHalt to verify per-batch context. Inject a
+        # disposition handler that records the halt then returns "drop".
+        captured_halt = {}
+
+        def _capturing_prompt(halt):
+            captured_halt["halt"] = halt
+            return "drop"
+
+        d = Dispatcher(sovereign_prompt_handler=_capturing_prompt)
         result = d.dispatch_turn(agent, user_message="hi")
-        # Halt fires; triggering intent is the Red one at index 1.
-        assert result["andon_halt"]["zone"] == "red"
-        assert result["andon_halt"]["triggering_index"] == 1
-        assert result["andon_halt"]["triggering_intent"]["tool_name"] == "write"
-        # The full batch zone results are surfaced for Phase 5's UX:
-        assert len(result["andon_halt"]["zone_results"]) == 2
-        assert result["andon_halt"]["zone_results"][0]["zone"] == "green"
-        assert result["andon_halt"]["zone_results"][1]["zone"] == "red"
+        # The halt the prompt saw carried both zone results so Phase 5
+        # UX can show the full batch context.
+        halt = captured_halt["halt"]
+        assert halt.triggering_index == 1
+        assert halt.intents[1].tool_name == "write"
+        assert len(halt.zone_results) == 2
+        assert halt.zone_results[0].zone == "green"
+        assert halt.zone_results[1].zone == "red"
+        # Result reflects the Drop disposition for the whole batch.
+        assert result["andon_disposition"]["disposition"] == "drop"
         assert agent._exec_called is False
 
     def test_terminal_command_routes_through_command_classifier(
@@ -574,12 +592,15 @@ class TestPhase4ZoneClassification:
         assert recorded["command"] == "echo hi"
         assert recorded["tool_id"] == "terminal"
 
-    def test_andon_halt_closes_generator_cleanly(
+    def test_drop_disposition_closes_generator_cleanly(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        # When AndonHalt fires, the Dispatcher must close() the generator
-        # so its finally blocks run (clears agent._current_* stash).
-        # Phase 5 replaces close() with disposition routing.
+        # When Drop fires, the dispatch_turn outer `finally` runs
+        # gen.close(). The generator's own finally block clears
+        # self._current_* and raises through any open contexts. The
+        # GeneratorExit propagates cleanly because the A6 audit
+        # confirmed zero bare-except / except-BaseException sites in
+        # the legacy code path.
         from grove import zones as _zones
         from grove.zones import ZoneResult
 
@@ -602,9 +623,11 @@ class TestPhase4ZoneClassification:
                 finally_ran["flag"] = True
             return {"final_response": "unreachable"}
         agent._run_turn_generator = lambda **kw: gen()
-        d = Dispatcher()
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
         d.dispatch_turn(agent, user_message="hi")
-        # The generator's finally block ran — confirming close() was called.
+        # The generator's finally block ran — confirming gen.close() was
+        # invoked (either by the disposition flow's drop branch or by
+        # dispatch_turn's outer finally; both are guarantees).
         assert finally_ran["flag"] is True
 
 
@@ -637,3 +660,360 @@ class TestAndonHaltException:
         # Message includes tool name + zone for log diagnostics
         assert "'b'" in str(halt) or "b" in str(halt)
         assert "red" in str(halt)
+
+
+# ── Phase 5 — Mid-execution Andon disposition ─────────────────────────────
+
+
+def _force_red(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force every classify() call to return Red."""
+    from grove import zones as _zones
+    from grove.zones import ZoneResult
+    monkeypatch.setattr(
+        _zones, "classify",
+        lambda action: ZoneResult(
+            zone="red", matched_rule="forced_red", source="test",
+        ),
+    )
+
+
+class TestPhase5SkipDisposition:
+    """Skip disposition: Dispatcher injects denial Observations and appends
+    paired denial tool messages so the LLM context stays consistent. The
+    generator resumes; the Agent re-reasons or pivots."""
+
+    def _bare_agent(self, msgs):
+        import run_agent
+        agent = object.__new__(run_agent.AIAgent)
+        agent._current_assistant_message = {"role": "assistant"}
+        agent._current_messages = msgs
+        agent._current_effective_task_id = "t"
+        agent._current_api_call_count = 1
+        agent._exec_called = False
+
+        def _exec(asst, messages, task_id, api_n):
+            agent._exec_called = True
+        agent._execute_tool_calls = _exec
+        agent.model = "m"
+        agent.provider = "p"
+        agent.session_id = "test_skip_session"
+        return agent
+
+    def test_skip_injects_denial_observations(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # Capture the Observations that get sent back to the generator;
+        # Skip flow must yield denial Observations with success=False.
+        _force_red(monkeypatch)
+        # Redirect pending_andon dir to tmp so we don't pollute ~/.grove.
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        msgs = []
+        agent = self._bare_agent(msgs)
+        captured_send: dict = {}
+
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+
+        def gen():
+            received = yield intents
+            captured_send["observations"] = received
+            yield FinalResponse(content="after_skip")
+            return {"final_response": "after_skip"}
+
+        agent._run_turn_generator = lambda **kw: gen()
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "skip")
+        result = d.dispatch_turn(agent, user_message="hi")
+
+        # The generator received Observations with success=False
+        observations = captured_send["observations"]
+        assert len(observations) == 1
+        assert observations[0].success is False
+        assert observations[0].intent_id == "c1"
+        assert "skipped" in observations[0].value.lower()
+        assert observations[0].metadata.get("disposition") == "skip"
+        # Generator resumed and completed
+        assert result["final_response"] == "after_skip"
+        # Executor was NOT called (the batch was skipped, not executed)
+        assert agent._exec_called is False
+
+    def test_skip_appends_denial_tool_messages_for_llm_consistency(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # Every assistant tool_call needs a paired tool message in the
+        # context; otherwise the next LLM call errors. Skip must
+        # append denial tool messages with the right tool_call_ids.
+        _force_red(monkeypatch)
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        msgs = []
+        agent = self._bare_agent(msgs)
+        intents = [
+            ToolIntent(tool_name="a", arguments={}, call_id="c1"),
+            ToolIntent(tool_name="b", arguments={}, call_id="c2"),
+        ]
+
+        def gen():
+            yield intents
+            yield FinalResponse(content="ok")
+            return {"final_response": "ok"}
+
+        agent._run_turn_generator = lambda **kw: gen()
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "skip")
+        d.dispatch_turn(agent, user_message="hi")
+
+        # Two denial tool messages were appended, one per intent
+        tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+        assert len(tool_msgs) == 2
+        assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
+        # All denial messages mention "skipped"
+        assert all("skipped" in m["content"].lower() for m in tool_msgs)
+
+
+class TestPhase5DropDisposition:
+    """Drop disposition: Dispatcher closes the generator (raising
+    GeneratorExit at the yield); volatile turn state is flushed;
+    persistent state stays at its pre-turn snapshot per § IX(3)."""
+
+    def _bare_agent(self, msgs):
+        import run_agent
+        agent = object.__new__(run_agent.AIAgent)
+        agent._current_assistant_message = {"role": "assistant"}
+        agent._current_messages = msgs
+        agent._current_effective_task_id = "t"
+        agent._current_api_call_count = 1
+        agent._exec_called = False
+        agent._execute_tool_calls = (
+            lambda asst, messages, task_id, api_n:
+            setattr(agent, "_exec_called", True)
+        )
+        agent.model = "m"
+        agent.provider = "p"
+        agent.session_id = "test_drop_session"
+        return agent
+
+    def test_drop_flushes_volatile_state(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        _force_red(monkeypatch)
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        msgs = []
+        agent = self._bare_agent(msgs)
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
+        )
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
+        result = d.dispatch_turn(agent, user_message="hi")
+
+        # § IX(3): volatile messages flushed
+        assert result["messages"] == []
+        # The Drop result carries explicit disposition metadata
+        assert result["andon_disposition"]["disposition"] == "drop"
+        assert result["turn_exit_reason"] == "andon_drop"
+        # Executor never ran
+        assert agent._exec_called is False
+
+    def test_drop_does_not_swallow_generator_exit(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # A6 mitigation: gen.close() must propagate GeneratorExit
+        # cleanly through the generator's body. If a try/except
+        # Exception block in the body swallowed it, the generator
+        # would leak state. This test wraps the yield in `except
+        # Exception` (which DOES NOT catch GeneratorExit per Python 3)
+        # to prove the propagation works.
+        _force_red(monkeypatch)
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        msgs = []
+        agent = self._bare_agent(msgs)
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        cleanup_ran = {"flag": False}
+
+        def gen():
+            try:
+                try:
+                    yield intents
+                except Exception:
+                    # This MUST NOT catch GeneratorExit per Python 3
+                    # exception hierarchy. If it did, cleanup_ran would
+                    # not fire because the except block would swallow
+                    # the close() and the generator would continue.
+                    pass
+                yield FinalResponse(content="unreachable")
+            finally:
+                cleanup_ran["flag"] = True
+            return {"final_response": "unreachable"}
+
+        agent._run_turn_generator = lambda **kw: gen()
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
+        d.dispatch_turn(agent, user_message="hi")
+        # The generator's outer finally ran, proving GeneratorExit
+        # propagated through the inner except Exception.
+        assert cleanup_ran["flag"] is True
+
+
+class TestPhase5PendingAndonMarker:
+    """D3 process-restart resilience: pending_andon markers persist a
+    structural trail of paused turns so a killed-mid-prompt process
+    can be acknowledged on restart."""
+
+    def test_marker_written_before_prompt_and_cleared_after(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        _force_red(monkeypatch)
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        import run_agent
+        agent = object.__new__(run_agent.AIAgent)
+        agent._current_assistant_message = {"role": "assistant"}
+        agent._current_messages = []
+        agent._current_effective_task_id = "t"
+        agent._current_api_call_count = 1
+        agent._execute_tool_calls = lambda *a, **k: None
+        agent.model = "m"
+        agent.provider = "p"
+        agent.session_id = "marker_test_session_123"
+
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
+        )
+
+        # During the prompt, the marker file must exist; after disposition
+        # completes, the marker must be cleared. The prompt handler
+        # asserts the marker presence as a side effect.
+        marker_dir = tmp_path / ".pending_andon"
+        marker_path = marker_dir / "marker_test_session_123.json"
+
+        def _checking_prompt(halt):
+            # Marker must exist at this point
+            assert marker_path.exists(), (
+                f"pending_andon marker missing during prompt: {marker_path}"
+            )
+            payload = json.loads(marker_path.read_text(encoding="utf-8"))
+            assert payload["session_id"] == "marker_test_session_123"
+            assert payload["halt"]["zone"] == "red"
+            assert len(payload["intents"]) == 1
+            return "drop"
+
+        import json
+        d = Dispatcher(sovereign_prompt_handler=_checking_prompt)
+        d.dispatch_turn(agent, user_message="hi")
+        # Marker cleared after disposition completed
+        assert not marker_path.exists()
+
+    def test_marker_cleared_even_if_prompt_raises(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # The clear runs in a finally — if the prompt handler raises,
+        # the marker should still be cleared so a buggy handler doesn't
+        # leave a stale trail.
+        _force_red(monkeypatch)
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        import run_agent
+        agent = object.__new__(run_agent.AIAgent)
+        agent._current_assistant_message = {"role": "assistant"}
+        agent._current_messages = []
+        agent._current_effective_task_id = "t"
+        agent._current_api_call_count = 1
+        agent._execute_tool_calls = lambda *a, **k: None
+        agent.model = "m"
+        agent.provider = "p"
+        agent.session_id = "buggy_prompt_session"
+
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
+        )
+
+        def _buggy_prompt(halt):
+            raise RuntimeError("simulated prompt crash")
+
+        marker_path = tmp_path / ".pending_andon" / "buggy_prompt_session.json"
+        d = Dispatcher(sovereign_prompt_handler=_buggy_prompt)
+        with pytest.raises(RuntimeError, match="simulated prompt crash"):
+            d.dispatch_turn(agent, user_message="hi")
+        # Marker cleared by the finally block even though the prompt raised
+        assert not marker_path.exists()
+
+    def test_check_pending_andon_surfaces_existing_markers(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # Operator starting fresh sees any markers left from a prior
+        # killed session.
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        marker_dir = tmp_path / ".pending_andon"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        import json
+        (marker_dir / "prior_session.json").write_text(
+            json.dumps({"session_id": "prior_session", "halt": {"zone": "red"}}),
+            encoding="utf-8",
+        )
+        markers = Dispatcher.check_pending_andon()
+        assert len(markers) == 1
+        assert markers[0]["session_id"] == "prior_session"
+        assert "_marker_path" in markers[0]
+
+    def test_check_pending_andon_empty_when_no_markers(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+        assert Dispatcher.check_pending_andon() == []
+
+
+class TestPhase5SovereignPromptDefault:
+    """The default TTY Sovereign Prompt is the fallback when no handler
+    is injected. These tests verify its structure without actually
+    requiring TTY input."""
+
+    def test_default_prompt_returns_skip_on_skip_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from grove.dispatcher import AndonHalt, _default_sovereign_prompt
+        from grove.zones import ZoneResult
+
+        # Stub builtins.input to return "skip"
+        monkeypatch.setattr("builtins.input", lambda prompt="": "skip")
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        zr = [ZoneResult(zone="red", matched_rule="r", source="s")]
+        halt = AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
+        assert _default_sovereign_prompt(halt) == "skip"
+
+    def test_default_prompt_returns_drop_on_drop_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from grove.dispatcher import AndonHalt, _default_sovereign_prompt
+        from grove.zones import ZoneResult
+
+        monkeypatch.setattr("builtins.input", lambda prompt="": "2")
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        zr = [ZoneResult(zone="red", matched_rule="r", source="s")]
+        halt = AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
+        assert _default_sovereign_prompt(halt) == "drop"
+
+    def test_default_prompt_drops_on_eof(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # EOFError → safest default is Drop (don't auto-skip).
+        from grove.dispatcher import AndonHalt, _default_sovereign_prompt
+        from grove.zones import ZoneResult
+
+        def _eof(prompt=""):
+            raise EOFError()
+        monkeypatch.setattr("builtins.input", _eof)
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        zr = [ZoneResult(zone="red", matched_rule="r", source="s")]
+        halt = AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
+        assert _default_sovereign_prompt(halt) == "drop"
