@@ -239,6 +239,24 @@ class TestRunConversationWrapper:
 # ── Dispatcher.dispatch_turn ──────────────────────────────────────────────
 
 
+def _patch_classifier_green(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the Phase 4 zone classifier to return Green for any input.
+
+    Used by Phase 3 dispatch tests that don't care about classification
+    — they exercise the drive loop, not the zone gate. Phase 4 tests
+    use real classification or explicit fixture rules.
+    """
+    from grove import zones as _zones
+    from grove.zones import ZoneResult
+
+    def _always_green(action):
+        return ZoneResult(
+            zone="green", matched_rule=action, source="test_force_green",
+        )
+
+    monkeypatch.setattr(_zones, "classify", _always_green)
+
+
 class TestDispatcherDispatchTurn:
     """``Dispatcher.dispatch_turn(agent, user_message, **kwargs)`` is
     the GRV-005-conformant turn entry point. Returns the same shape
@@ -268,7 +286,10 @@ class TestDispatcherDispatchTurn:
         agent._execute_tool_calls = _stub_execute
         return agent
 
-    def test_dispatch_turn_returns_generator_result(self):
+    def test_dispatch_turn_returns_generator_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        _patch_classifier_green(monkeypatch)
         msgs: List[Dict] = []
         agent = self._bare_agent_with_state(msgs)
         intents = [ToolIntent(tool_name="t", arguments={}, call_id="c1")]
@@ -280,7 +301,10 @@ class TestDispatcherDispatchTurn:
         assert result == {"final_response": "dispatched"}
         assert agent._exec_called is True
 
-    def test_dispatch_turn_forwards_kwargs_to_generator(self):
+    def test_dispatch_turn_forwards_kwargs_to_generator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        _patch_classifier_green(monkeypatch)
         msgs: List[Dict] = []
         agent = self._bare_agent_with_state(msgs)
         intents = [ToolIntent(tool_name="t", arguments={}, call_id="c1")]
@@ -314,6 +338,10 @@ class TestProtocolRoundTrip:
     raise and the test fails."""
 
     def test_wrapper_round_trip(self):
+        # The legacy wrapper does NOT run zone classification (per
+        # Phase 3/4 design: classification is added to the Dispatcher's
+        # path; the wrapper preserves legacy unzoned behavior via
+        # _execute_tool_calls). So no classifier patch is needed here.
         msgs: List[Dict] = []
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
@@ -341,7 +369,11 @@ class TestProtocolRoundTrip:
         # wrapper sent List[Observation] back correctly.
         assert result["final_response"] == "ok"
 
-    def test_dispatcher_round_trip(self):
+    def test_dispatcher_round_trip(self, monkeypatch: pytest.MonkeyPatch):
+        # Dispatcher path: Phase 4 runs zone classification. Force the
+        # classifier green for this round-trip test so we exercise the
+        # drive loop, not the zone gate (the gate has its own tests).
+        _patch_classifier_green(monkeypatch)
         msgs: List[Dict] = []
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
@@ -367,3 +399,241 @@ class TestProtocolRoundTrip:
         d = Dispatcher()
         result = d.dispatch_turn(agent, user_message="hi")
         assert result["final_response"] == "ok"
+
+
+# ── Phase 4 — tool-zone classification at intent-yield ─────────────────────
+
+
+class TestPhase4ZoneClassification:
+    """The Dispatcher classifies every ToolIntent in the yielded batch
+    before executing. Per the D6 lock, the batch is the disposition
+    unit — a single Yellow/Red intent halts the whole batch via
+    AndonHalt. Phase 4 fires the gate; Phase 5 adds Skip/Drop UX."""
+
+    def _bare_agent_for_batch(self, msgs: List[Dict]):
+        import run_agent
+        agent = object.__new__(run_agent.AIAgent)
+        agent._current_assistant_message = {"role": "assistant"}
+        agent._current_messages = msgs
+        agent._current_effective_task_id = "t"
+        agent._current_api_call_count = 1
+        agent._exec_called = False
+
+        def _exec(asst, messages, task_id, api_n):
+            agent._exec_called = True
+        agent._execute_tool_calls = _exec
+        agent.model = "claude-sonnet-4-6"
+        agent.provider = "anthropic"
+        return agent
+
+    def test_green_batch_executes_normally(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        _patch_classifier_green(monkeypatch)
+        msgs: List[Dict] = []
+        agent = self._bare_agent_for_batch(msgs)
+        intents = [ToolIntent(tool_name="memory", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
+        )
+        d = Dispatcher()
+        result = d.dispatch_turn(agent, user_message="hi")
+        # No halt: execution proceeded and the generator completed.
+        assert "andon_halt" not in result
+        assert agent._exec_called is True
+        assert result["final_response"] == "ok"
+
+    def test_red_intent_halts_batch_without_executing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Patch classifier to flag this specific batch as Red.
+        from grove import zones as _zones
+        from grove.zones import ZoneResult
+
+        def _red(action):
+            return ZoneResult(
+                zone="red", matched_rule="test_red_rule",
+                source="test_force_red",
+            )
+        monkeypatch.setattr(_zones, "classify", _red)
+
+        msgs: List[Dict] = []
+        agent = self._bare_agent_for_batch(msgs)
+        intents = [ToolIntent(tool_name="memory", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
+        )
+        d = Dispatcher()
+        result = d.dispatch_turn(agent, user_message="hi")
+        # Halt: execution was bypassed; result carries halt metadata.
+        assert agent._exec_called is False
+        assert "andon_halt" in result
+        assert result["andon_halt"]["zone"] == "red"
+        assert result["andon_halt"]["matched_rule"] == "test_red_rule"
+        assert result["completed"] is False
+        assert result["turn_exit_reason"] == "andon_halt"
+
+    def test_yellow_intent_also_halts_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Per Phase 4 scope, BOTH Yellow and Red halt the batch.
+        # Phase 5 differentiates dispositions (Red blocks; Yellow asks).
+        from grove import zones as _zones
+        from grove.zones import ZoneResult
+
+        monkeypatch.setattr(
+            _zones, "classify",
+            lambda action: ZoneResult(
+                zone="yellow", matched_rule="y", source="test",
+            ),
+        )
+        msgs: List[Dict] = []
+        agent = self._bare_agent_for_batch(msgs)
+        intents = [ToolIntent(tool_name="memory", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
+        )
+        d = Dispatcher()
+        result = d.dispatch_turn(agent, user_message="hi")
+        assert agent._exec_called is False
+        assert result["andon_halt"]["zone"] == "yellow"
+
+    def test_first_red_in_mixed_batch_halts_whole_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # D6 lock: per-batch scoping. Green + Red batch → whole batch halts.
+        # The triggering intent is the first non-Green one.
+        from grove import zones as _zones
+        from grove.zones import ZoneResult
+
+        def _by_tool(action: str):
+            # Synthetic: tool.read → green, tool.write → red
+            if action == "tool.read":
+                return ZoneResult(zone="green", matched_rule=action, source="t")
+            if action == "tool.write":
+                return ZoneResult(zone="red", matched_rule=action, source="t")
+            return ZoneResult(zone="green", matched_rule=action, source="t")
+        monkeypatch.setattr(_zones, "classify", _by_tool)
+
+        msgs: List[Dict] = []
+        agent = self._bare_agent_for_batch(msgs)
+        intents = [
+            ToolIntent(tool_name="read", arguments={}, call_id="c1"),
+            ToolIntent(tool_name="write", arguments={}, call_id="c2"),
+        ]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
+        )
+        d = Dispatcher()
+        result = d.dispatch_turn(agent, user_message="hi")
+        # Halt fires; triggering intent is the Red one at index 1.
+        assert result["andon_halt"]["zone"] == "red"
+        assert result["andon_halt"]["triggering_index"] == 1
+        assert result["andon_halt"]["triggering_intent"]["tool_name"] == "write"
+        # The full batch zone results are surfaced for Phase 5's UX:
+        assert len(result["andon_halt"]["zone_results"]) == 2
+        assert result["andon_halt"]["zone_results"][0]["zone"] == "green"
+        assert result["andon_halt"]["zone_results"][1]["zone"] == "red"
+        assert agent._exec_called is False
+
+    def test_terminal_command_routes_through_command_classifier(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Terminal-style intents with a 'command' arg go through the
+        # Sprint 06a command_to_action + Sprint 22 hierarchical
+        # classifier, not the generic classify(action) path.
+        from grove import dispatch as _gd
+        from grove.zones import ZoneResult
+
+        recorded: dict = {}
+
+        def _stub_classify_command(command, env_type="local", *, tool_id=None):
+            recorded["command"] = command
+            recorded["tool_id"] = tool_id
+            return ZoneResult(
+                zone="green", matched_rule="command.execute.echo",
+                source="test_command_route",
+            )
+        monkeypatch.setattr(_gd, "classify_command", _stub_classify_command)
+
+        msgs: List[Dict] = []
+        agent = self._bare_agent_for_batch(msgs)
+        intents = [
+            ToolIntent(
+                tool_name="terminal",
+                arguments={"command": "echo hi"},
+                call_id="c1",
+            )
+        ]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "ok"})
+        )
+        d = Dispatcher()
+        d.dispatch_turn(agent, user_message="hi")
+        # Confirm the command-classifier was the one consulted.
+        assert recorded["command"] == "echo hi"
+        assert recorded["tool_id"] == "terminal"
+
+    def test_andon_halt_closes_generator_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # When AndonHalt fires, the Dispatcher must close() the generator
+        # so its finally blocks run (clears agent._current_* stash).
+        # Phase 5 replaces close() with disposition routing.
+        from grove import zones as _zones
+        from grove.zones import ZoneResult
+
+        monkeypatch.setattr(
+            _zones, "classify",
+            lambda action: ZoneResult(
+                zone="red", matched_rule="r", source="test",
+            ),
+        )
+        msgs: List[Dict] = []
+        agent = self._bare_agent_for_batch(msgs)
+        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
+        finally_ran = {"flag": False}
+
+        def gen():
+            try:
+                yield intents
+                yield FinalResponse(content="unreachable")
+            finally:
+                finally_ran["flag"] = True
+            return {"final_response": "unreachable"}
+        agent._run_turn_generator = lambda **kw: gen()
+        d = Dispatcher()
+        d.dispatch_turn(agent, user_message="hi")
+        # The generator's finally block ran — confirming close() was called.
+        assert finally_ran["flag"] is True
+
+
+class TestAndonHaltException:
+    """The AndonHalt exception carries the full batch context Phase 5
+    will need to build the Sovereign Prompt."""
+
+    def test_andon_halt_exposes_triggering_metadata(self):
+        from grove.dispatcher import AndonHalt
+        from grove.zones import ZoneResult
+
+        intents = [
+            ToolIntent(tool_name="a", arguments={}, call_id="c0"),
+            ToolIntent(tool_name="b", arguments={"x": 1}, call_id="c1"),
+        ]
+        zone_results = [
+            ZoneResult(zone="green", matched_rule="g", source="auto_approve"),
+            ZoneResult(
+                zone="red", matched_rule="b-rule", source="sovereign",
+                reason="hard-coded denial",
+            ),
+        ]
+        halt = AndonHalt(intents=intents, zone_results=zone_results,
+                         triggering_index=1)
+        assert halt.zone == "red"
+        assert halt.matched_rule == "b-rule"
+        assert halt.source == "sovereign"
+        assert halt.reason == "hard-coded denial"
+        assert halt.triggering_index == 1
+        # Message includes tool name + zone for log diagnostics
+        assert "'b'" in str(halt) or "b" in str(halt)
+        assert "red" in str(halt)
