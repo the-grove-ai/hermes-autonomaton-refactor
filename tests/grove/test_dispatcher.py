@@ -18,7 +18,7 @@ from typing import Dict
 
 import pytest
 
-from grove.dispatcher import Dispatcher, RuntimeContext
+from grove.dispatcher import CompressionProbe, Dispatcher, RuntimeContext
 
 
 # ── RuntimeContext ────────────────────────────────────────────────────────
@@ -251,3 +251,157 @@ class TestAIAgentRuntimeCtxInjection:
             raise RuntimeError("config broken")
         monkeypatch.setattr(hcfg, "load_config", _boom)
         assert agent._config_load_or() == {}
+
+
+# ── Phase 1b heavy-resource injection ─────────────────────────────────────
+
+
+class TestRuntimeContextHeavyResourceSlots:
+    """RuntimeContext gains optional fields for pre-built heavy resources
+    (Sprint 26 Phase 1b). Each defaults to None / empty so existing
+    callers that construct RuntimeContext bare still work."""
+
+    def test_defaults_are_none_or_empty(self):
+        ctx = RuntimeContext()
+        assert ctx.tools is None
+        assert ctx.memory_store is None
+        assert ctx.context_length_by_model == {}
+        assert ctx.anthropic_client is None
+        assert ctx.openai_client is None
+        assert ctx.compression_probe is None
+
+    def test_fields_round_trip(self):
+        probe = CompressionProbe(
+            aux_model="qwen2.5:32b",
+            aux_context=32768,
+            aux_base_url="http://localhost:11434",
+            aux_api_key="",
+            aux_cfg_provider="ollama",
+        )
+        ctx = RuntimeContext(
+            env={},
+            config={},
+            tools=[{"function": {"name": "t1"}}],
+            memory_store=object(),
+            context_length_by_model={"claude-sonnet-4-6": 200000},
+            anthropic_client=object(),
+            compression_probe=probe,
+        )
+        assert ctx.tools == [{"function": {"name": "t1"}}]
+        assert ctx.context_length_by_model["claude-sonnet-4-6"] == 200000
+        assert ctx.compression_probe is probe
+
+
+class TestCompressionProbe:
+    def test_compression_probe_is_frozen(self):
+        probe = CompressionProbe(
+            aux_model="m", aux_context=None, aux_base_url="",
+            aux_api_key="", aux_cfg_provider="",
+        )
+        with pytest.raises(Exception):  # FrozenInstanceError
+            probe.aux_model = "other"  # type: ignore[misc]
+
+    def test_compression_probe_holds_none_context(self):
+        # When the underlying get_model_context_length returns None, the
+        # probe still constructs and the Agent's downstream code handles
+        # the None gracefully (existing MINIMUM_CONTEXT_LENGTH check).
+        probe = CompressionProbe(
+            aux_model="m", aux_context=None, aux_base_url="",
+            aux_api_key="", aux_cfg_provider="",
+        )
+        assert probe.aux_context is None
+
+
+class TestDispatcherHeavyResourceBuilders:
+    def test_runtime_context_for_returns_runtime_context(self):
+        d = Dispatcher()
+        ctx = d.runtime_context_for(skip_memory=True, skip_tools=True,
+                                    skip_compression_probe=True)
+        assert isinstance(ctx, RuntimeContext)
+
+    def test_runtime_context_for_inherits_env_and_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The per-call context shares the base substrate snapshot.
+        monkeypatch.setenv("GROVE_TEST_INHERIT", "yes")
+        d = Dispatcher()
+        ctx = d.runtime_context_for(skip_memory=True, skip_tools=True,
+                                    skip_compression_probe=True)
+        assert ctx.env_get("GROVE_TEST_INHERIT") == "yes"
+
+    def test_tools_cache_returns_same_list_on_repeat_call(self):
+        d = Dispatcher()
+        ctx1 = d.runtime_context_for(skip_memory=True, skip_compression_probe=True,
+                                     enabled_toolsets=["clarify"])
+        ctx2 = d.runtime_context_for(skip_memory=True, skip_compression_probe=True,
+                                     enabled_toolsets=["clarify"])
+        # Same toolset shape → same cached tools list instance.
+        assert ctx1.tools is ctx2.tools
+
+    def test_compression_probe_cache_returns_same_instance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # When the probe builders are stubbed to return a known result,
+        # both calls return the SAME cached probe instance.
+        from grove import dispatcher as dmod
+        from agent import auxiliary_client as ac
+        from agent import model_metadata as mm
+
+        fake_client = type("FakeClient", (), {
+            "base_url": "http://localhost:11434",
+            "api_key": "",
+        })()
+        monkeypatch.setattr(
+            ac, "get_text_auxiliary_client",
+            lambda task, main_runtime: (fake_client, "qwen2.5:32b"),
+        )
+        monkeypatch.setattr(
+            ac, "_resolve_task_provider_model",
+            lambda task: ("ollama", None, None, None, None),
+        )
+        monkeypatch.setattr(mm, "get_model_context_length", lambda *a, **kw: 32768)
+
+        d = Dispatcher()
+        ctx1 = d.runtime_context_for(model="claude-sonnet-4-6", provider="anthropic",
+                                     skip_memory=True, skip_tools=True)
+        ctx2 = d.runtime_context_for(model="claude-sonnet-4-6", provider="anthropic",
+                                     skip_memory=True, skip_tools=True)
+        assert ctx1.compression_probe is not None
+        assert ctx1.compression_probe.aux_model == "qwen2.5:32b"
+        assert ctx1.compression_probe.aux_context == 32768
+        # Same probe instance across calls (Dispatcher's cache hit)
+        assert ctx1.compression_probe is ctx2.compression_probe
+
+    def test_compression_probe_returns_none_when_no_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # When get_text_auxiliary_client returns (None, ""), the probe
+        # returns None and the Agent falls back to legacy path.
+        from agent import auxiliary_client as ac
+        monkeypatch.setattr(
+            ac, "get_text_auxiliary_client",
+            lambda task, main_runtime: (None, ""),
+        )
+        d = Dispatcher()
+        ctx = d.runtime_context_for(model="claude-sonnet-4-6", provider="anthropic",
+                                    skip_memory=True, skip_tools=True)
+        assert ctx.compression_probe is None
+
+    def test_compression_probe_returns_none_when_imports_fail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Module-import-failure path returns None gracefully.
+        import sys
+        monkeypatch.setitem(sys.modules, "agent.auxiliary_client", None)
+        d = Dispatcher()
+        ctx = d.runtime_context_for(model="claude-sonnet-4-6", provider="anthropic",
+                                    skip_memory=True, skip_tools=True)
+        assert ctx.compression_probe is None
+
+    def test_skip_compression_probe_flag(self):
+        # skip_compression_probe=True bypasses the probe even when model is set.
+        d = Dispatcher()
+        ctx = d.runtime_context_for(model="claude-sonnet-4-6", provider="anthropic",
+                                    skip_memory=True, skip_tools=True,
+                                    skip_compression_probe=True)
+        assert ctx.compression_probe is None

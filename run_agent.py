@@ -1652,7 +1652,14 @@ class AIAgent:
                 # the third-party identity-injection bug.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
                 self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+                # Sprint 26 Phase 1b: use Dispatcher-cached Anthropic client when injected.
+                if (
+                    self._runtime_ctx is not None
+                    and self._runtime_ctx.anthropic_client is not None
+                ):
+                    self._anthropic_client = self._runtime_ctx.anthropic_client
+                else:
+                    self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
                 # No OpenAI client needed for Anthropic mode
                 self.client = None
                 self._client_kwargs = {}
@@ -1896,12 +1903,16 @@ class AIAgent:
                 print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
-        # Get available tools with filtering
-        self.tools = get_tool_definitions(
-            enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets,
-            quiet_mode=self.quiet_mode,
-        )
+        # Get available tools with filtering.
+        # Sprint 26 Phase 1b: use Dispatcher-cached registry when injected.
+        if self._runtime_ctx is not None and self._runtime_ctx.tools is not None:
+            self.tools = self._runtime_ctx.tools
+        else:
+            self.tools = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=self.quiet_mode,
+            )
         
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
@@ -2049,12 +2060,19 @@ class AIAgent:
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 if self._memory_enabled or self._user_profile_enabled:
-                    from tools.memory_tool import MemoryStore
-                    self._memory_store = MemoryStore(
-                        memory_char_limit=mem_config.get("memory_char_limit", 2200),
-                        user_char_limit=mem_config.get("user_char_limit", 1375),
-                    )
-                    self._memory_store.load_from_disk()
+                    # Sprint 26 Phase 1b: use Dispatcher-cached store when injected.
+                    if (
+                        self._runtime_ctx is not None
+                        and self._runtime_ctx.memory_store is not None
+                    ):
+                        self._memory_store = self._runtime_ctx.memory_store
+                    else:
+                        from tools.memory_tool import MemoryStore
+                        self._memory_store = MemoryStore(
+                            memory_char_limit=mem_config.get("memory_char_limit", 2200),
+                            user_char_limit=mem_config.get("user_char_limit", 1375),
+                        )
+                        self._memory_store.load_from_disk()
             except Exception:
                 pass  # Memory is optional -- don't break agent init
         
@@ -2377,16 +2395,21 @@ class AIAgent:
 
         if _selected_engine is not None:
             self.context_compressor = _selected_engine
-            # Resolve context_length for plugin engines — mirrors switch_model() path
+            # Resolve context_length for plugin engines — mirrors switch_model() path.
+            # Sprint 26 Phase 1b: use Dispatcher-cached context length when injected.
             from agent.model_metadata import get_model_context_length
-            _plugin_ctx_len = get_model_context_length(
-                self.model,
-                base_url=self.base_url,
-                api_key=getattr(self, "api_key", ""),
-                config_context_length=_config_context_length,
-                provider=self.provider,
-                custom_providers=_custom_providers,
-            )
+            _plugin_ctx_len = None
+            if self._runtime_ctx is not None:
+                _plugin_ctx_len = self._runtime_ctx.context_length_by_model.get(self.model)
+            if _plugin_ctx_len is None:
+                _plugin_ctx_len = get_model_context_length(
+                    self.model,
+                    base_url=self.base_url,
+                    api_key=getattr(self, "api_key", ""),
+                    config_context_length=_config_context_length,
+                    provider=self.provider,
+                    custom_providers=_custom_providers,
+                )
             self.context_compressor.update_model(
                 model=self.model,
                 context_length=_plugin_ctx_len,
@@ -3465,55 +3488,99 @@ class AIAgent:
                 get_model_context_length,
             )
 
-            client, aux_model = get_text_auxiliary_client(
-                "compression",
-                main_runtime=self._current_main_runtime(),
+            # Sprint 26 Phase 1b A7 mitigation: when the Dispatcher has
+            # cached the feasibility probe, skip the synchronous HTTP
+            # roundtrip entirely. The downstream validation + threshold
+            # adjustment logic runs unchanged on the cached values. cProfile
+            # measured the bypassed call (get_model_context_length →
+            # _query_ollama_api_show → httpx.post) as ~96% of the
+            # warm-path AIAgent.__init__ cost.
+            cached_probe = (
+                self._runtime_ctx.compression_probe
+                if self._runtime_ctx is not None
+                else None
             )
-            # Best-effort aux provider label for the warning message. The
-            # configured provider may be "auto", in which case we fall back
-            # to the client's base_url hostname so the user can still tell
-            # where the compression model is actually being called.
-            try:
-                _aux_cfg_provider, _, _, _, _ = _resolve_task_provider_model("compression")
-            except Exception:
-                _aux_cfg_provider = ""
-            if client is None or not aux_model:
-                if _aux_cfg_provider and _aux_cfg_provider != "auto":
-                    msg = (
-                        "⚠ Configured auxiliary compression provider "
-                        f"'{_aux_cfg_provider}' is unavailable — context "
-                        "compression will drop middle turns without a summary. "
-                        "Check auxiliary.compression in config.yaml and "
-                        "reauthenticate that provider."
+
+            if cached_probe is not None:
+                aux_model = cached_probe.aux_model
+                aux_base_url = cached_probe.aux_base_url
+                aux_api_key = cached_probe.aux_api_key
+                aux_context = cached_probe.aux_context
+                _aux_cfg_provider = cached_probe.aux_cfg_provider
+                if not aux_model:
+                    # Cached probe found no auxiliary model — emit the
+                    # same warning the legacy path emits and return.
+                    if _aux_cfg_provider and _aux_cfg_provider != "auto":
+                        msg = (
+                            "⚠ Configured auxiliary compression provider "
+                            f"'{_aux_cfg_provider}' is unavailable — context "
+                            "compression will drop middle turns without a summary. "
+                            "Check auxiliary.compression in config.yaml and "
+                            "reauthenticate that provider."
+                        )
+                    else:
+                        msg = (
+                            "⚠ No auxiliary LLM provider configured — context "
+                            "compression will drop middle turns without a summary. "
+                            "Run `hermes setup` or set OPENROUTER_API_KEY."
+                        )
+                    self._compression_warning = msg
+                    self._emit_status(msg)
+                    logger.warning(
+                        "No auxiliary LLM provider for compression — "
+                        "summaries will be unavailable."
                     )
-                else:
-                    msg = (
-                        "⚠ No auxiliary LLM provider configured — context "
-                        "compression will drop middle turns without a summary. "
-                        "Run `hermes setup` or set OPENROUTER_API_KEY."
-                    )
-                self._compression_warning = msg
-                self._emit_status(msg)
-                logger.warning(
-                    "No auxiliary LLM provider for compression — "
-                    "summaries will be unavailable."
+                    return
+            else:
+                client, aux_model = get_text_auxiliary_client(
+                    "compression",
+                    main_runtime=self._current_main_runtime(),
                 )
-                return
+                # Best-effort aux provider label for the warning message. The
+                # configured provider may be "auto", in which case we fall back
+                # to the client's base_url hostname so the user can still tell
+                # where the compression model is actually being called.
+                try:
+                    _aux_cfg_provider, _, _, _, _ = _resolve_task_provider_model("compression")
+                except Exception:
+                    _aux_cfg_provider = ""
+                if client is None or not aux_model:
+                    if _aux_cfg_provider and _aux_cfg_provider != "auto":
+                        msg = (
+                            "⚠ Configured auxiliary compression provider "
+                            f"'{_aux_cfg_provider}' is unavailable — context "
+                            "compression will drop middle turns without a summary. "
+                            "Check auxiliary.compression in config.yaml and "
+                            "reauthenticate that provider."
+                        )
+                    else:
+                        msg = (
+                            "⚠ No auxiliary LLM provider configured — context "
+                            "compression will drop middle turns without a summary. "
+                            "Run `hermes setup` or set OPENROUTER_API_KEY."
+                        )
+                    self._compression_warning = msg
+                    self._emit_status(msg)
+                    logger.warning(
+                        "No auxiliary LLM provider for compression — "
+                        "summaries will be unavailable."
+                    )
+                    return
 
-            aux_base_url = str(getattr(client, "base_url", ""))
-            aux_api_key = str(getattr(client, "api_key", ""))
+                aux_base_url = str(getattr(client, "base_url", ""))
+                aux_api_key = str(getattr(client, "api_key", ""))
 
-            aux_context = get_model_context_length(
-                aux_model,
-                base_url=aux_base_url,
-                api_key=aux_api_key,
-                config_context_length=getattr(self, "_aux_compression_context_length_config", None),
-                # Each model must be resolved with its own provider so that
-                # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
-                # are invoked for the correct client, not inherited from the main model.
-                provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
-                custom_providers=self._custom_providers,
-            )
+                aux_context = get_model_context_length(
+                    aux_model,
+                    base_url=aux_base_url,
+                    api_key=aux_api_key,
+                    config_context_length=getattr(self, "_aux_compression_context_length_config", None),
+                    # Each model must be resolved with its own provider so that
+                    # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
+                    # are invoked for the correct client, not inherited from the main model.
+                    provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
+                    custom_providers=self._custom_providers,
+                )
 
             # Hard floor: the auxiliary compression model must have at least
             # MINIMUM_CONTEXT_LENGTH (64K) tokens of context.  The main model
