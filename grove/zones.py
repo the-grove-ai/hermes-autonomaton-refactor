@@ -302,6 +302,33 @@ class ZoneClassifier:
             return self.classify(action)
         entry = self._tool_zones_rich.get(resolved_tool)
         if entry is None:
+            # Bare-string ``tool_zones`` entry (or no entry at all) for the
+            # resolved tool. Sovereign patterns on the action still apply
+            # so ``command.execute.sudo`` etc. land RED even when the tool
+            # has a bare-string entry. After sovereign, honor the bare-
+            # string tool entry per the schema contract:
+            #
+            #   Every command flowing through this tool is classified
+            #   `yellow`. The classifier never inspects the command's
+            #   arguments.
+            #
+            # Previously this branch fell straight through to
+            # ``classify(action)``, which keyed on ``command.execute.<verb>``
+            # — a string the schema doesn't carry — so the bare-string
+            # entry was silently ignored and every command landed on
+            # default-yellow with ``source="default"``. That violated
+            # the documented contract.
+            for pattern in self._sovereign:
+                if self._pattern_matches(pattern, action):
+                    return ZoneResult(
+                        zone="red", matched_rule=pattern, source="sovereign",
+                    )
+            if resolved_tool in self._tool_zones:
+                return ZoneResult(
+                    zone=self._tool_zones[resolved_tool],
+                    matched_rule=resolved_tool,
+                    source="tool_zones",
+                )
             return self.classify(action)
         for rule in entry.rules:
             if rule.compiled.fullmatch(command):
