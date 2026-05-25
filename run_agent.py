@@ -1973,12 +1973,12 @@ class AIAgent:
         # session_context.py for concurrency safety (gateway runs multiple
         # sessions in one process).  Also writes os.environ as fallback for
         # CLI mode where ContextVars aren't used.
-        # TODO(Sprint26-Phase7): env-write under Dispatcher authority per
-        # GRV-005 § II. Substrate writes are Dispatcher-owned; the Agent
-        # MUST NOT touch os.environ. Migration: Dispatcher broadcasts the
-        # session_id to subprocess descendants via its own env-management
-        # surface; the Agent merely declares its session_id.
-        os.environ["GROVE_SESSION_ID"] = self.session_id
+        # Sprint 26 Phase 7 — env broadcast moved to Dispatcher.dispatch_turn
+        # per GRV-005 § II/III: substrate writes are Dispatcher-owned,
+        # not Agent-owned. The Agent declares its session_id; the
+        # Dispatcher broadcasts to subprocess descendants on every turn.
+        # ContextVar set remains here because it's a runtime concurrency
+        # primitive (gateway-specific), not a substrate write.
         try:
             from gateway.session_context import _SESSION_ID
             _SESSION_ID.set(self.session_id)
@@ -11076,9 +11076,11 @@ class AIAgent:
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-                # TODO(Sprint26-Phase7): env-write under Dispatcher authority
-                # per GRV-005 § II. See twin TODO at AIAgent.__init__ ~L1965.
-                os.environ["GROVE_SESSION_ID"] = self.session_id
+                # Sprint 26 Phase 7 — env broadcast routed through the
+                # Dispatcher per GRV-005 § II/III. The Agent declares
+                # its rotated session_id; the Dispatcher writes
+                # os.environ for subprocess descendants.
+                self._get_or_create_dispatcher().broadcast_session_id(self.session_id)
                 try:
                     from gateway.session_context import _SESSION_ID
                     _SESSION_ID.set(self.session_id)
@@ -16523,6 +16525,21 @@ class AIAgent:
             ))
         return intents
 
+    def _get_or_create_dispatcher(self) -> Any:
+        """Sprint 26 Phase 7 — agent-singleton Dispatcher.
+
+        Lazy construction so existing test paths that monkey-patch
+        AIAgent internals without ever calling run_conversation don't
+        eagerly build a Dispatcher (and its session-scoped ledger
+        file). The Dispatcher's lifetime is bound to this Agent; its
+        per-session state (Kaizen ledger, tier overrides, pending_andon
+        markers) persists across turns within the Agent's lifetime.
+        """
+        if getattr(self, "_dispatcher_singleton", None) is None:
+            from grove.dispatcher import Dispatcher
+            self._dispatcher_singleton = Dispatcher()
+        return self._dispatcher_singleton
+
     def run_conversation(
         self,
         user_message: str,
@@ -16533,25 +16550,26 @@ class AIAgent:
         persist_user_message: Optional[str] = None,
         already_routed: bool = False,
     ) -> Dict[str, Any]:
-        """Public synchronous turn entry point — drives the generator in-process.
+        """Public synchronous turn entry point.
 
-        Sprint 26 Phase 3 wrapper. Existing callers (cli.py, oneshot.py,
-        gateway, batch_runner, tests) continue to use this method
-        unchanged. Internally, the wrapper drives ``_run_turn_generator``
-        and executes each yielded ``List[ToolIntent]`` via the legacy
-        ``_execute_tool_calls`` path — preserving parallelism, tool
-        guardrails, telemetry, and every other edge-case behavior of
-        the pre-Phase-3 implementation.
+        Sprint 26 Phase 7: the legacy in-process drive loop is deleted.
+        All execution now flows through
+        ``grove.dispatcher.Dispatcher.dispatch_turn`` under GRV-005
+        § II/III authority — including tool-zone classification at
+        intent yield (§ V), the Sovereign Prompt on Andon halt (§ VI),
+        and Kaizen Ledger telemetry (§ IX(4)). The Agent holds the
+        Dispatcher as a singleton so per-session state survives across
+        turns.
 
-        Per GRV-005 § II/III, true GRV-005-conformant dispatch lives
-        in ``grove.dispatcher.Dispatcher.dispatch_turn`` (the
-        Dispatcher consumes the same generator but executes under its
-        own authority). Phase 7 cleanup will migrate legacy callers
-        from this wrapper to the Dispatcher and remove the wrapper.
+        Existing callers (cli.py, oneshot.py, gateway, batch_runner)
+        continue to invoke this method unchanged; the public signature
+        and return-shape are preserved. New callers may invoke
+        ``Dispatcher.dispatch_turn`` directly to make the GRV-005
+        authority boundary explicit.
         """
-        from grove.intents import FinalResponse, Observation
-        gen = self._run_turn_generator(
-            user_message=user_message,
+        dispatcher = self._get_or_create_dispatcher()
+        return dispatcher.dispatch_turn(
+            self, user_message,
             system_message=system_message,
             conversation_history=conversation_history,
             task_id=task_id,
@@ -16559,53 +16577,6 @@ class AIAgent:
             persist_user_message=persist_user_message,
             already_routed=already_routed,
         )
-        yielded: Any = None
-        send_value: Any = None
-        try:
-            yielded = gen.send(None)  # advance to first yield
-            while True:
-                if isinstance(yielded, list):
-                    # Batch of ToolIntents — execute via legacy path,
-                    # which mutates self._current_messages directly.
-                    asst = self._current_assistant_message
-                    msgs = self._current_messages
-                    task = self._current_effective_task_id
-                    api_n = self._current_api_call_count
-                    self._execute_tool_calls(asst, msgs, task, api_n)
-                    # Package informational Observations for the generator.
-                    # Observation values reflect the tool messages just
-                    # appended to msgs (last N entries). Phase 4 may tighten
-                    # the matching when zone-classification denials need
-                    # to be reflected back through Observations.
-                    observations: List[Any] = []
-                    for intent in yielded:
-                        tool_msg = None
-                        cid = intent.call_id
-                        if cid:
-                            for m in reversed(msgs):
-                                if isinstance(m, dict) and m.get("tool_call_id") == cid:
-                                    tool_msg = m
-                                    break
-                        value = ""
-                        if isinstance(tool_msg, dict):
-                            value = tool_msg.get("content", "")
-                        observations.append(Observation(
-                            intent_id=intent.call_id,
-                            success=True,
-                            value=value,
-                        ))
-                    send_value = observations
-                elif isinstance(yielded, FinalResponse):
-                    # Informational — the generator returns next.
-                    send_value = None
-                else:
-                    # Unrecognized payload (defensive — Phase 3 only yields
-                    # List[ToolIntent] and FinalResponse). Pass None to
-                    # advance the generator without crashing.
-                    send_value = None
-                yielded = gen.send(send_value)
-        except StopIteration as stop:
-            return stop.value  # legacy result dict
 
     def chat(self, message: str, stream_callback: Optional[callable] = None, *, already_routed: bool = False) -> str:
         """

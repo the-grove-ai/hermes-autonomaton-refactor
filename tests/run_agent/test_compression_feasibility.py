@@ -53,6 +53,12 @@ def _make_agent(
     agent._aux_compression_context_length_config = None
     agent._custom_providers = []
     agent.tools = []
+    # Sprint 26 Phase 1b: _check_compression_model_feasibility reads
+    # self._runtime_ctx to decide between the cached probe path and the
+    # legacy live probe. AIAgent.__init__ sets this; tests that bypass
+    # __init__ via __new__ must set it explicitly. None routes through
+    # the legacy live probe path that these tests verify.
+    agent._runtime_ctx = None
 
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
