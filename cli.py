@@ -5984,6 +5984,61 @@ class HermesCLI:
         print(f"  Home:    {display}")
         print()
 
+    def _handle_context_command(self, command: str) -> None:
+        """Sprint 24a — print per-section token breakdown for the current turn.
+
+        Pure instrumentation: reads the agent's prompt assembly + tool
+        list + the REPL's tracked conversation history + the ephemeral
+        cellar block, tokenises each via the runtime's existing
+        ``estimate_tokens_rough`` estimator, and prints a sorted
+        breakdown plus a JSON snapshot path. Snapshot writes to
+        ``~/.grove/.context_snapshots/<session>_<turn>.json``.
+
+        No side effects beyond stdout and the snapshot file. Sprint 24b
+        consumes the snapshots when designing the PA bundle / pruning
+        rules; v0.1 just makes the numbers visible.
+        """
+        if not getattr(self, "agent", None):
+            _cprint(f"  {_DIM}/context requires an active agent.{_RST}")
+            return
+        try:
+            from grove.context_report import (
+                build_context_report,
+                format_context_report,
+                persist_context_report,
+            )
+        except ImportError as exc:
+            _cprint(f"  {_DIM}grove.context_report not importable: {exc}{_RST}")
+            return
+
+        history = list(getattr(self, "conversation_history", None) or [])
+        # Turn ordinal — count user-role messages. Fresh session before
+        # first message: turn=0; after the first user turn: turn=1; etc.
+        # Used only for the snapshot file name, so any deterministic
+        # ordinal works.
+        turn = sum(1 for m in history if m.get("role") == "user")
+        session_id = getattr(self, "session_id", "") or ""
+
+        try:
+            report = build_context_report(
+                self.agent,
+                conversation_history=history,
+                session_id=session_id,
+                turn=turn,
+            )
+        except Exception as exc:
+            # No silent degradation per the sprint's prime directive —
+            # surface the assembly failure to the operator instead of
+            # printing a partial / fabricated breakdown.
+            _cprint(f"  {_DIM}/context failed during assembly: {exc!r}{_RST}")
+            raise
+
+        print(format_context_report(report))
+        try:
+            persist_context_report(report)
+        except OSError as exc:
+            _cprint(f"  {_DIM}(snapshot write failed: {exc}){_RST}")
+
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
@@ -7983,6 +8038,8 @@ class HermesCLI:
             self.show_help()
         elif canonical == "profile":
             self._handle_profile_command()
+        elif canonical == "context":
+            self._handle_context_command(cmd_original)
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":

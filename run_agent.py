@@ -51,7 +51,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -6181,7 +6181,14 @@ class AIAgent:
         warm across turns.
         """
         # ── Stable tier ────────────────────────────────────────────────
-        stable_parts: List[str] = []
+        # Sprint 24a (context-instrumentation-v1): each accumulator is now a
+        # List[Tuple[label, text)] so the per-section breakdown is recoverable
+        # for the /context handler without changing existing callers' output.
+        # The labels are taken as-discovered (faithful reporting > editorial
+        # cleanup); renames are a Sprint 24c+ concern. The return block
+        # joins text values (backward-compat keys) and synthesizes a fourth
+        # `_sections` key keyed by label.
+        stable_parts: List[Tuple[str, str]] = []
 
         # Sprint 07 (persona-soul-retrofit-v1): compose the operator's
         # declared identity into the stable tier — constitution → soul →
@@ -6205,16 +6212,16 @@ class AIAgent:
             from grove.identity import load_identity
             _identity_block = load_identity().compose_stable()
             if _identity_block:
-                stable_parts.append(_identity_block)
+                stable_parts.append(("identity", _identity_block))
                 _identity_loaded = True
 
         if not _identity_loaded:
             # No identity composed (batch / trajectory mode). Fall back to
             # the hardcoded identity.
-            stable_parts.append(DEFAULT_AGENT_IDENTITY)
+            stable_parts.append(("identity", DEFAULT_AGENT_IDENTITY))
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-        stable_parts.append(GROVE_AGENT_HELP_GUIDANCE)
+        stable_parts.append(("grove_agent_help", GROVE_AGENT_HELP_GUIDANCE))
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -6231,17 +6238,17 @@ class AIAgent:
         if "kanban_show" in self.valid_tool_names:
             tool_guidance.append(KANBAN_GUIDANCE)
         if tool_guidance:
-            stable_parts.append(" ".join(tool_guidance))
+            stable_parts.append(("tool_guidance", " ".join(tool_guidance)))
 
         # Computer-use (macOS) — goes in as its own block rather than being
         # merged into tool_guidance because the content is multi-paragraph.
         if "computer_use" in self.valid_tool_names:
             from agent.prompt_builder import COMPUTER_USE_GUIDANCE
-            stable_parts.append(COMPUTER_USE_GUIDANCE)
+            stable_parts.append(("computer_use_guidance", COMPUTER_USE_GUIDANCE))
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
-            stable_parts.append(nous_subscription_prompt)
+            stable_parts.append(("nous_subscription", nous_subscription_prompt))
         # Tool-use enforcement: tells the model to actually call tools instead
         # of describing intended actions.  Controlled by config.yaml
         # agent.tool_use_enforcement:
@@ -6264,16 +6271,16 @@ class AIAgent:
                 model_lower = (self.model or "").lower()
                 _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
             if _inject:
-                stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+                stable_parts.append(("tool_use_enforcement", TOOL_USE_ENFORCEMENT_GUIDANCE))
                 _model_lower = (self.model or "").lower()
                 # Google model operational guidance (conciseness, absolute
                 # paths, parallel tool calls, verify-before-edit, etc.)
                 if "gemini" in _model_lower or "gemma" in _model_lower:
-                    stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+                    stable_parts.append(("model_operational_guidance", GOOGLE_MODEL_OPERATIONAL_GUIDANCE))
                 # OpenAI GPT/Codex execution discipline (tool persistence,
                 # prerequisite checks, verification, anti-hallucination).
                 if "gpt" in _model_lower or "codex" in _model_lower:
-                    stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+                    stable_parts.append(("model_operational_guidance", OPENAI_MODEL_EXECUTION_GUIDANCE))
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -6291,7 +6298,7 @@ class AIAgent:
         else:
             skills_prompt = ""
         if skills_prompt:
-            stable_parts.append(skills_prompt)
+            stable_parts.append(("skills_index", skills_prompt))
 
         # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
         # of the requested model. Inject explicit model identity into the system prompt
@@ -6300,40 +6307,41 @@ class AIAgent:
         # at construction time.
         if self.provider == "alibaba":
             _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
-            stable_parts.append(
+            stable_parts.append((
+                "alibaba_model_override",
                 f"You are powered by the model named {_model_short}. "
                 f"The exact model ID is {self.model}. "
                 f"When asked what model you are, always answer based on this information, "
-                f"not on any model name returned by the API."
-            )
+                f"not on any model name returned by the API.",
+            ))
 
         # Environment hints (WSL, Termux, etc.) — tell the agent about the
         # execution environment so it can translate paths and adapt behavior.
         # Stable for the lifetime of the process.
         _env_hints = build_environment_hints()
         if _env_hints:
-            stable_parts.append(_env_hints)
+            stable_parts.append(("environment_hints", _env_hints))
 
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
-            stable_parts.append(PLATFORM_HINTS[platform_key])
+            stable_parts.append(("platform_hint", PLATFORM_HINTS[platform_key]))
         elif platform_key:
             # Check plugin registry for platform-specific LLM guidance
             try:
                 from gateway.platform_registry import platform_registry
                 _entry = platform_registry.get(platform_key)
                 if _entry and _entry.platform_hint:
-                    stable_parts.append(_entry.platform_hint)
+                    stable_parts.append(("platform_hint", _entry.platform_hint))
             except Exception:
                 pass
 
         # ── Context tier (cwd-dependent, may change between sessions) ─
-        context_parts: List[str] = []
+        context_parts: List[Tuple[str, str]] = []
 
         # Note: ephemeral_system_prompt is NOT included here. It's injected at
         # API-call time only so it stays out of the cached/stored system prompt.
         if system_message is not None:
-            context_parts.append(system_message)
+            context_parts.append(("system_message", system_message))
 
         if not self.skip_context_files:
             # Use TERMINAL_CWD for context file discovery when set (gateway
@@ -6344,28 +6352,28 @@ class AIAgent:
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_identity_loaded)
             if context_files_prompt:
-                context_parts.append(context_files_prompt)
+                context_parts.append(("context_files", context_files_prompt))
 
         # ── Volatile tier (changes per session/turn — never cached) ───
-        volatile_parts: List[str] = []
+        volatile_parts: List[Tuple[str, str]] = []
 
         if self._memory_store:
             if self._memory_enabled:
                 mem_block = self._memory_store.format_for_system_prompt("memory")
                 if mem_block:
-                    volatile_parts.append(mem_block)
+                    volatile_parts.append(("memory", mem_block))
             # USER.md is always included when enabled.
             if self._user_profile_enabled:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
-                    volatile_parts.append(user_block)
+                    volatile_parts.append(("user_profile", user_block))
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
             try:
                 _ext_mem_block = self._memory_manager.build_system_prompt()
                 if _ext_mem_block:
-                    volatile_parts.append(_ext_mem_block)
+                    volatile_parts.append(("external_memory", _ext_mem_block))
             except Exception:
                 pass
 
@@ -6378,12 +6386,32 @@ class AIAgent:
             timestamp_line += f"\nModel: {self.model}"
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
-        volatile_parts.append(timestamp_line)
+        volatile_parts.append(("timestamp", timestamp_line))
+
+        # Sprint 24a: helper that joins only the text values from
+        # List[Tuple[label, text]] so existing call sites (only
+        # _build_system_prompt at the moment) keep getting byte-identical
+        # output for the stable/context/volatile keys.
+        def _join_texts(parts: List[Tuple[str, str]]) -> str:
+            return "\n\n".join(t.strip() for _, t in parts if t and t.strip())
+
+        # `_sections` carries the labeled breakdown for grove.context_report.
+        # Empty / whitespace-only entries are dropped to match the join's
+        # filter, so token counts stay aligned. If a label appears twice
+        # (e.g., identity could in theory fire from both branches; in
+        # practice only one fires per call), last-wins per dict semantics —
+        # documented here so a future maintainer who hits a collision knows
+        # the contract.
+        _sections: Dict[str, str] = {}
+        for label, text in (*stable_parts, *context_parts, *volatile_parts):
+            if text and text.strip():
+                _sections[label] = text.strip()
 
         return {
-            "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
-            "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
-            "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
+            "stable":   _join_texts(stable_parts),
+            "context":  _join_texts(context_parts),
+            "volatile": _join_texts(volatile_parts),
+            "_sections": _sections,
         }
 
     def _build_system_prompt(self, system_message: str = None) -> str:
