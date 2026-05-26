@@ -243,11 +243,11 @@ tool_zones:
         zone: red
         reason: "doas privilege escalation requires sovereign approval."
       # ── Google Workspace skill wrappers: precise GREEN ─────────────
-      # Known-safe script paths under ~/.grove/skills/google-workspace/.
+      # Known-safe script paths under ~/.grove/skills/productivity/google-workspace/.
       # Daily-driver UX: asking the autonomaton "what's on my calendar"
       # routes through these wrappers and should not halt for every
       # invocation.
-      - match_pattern: '^GAPI=.*python3.*\.grove/skills/google-workspace/.*'
+      - match_pattern: '^GAPI=.*python3.*\.grove/skills/productivity/google-workspace/.*'
         zone: green
         reason: "Google Workspace skill wrapper — known-safe script path."
   skill_manage.create:       yellow
