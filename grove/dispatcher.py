@@ -902,10 +902,16 @@ class Dispatcher:
                                 matched_rule=halt.matched_rule,
                             )
                             return self._format_drop_result(agent, halt)
-                        raise ValueError(
-                            f"Sovereign prompt returned unknown disposition: "
-                            f"{disposition!r} (expected 'skip' or 'drop')"
-                        )
+                        if disposition != "shadow_approve":
+                            raise ValueError(
+                                f"Sovereign prompt returned unknown disposition: "
+                                f"{disposition!r} (expected 'skip', 'drop', "
+                                f"or 'shadow_approve')"
+                            )
+                        # shadow_approve: fall through to Green path. The
+                        # halt is already in the ledger via "andon_halt"
+                        # above; "andon_disposition" above records the
+                        # shadow_approve outcome for calibration review.
                     # Green path: execute the batch
                     asst = agent._current_assistant_message
                     msgs = agent._current_messages
@@ -1202,7 +1208,8 @@ class Dispatcher:
     def _handle_andon_halt(self, agent: Any, halt: "AndonHalt") -> str:
         """Write the pending_andon marker, prompt the operator, clear marker.
 
-        Returns the operator's disposition: ``"skip"`` or ``"drop"``.
+        Returns the operator's disposition: ``"skip"``, ``"drop"``, or
+        ``"shadow_approve"`` (when ``GROVE_ZONE_SHADOW=1`` is set).
 
         The marker write happens BEFORE the prompt so a process killed
         mid-prompt leaves a recoverable trail. The marker clear runs in
@@ -1215,7 +1222,23 @@ class Dispatcher:
         process restart, ``check_pending_andon()`` surfaces the marker
         so the operator can acknowledge the lost turn (Phase 5 MVP) or
         — in a future sprint — invoke a recovery flow.
+
+        Shadow mode (``GROVE_ZONE_SHADOW=1``): the would-have-been halt
+        is already captured in the Kaizen Ledger by the caller's
+        ``andon_halt`` record (with full intent + zone_result detail).
+        This handler short-circuits the marker write + sovereign
+        prompt and returns ``"shadow_approve"`` so the caller falls
+        through to the Green-path executor. The tool runs; the ledger
+        carries the halt for later calibration review.
         """
+        if os.environ.get("GROVE_ZONE_SHADOW") == "1":
+            triggering = halt.intents[halt.triggering_index].tool_name
+            print(
+                f"[shadow] would halt: {triggering} "
+                f"({halt.zone}, {halt.matched_rule})",
+                file=_sys.stderr,
+            )
+            return "shadow_approve"
         marker_path = self._write_pending_andon(agent, halt)
         try:
             disposition = self._sovereign_prompt_handler(halt)
