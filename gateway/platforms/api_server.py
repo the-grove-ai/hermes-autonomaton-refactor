@@ -50,6 +50,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from grove.sovereign_prompt_handlers import gateway_auto_skip_handler
 
 logger = logging.getLogger(__name__)
 
@@ -874,6 +875,11 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            # Sprint 27 Phase 3 — HTTP API request handler: no TTY surface.
+            # Andon halts auto-skip with Kaizen Ledger record. Covers both
+            # callers of this factory (run_conversation sites at lines
+            # 2739 and 2993).
+            sovereign_prompt_handler=gateway_auto_skip_handler,
         )
         return agent
 

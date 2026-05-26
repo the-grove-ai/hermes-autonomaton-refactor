@@ -1214,6 +1214,15 @@ class AIAgent:
         # to direct substrate reads — backward-compat path removed at
         # Phase 7 cleanup once every caller routes through the Dispatcher.
         runtime_ctx: Optional["RuntimeContext"] = None,
+        # ── Sprint 27 Phase 3 (caller-migration-v1) ───────────────────
+        # Non-TTY callers (gateway, batch, tests) inject a handler so
+        # the Agent's Dispatcher singleton routes Andon halts through
+        # the correct surface instead of the default TTY prompt that
+        # hangs without stdin. Passed verbatim to
+        # ``Dispatcher(sovereign_prompt_handler=...)`` in
+        # ``_get_or_create_dispatcher``. None preserves the legacy
+        # TTY default (CLI / oneshot).
+        sovereign_prompt_handler: callable = None,
     ):
         """
         Initialize the AI Agent.
@@ -1277,6 +1286,10 @@ class AIAgent:
         # which read from runtime_ctx when set, otherwise fall through to
         # direct substrate access. Phase 7 removes the fallback.
         self._runtime_ctx = runtime_ctx
+        # Sprint 27 Phase 3 — injected by non-TTY callers; consumed lazily
+        # at first ``_get_or_create_dispatcher()``. None → Dispatcher uses
+        # the default TTY handler.
+        self._sovereign_prompt_handler = sovereign_prompt_handler
 
         self.model = model
         self.max_iterations = max_iterations
@@ -16537,7 +16550,11 @@ class AIAgent:
         """
         if getattr(self, "_dispatcher_singleton", None) is None:
             from grove.dispatcher import Dispatcher
-            self._dispatcher_singleton = Dispatcher()
+            self._dispatcher_singleton = Dispatcher(
+                sovereign_prompt_handler=getattr(
+                    self, "_sovereign_prompt_handler", None,
+                ),
+            )
         return self._dispatcher_singleton
 
     def run_conversation(

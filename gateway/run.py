@@ -52,6 +52,10 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from grove.sovereign_prompt_handlers import (
+    batch_auto_skip_handler,
+    gateway_auto_skip_handler,
+)
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -7500,6 +7504,8 @@ class GatewayRunner:
                             ]
 
                             if len(_hyg_msgs) >= 4:
+                                # Compression-only — no turn dispatch; exempt from GRV-005 § II.
+                                #   See Sprint 27 A1 disposition.
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
                                     model=_hyg_model,
@@ -10669,6 +10675,9 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    # Sprint 27 Phase 3 — background task: no live operator
+                    # surface. Andon halts auto-skip with Kaizen Ledger record.
+                    sovereign_prompt_handler=batch_auto_skip_handler,
                 )
                 try:
                     return agent.run_conversation(
@@ -11114,6 +11123,8 @@ class GatewayRunner:
                 if m.get("role") in {"user", "assistant"} and m.get("content")
             ]
 
+            # Compression-only — no turn dispatch; exempt from GRV-005 § II.
+            #   See Sprint 27 A1 disposition.
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
@@ -15293,6 +15304,10 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    # Sprint 27 Phase 3 — live gateway turn (Telegram/Discord/etc).
+                    # Andon halts auto-skip; future work routes Sovereign Prompts
+                    # back through the platform adapter (Sprint 28).
+                    sovereign_prompt_handler=gateway_auto_skip_handler,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

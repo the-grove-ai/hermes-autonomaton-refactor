@@ -541,3 +541,89 @@ class TestClassifyOneIntentHierarchicalBridge:
         intent = ToolIntent(tool_name="terminal", arguments={})
         result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
         assert result.zone == "yellow"
+
+
+# ── Sprint 27 GATE-D: AIAgent → Dispatcher handler injection ──────────────
+
+
+class TestAgentDispatcherHandlerInjection:
+    """The Agent forwards ``sovereign_prompt_handler`` into the lazy
+    Dispatcher singleton at ``_get_or_create_dispatcher`` time. This is
+    the Sprint 27 Phase 3 caller-migration contract: non-TTY callers
+    (gateway, batch) construct ``AIAgent(..., sovereign_prompt_handler=h)``
+    and the Agent's existing per-session singleton picks up the handler
+    at first turn.
+
+    These tests use a stub agent rather than instantiating ``AIAgent``
+    directly, because the real ``__init__`` chain pulls in the full
+    tool registry, memory store, and LLM client — none of which this
+    contract depends on. ``_get_or_create_dispatcher`` reads only
+    ``self._sovereign_prompt_handler`` and ``self._dispatcher_singleton``
+    via ``getattr``, so a minimal stub exercises the contract."""
+
+    # The stub must store the handler as an INSTANCE attribute, not a
+    # class attribute. A function set on a class body becomes bound via
+    # Python's descriptor protocol when accessed through an instance —
+    # ``stub._sovereign_prompt_handler`` would return a bound method
+    # rather than the raw function, breaking ``is`` identity asserts.
+
+    @staticmethod
+    def _make_stub(handler):
+        class _StubAgent:
+            pass
+        stub = _StubAgent()
+        stub._dispatcher_singleton = None
+        stub._sovereign_prompt_handler = handler
+        return stub
+
+    def test_injected_handler_propagates_to_singleton(self):
+        from run_agent import AIAgent
+        from grove.sovereign_prompt_handlers import gateway_auto_skip_handler
+
+        stub = self._make_stub(gateway_auto_skip_handler)
+        dispatcher = AIAgent._get_or_create_dispatcher(stub)
+        assert dispatcher._sovereign_prompt_handler is gateway_auto_skip_handler
+
+    def test_default_handler_used_when_none_injected(self):
+        # Existing callers (CLI, oneshot) construct AIAgent without
+        # ``sovereign_prompt_handler``. The singleton must default to
+        # the TTY handler so interactive Sovereign Prompts still work.
+        from run_agent import AIAgent
+        from grove.dispatcher import _default_sovereign_prompt
+
+        stub = self._make_stub(None)
+        dispatcher = AIAgent._get_or_create_dispatcher(stub)
+        assert dispatcher._sovereign_prompt_handler is _default_sovereign_prompt
+
+    def test_singleton_is_reused_across_calls(self):
+        # Per-session state continuity requires the singleton to be
+        # built once and reused. The Sprint 26 Phase 7 design depends
+        # on this: the Dispatcher holds session-keyed Kaizen Ledgers
+        # in-memory, and rebuilding the Dispatcher would lose them.
+        from run_agent import AIAgent
+        from grove.sovereign_prompt_handlers import batch_auto_skip_handler
+
+        stub = self._make_stub(batch_auto_skip_handler)
+        first = AIAgent._get_or_create_dispatcher(stub)
+        second = AIAgent._get_or_create_dispatcher(stub)
+        assert first is second
+
+    def test_batch_and_gateway_handlers_produce_distinct_singletons(self):
+        # Different agents inject different handlers; their singletons
+        # are independent so a batch-tier agent and a gateway-tier
+        # agent running concurrently don't cross-wire.
+        from run_agent import AIAgent
+        from grove.sovereign_prompt_handlers import (
+            batch_auto_skip_handler,
+            gateway_auto_skip_handler,
+        )
+
+        batch_disp = AIAgent._get_or_create_dispatcher(
+            self._make_stub(batch_auto_skip_handler)
+        )
+        gateway_disp = AIAgent._get_or_create_dispatcher(
+            self._make_stub(gateway_auto_skip_handler)
+        )
+        assert batch_disp is not gateway_disp
+        assert batch_disp._sovereign_prompt_handler is batch_auto_skip_handler
+        assert gateway_disp._sovereign_prompt_handler is gateway_auto_skip_handler
