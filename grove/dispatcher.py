@@ -243,76 +243,18 @@ class CompressionProbe:
 
 
 # ── Sovereign Prompt (Sprint 26 Phase 5) ──────────────────────────────────
+#
+# Sprint 27 Phase 2 extracted the handler implementations to
+# grove/sovereign_prompt_handlers.py. The TTY handler keeps its old
+# private alias here for back-compat with existing import sites
+# (tests/grove/test_dispatch_turn.py and internal Dispatcher defaulting).
+# New callers should import from grove.sovereign_prompt_handlers directly
+# and choose the variant (tty / batch / gateway / test) that fits the
+# caller's surface.
 
-
-def _default_sovereign_prompt(halt: "AndonHalt") -> str:
-    """The Phase 5 MVP TTY Sovereign Prompt.
-
-    GRV-005 § IX(3) requires the Sovereign Prompt to "decouple the
-    decision payload from standard conversational text, presenting the
-    intent, arguments, and disposition options in a structured,
-    deterministic interface." This function prints the structured
-    block to stderr and reads the operator's disposition via input().
-
-    Returns one of:
-      * ``"skip"`` — the operator wants to skip this batch; the
-        Dispatcher injects a denial Observation and the Agent re-reasons.
-      * ``"drop"`` — the operator wants to abandon the turn entirely;
-        the Dispatcher calls ``gen.close()`` to flush volatile state.
-
-    Defaults to ``"drop"`` on EOF / KeyboardInterrupt (safest default
-    when stdin is unavailable). Non-TTY callers (gateway, web) must
-    inject a custom handler via the Dispatcher's constructor.
-    """
-    triggering = halt.intents[halt.triggering_index]
-    print(file=_sys.stderr)
-    print(
-        "─── Andon Halt — Sovereign Disposition Required ──────────",
-        file=_sys.stderr,
-    )
-    print(f"  Zone:        {halt.zone}", file=_sys.stderr)
-    print(f"  Matched:     {halt.matched_rule}", file=_sys.stderr)
-    print(f"  Source:      {halt.source}", file=_sys.stderr)
-    if halt.reason:
-        print(f"  Reason:      {halt.reason}", file=_sys.stderr)
-    print(file=_sys.stderr)
-    print(
-        f"  Batch ({len(halt.intents)} intent"
-        f"{'s' if len(halt.intents) != 1 else ''}):",
-        file=_sys.stderr,
-    )
-    for idx, (intent, zr) in enumerate(zip(halt.intents, halt.zone_results)):
-        marker = "→" if idx == halt.triggering_index else " "
-        args_preview = str(dict(intent.arguments))[:80]
-        print(
-            f"  {marker} #{idx} [{zr.zone:6}] {intent.tool_name}: {args_preview}",
-            file=_sys.stderr,
-        )
-    print(file=_sys.stderr)
-    print("  Dispositions:", file=_sys.stderr)
-    print(
-        "    [1] Skip — inject denial; let the agent re-reason or pivot",
-        file=_sys.stderr,
-    )
-    print(
-        "    [2] Drop — flush this turn; persistent state unchanged",
-        file=_sys.stderr,
-    )
-    print(file=_sys.stderr)
-    while True:
-        try:
-            choice = input("Choose [1/2 or skip/drop]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("(no input — defaulting to Drop)", file=_sys.stderr)
-            return "drop"
-        if choice in ("1", "skip"):
-            return "skip"
-        if choice in ("2", "drop"):
-            return "drop"
-        print(
-            f"Unknown choice {choice!r}; pick 1/skip or 2/drop.",
-            file=_sys.stderr,
-        )
+from grove.sovereign_prompt_handlers import (
+    tty_sovereign_prompt as _default_sovereign_prompt,
+)
 
 
 # ── Andon halt exception (Sprint 26 Phase 4) ──────────────────────────────
