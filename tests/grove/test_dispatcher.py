@@ -405,3 +405,139 @@ class TestDispatcherHeavyResourceBuilders:
                                     skip_memory=True, skip_tools=True,
                                     skip_compression_probe=True)
         assert ctx.compression_probe is None
+
+
+# ── Sprint 27 GATE-B: _classify_one_intent hierarchical-rule bridge ───────
+
+
+class TestClassifyOneIntentHierarchicalBridge:
+    """End-to-end verification of the Sprint 22 hierarchical-rule bridge
+    at ``Dispatcher._classify_one_intent`` (dispatcher.py:1191-1196).
+
+    For ``terminal`` and ``execute_code`` tool intents carrying a
+    ``command`` argument, the bridge routes through
+    ``grove.dispatch.classify_command`` so the tool's hierarchical
+    ``tool_zones`` entry (default_zone + rules) fires. For all other
+    tool intents, the bridge is skipped and the bare-string
+    ``classify(action == tool_name)`` path runs.
+
+    These tests exercise the repo's canonical ``config/zones.schema.yaml``
+    (not the operator copy at ``~/.grove/``) so they remain stable across
+    machines and reproduce the schema-as-checked-in behavior.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _initialize_classifier_from_repo_schema(self):
+        from pathlib import Path
+        from grove.zones import initialize
+        repo_schema = (
+            Path(__file__).resolve().parents[2] / "config" / "zones.schema.yaml"
+        )
+        initialize(schema_path=repo_schema)
+
+    def test_gapi_workspace_command_classifies_green_via_hierarchical_rule(self):
+        # The Sprint 27 GATE-A-prime root-cause finding: the corrected
+        # GAPI regex (commit 6ef2a24e0) targets the actual install path
+        # ``~/.grove/skills/productivity/google-workspace/``. A terminal
+        # intent invoking a script under that path must land green via
+        # the terminal hierarchical rule, not default-yellow.
+        from grove import dispatch as _grove_dispatch
+        from grove.dispatcher import Dispatcher
+        from grove.intents import ToolIntent
+
+        intent = ToolIntent(
+            tool_name="terminal",
+            arguments={
+                "command": (
+                    "GAPI=/tmp/key.json python3 "
+                    "/Users/jimcalhoun/.grove/skills/productivity/"
+                    "google-workspace/scripts/calendar_read.py"
+                )
+            },
+        )
+        result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
+        assert result.zone == "green"
+        assert result.source.startswith("tool_zones.terminal.rules")
+        assert "google-workspace" in result.matched_rule
+
+    def test_sudo_command_classifies_red_via_hierarchical_rule(self):
+        # The terminal hierarchical entry encodes sudo/su/doas as red
+        # explicitly per the schema's "Privilege escalation: explicit RED"
+        # block. The bridge must surface that rule, not fall through to
+        # the generic action-prefix classifier.
+        from grove import dispatch as _grove_dispatch
+        from grove.dispatcher import Dispatcher
+        from grove.intents import ToolIntent
+
+        intent = ToolIntent(
+            tool_name="terminal",
+            arguments={"command": "sudo apt install vim"},
+        )
+        result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
+        assert result.zone == "red"
+        assert result.source.startswith("tool_zones.terminal.rules")
+
+    def test_unmatched_terminal_command_falls_to_default_zone_yellow(self):
+        # A plain command that matches no hierarchical rule must take
+        # the terminal entry's ``default_zone`` (yellow), not the bare
+        # action-string lookup.
+        from grove import dispatch as _grove_dispatch
+        from grove.dispatcher import Dispatcher
+        from grove.intents import ToolIntent
+
+        intent = ToolIntent(
+            tool_name="terminal",
+            arguments={"command": "echo hello"},
+        )
+        result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
+        assert result.zone == "yellow"
+
+    def test_execute_code_tool_routes_through_bridge(self):
+        # The bridge predicate accepts both ``terminal`` and
+        # ``execute_code`` per dispatcher.py:1191. execute_code has no
+        # dedicated hierarchical entry, so the call falls through inside
+        # ``classify_command_string`` to the bare-tool lookup which
+        # honors sovereign patterns on the derived action identifier.
+        from grove import dispatch as _grove_dispatch
+        from grove.dispatcher import Dispatcher
+        from grove.intents import ToolIntent
+
+        intent = ToolIntent(
+            tool_name="execute_code",
+            arguments={"command": "sudo rm -rf /"},
+        )
+        result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
+        assert result.zone == "red"
+
+    def test_non_terminal_tool_bypasses_bridge_and_uses_bare_action_classify(self):
+        # browser_back is a flat green entry in tool_zones. The bridge
+        # only fires for terminal/execute_code, so this intent must take
+        # the generic ``classify(tool_name)`` path and resolve to green
+        # via the bare-string entry.
+        from grove import dispatch as _grove_dispatch
+        from grove.dispatcher import Dispatcher
+        from grove.intents import ToolIntent
+
+        intent = ToolIntent(
+            tool_name="browser_back",
+            arguments={},
+        )
+        result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
+        assert result.zone == "green"
+        assert "rules" not in result.source
+
+    def test_terminal_without_command_arg_bypasses_bridge(self):
+        # The bridge predicate requires ``args["command"]`` to be a
+        # non-empty string. A terminal intent with no command (degenerate
+        # but possible during model-side malformation) must NOT route
+        # through classify_command_string — it should fall through to the
+        # generic ``classify("terminal")`` path which resolves via the
+        # bare-string seed of the terminal hierarchical entry's
+        # default_zone (yellow).
+        from grove import dispatch as _grove_dispatch
+        from grove.dispatcher import Dispatcher
+        from grove.intents import ToolIntent
+
+        intent = ToolIntent(tool_name="terminal", arguments={})
+        result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
+        assert result.zone == "yellow"
