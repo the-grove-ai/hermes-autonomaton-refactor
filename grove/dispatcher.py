@@ -803,6 +803,11 @@ class Dispatcher:
         session_id = getattr(agent, "session_id", None)
         if session_id:
             self.broadcast_session_id(str(session_id))
+        # Sprint 28 Phase 4 — explicit success finalization. Capture the
+        # PREVIOUS turn's id before reset so we can finalize its pending
+        # record (if any) as success. The first turn for this Dispatcher
+        # has no previous (``_current_turn_id`` is None) — skip then.
+        previous_turn_id = self._current_turn_id
         # Sprint 28 Phase 3 — reset per-turn state and assign this turn's
         # id BEFORE driving the generator, so terminal write sites
         # (FinalResponse / Drop / exception) have a stable identity to
@@ -815,6 +820,8 @@ class Dispatcher:
         self._current_turn_tools_yielded = []
         self._current_turn_user_message = user_message
         self._current_turn_outcome_written = False
+        if previous_turn_id is not None:
+            self._finalize_previous_turn_pending(previous_turn_id)
         gen = agent._run_turn_generator(user_message=user_message, **kwargs)
         try:
             return self._drive_generator(agent, gen, ledger)
@@ -1001,6 +1008,51 @@ class Dispatcher:
                     yielded = gen.send(None)
         except StopIteration as stop:
             return stop.value
+
+    # ── Sprint 28 Phase 4 helper (Explicit Success Finalization) ────────
+
+    def _finalize_previous_turn_pending(self, previous_turn_id: str) -> None:
+        """Finalize the previous turn's pending record as success.
+
+        Sprint 28 Phase 4 — explicit success only per the GATE-D
+        disposition. Semantic correction detection is deferred (would
+        require either injecting prior-turn context into the routing
+        Haiku — degrading zero-shot accuracy — or a second LLM call,
+        breaking Sprint 12's one-call economics). The Implicit Success
+        Sweep at Dispatcher init catches abandoned sessions; this
+        method catches in-session continuations. Together they close
+        the loop with explicit-success semantics only.
+
+        No-op when the previous turn already terminated at Drop or
+        exception (its outcome is already terminal). No-op when no
+        store is wired (legacy/test Dispatchers).
+
+        Best-effort: any failure inside this method logs warning and
+        swallows — the new turn's setup MUST NOT depend on the
+        previous turn's finalization succeeding.
+        """
+        if self._intent_store is None:
+            return
+        try:
+            from grove.intent_store import finalize_record
+            latest: Optional[Any] = None
+            for record in self._intent_store.latest_by_turn():
+                if record.turn_id == previous_turn_id:
+                    latest = record
+                    break
+            if latest is None or latest.outcome != "pending":
+                return
+            self._intent_store.append(finalize_record(
+                latest,
+                outcome="success",
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            ))
+        except Exception as exc:
+            logger.warning(
+                "[grove.dispatcher] explicit-success finalization "
+                "failed for previous turn %r: %r",
+                previous_turn_id, exc,
+            )
 
     # ── Sprint 28 Phase 3 helper (Intent Record write) ──────────────────
 

@@ -393,9 +393,14 @@ class TestPerTurnStateLifecycle:
             )
             d.dispatch_turn(agent, user_message=f"turn {i}")
 
-        records = list(tmp_store.records())
-        turn_ids = [r.turn_id for r in records]
-        assert turn_ids == [
+        # Filter to the per-turn "pending" writes — Phase 4 adds a
+        # second "success" record per finalization, which we don't want
+        # to count here. One pending record per turn yields the
+        # monotonic id sequence under test.
+        pending_turn_ids = [
+            r.turn_id for r in tmp_store.records() if r.outcome == "pending"
+        ]
+        assert pending_turn_ids == [
             "test-session#1", "test-session#2", "test-session#3",
         ]
 
@@ -427,6 +432,183 @@ class TestPerTurnStateLifecycle:
         assert rec.tools_yielded == (
             "read_file", "search_files", "web_search",
         )
+
+
+# ── Phase 4: explicit success finalization ───────────────────────────────
+
+
+class TestPhase4ExplicitSuccessFinalization:
+    """At the start of turn N+1, the Dispatcher finalizes turn N's
+    pending record as success. Together with the 60-min Implicit
+    Success Sweep at Dispatcher init, this closes the loop with
+    explicit-success semantics only — semantic correction detection
+    is deferred per GATE-D (A3)."""
+
+    def test_second_turn_finalizes_previous_pending_as_success(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        d = Dispatcher(intent_store=tmp_store)
+        agent = _bare_agent_with_exec([])
+
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(
+                None, {"final_response": "first"}, final_text="first",
+            )
+        )
+        d.dispatch_turn(agent, user_message="turn 1")
+
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(
+                None, {"final_response": "second"}, final_text="second",
+            )
+        )
+        d.dispatch_turn(agent, user_message="turn 2")
+
+        # Three records: turn 1 pending, turn 1 success finalization,
+        # turn 2 pending. The latest_by_turn view collapses to
+        # {turn 1 → success, turn 2 → pending}.
+        latest_by_turn = {r.turn_id: r.outcome for r in tmp_store.latest_by_turn()}
+        assert latest_by_turn == {
+            "test-session#1": "success",
+            "test-session#2": "pending",
+        }
+
+    def test_finalization_preserves_original_fields(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(
+            monkeypatch, intent_class="planning", goal_alignment="direct",
+        )
+        d = Dispatcher(intent_store=tmp_store)
+        agent = _bare_agent_with_exec([])
+        intents = [ToolIntent(tool_name="search_files", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "x"})
+        )
+        d.dispatch_turn(agent, user_message="strategic question")
+
+        # Second turn finalizes the first.
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(None, {"final_response": "y"}, final_text="y")
+        )
+        d.dispatch_turn(agent, user_message="next")
+
+        finalized = next(
+            r for r in tmp_store.latest_by_turn()
+            if r.turn_id == "test-session#1"
+        )
+        # Outcome flipped to success; everything else preserved from
+        # the pending record.
+        assert finalized.outcome == "success"
+        assert finalized.intent_class == "planning"
+        assert finalized.goal_alignment == "direct"
+        assert finalized.tools_yielded == ("search_files",)
+        assert finalized.user_message_stem == "strategic question"
+
+    def test_previous_drop_is_not_re_finalized(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
+    ):
+        # Turn 1 ends at Drop terminal (outcome=drop). The Phase 4
+        # finalization at turn 2 start must NOT overwrite drop → success.
+        from grove import zones as _zones
+        from grove.zones import ZoneResult
+        monkeypatch.setattr(
+            _zones, "classify",
+            lambda action: ZoneResult(
+                zone="red", matched_rule="r", source="sovereign",
+            ),
+        )
+        _set_current_classification(monkeypatch)
+        d = Dispatcher(
+            intent_store=tmp_store,
+            sovereign_prompt_handler=lambda halt: "drop",
+        )
+        agent = _bare_agent_with_exec([])
+        intents = [ToolIntent(tool_name="t", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
+        )
+        d.dispatch_turn(agent, user_message="dangerous")
+
+        # Turn 2: same Dispatcher, normal flow now.
+        _patch_classifier_green(monkeypatch)
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(None, {"final_response": "y"}, final_text="y")
+        )
+        d.dispatch_turn(agent, user_message="next")
+
+        latest_by_turn = {r.turn_id: r.outcome for r in tmp_store.latest_by_turn()}
+        assert latest_by_turn["test-session#1"] == "drop"
+        assert latest_by_turn["test-session#2"] == "pending"
+
+    def test_previous_error_is_not_re_finalized(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        d = Dispatcher(intent_store=tmp_store)
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = (
+            lambda **kw: _raising_generator(RuntimeError("boom"))
+        )
+        with pytest.raises(RuntimeError):
+            d.dispatch_turn(agent, user_message="will fail")
+
+        # Turn 2: normal.
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(None, {"final_response": "y"}, final_text="y")
+        )
+        d.dispatch_turn(agent, user_message="next")
+
+        latest_by_turn = {r.turn_id: r.outcome for r in tmp_store.latest_by_turn()}
+        assert latest_by_turn["test-session#1"] == "error"
+        assert latest_by_turn["test-session#2"] == "pending"
+
+    def test_first_turn_attempts_no_finalization(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
+    ):
+        # First turn on a fresh Dispatcher has no previous turn — the
+        # finalization step is skipped entirely. The store should hold
+        # only the new pending record after one turn.
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        d = Dispatcher(intent_store=tmp_store)
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(None, {"final_response": "x"}, final_text="x")
+        )
+        d.dispatch_turn(agent, user_message="first")
+
+        records = list(tmp_store.records())
+        assert len(records) == 1
+        assert records[0].outcome == "pending"
+
+    def test_multi_turn_chain_finalizes_each_predecessor(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        d = Dispatcher(intent_store=tmp_store)
+        agent = _bare_agent_with_exec([])
+
+        for i in range(5):
+            agent._run_turn_generator = (
+                lambda **kw: _synthetic_generator(
+                    None, {"final_response": f"r{i}"}, final_text=f"r{i}",
+                )
+            )
+            d.dispatch_turn(agent, user_message=f"turn {i}")
+
+        # Five turns: first four finalize to success, fifth remains pending.
+        latest_by_turn = {r.turn_id: r.outcome for r in tmp_store.latest_by_turn()}
+        for i in range(1, 5):
+            assert latest_by_turn[f"test-session#{i}"] == "success", (
+                f"turn {i} should have finalized to success"
+            )
+        assert latest_by_turn["test-session#5"] == "pending"
 
 
 # ── AIAgent integration ──────────────────────────────────────────────────
