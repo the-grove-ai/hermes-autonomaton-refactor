@@ -499,6 +499,19 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- grove.intent_store — Sprint 28 module-level singleton ---
+    # _default_store caches an IntentStore bound to the first call site's
+    # GROVE_HOME tempdir. Since _isolate_hermes_home gives each test a
+    # fresh tempdir, leaving the singleton in place across tests points
+    # subsequent tests at a deleted directory and writes fail. Resetting
+    # to None means the next get_store() call inside a test constructs
+    # against the CURRENT test's tempdir.
+    try:
+        from grove import intent_store as _is_mod
+        _is_mod._default_store = None
+    except Exception:
+        pass
+
     yield
 
 

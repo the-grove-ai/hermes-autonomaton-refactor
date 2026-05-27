@@ -16566,10 +16566,16 @@ class AIAgent:
         """
         if getattr(self, "_dispatcher_singleton", None) is None:
             from grove.dispatcher import Dispatcher
+            from grove.intent_store import get_store as _get_intent_store
             self._dispatcher_singleton = Dispatcher(
                 sovereign_prompt_handler=getattr(
                     self, "_sovereign_prompt_handler", None,
                 ),
+                # Sprint 28 Phase 3 — wire the feed-first intent store.
+                # The Dispatcher writes an IntentRecord at every terminal
+                # site (FinalResponse / Drop / exception) and runs the
+                # Implicit Success Sweep at construction.
+                intent_store=_get_intent_store(),
             )
         return self._dispatcher_singleton
 

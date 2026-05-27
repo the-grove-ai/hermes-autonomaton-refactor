@@ -34,7 +34,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
@@ -44,8 +45,39 @@ __all__ = [
     "IntentRecord",
     "IntentStore",
     "VALID_OUTCOMES",
+    "finalize_record",
     "get_store",
+    "normalize_message_stem",
 ]
+
+
+_STEM_CHARS = 100
+
+
+def normalize_message_stem(message: str, max_chars: int = _STEM_CHARS) -> str:
+    """Return the first ``max_chars`` of ``message`` for human-readable
+    cross-reference against the classifier's ``pattern_hash``.
+
+    The hash itself normalizes (lowercase + whitespace-collapsed); this
+    stem preserves the operator's original casing and spacing so a
+    ledger reader can recognize their own request at a glance.
+    """
+    return message[:max_chars]
+
+
+def finalize_record(
+    record: "IntentRecord", *, outcome: str, timestamp: str,
+) -> "IntentRecord":
+    """Construct a finalization record carrying the same ``turn_id``.
+
+    The provisional-write pattern appends rather than mutates — this
+    helper produces the second record so the original ``pending`` plus
+    the finalization collapse to a single effective state under
+    :meth:`IntentStore.latest_by_turn`. All other fields copy through
+    unchanged so the finalized view carries the same telemetry as the
+    pending record.
+    """
+    return replace(record, outcome=outcome, timestamp=timestamp)
 
 
 # Closed set of valid outcome states. Sprint 28 Phase 4 implements the
@@ -210,6 +242,54 @@ class IntentStore:
             if existing is None or record.timestamp > existing.timestamp:
                 latest[record.turn_id] = record
         yield from latest.values()
+
+    def sweep_stale_pending(
+        self,
+        *,
+        older_than_minutes: int = 60,
+        now: Optional[datetime] = None,
+    ) -> int:
+        """Implicit Success Sweep — finalize stale ``pending`` records as success.
+
+        Sprint 28 policy: if the operator closes their laptop or walks
+        away, ~99% of the time the task is complete. Session abandonment
+        is treated as success. A ``pending`` record older than
+        ``older_than_minutes`` belongs to a session that has plausibly
+        ended without an explicit finalization (process crashed, laptop
+        closed, gateway restarted); finalizing it as success keeps the
+        feed honest about turns that actually happened without leaving
+        an indefinite ``pending`` overhang.
+
+        The threshold defaults to 60 minutes — large enough that a
+        legitimate in-flight turn (typically seconds) cannot be swept
+        by a concurrently-initializing Dispatcher in the same process.
+
+        Operates against ``latest_by_turn`` so records already
+        finalized via Phase 4 or a previous sweep are not re-swept.
+
+        Args:
+            older_than_minutes: pending records with timestamp older
+                than ``now - older_than_minutes`` are finalized.
+            now: explicit "now" for tests. Defaults to ``datetime.now(timezone.utc)``.
+
+        Returns:
+            Count of records finalized this call.
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+        cutoff_iso = (now - timedelta(minutes=older_than_minutes)).isoformat()
+        now_iso = now.isoformat()
+        swept = 0
+        for record in list(self.latest_by_turn()):
+            if record.outcome != "pending":
+                continue
+            if record.timestamp >= cutoff_iso:
+                continue
+            self.append(finalize_record(
+                record, outcome="success", timestamp=now_iso,
+            ))
+            swept += 1
+        return swept
 
     def filter(
         self,

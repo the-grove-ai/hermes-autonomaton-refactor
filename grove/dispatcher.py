@@ -337,6 +337,7 @@ class Dispatcher:
         *,
         sovereign_prompt_handler: Optional[Callable[["AndonHalt"], str]] = None,
         kaizen_ledger_dir: Optional[Path] = None,
+        intent_store: Optional[Any] = None,
     ) -> None:
         """Capture the substrate snapshot and install Phase 5 disposition handler.
 
@@ -393,6 +394,45 @@ class Dispatcher:
         self._anthropic_client_cache: Dict[tuple, Any] = {}
         self._context_length_cache: Dict[str, int] = {}
         self._compression_probe_cache: Optional[CompressionProbe] = None
+        # ── Sprint 28 Phase 3 — intent record store + per-turn state ──
+        # The IntentStore is optional so legacy / test Dispatchers (which
+        # construct ``Dispatcher()`` with no kwargs) skip the write path
+        # entirely. Production callers (``AIAgent._get_or_create_dispatcher``)
+        # inject ``intent_store=grove.intent_store.get_store()`` so every
+        # turn writes a record on the feed-first layer.
+        self._intent_store = intent_store
+        self._turn_counter: int = 0
+        # Per-turn state — reset at the top of every ``dispatch_turn``.
+        # Read at terminal write sites (FinalResponse, Drop, exception)
+        # to populate the IntentRecord without threading state through
+        # every internal call. Per-Dispatcher singleton design means
+        # only one turn is in flight per Dispatcher at a time, so this
+        # instance-attribute carrier is race-free in practice.
+        self._current_turn_id: Optional[str] = None
+        self._current_turn_classification: Optional[Any] = None
+        self._current_turn_start: Optional[float] = None
+        self._current_turn_tools_yielded: List[str] = []
+        self._current_turn_user_message: Optional[str] = None
+        self._current_turn_outcome_written: bool = False
+        if self._intent_store is not None:
+            # Sprint 28 Phase 3 — Implicit Success Sweep on Dispatcher
+            # construction. Stale ``pending`` records from previous
+            # processes / abandoned sessions finalize as success per
+            # the policy: laptop closed ≈ task complete.
+            try:
+                swept = self._intent_store.sweep_stale_pending()
+                if swept > 0:
+                    logger.info(
+                        "[grove.dispatcher] Implicit Success Sweep: "
+                        "finalized %d stale pending intent record(s) "
+                        "as success", swept,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[grove.dispatcher] Intent Store sweep failed at "
+                    "Dispatcher init: %r — intent writes will still "
+                    "proceed", exc,
+                )
         logger.debug(
             "[grove.dispatcher] runtime context captured: "
             "%d env vars, config keys=%s",
@@ -763,9 +803,30 @@ class Dispatcher:
         session_id = getattr(agent, "session_id", None)
         if session_id:
             self.broadcast_session_id(str(session_id))
+        # Sprint 28 Phase 3 — reset per-turn state and assign this turn's
+        # id BEFORE driving the generator, so terminal write sites
+        # (FinalResponse / Drop / exception) have a stable identity to
+        # write under.
+        import time as _time
+        self._turn_counter += 1
+        self._current_turn_id = f"{session_id or 'unknown'}#{self._turn_counter}"
+        self._current_turn_classification = None
+        self._current_turn_start = _time.monotonic()
+        self._current_turn_tools_yielded = []
+        self._current_turn_user_message = user_message
+        self._current_turn_outcome_written = False
         gen = agent._run_turn_generator(user_message=user_message, **kwargs)
         try:
             return self._drive_generator(agent, gen, ledger)
+        except BaseException:
+            # Sprint 28 Phase 3 — error terminal. Any exception escaping
+            # the drive loop (generator raise, internal error, KeyboardInterrupt)
+            # writes an IntentRecord with outcome="error" before
+            # propagating. ``_write_intent_record`` is idempotent per
+            # turn via the outcome_written flag, so an exception after a
+            # FinalResponse already wrote "pending" does NOT double-write.
+            self._write_intent_record(agent, outcome="error")
+            raise
         finally:
             # Ensure the generator is closed even if _drive_generator
             # raised an unexpected exception. gen.close() is idempotent;
@@ -794,8 +855,26 @@ class Dispatcher:
 
         try:
             yielded = gen.send(None)  # advance to first yield
+            # Sprint 28 Phase 3 — capture the turn's classification
+            # immediately. ``route_for_agent`` fires inside the generator
+            # during the first send; the module-global ``_last_classification``
+            # is set by the time control returns here. Snapshot to the
+            # Dispatcher's instance attr so terminal write sites
+            # (FinalResponse / Drop / exception) embed THIS turn's
+            # classification, immune to a concurrent session overwriting
+            # the global between here and the terminal.
+            from grove.providers import current_classification as _current_classification
+            self._current_turn_classification = _current_classification()
             while True:
                 if isinstance(yielded, list):
+                    # Sprint 28 Phase 3 — accumulate the tool names this
+                    # turn yielded for the intent record. Captured BEFORE
+                    # classification halts the batch, so a halted batch's
+                    # would-be tool names still surface in the record.
+                    for _intent in yielded:
+                        _name = getattr(_intent, "tool_name", None)
+                        if isinstance(_name, str) and _name:
+                            self._current_turn_tools_yielded.append(_name)
                     # Phase 4 — classify the batch at intent-yield
                     try:
                         self._classify_intents_batch_and_halt_or_raise(yielded)
@@ -843,6 +922,9 @@ class Dispatcher:
                                 zone=halt.zone,
                                 matched_rule=halt.matched_rule,
                             )
+                            # Sprint 28 Phase 3 — drop terminal. Outcome
+                            # is terminal (no Phase 4 finalization).
+                            self._write_intent_record(agent, outcome="drop")
                             return self._format_drop_result(agent, halt)
                         if disposition != "shadow_approve":
                             raise ValueError(
@@ -903,11 +985,127 @@ class Dispatcher:
                         content_length=len(yielded.content or ""),
                         metadata=dict(yielded.metadata),
                     )
+                    # Sprint 28 Phase 3 — success terminal. Write a
+                    # provisional record with outcome="pending"; Phase 4
+                    # finalizes to success/correction at next turn start.
+                    # If the operator walks away, the Implicit Success
+                    # Sweep on a future Dispatcher init finalizes the
+                    # orphaned pending as success.
+                    self._write_intent_record(
+                        agent,
+                        outcome="pending",
+                        final_response_chars=len(yielded.content or ""),
+                    )
                     yielded = gen.send(None)
                 else:
                     yielded = gen.send(None)
         except StopIteration as stop:
             return stop.value
+
+    # ── Sprint 28 Phase 3 helper (Intent Record write) ──────────────────
+
+    def _write_intent_record(
+        self,
+        agent: Any,
+        *,
+        outcome: str,
+        final_response_chars: Optional[int] = None,
+    ) -> None:
+        """Write an IntentRecord for the current turn if the store is wired.
+
+        Idempotent per turn via ``self._current_turn_outcome_written``:
+        if a terminal site (FinalResponse) already wrote "pending" for
+        this turn and a subsequent exception fires, the exception
+        handler's call here is a no-op rather than a double-write.
+
+        Best-effort: any failure inside this method is logged at
+        WARNING and swallowed — intent-record writes MUST NOT crash
+        the turn (Architectural Prime Directive: fail loud about the
+        write failure, but don't degrade the operator's turn outcome).
+
+        Args:
+            agent: the AIAgent the turn is running for. Read for
+                ``session_id``, ``model``, and ``_current_api_call_count``.
+            outcome: one of the :data:`grove.intent_store.VALID_OUTCOMES`
+                values appropriate to the terminal site.
+            final_response_chars: only populated at the FinalResponse
+                terminal; ``None`` at Drop / exception terminals.
+        """
+        if self._intent_store is None:
+            return
+        if self._current_turn_outcome_written:
+            return
+        if self._current_turn_id is None:
+            # dispatch_turn never set per-turn state — nothing meaningful
+            # to write. Happens when this helper is reached via a path
+            # the Sprint 28 wiring did not cover.
+            return
+        try:
+            from grove.intent_store import IntentRecord, normalize_message_stem
+            from grove.providers import current_tier as _current_tier
+            import time as _time
+
+            classification = self._current_turn_classification
+            if classification is None:
+                # Classification failed (Sprint 12 D4 graceful
+                # degradation) or never fired. Sentinel-fill so the
+                # record schema validates; downstream consumers filter
+                # by intent_class=="unknown" to identify these.
+                pattern_hash = "unclassified"
+                intent_class = "unknown"
+                register_class = "unknown"
+                complexity_signal = "unknown"
+                confidence = 0.0
+                goal_alignment = None
+            else:
+                pattern_hash = classification.pattern_hash
+                intent_class = classification.intent_class
+                register_class = classification.register_class
+                complexity_signal = classification.complexity_signal
+                confidence = classification.confidence
+                goal_alignment = classification.goal_alignment
+
+            duration_ms = 0.0
+            if self._current_turn_start is not None:
+                duration_ms = (
+                    _time.monotonic() - self._current_turn_start
+                ) * 1000.0
+
+            session_id = getattr(agent, "session_id", None) or "unknown"
+            api_calls = int(
+                getattr(agent, "_current_api_call_count", 0) or 0
+            )
+            model_used = getattr(agent, "model", None) or None
+
+            record = IntentRecord(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                session_id=session_id,
+                turn_id=self._current_turn_id,
+                user_message_stem=normalize_message_stem(
+                    self._current_turn_user_message or ""
+                ),
+                pattern_hash=pattern_hash,
+                intent_class=intent_class,
+                register_class=register_class,
+                complexity_signal=complexity_signal,
+                confidence=confidence,
+                outcome=outcome,
+                goal_alignment=goal_alignment,
+                tier_selected=_current_tier(),
+                model_used=model_used,
+                tools_yielded=tuple(self._current_turn_tools_yielded),
+                api_calls=api_calls,
+                duration_ms=round(duration_ms, 2),
+                final_response_chars=final_response_chars,
+            )
+            self._intent_store.append(record)
+            self._current_turn_outcome_written = True
+        except Exception as exc:
+            logger.warning(
+                "[grove.dispatcher] intent record write failed "
+                "(outcome=%r, turn_id=%r): %r",
+                outcome, self._current_turn_id, exc,
+            )
 
     # ── Phase 6 helpers (Kaizen Ledger + Tier Override) ─────────────────
 
