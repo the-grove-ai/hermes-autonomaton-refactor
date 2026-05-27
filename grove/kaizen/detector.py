@@ -1,52 +1,98 @@
-"""Grove Kaizen — Intent Pattern Detector (stub).
+"""Grove Kaizen — Intent Pattern Detector (Sprint 28 Phase 5 read-only).
 
 Draft 1.4 Commitment 5.3: the DETECT stage of the six-stage Skill Flywheel
 (OBSERVE → DETECT → PROPOSE → APPROVE → EXECUTE → REFINE).
 
-The detector watches the ``sovereignty_decision`` telemetry stream that
-Sprint 06a (jidoka-andon-implementation-v1) emits, plus operator approval
-patterns, and surfaces recurring intent patterns that meet a recurrence
-threshold — candidates for promotion to a skill, or for zone promotion via
-the ``hermes andon`` CLI.
-
-v0.1 stub. The full implementation lands in a later sprint, once the
-telemetry stream has enough volume to detect against.
+Sprint 28 Phase 5 wires the detector to read the feed-first
+:mod:`grove.intent_store` and surface recurring intent patterns within a
+lookback window. The detector READs and AGGREGATES; it does not yet
+PROPOSE skill candidates from the patterns it finds — that act-stage
+work waits for a future sprint with operator-facing UX for the
+proposals. The interface contract this sprint locks in is the
+structured list-of-dicts that downstream stages will consume.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class IntentPatternDetector:
-    """Scans recent telemetry windows for repeated intent patterns.
+    """Scans recent intent records for repeated patterns.
 
-    Stub for Sprint 06b (kaizen-foundation-v1). The contract this will
-    implement is the Skill Flywheel DETECT stage — see
-    https://the-grove.ai/standards/001.
+    Sprint 28 Phase 5: the stub now reads. Construct with an explicit
+    :class:`grove.intent_store.IntentStore` for tests; production
+    callers get the module singleton via ``get_store()`` by passing
+    ``None`` (the default).
+
+    The Skill Flywheel's full DETECT-stage semantics (propose skill
+    candidates from observed patterns) remains future work; this class
+    now exposes the data layer those proposals will draw from.
     """
 
-    def detect(self, window_days: int = 14, threshold: int = 3) -> list[Any]:
-        """Detect intent patterns in the last ``window_days`` days that recur
-        at least ``threshold`` times.
+    def __init__(self, store: Optional["object"] = None) -> None:
+        if store is None:
+            from grove.intent_store import get_store
+            store = get_store()
+        self._store = store
 
-        Args:
-            window_days: size of the telemetry lookback window, in days.
-            threshold: minimum recurrence count for a pattern to be surfaced.
+    def detect(
+        self, window_days: int = 14, threshold: int = 3,
+    ) -> List[dict]:
+        """Return recurring intent patterns from the store. READ-only.
 
-        Returns:
-            A list of detected pattern candidates (when implemented).
+        Aggregates intent records (post-Phase-4 collapse view: latest
+        outcome per turn) by ``pattern_hash`` within the last
+        ``window_days``. Patterns that recur at least ``threshold`` times
+        surface as result entries. Each entry shape:
 
-        Raises:
-            NotImplementedError: stub. Implementation deferred beyond
-                Sprint 06b. Design contract:
-                https://the-grove.ai/standards/001
+        ``{
+            "pattern_hash": <sha256 hex>,
+            "intent_class": <one of the Sprint 12 taxonomy>,
+            "count": <int — total turns matching the pattern>,
+            "session_count": <int — distinct session_ids>,
+            "last_seen": <ISO 8601 UTC timestamp>,
+        }``
+
+        Sorted by ``count`` descending, then ``pattern_hash`` ascending
+        for stable iteration. Empty list when no patterns meet the
+        threshold or the store is empty — never raises on missing data.
         """
-        raise NotImplementedError(
-            "IntentPatternDetector.detect is a Sprint 06b stub. The DETECT "
-            "stage of the Skill Flywheel is implemented in a later sprint. "
-            "See https://the-grove.ai/standards/001"
-        )
+        cutoff_iso = (
+            datetime.now(timezone.utc) - timedelta(days=window_days)
+        ).isoformat()
+        groups: dict[str, dict] = {}
+        for record in self._store.latest_by_turn():
+            if record.timestamp < cutoff_iso:
+                continue
+            ph = record.pattern_hash
+            if ph not in groups:
+                groups[ph] = {
+                    "pattern_hash": ph,
+                    "intent_class": record.intent_class,
+                    "count": 0,
+                    "sessions": set(),
+                    "last_seen": record.timestamp,
+                }
+            g = groups[ph]
+            g["count"] += 1
+            g["sessions"].add(record.session_id)
+            if record.timestamp > g["last_seen"]:
+                g["last_seen"] = record.timestamp
+        results: List[dict] = []
+        for g in groups.values():
+            if g["count"] < threshold:
+                continue
+            results.append({
+                "pattern_hash": g["pattern_hash"],
+                "intent_class": g["intent_class"],
+                "count": g["count"],
+                "session_count": len(g["sessions"]),
+                "last_seen": g["last_seen"],
+            })
+        results.sort(key=lambda r: (-r["count"], r["pattern_hash"]))
+        return results
