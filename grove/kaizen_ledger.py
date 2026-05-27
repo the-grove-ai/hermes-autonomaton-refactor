@@ -93,6 +93,12 @@ class KaizenLedger:
         "final_response",
         "turn_dropped",
         "tier_override",
+        # Sprint 29 Phase 2 — per-turn tool-set selection. Dispatcher
+        # writes this after _maybe_apply_tool_filter runs in the agent,
+        # capturing intent_class + complexity + selected/full counts
+        # plus the fallback flag so the operator can audit how often
+        # the optimizer fell back to the full registry.
+        "tool_selection",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:

@@ -872,6 +872,20 @@ class Dispatcher:
             # the global between here and the terminal.
             from grove.providers import current_classification as _current_classification
             self._current_turn_classification = _current_classification()
+            # Sprint 29 Phase 2 — record the per-turn tool selection the
+            # Agent computed (post-route, pre-first-call). Agent stashes
+            # the metadata on ``_last_tool_selection``; Dispatcher writes
+            # the Kaizen Ledger event so the Agent stays unaware of the
+            # ledger per GRV-005 § III.
+            _tool_selection = getattr(agent, "_last_tool_selection", None)
+            if _tool_selection is not None:
+                try:
+                    ledger.record("tool_selection", **_tool_selection)
+                except Exception as _exc:
+                    logger.warning(
+                        "[grove.dispatcher] tool_selection ledger write "
+                        "failed: %r", _exc,
+                    )
             while True:
                 if isinstance(yielded, list):
                     # Sprint 28 Phase 3 — accumulate the tool names this

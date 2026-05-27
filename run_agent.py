@@ -1306,6 +1306,14 @@ class AIAgent:
         # at first ``_get_or_create_dispatcher()``. None → Dispatcher uses
         # the default TTY handler.
         self._sovereign_prompt_handler = sovereign_prompt_handler
+        # Sprint 29 Phase 2 — per-turn tool filter (context-budget-v1).
+        # ``_tools_for_turn`` overrides ``self.tools`` at every LLM call
+        # site via the ``_tools_for_api`` property; ``_maybe_apply_tool_filter``
+        # populates it post-route, pre-first-call. ``_last_tool_selection``
+        # carries the metadata the Dispatcher reads to write the
+        # ``tool_selection`` Kaizen Ledger event.
+        self._tools_for_turn: Optional[List[Dict[str, Any]]] = None
+        self._last_tool_selection: Optional[Dict[str, Any]] = None
 
         self.model = model
         self.max_iterations = max_iterations
@@ -2879,6 +2887,102 @@ class AIAgent:
             )
             if decision.tier_config.max_tokens is not None:
                 self.max_tokens = decision.tier_config.max_tokens
+
+    # ── Sprint 29 Phase 2 — per-turn tool filter ─────────────────────────
+
+    @property
+    def _tools_for_api(self) -> Optional[List[Dict[str, Any]]]:
+        """The tool list to send to the LLM on this turn.
+
+        Returns ``self._tools_for_turn`` when the Sprint 29 per-turn
+        filter has populated it (post-route, pre-first-call), otherwise
+        the agent's full ``self.tools`` list. ``None`` when both are
+        ``None`` — callers handle by passing ``None`` to the transport
+        (LLM call with no tools).
+        """
+        if self._tools_for_turn is not None:
+            return self._tools_for_turn
+        return self.tools
+
+    def _maybe_apply_tool_filter(self) -> None:
+        """Compute the per-turn filtered tool list and stash the
+        selection metadata for the Dispatcher to write to the ledger.
+
+        Fires inside ``_run_turn_generator`` right after
+        ``_maybe_route_for_turn`` — by which point Sprint 12's Haiku
+        classification has fired (or graceful-failed) and
+        ``grove.providers.current_classification()`` is set. Reads the
+        Sprint 29 tool-groups taxonomy and calls
+        ``grove.context_budget.resolve_tool_set`` to compute the
+        allowed name set; ``None`` from resolve signals maximal
+        fallback (full registry loaded — recorded loudly).
+
+        Safe to call repeatedly per turn — only the first non-None
+        application sticks because the Dispatcher resets state at
+        ``dispatch_turn`` entry. Best-effort: any failure logs at
+        WARNING and degrades to full registry — the operator's turn
+        MUST NOT crash because the optimizer threw.
+        """
+        # Skip when self.tools is empty/missing — nothing to filter.
+        if not self.tools:
+            return
+        try:
+            from grove.providers import current_classification
+            from grove.context_budget import (
+                load_taxonomy,
+                resolve_tool_set,
+                filter_tools_by_name,
+            )
+
+            classification = current_classification()
+            taxonomy = load_taxonomy()
+            allowed = resolve_tool_set(
+                intent_class=(
+                    classification.intent_class if classification else None
+                ),
+                complexity_signal=(
+                    classification.complexity_signal if classification else None
+                ),
+                taxonomy=taxonomy,
+            )
+            if allowed is None:
+                # Maximal fallback. Leave _tools_for_turn None so
+                # _tools_for_api returns the full self.tools.
+                self._tools_for_turn = None
+                self._last_tool_selection = {
+                    "intent_class": (
+                        classification.intent_class if classification else None
+                    ),
+                    "complexity_signal": (
+                        classification.complexity_signal if classification else None
+                    ),
+                    "fallback": True,
+                    "selected_count": len(self.tools),
+                    "full_count": len(self.tools),
+                }
+                return
+            filtered = filter_tools_by_name(self.tools, allowed)
+            self._tools_for_turn = filtered
+            self._last_tool_selection = {
+                "intent_class": classification.intent_class,
+                "complexity_signal": classification.complexity_signal,
+                "goal_alignment": classification.goal_alignment,
+                "fallback": False,
+                "selected_count": len(filtered),
+                "full_count": len(self.tools),
+            }
+        except Exception as exc:
+            logger.warning(
+                "[run_agent] tool filter failed; degrading to full "
+                "registry: %r", exc,
+            )
+            self._tools_for_turn = None
+            self._last_tool_selection = {
+                "fallback": True,
+                "error": repr(exc),
+                "selected_count": len(self.tools),
+                "full_count": len(self.tools),
+            }
 
     def apply_tier(self, model, max_tokens):
         """Swap the active cognitive tier in place — model and token budget only.
@@ -10218,7 +10322,9 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
-        tools_for_api = self.tools
+        # Sprint 29 Phase 2 — read via _tools_for_api so per-turn filter
+        # (set by _maybe_apply_tool_filter) is honored when present.
+        tools_for_api = self._tools_for_api
 
         if self.api_mode == "anthropic_messages":
             _transport = self._get_transport()
@@ -11190,7 +11296,7 @@ class AIAgent:
         _compressed_est = estimate_request_tokens_rough(
             compressed,
             system_prompt=new_system_prompt or "",
-            tools=self.tools or None,
+            tools=self._tools_for_api or None,
         )
         self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
@@ -12589,6 +12695,12 @@ class AIAgent:
         # exactly once per turn (A2).
         if not already_routed:
             self._maybe_route_for_turn(user_message)
+        # Sprint 29 Phase 2 — per-turn tool filter. Reads the
+        # classification just-fired-or-already-set, looks up the
+        # tool_groups taxonomy, prunes self.tools for this turn via
+        # the _tools_for_api property. Maximal fallback (full registry)
+        # on unknown intent or any failure — never crashes the turn.
+        self._maybe_apply_tool_filter()
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
@@ -12803,7 +12915,7 @@ class AIAgent:
             _preflight_tokens = estimate_request_tokens_rough(
                 messages,
                 system_prompt=active_system_prompt or "",
-                tools=self.tools or None,
+                tools=self._tools_for_api or None,
             )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
@@ -12849,7 +12961,7 @@ class AIAgent:
                     _preflight_tokens = estimate_request_tokens_rough(
                         messages,
                         system_prompt=active_system_prompt or "",
-                        tools=self.tools or None,
+                        tools=self._tools_for_api or None,
                     )
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
@@ -15782,7 +15894,7 @@ class AIAgent:
                         # estimate misses, which can skip compression
                         # past the configured threshold (#14695).
                         _real_tokens = estimate_request_tokens_rough(
-                            messages, tools=self.tools or None
+                            messages, tools=self._tools_for_api or None
                         )
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
