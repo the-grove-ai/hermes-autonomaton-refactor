@@ -23,6 +23,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -41,12 +42,44 @@ INTENT_CLASSES = (
 REGISTER_CLASSES = ("technical", "strategic", "casual", "formal")
 COMPLEXITY_SIGNALS = ("simple", "moderate", "complex", "novel")
 
-_CLASSIFICATION_SYSTEM_PROMPT = """\
+# Sprint 28 Phase 2 — goal-alignment taxonomy. The Haiku classifier scores
+# each request against the operator's current goals.md content. The closed
+# set protects downstream consumers (Skill Flywheel, future Cognitive
+# Router learning) from arbitrary string values accumulating in the feed.
+GOAL_ALIGNMENT_VALUES = (
+    "direct",         # directly advances a stated goal
+    "indirect",       # supports something that helps a goal
+    "orthogonal",     # neither helping nor blocking
+    "distracting",    # pulls focus away from goals
+    "no_goals_set",   # goals.md empty or absent (graceful tier)
+)
+
+
+def _build_classification_system_prompt(goals_content: str) -> str:
+    """Compose the classifier system prompt with the two-envelope schema.
+
+    Sprint 28 Phase 2 GATE-A directive: structural separation between
+    the routing-critical fields and the learning-layer goal_alignment.
+    The two-envelope JSON output protects routing accuracy from any
+    semantic noise the goal_alignment reasoning introduces — the model
+    treats them as independent answers within one response.
+
+    Empty/missing goals: ``goals_content`` is the empty string. The
+    prompt names this case explicitly so the model returns
+    ``goal_alignment: "no_goals_set"`` without hallucinating goals.
+    """
+    goals_block = goals_content.strip() if goals_content else (
+        "(no goals set; return goal_alignment: no_goals_set)"
+    )
+    return f"""\
 You are the telemetry classifier for a cognitive-routing system. You read
 one operator request and return exactly one JSON object describing it —
 no prose, no markdown, no explanation.
 
-Return these four fields:
+Return ONE JSON object with TWO envelopes:
+
+"routing_envelope" — drives tier selection. Keep these reliable; routing
+accuracy depends on them.
 
   intent_class — the kind of work the operator is asking for:
     code_generation    writing or extending code
@@ -66,10 +99,58 @@ Return these four fields:
 
   confidence — your confidence in the intent_class, a number 0.0 to 1.0.
 
-Pick the single best value for each field.\
+"learning_envelope" — drives the feed-first learning layer. Routing
+ignores these; this is interpretive signal for cross-session pattern
+recognition.
+
+  goal_alignment — how the request aligns with the operator's current
+    goals (listed below). One of:
+    direct        — the request directly advances a stated goal
+    indirect      — the request supports something that helps a goal
+    orthogonal    — neither helping nor blocking
+    distracting   — pulls focus away from goals
+    no_goals_set  — goals.md empty or absent (graceful tier)
+
+OPERATOR GOALS (the alignment target):
+{goals_block}
+
+Pick the single best value for each field. Return ONE JSON object with
+both envelopes; no prose, no markdown, no explanation.\
 """
 
-_MAX_OUTPUT_TOKENS = 200
+
+def _goals_path() -> Path:
+    """Resolve the runtime goals.md path.
+
+    Reads from the operator runtime copy at ``$GROVE_HOME/goals.md``
+    (default ``~/.grove/goals.md``) per Sprint 28 GATE-A disposition
+    A-x1. The repo template at ``config/identity/goals.md`` is a
+    starting point, not the authority — the active runtime state is
+    the sovereign truth of the Autonomaton.
+    """
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / "goals.md"
+
+
+def _read_goals_content() -> str:
+    """Read the operator's runtime goals.md; return "" if missing/empty.
+
+    Graceful-tier per the goals.md template comment: a missing file is
+    fine, the classifier composes without it (the prompt names the
+    empty case explicitly so the model returns ``no_goals_set``).
+    Any read error degrades the same way — log debug, return empty.
+    """
+    try:
+        text = _goals_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        logger.debug("[classify] could not read goals.md: %r", exc)
+        return ""
+    return text
+
+
+_MAX_OUTPUT_TOKENS = 280  # Sprint 28 Phase 2: room for two envelopes
 _STEM_CHARS = 100  # message-stem length for the pattern hash (D9)
 
 # Haiku list pricing, May 2026 (USD per million tokens) — cost tracking (D5).
@@ -91,6 +172,12 @@ class ClassificationResult:
     SHA-256 of the intent and a normalized message stem, so identical
     requests hash identically. It is the key Sprint 13's T0 pattern
     cache will match against.
+
+    ``goal_alignment`` is Sprint 28 Phase 2's learning-envelope field.
+    Optional so consumers that predate Phase 2 (or responses where the
+    learning envelope is missing/malformed) round-trip cleanly with
+    ``None``. The router and tier-UX surfaces ignore this field; the
+    Skill Flywheel reads it from the intent record store.
     """
 
     intent_class: str
@@ -98,6 +185,7 @@ class ClassificationResult:
     confidence: float
     register_class: str
     complexity_signal: str
+    goal_alignment: Optional[str] = None
 
 
 def classify_for_routing(message: str) -> Optional[ClassificationResult]:
@@ -122,6 +210,7 @@ def classify_for_routing(message: str) -> Optional[ClassificationResult]:
             confidence=fields["confidence"],
             register_class=fields["register_class"],
             complexity_signal=fields["complexity_signal"],
+            goal_alignment=fields.get("goal_alignment"),
         )
     except Exception as exc:
         logger.error(
@@ -190,10 +279,15 @@ def _call_classifier(runtime: dict, message: str) -> str:
         api_key=api_key,
         base_url=runtime.get("base_url") or None,
     )
+    # Sprint 28 Phase 2: build the system prompt per-call so a goals.md
+    # edit takes effect on the next classify without restarting the
+    # process. The file is small and the cost is trivial against a
+    # Haiku call's existing baseline.
+    system_prompt = _build_classification_system_prompt(_read_goals_content())
     response = client.messages.create(
         model=runtime["model"],
         max_tokens=_MAX_OUTPUT_TOKENS,
-        system=_CLASSIFICATION_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[
             {"role": "user", "content": message},
             {"role": "assistant", "content": "{"},  # prefill — force JSON
@@ -207,8 +301,23 @@ def _call_classifier(runtime: dict, message: str) -> str:
 def _parse_classification(raw: str) -> dict:
     """Parse the classifier's JSON and validate the required fields.
 
-    Raises ValueError if the response is not a usable classification —
-    caught by classify_for_routing() as a commanded fall-through.
+    Accepts both shapes:
+
+    * **Two-envelope (Sprint 28 Phase 2 contract).** The current prompt
+      produces ``{"routing_envelope": {...}, "learning_envelope": {...}}``.
+      Routing fields read from ``routing_envelope``; ``goal_alignment``
+      reads from ``learning_envelope`` (defaults to ``None`` if absent).
+
+    * **Flat (legacy / Sprint 12 contract).** A response where the
+      routing fields sit at the top level. Defensive support for tests
+      that mock the older shape and for any in-flight response that
+      arrives mid-prompt-transition. Treated as routing-only —
+      ``goal_alignment`` is ``None``.
+
+    Raises ValueError if the response is not usable as routing
+    classification — caught by ``classify_for_routing`` as a commanded
+    fall-through (no classification → default tier; the agent still
+    runs per Sprint 12 D4).
     """
     try:
         data = json.loads(raw)
@@ -221,21 +330,57 @@ def _parse_classification(raw: str) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"classifier response is not a JSON object: {raw!r}")
 
+    # Two-envelope shape takes priority; otherwise treat the object as
+    # the legacy flat routing-only response.
+    if isinstance(data.get("routing_envelope"), dict):
+        routing = data["routing_envelope"]
+        learning = data.get("learning_envelope") if isinstance(
+            data.get("learning_envelope"), dict
+        ) else {}
+    else:
+        routing = data
+        learning = {}
+
     for key in ("intent_class", "register_class", "complexity_signal"):
-        value = data.get(key)
+        value = routing.get(key)
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"classifier response missing string {key!r}: {data!r}")
+            raise ValueError(
+                f"classifier response missing string {key!r}: {data!r}"
+            )
 
     try:
-        confidence = float(data.get("confidence"))
+        confidence = float(routing.get("confidence"))
     except (TypeError, ValueError):
-        raise ValueError(f"classifier response missing numeric confidence: {data!r}")
+        raise ValueError(
+            f"classifier response missing numeric confidence: {data!r}"
+        )
+
+    # goal_alignment is optional in the learning envelope. Validate
+    # against the closed set when present; drop (to None) on anything
+    # unknown rather than failing the whole classification — the
+    # routing path doesn't care about goal_alignment and we don't want
+    # a bad learning value to take routing down with it.
+    goal_alignment_raw = learning.get("goal_alignment")
+    if isinstance(goal_alignment_raw, str):
+        candidate = goal_alignment_raw.strip()
+        if candidate in GOAL_ALIGNMENT_VALUES:
+            goal_alignment: Optional[str] = candidate
+        else:
+            logger.debug(
+                "[classify] learning_envelope.goal_alignment=%r not in "
+                "the closed set %s; dropping to None",
+                candidate, GOAL_ALIGNMENT_VALUES,
+            )
+            goal_alignment = None
+    else:
+        goal_alignment = None
 
     return {
-        "intent_class": data["intent_class"].strip(),
-        "register_class": data["register_class"].strip(),
-        "complexity_signal": data["complexity_signal"].strip(),
+        "intent_class": routing["intent_class"].strip(),
+        "register_class": routing["register_class"].strip(),
+        "complexity_signal": routing["complexity_signal"].strip(),
         "confidence": max(0.0, min(1.0, confidence)),  # clamp to 0.0-1.0
+        "goal_alignment": goal_alignment,
     }
 
 
