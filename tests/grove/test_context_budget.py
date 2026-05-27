@@ -1,0 +1,303 @@
+"""Tests for grove.context_budget — Sprint 29 context-budget-optimization-v1.
+
+Covers the tool-group taxonomy loader (schema validation, caching,
+runtime/repo path resolution), the per-turn ``resolve_tool_set``
+logic (core + reads always, domain chunks per intent, exploratory
+gating, write-intent gating, unknown→None fallback), and the
+``filter_tools_by_name`` pass-through / name-match behavior.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List
+
+import pytest
+import yaml
+
+from grove import context_budget as _cb_mod
+from grove.context_budget import (
+    filter_tools_by_name,
+    load_taxonomy,
+    reset_taxonomy_cache,
+    resolve_tool_set,
+)
+
+
+# ── Test helpers ──────────────────────────────────────────────────────────
+
+
+def _minimal_taxonomy() -> dict:
+    return {
+        "version": 1,
+        "core": ["clarify", "read_file", "memory"],
+        "domain_chunks": {
+            "code_generation": ["write_file", "patch"],
+            "planning": ["search_files", "web_search"],
+            "conversation": [],
+        },
+        "exploratory": ["delegate_task", "browser_navigate"],
+        "mcp_notion": {
+            "reads": ["mcp_notion_API_post_search", "mcp_notion_API_retrieve_a_page"],
+            "writes": ["mcp_notion_API_patch_page", "mcp_notion_API_post_page"],
+            "write_intents": ["planning"],
+        },
+    }
+
+
+def _write_taxonomy(tmp_path: Path, body: dict) -> Path:
+    p = tmp_path / "tool_groups.yaml"
+    p.write_text(yaml.safe_dump(body), encoding="utf-8")
+    return p
+
+
+def _tool(name: str) -> dict:
+    return {"type": "function", "function": {"name": name, "description": ""}}
+
+
+# ── load_taxonomy — repo template ─────────────────────────────────────────
+
+
+class TestLoadTaxonomyRepoTemplate:
+    """The repo's config/tool_groups.yaml is the shipped baseline. The
+    loader must accept it as-is and pass every structural check."""
+
+    def test_repo_template_loads_clean(self):
+        # The repo template is the shipped baseline — must always load.
+        repo_yaml = (
+            Path(__file__).resolve().parents[2]
+            / "config" / "tool_groups.yaml"
+        )
+        taxonomy = load_taxonomy(path=repo_yaml)
+        assert taxonomy["version"] == 1
+        assert "clarify" in taxonomy["core"]
+        assert "code_generation" in taxonomy["domain_chunks"]
+        assert "mcp_notion_API_post_search" in taxonomy["mcp_notion"]["reads"]
+
+
+# ── load_taxonomy — schema validation ─────────────────────────────────────
+
+
+class TestSchemaValidation:
+    def test_missing_top_level_key_raises(self, tmp_path: Path):
+        bad = _minimal_taxonomy()
+        del bad["mcp_notion"]
+        p = _write_taxonomy(tmp_path, bad)
+        with pytest.raises(ValueError, match="missing required keys"):
+            load_taxonomy(path=p)
+
+    def test_unsupported_version_raises(self, tmp_path: Path):
+        bad = _minimal_taxonomy()
+        bad["version"] = 99
+        p = _write_taxonomy(tmp_path, bad)
+        with pytest.raises(ValueError, match="unsupported schema_version"):
+            load_taxonomy(path=p)
+
+    def test_core_must_be_list(self, tmp_path: Path):
+        bad = _minimal_taxonomy()
+        bad["core"] = "not a list"
+        p = _write_taxonomy(tmp_path, bad)
+        with pytest.raises(ValueError, match="core must be a list"):
+            load_taxonomy(path=p)
+
+    def test_domain_chunk_must_be_list(self, tmp_path: Path):
+        bad = _minimal_taxonomy()
+        bad["domain_chunks"]["analysis"] = "not a list"
+        p = _write_taxonomy(tmp_path, bad)
+        with pytest.raises(ValueError, match="domain_chunks"):
+            load_taxonomy(path=p)
+
+    def test_mcp_notion_missing_sub_keys_raises(self, tmp_path: Path):
+        bad = _minimal_taxonomy()
+        del bad["mcp_notion"]["write_intents"]
+        p = _write_taxonomy(tmp_path, bad)
+        with pytest.raises(ValueError, match="mcp_notion missing keys"):
+            load_taxonomy(path=p)
+
+    def test_non_mapping_root_raises(self, tmp_path: Path):
+        p = tmp_path / "tool_groups.yaml"
+        p.write_text("- this\n- is\n- a list\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="is not a mapping"):
+            load_taxonomy(path=p)
+
+
+# ── load_taxonomy — caching ───────────────────────────────────────────────
+
+
+class TestTaxonomyCache:
+    def test_cache_returns_same_instance_on_default_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ):
+        # Redirect _resolve_taxonomy_path at a tmp YAML; first call
+        # caches, second call returns the same dict.
+        p = _write_taxonomy(tmp_path, _minimal_taxonomy())
+        monkeypatch.setattr(_cb_mod, "_resolve_taxonomy_path", lambda: p)
+        first = load_taxonomy()
+        second = load_taxonomy()
+        assert first is second
+
+    def test_explicit_path_bypasses_cache(self, tmp_path: Path):
+        # Tests pass explicit paths; they should always re-read and
+        # never poison the module cache.
+        (tmp_path / "a").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "b").mkdir(parents=True, exist_ok=True)
+        a = _write_taxonomy(tmp_path / "a", _minimal_taxonomy())
+        bad = _minimal_taxonomy()
+        bad["core"] = ["only_one"]
+        b = _write_taxonomy(tmp_path / "b", bad)
+        load_a = load_taxonomy(path=a)
+        load_b = load_taxonomy(path=b)
+        assert load_a is not load_b
+        assert load_a["core"] != load_b["core"]
+
+    def test_reset_taxonomy_cache_forces_reload(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ):
+        p = _write_taxonomy(tmp_path, _minimal_taxonomy())
+        monkeypatch.setattr(_cb_mod, "_resolve_taxonomy_path", lambda: p)
+        first = load_taxonomy()
+        reset_taxonomy_cache()
+        second = load_taxonomy()
+        # Same content but different dict identity — reload happened.
+        assert first is not second
+        assert first == second
+
+
+# ── resolve_tool_set ─────────────────────────────────────────────────────
+
+
+class TestResolveToolSet:
+    def test_unknown_intent_returns_none_loud_fallback(self, caplog):
+        import logging
+        with caplog.at_level(logging.INFO, logger="grove.context_budget"):
+            result = resolve_tool_set("unknown", "simple", _minimal_taxonomy())
+        assert result is None
+        assert "maximal fallback" in caplog.text
+
+    def test_none_intent_returns_none(self):
+        assert resolve_tool_set(None, "simple", _minimal_taxonomy()) is None
+
+    def test_core_always_loaded(self):
+        result = resolve_tool_set(
+            "conversation", "simple", _minimal_taxonomy(),
+        )
+        assert {"clarify", "read_file", "memory"}.issubset(result)
+
+    def test_mcp_notion_reads_always_loaded(self):
+        result = resolve_tool_set(
+            "conversation", "simple", _minimal_taxonomy(),
+        )
+        assert "mcp_notion_API_post_search" in result
+        assert "mcp_notion_API_retrieve_a_page" in result
+
+    def test_domain_chunk_added_for_intent(self):
+        result = resolve_tool_set(
+            "code_generation", "simple", _minimal_taxonomy(),
+        )
+        assert "write_file" in result
+        assert "patch" in result
+
+    def test_unknown_intent_class_skips_domain_chunk_silently(self):
+        # An intent_class not in domain_chunks gets core + reads only
+        # (the empty-chunk path). This is fail-safe: a new intent_class
+        # the taxonomy hasn't been updated for still gets a usable set.
+        # NOTE: this is NOT the same as intent_class="unknown" which
+        # signals maximal fallback. This is an intent_class the Sprint 12
+        # classifier produced that isn't in the taxonomy yet.
+        tax = _minimal_taxonomy()
+        result = resolve_tool_set("brand_new_intent", "simple", tax)
+        assert result is not None
+        assert "clarify" in result
+        # No exploratory and no writes.
+        assert "delegate_task" not in result
+        assert "mcp_notion_API_patch_page" not in result
+
+    def test_complex_adds_exploratory(self):
+        result = resolve_tool_set(
+            "code_generation", "complex", _minimal_taxonomy(),
+        )
+        assert "delegate_task" in result
+        assert "browser_navigate" in result
+
+    def test_novel_adds_exploratory(self):
+        result = resolve_tool_set(
+            "code_generation", "novel", _minimal_taxonomy(),
+        )
+        assert "delegate_task" in result
+
+    def test_simple_does_not_add_exploratory(self):
+        result = resolve_tool_set(
+            "code_generation", "simple", _minimal_taxonomy(),
+        )
+        assert "delegate_task" not in result
+
+    def test_moderate_does_not_add_exploratory(self):
+        result = resolve_tool_set(
+            "code_generation", "moderate", _minimal_taxonomy(),
+        )
+        assert "delegate_task" not in result
+
+    def test_write_intent_adds_writes(self):
+        # planning is in write_intents → writes included.
+        result = resolve_tool_set("planning", "simple", _minimal_taxonomy())
+        assert "mcp_notion_API_patch_page" in result
+        assert "mcp_notion_API_post_page" in result
+
+    def test_non_write_intent_omits_writes(self):
+        result = resolve_tool_set(
+            "code_generation", "simple", _minimal_taxonomy(),
+        )
+        assert "mcp_notion_API_patch_page" not in result
+        assert "mcp_notion_API_post_page" not in result
+
+
+# ── filter_tools_by_name ──────────────────────────────────────────────────
+
+
+class TestFilterToolsByName:
+    @pytest.fixture
+    def tools(self) -> List[dict]:
+        return [
+            _tool("clarify"),
+            _tool("write_file"),
+            _tool("delegate_task"),
+            _tool("mcp_notion_API_post_search"),
+        ]
+
+    def test_none_allowed_returns_input_unchanged(self, tools):
+        # The maximal-fallback signal: pass-through, full registry.
+        out = filter_tools_by_name(tools, allowed=None)
+        assert out is tools
+
+    def test_set_filters_by_name(self, tools):
+        out = filter_tools_by_name(
+            tools, allowed={"clarify", "delegate_task"},
+        )
+        names = [t["function"]["name"] for t in out]
+        assert names == ["clarify", "delegate_task"]
+
+    def test_empty_allowed_filters_everything(self, tools):
+        out = filter_tools_by_name(tools, allowed=set())
+        assert out == []
+
+    def test_preserves_input_order(self, tools):
+        # Filter against a set that matches multiple tools; the output
+        # preserves the input order, not the set's hash order.
+        out = filter_tools_by_name(
+            tools,
+            allowed={"mcp_notion_API_post_search", "clarify", "write_file"},
+        )
+        names = [t["function"]["name"] for t in out]
+        assert names == ["clarify", "write_file", "mcp_notion_API_post_search"]
+
+    def test_skips_malformed_entries(self):
+        bad = [
+            _tool("clarify"),
+            "not a dict",
+            {"type": "function"},  # missing function.name
+            {"type": "function", "function": "not a dict"},  # function not dict
+            _tool("write_file"),
+        ]
+        out = filter_tools_by_name(bad, allowed={"clarify", "write_file"})
+        names = [t["function"]["name"] for t in out]
+        assert names == ["clarify", "write_file"]

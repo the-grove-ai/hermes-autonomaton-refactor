@@ -512,6 +512,18 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- grove.context_budget — Sprint 29 taxonomy cache ---
+    # Same reasoning as intent_store: the taxonomy path resolves via
+    # GROVE_HOME, which is per-test tempdir-isolated. The cached
+    # taxonomy from a prior test points at a deleted runtime file;
+    # reset so the next load_taxonomy() resolves fresh against the
+    # current test's GROVE_HOME (or the repo template fallback).
+    try:
+        from grove import context_budget as _cb_mod
+        _cb_mod._taxonomy_cache = None
+    except Exception:
+        pass
+
     yield
 
 

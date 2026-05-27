@@ -1,0 +1,154 @@
+# ============================================================================
+# Grove Autonomaton — Tool-Group Taxonomy
+# ============================================================================
+#
+# Location:     ~/.grove/tool_groups.yaml (operator copy)
+#               config/tool_groups.yaml   (repo default template)
+#
+# Purpose:      Declarative tool-group taxonomy for selective per-turn
+#               loading. The Dispatcher reads this file plus the Sprint 12
+#               classification (intent_class, complexity_signal) plus the
+#               Sprint 28 goal_alignment, then computes the tool-name set
+#               the Agent exposes for the turn.
+#
+#               Sprint 29 (context-budget-optimization-v1) — reduces the
+#               per-turn tool-schema token cost from ~31K (Sprint 24a
+#               baseline, 63.6% of turn-1 context) to ~12-14K for
+#               simple/moderate turns and ~18-22K for complex/novel.
+#               Unknown intent loads ALL tools as a loud fallback
+#               (logged to the Kaizen Ledger).
+#
+# Canonical refs:
+#   GRV-005 § II — Dispatcher owns tool execution
+#   Sprint 12 INTENT_CLASSES (grove/classify.py) — the keying space
+#   Sprint 28 IntentStore — future UsageRefiner re-tunes from observed data
+#
+# Schema version
+# --------------
+# Integer. The loader rejects unrecognized versions. Bump only when the
+# structure changes (keys added/removed/renamed). Adding tool names to
+# existing lists is normal operator configuration, not a version bump.
+#
+# Maintenance discipline
+# ----------------------
+# New tool added to the runtime: add it to the appropriate group below.
+# Tool not in any group: it falls outside the selective load for known
+# intents (won't be loaded for those turns) but DOES load for unknown-intent
+# maximal fallback. To make a new tool always available, add it to ``core``.
+#
+# This file is a seed for UsageRefiner. A future sprint can rewrite the
+# domain_chunks based on observed tools_yielded frequency from the intent
+# store — but the operator stays in the loop because this is a config
+# file, not generated code.
+
+version: 1
+
+# ── Core — always loaded regardless of intent ──────────────────────────────
+# Read-heavy + comms primitives the Agent uses to gather context, ask the
+# operator, or inspect/load skills. Cheap (~1.4K total) and broadly useful.
+core:
+  - clarify           # ask the operator a question
+  - memory            # session and persistent memory
+  - skill_view        # show a skill's contents
+  - read_file         # filesystem read
+  - skills_list       # discover skills
+
+# ── Domain chunks — keyed by Sprint 12 intent_class ────────────────────────
+# Additive on top of core. Empty list = core only (e.g., conversation).
+# Tool names must match the registry; unknown names log a debug warning
+# and are skipped at filter time (fail-safe — won't crash the turn).
+domain_chunks:
+  code_generation:
+    - write_file
+    - patch
+    - search_files
+    - terminal
+    - execute_code
+  debugging:
+    - search_files
+    - terminal
+    - execute_code
+    - process
+  analysis:
+    - search_files
+    - session_search
+    - web_search
+    - web_extract
+  planning:
+    - search_files
+    - web_search
+    - write_file
+  factual_retrieval:
+    - web_search
+    - web_extract
+    - x_search
+    - session_search
+  creative_writing:
+    - write_file
+    - image_generate
+    - video_generate
+    - text_to_speech
+  system_admin:
+    - terminal
+    - execute_code
+    - cronjob
+    - process
+    - skill_manage
+  conversation: []   # core only
+
+# ── Exploratory — added only for complex/novel turns ────────────────────────
+# Heavier tools that unlock capability for novel work. Browser automation,
+# sub-agent delegation, integrations the operator uses rarely.
+exploratory:
+  - delegate_task
+  - mixture_of_agents
+  - browser_back
+  - browser_cdp
+  - browser_click
+  - browser_console
+  - browser_dialog
+  - browser_get_images
+  - browser_navigate
+  - browser_press
+  - browser_scroll
+  - browser_snapshot
+  - browser_type
+  - browser_vision
+  - vision_analyze
+  - video_analyze
+  - feishu_doc_read
+  - ha_get_state
+  - ha_call_service
+
+# ── MCP Notion bridge — reads/writes/write-intent gating ───────────────────
+# Reads always load (per Sprint 29 GATE-A decision). Writes load only when
+# the classified intent_class is in write_intents. Sprint 30+ can replace
+# write_intents with goal_alignment="direct" gating.
+mcp_notion:
+  reads:
+    - mcp_notion_API_get_user
+    - mcp_notion_API_get_users
+    - mcp_notion_API_get_self
+    - mcp_notion_API_post_search
+    - mcp_notion_API_get_block_children
+    - mcp_notion_API_retrieve_a_block
+    - mcp_notion_API_retrieve_a_page
+    - mcp_notion_API_retrieve_a_page_property
+    - mcp_notion_API_retrieve_a_comment
+    - mcp_notion_API_query_data_source
+    - mcp_notion_API_retrieve_a_data_source
+    - mcp_notion_API_list_data_source_templates
+    - mcp_notion_API_retrieve_a_database
+  writes:
+    - mcp_notion_API_patch_block_children
+    - mcp_notion_API_update_a_block
+    - mcp_notion_API_delete_a_block
+    - mcp_notion_API_patch_page
+    - mcp_notion_API_post_page
+    - mcp_notion_API_create_a_comment
+    - mcp_notion_API_update_a_data_source
+    - mcp_notion_API_create_a_data_source
+    - mcp_notion_API_move_page
+  write_intents:
+    - planning
+    - creative_writing
