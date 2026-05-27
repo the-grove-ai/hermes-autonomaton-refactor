@@ -185,6 +185,19 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+ESCALATION_GUIDANCE = (
+    "If you genuinely need more reasoning capacity than the current tier "
+    "offers — context is too large for clean reasoning, the problem "
+    "requires deeper synthesis than your tier handles, or you're "
+    "structurally blocked — call escalate(reasoning_depth=..., "
+    "context_size=..., blocker=...) AS THE ONLY tool call in the batch. "
+    "The Dispatcher decides whether to grant. On grant, your conversation "
+    "continues on a more capable tier with the full prior context — no "
+    "tool re-execution. On denial, you see a decline and continue at the "
+    "current tier. Escalate when capacity is actually the bottleneck; do "
+    "not escalate to avoid effort."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

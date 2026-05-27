@@ -52,6 +52,9 @@ core:
   - skill_view        # show a skill's contents
   - read_file         # filesystem read
   - skills_list       # discover skills
+  - escalate          # Sprint 30 — request more capability (declarative;
+                      # Dispatcher decides). Synthetic tool; LLM-call gets
+                      # intercepted before classification.
 
 # ── Domain chunks — keyed by Sprint 12 intent_class ────────────────────────
 # Additive on top of core. Empty list = core only (e.g., conversation).

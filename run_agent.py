@@ -152,7 +152,7 @@ from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
-    GROVE_AGENT_HELP_GUIDANCE,
+    GROVE_AGENT_HELP_GUIDANCE, ESCALATION_GUIDANCE,
     KANBAN_GUIDANCE,
     build_nous_subscription_prompt,
 )
@@ -6534,6 +6534,11 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        # Sprint 30 — escalation surface. Only when the synthetic
+        # `escalate` tool is in the registry (it's in the Sprint 29
+        # `core` chunk so it loads on every classified-intent turn).
+        if "escalate" in self.valid_tool_names:
+            tool_guidance.append(ESCALATION_GUIDANCE)
         # Kanban worker/orchestrator lifecycle — only present when the
         # dispatcher spawned this process (kanban_show check_fn gates on
         # GROVE_KANBAN_TASK env var). Normal chat sessions never see
@@ -15822,8 +15827,32 @@ class AIAgent:
                         self._current_messages = messages
                         self._current_effective_task_id = effective_task_id
                         self._current_api_call_count = api_call_count
+                        # Sprint 30 — single-purpose `escalate` intercept.
+                        # A batch of exactly one `escalate` tool call
+                        # becomes an EscalationRequest yield to the
+                        # Dispatcher instead of routing through normal
+                        # tool dispatch. Mixed batches (escalate + other
+                        # tools) fall through to the regular path; the
+                        # escalate handler returns an honest decline so
+                        # the LLM re-emits it alone.
+                        _yield_payload = _intents
+                        if (
+                            len(_intents) == 1
+                            and _intents[0].tool_name == "escalate"
+                        ):
+                            from grove.intents import EscalationRequest
+                            _esc_intent = _intents[0]
+                            _esc_args = _esc_intent.arguments or {}
+                            _yield_payload = EscalationRequest(
+                                reason=str(_esc_args.get("blocker", "")) or "(no blocker)",
+                                request={
+                                    "reasoning_depth": _esc_args.get("reasoning_depth"),
+                                    "context_size": _esc_args.get("context_size"),
+                                    "call_id": _esc_intent.call_id,
+                                },
+                            )
                         try:
-                            _observations = yield _intents
+                            _observations = yield _yield_payload
                         finally:
                             self._current_assistant_message = None
                             self._current_messages = None
