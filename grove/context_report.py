@@ -220,10 +220,20 @@ def build_context_report(
         v for k, v in system_prompt_sections.items() if k != "_total"
     )
 
-    # Tool schemas — enumerate ``agent.tools`` and bucket by name prefix.
-    # ``agent.tools`` is the OpenAI-format list Hermes maintains
-    # (run_agent.py:1872). Empty / missing → zero-tokens bucket.
-    tools_attr = getattr(agent, "tools", None) or []
+    # Tool schemas — enumerate the per-turn tool view the LLM actually
+    # received and bucket by name prefix. Sprint 29 introduced
+    # ``_tools_for_api`` on AIAgent: it returns the per-turn filtered
+    # set when ``_maybe_apply_tool_filter`` ran (Sprint 29 Phase 2),
+    # otherwise the full ``self.tools`` registry. Prefer the property
+    # so /context reflects what was sent to the model on this turn,
+    # not the full registry the agent still holds for fallback. Falls
+    # back to ``agent.tools`` for legacy / test agents that don't
+    # carry the Sprint 29 property; empty / missing → zero-tokens.
+    tools_attr = (
+        getattr(agent, "_tools_for_api", None)
+        or getattr(agent, "tools", None)
+        or []
+    )
     tool_schemas: Dict[str, int] = {}
     for tool in tools_attr:
         if not isinstance(tool, Mapping):
