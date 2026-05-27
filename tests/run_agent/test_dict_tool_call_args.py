@@ -45,7 +45,6 @@ class _FakeClient:
         self.chat = SimpleNamespace(completions=_FakeChatCompletions())
 
 
-@pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
 def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
     from run_agent import AIAgent
 
@@ -59,6 +58,7 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
         lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True, "args": args}),
     )
 
+    from grove.sovereign_prompt_handlers import silent_approve_handler
     agent = AIAgent(
         model="test-model",
         api_key="test-key",
@@ -67,6 +67,10 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
         max_iterations=3,
         quiet_mode=True,
         skip_memory=True,
+        # Sprint 27 Phase 4 — silent_skip keeps the dict-args validation
+        # test deterministic. It verifies argument shape handling, not
+        # Andon behavior.
+        sovereign_prompt_handler=silent_approve_handler,
     )
     agent._disable_streaming = True
 

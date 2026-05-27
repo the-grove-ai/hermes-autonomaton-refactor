@@ -44,6 +44,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
         patch("hermes_cli.config.load_config", return_value=config or {}),
         patch("run_agent.OpenAI"),
     ):
+        from grove.sovereign_prompt_handlers import silent_approve_handler
         agent = AIAgent(
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
@@ -51,6 +52,11 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
+            # Sprint 27 Phase 4 — silent_skip keeps the guardrail tests
+            # deterministic if mock tool surface incidentally triggers
+            # an Andon halt. These tests verify guardrail behavior, not
+            # Andon behavior.
+            sovereign_prompt_handler=silent_approve_handler,
         )
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
@@ -208,7 +214,6 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
 
 
-@pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
 def test_default_run_conversation_warns_without_guardrail_halt():
     agent = _make_agent("web_search", max_iterations=10)
     same_args = {"query": "same"}
@@ -239,7 +244,6 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
 
 
-@pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
 def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
     agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
     same_args = {"query": "same"}

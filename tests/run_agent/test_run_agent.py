@@ -22,6 +22,7 @@ import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from grove.sovereign_prompt_handlers import silent_approve_handler
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +55,14 @@ def test_is_destructive_command_treats_install_as_mutating():
 
 @pytest.fixture()
 def agent():
-    """Minimal AIAgent with mocked OpenAI client and tool loading."""
+    """Minimal AIAgent with mocked OpenAI client and tool loading.
+
+    Sprint 27 Phase 4: ``sovereign_prompt_handler=silent_approve_handler``
+    keeps the test suite deterministic — any incidental Andon halt from
+    the mocked tool surface auto-skips silently instead of blocking on
+    the default TTY ``input()``. Tests that specifically verify Andon
+    behavior construct their own AIAgent with a capture handler.
+    """
     with (
         patch(
             "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
@@ -68,6 +76,7 @@ def agent():
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
+            sovereign_prompt_handler=silent_approve_handler,
         )
         a.client = MagicMock()
         return a
@@ -75,7 +84,11 @@ def agent():
 
 @pytest.fixture()
 def agent_with_memory_tool():
-    """Agent whose valid_tool_names includes 'memory'."""
+    """Agent whose valid_tool_names includes 'memory'.
+
+    Sprint 27 Phase 4: silent_approve_handler injection rationale — see
+    ``agent`` fixture above.
+    """
     with (
         patch(
             "run_agent.get_tool_definitions",
@@ -90,6 +103,7 @@ def agent_with_memory_tool():
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
+            sovereign_prompt_handler=silent_approve_handler,
         )
         a.client = MagicMock()
         return a
@@ -2538,7 +2552,6 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -2557,7 +2570,6 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -2592,7 +2604,6 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)
         agent.platform = None
@@ -3001,7 +3012,6 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after remint"
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""
         self._setup_agent(agent)
@@ -3167,7 +3177,6 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
         """Ollama-hosted GLM responses can misreport truncated output as stop."""
         self._setup_agent(agent)
@@ -3213,7 +3222,6 @@ class TestRunConversation:
         assert third_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in third_call_messages[-1]["content"]
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_ollama_glm_stop_with_terminal_boundary_does_not_continue(self, agent):
         """Complete Ollama/GLM responses should not be reclassified as truncated."""
         self._setup_agent(agent)
@@ -3247,7 +3255,6 @@ class TestRunConversation:
             == "Based on the search results, the best next step is to update the config."
         )
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_non_ollama_stop_without_terminal_boundary_does_not_continue(self, agent):
         """The stop->length workaround should stay scoped to Ollama/GLM backends."""
         self._setup_agent(agent)
@@ -3346,7 +3353,6 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
         once. If the retry succeeds (valid JSON args), tool execution proceeds."""
@@ -3415,7 +3421,6 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
         """Regression: kanban worker must call kanban_block when iteration
         budget is exhausted, otherwise the dispatcher sees a protocol
@@ -3464,7 +3469,6 @@ class TestRunConversation:
         assert call[0][1]["task_id"] == "t_test_task_123"
         assert "Iteration budget exhausted" in call[0][1]["reason"]
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
         """kanban_block must NOT be called when GROVE_KANBAN_TASK is unset."""
         self._setup_agent(agent)

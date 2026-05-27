@@ -19,6 +19,7 @@ from grove.intents import ToolIntent
 from grove.sovereign_prompt_handlers import (
     batch_auto_skip_handler,
     gateway_auto_skip_handler,
+    silent_approve_handler,
     silent_skip_handler,
     tty_sovereign_prompt,
 )
@@ -126,3 +127,31 @@ class TestSilentHandler:
         with caplog.at_level(logging.DEBUG, logger="grove.sovereign_prompt_handlers"):
             silent_skip_handler(halt)
         assert caplog.records == []
+
+
+# ── silent_approve_handler ────────────────────────────────────────────────
+
+
+class TestSilentApproveHandler:
+    """Test-only auto-approve handler. Returns ``"shadow_approve"`` so
+    the Dispatcher falls through to the Green-path executor and the
+    tool actually runs — needed by run_agent tests that verify flow
+    control (retry logic, callback ordering, compression triggering)
+    around tools the mock surface invokes."""
+
+    def test_returns_shadow_approve(self):
+        assert silent_approve_handler(_build_halt()) == "shadow_approve"
+
+    def test_emits_no_log_records(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        halt = _build_halt()
+        with caplog.at_level(logging.DEBUG, logger="grove.sovereign_prompt_handlers"):
+            silent_approve_handler(halt)
+        assert caplog.records == []
+
+    def test_distinct_from_skip_handler(self):
+        # Different return value, distinct identity.
+        assert silent_approve_handler is not silent_skip_handler
+        halt = _build_halt()
+        assert silent_approve_handler(halt) != silent_skip_handler(halt)

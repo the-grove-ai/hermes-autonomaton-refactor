@@ -57,6 +57,7 @@ __all__ = [
     "batch_auto_skip_handler",
     "gateway_auto_skip_handler",
     "silent_skip_handler",
+    "silent_approve_handler",
 ]
 
 logger = logging.getLogger(__name__)
@@ -178,5 +179,34 @@ def silent_skip_handler(halt: "AndonHalt") -> str:
     polluting test output. The Dispatcher's upstream ``andon_halt``
     ledger record is unaffected — tests that want to assert ledger
     contents inspect the ledger directly.
+
+    Tools are NOT executed when this handler fires — the Dispatcher
+    injects a denial Observation per § VI Skip semantics. Use the
+    complementary :func:`silent_approve_handler` for tests that
+    verify tool-execution flow control around incidental halts.
     """
     return "skip"
+
+
+def silent_approve_handler(halt: "AndonHalt") -> str:
+    """Silent auto-approve for test fixtures.
+
+    Returns ``"shadow_approve"`` — the disposition the Dispatcher
+    falls through to the Green-path executor on, letting the tool
+    actually run. Tests injecting this handler verify flow control
+    (retry logic, callback ordering, compression triggering, etc.)
+    that depends on tools executing; an incidental Andon halt from
+    the mocked tool surface (e.g., a tool name not in the schema's
+    ``tool_zones`` map defaulting to yellow) would otherwise be
+    skipped with a denial Observation, preventing the test from
+    observing the execution it's checking.
+
+    This is NOT for production use. The ``shadow_approve``
+    disposition exists primarily for ``GROVE_ZONE_SHADOW=1``
+    calibration; returning it from a handler bypasses operator
+    oversight unconditionally. Production gateway / batch callers
+    should use :func:`gateway_auto_skip_handler` /
+    :func:`batch_auto_skip_handler` so unintended-yellow surfaces
+    fail-safe rather than fail-open.
+    """
+    return "shadow_approve"

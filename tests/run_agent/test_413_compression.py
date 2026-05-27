@@ -85,12 +85,17 @@ def agent():
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
+        from grove.sovereign_prompt_handlers import silent_approve_handler
         a = AIAgent(
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
+            # Sprint 27 Phase 4 — silent_skip keeps compression tests
+            # deterministic. These verify compression triggering, not
+            # Andon behavior.
+            sovereign_prompt_handler=silent_approve_handler,
         )
         a.client = MagicMock()
         a._cached_system_prompt = "You are helpful."
@@ -547,7 +552,6 @@ class TestPreflightCompression:
 class TestToolResultPreflightCompression:
     """Compression should trigger when tool results push context past the threshold."""
 
-    @pytest.mark.skip(reason="TODO(Sprint 27): Caller requires sovereign_prompt_handler injection per GRV-005")
     def test_large_tool_results_trigger_compression(self, agent):
         """When tool results push estimated tokens past threshold, compress before next call."""
         agent.compression_enabled = True
