@@ -1208,11 +1208,27 @@ class AIAgent:
         pass_session_id: bool = False,
         # ── Sprint 26 Phase 1a (D4 substrate extraction) ──────────────
         # When provided by a Dispatcher, env-var reads and config loads
-        # the Agent's code paths historically did directly route through
-        # this snapshot instead. When None (existing callers), the
-        # Agent's helper methods (_env_or / _config_load_or) fall back
-        # to direct substrate reads — backward-compat path removed at
-        # Phase 7 cleanup once every caller routes through the Dispatcher.
+        # route through this snapshot. When None, the Agent's helper
+        # methods (_env_or / _config_load_or) fall back to direct
+        # substrate reads.
+        #
+        # Sprint 27 caller-migration-v1 audit (caller-migration-v1):
+        # zero production callers (cli.py, hermes_cli/oneshot.py,
+        # batch_runner.py, gateway/*, cron/scheduler.py,
+        # tui_gateway/server.py, acp_adapter/session.py,
+        # tools/delegate_tool.py, agent/curator.py,
+        # grove/kaizen/curator.py) pass runtime_ctx. They all rely on
+        # this fallback. Removing it would force every caller to
+        # pre-construct a Dispatcher and call ``runtime_context_for(...)``,
+        # which is out of Sprint 27 scope. The fallback stays.
+        #
+        # Sprint 27 chose the lazy-Dispatcher path (Path B): the Agent
+        # constructs its own Dispatcher singleton at first
+        # ``run_conversation`` via ``_get_or_create_dispatcher``. The
+        # singleton carries per-session state (Kaizen Ledger, tier
+        # overrides, pending_andon markers) across turns. Non-TTY
+        # callers pass ``sovereign_prompt_handler=`` so the singleton
+        # routes Andon halts through the right surface.
         runtime_ctx: Optional["RuntimeContext"] = None,
         # ── Sprint 27 Phase 3 (caller-migration-v1) ───────────────────
         # Non-TTY callers (gateway, batch, tests) inject a handler so
