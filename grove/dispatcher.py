@@ -887,6 +887,36 @@ class Dispatcher:
             # the global between here and the terminal.
             from grove.providers import current_classification as _current_classification
             self._current_turn_classification = _current_classification()
+            # Sprint 30.1 (post-completion patch) — record the classifier-
+            # driven pre-route escalation, if route_for_agent took that
+            # path on this turn. Mirrors Sprint 29's pattern: the router
+            # stashes the decision in providers._last_pre_route_decision;
+            # the Dispatcher reads + emits the ledger event so the Agent
+            # stays unaware of the ledger per GRV-005 § III. ``source``
+            # distinguishes this from the Agent-yielded EscalationRequest
+            # path which carries source="agent_request".
+            from grove.providers import current_pre_route_decision as _current_pre_route_decision
+            _pre_route = _current_pre_route_decision()
+            if _pre_route is not None:
+                try:
+                    ledger.record(
+                        "escalation_decision",
+                        source="pre_route",
+                        granted=True,
+                        current_tier=_pre_route.get("current_tier"),
+                        target_tier=_pre_route.get("target_tier"),
+                        complexity_signal=_pre_route.get("complexity_signal"),
+                        confidence=_pre_route.get("confidence"),
+                        reason=(
+                            "classifier-driven pre-route — complexity_signal in "
+                            "triggers and confidence below threshold"
+                        ),
+                    )
+                except Exception as _exc:
+                    logger.warning(
+                        "[grove.dispatcher] pre_route escalation_decision "
+                        "ledger write failed: %r", _exc,
+                    )
             # Sprint 29 Phase 2 — record the per-turn tool selection the
             # Agent computed (post-route, pre-first-call). Agent stashes
             # the metadata on ``_last_tool_selection``; Dispatcher writes

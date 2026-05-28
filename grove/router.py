@@ -26,6 +26,12 @@ from typing import Optional
 
 import yaml
 
+from grove.escalation_policy import (
+    EscalationPolicy,
+    load_escalation_policy,
+    pre_route_check,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,6 +103,10 @@ class CognitiveRouter:
         self._default_tier: str = ""
         self._escalation_threshold: float = 0.0
         self._telemetry_tier: str = ""
+        # Sprint 30.1 (post-completion patch): classifier-driven pre-routing.
+        # Default disabled — vanilla installs see the legacy step_up path
+        # only. Parsed from routing.escalation_policy in _load_into_self.
+        self._escalation_policy: EscalationPolicy = EscalationPolicy()
         self._load_into_self()
 
     # ----- public query API ---------------------------------------------------
@@ -192,6 +202,36 @@ class CognitiveRouter:
                 pattern_cache_hit=False,
             )
 
+        # 2.5. Classifier-driven pre-routing (Sprint 30.1 post-completion
+        #      patch). When complexity_signal is in the policy's triggers
+        #      AND classifier confidence is below the threshold, jump
+        #      straight to the policy's mapped tier for ``target_depth``
+        #      (defaults: complex|novel triggers, 0.6 threshold, "deep"
+        #      depth → T3).
+        #
+        #      Precedence:
+        #        - Operator overrides above always win (steps 1-2).
+        #        - Pre-route fires BEFORE routing_rules.step_up. If both
+        #          would trigger on the same turn, pre-route wins as the
+        #          stronger signal: "this is genuinely hard" beats
+        #          "classifier isn't sure". The step_up path still
+        #          handles low-confidence-on-any-complexity turns when
+        #          pre-route doesn't fire.
+        pre_route_tier = pre_route_check(
+            policy=self._escalation_policy,
+            complexity_signal=complexity_signal,
+            confidence=confidence,
+            current_tier=self._default_tier,
+        )
+        if pre_route_tier is not None:
+            return RoutingDecision(
+                tier=pre_route_tier,
+                tier_config=self.get_tier_config(pre_route_tier),
+                reason="pre_route_escalation",
+                confidence=confidence,
+                pattern_cache_hit=False,
+            )
+
         # 3. Declarative routing rules — downward, upward, escalation in
         #    config order. The first enabled rule that matches wins.
         for rule in self._routing_rules:
@@ -264,6 +304,7 @@ class CognitiveRouter:
             self._default_tier,
             self._escalation_threshold,
             self._telemetry_tier,
+            self._escalation_policy,
         )
         try:
             self._load_into_self()
@@ -278,6 +319,7 @@ class CognitiveRouter:
                 self._default_tier,
                 self._escalation_threshold,
                 self._telemetry_tier,
+                self._escalation_policy,
             ) = snapshot
 
     # ----- internals ----------------------------------------------------------
@@ -366,6 +408,14 @@ class CognitiveRouter:
                     f" declared tier"
                 )
 
+        # Sprint 30.1 (post-completion patch): load the escalation policy
+        # for classifier-driven pre-routing. Load is permissive — a
+        # missing or malformed routing.escalation_policy block yields a
+        # disabled policy, never an exception. Parent escalation must be
+        # enabled for pre_route to fire (load_escalation_policy honors
+        # the parent flag when defaulting pre_route.enabled).
+        escalation_policy = load_escalation_policy(raw)
+
         # All-or-nothing swap (mutation only after validation succeeds).
         self._tiers = tiers
         self._zone_overrides = dict(zone_overrides)
@@ -373,6 +423,7 @@ class CognitiveRouter:
         self._default_tier = default_tier
         self._escalation_threshold = float(threshold)
         self._telemetry_tier = telemetry_tier
+        self._escalation_policy = escalation_policy
 
 
 # ----- module-level singleton + helpers ---------------------------------------

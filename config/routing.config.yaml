@@ -229,3 +229,29 @@ routing:
       moderate: T2
       deep:     T3
       apex:     T3
+
+    # ── Pre-route (Sprint 30.1 post-completion patch) ─────────────────
+    # Classifier-driven pre-routing for hard turns. Distinct from
+    # routing_rules.escalation above (Sprint 12 step_up; bumps one
+    # tier on low classifier confidence regardless of complexity).
+    #
+    # pre_route jumps STRAIGHT to mapping[target_depth] when:
+    #   complexity_signal in complexity_triggers AND
+    #   confidence < confidence_threshold
+    #
+    # The two are complementary:
+    #   step_up:   "classifier isn't sure" → one tier bump
+    #   pre_route: "this is genuinely hard" → jump to deep
+    #
+    # When both would trigger on the same turn, pre_route wins (the
+    # router enforces precedence). enabled defaults to the parent
+    # escalation_policy.enabled, so flipping the parent on enables
+    # pre-routing by default. Set pre_route.enabled: false to keep
+    # the Agent-driven escalation path (synthetic tool) without the
+    # classifier-driven pre-route.
+    pre_route:
+      enabled: false
+      complexity_triggers: [complex, novel]
+      confidence_threshold: 0.6
+      # Key into escalation_policy.mapping above.
+      target_depth: deep

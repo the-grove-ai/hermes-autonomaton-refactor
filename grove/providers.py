@@ -41,6 +41,15 @@ _last_routed_tier: Optional[str] = None
 # (the /why command, the transition line). None until the first call.
 _last_classification: Optional[ClassificationResult] = None
 
+# Sprint 30.1 (post-completion patch): the most recent pre-route
+# escalation decision, populated when ``RoutingDecision.reason ==
+# "pre_route_escalation"`` and None otherwise. The Dispatcher reads
+# this after classification capture and emits a Kaizen Ledger
+# ``escalation_decision`` event with ``source="pre_route"``. Mirrors
+# the ``_last_classification`` pattern — module-global, cleared on
+# every routing call so a stale value can't leak across turns.
+_last_pre_route_decision: Optional[dict] = None
+
 
 def route_for_agent(
     *,
@@ -88,9 +97,25 @@ def route_for_agent(
     # "operator forced a tier from the command line".
     if tier_source == "session" and decision.reason == "operator_override":
         decision = replace(decision, reason="operator_session_override")
-    global _last_routed_tier, _last_classification
+    global _last_routed_tier, _last_classification, _last_pre_route_decision
     _last_routed_tier = decision.tier
     _last_classification = classification
+    # Sprint 30.1: snapshot the pre-route decision iff the router
+    # took that path. Cleared to None on every routing call so a
+    # stale value never leaks into a later turn's ledger event.
+    if decision.reason == "pre_route_escalation":
+        _last_pre_route_decision = {
+            "current_tier": router.get_default_tier(),
+            "target_tier": decision.tier,
+            "complexity_signal": (
+                classification.complexity_signal if classification else None
+            ),
+            "confidence": (
+                classification.confidence if classification else None
+            ),
+        }
+    else:
+        _last_pre_route_decision = None
     _log_routing(decision, classification)
     return decision
 
@@ -116,6 +141,23 @@ def current_classification() -> Optional[ClassificationResult]:
     transition line — without spending a second classification call.
     """
     return _last_classification
+
+
+def current_pre_route_decision() -> Optional[dict]:
+    """The most recent classifier-driven pre-route escalation, or None.
+
+    Sprint 30.1 (post-completion patch). Populated when the router's
+    most recent ``route()`` returned ``reason="pre_route_escalation"``
+    and ``None`` otherwise. Payload keys: ``current_tier`` (the default
+    tier the agent would have used), ``target_tier`` (the escalated
+    tier), ``complexity_signal``, ``confidence``.
+
+    The Dispatcher reads this after its post-first-yield classification
+    capture and emits a Kaizen Ledger ``escalation_decision`` event
+    with ``source="pre_route"``. Distinguishes pre-routing from the
+    Agent-yielded EscalationRequest path (``source="agent_request"``).
+    """
+    return _last_pre_route_decision
 
 
 def resolve_tier_to_runtime(tier_config: TierConfig) -> dict:

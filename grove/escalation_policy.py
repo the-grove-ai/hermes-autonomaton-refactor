@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "EscalationPolicy",
     "EscalationDecision",
+    "PreRoutePolicy",
     "load_escalation_policy",
     "evaluate_escalation",
+    "pre_route_check",
 ]
 
 
@@ -40,6 +42,42 @@ _DEFAULT_MAPPING: Dict[str, str] = {
     "deep": "T3",
     "apex": "T3",
 }
+
+
+_DEFAULT_PRE_ROUTE_TRIGGERS = frozenset({"complex", "novel"})
+
+
+@dataclass(frozen=True)
+class PreRoutePolicy:
+    """Classifier-driven pre-routing for hard turns.
+
+    Sprint 30.1 (post-completion patch). Distinct from Sprint 12's
+    ``routing_rules.escalation`` step_up:
+
+    * ``routing_rules.step_up``: bumps one tier when classifier
+      confidence is low, regardless of complexity. Handles the
+      "classifier isn't sure" case.
+    * ``pre_route``: jumps to the policy's mapped tier for
+      ``target_depth`` when complexity_signal is in
+      ``complexity_triggers`` AND confidence is below
+      ``confidence_threshold``. Handles the "this is genuinely hard"
+      case.
+
+    The two are complementary. When both would trigger on the same
+    turn, pre_route wins — it's the stronger signal (precedence
+    enforced in ``grove.router.CognitiveRouter.route``).
+    """
+
+    enabled: bool = False
+    complexity_triggers: frozenset = None  # type: ignore[assignment]
+    confidence_threshold: float = 0.6
+    target_depth: str = "deep"
+
+    def __post_init__(self) -> None:
+        if self.complexity_triggers is None:
+            object.__setattr__(
+                self, "complexity_triggers", _DEFAULT_PRE_ROUTE_TRIGGERS,
+            )
 
 
 @dataclass(frozen=True)
@@ -57,12 +95,15 @@ class EscalationPolicy:
     ceiling_tier: str = "T3"
     auto_grant_above_tier: str = "T3"
     mapping: Dict[str, str] = None  # type: ignore[assignment]
+    pre_route: PreRoutePolicy = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         # Frozen dataclass: assign via object.__setattr__ when post-init
         # needs to fix a default-collection field.
         if self.mapping is None:
             object.__setattr__(self, "mapping", dict(_DEFAULT_MAPPING))
+        if self.pre_route is None:
+            object.__setattr__(self, "pre_route", PreRoutePolicy())
 
     def resolved_tier(self, reasoning_depth: Optional[str]) -> Optional[str]:
         """Map a declarative ``reasoning_depth`` to a configured tier.
@@ -136,13 +177,35 @@ def load_escalation_policy(routing_config: Dict[str, Any]) -> EscalationPolicy:
             if isinstance(k, str) and isinstance(v, str)
         }
 
+    escalation_enabled = bool(esc.get("enabled", False))
+
+    # pre_route sub-block: defaults pre_route.enabled to escalation.enabled
+    # so flipping escalation on also enables classifier-driven pre-routing
+    # by default. Operators can disable pre-routing independently by
+    # setting routing.escalation_policy.pre_route.enabled to false.
+    pre_route_cfg = esc.get("pre_route")
+    if not isinstance(pre_route_cfg, dict):
+        pre_route_cfg = {}
+    triggers_raw = pre_route_cfg.get("complexity_triggers")
+    if isinstance(triggers_raw, list):
+        triggers = frozenset(str(t) for t in triggers_raw if isinstance(t, str))
+    else:
+        triggers = _DEFAULT_PRE_ROUTE_TRIGGERS
+    pre_route = PreRoutePolicy(
+        enabled=bool(pre_route_cfg.get("enabled", escalation_enabled)),
+        complexity_triggers=triggers,
+        confidence_threshold=float(pre_route_cfg.get("confidence_threshold", 0.6)),
+        target_depth=str(pre_route_cfg.get("target_depth", "deep")),
+    )
+
     return EscalationPolicy(
-        enabled=bool(esc.get("enabled", False)),
+        enabled=escalation_enabled,
         max_escalations_per_turn=int(esc.get("max_escalations_per_turn", 1)),
         max_escalations_per_session=int(esc.get("max_escalations_per_session", 5)),
         ceiling_tier=str(esc.get("ceiling_tier", "T3")),
         auto_grant_above_tier=str(esc.get("auto_grant_above_tier", "T3")),
         mapping=mapping,
+        pre_route=pre_route,
     )
 
 
@@ -232,3 +295,51 @@ def evaluate_escalation(
         target_tier=target_tier,
         current_tier=current_tier,
     )
+
+
+def pre_route_check(
+    *,
+    policy: EscalationPolicy,
+    complexity_signal: Optional[str],
+    confidence: Optional[float],
+    current_tier: Optional[str] = None,
+) -> Optional[str]:
+    """Classifier-driven pre-routing — return target tier or None.
+
+    Pure function. Runs at routing time on the T-telemetry classifier's
+    read of the request, before the LLM call. No budget / per-turn
+    counter checks (those apply only to Agent-yielded EscalationRequest
+    via ``evaluate_escalation``).
+
+    Returns ``None`` when:
+      * the parent ``policy.enabled`` is False,
+      * ``policy.pre_route.enabled`` is False,
+      * ``complexity_signal`` is not in ``policy.pre_route.complexity_triggers``,
+      * ``confidence`` is None or at-or-above ``confidence_threshold``,
+      * the mapped target tier is unknown or exceeds ``ceiling_tier``,
+      * ``current_tier`` is already at-or-above the target.
+
+    Returns the resolved target tier string when all conditions hold.
+    The router (``grove.router.CognitiveRouter.route``) consumes this
+    return value to build a ``RoutingDecision`` with
+    ``reason="pre_route_escalation"``. The Dispatcher then emits a
+    Kaizen Ledger ``escalation_decision`` event with ``source="pre_route"``
+    so analytics can distinguish pre-routing from Agent-yielded
+    escalations (``source="agent_request"``).
+    """
+    if not policy.enabled:
+        return None
+    if not policy.pre_route.enabled:
+        return None
+    if complexity_signal not in policy.pre_route.complexity_triggers:
+        return None
+    if confidence is None or confidence >= policy.pre_route.confidence_threshold:
+        return None
+    target_tier = policy.resolved_tier(policy.pre_route.target_depth)
+    if target_tier is None:
+        return None
+    if _tier_index(target_tier) > _tier_index(policy.ceiling_tier):
+        return None
+    if current_tier and _tier_index(current_tier) >= _tier_index(target_tier):
+        return None
+    return target_tier
