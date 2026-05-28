@@ -30,10 +30,13 @@ from grove import intent_store as _intent_store_mod
 from grove.classify import ClassificationResult
 from grove.dispatcher import Dispatcher
 from grove.intent_store import IntentRecord, IntentStore
-from grove.intents import FinalResponse, Observation, ToolIntent
+from grove.intents import ToolBatchYield, FinalResponse, Observation, ToolIntent
 
 
 # ── Test helpers ──────────────────────────────────────────────────────────
+
+
+
 
 
 def _synthetic_generator(
@@ -50,7 +53,13 @@ def _synthetic_generator(
     """
     def gen():
         if intents_batch:
-            obs = yield intents_batch
+            # Sprint 31 Phase 2: api_call_count rides ToolBatchYield;
+            # legacy fixtures asserted api_calls=3 on the terminal
+            # intent record via the deleted ``_current_api_call_count``
+            # bridge field's default fixture value. Preserve that
+            # value in the yield so the dispatcher's tracker picks
+            # it up.
+            obs = yield ToolBatchYield(intents=intents_batch, api_call_count=3)
             assert isinstance(obs, list)
             assert all(isinstance(o, Observation) for o in obs)
         yield FinalResponse(content=final_text)
@@ -61,7 +70,7 @@ def _synthetic_generator(
 def _raising_generator(exc: BaseException):
     """Yield once, then raise on the next send."""
     def gen():
-        yield [ToolIntent(tool_name="t", arguments={}, call_id="c1")]
+        yield ToolBatchYield(intents=[ToolIntent(tool_name="t", arguments={}, call_id="c1")])
         raise exc
         yield  # unreachable; satisfies generator typing
     return gen()
@@ -72,26 +81,10 @@ def _bare_agent_with_exec(msgs: List[Dict]):
     reads at Green-path execution."""
     import run_agent
     agent = object.__new__(run_agent.AIAgent)
-    agent._current_assistant_message = {
-        "role": "assistant",
-        "tool_calls": [
-            {"id": "c1", "function": {"name": "t", "arguments": "{}"}}
-        ],
-    }
     agent._current_messages = msgs
-    agent._current_effective_task_id = "task_t"
-    agent._current_api_call_count = 3
     agent.session_id = "test-session"
     agent.model = "claude-sonnet-4-6"
-
-    def _stub_execute(asst, messages, task_id, api_n):
-        for tc in (asst.get("tool_calls") or []):
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.get("id", ""),
-                "content": "stub-result",
-            })
-    agent._execute_tool_calls = _stub_execute
+    _phase2_executor_stub(agent)
     return agent
 
 
@@ -142,6 +135,68 @@ def tmp_store(tmp_path: Path) -> IntentStore:
 
 
 # ── Dispatcher construction + sweep ───────────────────────────────────────
+
+
+def _phase2_executor_stub(agent):
+    """Sprint 31 Phase 2 migration: provide the minimum agent surface
+    the dispatcher's new direct-executor path expects.
+
+    The legacy Phase 1 tests stubbed ``agent._execute_tool_calls`` as
+    a no-op lambda. Phase 2 routes the dispatcher through
+    ``agent._tool_executor.execute_batch_concurrent/sequential`` plus
+    ``agent._build_execution_context_*`` and
+    ``agent._apply_execution_results_to_messages``. This helper
+    wires all four with stubs that mimic the prior legacy stub's
+    observable effect: append one tool message per intent and
+    surface execution via ``agent._exec_called``.
+    """
+    from grove.tool_executor import ToolResult
+
+    agent._exec_called = False
+
+    class _StubExecutor:
+        def execute_batch_concurrent(self, ctx):
+            return self._run(ctx)
+
+        def execute_batch_sequential(self, ctx):
+            return self._run(ctx)
+
+        def _run(self, ctx):
+            agent._exec_called = True
+            return [
+                ToolResult(
+                    intent_id=i.call_id or "",
+                    tool_name=i.tool_name,
+                    tool_args=dict(i.arguments or {}),
+                    success=True,
+                    content="stub-result",
+                )
+                for i in ctx.intents
+            ]
+
+    class _MinimalCtx:
+        def __init__(self, intents):
+            self.intents = list(intents)
+
+    agent._tool_executor = _StubExecutor()
+    agent._build_execution_context_concurrent = (
+        lambda intents, task, n: _MinimalCtx(intents)
+    )
+    agent._build_execution_context_sequential = (
+        lambda intents, task, n: _MinimalCtx(intents)
+    )
+
+    def _apply(results, messages, task_id):
+        for r in results:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": r.intent_id,
+                "content": r.content,
+            })
+
+    agent._apply_execution_results_to_messages = _apply
+    agent._executing_tools = False
+    return agent
 
 
 class TestDispatcherIntentStoreInit:
@@ -414,11 +469,11 @@ class TestPerTurnStateLifecycle:
         _set_current_classification(monkeypatch)
 
         def gen():
-            yield [ToolIntent(tool_name="read_file", arguments={}, call_id="c1")]
-            yield [
+            yield ToolBatchYield(intents=[ToolIntent(tool_name="read_file", arguments={}, call_id="c1")])
+            yield ToolBatchYield(intents=[
                 ToolIntent(tool_name="search_files", arguments={}, call_id="c2"),
                 ToolIntent(tool_name="web_search", arguments={}, call_id="c3"),
-            ]
+            ])
             yield FinalResponse(content="done")
 
         # Two-batch flow needs the agent's execution state per yield.

@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional
 
 __all__ = [
     "ToolIntent",
+    "ToolBatchYield",
     "EscalationRequest",
     "FinalResponse",
     "ClarificationRequest",
@@ -81,6 +82,43 @@ class ToolIntent:
     tool_name: str
     arguments: Dict[str, Any] = field(default_factory=dict)
     call_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ToolBatchYield:
+    """A batch of ``ToolIntent`` plus the per-batch scalars the
+    Dispatcher needs to execute them.
+
+    Sprint 31 Phase 2. Before this sprint, the Agent's
+    ``_run_turn_generator`` yielded a bare ``List[ToolIntent]`` and
+    the Dispatcher reached into the Agent for ``effective_task_id``
+    and ``api_call_count`` via four state-stashing bridge fields
+    (Sprint 26 GATE-D pragmatic choice). Phase 2 deletes the bridge
+    and moves those per-batch scalars onto this dataclass —
+    carrying them through the yield protocol where they belong
+    rather than back-channel attribute access.
+
+    The Dispatcher catches ``ToolBatchYield`` in ``_drive_generator``,
+    decides concurrent vs sequential via the pure-function
+    parallelization heuristic, and routes directly to
+    ``grove.tool_executor.ToolExecutor.execute_batch_concurrent`` or
+    ``execute_batch_sequential`` — no Agent shim in the path.
+
+    Fields:
+        intents: the batch of ``ToolIntent``s to execute, in input
+            order. The order is preserved end-to-end through the
+            executor's per-slot result list.
+        effective_task_id: per-turn / per-task identifier the
+            executor threads into telemetry and the persistent
+            tool-result storage's environment resolver.
+        api_call_count: ordinal API call counter for this turn
+            (1-indexed). Carried for intent-record telemetry and
+            the ledger's per-batch context.
+    """
+
+    intents: List[ToolIntent]
+    effective_task_id: str = ""
+    api_call_count: int = 0
 
 
 @dataclass(frozen=True)

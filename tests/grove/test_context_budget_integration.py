@@ -16,7 +16,7 @@ import pytest
 from grove.classify import ClassificationResult
 from grove.dispatcher import Dispatcher
 from grove.intent_store import IntentStore
-from grove.intents import FinalResponse, Observation, ToolIntent
+from grove.intents import ToolBatchYield, FinalResponse, Observation, ToolIntent
 
 
 # ── Test helpers (mirrored from test_dispatcher_intent_records.py) ────────
@@ -30,7 +30,7 @@ def _synthetic_generator(
 ):
     def gen():
         if intents_batch:
-            obs = yield intents_batch
+            obs = yield ToolBatchYield(intents=intents_batch)
             assert isinstance(obs, list)
             assert all(isinstance(o, Observation) for o in obs)
         yield FinalResponse(content=final_text)

@@ -21,12 +21,15 @@ from typing import Any, Dict, List
 import pytest
 
 from grove.dispatcher import Dispatcher, RuntimeContext
-from grove.intents import FinalResponse, Observation, ToolIntent
+from grove.intents import ToolBatchYield, FinalResponse, Observation, ToolIntent
 
 
 # Sprint 26 Phase 6 — every test in this file constructs Dispatchers
 # which now eagerly create per-session Kaizen Ledger files. Redirect
 # the substrate home to tmp so no test pollutes ~/.grove/.kaizen_ledger.
+
+
+
 @pytest.fixture(autouse=True)
 def _redirect_grove_home(tmp_path, monkeypatch):
     import hermes_constants
@@ -35,6 +38,68 @@ def _redirect_grove_home(tmp_path, monkeypatch):
 
 
 # ── _extract_tool_intents ─────────────────────────────────────────────────
+
+
+def _phase2_executor_stub(agent):
+    """Sprint 31 Phase 2 migration: provide the minimum agent surface
+    the dispatcher's new direct-executor path expects.
+
+    The legacy Phase 1 tests stubbed ``agent._execute_tool_calls`` as
+    a no-op lambda. Phase 2 routes the dispatcher through
+    ``agent._tool_executor.execute_batch_concurrent/sequential`` plus
+    ``agent._build_execution_context_*`` and
+    ``agent._apply_execution_results_to_messages``. This helper
+    wires all four with stubs that mimic the prior legacy stub's
+    observable effect: append one tool message per intent and
+    surface execution via ``agent._exec_called``.
+    """
+    from grove.tool_executor import ToolResult
+
+    agent._exec_called = False
+
+    class _StubExecutor:
+        def execute_batch_concurrent(self, ctx):
+            return self._run(ctx)
+
+        def execute_batch_sequential(self, ctx):
+            return self._run(ctx)
+
+        def _run(self, ctx):
+            agent._exec_called = True
+            return [
+                ToolResult(
+                    intent_id=i.call_id or "",
+                    tool_name=i.tool_name,
+                    tool_args=dict(i.arguments or {}),
+                    success=True,
+                    content="stub-result",
+                )
+                for i in ctx.intents
+            ]
+
+    class _MinimalCtx:
+        def __init__(self, intents):
+            self.intents = list(intents)
+
+    agent._tool_executor = _StubExecutor()
+    agent._build_execution_context_concurrent = (
+        lambda intents, task, n: _MinimalCtx(intents)
+    )
+    agent._build_execution_context_sequential = (
+        lambda intents, task, n: _MinimalCtx(intents)
+    )
+
+    def _apply(results, messages, task_id):
+        for r in results:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": r.intent_id,
+                "content": r.content,
+            })
+
+    agent._apply_execution_results_to_messages = _apply
+    agent._executing_tools = False
+    return agent
 
 
 class TestExtractToolIntents:
@@ -132,7 +197,7 @@ def _synthetic_generator(intents_batch: List[ToolIntent], result: Dict[str, Any]
     semantics without exercising a real LLM turn.
     """
     def gen():
-        observations = yield intents_batch
+        observations = yield ToolBatchYield(intents=intents_batch)
         # Assert the consumer sent us back a list of Observations
         assert isinstance(observations, list)
         assert all(isinstance(o, Observation) for o in observations)
@@ -151,25 +216,11 @@ class TestPhase7RunConversationDelegation:
     def _bare_agent_with_state(self, msgs: List[Dict]):
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
-        agent._current_assistant_message = {
-            "role": "assistant",
-            "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
-        }
         agent._current_messages = msgs
-        agent._current_effective_task_id = "task_t"
-        agent._current_api_call_count = 1
         agent.session_id = "phase7_delegation_session"
         agent.model = "m"
         agent.provider = "p"
-        agent._execute_tool_calls = (
-            lambda asst, messages, task_id, api_n: [
-                messages.append({
-                    "role": "tool", "tool_call_id": tc.get("id", ""),
-                    "content": "stub-result",
-                })
-                for tc in (asst.get("tool_calls") or [])
-            ]
-        )
+        _phase2_executor_stub(agent)
         return agent
 
     def test_run_conversation_creates_dispatcher_singleton(
@@ -267,24 +318,10 @@ class TestDispatcherDispatchTurn:
     def _bare_agent_with_state(self, msgs: List[Dict]):
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
-        agent._current_assistant_message = {
-            "role": "assistant",
-            "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
-        }
         agent._current_messages = msgs
-        agent._current_effective_task_id = "task_t"
-        agent._current_api_call_count = 1
-        agent._exec_called = False
-
-        def _stub_execute(asst, messages, task_id, api_n):
-            agent._exec_called = True
-            for tc in (asst.get("tool_calls") or []):
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": "dispatcher-result",
-                })
-        agent._execute_tool_calls = _stub_execute
+        agent.session_id = "test-session"
+        agent.model = "claude-sonnet-4-6"
+        _phase2_executor_stub(agent)
         return agent
 
     def test_dispatch_turn_returns_generator_result(
@@ -418,17 +455,10 @@ class TestPhase4ZoneClassification:
     def _bare_agent_for_batch(self, msgs: List[Dict]):
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
-        agent._current_assistant_message = {"role": "assistant"}
         agent._current_messages = msgs
-        agent._current_effective_task_id = "t"
-        agent._current_api_call_count = 1
-        agent._exec_called = False
-
-        def _exec(asst, messages, task_id, api_n):
-            agent._exec_called = True
-        agent._execute_tool_calls = _exec
         agent.model = "claude-sonnet-4-6"
         agent.provider = "anthropic"
+        _phase2_executor_stub(agent)
         return agent
 
     def test_green_batch_executes_normally(
@@ -624,7 +654,7 @@ class TestPhase4ZoneClassification:
 
         def gen():
             try:
-                yield intents
+                yield ToolBatchYield(intents=intents)
                 yield FinalResponse(content="unreachable")
             finally:
                 finally_ran["flag"] = True
@@ -692,18 +722,11 @@ class TestPhase5SkipDisposition:
     def _bare_agent(self, msgs):
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
-        agent._current_assistant_message = {"role": "assistant"}
         agent._current_messages = msgs
-        agent._current_effective_task_id = "t"
-        agent._current_api_call_count = 1
-        agent._exec_called = False
-
-        def _exec(asst, messages, task_id, api_n):
-            agent._exec_called = True
-        agent._execute_tool_calls = _exec
         agent.model = "m"
         agent.provider = "p"
         agent.session_id = "test_skip_session"
+        _phase2_executor_stub(agent)
         return agent
 
     def test_skip_injects_denial_observations(
@@ -723,7 +746,7 @@ class TestPhase5SkipDisposition:
         intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
 
         def gen():
-            received = yield intents
+            received = yield ToolBatchYield(intents=intents)
             captured_send["observations"] = received
             yield FinalResponse(content="after_skip")
             return {"final_response": "after_skip"}
@@ -762,7 +785,7 @@ class TestPhase5SkipDisposition:
         ]
 
         def gen():
-            yield intents
+            yield ToolBatchYield(intents=intents)
             yield FinalResponse(content="ok")
             return {"final_response": "ok"}
 
@@ -786,18 +809,11 @@ class TestPhase5DropDisposition:
     def _bare_agent(self, msgs):
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
-        agent._current_assistant_message = {"role": "assistant"}
         agent._current_messages = msgs
-        agent._current_effective_task_id = "t"
-        agent._current_api_call_count = 1
-        agent._exec_called = False
-        agent._execute_tool_calls = (
-            lambda asst, messages, task_id, api_n:
-            setattr(agent, "_exec_called", True)
-        )
         agent.model = "m"
         agent.provider = "p"
         agent.session_id = "test_drop_session"
+        _phase2_executor_stub(agent)
         return agent
 
     def test_drop_flushes_volatile_state(
@@ -845,7 +861,7 @@ class TestPhase5DropDisposition:
         def gen():
             try:
                 try:
-                    yield intents
+                    yield ToolBatchYield(intents=intents)
                 except Exception:
                     # This MUST NOT catch GeneratorExit per Python 3
                     # exception hierarchy. If it did, cleanup_ran would

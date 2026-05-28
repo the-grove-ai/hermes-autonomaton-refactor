@@ -459,6 +459,46 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
     return True
 
 
+def _should_parallelize_intents(intents) -> bool:
+    """Return True when a ``List[ToolIntent]`` batch is safe to run concurrently.
+
+    Sprint 31 Phase 2. Mirrors ``_should_parallelize_tool_batch`` exactly,
+    but operates on the new yield-protocol ``ToolIntent`` objects (which
+    carry parsed arguments dict directly) instead of raw OpenAI-format
+    tool_calls (with JSON-string arguments). The Dispatcher consults
+    this on each ``ToolBatchYield`` to decide concurrent vs sequential
+    routing through ``grove.tool_executor.ToolExecutor``.
+    """
+    if len(intents) <= 1:
+        return False
+
+    tool_names = [i.tool_name for i in intents]
+    if any(name in _NEVER_PARALLEL_TOOLS for name in tool_names):
+        return False
+
+    reserved_paths: list[Path] = []
+    for intent in intents:
+        tool_name = intent.tool_name
+        function_args = intent.arguments or {}
+        if not isinstance(function_args, dict):
+            return False
+
+        if tool_name in _PATH_SCOPED_TOOLS:
+            scoped_path = _extract_parallel_scope_path(tool_name, function_args)
+            if scoped_path is None:
+                return False
+            if any(_paths_overlap(scoped_path, existing) for existing in reserved_paths):
+                return False
+            reserved_paths.append(scoped_path)
+            continue
+
+        if tool_name not in _PARALLEL_SAFE_TOOLS:
+            if not _is_mcp_tool_parallel_safe(tool_name):
+                return False
+
+    return True
+
+
 def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | None:
     """Return the normalized file target for path-scoped tools."""
     if tool_name not in _PATH_SCOPED_TOOLS:
@@ -15587,13 +15627,22 @@ class AIAgent:
                     # by the consumer's executor.
                     _intents = self._extract_tool_intents(assistant_message)
                     if _intents:
-                        # Expose state for the consumer's executor. The
-                        # consumer reads these immediately after the yield;
-                        # they are cleared on resume.
-                        self._current_assistant_message = assistant_message
+                        # Sprint 31 Phase 2 — the per-batch scalars
+                        # (effective_task_id, api_call_count) ride the
+                        # yield protocol via ``ToolBatchYield`` rather
+                        # than back-channel attribute access. The Sprint
+                        # 26 GATE-D state-stashing bridge fields
+                        # (_current_assistant_message,
+                        # _current_effective_task_id,
+                        # _current_api_call_count) are gone.
+                        #
+                        # ``_current_messages`` survives as a transitional
+                        # field used by Sprint 30's hot-swap snapshot
+                        # (grove.dispatcher._handle_escalation_request)
+                        # and Sprint 31 Phase 1b's ``_invoke_tool``
+                        # context-engine branch. Its set+clear pair stays
+                        # in place; a future sprint removes it.
                         self._current_messages = messages
-                        self._current_effective_task_id = effective_task_id
-                        self._current_api_call_count = api_call_count
                         # Sprint 30 — single-purpose `escalate` intercept.
                         # A batch of exactly one `escalate` tool call
                         # becomes an EscalationRequest yield to the
@@ -15602,7 +15651,6 @@ class AIAgent:
                         # tools) fall through to the regular path; the
                         # escalate handler returns an honest decline so
                         # the LLM re-emits it alone.
-                        _yield_payload = _intents
                         if (
                             len(_intents) == 1
                             and _intents[0].tool_name == "escalate"
@@ -15618,13 +15666,17 @@ class AIAgent:
                                     "call_id": _esc_intent.call_id,
                                 },
                             )
+                        else:
+                            from grove.intents import ToolBatchYield
+                            _yield_payload = ToolBatchYield(
+                                intents=_intents,
+                                effective_task_id=effective_task_id or "",
+                                api_call_count=api_call_count or 0,
+                            )
                         try:
                             _observations = yield _yield_payload
                         finally:
-                            self._current_assistant_message = None
                             self._current_messages = None
-                            self._current_effective_task_id = None
-                            self._current_api_call_count = None
                         # Observation list is informational in Phase 3 MVP
                         # — the consumer's executor mutated `messages` via
                         # _execute_tool_calls (legacy) or its own path

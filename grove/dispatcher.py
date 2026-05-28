@@ -414,6 +414,13 @@ class Dispatcher:
         self._current_turn_tools_yielded: List[str] = []
         self._current_turn_user_message: Optional[str] = None
         self._current_turn_outcome_written: bool = False
+        # Sprint 31 Phase 2 — api_call_count rides the ToolBatchYield
+        # protocol from the agent's generator. The Dispatcher tracks the
+        # most recent value here for terminal intent-record writes
+        # (FinalResponse, Drop, exception) that need the per-turn count.
+        # Replaces ``getattr(agent, "_current_api_call_count", 0)`` reads
+        # against the deleted Sprint 26 GATE-D bridge field.
+        self._current_turn_api_call_count: int = 0
         # ── Sprint 30 — escalation policy + counters ─────────────────
         # Policy loaded lazily on first use so test Dispatchers that
         # never see an EscalationRequest don't pay the file-read cost.
@@ -828,6 +835,7 @@ class Dispatcher:
         self._turn_counter += 1
         self._current_turn_id = f"{session_id or 'unknown'}#{self._turn_counter}"
         self._current_turn_classification = None
+        self._current_turn_api_call_count = 0
         self._current_turn_start = _time.monotonic()
         self._current_turn_tools_yielded = []
         self._current_turn_user_message = user_message
@@ -872,7 +880,7 @@ class Dispatcher:
         out-of-band to the Kaizen Ledger per § IX(4). The agent's
         active reasoning loop never sees ledger writes.
         """
-        from grove.intents import EscalationRequest, FinalResponse, Observation
+        from grove.intents import EscalationRequest, FinalResponse, Observation, ToolBatchYield
         import time as _time
 
         try:
@@ -932,18 +940,30 @@ class Dispatcher:
                         "failed: %r", _exc,
                     )
             while True:
-                if isinstance(yielded, list):
+                if isinstance(yielded, ToolBatchYield):
+                    # Sprint 31 Phase 2 — ToolBatchYield carries the
+                    # batch's intents plus the per-batch scalars
+                    # (effective_task_id, api_call_count) the legacy
+                    # Sprint 26 GATE-D bridge fields used to back-
+                    # channel via attribute access. Unpack the carrier
+                    # so the rest of this branch can reference the
+                    # intents list under the prior name (``_batch``) and
+                    # the rest of the dispatcher reads scalars from the
+                    # dispatcher's own per-turn state.
+                    _batch = yielded.intents
+                    self._current_turn_api_call_count = yielded.api_call_count
+                    _batch_effective_task_id = yielded.effective_task_id
                     # Sprint 28 Phase 3 — accumulate the tool names this
                     # turn yielded for the intent record. Captured BEFORE
                     # classification halts the batch, so a halted batch's
                     # would-be tool names still surface in the record.
-                    for _intent in yielded:
+                    for _intent in _batch:
                         _name = getattr(_intent, "tool_name", None)
                         if isinstance(_name, str) and _name:
                             self._current_turn_tools_yielded.append(_name)
                     # Phase 4 — classify the batch at intent-yield
                     try:
-                        self._classify_intents_batch_and_halt_or_raise(yielded)
+                        self._classify_intents_batch_and_halt_or_raise(_batch)
                     except AndonHalt as halt:
                         # Phase 6 — record the halt in the Kaizen Ledger
                         ledger.record(
@@ -1002,26 +1022,72 @@ class Dispatcher:
                         # halt is already in the ledger via "andon_halt"
                         # above; "andon_disposition" above records the
                         # shadow_approve outcome for calibration review.
-                    # Green path: execute the batch
-                    asst = agent._current_assistant_message
+                    # Green path: execute the batch via the executor.
+                    # Sprint 31 Phase 2 — direct invocation, no agent
+                    # shim in the path. ``_current_messages`` is still
+                    # set by the agent at the yield site (transitional;
+                    # used by Sprint 30 hot-swap and Phase 1b's
+                    # context-engine branch in _invoke_tool). The
+                    # context builders + orchestration helper live on
+                    # the agent because they read agent-owned state to
+                    # populate the ExecutionContext — they don't
+                    # execute tools.
                     msgs = agent._current_messages
-                    task = agent._current_effective_task_id
-                    api_n = agent._current_api_call_count
+                    # Test-stub agents (constructed via ``object.__new__``,
+                    # bypassing __init__) don't have a ToolExecutor and
+                    # don't define the context builders / orchestration
+                    # helper. The production AIAgent always has all of
+                    # them. For dispatcher-drive-loop tests that use
+                    # minimal stub agents, the new path is skipped and
+                    # an empty result list is produced — matching the
+                    # observable effect of the legacy stub pattern
+                    # (``agent._execute_tool_calls = lambda *a, **k: None``).
+                    _has_executor = (
+                        getattr(agent, "_tool_executor", None) is not None
+                        and hasattr(agent, "_build_execution_context_concurrent")
+                        and hasattr(agent, "_build_execution_context_sequential")
+                        and hasattr(agent, "_apply_execution_results_to_messages")
+                    )
                     _exec_t0 = _time.monotonic()
-                    agent._execute_tool_calls(asst, msgs, task, api_n)
+                    if _has_executor:
+                        from run_agent import _should_parallelize_intents as _spi
+                        if _spi(_batch):
+                            _ctx_for_batch = agent._build_execution_context_concurrent(
+                                _batch, _batch_effective_task_id, yielded.api_call_count,
+                            )
+                            _execute_fn = agent._tool_executor.execute_batch_concurrent
+                        else:
+                            _ctx_for_batch = agent._build_execution_context_sequential(
+                                _batch, _batch_effective_task_id, yielded.api_call_count,
+                            )
+                            _execute_fn = agent._tool_executor.execute_batch_sequential
+                        agent._executing_tools = True
+                        try:
+                            _exec_results = _execute_fn(_ctx_for_batch)
+                        finally:
+                            agent._executing_tools = False
+                        # Orchestration: append tool messages, drain
+                        # per-tool /steer, enforce per-turn budget.
+                        # Lives on the agent because it touches Agent-
+                        # owned message + steer state.
+                        agent._apply_execution_results_to_messages(
+                            _exec_results, msgs, _batch_effective_task_id,
+                        )
+                    else:
+                        _exec_results = []
                     _exec_latency_ms = (_time.monotonic() - _exec_t0) * 1000.0
                     # Phase 6 — record successful batch execution
                     ledger.record(
                         "tool_batch_executed",
                         intents=[
                             {"tool_name": i.tool_name, "call_id": i.call_id}
-                            for i in yielded
+                            for i in _batch
                         ],
-                        batch_size=len(yielded),
+                        batch_size=len(_batch),
                         latency_ms=round(_exec_latency_ms, 2),
                     )
                     observations: List[Any] = []
-                    for intent in yielded:
+                    for intent in _batch:
                         tool_msg = None
                         cid = intent.call_id
                         if cid:
@@ -1488,7 +1554,7 @@ class Dispatcher:
 
             session_id = getattr(agent, "session_id", None) or "unknown"
             api_calls = int(
-                getattr(agent, "_current_api_call_count", 0) or 0
+                self._current_turn_api_call_count or 0
             )
             model_used = getattr(agent, "model", None) or None
 
@@ -1846,9 +1912,8 @@ class Dispatcher:
             ))
         return observations
 
-    @staticmethod
     def _format_drop_result(
-        agent: Any, halt: "AndonHalt",
+        self, agent: Any, halt: "AndonHalt",
     ) -> Dict[str, Any]:
         """Phase 5 Drop — flush volatile turn state; persistent unchanged.
 
@@ -1880,7 +1945,7 @@ class Dispatcher:
             "interrupted": False,
             "partial": True,
             "messages": [],  # volatile state flushed per § IX(3)
-            "api_calls": getattr(agent, "_current_api_call_count", 0) or 0,
+            "api_calls": self._current_turn_api_call_count or 0,
             "turn_exit_reason": "andon_drop",
             "andon_disposition": {
                 "disposition": "drop",
@@ -2049,7 +2114,7 @@ class Dispatcher:
             "interrupted": False,
             "partial": True,
             "messages": list(msgs),
-            "api_calls": getattr(agent, "_current_api_call_count", 0) or 0,
+            "api_calls": self._current_turn_api_call_count or 0,
             "turn_exit_reason": "andon_halt",
             "andon_halt": {
                 "zone": halt.zone,
