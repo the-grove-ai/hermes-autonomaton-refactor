@@ -11512,6 +11512,30 @@ class AIAgent:
                 except Exception:
                     pass
             return result
+        elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
+            # Sprint 31 Phase 1b: context-engine tools (lcm_grep,
+            # lcm_describe, lcm_expand, etc.) were sequential-only
+            # routing before extraction. Unified here so both paths
+            # share one single-call dispatch. They need the messages
+            # list — read it from ``messages`` (callback-provided) or
+            # the transitional bridge field ``_current_messages`` which
+            # the shim sets for the batch's duration. Phase 2 removes
+            # the bridge; context-engine integration at that point
+            # routes through a different mechanism.
+            _msgs = messages if messages is not None else getattr(self, "_current_messages", None)
+            try:
+                return self.context_compressor.handle_tool_call(
+                    function_name, function_args, messages=_msgs,
+                )
+            except Exception as tool_error:
+                import json as _json
+                logger.error(
+                    "context_engine.handle_tool_call raised for %s: %s",
+                    function_name, tool_error, exc_info=True,
+                )
+                return _json.dumps({
+                    "error": f"Context engine tool '{function_name}' failed: {tool_error}",
+                })
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
@@ -11632,13 +11656,42 @@ class AIAgent:
     def _log_tool_complete_line(
         self, index_1_based: int, function_name: str, function_result, tool_duration: float,
     ) -> None:
-        """Display callback — per-tool completion line + UI tracker reset."""
+        """Display callback — per-tool completion line + UI tracker reset.
+
+        Concurrent-path variant: prints the cute message via _safe_print
+        when quiet+emit (the concurrent path doesn't run per-tool
+        spinners), or the ✅ line via plain print when non-quiet.
+        """
         if self._should_emit_quiet_tool_messages():
             cute_msg = _get_cute_tool_message_impl(
                 function_name, {}, tool_duration, result=function_result,
             )
             self._safe_print(f"  {cute_msg}")
         elif not self.quiet_mode:
+            _preview_str = _multimodal_text_summary(function_result)
+            if self.verbose_logging:
+                print(f"  ✅ Tool {index_1_based} completed in {tool_duration:.2f}s")
+                print(self._wrap_verbose("Result: ", _preview_str))
+            else:
+                response_preview = (
+                    _preview_str[:self.log_prefix_chars] + "..."
+                    if len(_preview_str) > self.log_prefix_chars else _preview_str
+                )
+                print(f"  ✅ Tool {index_1_based} completed in {tool_duration:.2f}s - {response_preview}")
+        self._current_tool = None
+
+    def _log_tool_complete_line_sequential(
+        self, index_1_based: int, function_name: str, function_result, tool_duration: float,
+    ) -> None:
+        """Display callback — sequential-path per-tool completion line.
+
+        Sprint 31 Phase 1b. Sequential's quiet+emit cute message is
+        already printed by ``_tool_display_close`` (via the per-tool
+        spinner's stop or via _vprint for fast inline tools). This
+        helper only owns the non-quiet ✅ line so there's no duplicate
+        cute-message output.
+        """
+        if not self.quiet_mode:
             _preview_str = _multimodal_text_summary(function_result)
             if self.verbose_logging:
                 print(f"  ✅ Tool {index_1_based} completed in {tool_duration:.2f}s")
@@ -11845,445 +11898,236 @@ class AIAgent:
         self._apply_execution_results_to_messages(results, messages, effective_task_id)
 
 
-    def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
-        """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
-        for i, tool_call in enumerate(assistant_message.tool_calls, 1):
-            # SAFETY: check interrupt BEFORE starting each tool.
-            # If the user sent "stop" during a previous tool's execution,
-            # do NOT start any more tools -- skip them all immediately.
-            if self._interrupt_requested:
-                remaining_calls = assistant_message.tool_calls[i-1:]
-                if remaining_calls:
-                    self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
-                for skipped_tc in remaining_calls:
-                    skipped_name = skipped_tc.function.name
-                    skip_msg = {
-                        "role": "tool",
-                        "name": skipped_name,
-                        "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
-                        "tool_call_id": skipped_tc.id,
-                    }
-                    messages.append(skip_msg)
-                break
+    def _tool_display_open(self, function_name: str, function_args: dict) -> None:
+        """Per-tool display setup for the sequential path. Decides whether
+        to start a KawaiiSpinner based on tool name + agent state.
 
-            function_name = tool_call.function.name
+        Sprint 31 Phase 1b. Display orchestration stays agent-owned
+        (GATE-B path (i)); the executor fires this callback and the
+        agent decides what visual feedback to provide. The spinner
+        instance is stashed on ``self._per_tool_spinner`` for the
+        matching ``_tool_display_close`` to stop.
+        """
+        self._per_tool_spinner = None
 
+        # delegate_task — always show a spinner with the delegate label
+        if function_name == "delegate_task":
+            if not (self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner()):
+                return
+            tasks_arg = function_args.get("tasks")
+            if tasks_arg and isinstance(tasks_arg, list):
+                label_inner = f"🔀 delegating {len(tasks_arg)} tasks"
+            else:
+                goal_preview = (function_args.get("goal") or "")[:30]
+                label_inner = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
+            face = random.choice(KawaiiSpinner.get_waiting_faces())
+            self._per_tool_spinner = KawaiiSpinner(
+                f"{face} {label_inner}", spinner_type='dots', print_fn=self._print_fn,
+            )
+            self._per_tool_spinner.start()
+            self._delegate_spinner = self._per_tool_spinner
+            return
+
+        # context_engine tools — spinner only requires should_emit_quiet
+        if self._context_engine_tool_names and function_name in self._context_engine_tool_names:
+            if not self._should_emit_quiet_tool_messages():
+                return
+            face = random.choice(KawaiiSpinner.get_waiting_faces())
+            emoji = _get_tool_emoji(function_name)
+            preview = _build_tool_preview(function_name, function_args) or function_name
+            self._per_tool_spinner = KawaiiSpinner(
+                f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn,
+            )
+            self._per_tool_spinner.start()
+            return
+
+        # memory_manager tools — spinner if both quiet gates pass
+        if self._memory_manager and self._memory_manager.has_tool(function_name):
+            if not (self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner()):
+                return
+            face = random.choice(KawaiiSpinner.get_waiting_faces())
+            emoji = _get_tool_emoji(function_name)
+            preview = _build_tool_preview(function_name, function_args) or function_name
+            self._per_tool_spinner = KawaiiSpinner(
+                f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn,
+            )
+            self._per_tool_spinner.start()
+            return
+
+        # Fast inline tools — no spinner, completion message printed
+        # via vprint in _tool_display_close.
+        if function_name in {"todo", "session_search", "memory", "clarify"}:
+            return
+
+        # Generic registry-dispatched tool — quiet_mode path uses
+        # a spinner; non-quiet path has no spinner (the legacy
+        # ✅ completion line fires from _log_tool_complete_line).
+        if self.quiet_mode:
+            if not (self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner()):
+                return
+            face = random.choice(KawaiiSpinner.get_waiting_faces())
+            emoji = _get_tool_emoji(function_name)
+            preview = _build_tool_preview(function_name, function_args) or function_name
+            self._per_tool_spinner = KawaiiSpinner(
+                f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn,
+            )
+            self._per_tool_spinner.start()
+
+    def _tool_display_close(
+        self, function_name: str, function_result, tool_duration: float,
+    ) -> None:
+        """Per-tool display teardown. Stops the spinner if one was started;
+        prints a cute message via vprint for fast inline tools that
+        didn't get a spinner.
+        """
+        spinner = getattr(self, "_per_tool_spinner", None)
+        cute_msg = None
+        if self._should_emit_quiet_tool_messages():
             try:
-                function_args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError as e:
-                logging.warning(f"Unexpected JSON error after validation: {e}")
-                function_args = {}
-            if not isinstance(function_args, dict):
-                function_args = {}
-
-            # Check plugin hooks for a block directive before executing.
-            _block_msg: Optional[str] = None
-            try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                _block_msg = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
+                cute_msg = _get_cute_tool_message_impl(
+                    function_name, {}, tool_duration, result=function_result,
                 )
+            except Exception:
+                cute_msg = None
+
+        if spinner is not None:
+            try:
+                spinner.stop(cute_msg or "")
+            except Exception:
+                pass
+        elif cute_msg is not None:
+            # Fast inline tool path — no spinner, but still print
+            # the cute message so the UX matches the legacy display.
+            try:
+                self._vprint(f"  {cute_msg}")
             except Exception:
                 pass
 
-            _guardrail_block_decision: ToolGuardrailDecision | None = None
-            if _block_msg is None:
-                guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
-                if not guardrail_decision.allows_execution:
-                    _guardrail_block_decision = guardrail_decision
+        self._per_tool_spinner = None
+        if function_name == "delegate_task":
+            self._delegate_spinner = None
 
-            _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+    def _build_execution_context_sequential(
+        self, intents, effective_task_id: str, api_call_count: int,
+    ):
+        """Build the ExecutionContext the executor's sequential path consumes.
 
-            if _execution_blocked:
-                # Tool blocked by plugin or guardrail policy — skip counters,
-                # callbacks, checkpointing, activity mutation, and real execution.
-                pass
-            # Reset nudge counters when the relevant tool is actually used
-            elif function_name == "memory":
-                self._turns_since_memory = 0
-            elif function_name == "skill_manage":
-                self._iters_since_skill = 0
+        Mirrors ``_build_execution_context_concurrent`` but adds the
+        per-tool display callbacks (``tool_display_open`` /
+        ``tool_display_close``) and the ``tool_delay_seconds`` config
+        field. Omits the concurrent-only parent-thread / worker-teardown
+        callbacks since sequential runs in a single thread.
+        """
+        from grove.tool_executor import (
+            ExecutionContext, ExecutorConfig,
+            ObservabilityCallbacks, SideEffectCallbacks,
+        )
+        from tools.registry import registry as _tool_registry
+        from tools.tool_result_storage import maybe_persist_tool_result as _persist
+        from tools.terminal_tool import get_active_env as _env_for_task
+        from hermes_cli.plugins import get_pre_tool_call_block_message as _plugin_block
 
-            if not self.quiet_mode:
-                args_str = json.dumps(function_args, ensure_ascii=False)
-                if self.verbose_logging:
-                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                    print(self._wrap_verbose("Args: ", json.dumps(function_args, indent=2, ensure_ascii=False)))
-                else:
-                    args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+        def _safe_plugin_block(name: str, args: dict, task_id: str):
+            try:
+                return _plugin_block(name, args, task_id=task_id or "")
+            except Exception:
+                return None
 
-            if not _execution_blocked:
-                self._current_tool = function_name
-                self._touch_activity(f"executing tool: {function_name}")
+        return ExecutionContext(
+            intents=intents,
+            tool_registry=_tool_registry,
+            callbacks=ObservabilityCallbacks(
+                # Sequential omits batch_started/batch_completed (no
+                # batch-level spinner) and log_batch_header_line (no
+                # batch header in the legacy sequential display).
+                on_tool_start=self.tool_start_callback,
+                on_tool_progress=self.tool_progress_callback,
+                on_tool_complete=self.tool_complete_callback,
+                log_tool_call_line=self._log_tool_call_line,
+                log_tool_complete_line=self._log_tool_complete_line_sequential,
+                log_interrupt_message=self._log_interrupt_skip,
+                tool_display_open=self._tool_display_open,
+                tool_display_close=self._tool_display_close,
+                vprint=self._vprint,
+                touch_activity=self._touch_activity,
+                should_emit_quiet=self._should_emit_quiet_tool_messages,
+                should_start_quiet_spinner=self._should_start_quiet_spinner,
+            ),
+            side_effects=SideEffectCallbacks(
+                invoke_tool=self._invoke_tool,
+                pre_call_block_message=_safe_plugin_block,
+                guardrail_check=self._tool_guardrails.before_call,
+                guardrail_block_result=self._guardrail_block_result,
+                append_guardrail_observation=self._append_guardrail_observation,
+                record_file_mutation=self._record_file_mutation_result,
+                format_result_content=self._tool_result_content_for_active_model,
+                compute_subdir_hints=self._subdirectory_hints.check_tool_call,
+                on_tool_completed=self._on_tool_completed_hook,
+                pre_execute_checkpoint=self._maybe_checkpoint_for_tool,
+                detect_tool_failure=_detect_tool_failure,
+                is_multimodal_result=_is_multimodal_tool_result,
+                append_subdir_hint_to_multimodal=_append_subdir_hint_to_multimodal,
+                persist_tool_result=_persist,
+            ),
+            interrupt=_AgentInterruptAdapter(self),
+            config=ExecutorConfig(
+                quiet_mode=self.quiet_mode,
+                verbose_logging=self.verbose_logging,
+                log_prefix=self.log_prefix,
+                log_prefix_chars=self.log_prefix_chars,
+                active_model=getattr(self, "model", None),
+                tool_delay_seconds=float(getattr(self, "tool_delay", 0.0) or 0.0),
+                env_for_task=_env_for_task,
+            ),
+            tool_guardrails=self._tool_guardrails,
+            effective_task_id=effective_task_id,
+            api_call_count=api_call_count,
+        )
 
-            # Set activity callback for long-running tool execution (terminal
-            # commands, etc.) so the gateway's inactivity monitor doesn't kill
-            # the agent while a command is running.
-            if not _execution_blocked:
-                try:
-                    from tools.environments.base import set_activity_callback
-                    set_activity_callback(self._touch_activity)
-                except Exception:
-                    pass
+    def _execute_tool_calls_sequential(
+        self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0,
+    ) -> None:
+        """Execute tool calls sequentially (original behavior).
 
-            if not _execution_blocked and self.tool_progress_callback:
-                try:
-                    preview = _build_tool_preview(function_name, function_args)
-                    self.tool_progress_callback("tool.started", function_name, preview, function_args)
-                except Exception as cb_err:
-                    logging.debug(f"Tool progress callback error: {cb_err}")
+        Sprint 31 Phase 1b transitional shim. Delegates to
+        ``grove.tool_executor.ToolExecutor.execute_batch_sequential``
+        with an ExecutionContext built from the agent's current state,
+        then applies messages / steer / budget orchestration the
+        executor's prior monolithic version did inline.
 
-            if not _execution_blocked and self.tool_start_callback:
-                try:
-                    self.tool_start_callback(tool_call.id, function_name, function_args)
-                except Exception as cb_err:
-                    logging.debug(f"Tool start callback error: {cb_err}")
+        The shim sets ``self._current_messages = messages`` for the
+        duration of the batch so the context-engine branch in
+        ``_invoke_tool`` (which needs the messages list to call
+        ``self.context_compressor.handle_tool_call``) finds the right
+        list when called via the SideEffectCallbacks.invoke_tool
+        callback. Phase 2 removes the bridge entirely and changes the
+        context-engine integration to a different mechanism.
 
-            # Checkpoint: snapshot working dir before file-mutating tools
-            if not _execution_blocked and function_name in {"write_file", "patch"} and self._checkpoint_mgr.enabled:
-                try:
-                    file_path = function_args.get("path", "")
-                    if file_path:
-                        work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        self._checkpoint_mgr.ensure_checkpoint(
-                            work_dir, f"before {function_name}"
-                        )
-                except Exception:
-                    pass  # never block tool execution
+        Tests that call this method directly or via
+        ``patch.object(agent, "_execute_tool_calls_sequential")`` keep
+        working unchanged. Phase 2 deletes the shim and routes
+        ``grove.dispatcher._drive_generator`` straight through
+        ``self._tool_executor.execute_batch_sequential``.
+        """
+        intents = self._extract_tool_intents(assistant_message)
+        if not intents:
+            return
 
-            # Checkpoint before destructive terminal commands
-            if not _execution_blocked and function_name == "terminal" and self._checkpoint_mgr.enabled:
-                try:
-                    cmd = function_args.get("command", "")
-                    if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                        self._checkpoint_mgr.ensure_checkpoint(
-                            cwd, f"before terminal: {cmd[:60]}"
-                        )
-                except Exception:
-                    pass  # never block tool execution
-
-            tool_start_time = time.time()
-
-            if _block_msg is not None:
-                # Tool blocked by plugin policy — return error without executing.
-                function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
-                tool_duration = 0.0
-            elif _guardrail_block_decision is not None:
-                # Tool blocked by tool-loop guardrail — synthesize exactly one
-                # tool result for the original tool_call_id without executing.
-                function_result = self._guardrail_block_result(_guardrail_block_decision)
-                tool_duration = 0.0
-            elif function_name == "todo":
-                from tools.todo_tool import todo_tool as _todo_tool
-                function_result = _todo_tool(
-                    todos=function_args.get("todos"),
-                    merge=function_args.get("merge", False),
-                    store=self._todo_store,
-                )
-                tool_duration = time.time() - tool_start_time
-                if self._should_emit_quiet_tool_messages():
-                    self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
-            elif function_name == "session_search":
-                session_db = self._get_session_db_for_recall()
-                if not session_db:
-                    from hermes_state import format_session_db_unavailable
-                    function_result = json.dumps({"success": False, "error": format_session_db_unavailable()})
-                else:
-                    from tools.session_search_tool import session_search as _session_search
-                    function_result = _session_search(
-                        query=function_args.get("query", ""),
-                        role_filter=function_args.get("role_filter"),
-                        limit=function_args.get("limit", 3),
-                        db=session_db,
-                        current_session_id=self.session_id,
-                    )
-                tool_duration = time.time() - tool_start_time
-                if self._should_emit_quiet_tool_messages():
-                    self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
-            elif function_name == "memory":
-                target = function_args.get("target", "memory")
-                from tools.memory_tool import memory_tool as _memory_tool
-                function_result = _memory_tool(
-                    action=function_args.get("action"),
-                    target=target,
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
-                    store=self._memory_store,
-                )
-                # Bridge: notify external memory provider of built-in memory writes
-                if self._memory_manager and function_args.get("action") in {"add", "replace"}:
-                    try:
-                        self._memory_manager.on_memory_write(
-                            function_args.get("action", ""),
-                            target,
-                            function_args.get("content", ""),
-                            metadata=self._build_memory_write_metadata(
-                                task_id=effective_task_id,
-                                tool_call_id=getattr(tool_call, "id", None),
-                            ),
-                        )
-                    except Exception:
-                        pass
-                tool_duration = time.time() - tool_start_time
-                if self._should_emit_quiet_tool_messages():
-                    self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
-            elif function_name == "clarify":
-                from tools.clarify_tool import clarify_tool as _clarify_tool
-                function_result = _clarify_tool(
-                    question=function_args.get("question", ""),
-                    choices=function_args.get("choices"),
-                    callback=self.clarify_callback,
-                )
-                tool_duration = time.time() - tool_start_time
-                if self._should_emit_quiet_tool_messages():
-                    self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
-            elif function_name == "delegate_task":
-                tasks_arg = function_args.get("tasks")
-                if tasks_arg and isinstance(tasks_arg, list):
-                    spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
-                else:
-                    goal_preview = (function_args.get("goal") or "")[:30]
-                    spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
-                spinner = None
-                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-                    face = random.choice(KawaiiSpinner.get_waiting_faces())
-                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                self._delegate_spinner = spinner
-                _delegate_result = None
-                try:
-                    function_result = self._dispatch_delegate_task(function_args)
-                    _delegate_result = function_result
-                finally:
-                    self._delegate_spinner = None
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self._should_emit_quiet_tool_messages():
-                        self._vprint(f"  {cute_msg}")
-            elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
-                # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
-                spinner = None
-                if self._should_emit_quiet_tool_messages():
-                    face = random.choice(KawaiiSpinner.get_waiting_faces())
-                    emoji = _get_tool_emoji(function_name)
-                    preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                _ce_result = None
-                try:
-                    function_result = self.context_compressor.handle_tool_call(function_name, function_args, messages=messages)
-                    _ce_result = function_result
-                except Exception as tool_error:
-                    function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
-                    logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                finally:
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self._should_emit_quiet_tool_messages():
-                        self._vprint(f"  {cute_msg}")
-            elif self._memory_manager and self._memory_manager.has_tool(function_name):
-                # Memory provider tools (hindsight_retain, honcho_search, etc.)
-                # These are not in the tool registry — route through MemoryManager.
-                spinner = None
-                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-                    face = random.choice(KawaiiSpinner.get_waiting_faces())
-                    emoji = _get_tool_emoji(function_name)
-                    preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                _mem_result = None
-                try:
-                    function_result = self._memory_manager.handle_tool_call(function_name, function_args)
-                    _mem_result = function_result
-                except Exception as tool_error:
-                    function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
-                    logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                finally:
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self._should_emit_quiet_tool_messages():
-                        self._vprint(f"  {cute_msg}")
-            elif self.quiet_mode:
-                spinner = None
-                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-                    face = random.choice(KawaiiSpinner.get_waiting_faces())
-                    emoji = _get_tool_emoji(function_name)
-                    preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                _spinner_result = None
-                try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
-                    _spinner_result = function_result
-                except Exception as tool_error:
-                    function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                finally:
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self._should_emit_quiet_tool_messages():
-                        self._vprint(f"  {cute_msg}")
-            else:
-                try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
-                except Exception as tool_error:
-                    function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                tool_duration = time.time() - tool_start_time
-
-            if isinstance(function_result, str):
-                result_preview = function_result if self.verbose_logging else (
-                    function_result[:200] if len(function_result) > 200 else function_result
-                )
-                _result_len = len(function_result)
-            else:
-                # Multimodal dict result (_multimodal=True) — not sliceable as string
-                result_preview = function_result
-                _result_len = len(str(function_result))
-
-            # Log tool errors to the persistent error log so [error] tags
-            # in the UI always have a corresponding detailed entry on disk.
-            _is_error_result, _ = _detect_tool_failure(function_name, function_result)
-            if not _execution_blocked:
-                function_result = self._append_guardrail_observation(
-                    function_name,
-                    function_args,
-                    function_result,
-                    failed=_is_error_result,
-                )
-                result_preview = function_result if self.verbose_logging else (
-                    function_result[:200] if len(function_result) > 200 else function_result
-                )
-            if _is_error_result:
-                logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
-            else:
-                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
-
-            # Track file-mutation outcome for the turn-end verifier.  See
-            # the concurrent path for the rationale; both paths must feed
-            # the same state so the footer reflects every tool call in the
-            # turn, not just the parallel ones.
-            if not _execution_blocked:
-                try:
-                    self._record_file_mutation_result(
-                        function_name, function_args, function_result, _is_error_result,
-                    )
-                except Exception as _ver_err:
-                    logging.debug("file-mutation verifier record failed: %s", _ver_err)
-
-            if not _execution_blocked and self.tool_progress_callback:
-                try:
-                    self.tool_progress_callback(
-                        "tool.completed", function_name, None, None,
-                        duration=tool_duration, is_error=_is_error_result,
-                    )
-                except Exception as cb_err:
-                    logging.debug(f"Tool progress callback error: {cb_err}")
-
-            self._current_tool = None
-            self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
-
-            if self.verbose_logging:
-                logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
-                _log_result = _multimodal_text_summary(function_result)
-                logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
-
-            if not _execution_blocked and self.tool_complete_callback:
-                try:
-                    self.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
-                except Exception as cb_err:
-                    logging.debug(f"Tool complete callback error: {cb_err}")
-
-            function_result = maybe_persist_tool_result(
-                content=function_result,
-                tool_name=function_name,
-                tool_use_id=tool_call.id,
-                env=get_active_env(effective_task_id),
-            ) if not _is_multimodal_tool_result(function_result) else function_result
-
-            # Discover subdirectory context files from tool arguments
-            subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
-            if subdir_hints:
-                if _is_multimodal_tool_result(function_result):
-                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-                else:
-                    function_result += subdir_hints
-
-            # Unwrap _multimodal dicts to an OpenAI-style content list
-            # (see parallel path for rationale). String results pass through.
-            _tool_content = self._tool_result_content_for_active_model(function_name, function_result)
-            tool_msg = {
-                "role": "tool",
-                "name": function_name,
-                "content": _tool_content,
-                "tool_call_id": tool_call.id
-            }
-            messages.append(tool_msg)
-
-            # ── Per-tool /steer drain ───────────────────────────────────
-            # Drain pending steer BETWEEN individual tool calls so the
-            # injection lands as soon as a tool finishes — not after the
-            # entire batch.  The model sees it on the next API iteration.
-            self._apply_pending_steer_to_tool_results(messages, 1)
-
-            if not self.quiet_mode:
-                if self.verbose_logging:
-                    print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
-                    print(self._wrap_verbose("Result: ", function_result))
-                else:
-                    _fr_str = function_result if isinstance(function_result, str) else str(function_result)
-                    response_preview = _fr_str[:self.log_prefix_chars] + "..." if len(_fr_str) > self.log_prefix_chars else _fr_str
-                    print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
-
-            if self._interrupt_requested and i < len(assistant_message.tool_calls):
-                remaining = len(assistant_message.tool_calls) - i
-                self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
-                for skipped_tc in assistant_message.tool_calls[i:]:
-                    skipped_name = skipped_tc.function.name
-                    skip_msg = {
-                        "role": "tool",
-                        "name": skipped_name,
-                        "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
-                        "tool_call_id": skipped_tc.id
-                    }
-                    messages.append(skip_msg)
-                break
-
-            if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
-                time.sleep(self.tool_delay)
-
-        # ── Per-turn aggregate budget enforcement ─────────────────────────
-        num_tools_seq = len(assistant_message.tool_calls)
-        if num_tools_seq > 0:
-            enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
-
-        # ── /steer injection ──────────────────────────────────────────────
-        # See _execute_tool_calls_parallel for the rationale. Same hook,
-        # applied to sequential execution as well.
-        if num_tools_seq > 0:
-            self._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+        # Transitional: _invoke_tool's context_engine branch reads
+        # self._current_messages. The bridge field is normally set by
+        # _run_turn_generator at yield time, but tests calling this
+        # shim directly bypass that. Set + restore for the batch's
+        # duration so context-engine tools find the messages list.
+        _prior_current_messages = getattr(self, "_current_messages", None)
+        self._current_messages = messages
+        try:
+            ctx = self._build_execution_context_sequential(
+                intents, effective_task_id, api_call_count,
+            )
+            results = self._tool_executor.execute_batch_sequential(ctx)
+            self._apply_execution_results_to_messages(results, messages, effective_task_id)
+        finally:
+            self._current_messages = _prior_current_messages
 
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:

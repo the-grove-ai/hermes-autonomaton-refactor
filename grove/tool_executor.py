@@ -124,6 +124,14 @@ class ObservabilityCallbacks:
     log_batch_header_line: Optional[Callable[[int, str], None]] = None
     # signature: (num_tools, names_summary)
 
+    # Per-tool display open/close (Sprint 31 Phase 1b — sequential path
+    # uses these for spinner-per-tool orchestration; the executor never
+    # imports KawaiiSpinner. GATE-B path (i).)
+    tool_display_open: Optional[Callable[[str, dict], None]] = None
+    # signature: (tool_name, tool_args)
+    tool_display_close: Optional[Callable[[str, Any, float], None]] = None
+    # signature: (tool_name, result, duration_s)
+
     # Verbose tracing and console activity hooks
     vprint: Optional[Callable[..., None]] = None  # accepts (text, force=False) like agent._vprint
     touch_activity: Optional[Callable[[str], None]] = None
@@ -209,6 +217,10 @@ class ExecutorConfig:
     log_prefix_chars: int = 100
     active_model: Optional[str] = None
     max_workers: Optional[int] = None
+    # Per-tool delay in the sequential path. Sprint 31 Phase 1b — the
+    # legacy AIAgent.tool_delay attribute lives here now; the executor
+    # consults it between tools when sleeping is desired (rare).
+    tool_delay_seconds: float = 0.0
     # Active-env resolver — the executor calls it lazily inside per-tool
     # post-processing (persist_tool_result + budget enforcement need it).
     # Kept on config rather than callbacks because it's a pure derivation
@@ -700,5 +712,361 @@ class ToolExecutor:
                 latency_s=tool_duration,
                 blocked=blocked_flag,
             ))
+
+        return results
+
+    # ── execute_batch_sequential ─────────────────────────────────
+
+    def execute_batch_sequential(self, ctx: ExecutionContext) -> List[ToolResult]:
+        """Execute the batch sequentially, one tool at a time.
+
+        Sprint 31 Phase 1b. Used for batches that look entangled —
+        file mutations against overlapping paths, interactive tools,
+        single-call yields. The parallelism decision is made upstream
+        (``tools._should_parallelize_tool_batch`` style logic in the
+        agent's wrapper); the executor exposes both ``execute_batch_concurrent``
+        and ``execute_batch_sequential`` and the caller picks.
+
+        Returns ``List[ToolResult]`` in input order. The caller
+        (Dispatcher, or the transition-period shim) appends tool
+        messages to the conversation, drains pending steer, and
+        enforces per-turn budget — orchestration lives outside the
+        executor by design.
+
+        Mid-batch interrupt: if ``ctx.interrupt.is_set()`` becomes
+        True after a tool finishes, the remaining intents are
+        skipped with cancellation messages (mirrors the legacy
+        sequential behavior).
+        """
+        num_tools = len(ctx.intents)
+        if num_tools == 0:
+            return []
+
+        cb = ctx.callbacks
+        sx = ctx.side_effects
+        cfg = ctx.config
+
+        results: List[ToolResult] = []
+
+        for i, intent in enumerate(ctx.intents, 1):
+            # ── Pre-iteration interrupt check ────────────────────
+            # Triggers for both the pre-flight case (interrupt set
+            # before the batch starts) and the mid-batch case
+            # (interrupt set after a prior tool finished).
+            if ctx.interrupt.is_set():
+                remaining = ctx.intents[i - 1:]
+                if remaining and cb.vprint is not None:
+                    try:
+                        cb.vprint(
+                            f"{cfg.log_prefix}⚡ Interrupt: skipping {len(remaining)} tool call(s)",
+                            force=True,
+                        )
+                    except Exception:
+                        pass
+                for skipped in remaining:
+                    results.append(ToolResult(
+                        intent_id=skipped.call_id,
+                        tool_name=skipped.tool_name,
+                        tool_args=dict(skipped.arguments or {}),
+                        success=False,
+                        content=(
+                            f"[Tool execution cancelled — {skipped.tool_name} was "
+                            f"skipped due to user interrupt]"
+                        ),
+                        error="interrupted",
+                        latency_s=0.0,
+                        blocked=False,
+                    ))
+                break
+
+            function_name = intent.tool_name
+            function_args = dict(intent.arguments or {})
+
+            # ── Pre-call block / guardrail gates ─────────────────
+            block_result: Optional[str] = None
+            blocked_by_guardrail = False
+            block_message: Optional[str] = None
+            if sx.pre_call_block_message is not None:
+                try:
+                    block_message = sx.pre_call_block_message(
+                        function_name, function_args, ctx.effective_task_id,
+                    )
+                except Exception:
+                    block_message = None
+
+            if block_message is not None:
+                import json as _json
+                block_result = _json.dumps({"error": block_message}, ensure_ascii=False)
+            elif sx.guardrail_check is not None:
+                try:
+                    decision = sx.guardrail_check(function_name, function_args)
+                    if not decision.allows_execution:
+                        if sx.guardrail_block_result is not None:
+                            block_result = sx.guardrail_block_result(decision)
+                        else:
+                            block_result = '{"error": "blocked by guardrail"}'
+                        blocked_by_guardrail = True
+                except Exception:
+                    pass
+
+            execution_blocked = block_result is not None
+
+            # Nudge counter reset (callback) — only when actually executing
+            if not execution_blocked and sx.on_tool_completed is not None:
+                try:
+                    sx.on_tool_completed(function_name, function_args)
+                except Exception:
+                    pass
+
+            # ── Per-tool call-line display ───────────────────────
+            if not cfg.quiet_mode and cb.log_tool_call_line is not None:
+                try:
+                    cb.log_tool_call_line(i, function_name, function_args)
+                except Exception:
+                    pass
+
+            # ── Activity + callback hooks (for executing tools) ──
+            if not execution_blocked and cb.touch_activity is not None:
+                try:
+                    cb.touch_activity(f"executing tool: {function_name}")
+                except Exception:
+                    pass
+
+            if not execution_blocked and cb.on_tool_progress is not None:
+                try:
+                    cb.on_tool_progress(
+                        "tool.started", function_name,
+                        preview=None, args=function_args,
+                    )
+                except Exception as cb_err:
+                    logger.debug("Tool progress callback error: %s", cb_err)
+
+            if not execution_blocked and cb.on_tool_start is not None:
+                try:
+                    cb.on_tool_start(intent.call_id, function_name, function_args)
+                except Exception as cb_err:
+                    logger.debug("Tool start callback error: %s", cb_err)
+
+            # Pre-execute checkpoint (write_file / patch / terminal)
+            if not execution_blocked and sx.pre_execute_checkpoint is not None:
+                try:
+                    sx.pre_execute_checkpoint(
+                        function_name, function_args, ctx.effective_task_id,
+                    )
+                except Exception:
+                    pass
+
+            # ── Per-tool display open (spinner-per-tool, agent owns) ──
+            if not execution_blocked and cb.tool_display_open is not None:
+                try:
+                    cb.tool_display_open(function_name, function_args)
+                except Exception:
+                    pass
+
+            # ── Invoke the tool ──────────────────────────────────
+            tool_start_time = time.time()
+            if execution_blocked:
+                function_result: Any = block_result
+                tool_duration = 0.0
+                is_error = True
+            else:
+                try:
+                    function_result = sx.invoke_tool(
+                        function_name,
+                        function_args,
+                        ctx.effective_task_id,
+                        tool_call_id=intent.call_id,
+                        pre_tool_block_checked=True,
+                    )
+                except Exception as tool_error:
+                    function_result = f"Error executing tool '{function_name}': {tool_error}"
+                    logger.error(
+                        "invoke_tool raised for %s: %s",
+                        function_name, tool_error, exc_info=True,
+                    )
+                tool_duration = time.time() - tool_start_time
+                is_error = False
+                if sx.detect_tool_failure is not None:
+                    try:
+                        is_err_flag, _ = sx.detect_tool_failure(function_name, function_result)
+                        is_error = bool(is_err_flag)
+                    except Exception:
+                        is_error = False
+
+            # ── Per-tool display close ──────────────────────────
+            if not execution_blocked and cb.tool_display_close is not None:
+                try:
+                    cb.tool_display_close(function_name, function_result, tool_duration)
+                except Exception:
+                    pass
+
+            # ── Post-execution: guardrail observation + telemetry ──
+            if not execution_blocked and sx.append_guardrail_observation is not None:
+                try:
+                    function_result = sx.append_guardrail_observation(
+                        function_name, function_args, function_result, failed=is_error,
+                    )
+                except Exception:
+                    pass
+
+            if is_error:
+                try:
+                    preview = (
+                        function_result[:200] if isinstance(function_result, str)
+                        else str(function_result)[:200]
+                    )
+                except Exception:
+                    preview = "<non-string result>"
+                logger.warning(
+                    "Tool %s returned error (%.2fs): %s",
+                    function_name, tool_duration, preview,
+                )
+            else:
+                try:
+                    rlen = (
+                        len(function_result) if isinstance(function_result, str)
+                        else len(str(function_result))
+                    )
+                except Exception:
+                    rlen = 0
+                logger.info(
+                    "tool %s completed (%.2fs, %d chars)",
+                    function_name, tool_duration, rlen,
+                )
+
+            if not execution_blocked and sx.record_file_mutation is not None:
+                try:
+                    sx.record_file_mutation(
+                        function_name, function_args, function_result, is_error,
+                    )
+                except Exception as ver_err:
+                    logger.debug("file-mutation verifier record failed: %s", ver_err)
+
+            if not execution_blocked and cb.on_tool_progress is not None:
+                try:
+                    cb.on_tool_progress(
+                        "tool.completed", function_name,
+                        preview=None, args=None,
+                        duration=tool_duration, is_error=is_error,
+                    )
+                except Exception as cb_err:
+                    logger.debug("Tool progress callback error: %s", cb_err)
+
+            if cb.touch_activity is not None:
+                try:
+                    cb.touch_activity(
+                        f"tool completed: {function_name} ({tool_duration:.1f}s)",
+                    )
+                except Exception:
+                    pass
+
+            if not execution_blocked and cb.on_tool_complete is not None:
+                try:
+                    cb.on_tool_complete(
+                        intent.call_id, function_name, function_args, function_result,
+                    )
+                except Exception as cb_err:
+                    logger.debug("Tool complete callback error: %s", cb_err)
+
+            # ── Per-tool persist + subdir hints + model-aware format ──
+            if (
+                sx.persist_tool_result is not None
+                and sx.is_multimodal_result is not None
+            ):
+                try:
+                    if not sx.is_multimodal_result(function_result):
+                        env = (
+                            cfg.env_for_task(ctx.effective_task_id)
+                            if cfg.env_for_task else None
+                        )
+                        function_result = sx.persist_tool_result(
+                            content=function_result,
+                            tool_name=function_name,
+                            tool_use_id=intent.call_id,
+                            env=env,
+                        )
+                except Exception:
+                    pass
+
+            if sx.compute_subdir_hints is not None:
+                try:
+                    subdir_hints = sx.compute_subdir_hints(function_name, function_args)
+                    if subdir_hints:
+                        if (
+                            sx.is_multimodal_result is not None
+                            and sx.is_multimodal_result(function_result)
+                        ):
+                            if sx.append_subdir_hint_to_multimodal is not None:
+                                sx.append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                        else:
+                            function_result = (function_result or "") + (subdir_hints or "")
+                except Exception:
+                    pass
+
+            content_formatted: Any = function_result
+            if sx.format_result_content is not None:
+                try:
+                    content_formatted = sx.format_result_content(function_name, function_result)
+                except Exception:
+                    content_formatted = function_result
+
+            # ── Per-tool completion-line display ────────────────
+            if cb.log_tool_complete_line is not None:
+                try:
+                    cb.log_tool_complete_line(i, function_name, function_result, tool_duration)
+                except Exception:
+                    pass
+
+            results.append(ToolResult(
+                intent_id=intent.call_id,
+                tool_name=function_name,
+                tool_args=function_args,
+                success=not is_error and not execution_blocked,
+                content=content_formatted,
+                error=(
+                    None if not is_error
+                    else (
+                        str(function_result)[:500] if isinstance(function_result, str)
+                        else None
+                    )
+                ),
+                latency_s=tool_duration,
+                blocked=execution_blocked,
+            ))
+
+            # ── Mid-batch interrupt check ────────────────────────
+            # Same shape as the pre-iteration check at the top of
+            # the loop, but specifically catches the case where the
+            # interrupt fired DURING this tool's execution.
+            if ctx.interrupt.is_set() and i < num_tools:
+                remaining = ctx.intents[i:]
+                if cb.vprint is not None:
+                    try:
+                        cb.vprint(
+                            f"{cfg.log_prefix}⚡ Interrupt: skipping "
+                            f"{len(remaining)} remaining tool call(s)",
+                            force=True,
+                        )
+                    except Exception:
+                        pass
+                for skipped in remaining:
+                    results.append(ToolResult(
+                        intent_id=skipped.call_id,
+                        tool_name=skipped.tool_name,
+                        tool_args=dict(skipped.arguments or {}),
+                        success=False,
+                        content=(
+                            f"[Tool execution skipped — {skipped.tool_name} was "
+                            f"not started. User sent a new message]"
+                        ),
+                        error="interrupted",
+                        latency_s=0.0,
+                        blocked=False,
+                    ))
+                break
+
+            # ── Tool delay between tools ────────────────────────
+            if cfg.tool_delay_seconds > 0 and i < num_tools:
+                time.sleep(cfg.tool_delay_seconds)
 
         return results
