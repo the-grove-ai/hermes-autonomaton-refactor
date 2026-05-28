@@ -99,6 +99,14 @@ class KaizenLedger:
         # plus the fallback flag so the operator can audit how often
         # the optimizer fell back to the full registry.
         "tool_selection",
+        # Sprint 30 — per-EscalationRequest outcome. Dispatcher writes
+        # this in _handle_escalation_request with the granted flag,
+        # the declarative request (depth/context/blocker), the policy
+        # decision reason, current/target tiers, and the per-turn /
+        # per-session escalation counters. Both grant and deny land
+        # here so the operator can audit how often the Agent asked
+        # for capacity and how often the policy said yes.
+        "escalation_decision",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:

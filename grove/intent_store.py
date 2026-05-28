@@ -138,6 +138,12 @@ class IntentRecord:
     duration_ms: float = 0.0
     final_response_chars: Optional[int] = None
 
+    # Sprint 30 — count of EscalationRequests this turn produced.
+    # Zero for the vast majority of turns. Sprint 28's TierRatchet
+    # consumer reads this to detect tier-pressure patterns ("intent_class
+    # X escalates 40% of the time → consider raising default tier for X").
+    escalation_count: int = 0
+
 
 class IntentStore:
     """Append-only JSON Lines store for IntentRecords.

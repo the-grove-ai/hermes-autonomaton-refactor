@@ -414,6 +414,18 @@ class Dispatcher:
         self._current_turn_tools_yielded: List[str] = []
         self._current_turn_user_message: Optional[str] = None
         self._current_turn_outcome_written: bool = False
+        # ── Sprint 30 — escalation policy + counters ─────────────────
+        # Policy loaded lazily on first use so test Dispatchers that
+        # never see an EscalationRequest don't pay the file-read cost.
+        # Counters keyed per session so concurrent gateway sessions
+        # don't share budgets. Per-turn counter resets at dispatch_turn
+        # entry.
+        self._escalation_policy: Optional[Any] = None
+        self._session_escalation_counts: Dict[str, int] = {}
+        self._current_turn_escalations: int = 0
+        # Track all escalation events that fired this turn so the
+        # IntentRecord write at terminal sites captures them.
+        self._current_turn_escalation_events: List[Dict[str, Any]] = []
         if self._intent_store is not None:
             # Sprint 28 Phase 3 — Implicit Success Sweep on Dispatcher
             # construction. Stale ``pending`` records from previous
@@ -820,6 +832,9 @@ class Dispatcher:
         self._current_turn_tools_yielded = []
         self._current_turn_user_message = user_message
         self._current_turn_outcome_written = False
+        # Sprint 30 — reset per-turn escalation counter + events list.
+        self._current_turn_escalations = 0
+        self._current_turn_escalation_events = []
         if previous_turn_id is not None:
             self._finalize_previous_turn_pending(previous_turn_id)
         gen = agent._run_turn_generator(user_message=user_message, **kwargs)
@@ -857,7 +872,7 @@ class Dispatcher:
         out-of-band to the Kaizen Ledger per § IX(4). The agent's
         active reasoning loop never sees ledger writes.
         """
-        from grove.intents import FinalResponse, Observation
+        from grove.intents import EscalationRequest, FinalResponse, Observation
         import time as _time
 
         try:
@@ -996,6 +1011,33 @@ class Dispatcher:
                             value=value,
                         ))
                     yielded = gen.send(observations)
+                elif isinstance(yielded, EscalationRequest):
+                    # Sprint 30 — EscalationRequest mid-turn. Apply the
+                    # locked GATE-A deterministic-silent policy: auto-
+                    # grant within budget+ceiling, auto-deny above. Both
+                    # paths log to the Kaizen Ledger; both record on
+                    # the IntentRecord at terminal. Per § VII: the
+                    # decision is observable; no synchronous operator
+                    # prompt.
+                    result = self._handle_escalation_request(
+                        agent, gen, yielded, ledger,
+                    )
+                    if result["action"] == "grant_hot_swap":
+                        # _handle_escalation_request closed the original
+                        # generator, constructed a fresh Agent at the
+                        # escalated tier with full turn_history, and
+                        # started a new generator. Resume the drive
+                        # loop with the new generator + agent.
+                        agent = result["new_agent"]
+                        gen = result["new_gen"]
+                        ledger = self._get_or_create_ledger(agent)
+                        yielded = gen.send(None)
+                        continue
+                    # deny path — generator was resumed with None after
+                    # the denial tool-response was injected into
+                    # agent._current_messages.
+                    yielded = result["next_yielded"]
+                    continue
                 elif isinstance(yielded, FinalResponse):
                     # Phase 6 — Foreground/Background split per § IX(4):
                     # the conversational payload (FinalResponse.content)
@@ -1067,6 +1109,283 @@ class Dispatcher:
                 "failed for previous turn %r: %r",
                 previous_turn_id, exc,
             )
+
+    # ── Sprint 30 helper (Escalation policy + hot-swap) ─────────────────
+
+    def _get_or_load_escalation_policy(self) -> Any:
+        """Lazily load + cache the escalation policy from routing config.
+
+        Cached on the Dispatcher instance so successive turns don't
+        re-read the file. The policy is intentionally permissive: a
+        missing or malformed config block produces an ``enabled=False``
+        policy, NOT an exception. The Dispatcher must boot even when
+        operators have no escalation block.
+        """
+        if self._escalation_policy is not None:
+            return self._escalation_policy
+        from grove.escalation_policy import load_escalation_policy
+        self._escalation_policy = load_escalation_policy(
+            self._base_runtime_ctx.config or {}
+        )
+        return self._escalation_policy
+
+    def _handle_escalation_request(
+        self,
+        agent: Any,
+        gen: Any,
+        req: Any,
+        ledger: Any,
+    ) -> Dict[str, Any]:
+        """Apply the deterministic-silent escalation policy.
+
+        Returns a dict the caller (``_drive_generator``) branches on:
+
+        * ``{"action": "grant_hot_swap", "new_agent": ..., "new_gen": ...}``
+          — original generator closed; fresh Agent at the escalated
+          tier constructed with the full turn_history (snapshotted
+          messages list); fresh generator started. Caller resumes the
+          drive loop with the swap.
+
+        * ``{"action": "deny_inject", "next_yielded": ...}``
+          — denial tool-response injected into ``agent._current_messages``;
+          original generator resumed via ``gen.send(None)``; caller
+          continues with the yielded value.
+
+        Both paths:
+        * Write an ``escalation_decision`` event to the Kaizen Ledger.
+        * Append a summary dict to ``self._current_turn_escalation_events``
+          so the IntentRecord at terminal sites captures the history.
+        * Increment per-turn + per-session escalation counters.
+        """
+        from grove.escalation_policy import evaluate_escalation
+
+        policy = self._get_or_load_escalation_policy()
+        session_id = getattr(agent, "session_id", None) or "unknown"
+        current_tier = None
+        try:
+            from grove.providers import current_tier as _current_tier
+            current_tier = _current_tier()
+        except Exception:
+            pass
+
+        request = req.request or {}
+        requested_depth = request.get("reasoning_depth")
+        requested_context = request.get("context_size")
+        call_id = request.get("call_id")
+
+        decision = evaluate_escalation(
+            policy=policy,
+            current_tier=current_tier,
+            requested_depth=requested_depth,
+            requested_context=requested_context,
+            turn_escalations_so_far=self._current_turn_escalations,
+            session_escalations_so_far=self._session_escalation_counts.get(
+                session_id, 0,
+            ),
+        )
+
+        # Counters tick regardless of grant/deny — the request happened,
+        # the budget accounts for it.
+        self._current_turn_escalations += 1
+        self._session_escalation_counts[session_id] = (
+            self._session_escalation_counts.get(session_id, 0) + 1
+        )
+
+        event_payload = {
+            "granted": decision.granted,
+            "reason": decision.reason,
+            "requested_depth": requested_depth,
+            "requested_context": requested_context,
+            "current_tier": decision.current_tier,
+            "target_tier": decision.target_tier,
+            "blocker": req.reason,
+            "turn_escalation_index": self._current_turn_escalations,
+            "session_escalation_total": self._session_escalation_counts[session_id],
+        }
+        try:
+            ledger.record("escalation_decision", **event_payload)
+        except Exception as exc:
+            logger.warning(
+                "[grove.dispatcher] escalation_decision ledger write "
+                "failed: %r", exc,
+            )
+        self._current_turn_escalation_events.append(event_payload)
+
+        if decision.granted:
+            return self._grant_escalation_hot_swap(
+                agent, gen, req, decision, call_id,
+            )
+        return self._deny_escalation(agent, gen, req, decision, call_id)
+
+    def _grant_escalation_hot_swap(
+        self,
+        agent: Any,
+        gen: Any,
+        req: Any,
+        decision: Any,
+        call_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Hot-swap to a fresh Agent at the escalated tier.
+
+        Snapshots ``agent._current_messages`` (the picklable JSON-ish
+        conversation history), closes the original generator, and
+        constructs a new Agent with the carry kit from GATE-A:
+        model (escalated), session_id, user/chat/platform fields,
+        max_iterations, enabled_toolsets, sovereign_prompt_handler.
+        Anything else (transports, caches, thread state) is rebuilt
+        by the new Agent's ``__init__``.
+
+        The new Agent starts a fresh ``_run_turn_generator`` with
+        ``conversation_history=<snapshot>`` — the escalated LLM sees
+        every prior assistant/tool message as conversation context.
+        No tool re-execution.
+
+        Per § III: the Agent never instantiates the new Agent (or the
+        new tier). The Dispatcher owns both.
+        """
+        # Snapshot the messages list BEFORE closing the generator —
+        # gen.close() raises GeneratorExit at the yield point, which
+        # triggers the finally block that clears _current_messages.
+        snapshot_messages = list(getattr(agent, "_current_messages", None) or [])
+        snapshot_user_message = self._current_turn_user_message or ""
+
+        # Write the grant tool-response into the snapshot BEFORE the
+        # close — so the new Agent's first LLM call sees the escalate
+        # tool call paired with its tool-response per provider API
+        # requirements. Skip when call_id is missing (defensive — the
+        # intercept always sets it from the original ToolIntent).
+        if call_id:
+            snapshot_messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": (
+                    f"⬆ Escalation granted: {decision.reason}. "
+                    f"Continue reasoning at the escalated tier."
+                ),
+            })
+
+        gen.close()
+
+        # Construct the carry kit. Only constructor args from the
+        # GATE-A locked list — nothing else. Missing critical state
+        # surfaces as a test failure, not a silent degradation.
+        carry_kit = self._extract_agent_carry_kit(agent)
+        carry_kit["model"] = self._resolve_model_for_tier(decision.target_tier)
+
+        from run_agent import AIAgent
+        new_agent = AIAgent(**carry_kit)
+        # The new agent must reuse our Dispatcher singleton so the
+        # Kaizen Ledger continuity holds — without this, the new
+        # agent's lazy _get_or_create_dispatcher would build a fresh
+        # Dispatcher and lose the per-session ledgers / counters.
+        new_agent._dispatcher_singleton = self
+        new_agent._sovereign_prompt_handler = getattr(
+            agent, "_sovereign_prompt_handler", None,
+        )
+
+        # Start the new generator with the snapshotted messages. The
+        # Agent's conversation_history kwarg accepts pre-seeded
+        # messages — the existing path Sprint 27 exercised.
+        new_gen = new_agent._run_turn_generator(
+            user_message=snapshot_user_message,
+            conversation_history=snapshot_messages,
+            # already_routed=True so the new turn doesn't re-classify
+            # (we know which tier we want; the routing decision is the
+            # escalation grant). Sprint 12's classify_for_routing skips
+            # when already_routed.
+            already_routed=True,
+        )
+        return {
+            "action": "grant_hot_swap",
+            "new_agent": new_agent,
+            "new_gen": new_gen,
+        }
+
+    def _deny_escalation(
+        self,
+        agent: Any,
+        gen: Any,
+        req: Any,
+        decision: Any,
+        call_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Inject an honest decline tool-response and resume the generator.
+
+        The denial lands as a tool message in ``agent._current_messages``
+        paired with the original ``escalate`` tool call's ``call_id``.
+        The next LLM call sees it as a normal tool response and reasons
+        about the denial in-stream. No contract extension; no second
+        yield type.
+
+        Per the locked decision: no synchronous operator prompt. The
+        decision IS observable via the Kaizen Ledger (already written
+        by the caller) but doesn't block the turn.
+        """
+        msgs = getattr(agent, "_current_messages", None)
+        if msgs is not None and call_id:
+            denial_text = f"⬆ Escalation denied: {decision.reason}"
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": denial_text,
+            })
+        # Resume the generator with None — the Agent's yield site
+        # discards the Observation list anyway (it's informational
+        # per the Sprint 26 Phase 3 contract). The next LLM call
+        # reads the appended denial from messages.
+        next_yielded = gen.send(None)
+        return {
+            "action": "deny_inject",
+            "next_yielded": next_yielded,
+        }
+
+    @staticmethod
+    def _extract_agent_carry_kit(agent: Any) -> Dict[str, Any]:
+        """Build the constructor-args dict for the hot-swap Agent.
+
+        Per the GATE-A carry-kit list: model, session_id, user/chat/
+        platform fields, max_iterations, enabled_toolsets,
+        sovereign_prompt_handler. Caller overwrites model with the
+        escalated tier's model before constructing.
+
+        Returns a dict suitable to splat into ``AIAgent(...)``.
+        Anything not in this dict gets rebuilt by the new Agent's
+        ``__init__`` — that's the design.
+        """
+        return {
+            "model": getattr(agent, "model", "") or "",
+            "session_id": getattr(agent, "session_id", None),
+            "platform": getattr(agent, "platform", None),
+            "user_id": getattr(agent, "user_id", None),
+            "user_name": getattr(agent, "user_name", None),
+            "chat_id": getattr(agent, "chat_id", None),
+            "chat_name": getattr(agent, "chat_name", None),
+            "chat_type": getattr(agent, "chat_type", None),
+            "thread_id": getattr(agent, "thread_id", None),
+            "max_iterations": getattr(agent, "max_iterations", 90),
+            "enabled_toolsets": list(
+                getattr(agent, "_enabled_toolsets_at_construction", [])
+                or getattr(agent, "enabled_toolsets", []) or []
+            ) or None,
+            "quiet_mode": getattr(agent, "quiet_mode", False),
+            "sovereign_prompt_handler": getattr(
+                agent, "_sovereign_prompt_handler", None,
+            ),
+        }
+
+    def _resolve_model_for_tier(self, target_tier: Optional[str]) -> str:
+        """Look up the model bound to a tier in the routing config.
+
+        Returns empty string when no tier or no binding — the caller
+        will pass that into the new Agent's constructor, which falls
+        back to its own config-resolution path.
+        """
+        if not target_tier:
+            return ""
+        routing = (self._base_runtime_ctx.config or {}).get("routing") or {}
+        prefs = routing.get("tier_preferences") or {}
+        tier_block = prefs.get(target_tier) or {}
+        return str(tier_block.get("model", "") or "")
 
     # ── Sprint 28 Phase 3 helper (Intent Record write) ──────────────────
 
@@ -1163,6 +1482,7 @@ class Dispatcher:
                 api_calls=api_calls,
                 duration_ms=round(duration_ms, 2),
                 final_response_chars=final_response_chars,
+                escalation_count=self._current_turn_escalations,
             )
             self._intent_store.append(record)
             self._current_turn_outcome_written = True

@@ -185,3 +185,47 @@ routing:
       each one is, and how confident that judgment is. T1 is the natural
       home: the scoring is fast, high-volume, well-scoped work, and a
       cheap model keeps the overhead negligible.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # ESCALATION POLICY (Sprint 30 — escalation-signal-v1)
+  # ────────────────────────────────────────────────────────────────────────
+  # Distinct from routing_rules.escalation above. That block is the
+  # confidence-driven step-up the classifier triggers when it's
+  # uncertain. THIS block is the Agent-driven escalation: the LLM calls
+  # the synthetic `escalate(reasoning_depth, context_size, blocker)`
+  # tool when it genuinely needs more capacity; the Dispatcher applies
+  # this policy to decide grant vs. deny.
+  #
+  # Default state: enabled=false. Vanilla installs auto-deny every
+  # escalate call (the synthetic tool is still in the LLM's surface,
+  # but nothing escalates without operator opt-in).
+  #
+  # When enabled, the policy is deterministic and silent: no operator
+  # prompt, no Kaizen halt. Auto-grant within budget+ceiling; auto-deny
+  # above. Both paths log to the Kaizen Ledger as escalation_decision
+  # events so the operator can audit grants/denies after the fact.
+  #
+  # Per GRV-005 § III: the Agent declares WHAT it needs (reasoning_depth
+  # mapped to a tier here). The Dispatcher decides HOW. The Agent never
+  # dictates infrastructure.
+  escalation_policy:
+    enabled: false
+    # Hard cap per turn — second escalate call in the same turn auto-
+    # denies regardless of budget.
+    max_escalations_per_turn: 1
+    # Soft budget across a session. Hits the deny path once exhausted.
+    max_escalations_per_session: 5
+    # Never escalate above this tier — even if the Agent asks for apex.
+    ceiling_tier: T3
+    # Reserved for v0.2 — distinguishes auto-grant tiers from operator-
+    # confirmation-required tiers. v0.1 treats any grant within ceiling
+    # as auto-grant.
+    auto_grant_above_tier: T3
+    # Map the declarative reasoning_depth the Agent emits to a concrete
+    # tier from tier_preferences above. Edit to tune which depth lands
+    # on which tier; the Agent's vocabulary stays declarative.
+    mapping:
+      shallow:  T1
+      moderate: T2
+      deep:     T3
+      apex:     T3
