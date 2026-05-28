@@ -335,9 +335,11 @@ class Dispatcher:
     def __init__(
         self,
         *,
+        runtime_ctx: Optional[RuntimeContext] = None,
         sovereign_prompt_handler: Optional[Callable[["AndonHalt"], str]] = None,
         kaizen_ledger_dir: Optional[Path] = None,
         intent_store: Optional[Any] = None,
+        agent_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Capture the substrate snapshot and install Phase 5 disposition handler.
 
@@ -359,14 +361,22 @@ class Dispatcher:
         inject a callback that surfaces the prompt through their UX
         layer and returns one of ``"skip"`` or ``"drop"``.
         """
-        config = self._load_config_safely()
         # Sprint 26 Phase 7 hotfix: prime the zone classifier singleton so
         # Phase 4's classify() at ToolIntent yield has it ready.
         import grove.zones as _zones; _zones.initialize()
-        self._base_runtime_ctx = RuntimeContext(
-            env=dict(os.environ),
-            config=config,
-        )
+        # Sprint 33 — runtime_ctx injection. Callers that hold a constructed
+        # RuntimeContext pass it directly; the env/config fallback below is
+        # the runtime_ctx=None path Sprint 34 removes once every production
+        # caller supplies its own context. The fallback's behavior is
+        # byte-identical to the pre-Sprint-33 lazy bootstrap.
+        if runtime_ctx is not None:
+            self._base_runtime_ctx = runtime_ctx
+        else:
+            config = self._load_config_safely()
+            self._base_runtime_ctx = RuntimeContext(
+                env=dict(os.environ),
+                config=config,
+            )
         self._sovereign_prompt_handler: Callable[["AndonHalt"], str] = (
             sovereign_prompt_handler or _default_sovereign_prompt
         )
@@ -458,6 +468,31 @@ class Dispatcher:
             len(self._base_runtime_ctx.env),
             sorted(self._base_runtime_ctx.config.keys())[:10],
         )
+
+        # ── Sprint 33 — inversion of construction ─────────────────────
+        # When ``agent_kwargs`` is provided, the Dispatcher constructs
+        # the per-turn Agent and exposes it as ``self.agent``. This is
+        # the sole sanctioned Agent construction path after Sprint 33
+        # Phase 2 migrates the caller sites and deletes the lazy
+        # singleton inside AIAgent.
+        #
+        # The import is gated on the construction branch — fires only
+        # when an Agent is actually being built, which (a) preserves
+        # backward compatibility for test Dispatchers that don't need
+        # an Agent and (b) keeps module-load-time imports symmetric
+        # with the existing TYPE_CHECKING guard at run_agent.py:60-61.
+        # When Sprint 34 makes RuntimeContext required and every
+        # Dispatcher constructs an Agent, this import moves to the
+        # module top.
+        self.agent: Optional[Any] = None
+        if agent_kwargs is not None:
+            from run_agent import AIAgent
+            self.agent = AIAgent(**agent_kwargs)
+            # Back-reference so the Agent's run_conversation() reaches
+            # this Dispatcher instead of lazily building a new one.
+            # Phase 2 inlines the singleton's remaining responsibility
+            # into run_conversation() and deletes the helper method.
+            self.agent._dispatcher_singleton = self
 
     @property
     def runtime_ctx(self) -> RuntimeContext:

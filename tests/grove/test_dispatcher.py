@@ -140,6 +140,111 @@ class TestDispatcherConstruction:
         assert d.build_runtime_context() is d.runtime_ctx
 
 
+class TestDispatcherConstructsAgent:
+    """Sprint 33 — inversion of construction.
+
+    ``Dispatcher(agent_kwargs={...}).agent`` is the post-Sprint-33
+    sole sanctioned Agent construction path. Verifies the new
+    parameters thread cleanly, the conditional construction guard
+    only fires when ``agent_kwargs`` is provided, the runtime_ctx
+    injection path works alongside the fallback, and the back-
+    reference for ``run_conversation`` is wired.
+    """
+
+    def test_no_agent_constructed_when_agent_kwargs_omitted(self):
+        d = Dispatcher()
+        assert d.agent is None
+
+    def test_no_agent_constructed_when_agent_kwargs_explicit_none(self):
+        d = Dispatcher(agent_kwargs=None)
+        assert d.agent is None
+
+    def test_agent_constructed_when_agent_kwargs_provided(self):
+        from unittest.mock import patch
+        agent_kwargs = dict(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            d = Dispatcher(agent_kwargs=agent_kwargs)
+        from run_agent import AIAgent
+        assert isinstance(d.agent, AIAgent)
+
+    def test_constructed_agent_back_references_dispatcher(self):
+        from unittest.mock import patch
+        agent_kwargs = dict(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            d = Dispatcher(agent_kwargs=agent_kwargs)
+        # The back-reference is what lets the Agent's
+        # ``run_conversation()`` reach this Dispatcher after the
+        # Phase 2 lazy-singleton deletion.
+        assert d.agent._dispatcher_singleton is d
+
+    def test_runtime_ctx_injection_path_uses_provided_context(self):
+        # When runtime_ctx is provided, the Dispatcher uses it directly
+        # instead of reading os.environ + load_config_safely().
+        from grove.dispatcher import RuntimeContext
+        injected = RuntimeContext(
+            env={"GROVE_TEST_INJECTED_PROBE": "captured"},
+            config={"injected": True},
+        )
+        d = Dispatcher(runtime_ctx=injected)
+        assert d.runtime_ctx is injected
+        assert d.runtime_ctx.env_get("GROVE_TEST_INJECTED_PROBE") == "captured"
+        assert d.runtime_ctx.config == {"injected": True}
+
+    def test_runtime_ctx_none_fallback_still_reads_env_and_config(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Sprint 34 removes this fallback; Sprint 33 preserves it.
+        # When runtime_ctx is omitted, the Dispatcher's pre-Sprint-33
+        # behavior holds — env + config are read at construction.
+        monkeypatch.setenv("GROVE_TEST_FALLBACK_PROBE", "captured")
+        d = Dispatcher()  # no runtime_ctx, no agent_kwargs
+        assert d.runtime_ctx.env_get("GROVE_TEST_FALLBACK_PROBE") == "captured"
+
+    def test_agent_kwargs_and_runtime_ctx_compose(self):
+        # Both new parameters work together: Dispatcher receives the
+        # explicit RuntimeContext AND constructs the Agent from the
+        # forwarded kwargs.
+        from unittest.mock import patch
+        from grove.dispatcher import RuntimeContext
+        injected = RuntimeContext(env={}, config={})
+        agent_kwargs = dict(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            d = Dispatcher(runtime_ctx=injected, agent_kwargs=agent_kwargs)
+        assert d.runtime_ctx is injected
+        assert d.agent is not None
+        assert d.agent._dispatcher_singleton is d
+
+
 class TestDispatcherGracefulDegradation:
     def test_dispatcher_handles_load_config_failure(
         self,
