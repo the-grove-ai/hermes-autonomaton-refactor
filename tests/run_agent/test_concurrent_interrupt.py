@@ -100,23 +100,52 @@ class _FakeAssistantMsg:
 
 
 def test_concurrent_preflight_interrupt_skips_all(monkeypatch):
-    """When _interrupt_requested is already set before concurrent execution,
-    all tools are skipped with cancellation messages."""
-    agent = _make_agent(monkeypatch)
-    agent._interrupt_requested = True
+    """When the interrupt token is set before concurrent execution,
+    all tools are skipped with cancellation messages.
 
-    tc1 = _FakeToolCall("tool_a", call_id="tc_a")
-    tc2 = _FakeToolCall("tool_b", call_id="tc_b")
-    msg = _FakeAssistantMsg([tc1, tc2])
-    messages = []
+    Sprint 31 migration: this test targeted the prior monolithic
+    AIAgent._execute_tool_calls_concurrent. After extraction the
+    pre-flight interrupt logic lives in
+    grove.tool_executor.ToolExecutor.execute_batch_concurrent —
+    test it directly there. The agent's shim is exercised by the
+    broader integration tests in tests/run_agent/test_run_agent.py
+    and tests/grove/test_dispatch_turn.py.
+    """
+    from grove.tool_executor import (
+        ToolExecutor, ExecutionContext, ExecutorConfig,
+        ObservabilityCallbacks, SideEffectCallbacks,
+    )
+    from grove.intents import ToolIntent
 
-    agent._execute_tool_calls_concurrent(msg, messages, "test_task")
+    invoke_tool_mock = MagicMock(side_effect=lambda *a, **kw: '{"ok": true}')
 
-    assert len(messages) == 2
-    assert "skipped due to user interrupt" in messages[0]["content"]
-    assert "skipped due to user interrupt" in messages[1]["content"]
-    # _invoke_tool should never have been called
-    agent._invoke_tool.assert_not_called()
+    class _AlreadyInterrupted:
+        def is_set(self) -> bool: return True
+        def set_for_thread(self, tid: int) -> None: pass
+        def clear_for_thread(self, tid: int) -> None: pass
+
+    executor = ToolExecutor()
+    ctx = ExecutionContext(
+        intents=[
+            ToolIntent(tool_name="tool_a", arguments={}, call_id="tc_a"),
+            ToolIntent(tool_name="tool_b", arguments={}, call_id="tc_b"),
+        ],
+        tool_registry=None,
+        callbacks=ObservabilityCallbacks(),
+        side_effects=SideEffectCallbacks(invoke_tool=invoke_tool_mock),
+        interrupt=_AlreadyInterrupted(),
+        config=ExecutorConfig(quiet_mode=True),
+    )
+
+    results = executor.execute_batch_concurrent(ctx)
+
+    assert len(results) == 2
+    assert "skipped due to user interrupt" in results[0].content
+    assert "skipped due to user interrupt" in results[1].content
+    assert results[0].error == "interrupted"
+    assert results[1].error == "interrupted"
+    # invoke_tool should never have been called — pre-flight short-circuits
+    invoke_tool_mock.assert_not_called()
 
 
 

@@ -142,16 +142,22 @@ def test_run_agent_concurrent_executor_wraps_submit_with_copy_context():
     """Source-level guard that the fix stays at the REAL call site.
 
     The behavioral tests above exercise the pattern in isolation and
-    pass regardless of whether ``run_agent.py`` actually uses it.
-    This guard inspects ``_execute_tool_calls_concurrent`` directly and
-    asserts that ``executor.submit`` is called with ``ctx.run`` (or
-    ``copy_context()`` appears within a few lines) — so reverting the
-    wrapper in ``run_agent.py`` fails this test with a clear message.
+    pass regardless of whether the concurrent execution path actually
+    uses it. This guard inspects ``ToolExecutor.execute_batch_concurrent``
+    directly and asserts that ``pool.submit`` is called with
+    ``run_ctx.run`` (or ``copy_context()`` appears within a few lines) —
+    so reverting the wrapper fails this test with a clear message.
+
+    Sprint 31 migration: the call site moved from
+    ``run_agent.py::_execute_tool_calls_concurrent`` to
+    ``grove/tool_executor.py::ToolExecutor.execute_batch_concurrent``
+    when the execution engine was extracted. The introspection target
+    follows.
     """
     import ast
     import inspect
 
-    import run_agent
+    import grove.tool_executor as run_agent  # introspection target — name preserved for diff readability
 
     src_path = inspect.getsourcefile(run_agent)
     assert src_path is not None

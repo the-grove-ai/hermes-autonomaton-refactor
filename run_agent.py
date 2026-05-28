@@ -1117,6 +1117,40 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+class _AgentInterruptAdapter:
+    """Adapts AIAgent's interrupt state to the ToolExecutor's
+    InterruptToken protocol.
+
+    Sprint 31 Phase 1a. The executor polls ``is_set()`` at iteration
+    boundaries and uses ``set_for_thread`` / ``clear_for_thread`` to
+    fan out interrupts to specific worker threads. The adapter
+    routes those calls through the agent's ``_interrupt_requested``
+    attribute and the module-level ``_set_interrupt(state, tid)``
+    helper from ``tools.interrupt`` — preserving the prior
+    per-thread interrupt semantics without giving the executor a
+    direct path to agent internals.
+    """
+    __slots__ = ("_agent",)
+
+    def __init__(self, agent: "AIAgent") -> None:
+        self._agent = agent
+
+    def is_set(self) -> bool:
+        return bool(getattr(self._agent, "_interrupt_requested", False))
+
+    def set_for_thread(self, thread_id: int) -> None:
+        try:
+            _set_interrupt(True, thread_id)
+        except Exception:
+            pass
+
+    def clear_for_thread(self, thread_id: int) -> None:
+        try:
+            _set_interrupt(False, thread_id)
+        except Exception:
+            pass
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1503,9 +1537,18 @@ class AIAgent:
         # `is_interrupted()` inside the worker to return True.  Track the
         # workers here so `interrupt()` / `clear_interrupt()` can fan out to
         # their tids explicitly.
-        self._tool_worker_threads: set[int] = set()
-        self._tool_worker_threads_lock = threading.Lock()
-        
+        # Sprint 31 Phase 1a: tool execution machinery lives on the
+        # ToolExecutor. The agent's _tool_worker_threads attribute is
+        # kept as an alias to the executor's internal set so the
+        # interrupt() fan-out at line ~5879 keeps working unchanged
+        # — the set is the SAME object, mutated by the executor's
+        # _run_tool entry/exit and read by the agent's interrupt
+        # fan-out. Phase 2 moves ownership to the Dispatcher.
+        from grove.tool_executor import ToolExecutor as _GroveToolExecutor
+        self._tool_executor = _GroveToolExecutor()
+        self._tool_worker_threads: set[int] = self._tool_executor._worker_threads
+        self._tool_worker_threads_lock = self._tool_executor._worker_threads_lock
+
         # Subagent delegation state
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
@@ -11514,167 +11557,161 @@ class AIAgent:
         body = ("\n" + indent).join(out_lines)
         return f"{indent}{label}{body}"
 
-    def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
-        """Execute multiple tool calls concurrently using a thread pool.
+    # ─── Sprint 31 Phase 1a: tool execution moved to grove/tool_executor.py ──
+    # The helpers below are the agent-side wiring that converts agent
+    # state into an ExecutionContext, and orchestrates message append /
+    # steer drain / budget enforcement around the executor's pure
+    # batch-execute call. Phase 2 deletes the shim methods and routes
+    # grove.dispatcher._drive_generator straight through the executor.
 
-        Results are collected in the original tool-call order and appended to
-        messages so the API sees them in the expected sequence.
+    def _on_tool_completed_hook(self, function_name: str, function_args: dict) -> None:
+        """Reset the nudge counters when the relevant tool runs.
+
+        Fired by ToolExecutor at the per-tool boundary (before invocation).
+        Mirrors the prior inline behavior at the top of the concurrent
+        execution loop. The agent owns counter state; the executor owns
+        the lifecycle.
         """
-        tool_calls = assistant_message.tool_calls
-        num_tools = len(tool_calls)
+        if function_name == "memory":
+            self._turns_since_memory = 0
+        elif function_name == "skill_manage":
+            self._iters_since_skill = 0
 
-        # ── Pre-flight: interrupt check ──────────────────────────────────
-        if self._interrupt_requested:
-            print(f"{self.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
-            for tc in tool_calls:
-                messages.append({
-                    "role": "tool",
-                    "name": tc.function.name,
-                    "content": f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
-                    "tool_call_id": tc.id,
-                })
+    def _maybe_checkpoint_for_tool(
+        self, function_name: str, function_args: dict, effective_task_id: str,
+    ) -> None:
+        """Pre-execute checkpoint snapshot for file-mutating / destructive tools.
+
+        For ``write_file`` / ``patch``: snapshot the working dir for the
+        target path. For ``terminal``: snapshot the cwd before destructive
+        commands. All errors swallowed — checkpoint failure must never
+        block tool execution.
+        """
+        if not getattr(self._checkpoint_mgr, "enabled", False):
             return
-
-        # ── Parse args + pre-execution bookkeeping ───────────────────────
-        parsed_calls = []  # list of (tool_call, function_name, function_args)
-        for tool_call in tool_calls:
-            function_name = tool_call.function.name
-
-            # Reset nudge counters
-            if function_name == "memory":
-                self._turns_since_memory = 0
-            elif function_name == "skill_manage":
-                self._iters_since_skill = 0
-
+        if function_name in {"write_file", "patch"}:
             try:
-                function_args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                function_args = {}
-            if not isinstance(function_args, dict):
-                function_args = {}
-
-            # Checkpoint for file-mutating tools
-            if function_name in {"write_file", "patch"} and self._checkpoint_mgr.enabled:
-                try:
-                    file_path = function_args.get("path", "")
-                    if file_path:
-                        work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        self._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
-                except Exception:
-                    pass
-
-            # Checkpoint before destructive terminal commands
-            if function_name == "terminal" and self._checkpoint_mgr.enabled:
-                try:
-                    cmd = function_args.get("command", "")
-                    if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                        self._checkpoint_mgr.ensure_checkpoint(
-                            cwd, f"before terminal: {cmd[:60]}"
-                        )
-                except Exception:
-                    pass
-
-            block_result = None
-            blocked_by_guardrail = False
-            try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
-                )
+                file_path = function_args.get("path", "")
+                if file_path:
+                    work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
+                    self._checkpoint_mgr.ensure_checkpoint(
+                        work_dir, f"before {function_name}",
+                    )
             except Exception:
-                block_message = None
+                pass
+        elif function_name == "terminal":
+            try:
+                cmd = function_args.get("command", "")
+                if _is_destructive_command(cmd):
+                    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                    self._checkpoint_mgr.ensure_checkpoint(
+                        cwd, f"before terminal: {cmd[:60]}",
+                    )
+            except Exception:
+                pass
 
-            if block_message is not None:
-                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+    def _log_concurrent_batch_header(self, num_tools: int, names_summary: str) -> None:
+        """Display callback — concurrent batch header line."""
+        print(f"  ⚡ Concurrent: {num_tools} tool calls — {names_summary}")
+
+    def _log_tool_call_line(
+        self, index_1_based: int, function_name: str, function_args: dict,
+    ) -> None:
+        """Display callback — per-tool descriptive call line."""
+        args_str = json.dumps(function_args, ensure_ascii=False)
+        if self.verbose_logging:
+            print(f"  📞 Tool {index_1_based}: {function_name}({list(function_args.keys())})")
+            print(self._wrap_verbose("Args: ", json.dumps(function_args, indent=2, ensure_ascii=False)))
+        else:
+            args_preview = (
+                args_str[:self.log_prefix_chars] + "..."
+                if len(args_str) > self.log_prefix_chars else args_str
+            )
+            print(f"  📞 Tool {index_1_based}: {function_name}({list(function_args.keys())}) - {args_preview}")
+
+    def _log_tool_complete_line(
+        self, index_1_based: int, function_name: str, function_result, tool_duration: float,
+    ) -> None:
+        """Display callback — per-tool completion line + UI tracker reset."""
+        if self._should_emit_quiet_tool_messages():
+            cute_msg = _get_cute_tool_message_impl(
+                function_name, {}, tool_duration, result=function_result,
+            )
+            self._safe_print(f"  {cute_msg}")
+        elif not self.quiet_mode:
+            _preview_str = _multimodal_text_summary(function_result)
+            if self.verbose_logging:
+                print(f"  ✅ Tool {index_1_based} completed in {tool_duration:.2f}s")
+                print(self._wrap_verbose("Result: ", _preview_str))
             else:
-                guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
-                if not guardrail_decision.allows_execution:
-                    block_result = self._guardrail_block_result(guardrail_decision)
-                    blocked_by_guardrail = True
+                response_preview = (
+                    _preview_str[:self.log_prefix_chars] + "..."
+                    if len(_preview_str) > self.log_prefix_chars else _preview_str
+                )
+                print(f"  ✅ Tool {index_1_based} completed in {tool_duration:.2f}s - {response_preview}")
+        self._current_tool = None
 
-            parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
+    def _log_interrupt_skip(self, message: str) -> None:
+        """Display callback — interrupt-skip notification line."""
+        print(message)
 
-        # ── Logging / callbacks ──────────────────────────────────────────
-        tool_names_str = ", ".join(name for _, name, _, _, _ in parsed_calls)
-        if not self.quiet_mode:
-            print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
-            for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
-                args_str = json.dumps(args, ensure_ascii=False)
-                if self.verbose_logging:
-                    print(f"  📞 Tool {i}: {name}({list(args.keys())})")
-                    print(self._wrap_verbose("Args: ", json.dumps(args, indent=2, ensure_ascii=False)))
-                else:
-                    args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                    print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
+    def _batch_display_started(self, num_tools: int, names_summary: str, mode: str) -> None:
+        """Display callback — spinner setup + UI tracker for batch start."""
+        self._batch_spinner_mode = mode
+        self._batch_spinner = None
+        if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
+            face = random.choice(KawaiiSpinner.get_waiting_faces())
+            if mode == "concurrent":
+                label = f"{face} ⚡ running {num_tools} tools concurrently"
+            else:
+                label = f"{face} 🔄 running {num_tools} tool(s)"
+            self._batch_spinner = KawaiiSpinner(
+                label, spinner_type='dots', print_fn=self._print_fn,
+            )
+            self._batch_spinner.start()
+        try:
+            self._current_tool = names_summary
+        except Exception:
+            pass
 
-        for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
-            if block_result is not None:
-                continue
-            if self.tool_progress_callback:
-                try:
-                    preview = _build_tool_preview(name, args)
-                    self.tool_progress_callback("tool.started", name, preview, args)
-                except Exception as cb_err:
-                    logging.debug(f"Tool progress callback error: {cb_err}")
+    def _batch_display_completed(self, completed: int, total: int, total_dur: float) -> None:
+        """Display callback — spinner stop on batch end."""
+        spinner = getattr(self, "_batch_spinner", None)
+        if spinner is not None:
+            mode = getattr(self, "_batch_spinner_mode", "concurrent")
+            if mode == "concurrent":
+                msg = f"⚡ {completed}/{total} tools completed in {total_dur:.1f}s total"
+            else:
+                msg = f"🔄 {completed}/{total} tools completed in {total_dur:.1f}s"
+            try:
+                spinner.stop(msg)
+            except Exception:
+                pass
+        self._batch_spinner = None
 
-        for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
-            if block_result is not None:
-                continue
-            if self.tool_start_callback:
-                try:
-                    self.tool_start_callback(tc.id, name, args)
-                except Exception as cb_err:
-                    logging.debug(f"Tool start callback error: {cb_err}")
+    def _build_execution_context_concurrent(
+        self, intents, effective_task_id: str, api_call_count: int,
+    ):
+        """Build the ExecutionContext the ToolExecutor consumes."""
+        from grove.tool_executor import (
+            ExecutionContext, ExecutorConfig,
+            ObservabilityCallbacks, SideEffectCallbacks,
+        )
+        from tools.registry import registry as _tool_registry
+        from tools.tool_result_storage import maybe_persist_tool_result as _persist
+        from tools.terminal_tool import get_active_env as _env_for_task
+        from hermes_cli.plugins import get_pre_tool_call_block_message as _plugin_block
 
-        # ── Concurrent execution ─────────────────────────────────────────
-        # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag)
-        results = [None] * num_tools
-        for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
-            if block_result is not None:
-                results[i] = (name, args, block_result, 0.0, True, True)
-
-        # Touch activity before launching workers so the gateway knows
-        # we're executing tools (not stuck).
-        self._current_tool = tool_names_str
-        self._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
-
-        # Capture CLI callbacks from the agent thread so worker threads can
-        # register them locally.  Without this, _get_approval_callback() in
-        # terminal_tool returns None in ThreadPoolExecutor workers, causing
-        # the dangerous-command prompt to fall back to input() — which
-        # deadlocks against prompt_toolkit's raw terminal mode (#13617).
+        # Snapshot parent-thread callbacks for worker-thread propagation
         _parent_approval_cb = _get_approval_callback()
         _parent_sudo_cb = _get_sudo_password_callback()
 
-        def _run_tool(index, tool_call, function_name, function_args):
-            """Worker function executed in a thread."""
-            # Register this worker tid so the agent can fan out an interrupt
-            # to it — see AIAgent.interrupt().  Must happen first thing, and
-            # must be paired with discard + clear in the finally block.
-            _worker_tid = threading.current_thread().ident
-            with self._tool_worker_threads_lock:
-                self._tool_worker_threads.add(_worker_tid)
-            # Race: if the agent was interrupted between fan-out (which
-            # snapshotted an empty/earlier set) and our registration, apply
-            # the interrupt to our own tid now so is_interrupted() inside
-            # the tool returns True on the next poll.
-            if self._interrupt_requested:
-                try:
-                    _set_interrupt(True, _worker_tid)
-                except Exception:
-                    pass
-            # Set the activity callback on THIS worker thread so
-            # _wait_for_process (terminal commands) can fire heartbeats.
-            # The callback is thread-local; the main thread's callback
-            # is invisible to worker threads.
+        def _parent_thread_setup() -> None:
             try:
                 from tools.environments.base import set_activity_callback
                 set_activity_callback(self._touch_activity)
             except Exception:
                 pass
-            # Propagate approval/sudo callbacks to this worker thread.
-            # Mirrors cli.py run_agent() pattern (GHSA-qg5c-hvr5-hjgr).
             if _parent_approval_cb is not None:
                 try:
                     _set_approval_callback(_parent_approval_cb)
@@ -11685,242 +11722,128 @@ class AIAgent:
                     _set_sudo_password_callback(_parent_sudo_cb)
                 except Exception:
                     pass
-            start = time.time()
-            try:
-                result = self._invoke_tool(
-                    function_name,
-                    function_args,
-                    effective_task_id,
-                    tool_call.id,
-                    messages=messages,
-                    pre_tool_block_checked=True,
-                )
-            except Exception as tool_error:
-                result = f"Error executing tool '{function_name}': {tool_error}"
-                logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
-            duration = time.time() - start
-            is_error, _ = _detect_tool_failure(function_name, result)
-            if is_error:
-                logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
-            else:
-                logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
-            results[index] = (function_name, function_args, result, duration, is_error, False)
-            # Tear down worker-tid tracking.  Clear any interrupt bit we may
-            # have set so the next task scheduled onto this recycled tid
-            # starts with a clean slate.
-            with self._tool_worker_threads_lock:
-                self._tool_worker_threads.discard(_worker_tid)
-            try:
-                _set_interrupt(False, _worker_tid)
-            except Exception:
-                pass
-            # Clear thread-local callbacks so a recycled worker thread
-            # doesn't hold stale references to a disposed CLI instance.
+
+        def _worker_teardown() -> None:
             try:
                 _set_approval_callback(None)
                 _set_sudo_password_callback(None)
             except Exception:
                 pass
 
-        # Start spinner for CLI mode (skip when TUI handles tool progress)
-        spinner = None
-        if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-            face = random.choice(KawaiiSpinner.get_waiting_faces())
-            spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots', print_fn=self._print_fn)
-            spinner.start()
+        def _safe_plugin_block(name: str, args: dict, task_id: str):
+            try:
+                return _plugin_block(name, args, task_id=task_id or "")
+            except Exception:
+                return None
 
-        try:
-            runnable_calls = [
-                (i, tc, name, args)
-                for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls)
-                if block_result is None
-            ]
-            futures = []
-            if runnable_calls:
-                max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    for i, tc, name, args in runnable_calls:
-                        # Propagate ContextVars (e.g. _approval_session_key); mirrors asyncio.to_thread.
-                        ctx = contextvars.copy_context()
-                        f = executor.submit(ctx.run, _run_tool, i, tc, name, args)
-                        futures.append(f)
+        return ExecutionContext(
+            intents=intents,
+            tool_registry=_tool_registry,
+            callbacks=ObservabilityCallbacks(
+                batch_started=self._batch_display_started,
+                batch_completed=self._batch_display_completed,
+                on_tool_start=self.tool_start_callback,
+                on_tool_progress=self.tool_progress_callback,
+                on_tool_complete=self.tool_complete_callback,
+                log_batch_header_line=self._log_concurrent_batch_header,
+                log_tool_call_line=self._log_tool_call_line,
+                log_tool_complete_line=self._log_tool_complete_line,
+                log_interrupt_message=self._log_interrupt_skip,
+                vprint=self._vprint,
+                touch_activity=self._touch_activity,
+                should_emit_quiet=self._should_emit_quiet_tool_messages,
+                should_start_quiet_spinner=self._should_start_quiet_spinner,
+            ),
+            side_effects=SideEffectCallbacks(
+                invoke_tool=self._invoke_tool,
+                pre_call_block_message=_safe_plugin_block,
+                guardrail_check=self._tool_guardrails.before_call,
+                guardrail_block_result=self._guardrail_block_result,
+                append_guardrail_observation=self._append_guardrail_observation,
+                record_file_mutation=self._record_file_mutation_result,
+                format_result_content=self._tool_result_content_for_active_model,
+                compute_subdir_hints=self._subdirectory_hints.check_tool_call,
+                on_tool_completed=self._on_tool_completed_hook,
+                pre_execute_checkpoint=self._maybe_checkpoint_for_tool,
+                parent_thread_setup=_parent_thread_setup,
+                worker_thread_teardown=_worker_teardown,
+                detect_tool_failure=_detect_tool_failure,
+                is_multimodal_result=_is_multimodal_tool_result,
+                append_subdir_hint_to_multimodal=_append_subdir_hint_to_multimodal,
+                persist_tool_result=_persist,
+            ),
+            interrupt=_AgentInterruptAdapter(self),
+            config=ExecutorConfig(
+                quiet_mode=self.quiet_mode,
+                verbose_logging=self.verbose_logging,
+                log_prefix=self.log_prefix,
+                log_prefix_chars=self.log_prefix_chars,
+                active_model=getattr(self, "model", None),
+                env_for_task=_env_for_task,
+            ),
+            tool_guardrails=self._tool_guardrails,
+            effective_task_id=effective_task_id,
+            api_call_count=api_call_count,
+        )
 
-                    # Wait for all to complete with periodic heartbeats so the
-                    # gateway's inactivity monitor doesn't kill us during long
-                    # concurrent tool batches. Also check for user interrupts
-                    # so we don't block indefinitely when the user sends /stop
-                    # or a new message during concurrent tool execution.
-                    _conc_start = time.time()
-                    _interrupt_logged = False
-                    while True:
-                        done, not_done = concurrent.futures.wait(
-                            futures, timeout=5.0,
-                        )
-                        if not not_done:
-                            break
+    def _apply_execution_results_to_messages(
+        self, results, messages: list, effective_task_id: str,
+    ) -> None:
+        """Convert ToolResults to tool messages, drain pending steer
+        between tools, enforce per-turn budget at end.
 
-                        # Check for interrupt — the per-thread interrupt signal
-                        # already causes individual tools (terminal, execute_code)
-                        # to abort, but tools without interrupt checks (web_search,
-                        # read_file) will run to completion. Cancel any futures
-                        # that haven't started yet so we don't block on them.
-                        if self._interrupt_requested:
-                            if not _interrupt_logged:
-                                _interrupt_logged = True
-                                self._vprint(
-                                    f"{self.log_prefix}⚡ Interrupt: cancelling "
-                                    f"{len(not_done)} pending concurrent tool(s)",
-                                    force=True,
-                                )
-                            for f in not_done:
-                                f.cancel()
-                            # Give already-running tools a moment to notice the
-                            # per-thread interrupt signal and exit gracefully.
-                            concurrent.futures.wait(not_done, timeout=3.0)
-                            break
-
-                        _conc_elapsed = int(time.time() - _conc_start)
-                        # Heartbeat every ~30s (6 × 5s poll intervals)
-                        if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
-                            _still_running = [
-                                parsed_calls[futures.index(f)][1]
-                                for f in not_done
-                                if f in futures
-                            ]
-                            self._touch_activity(
-                                f"concurrent tools running ({_conc_elapsed}s, "
-                                f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
-                            )
-        finally:
-            if spinner:
-                # Build a summary message for the spinner stop
-                completed = sum(1 for r in results if r is not None)
-                total_dur = sum(r[3] for r in results if r is not None)
-                spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
-
-        # ── Post-execution: display per-tool results ─────────────────────
-        for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
-            r = results[i]
-            blocked = False
-            if r is None:
-                # Tool was cancelled (interrupt) or thread didn't return
-                if self._interrupt_requested:
-                    function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
-                else:
-                    function_result = f"Error executing tool '{name}': thread did not return a result"
-                tool_duration = 0.0
-            else:
-                function_name, function_args, function_result, tool_duration, is_error, blocked = r
-
-                if not blocked:
-                    function_result = self._append_guardrail_observation(
-                        function_name,
-                        function_args,
-                        function_result,
-                        failed=is_error,
-                    )
-
-                if is_error:
-                    _err_text = _multimodal_text_summary(function_result)
-                    result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
-                    logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
-
-                # Track file-mutation outcome for the turn-end verifier.
-                # `blocked` calls never actually ran — don't let a guardrail
-                # block count as either a failure or a success.
-                if not blocked:
-                    try:
-                        self._record_file_mutation_result(
-                            function_name, function_args, function_result, is_error,
-                        )
-                    except Exception as _ver_err:
-                        logging.debug("file-mutation verifier record failed: %s", _ver_err)
-
-                if not blocked and self.tool_progress_callback:
-                    try:
-                        self.tool_progress_callback(
-                            "tool.completed", function_name, None, None,
-                            duration=tool_duration, is_error=is_error,
-                        )
-                    except Exception as cb_err:
-                        logging.debug(f"Tool progress callback error: {cb_err}")
-
-                if self.verbose_logging:
-                    logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
-                    logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
-
-            # Print cute message per tool
-            if self._should_emit_quiet_tool_messages():
-                cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
-                self._safe_print(f"  {cute_msg}")
-            elif not self.quiet_mode:
-                _preview_str = _multimodal_text_summary(function_result)
-                if self.verbose_logging:
-                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
-                    print(self._wrap_verbose("Result: ", _preview_str))
-                else:
-                    response_preview = _preview_str[:self.log_prefix_chars] + "..." if len(_preview_str) > self.log_prefix_chars else _preview_str
-                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
-
-            self._current_tool = None
-            self._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
-
-            if not blocked and self.tool_complete_callback:
-                try:
-                    self.tool_complete_callback(tc.id, name, args, function_result)
-                except Exception as cb_err:
-                    logging.debug(f"Tool complete callback error: {cb_err}")
-
-            function_result = maybe_persist_tool_result(
-                content=function_result,
-                tool_name=name,
-                tool_use_id=tc.id,
-                env=get_active_env(effective_task_id),
-            ) if not _is_multimodal_tool_result(function_result) else function_result
-
-            subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
-            if subdir_hints:
-                if _is_multimodal_tool_result(function_result):
-                    # Append the hint to the text summary part so the model
-                    # still sees it; don't touch the image blocks.
-                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-                else:
-                    function_result += subdir_hints
-
-            # Unwrap _multimodal dicts to an OpenAI-style content list so any
-            # vision-capable provider receives [{type:text},{type:image_url}]
-            # rather than a raw Python dict.  The Anthropic adapter already
-            # accepts content lists; vision-capable OpenAI-compatible servers
-            # (mlx-vlm, GPT-4o, …) accept image_url in tool messages natively.
-            # Text-only servers get a string-safe fallback here so a rejected
-            # image tool result never poisons canonical session history.
-            # String results pass through unchanged.
-            _tool_content = self._tool_result_content_for_active_model(name, function_result)
+        Orchestration logic that lived inline in the legacy concurrent
+        path. Phase 2 moves this into the Dispatcher proper; for the
+        transition we keep it on the agent so both legacy callers
+        (tests calling the shim directly) and the Dispatcher's call to
+        ``agent._execute_tool_calls`` see the same observable behavior.
+        """
+        from tools.tool_result_storage import enforce_turn_budget
+        from tools.terminal_tool import get_active_env
+        for r in results:
             tool_msg = {
                 "role": "tool",
-                "name": name,
-                "content": _tool_content,
-                "tool_call_id": tc.id,
+                "name": r.tool_name,
+                "content": r.content,
+                "tool_call_id": r.intent_id,
             }
             messages.append(tool_msg)
-
-            # ── Per-tool /steer drain ───────────────────────────────────
-            # Same as the sequential path: drain between each collected
-            # result so the steer lands as early as possible.
             self._apply_pending_steer_to_tool_results(messages, 1)
 
-        # ── Per-turn aggregate budget enforcement ─────────────────────────
-        num_tools = len(parsed_calls)
+        num_tools = len(results)
         if num_tools > 0:
             turn_tool_msgs = messages[-num_tools:]
-            enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
-
-        # ── /steer injection ──────────────────────────────────────────────
-        # Append any pending user steer text to the last tool result so the
-        # agent sees it on its next iteration. Runs AFTER budget enforcement
-        # so the steer marker is never truncated. See steer() for details.
-        if num_tools > 0:
+            try:
+                enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+            except Exception:
+                pass
             self._apply_pending_steer_to_tool_results(messages, num_tools)
+
+    def _execute_tool_calls_concurrent(
+        self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0,
+    ) -> None:
+        """Execute multiple tool calls concurrently using a thread pool.
+
+        Sprint 31 Phase 1a transitional shim. Delegates to
+        ``grove.tool_executor.ToolExecutor.execute_batch_concurrent``
+        with an ``ExecutionContext`` built from the agent's current
+        state, then applies messages / steer / budget orchestration
+        the executor's prior monolithic version did inline. Tests
+        that call this method directly or via
+        ``patch.object(agent, "_execute_tool_calls_concurrent")``
+        keep working unchanged. Phase 2 deletes the shim and routes
+        ``grove.dispatcher._drive_generator`` straight through
+        ``self._tool_executor.execute_batch_concurrent``.
+        """
+        intents = self._extract_tool_intents(assistant_message)
+        if not intents:
+            return
+        ctx = self._build_execution_context_concurrent(
+            intents, effective_task_id, api_call_count,
+        )
+        results = self._tool_executor.execute_batch_concurrent(ctx)
+        self._apply_execution_results_to_messages(results, messages, effective_task_id)
+
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
