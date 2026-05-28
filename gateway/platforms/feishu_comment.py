@@ -1073,7 +1073,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
             logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages from session %s",
                         len(history), session_key)
 
-        agent = AIAgent(
+        agent = Dispatcher(agent_kwargs=dict(
             model=model,
             base_url=runtime_kwargs.get("base_url"),
             api_key=runtime_kwargs.get("api_key"),
@@ -1088,7 +1088,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
             # Sprint 27 Phase 3 — Feishu doc-comment thread agent: no TTY
             # surface. Andon halts auto-skip with Kaizen Ledger record.
             sovereign_prompt_handler=gateway_auto_skip_handler,
-        )
+        )).agent
         logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)",
                     len(prompt), len(history))
         result = agent.run_conversation(prompt, conversation_history=history or None)

@@ -573,7 +573,8 @@ class SessionManager:
         if self._agent_factory is not None:
             return self._agent_factory()
 
-        from run_agent import AIAgent
+        from run_agent import AIAgent  # noqa: F401  Sprint 33 retained for typing; construction routes via Dispatcher
+        from grove.dispatcher import Dispatcher
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -621,7 +622,7 @@ class SessionManager:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
         _register_task_cwd(session_id, cwd)
-        agent = AIAgent(**kwargs)
+        agent = Dispatcher(agent_kwargs=dict(**kwargs)).agent
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print

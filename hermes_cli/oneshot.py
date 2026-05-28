@@ -395,7 +395,7 @@ def _run_agent(
     from grove.cellar import retrieve_cellar_context
     _cellar_context = retrieve_cellar_context(prompt)
 
-    agent = AIAgent(
+    agent = Dispatcher(agent_kwargs=dict(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
@@ -419,7 +419,7 @@ def _run_agent(
         #   - skill secret capture → returns gracefully when no callback set
         clarify_callback=_oneshot_clarify_callback,
         ephemeral_system_prompt=_cellar_context or None,
-    )
+    )).agent
 
     # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
     # display callbacks that would bypass our stdout capture.

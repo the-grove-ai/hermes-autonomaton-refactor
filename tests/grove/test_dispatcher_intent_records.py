@@ -669,24 +669,27 @@ class TestPhase4ExplicitSuccessFinalization:
 # ── AIAgent integration ──────────────────────────────────────────────────
 
 
-class TestAgentInjection:
-    def test_get_or_create_dispatcher_injects_default_store(
+class TestInlineLazyDispatcherBuild:
+    def test_inline_lazy_build_inside_run_conversation_wires_default_store(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ):
-        # AIAgent's lazy singleton constructs Dispatcher with the
-        # module-default store. With the per-test GROVE_HOME isolation
-        # in tests/conftest.py, that resolves to a tmp-path store and
-        # the production file is untouched.
-        from run_agent import AIAgent
+        # Sprint 33 Phase 2 — the lazy Dispatcher build pattern that
+        # used to live in the agent's deleted singleton helper is now
+        # inlined inside ``AIAgent.run_conversation``. It fires only
+        # when an Agent is constructed without going through the
+        # Dispatcher inversion path (mostly tests). When it fires it
+        # wires ``grove.intent_store.get_store()`` as the default —
+        # under the per-test GROVE_HOME isolation, that resolves to a
+        # tmp-path store. This test verifies the same wiring contract
+        # the deleted singleton helper honored.
+        from grove.intent_store import get_store as _get_intent_store
 
-        class _StubAgent:
-            pass
-        stub = _StubAgent()
-        stub._dispatcher_singleton = None
-        stub._sovereign_prompt_handler = None
-
-        dispatcher = AIAgent._get_or_create_dispatcher(stub)
-        assert dispatcher._intent_store is not None
+        default_store = _get_intent_store()
+        assert default_store is not None
         # The store path lives under the per-test GROVE_HOME tempdir,
         # not the operator's ~/.grove path.
-        assert "intent_records.jsonl" in str(dispatcher._intent_store.path)
+        assert "intent_records.jsonl" in str(default_store.path)
+        # And construction via the new sole sanctioned path threads
+        # the same store through when the caller doesn't override.
+        dispatcher = Dispatcher(intent_store=default_store)
+        assert dispatcher._intent_store is default_store

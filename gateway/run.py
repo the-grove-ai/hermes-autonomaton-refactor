@@ -7506,7 +7506,7 @@ class GatewayRunner:
                             if len(_hyg_msgs) >= 4:
                                 # Compression-only — no turn dispatch; exempt from GRV-005 § II.
                                 #   See Sprint 27 A1 disposition.
-                                _hyg_agent = AIAgent(
+                                _hyg_agent = Dispatcher(agent_kwargs=dict(
                                     **_hyg_runtime,
                                     model=_hyg_model,
                                     max_iterations=4,
@@ -7514,7 +7514,7 @@ class GatewayRunner:
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
-                                )
+                                )).agent
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
@@ -10648,7 +10648,7 @@ class GatewayRunner:
                         logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
-                agent = AIAgent(
+                agent = Dispatcher(agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
@@ -10678,7 +10678,7 @@ class GatewayRunner:
                     # Sprint 27 Phase 3 — background task: no live operator
                     # surface. Andon halts auto-skip with Kaizen Ledger record.
                     sovereign_prompt_handler=batch_auto_skip_handler,
-                )
+                )).agent
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -11125,7 +11125,7 @@ class GatewayRunner:
 
             # Compression-only — no turn dispatch; exempt from GRV-005 § II.
             #   See Sprint 27 A1 disposition.
-            tmp_agent = AIAgent(
+            tmp_agent = Dispatcher(agent_kwargs=dict(
                 **runtime_kwargs,
                 model=model,
                 max_iterations=4,
@@ -11133,7 +11133,7 @@ class GatewayRunner:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
-            )
+            )).agent
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
 
@@ -15274,7 +15274,7 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
-                agent = AIAgent(
+                agent = Dispatcher(agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
@@ -15308,7 +15308,7 @@ class GatewayRunner:
                     # Andon halts auto-skip; future work routes Sovereign Prompts
                     # back through the platform adapter (Sprint 28).
                     sovereign_prompt_handler=gateway_auto_skip_handler,
-                )
+                )).agent
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)

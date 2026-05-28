@@ -1884,7 +1884,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         requested=requested_provider,
         target_model=model or None,
     )
-    return AIAgent(
+    return Dispatcher(agent_kwargs=dict(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
         provider=runtime.get("provider"),
@@ -1908,7 +1908,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         skip_context_files=is_truthy_value(os.environ.get("GROVE_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("GROVE_IGNORE_RULES")),
         **_agent_cbs(sid),
-    )
+    )).agent
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
@@ -3667,9 +3667,9 @@ def _(rid, params: dict) -> dict:
         try:
             from run_agent import AIAgent
 
-            result = AIAgent(
+            result = Dispatcher(agent_kwargs=dict(
                 **_background_agent_kwargs(session["agent"], task_id)
-            ).run_conversation(
+            )).agent.run_conversation(
                 user_message=text,
                 task_id=task_id,
             )

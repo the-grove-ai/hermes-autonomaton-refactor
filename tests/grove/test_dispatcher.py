@@ -648,87 +648,80 @@ class TestClassifyOneIntentHierarchicalBridge:
         assert result.zone == "yellow"
 
 
-# ── Sprint 27 GATE-D: AIAgent → Dispatcher handler injection ──────────────
+# ── Sprint 33 Phase 2: Dispatcher handler injection ──────────────────────
 
 
-class TestAgentDispatcherHandlerInjection:
-    """The Agent forwards ``sovereign_prompt_handler`` into the lazy
-    Dispatcher singleton at ``_get_or_create_dispatcher`` time. This is
-    the Sprint 27 Phase 3 caller-migration contract: non-TTY callers
-    (gateway, batch) construct ``AIAgent(..., sovereign_prompt_handler=h)``
-    and the Agent's existing per-session singleton picks up the handler
-    at first turn.
+class TestDispatcherHandlerInjection:
+    """The Dispatcher's ``sovereign_prompt_handler`` kwarg stores the
+    handler that fires when an AndonHalt is raised during dispatch_turn.
 
-    These tests use a stub agent rather than instantiating ``AIAgent``
-    directly, because the real ``__init__`` chain pulls in the full
-    tool registry, memory store, and LLM client — none of which this
-    contract depends on. ``_get_or_create_dispatcher`` reads only
-    ``self._sovereign_prompt_handler`` and ``self._dispatcher_singleton``
-    via ``getattr``, so a minimal stub exercises the contract."""
+    Sprint 27 originally tested this contract via the Agent's lazy
+    singleton helper. Sprint 33 Phase 2 deleted that helper; the
+    handler injection now happens at Dispatcher construction
+    directly — via either
+    ``Dispatcher(sovereign_prompt_handler=h)`` or
+    ``Dispatcher(agent_kwargs={..., 'sovereign_prompt_handler': h})``
+    when the Agent is constructed alongside.
+    """
 
-    # The stub must store the handler as an INSTANCE attribute, not a
-    # class attribute. A function set on a class body becomes bound via
-    # Python's descriptor protocol when accessed through an instance —
-    # ``stub._sovereign_prompt_handler`` would return a bound method
-    # rather than the raw function, breaking ``is`` identity asserts.
-
-    @staticmethod
-    def _make_stub(handler):
-        class _StubAgent:
-            pass
-        stub = _StubAgent()
-        stub._dispatcher_singleton = None
-        stub._sovereign_prompt_handler = handler
-        return stub
-
-    def test_injected_handler_propagates_to_singleton(self):
-        from run_agent import AIAgent
+    def test_injected_handler_stored_on_dispatcher(self):
         from grove.sovereign_prompt_handlers import gateway_auto_skip_handler
 
-        stub = self._make_stub(gateway_auto_skip_handler)
-        dispatcher = AIAgent._get_or_create_dispatcher(stub)
-        assert dispatcher._sovereign_prompt_handler is gateway_auto_skip_handler
+        d = Dispatcher(sovereign_prompt_handler=gateway_auto_skip_handler)
+        assert d._sovereign_prompt_handler is gateway_auto_skip_handler
 
     def test_default_handler_used_when_none_injected(self):
-        # Existing callers (CLI, oneshot) construct AIAgent without
-        # ``sovereign_prompt_handler``. The singleton must default to
-        # the TTY handler so interactive Sovereign Prompts still work.
-        from run_agent import AIAgent
+        # When no handler is provided, the Dispatcher falls back to the
+        # TTY ``_default_sovereign_prompt`` so interactive Sovereign
+        # Prompts still work for CLI / oneshot callers.
         from grove.dispatcher import _default_sovereign_prompt
 
-        stub = self._make_stub(None)
-        dispatcher = AIAgent._get_or_create_dispatcher(stub)
-        assert dispatcher._sovereign_prompt_handler is _default_sovereign_prompt
+        d = Dispatcher()
+        assert d._sovereign_prompt_handler is _default_sovereign_prompt
 
-    def test_singleton_is_reused_across_calls(self):
-        # Per-session state continuity requires the singleton to be
-        # built once and reused. The Sprint 26 Phase 7 design depends
-        # on this: the Dispatcher holds session-keyed Kaizen Ledgers
-        # in-memory, and rebuilding the Dispatcher would lose them.
-        from run_agent import AIAgent
-        from grove.sovereign_prompt_handlers import batch_auto_skip_handler
-
-        stub = self._make_stub(batch_auto_skip_handler)
-        first = AIAgent._get_or_create_dispatcher(stub)
-        second = AIAgent._get_or_create_dispatcher(stub)
-        assert first is second
-
-    def test_batch_and_gateway_handlers_produce_distinct_singletons(self):
-        # Different agents inject different handlers; their singletons
-        # are independent so a batch-tier agent and a gateway-tier
-        # agent running concurrently don't cross-wire.
-        from run_agent import AIAgent
+    def test_separate_dispatchers_hold_distinct_handlers(self):
+        # Pre-Sprint-33 the per-Agent singleton pattern made this
+        # implicit; post-Sprint-33 each Dispatcher instance is an
+        # independent object, so the property is structural.
         from grove.sovereign_prompt_handlers import (
             batch_auto_skip_handler,
             gateway_auto_skip_handler,
         )
 
-        batch_disp = AIAgent._get_or_create_dispatcher(
-            self._make_stub(batch_auto_skip_handler)
-        )
-        gateway_disp = AIAgent._get_or_create_dispatcher(
-            self._make_stub(gateway_auto_skip_handler)
-        )
+        batch_disp = Dispatcher(sovereign_prompt_handler=batch_auto_skip_handler)
+        gateway_disp = Dispatcher(sovereign_prompt_handler=gateway_auto_skip_handler)
         assert batch_disp is not gateway_disp
         assert batch_disp._sovereign_prompt_handler is batch_auto_skip_handler
         assert gateway_disp._sovereign_prompt_handler is gateway_auto_skip_handler
+
+    def test_handler_threads_through_agent_kwargs_construction(self):
+        # The full inversion-of-construction path: the caller passes
+        # the handler as a Dispatcher kwarg and the Agent's
+        # ``_sovereign_prompt_handler`` field reflects the same
+        # callable via the back-reference for in-Agent code paths
+        # that read it (e.g., the inline lazy build inside
+        # run_conversation when an Agent was constructed without
+        # going through the Dispatcher).
+        from unittest.mock import patch
+        from grove.sovereign_prompt_handlers import batch_auto_skip_handler
+
+        agent_kwargs = dict(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            sovereign_prompt_handler=batch_auto_skip_handler,
+        )
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            d = Dispatcher(
+                sovereign_prompt_handler=batch_auto_skip_handler,
+                agent_kwargs=agent_kwargs,
+            )
+        assert d._sovereign_prompt_handler is batch_auto_skip_handler
+        assert d.agent._sovereign_prompt_handler is batch_auto_skip_handler
+        assert d.agent._dispatcher_singleton is d

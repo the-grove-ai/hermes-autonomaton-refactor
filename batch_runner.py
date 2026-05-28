@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 import fire
 
 from run_agent import AIAgent
+from grove.dispatcher import Dispatcher
 from toolset_distributions import (
     list_distributions, 
     sample_toolsets_from_distribution,
@@ -322,7 +323,7 @@ def _process_single_prompt(
         
         # Initialize agent with sampled toolsets and log prefix for identification
         log_prefix = f"[B{batch_num}:P{prompt_index}]"
-        agent = AIAgent(
+        agent = Dispatcher(agent_kwargs=dict(
             base_url=config.get("base_url"),
             api_key=config.get("api_key"),
             model=config["model"],
@@ -343,7 +344,7 @@ def _process_single_prompt(
             prefill_messages=config.get("prefill_messages"),
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
             skip_memory=True,  # Don't use persistent memory in batch runs
-        )
+        )).agent
 
         # Run the agent with task_id to ensure each task gets its own isolated VM
         result = agent.run_conversation(prompt, task_id=task_id)

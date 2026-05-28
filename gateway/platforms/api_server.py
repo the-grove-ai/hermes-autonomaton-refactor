@@ -857,7 +857,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
 
-        agent = AIAgent(
+        agent = Dispatcher(agent_kwargs=dict(
             model=model,
             **runtime_kwargs,
             max_iterations=max_iterations,
@@ -880,7 +880,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # callers of this factory (run_conversation sites at lines
             # 2739 and 2993).
             sovereign_prompt_handler=gateway_auto_skip_handler,
-        )
+        )).agent
         return agent
 
     # ------------------------------------------------------------------

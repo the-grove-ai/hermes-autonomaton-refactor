@@ -1764,7 +1764,8 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        from run_agent import AIAgent
+        from run_agent import AIAgent  # noqa: F401  Sprint 33 retained for typing; construction routes via Dispatcher
+        from grove.dispatcher import Dispatcher
     except Exception as e:
         result_meta["error"] = f"AIAgent import failed: {e}"
         result_meta["summary"] = result_meta["error"]
@@ -1810,7 +1811,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
-        review_agent = AIAgent(
+        review_agent = Dispatcher(agent_kwargs=dict(
             model=_model_name,
             provider=_resolved_provider,
             api_key=_api_key,
@@ -1826,7 +1827,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             platform="curator",
             skip_context_files=True,
             skip_memory=True,
-        )
+        )).agent
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0

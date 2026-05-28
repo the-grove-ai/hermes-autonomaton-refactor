@@ -407,9 +407,12 @@ class Dispatcher:
         # ── Sprint 28 Phase 3 — intent record store + per-turn state ──
         # The IntentStore is optional so legacy / test Dispatchers (which
         # construct ``Dispatcher()`` with no kwargs) skip the write path
-        # entirely. Production callers (``AIAgent._get_or_create_dispatcher``)
-        # inject ``intent_store=grove.intent_store.get_store()`` so every
-        # turn writes a record on the feed-first layer.
+        # entirely. Production callers inject
+        # ``intent_store=grove.intent_store.get_store()`` so every turn
+        # writes a record on the feed-first layer. Sprint 33 Phase 2:
+        # ``AIAgent.run_conversation``'s inline lazy build wires the
+        # default store for callers that bypass the Dispatcher
+        # inversion (mostly tests).
         self._intent_store = intent_store
         self._turn_counter: int = 0
         # Per-turn state — reset at the top of every ``dispatch_turn``.
@@ -1405,10 +1408,11 @@ class Dispatcher:
 
         from run_agent import AIAgent
         new_agent = AIAgent(**carry_kit)
-        # The new agent must reuse our Dispatcher singleton so the
-        # Kaizen Ledger continuity holds — without this, the new
-        # agent's lazy _get_or_create_dispatcher would build a fresh
-        # Dispatcher and lose the per-session ledgers / counters.
+        # The new agent must reuse our Dispatcher instance so the
+        # Kaizen Ledger continuity holds — without this back-reference,
+        # the agent's inline lazy build inside ``run_conversation``
+        # would create a fresh Dispatcher and lose the per-session
+        # ledgers / counters.
         new_agent._dispatcher_singleton = self
         new_agent._sovereign_prompt_handler = getattr(
             agent, "_sovereign_prompt_handler", None,

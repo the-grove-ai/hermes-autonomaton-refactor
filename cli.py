@@ -704,6 +704,7 @@ import fire
 
 # Import the agent and tool systems
 from run_agent import AIAgent
+from grove.dispatcher import Dispatcher
 from model_tools import get_tool_definitions, get_toolset_for_tool
 
 # Extracted CLI modules (Phase 3)
@@ -4785,7 +4786,7 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
-            self.agent = AIAgent(
+            self.agent = Dispatcher(agent_kwargs=dict(
                 model=effective_model,
                 max_tokens=max_tokens,
                 api_key=runtime.get("api_key"),
@@ -4832,7 +4833,7 @@ class HermesCLI:
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
-            )
+            )).agent
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
             _active_agent_ref = self.agent
@@ -8655,7 +8656,7 @@ class HermesCLI:
             except Exception:
                 pass
             try:
-                bg_agent = AIAgent(
+                bg_agent = Dispatcher(agent_kwargs=dict(
                     model=turn_route["model"],
                     max_tokens=turn_route["max_tokens"],
                     api_key=turn_route["runtime"].get("api_key"),
@@ -8682,7 +8683,7 @@ class HermesCLI:
                     provider_data_collection=self._provider_data_collection,
                     openrouter_min_coding_score=self._openrouter_min_coding_score,
                     fallback_model=self._fallback_model,
-                )
+                )).agent
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
 

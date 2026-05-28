@@ -1296,22 +1296,24 @@ class AIAgent:
         # pre-construct a Dispatcher and call ``runtime_context_for(...)``,
         # which is out of Sprint 27 scope. The fallback stays.
         #
-        # Sprint 27 chose the lazy-Dispatcher path (Path B): the Agent
-        # constructs its own Dispatcher singleton at first
-        # ``run_conversation`` via ``_get_or_create_dispatcher``. The
-        # singleton carries per-session state (Kaizen Ledger, tier
-        # overrides, pending_andon markers) across turns. Non-TTY
-        # callers pass ``sovereign_prompt_handler=`` so the singleton
-        # routes Andon halts through the right surface.
+        # Sprint 33 Phase 2 (caller-migration-v2) inverted construction:
+        # production callers construct the Dispatcher first and access
+        # the Agent via ``Dispatcher(agent_kwargs={...}).agent``. The
+        # Dispatcher sets ``agent._dispatcher_singleton = self`` as a
+        # back-reference so the Agent's ``run_conversation`` reaches
+        # the Dispatcher constructed by the caller. The inline lazy
+        # build inside ``run_conversation`` remains for tests that
+        # construct ``AIAgent`` directly without going through the
+        # Dispatcher inversion.
         runtime_ctx: Optional["RuntimeContext"] = None,
-        # ── Sprint 27 Phase 3 (caller-migration-v1) ───────────────────
         # Non-TTY callers (gateway, batch, tests) inject a handler so
-        # the Agent's Dispatcher singleton routes Andon halts through
-        # the correct surface instead of the default TTY prompt that
-        # hangs without stdin. Passed verbatim to
-        # ``Dispatcher(sovereign_prompt_handler=...)`` in
-        # ``_get_or_create_dispatcher``. None preserves the legacy
-        # TTY default (CLI / oneshot).
+        # Andon halts route through the correct surface instead of the
+        # default TTY prompt that hangs without stdin. Forwarded to
+        # ``Dispatcher(sovereign_prompt_handler=...)`` when the Agent
+        # is constructed via ``Dispatcher(agent_kwargs={...})``, and
+        # honored by the inline lazy build inside ``run_conversation``
+        # for tests that bypass the Dispatcher inversion. None
+        # preserves the legacy TTY default (CLI / oneshot).
         sovereign_prompt_handler: callable = None,
     ):
         """
@@ -1376,9 +1378,12 @@ class AIAgent:
         # which read from runtime_ctx when set, otherwise fall through to
         # direct substrate access. Phase 7 removes the fallback.
         self._runtime_ctx = runtime_ctx
-        # Sprint 27 Phase 3 — injected by non-TTY callers; consumed lazily
-        # at first ``_get_or_create_dispatcher()``. None → Dispatcher uses
-        # the default TTY handler.
+        # Sprint 27 Phase 3 → Sprint 33 Phase 2: injected by non-TTY
+        # callers; threaded into ``Dispatcher(sovereign_prompt_handler=...)``
+        # at construction time (via the new inversion path) or by the
+        # inline lazy build inside ``run_conversation`` (for tests that
+        # bypass the inversion). None → Dispatcher uses the default
+        # TTY handler.
         self._sovereign_prompt_handler = sovereign_prompt_handler
         # Sprint 29 Phase 2 — per-turn tool filter (context-budget-v1).
         # ``_tools_for_turn`` overrides ``self.tools`` at every LLM call
@@ -11300,7 +11305,17 @@ class AIAgent:
                 # Dispatcher per GRV-005 § II/III. The Agent declares
                 # its rotated session_id; the Dispatcher writes
                 # os.environ for subprocess descendants.
-                self._get_or_create_dispatcher().broadcast_session_id(self.session_id)
+                # Sprint 33 Phase 2: prefer the back-referenced Dispatcher
+                # (set by Dispatcher(agent_kwargs=...).agent). If absent —
+                # only possible for callers that bypass the Dispatcher
+                # inversion, mostly tests constructed via AIAgent(...)
+                # directly — skip the broadcast rather than incur the
+                # construction cost of a transient Dispatcher just for
+                # one env write. Sprint 34 makes the Dispatcher
+                # construction mandatory and deletes this guard.
+                _disp = getattr(self, "_dispatcher_singleton", None)
+                if _disp is not None:
+                    _disp.broadcast_session_id(self.session_id)
                 try:
                     from gateway.session_context import _SESSION_ID
                     _SESSION_ID.set(self.session_id)
@@ -16435,31 +16450,6 @@ class AIAgent:
             ))
         return intents
 
-    def _get_or_create_dispatcher(self) -> Any:
-        """Sprint 26 Phase 7 — agent-singleton Dispatcher.
-
-        Lazy construction so existing test paths that monkey-patch
-        AIAgent internals without ever calling run_conversation don't
-        eagerly build a Dispatcher (and its session-scoped ledger
-        file). The Dispatcher's lifetime is bound to this Agent; its
-        per-session state (Kaizen ledger, tier overrides, pending_andon
-        markers) persists across turns within the Agent's lifetime.
-        """
-        if getattr(self, "_dispatcher_singleton", None) is None:
-            from grove.dispatcher import Dispatcher
-            from grove.intent_store import get_store as _get_intent_store
-            self._dispatcher_singleton = Dispatcher(
-                sovereign_prompt_handler=getattr(
-                    self, "_sovereign_prompt_handler", None,
-                ),
-                # Sprint 28 Phase 3 — wire the feed-first intent store.
-                # The Dispatcher writes an IntentRecord at every terminal
-                # site (FinalResponse / Drop / exception) and runs the
-                # Implicit Success Sweep at construction.
-                intent_store=_get_intent_store(),
-            )
-        return self._dispatcher_singleton
-
     def run_conversation(
         self,
         user_message: str,
@@ -16487,7 +16477,25 @@ class AIAgent:
         ``Dispatcher.dispatch_turn`` directly to make the GRV-005
         authority boundary explicit.
         """
-        dispatcher = self._get_or_create_dispatcher()
+        # Sprint 33 Phase 2: prefer the back-referenced Dispatcher set by
+        # ``Dispatcher(agent_kwargs={...}).agent``. Production callers
+        # always reach this method on an Agent constructed via the
+        # Dispatcher inversion path, so ``_dispatcher_singleton`` is
+        # populated. Tests that construct ``AIAgent(...)`` directly
+        # land here with ``_dispatcher_singleton == None`` — the inline
+        # lazy build below handles that case. Sprint 34 makes the
+        # Dispatcher mandatory at construction and deletes this branch.
+        dispatcher = getattr(self, "_dispatcher_singleton", None)
+        if dispatcher is None:
+            from grove.dispatcher import Dispatcher
+            from grove.intent_store import get_store as _get_intent_store
+            dispatcher = Dispatcher(
+                sovereign_prompt_handler=getattr(
+                    self, "_sovereign_prompt_handler", None,
+                ),
+                intent_store=_get_intent_store(),
+            )
+            self._dispatcher_singleton = dispatcher
         return dispatcher.dispatch_turn(
             self, user_message,
             system_message=system_message,

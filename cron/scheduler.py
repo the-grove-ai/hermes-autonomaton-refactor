@@ -1140,7 +1140,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # at module top keeps no_agent ticks from paying for AIAgent / SessionDB
     # construction costs.
     # ---------------------------------------------------------------
-    from run_agent import AIAgent
+    from run_agent import AIAgent  # noqa: F401  Sprint 33 retained for typing; construction routes via Dispatcher
+    from grove.dispatcher import Dispatcher
 
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
@@ -1434,7 +1435,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
-        agent = AIAgent(
+        agent = Dispatcher(agent_kwargs=dict(
             model=model,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -1465,7 +1466,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
-        )
+        )).agent
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
