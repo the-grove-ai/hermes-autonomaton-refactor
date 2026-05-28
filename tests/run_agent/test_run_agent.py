@@ -30,6 +30,48 @@ from grove.sovereign_prompt_handlers import silent_approve_handler
 # ---------------------------------------------------------------------------
 
 
+
+
+# Sprint 31 Phase 2.1 — tests below previously called the deleted
+# AIAgent shims (_execute_tool_calls, _execute_tool_calls_concurrent,
+# _execute_tool_calls_sequential). The shims are gone in Phase 2.1;
+# tests that exercise execution end-to-end go through these helpers,
+# which mirror what the dispatcher does in production: build an
+# ExecutionContext, call the executor, apply messages orchestration.
+
+def _exec_batch_seq(agent, assistant_msg, messages, task_id, api_count=0):
+    intents = agent._extract_tool_intents(assistant_msg)
+    if not intents:
+        return
+    ctx = agent._build_execution_context_sequential(intents, task_id, api_count)
+    results = agent._tool_executor.execute_batch_sequential(ctx)
+    agent._apply_execution_results_to_messages(results, messages, task_id)
+
+
+def _exec_batch_conc(agent, assistant_msg, messages, task_id, api_count=0):
+    intents = agent._extract_tool_intents(assistant_msg)
+    if not intents:
+        return
+    ctx = agent._build_execution_context_concurrent(intents, task_id, api_count)
+    results = agent._tool_executor.execute_batch_concurrent(ctx)
+    agent._apply_execution_results_to_messages(results, messages, task_id)
+
+
+def _exec_batch_auto(agent, assistant_msg, messages, task_id, api_count=0):
+    intents = agent._extract_tool_intents(assistant_msg)
+    if not intents:
+        return
+    from run_agent import _should_parallelize_intents
+    if _should_parallelize_intents(intents):
+        ctx = agent._build_execution_context_concurrent(intents, task_id, api_count)
+        results = agent._tool_executor.execute_batch_concurrent(ctx)
+    else:
+        ctx = agent._build_execution_context_sequential(intents, task_id, api_count)
+        results = agent._tool_executor.execute_batch_sequential(ctx)
+    agent._apply_execution_results_to_messages(results, messages, task_id)
+
+
+
 def _make_tool_defs(*names: str) -> list:
     """Build minimal tool definition list accepted by AIAgent.__init__."""
     return [
@@ -1725,7 +1767,7 @@ class TestExecuteToolCalls:
         with patch(
             "run_agent.handle_function_call", return_value="search result"
         ) as mock_hfc:
-            agent._execute_tool_calls(mock_msg, messages, "task-1")
+            _exec_batch_auto(agent, mock_msg, messages, "task-1")
             # enabled_tools passes the agent's own valid_tool_names
             args, kwargs = mock_hfc.call_args
             assert args[:3] == ("web_search", {"q": "test"}, "task-1")
@@ -1743,7 +1785,7 @@ class TestExecuteToolCalls:
         with patch("run_agent._set_interrupt"):
             agent.interrupt()
 
-        agent._execute_tool_calls(mock_msg, messages, "task-1")
+        _exec_batch_auto(agent, mock_msg, messages, "task-1")
         # Both calls should be skipped with cancellation messages
         assert len(messages) == 2
         assert (
@@ -1758,7 +1800,7 @@ class TestExecuteToolCalls:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
-            agent._execute_tool_calls(mock_msg, messages, "task-1")
+            _exec_batch_auto(agent, mock_msg, messages, "task-1")
             # Invalid JSON args should fall back to empty dict
             args, kwargs = mock_hfc.call_args
             assert args[:3] == ("web_search", {}, "task-1")
@@ -1775,7 +1817,7 @@ class TestExecuteToolCalls:
         messages = []
         big_result = "x" * 150_000
         with patch("run_agent.handle_function_call", return_value=big_result):
-            agent._execute_tool_calls(mock_msg, messages, "task-1")
+            _exec_batch_auto(agent, mock_msg, messages, "task-1")
         # Content should be replaced with persisted-output or truncation
         assert len(messages[0]["content"]) < 150_000
         assert ("Truncated" in messages[0]["content"] or "<persisted-output>" in messages[0]["content"])
@@ -1788,7 +1830,7 @@ class TestExecuteToolCalls:
 
         with patch("run_agent.handle_function_call", return_value="search result"), \
              patch.object(agent, "_safe_print") as mock_print:
-            agent._execute_tool_calls(mock_msg, messages, "task-1")
+            _exec_batch_auto(agent, mock_msg, messages, "task-1")
 
         mock_print.assert_not_called()
         assert len(messages) == 1
@@ -1803,7 +1845,7 @@ class TestExecuteToolCalls:
 
         with patch("run_agent.handle_function_call", return_value="search result"), \
              patch.object(agent, "_safe_print") as mock_print:
-            agent._execute_tool_calls(mock_msg, messages, "task-1")
+            _exec_batch_auto(agent, mock_msg, messages, "task-1")
 
         mock_print.assert_called_once()
         assert "search" in str(mock_print.call_args.args[0]).lower()
@@ -1819,7 +1861,7 @@ class TestExecuteToolCalls:
 
         with patch("run_agent.handle_function_call", return_value="search result"), \
              patch.object(agent, "_safe_print") as mock_print:
-            agent._execute_tool_calls(mock_msg, messages, "task-1")
+            _exec_batch_auto(agent, mock_msg, messages, "task-1")
 
         mock_print.assert_not_called()
         assert len(messages) == 1
@@ -1869,66 +1911,53 @@ class TestExecuteToolCalls:
 
 
 class TestConcurrentToolExecution:
-    """Tests for _execute_tool_calls_concurrent and dispatch logic."""
+    """Tests for the concurrent vs sequential dispatch decision.
+
+    Sprint 31 Phase 2.1 — these tests previously asserted that the
+    deleted dispatch wrapper called _execute_tool_calls_sequential or
+    _execute_tool_calls_concurrent. After the shim deletion the
+    decision lives in run_agent._should_parallelize_intents, a pure
+    function. Tests now assert that directly.
+    """
 
     def test_single_tool_uses_sequential_path(self, agent):
         """Single tool call should use sequential path, not concurrent."""
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
-        messages = []
-        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
-            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
-                agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_seq.assert_called_once()
-                mock_con.assert_not_called()
+        intents = agent._extract_tool_intents(mock_msg)
+        assert _should_parallelize_intents(intents) is False
 
     def test_clarify_forces_sequential(self, agent):
         """Batch containing clarify should use sequential path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="clarify", arguments='{"question":"ok?"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
-        messages = []
-        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
-            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
-                agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_seq.assert_called_once()
-                mock_con.assert_not_called()
+        intents = agent._extract_tool_intents(mock_msg)
+        assert _should_parallelize_intents(intents) is False
 
     def test_multiple_tools_uses_concurrent_path(self, agent):
         """Multiple read-only tools should use concurrent path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
-        messages = []
-        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
-            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
-                agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_con.assert_called_once()
-                mock_seq.assert_not_called()
+        intents = agent._extract_tool_intents(mock_msg)
+        assert _should_parallelize_intents(intents) is True
 
     def test_terminal_batch_forces_sequential(self, agent):
         """Stateful tools should not share the concurrent execution path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
-        messages = []
-        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
-            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
-                agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_seq.assert_called_once()
-                mock_con.assert_not_called()
+        intents = agent._extract_tool_intents(mock_msg)
+        assert _should_parallelize_intents(intents) is False
 
     def test_write_batch_forces_sequential(self, agent):
         """File mutations should stay ordered within a turn."""
         tc1 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c1")
         tc2 = _mock_tool_call(name="write_file", arguments='{"path":"x.py","content":"print(1)"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
-        messages = []
-        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
-            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
-                agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_seq.assert_called_once()
-                mock_con.assert_not_called()
+        intents = agent._extract_tool_intents(mock_msg)
+        assert _should_parallelize_intents(intents) is False
 
     def test_disjoint_write_batch_uses_concurrent_path(self, agent):
         """Independent file writes should still run concurrently."""
@@ -1943,12 +1972,8 @@ class TestConcurrentToolExecution:
             call_id="c2",
         )
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
-        messages = []
-        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
-            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
-                agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_con.assert_called_once()
-                mock_seq.assert_not_called()
+        intents = agent._extract_tool_intents(mock_msg)
+        assert _should_parallelize_intents(intents) is True
 
     def test_overlapping_write_batch_forces_sequential(self, agent):
         """Writes to the same file must stay ordered."""
@@ -1963,36 +1988,24 @@ class TestConcurrentToolExecution:
             call_id="c2",
         )
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
-        messages = []
-        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
-            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
-                agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_seq.assert_called_once()
-                mock_con.assert_not_called()
+        intents = agent._extract_tool_intents(mock_msg)
+        assert _should_parallelize_intents(intents) is False
 
     def test_malformed_json_args_forces_sequential(self, agent):
         """Unparseable tool arguments should fall back to sequential."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="NOT JSON {{{", call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
-        messages = []
-        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
-            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
-                agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_seq.assert_called_once()
-                mock_con.assert_not_called()
+        intents = agent._extract_tool_intents(mock_msg)
+        assert _should_parallelize_intents(intents) is False
 
     def test_non_dict_args_forces_sequential(self, agent):
         """Tool arguments that parse to a non-dict type should fall back to sequential."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='"just a string"', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
-        messages = []
-        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
-            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
-                agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_seq.assert_called_once()
-                mock_con.assert_not_called()
+        intents = agent._extract_tool_intents(mock_msg)
+        assert _should_parallelize_intents(intents) is False
 
     def test_concurrent_executes_all_tools(self, agent):
         """Concurrent path should execute all tools and append results in order."""

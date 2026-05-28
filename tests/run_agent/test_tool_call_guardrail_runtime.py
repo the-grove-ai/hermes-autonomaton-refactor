@@ -9,6 +9,48 @@ from unittest.mock import MagicMock, patch
 from run_agent import AIAgent
 
 
+
+
+# Sprint 31 Phase 2.1 — tests below previously called the deleted
+# AIAgent shims (_execute_tool_calls, _execute_tool_calls_concurrent,
+# _execute_tool_calls_sequential). The shims are gone in Phase 2.1;
+# tests that exercise execution end-to-end go through these helpers,
+# which mirror what the dispatcher does in production: build an
+# ExecutionContext, call the executor, apply messages orchestration.
+
+def _exec_batch_seq(agent, assistant_msg, messages, task_id, api_count=0):
+    intents = agent._extract_tool_intents(assistant_msg)
+    if not intents:
+        return
+    ctx = agent._build_execution_context_sequential(intents, task_id, api_count)
+    results = agent._tool_executor.execute_batch_sequential(ctx)
+    agent._apply_execution_results_to_messages(results, messages, task_id)
+
+
+def _exec_batch_conc(agent, assistant_msg, messages, task_id, api_count=0):
+    intents = agent._extract_tool_intents(assistant_msg)
+    if not intents:
+        return
+    ctx = agent._build_execution_context_concurrent(intents, task_id, api_count)
+    results = agent._tool_executor.execute_batch_concurrent(ctx)
+    agent._apply_execution_results_to_messages(results, messages, task_id)
+
+
+def _exec_batch_auto(agent, assistant_msg, messages, task_id, api_count=0):
+    intents = agent._extract_tool_intents(assistant_msg)
+    if not intents:
+        return
+    from run_agent import _should_parallelize_intents
+    if _should_parallelize_intents(intents):
+        ctx = agent._build_execution_context_concurrent(intents, task_id, api_count)
+        results = agent._tool_executor.execute_batch_concurrent(ctx)
+    else:
+        ctx = agent._build_execution_context_sequential(intents, task_id, api_count)
+        results = agent._tool_executor.execute_batch_sequential(ctx)
+    agent._apply_execution_results_to_messages(results, messages, task_id)
+
+
+
 def _make_tool_defs(*names: str) -> list[dict]:
     return [
         {
@@ -106,7 +148,7 @@ def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_e
     messages = []
 
     with patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc:
-        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+        _exec_batch_seq(agent, msg, messages, "task-1")
 
     mock_hfc.assert_called_once()
     assert len(starts) == 1
@@ -132,7 +174,7 @@ def test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution
     messages = []
 
     with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
-        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+        _exec_batch_seq(agent, msg, messages, "task-1")
 
     mock_hfc.assert_not_called()
     assert starts == []
@@ -152,7 +194,7 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     messages = []
 
     with patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})):
-        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+        _exec_batch_seq(agent, msg, messages, "task-1")
 
     assert [m["role"] for m in messages] == ["tool"]
     assert messages[0]["tool_call_id"] == "c-warn"
@@ -182,7 +224,7 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
         return json.dumps({"ok": args["query"]})
 
     with patch("run_agent.handle_function_call", side_effect=fake_handle):
-        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+        _exec_batch_conc(agent, msg, messages, "task-1")
 
     assert executed == [("web_search", allowed_args, "c-allow")]
     assert [m["tool_call_id"] for m in messages] == ["c-block", "c-allow"]
@@ -207,7 +249,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
         patch("hermes_cli.plugins.get_pre_tool_call_block_message", return_value="plugin policy"),
         patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc,
     ):
-        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+        _exec_batch_seq(agent, msg, messages, "task-1")
 
     mock_hfc.assert_not_called()
     assert "plugin policy" in messages[0]["content"]

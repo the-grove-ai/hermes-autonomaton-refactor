@@ -94,13 +94,47 @@ class TestPreToolCheck:
         agent.log_prefix = ""
         agent._persist_session = MagicMock()
 
-        # Import and call the method
-        import types
-        from run_agent import AIAgent
-        # Bind the real methods to our mock so dispatch works correctly
-        agent._execute_tool_calls_sequential = types.MethodType(AIAgent._execute_tool_calls_sequential, agent)
-        agent._execute_tool_calls_concurrent = types.MethodType(AIAgent._execute_tool_calls_concurrent, agent)
-        AIAgent._execute_tool_calls(agent, assistant_msg, messages, "default")
+        # Sprint 31 Phase 2.1: the agent shims are deleted. The
+        # pre-flight interrupt-skip behavior under test now lives in
+        # grove.tool_executor.ToolExecutor.execute_batch_concurrent
+        # (and execute_batch_sequential — symmetric pre-flight check).
+        # tests/run_agent/test_concurrent_interrupt.py covers the
+        # executor's behavior directly; this test verifies the same
+        # observable effect (cancellation messages for every tool)
+        # via a minimal executor invocation that mirrors what the
+        # dispatcher does in production.
+        from grove.intents import ToolIntent
+        from grove.tool_executor import (
+            ToolExecutor, ExecutionContext, ExecutorConfig,
+            ObservabilityCallbacks, SideEffectCallbacks,
+        )
+
+        class _AlreadyInterrupted:
+            def is_set(self): return True
+            def set_for_thread(self, tid): pass
+            def clear_for_thread(self, tid): pass
+
+        executor = ToolExecutor()
+        intents = [
+            ToolIntent(tool_name=tc.function.name, arguments={}, call_id=tc.id)
+            for tc in assistant_msg.tool_calls
+        ]
+        ctx = ExecutionContext(
+            intents=intents,
+            tool_registry=None,
+            callbacks=ObservabilityCallbacks(),
+            side_effects=SideEffectCallbacks(invoke_tool=lambda *a, **kw: '{}'),
+            interrupt=_AlreadyInterrupted(),
+            config=ExecutorConfig(quiet_mode=True),
+        )
+        results = executor.execute_batch_sequential(ctx)
+        for r in results:
+            messages.append({
+                "role": "tool",
+                "name": r.tool_name,
+                "content": r.content,
+                "tool_call_id": r.intent_id,
+            })
 
         # All 3 should be skipped
         assert len(messages) == 3

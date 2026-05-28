@@ -1577,17 +1577,12 @@ class AIAgent:
         # `is_interrupted()` inside the worker to return True.  Track the
         # workers here so `interrupt()` / `clear_interrupt()` can fan out to
         # their tids explicitly.
-        # Sprint 31 Phase 1a: tool execution machinery lives on the
-        # ToolExecutor. The agent's _tool_worker_threads attribute is
-        # kept as an alias to the executor's internal set so the
-        # interrupt() fan-out at line ~5879 keeps working unchanged
-        # — the set is the SAME object, mutated by the executor's
-        # _run_tool entry/exit and read by the agent's interrupt
-        # fan-out. Phase 2 moves ownership to the Dispatcher.
+        # Sprint 31 Phase 2.1: tool execution machinery lives entirely
+        # on the ToolExecutor — the agent owns no execution state.
+        # ``interrupt()`` / ``clear_interrupt()`` fan out per-thread
+        # signals via ``self._tool_executor.worker_threads`` directly.
         from grove.tool_executor import ToolExecutor as _GroveToolExecutor
         self._tool_executor = _GroveToolExecutor()
-        self._tool_worker_threads: set[int] = self._tool_executor._worker_threads
-        self._tool_worker_threads_lock = self._tool_executor._worker_threads_lock
 
         # Subagent delegation state
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
@@ -5950,20 +5945,22 @@ class AIAgent:
             # interrupt signal until startup completes instead of targeting
             # the caller thread by mistake.
             self._interrupt_thread_signal_pending = True
-        # Fan out to concurrent-tool worker threads.  Those workers run tools
-        # on their own tids (ThreadPoolExecutor workers), so `is_interrupted()`
-        # inside a tool only sees an interrupt when their specific tid is in
-        # the `_interrupted_threads` set.  Without this propagation, an
-        # already-running concurrent tool (e.g. a terminal command hung on
-        # network I/O) never notices the interrupt and has to run to its own
-        # timeout.  See `_run_tool` for the matching entry/exit bookkeeping.
-        # `getattr` fallback covers test stubs that build AIAgent via
-        # object.__new__ and skip __init__.
-        _tracker = getattr(self, "_tool_worker_threads", None)
-        _tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
-        if _tracker is not None and _tracker_lock is not None:
-            with _tracker_lock:
-                _worker_tids = list(_tracker)
+        # Fan out to concurrent-tool worker threads.  Those workers run
+        # tools on their own tids (ThreadPoolExecutor workers), so
+        # ``is_interrupted()`` inside a tool only sees an interrupt
+        # when their specific tid is in the ``_interrupted_threads``
+        # set.  Without this propagation, an already-running concurrent
+        # tool (e.g. a terminal command hung on network I/O) never
+        # notices the interrupt and has to run to its own timeout.
+        # Sprint 31 Phase 2.1: the worker-thread set lives on the
+        # ToolExecutor; the agent reads it through the public
+        # ``worker_threads`` property.  ``getattr`` fallback covers
+        # test stubs that build AIAgent via object.__new__ and skip
+        # __init__ (no executor).
+        _executor = getattr(self, "_tool_executor", None)
+        if _executor is not None:
+            with _executor.worker_threads_lock:
+                _worker_tids = list(_executor.worker_threads)
             for _wtid in _worker_tids:
                 try:
                     _set_interrupt(True, _wtid)
@@ -5992,13 +5989,13 @@ class AIAgent:
         # clear here guarantees no stale interrupt can survive a turn
         # boundary and fire on a subsequent, unrelated tool call that
         # happens to get scheduled onto the same recycled worker tid.
-        # `getattr` fallback covers test stubs that build AIAgent via
-        # object.__new__ and skip __init__.
-        _tracker = getattr(self, "_tool_worker_threads", None)
-        _tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
-        if _tracker is not None and _tracker_lock is not None:
-            with _tracker_lock:
-                _worker_tids = list(_tracker)
+        # Sprint 31 Phase 2.1: read from the ToolExecutor's public
+        # property; ``getattr`` fallback covers test stubs that skip
+        # __init__.
+        _executor = getattr(self, "_tool_executor", None)
+        if _executor is not None:
+            with _executor.worker_threads_lock:
+                _worker_tids = list(_executor.worker_threads)
             for _wtid in _worker_tids:
                 try:
                     _set_interrupt(False, _wtid)
@@ -11443,29 +11440,6 @@ class AIAgent:
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
 
-    def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
-        """Execute tool calls from the assistant message and append results to messages.
-
-        Dispatches to concurrent execution only for batches that look
-        independent: read-only tools may always share the parallel path, while
-        file reads/writes may do so only when their target paths do not overlap.
-        """
-        tool_calls = assistant_message.tool_calls
-
-        # Allow _vprint during tool execution even with stream consumers
-        self._executing_tools = True
-        try:
-            if not _should_parallelize_tool_batch(tool_calls):
-                return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
-                )
-
-            return self._execute_tool_calls_concurrent(
-                assistant_message, messages, effective_task_id, api_call_count
-            )
-        finally:
-            self._executing_tools = False
-
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch.
 
@@ -11912,32 +11886,6 @@ class AIAgent:
                 pass
             self._apply_pending_steer_to_tool_results(messages, num_tools)
 
-    def _execute_tool_calls_concurrent(
-        self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0,
-    ) -> None:
-        """Execute multiple tool calls concurrently using a thread pool.
-
-        Sprint 31 Phase 1a transitional shim. Delegates to
-        ``grove.tool_executor.ToolExecutor.execute_batch_concurrent``
-        with an ``ExecutionContext`` built from the agent's current
-        state, then applies messages / steer / budget orchestration
-        the executor's prior monolithic version did inline. Tests
-        that call this method directly or via
-        ``patch.object(agent, "_execute_tool_calls_concurrent")``
-        keep working unchanged. Phase 2 deletes the shim and routes
-        ``grove.dispatcher._drive_generator`` straight through
-        ``self._tool_executor.execute_batch_concurrent``.
-        """
-        intents = self._extract_tool_intents(assistant_message)
-        if not intents:
-            return
-        ctx = self._build_execution_context_concurrent(
-            intents, effective_task_id, api_call_count,
-        )
-        results = self._tool_executor.execute_batch_concurrent(ctx)
-        self._apply_execution_results_to_messages(results, messages, effective_task_id)
-
-
     def _tool_display_open(self, function_name: str, function_args: dict) -> None:
         """Per-tool display setup for the sequential path. Decides whether
         to start a KawaiiSpinner based on tool name + agent state.
@@ -12123,52 +12071,6 @@ class AIAgent:
             effective_task_id=effective_task_id,
             api_call_count=api_call_count,
         )
-
-    def _execute_tool_calls_sequential(
-        self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0,
-    ) -> None:
-        """Execute tool calls sequentially (original behavior).
-
-        Sprint 31 Phase 1b transitional shim. Delegates to
-        ``grove.tool_executor.ToolExecutor.execute_batch_sequential``
-        with an ExecutionContext built from the agent's current state,
-        then applies messages / steer / budget orchestration the
-        executor's prior monolithic version did inline.
-
-        The shim sets ``self._current_messages = messages`` for the
-        duration of the batch so the context-engine branch in
-        ``_invoke_tool`` (which needs the messages list to call
-        ``self.context_compressor.handle_tool_call``) finds the right
-        list when called via the SideEffectCallbacks.invoke_tool
-        callback. Phase 2 removes the bridge entirely and changes the
-        context-engine integration to a different mechanism.
-
-        Tests that call this method directly or via
-        ``patch.object(agent, "_execute_tool_calls_sequential")`` keep
-        working unchanged. Phase 2 deletes the shim and routes
-        ``grove.dispatcher._drive_generator`` straight through
-        ``self._tool_executor.execute_batch_sequential``.
-        """
-        intents = self._extract_tool_intents(assistant_message)
-        if not intents:
-            return
-
-        # Transitional: _invoke_tool's context_engine branch reads
-        # self._current_messages. The bridge field is normally set by
-        # _run_turn_generator at yield time, but tests calling this
-        # shim directly bypass that. Set + restore for the batch's
-        # duration so context-engine tools find the messages list.
-        _prior_current_messages = getattr(self, "_current_messages", None)
-        self._current_messages = messages
-        try:
-            ctx = self._build_execution_context_sequential(
-                intents, effective_task_id, api_call_count,
-            )
-            results = self._tool_executor.execute_batch_sequential(ctx)
-            self._apply_execution_results_to_messages(results, messages, effective_task_id)
-        finally:
-            self._current_messages = _prior_current_messages
-
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
@@ -15636,12 +15538,31 @@ class AIAgent:
                         # _current_effective_task_id,
                         # _current_api_call_count) are gone.
                         #
-                        # ``_current_messages`` survives as a transitional
-                        # field used by Sprint 30's hot-swap snapshot
-                        # (grove.dispatcher._handle_escalation_request)
-                        # and Sprint 31 Phase 1b's ``_invoke_tool``
-                        # context-engine branch. Its set+clear pair stays
-                        # in place; a future sprint removes it.
+                        # ``_current_messages`` is NOT a transitional
+                        # bridge — it's the Agent's published reference
+                        # to the active conversation, with two real
+                        # architectural consumers:
+                        #
+                        # 1. Sprint 30 hot-swap snapshot
+                        #    (grove.dispatcher._grant_escalation_hot_swap):
+                        #    snapshots the messages at EscalationRequest
+                        #    yield time to construct the escalated Agent
+                        #    with full turn_history. Eliminating this
+                        #    field would require carrying the snapshot
+                        #    inside the EscalationRequest payload, which
+                        #    couples the protocol type to a transient
+                        #    conversation state — undesirable.
+                        # 2. Sprint 31 Phase 1b context-engine routing
+                        #    (AIAgent._invoke_tool's context_engine
+                        #    branch): the context_compressor's
+                        #    handle_tool_call needs the conversation
+                        #    history to operate on. Eliminating this
+                        #    field would require moving context-engine
+                        #    tool handling out of _invoke_tool into a
+                        #    Dispatcher-special-case, breaking the
+                        #    single-call-dispatch contract.
+                        #
+                        # Set+clear pair stays in place by design.
                         self._current_messages = messages
                         # Sprint 30 — single-purpose `escalate` intercept.
                         # A batch of exactly one `escalate` tool call
