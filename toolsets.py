@@ -56,6 +56,10 @@ _GROVE_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
+    # Sprint 30 escalation: Agent declares a cognitive deficit; the
+    # Dispatcher's routing.escalation_policy.enabled flag in
+    # routing.config.yaml gates whether a grant fires.
+    "escalate",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -217,7 +221,13 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
-    
+
+    "escalate": {
+        "description": "Sprint 30 escalation — Agent calls escalate() to request more capability. Dispatcher's routing.escalation_policy.enabled gates whether grants fire.",
+        "tools": ["escalate"],
+        "includes": []
+    },
+
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
         "tools": ["execute_code"],

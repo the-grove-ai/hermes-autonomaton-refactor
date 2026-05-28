@@ -108,9 +108,9 @@ def escalate_tool(
     })
 
 
-def check_escalate_requirements() -> Dict[str, Any]:
+def check_escalate_requirements() -> bool:
     """Always-available check — no external dependencies."""
-    return {}
+    return True
 
 
 # --- Registry ---
