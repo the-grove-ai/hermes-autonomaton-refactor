@@ -91,8 +91,8 @@ prompt:
 
     # ── Context tier ──────────────────────────────────────────────────────
     # cwd-dependent sections that may change between sessions but stay
-    # stable within one. Sprint 37 will register the contextual preamble
-    # here at order: 15 (between system_message and context_files).
+    # stable within one. Sprint 37's contextual preamble landed in the
+    # volatile tier instead (per-turn classification drives content).
 
     system_message:
       tier: context
@@ -113,6 +113,21 @@ prompt:
       tier: volatile
       order: 10
       enabled: true
+
+    # Sprint 37 — Compositional Preamble (GRV-006). Surfaces prior intent
+    # records matching the current turn's classification so the model sees
+    # its own historical patterns. top_k, recency_decay, and outcome_filter
+    # are GRV-006 § III tuning parameters.
+    contextual_preamble:
+      tier: volatile
+      order: 15
+      enabled: true
+      top_k: 3
+      recency_decay: 0.85
+      outcome_filter:
+        - success
+        - correction
+        - drop
 
     user_profile:
       tier: volatile

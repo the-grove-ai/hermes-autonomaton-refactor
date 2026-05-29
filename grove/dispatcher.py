@@ -2567,6 +2567,9 @@ class Dispatcher:
             terminal_cwd = self._base_runtime_ctx.env.get("TERMINAL_CWD") or None
         except Exception:
             terminal_cwd = None
+        classification = getattr(self, "_current_turn_classification", None)
+        pattern_hash = getattr(classification, "pattern_hash", None) if classification else None
+        intent_class = getattr(classification, "intent_class", None) if classification else None
         result = composer.compose(
             valid_tool_names=getattr(agent, "valid_tool_names", set()) or set(),
             model=getattr(agent, "model", "") or "",
@@ -2584,6 +2587,8 @@ class Dispatcher:
             memory_store=memory_store,
             memory_manager=memory_manager,
             terminal_cwd=terminal_cwd,
+            pattern_hash=pattern_hash,
+            intent_class=intent_class,
         )
         return result.text
 

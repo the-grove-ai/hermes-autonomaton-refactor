@@ -512,19 +512,37 @@ _DEFAULT_SECTIONS: Tuple[Tuple[str, SectionProvider, int, str], ...] = (
 def build_default_composer(
     config: Optional[Dict[str, Any]] = None,
 ) -> PromptComposer:
-    """Construct a ``PromptComposer`` with the 17 v0.1 section providers
+    """Construct a ``PromptComposer`` with the v0.1 section providers
     registered at their default tier+order.
 
     ``config`` is the ``prompt`` block from ``runtime_ctx.config`` (or
     a parsed ``prompt.config.yaml`` payload). Per-section ``enabled`` /
     ``order`` / ``tier`` entries override the in-code defaults.
 
-    Sprint 37's contextual-preamble provider calls
-    ``composer.register_section("contextual_preamble", ...,
-    tier="context", order=15)`` — one line, no code change in the
-    composer or the Agent.
+    Sprint 37 adds ``contextual_preamble`` at ``tier="volatile",
+    order=15`` per GRV-006 § II.
     """
     composer = PromptComposer(config=config)
     for name, provider, order, tier in _DEFAULT_SECTIONS:
         composer.register_section(name, provider, order=order, tier=tier)
+
+    from grove.prompt.preamble import build_contextual_preamble_provider
+    preamble_cfg: Dict[str, Any] = {}
+    if config and isinstance(config.get("sections"), dict):
+        section_entry = config["sections"].get("contextual_preamble")
+        if isinstance(section_entry, dict):
+            preamble_cfg = section_entry
+    preamble_kwargs: Dict[str, Any] = {}
+    if "top_k" in preamble_cfg:
+        preamble_kwargs["top_k"] = preamble_cfg["top_k"]
+    if "recency_decay" in preamble_cfg:
+        preamble_kwargs["recency_decay"] = preamble_cfg["recency_decay"]
+    if "outcome_filter" in preamble_cfg:
+        preamble_kwargs["outcome_filter"] = preamble_cfg["outcome_filter"]
+    composer.register_section(
+        "contextual_preamble",
+        build_contextual_preamble_provider(**preamble_kwargs),
+        order=15,
+        tier="volatile",
+    )
     return composer
