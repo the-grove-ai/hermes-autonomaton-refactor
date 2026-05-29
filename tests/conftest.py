@@ -565,6 +565,47 @@ def mock_runtime_ctx():
     return MOCK_RUNTIME_CTX
 
 
+@pytest.fixture()
+def mock_session_db():
+    """A ``MagicMock(spec=SessionDB)`` for Sprint 39 session-authority tests.
+
+    Tests asserting Dispatcher-mediated session writes (turn lifecycle,
+    SessionRotateIntent, SessionUpdateTokensIntent) inspect this mock's
+    calls instead of the deleted ``agent._session_db`` handle. Sensible
+    defaults wired so common read paths
+    (``resolve_resume_session_id``, ``get_messages_as_conversation``,
+    ``get_session_title``, ``get_next_title_in_lineage``) return values
+    that exercise the happy path without per-test setup.
+    """
+    from unittest.mock import MagicMock
+    from hermes_state import SessionDB
+    db = MagicMock(spec=SessionDB)
+    db.get_messages_as_conversation.return_value = []
+    db.get_session_title.return_value = None
+    # No default side_effects — tests that exercise these readers set
+    # ``.return_value`` (or override ``.side_effect``) directly. Side-
+    # effect lambdas in the fixture would shadow per-test ``return_value``
+    # overrides because side_effect wins in MagicMock's resolution.
+    return db
+
+
+@pytest.fixture()
+def dispatcher_with_session(mock_session_db, mock_runtime_ctx):
+    """A Dispatcher wired with the ``mock_session_db`` and ``mock_runtime_ctx``.
+
+    No Agent is constructed (``agent_kwargs`` omitted). Sprint 39 tests
+    use this to exercise the Dispatcher's session lifecycle in
+    isolation — including the load-bearing pre-construction
+    ``open_session()`` + ``hydrate_history()`` hooks that Sprint 35
+    depends on.
+    """
+    from grove.dispatcher import Dispatcher
+    return Dispatcher(
+        runtime_ctx=mock_runtime_ctx,
+        session_db=mock_session_db,
+    )
+
+
 # ── Global test timeout ─────────────────────────────────────────────────────
 # Kill any individual test that takes longer than 30 seconds.
 # Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the

@@ -45,6 +45,8 @@ __all__ = [
     "FinalResponse",
     "ClarificationRequest",
     "Observation",
+    "SessionRotateIntent",
+    "SessionUpdateTokensIntent",
 ]
 
 
@@ -259,3 +261,63 @@ class Observation:
     success: bool
     value: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+# ── Sprint 39 — session-authority Agent→Dispatcher intents ─────────────
+
+
+@dataclass(frozen=True)
+class SessionRotateIntent:
+    """Atomic compression-boundary session rotation.
+
+    GRV-005 § III bars the Agent from holding substrate authority. The
+    pre-Sprint-39 compression flow had the Agent reach directly into a
+    ``SessionDB`` handle to ``end_session`` the old session, generate a
+    new id, ``create_session`` for it, propagate the title with
+    auto-numbering, and ``update_system_prompt`` — seven calls in a
+    cohesive sequence. Sprint 39 expresses that whole sequence as one
+    declarative intent. The Agent yields ``SessionRotateIntent``; the
+    Dispatcher catches it and executes the rotation atomically against
+    its owned ``self.session``.
+
+    Mirrors the Sprint 26 ``ToolIntent`` yield pattern: the Agent
+    declares what should happen, the Dispatcher does it.
+
+    Fields:
+        reason: lifecycle marker recorded against the closing session
+            (e.g. ``"compression"``). Surfaces in ``end_session``'s
+            ``end_reason`` column.
+        new_system_prompt: the system prompt to install on the freshly
+            created continuation session. Computed by the Agent's
+            ``_build_system_prompt`` after compression.
+    """
+
+    reason: str
+    new_system_prompt: str
+
+
+@dataclass(frozen=True)
+class SessionUpdateTokensIntent:
+    """Per-API-call telemetry write against the active session.
+
+    The Agent emits one of these after every API call so the session
+    row's token / cost / billing columns track the conversation. The
+    Dispatcher catches it and updates ``self.session`` — the Agent
+    never holds the handle. High-frequency intent (multiple per turn);
+    the Dispatcher's handling is a single ``update_token_counts`` call.
+
+    Fields mirror ``SessionDB.update_token_counts`` so the Dispatcher's
+    handler can splat them through unchanged.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+    estimated_cost_usd: Optional[float] = None
+    cost_status: Optional[str] = None
+    cost_source: Optional[str] = None
+    billing_provider: Optional[str] = None
+    billing_base_url: Optional[str] = None
+    billing_mode: Optional[str] = None

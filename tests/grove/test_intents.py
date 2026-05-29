@@ -27,16 +27,15 @@ from grove.intents import (
 
 
 def test_module_exports_v1_enumeration():
-    """The __all__ surface is the GRV-005 § IV v1 types plus the Sprint 31
-    Phase 2 ToolBatchYield carrier dataclass.
+    """The __all__ surface is the GRV-005 § IV v1 types plus the carriers
+    later sprints added.
 
-    Sprint 31 Phase 2 migration: the agent → dispatcher yield protocol for
-    tool batches changed from bare ``List[ToolIntent]`` to
-    ``ToolBatchYield(intents, effective_task_id, api_call_count)`` so the
-    per-batch scalars ride the structured protocol instead of the Sprint 26
-    GATE-D state-stashing bridge fields (which Phase 2 deletes).
-    ``ToolBatchYield`` is an internal Sprint 31 carrier, NOT a GRV-005 § IV
-    v1 intent type — but it is exported alongside them for symmetry.
+    Sprint 31 Phase 2 added ``ToolBatchYield`` (per-batch scalar carrier;
+    not a § IV v1 intent but exported for symmetry). Sprint 39 added
+    ``SessionRotateIntent`` and ``SessionUpdateTokensIntent`` as the
+    session-authority extraction's declarative writes — the Agent yields
+    these and the Dispatcher executes against ``self.session``, mirroring
+    the Sprint 26 ``ToolIntent`` mediation pattern.
     """
     import grove.intents as intents
     assert set(intents.__all__) == {
@@ -46,6 +45,8 @@ def test_module_exports_v1_enumeration():
         "FinalResponse",
         "ClarificationRequest",
         "Observation",
+        "SessionRotateIntent",
+        "SessionUpdateTokensIntent",
     }
 
 
