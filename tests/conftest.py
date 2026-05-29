@@ -606,6 +606,63 @@ def dispatcher_with_session(mock_session_db, mock_runtime_ctx):
     )
 
 
+@pytest.fixture()
+def mock_memory_store():
+    """A ``MagicMock(spec=MemoryStore)`` for Sprint 40 memory-authority tests.
+
+    Returns the same shape ``tools.memory_tool.MemoryStore`` exposes —
+    ``add`` / ``replace`` / ``format_for_system_prompt`` / ``load_from_disk``
+    plus the lookup helpers. Tests inspect the mock to verify
+    Dispatcher-mediated writes; Agent unit tests inspect the yielded
+    ``MemoryWriteIntent`` instead per the Sprint 40 GATE-A test-scope
+    refinement.
+    """
+    from unittest.mock import MagicMock
+    from tools.memory_tool import MemoryStore
+    store = MagicMock(spec=MemoryStore)
+    store.format_for_system_prompt.return_value = ""
+    return store
+
+
+@pytest.fixture()
+def mock_memory_manager():
+    """A ``MagicMock(spec=MemoryManager)`` for Sprint 40 memory-authority tests.
+
+    Exposes the lifecycle hooks (``on_session_end`` /
+    ``on_session_switch`` / ``on_pre_compress`` / ``sync_all`` /
+    ``queue_prefetch_all`` / ``shutdown_all``), the bridge call
+    (``on_memory_write``), and the tool-call surface (``has_tool`` /
+    ``handle_tool_call``) — same shape ``agent.memory_manager.MemoryManager``
+    presents to the Dispatcher.
+    """
+    from unittest.mock import MagicMock
+    from agent.memory_manager import MemoryManager
+    manager = MagicMock(spec=MemoryManager)
+    manager.providers = []
+    manager.has_tool.return_value = False
+    manager.handle_tool_call.return_value = ""
+    manager.build_system_prompt.return_value = ""
+    manager.get_all_tool_schemas.return_value = []
+    return manager
+
+
+@pytest.fixture()
+def dispatcher_with_memory(mock_memory_store, mock_memory_manager, mock_runtime_ctx):
+    """A Dispatcher wired with ``mock_memory_store`` + ``mock_memory_manager``.
+
+    No Agent is constructed (``agent_kwargs`` omitted). Sprint 40 tests
+    use this to exercise the Dispatcher's memory lifecycle in isolation:
+    pre-construction ``hydrate_memory_context()``, ``MemoryWriteIntent``
+    round-trips, and ``MemoryLifecycleIntent`` fire-and-forget routing.
+    """
+    from grove.dispatcher import Dispatcher
+    return Dispatcher(
+        runtime_ctx=mock_runtime_ctx,
+        memory_store=mock_memory_store,
+        memory_manager=mock_memory_manager,
+    )
+
+
 # ── Global test timeout ─────────────────────────────────────────────────────
 # Kill any individual test that takes longer than 30 seconds.
 # Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the

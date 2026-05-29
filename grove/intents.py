@@ -47,6 +47,9 @@ __all__ = [
     "Observation",
     "SessionRotateIntent",
     "SessionUpdateTokensIntent",
+    "MemoryWriteIntent",
+    "MemoryWriteResult",
+    "MemoryLifecycleIntent",
 ]
 
 
@@ -323,3 +326,90 @@ class SessionUpdateTokensIntent:
     billing_mode: Optional[str] = None
     model: Optional[str] = None
     api_call_count: int = 1
+
+
+# ── Sprint 40 — memory-authority Agent↔Dispatcher intents ──────────────
+
+
+@dataclass(frozen=True)
+class MemoryWriteIntent:
+    """Agent → Dispatcher: synchronous memory write whose result the
+    Agent treats as a tool output.
+
+    Sprint 40 mediates the two Agent-initiated memory tool calls (the
+    built-in ``memory`` tool and external memory-provider tools registered
+    via the memory manager). Both return a string the LLM sees as the
+    tool result — they need the bidirectional yield-and-inject protocol
+    Sprint 26 established for ``ToolIntent``: the Agent yields, the
+    Dispatcher executes, the Dispatcher ``.send()``s a
+    ``MemoryWriteResult`` back into the generator.
+
+    Two operation kinds:
+
+    * ``kind="builtin_memory"`` — the built-in ``memory`` tool. Dispatcher
+      executes against ``self.memory_store`` (``MemoryStore.add`` or
+      ``replace`` depending on ``action``), then fires the bridge
+      notification to ``self.memory_manager.on_memory_write(...)`` so
+      external providers stay in sync. Sprint 40 owns the bridge.
+    * ``kind="provider_tool"`` — an external memory-provider tool
+      registered via the manager's tool schemas. Dispatcher routes to
+      ``self.memory_manager.handle_tool_call(tool_name, arguments)``.
+    """
+
+    kind: str  # "builtin_memory" | "provider_tool"
+    # builtin_memory fields
+    action: Optional[str] = None
+    target: Optional[str] = None
+    content: Optional[str] = None
+    old_text: Optional[str] = None
+    # provider_tool fields
+    tool_name: Optional[str] = None
+    arguments: Dict[str, Any] = field(default_factory=dict)
+    # shared metadata (used by the on_memory_write bridge for the
+    # builtin_memory path; carries effective_task_id + tool_call_id +
+    # whatever else the Agent's metadata builder produces).
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MemoryWriteResult:
+    """Dispatcher → Agent: result of a ``MemoryWriteIntent``.
+
+    Injected back into the generator via ``.send()`` exactly like
+    ``Observation`` is returned for a ``ToolIntent``. The Agent treats
+    ``value`` as the tool's return string (passed back to the LLM as the
+    tool result).
+    """
+
+    success: bool
+    value: str = ""
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class MemoryLifecycleIntent:
+    """Agent → Dispatcher: fire-and-forget memory-manager lifecycle hook.
+
+    The Dispatcher executes the corresponding ``memory_manager.*`` call
+    and returns a trivial ``Observation`` so the generator resumes
+    immediately. Five events:
+
+    * ``on_session_end`` — turn-end or session-rotation extraction.
+      Carries ``messages`` (the conversation state at that boundary).
+    * ``on_session_switch`` — compression-driven session id rotation.
+      Carries ``parent_session_id`` and ``reason``.
+    * ``on_pre_compress`` — pre-compression notification. Carries
+      ``messages``.
+    * ``sync_turn`` — turn-end ``sync_all(...)`` + ``queue_prefetch_all
+      (...)`` (the manager's per-turn external-sync pair). Carries
+      ``original_user_message`` / ``final_response`` / ``interrupted``.
+    * ``shutdown`` — session-shutdown ``shutdown_all()``.
+    """
+
+    event: str
+    messages: Optional[List[Dict[str, Any]]] = None
+    parent_session_id: Optional[str] = None
+    reason: Optional[str] = None
+    original_user_message: Any = None
+    final_response: Any = None
+    interrupted: bool = False

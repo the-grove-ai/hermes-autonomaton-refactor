@@ -343,6 +343,8 @@ class Dispatcher:
         session_db: Optional[Any] = None,
         session_id: Optional[str] = None,
         resume: bool = False,
+        memory_store: Optional[Any] = None,
+        memory_manager: Optional[Any] = None,
     ) -> None:
         """Capture the substrate snapshot and install Phase 5 disposition handler.
 
@@ -519,6 +521,41 @@ class Dispatcher:
         # works pre-Agent-construction.
         if session_id is not None or resume:
             self.open_session(session_id=session_id, resume=resume)
+
+        # ── Sprint 40 — memory authority ─────────────────────────────
+        # Dispatcher.memory_store and Dispatcher.memory_manager are
+        # the single Agent-path memory authorities. Caller-supplied
+        # (rare; mostly tests) or built lazily by open_memory(). The
+        # Agent does not hold either; reads route through the back-
+        # reference, writes route through MemoryWriteIntent /
+        # MemoryLifecycleIntent yields.
+        self.memory_store: Optional[Any] = memory_store
+        self.memory_manager: Optional[Any] = memory_manager
+        # Memory-enable flags mirror the Agent's existing config-driven
+        # behavior; open_memory() populates them from runtime_ctx.config.
+        self._memory_enabled: bool = False
+        self._user_profile_enabled: bool = False
+
+        # Sprint 40 — when memory is enabled in config AND an Agent is
+        # being constructed (agent_kwargs is not None) AND the caller
+        # hasn't opted out via skip_memory, open the memory store +
+        # manager BEFORE constructing the Agent. This is the Sprint 35
+        # precondition path: hydrate_memory_context() works pre-Agent.
+        # Test Dispatchers that omit agent_kwargs (or pre-supply
+        # memory_store/memory_manager) skip the auto-build; Sprint 35
+        # call sites that classify pre-construction call open_memory()
+        # explicitly.
+        if agent_kwargs is not None:
+            _skip_memory = bool(agent_kwargs.get("skip_memory", False))
+            if not _skip_memory and (
+                self.memory_store is None or self.memory_manager is None
+            ):
+                self.open_memory(
+                    platform=agent_kwargs.get("platform"),
+                    provider_init_kwargs=self._collect_provider_init_kwargs(
+                        agent_kwargs,
+                    ),
+                )
 
         self.agent: Optional[Any] = None
         if agent_kwargs is not None:
@@ -1000,6 +1037,8 @@ class Dispatcher:
         from grove.intents import (
             EscalationRequest,
             FinalResponse,
+            MemoryLifecycleIntent,
+            MemoryWriteIntent,
             Observation,
             SessionRotateIntent,
             SessionUpdateTokensIntent,
@@ -1283,6 +1322,25 @@ class Dispatcher:
                     # is sent back so the generator's ``yield`` resumes
                     # without inspecting a value.
                     self.update_token_counts(yielded)
+                    yielded = gen.send(Observation(
+                        intent_id=None,
+                        success=True,
+                        value=None,
+                    ))
+                elif isinstance(yielded, MemoryWriteIntent):
+                    # Sprint 40 — synchronous memory write. The Agent
+                    # treats the returned ``MemoryWriteResult.value`` as
+                    # the LLM tool result. Bidirectional yield-and-inject
+                    # mirrors the Sprint 26 ToolIntent protocol applied
+                    # to memory.
+                    result = self.execute_memory_write(yielded)
+                    yielded = gen.send(result)
+                elif isinstance(yielded, MemoryLifecycleIntent):
+                    # Sprint 40 — fire-and-forget memory-manager lifecycle
+                    # event. Empty Observation back so the generator
+                    # resumes without inspecting a value (matches the
+                    # SessionUpdateTokensIntent pattern).
+                    self.execute_memory_lifecycle(yielded)
                     yielded = gen.send(Observation(
                         intent_id=None,
                         success=True,
@@ -2120,6 +2178,296 @@ class Dispatcher:
             logger.debug(
                 "Dispatcher.close_session: end_session(%s) failed: %s",
                 self.session_id, exc,
+            )
+
+    # ── Sprint 40 — memory authority + pre-construction read ────────────
+
+    @staticmethod
+    def _collect_provider_init_kwargs(
+        agent_kwargs: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Extract the gateway/user identity fields the memory manager's
+        providers expect at ``initialize_all(...)``.
+
+        Pre-Sprint-40 the Agent's ``__init__`` did this inline. Sprint 40
+        relocates the construction; this helper preserves the same field
+        set so providers (Honcho, etc.) see identical scoping kwargs.
+        """
+        out: Dict[str, Any] = {}
+        if not agent_kwargs:
+            return out
+        for key in (
+            "session_title",
+            "user_id",
+            "user_name",
+            "chat_id",
+            "chat_name",
+            "chat_type",
+            "thread_id",
+            "gateway_session_key",
+        ):
+            v = agent_kwargs.get(key)
+            if v:
+                out[key] = v
+        return out
+
+    def open_memory(
+        self,
+        *,
+        memory_config: Optional[Dict[str, Any]] = None,
+        platform: Optional[str] = None,
+        provider_init_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Build the memory store + manager — pre-Agent-construction.
+
+        Sprint 40 owns the construction the Agent used to do inside its
+        ``__init__``. Idempotent at the store level (already-built handle
+        is preserved); the manager is rebuilt when ``provider_init_kwargs``
+        changes (e.g. session id rotation), but that path is exercised
+        by Sprint 39's session machinery, not here.
+
+        ``memory_config`` defaults to ``self._base_runtime_ctx.config
+        .get("memory", {})`` per the GATE-A disposition. ``platform`` is
+        the Agent's platform string (used by some providers for scoping
+        — Honcho, etc.). ``provider_init_kwargs`` carries the gateway/
+        user/profile identity the manager forwards to each provider's
+        ``initialize_all(...)``.
+
+        After this returns:
+
+        * ``self.memory_store`` is a ``MemoryStore`` (or stays ``None``
+          when neither MEMORY.md nor USER.md is enabled in config).
+        * ``self.memory_manager`` is a ``MemoryManager`` with its
+          providers added and initialized (or stays ``None`` when
+          config has no ``memory.provider`` set).
+        * Sprint 35 can call ``hydrate_memory_context()`` to read the
+          three system-prompt blocks the classifier needs.
+        """
+        if memory_config is None:
+            cfg = self._base_runtime_ctx.config or {}
+            memory_config = cfg.get("memory", {}) if isinstance(cfg, dict) else {}
+        memory_config = memory_config or {}
+        self._memory_enabled = bool(memory_config.get("memory_enabled", False))
+        self._user_profile_enabled = bool(memory_config.get("user_profile_enabled", False))
+
+        # MemoryStore — built only when at least one of the two operator-
+        # memory surfaces (MEMORY.md or USER.md) is enabled. Honors the
+        # Sprint 26 Phase 1b cache on runtime_ctx.
+        if self.memory_store is None and (self._memory_enabled or self._user_profile_enabled):
+            cached = getattr(self._base_runtime_ctx, "memory_store", None)
+            if cached is not None:
+                self.memory_store = cached
+            else:
+                try:
+                    from tools.memory_tool import MemoryStore
+                    self.memory_store = MemoryStore(
+                        memory_char_limit=memory_config.get("memory_char_limit", 2200),
+                        user_char_limit=memory_config.get("user_char_limit", 1375),
+                    )
+                    self.memory_store.load_from_disk()
+                except Exception as exc:
+                    logger.debug(
+                        "Dispatcher.open_memory: MemoryStore build failed: %s",
+                        exc,
+                    )
+                    self.memory_store = None
+
+        # MemoryManager — built only when an external provider is
+        # configured. Same flow the Agent used pre-Sprint-40.
+        if self.memory_manager is None:
+            provider_name = memory_config.get("provider", "")
+            if provider_name:
+                try:
+                    from agent.memory_manager import MemoryManager
+                    from plugins.memory import load_memory_provider
+                    manager = MemoryManager()
+                    mp = load_memory_provider(provider_name)
+                    if mp and mp.is_available():
+                        manager.add_provider(mp)
+                    if manager.providers:
+                        init_kwargs = {
+                            "session_id": self.session_id,
+                            "platform": platform or "cli",
+                            "agent_context": "primary",
+                        }
+                        try:
+                            from hermes_state import get_hermes_home
+                            init_kwargs["hermes_home"] = str(get_hermes_home())
+                        except Exception:
+                            pass
+                        try:
+                            from hermes_cli.profiles import get_active_profile_name
+                            init_kwargs["agent_identity"] = get_active_profile_name()
+                            init_kwargs["agent_workspace"] = "hermes"
+                        except Exception:
+                            pass
+                        if provider_init_kwargs:
+                            init_kwargs.update(provider_init_kwargs)
+                        manager.initialize_all(**init_kwargs)
+                        self.memory_manager = manager
+                        logger.info(
+                            "[grove.dispatcher] memory provider '%s' activated",
+                            provider_name,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[grove.dispatcher] memory provider plugin init failed: %s",
+                        exc,
+                    )
+                    self.memory_manager = None
+
+    def hydrate_memory_context(self) -> Dict[str, str]:
+        """Return the three memory system-prompt blocks — pre-Agent.
+
+        Sprint 35 calls this before constructing the Agent so the
+        classifier can see operator memory + user profile + external
+        provider context. Missing blocks default to empty strings.
+        """
+        result = {"memory": "", "user": "", "external": ""}
+        if self.memory_store is not None:
+            try:
+                if self._memory_enabled:
+                    block = self.memory_store.format_for_system_prompt("memory")
+                    if block:
+                        result["memory"] = block
+                if self._user_profile_enabled:
+                    block = self.memory_store.format_for_system_prompt("user")
+                    if block:
+                        result["user"] = block
+            except Exception as exc:
+                logger.debug(
+                    "Dispatcher.hydrate_memory_context: store read failed: %s",
+                    exc,
+                )
+        if self.memory_manager is not None:
+            try:
+                ext = self.memory_manager.build_system_prompt()
+                if ext:
+                    result["external"] = ext
+            except Exception as exc:
+                logger.debug(
+                    "Dispatcher.hydrate_memory_context: manager read failed: %s",
+                    exc,
+                )
+        return result
+
+    def execute_memory_write(self, intent: "MemoryWriteIntent") -> "MemoryWriteResult":
+        """Handle a ``MemoryWriteIntent`` — synchronous return.
+
+        Routes by ``intent.kind``:
+
+        * ``"builtin_memory"`` — executes the built-in ``memory`` tool
+          against ``self.memory_store`` (``add`` or ``replace``), then
+          fires the bridge notification to
+          ``self.memory_manager.on_memory_write(...)`` so external
+          providers stay in sync. Sprint 40 owns the bridge — Phase 2
+          deletes the Agent-side call.
+        * ``"provider_tool"`` — delegates to
+          ``self.memory_manager.handle_tool_call(...)``.
+
+        Returns a ``MemoryWriteResult`` the Dispatcher injects back into
+        the generator via ``.send()`` — the Agent treats ``value`` as the
+        tool's LLM-visible result string.
+        """
+        from grove.intents import MemoryWriteResult
+        if intent.kind == "builtin_memory":
+            if self.memory_store is None:
+                return MemoryWriteResult(
+                    success=False, value="",
+                    error="memory store not available",
+                )
+            try:
+                from tools.memory_tool import memory_tool as _memory_tool
+                value = _memory_tool(
+                    action=intent.action,
+                    target=intent.target or "memory",
+                    content=intent.content,
+                    old_text=intent.old_text,
+                    store=self.memory_store,
+                )
+            except Exception as exc:
+                return MemoryWriteResult(
+                    success=False, value="", error=str(exc),
+                )
+            # Bridge: notify external memory provider of built-in writes.
+            if (
+                self.memory_manager is not None
+                and intent.action in {"add", "replace"}
+            ):
+                try:
+                    self.memory_manager.on_memory_write(
+                        intent.action or "",
+                        intent.target or "memory",
+                        intent.content or "",
+                        metadata=dict(intent.metadata),
+                    )
+                except Exception:
+                    pass
+            return MemoryWriteResult(success=True, value=str(value))
+        if intent.kind == "provider_tool":
+            if self.memory_manager is None:
+                return MemoryWriteResult(
+                    success=False, value="",
+                    error="memory manager not available",
+                )
+            try:
+                value = self.memory_manager.handle_tool_call(
+                    intent.tool_name or "",
+                    dict(intent.arguments),
+                )
+            except Exception as exc:
+                return MemoryWriteResult(
+                    success=False, value="", error=str(exc),
+                )
+            return MemoryWriteResult(success=True, value=str(value))
+        return MemoryWriteResult(
+            success=False, value="",
+            error=f"unknown MemoryWriteIntent.kind: {intent.kind!r}",
+        )
+
+    def execute_memory_lifecycle(self, intent: "MemoryLifecycleIntent") -> None:
+        """Handle a ``MemoryLifecycleIntent`` — fire-and-forget.
+
+        Routes by ``intent.event`` to the corresponding memory-manager
+        lifecycle method. All event handlers are wrapped in try/except
+        because lifecycle failures must not break the conversational
+        flow (matches the Agent's pre-Sprint-40 behavior).
+        """
+        if self.memory_manager is None:
+            return
+        event = intent.event
+        try:
+            if event == "on_session_end":
+                self.memory_manager.on_session_end(intent.messages or [])
+            elif event == "on_session_switch":
+                self.memory_manager.on_session_switch(
+                    self.session_id or "",
+                    parent_session_id=intent.parent_session_id,
+                    reset=False,
+                    reason=intent.reason or "session_switch",
+                )
+            elif event == "on_pre_compress":
+                self.memory_manager.on_pre_compress(intent.messages or [])
+            elif event == "sync_turn":
+                self.memory_manager.sync_all(
+                    original_user_message=intent.original_user_message,
+                    final_response=intent.final_response,
+                    interrupted=intent.interrupted,
+                )
+                self.memory_manager.queue_prefetch_all(
+                    original_user_message=intent.original_user_message,
+                )
+            elif event == "shutdown":
+                self.memory_manager.shutdown_all()
+            else:
+                logger.debug(
+                    "Dispatcher.execute_memory_lifecycle: unknown event %r",
+                    event,
+                )
+        except Exception as exc:
+            logger.debug(
+                "Dispatcher.execute_memory_lifecycle(%s) failed: %s",
+                event, exc,
             )
 
     @classmethod

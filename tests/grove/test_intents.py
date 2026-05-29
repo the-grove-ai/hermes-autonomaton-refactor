@@ -47,20 +47,30 @@ def test_module_exports_v1_enumeration():
         "Observation",
         "SessionRotateIntent",
         "SessionUpdateTokensIntent",
+        "MemoryWriteIntent",
+        "MemoryWriteResult",
+        "MemoryLifecycleIntent",
     }
 
 
-def test_no_deferred_horizon_types_exported():
-    """GRV-005 § X deferred horizons (MemoryWriteIntent, SubAgentIntent,
-    OperatorDispositionObservation) MUST NOT be implemented in v1."""
+def test_remaining_horizons_not_exported():
+    """GRV-005 § X horizons that are still deferred MUST NOT be exported.
+
+    Sprint 40 realized ``MemoryWriteIntent`` (paired with the
+    ``MemoryWriteResult`` return container and the fire-and-forget
+    ``MemoryLifecycleIntent``) — the operator-memory authority that used
+    to live on ``AIAgent._memory_store`` / ``_memory_manager`` now flows
+    as declarative intents the Dispatcher catches. The remaining § X
+    horizons (``SubAgentIntent``, ``OperatorDispositionObservation``)
+    stay deferred.
+    """
     import grove.intents as intents
     for name in (
-        "MemoryWriteIntent",
         "SubAgentIntent",
         "OperatorDispositionObservation",
     ):
         assert not hasattr(intents, name), (
-            f"{name} is a GRV-005 § X horizon and MUST NOT be in v1"
+            f"{name} is a GRV-005 § X horizon and MUST NOT be exported yet"
         )
 
 
