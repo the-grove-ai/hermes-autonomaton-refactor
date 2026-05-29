@@ -958,6 +958,16 @@ class Dispatcher:
             ``run_conversation`` return value byte-for-byte.
         """
         ledger = self._get_or_create_ledger(agent)
+        # Sprint 35 — defer classification until AFTER the per-turn
+        # reset below so the reset can't overwrite the captured value
+        # to ``None``. Capture the gate flag here; fire the classify
+        # call after the reset.
+        already_routed = bool(kwargs.get("already_routed", False))
+        # Sprint 35 — the in-generator ``_maybe_route_for_turn`` is
+        # dead code after Phase 2; force ``already_routed=True`` so
+        # the generator's gate never fires the now-deleted path. The
+        # kwarg itself is deleted in Phase 2.
+        kwargs["already_routed"] = True
         # Sprint 26 Phase 7 — Dispatcher broadcasts GROVE_SESSION_ID to
         # subprocess descendants on every turn. Authority moved here
         # from AIAgent.__init__ per GRV-005 § II/III: substrate writes
@@ -1005,6 +1015,24 @@ class Dispatcher:
         self._current_turn_escalation_events = []
         if previous_turn_id is not None:
             self._finalize_previous_turn_pending(previous_turn_id)
+        # Sprint 35 — pre-construction classification + tier binding.
+        # Fires AFTER the per-turn reset block above so the reset
+        # cannot null out the captured classification. Pre-Sprint-35
+        # this work happened on the first ``send(None)`` inside the
+        # generator via ``_maybe_route_for_turn``. Sprint 35 moves it
+        # here so the Agent's reasoning never fires at the wrong tier
+        # and Sprint 28 IntentRecord / Sprint 29 tool filter both see
+        # the classification BEFORE the LLM call. ``already_routed``
+        # short-circuits the route_for_agent call (CLI pre-routed via
+        # ``_resolve_turn_agent_config``, or the Sprint 30 hot-swap
+        # rebuild path) but the Dispatcher still snapshots whatever
+        # ``providers._last_classification`` holds — pre-routing fills
+        # the global, and downstream consumers expect the snapshot.
+        if not already_routed and isinstance(user_message, str):
+            self._classify_and_bind_turn(agent, user_message, ledger)
+        else:
+            from grove.providers import current_classification as _current_classification
+            self._current_turn_classification = _current_classification()
         gen = agent._run_turn_generator(user_message=user_message, **kwargs)
         try:
             return self._drive_generator(agent, gen, ledger)
@@ -1054,46 +1082,13 @@ class Dispatcher:
 
         try:
             yielded = gen.send(None)  # advance to first yield
-            # Sprint 28 Phase 3 — capture the turn's classification
-            # immediately. ``route_for_agent`` fires inside the generator
-            # during the first send; the module-global ``_last_classification``
-            # is set by the time control returns here. Snapshot to the
-            # Dispatcher's instance attr so terminal write sites
-            # (FinalResponse / Drop / exception) embed THIS turn's
-            # classification, immune to a concurrent session overwriting
-            # the global between here and the terminal.
-            from grove.providers import current_classification as _current_classification
-            self._current_turn_classification = _current_classification()
-            # Sprint 30.1 (post-completion patch) — record the classifier-
-            # driven pre-route escalation, if route_for_agent took that
-            # path on this turn. Mirrors Sprint 29's pattern: the router
-            # stashes the decision in providers._last_pre_route_decision;
-            # the Dispatcher reads + emits the ledger event so the Agent
-            # stays unaware of the ledger per GRV-005 § III. ``source``
-            # distinguishes this from the Agent-yielded EscalationRequest
-            # path which carries source="agent_request".
-            from grove.providers import current_pre_route_decision as _current_pre_route_decision
-            _pre_route = _current_pre_route_decision()
-            if _pre_route is not None:
-                try:
-                    ledger.record(
-                        "escalation_decision",
-                        source="pre_route",
-                        granted=True,
-                        current_tier=_pre_route.get("current_tier"),
-                        target_tier=_pre_route.get("target_tier"),
-                        complexity_signal=_pre_route.get("complexity_signal"),
-                        confidence=_pre_route.get("confidence"),
-                        reason=(
-                            "classifier-driven pre-route — complexity_signal in "
-                            "triggers and confidence below threshold"
-                        ),
-                    )
-                except Exception as _exc:
-                    logger.warning(
-                        "[grove.dispatcher] pre_route escalation_decision "
-                        "ledger write failed: %r", _exc,
-                    )
+            # Sprint 35 — classification + pre-route ledger event already
+            # fired in ``dispatch_turn`` BEFORE this generator ran. The
+            # in-generator ``_maybe_route_for_turn`` call site is dead
+            # code Phase 2 deletes; the Dispatcher's
+            # ``_current_turn_classification`` was populated by
+            # ``_classify_and_bind_turn``.
+
             # Sprint 29 Phase 2 — record the per-turn tool selection the
             # Agent computed (post-route, pre-first-call). Agent stashes
             # the metadata on ``_last_tool_selection``; Dispatcher writes
@@ -1686,6 +1681,11 @@ class Dispatcher:
             "sovereign_prompt_handler": getattr(
                 agent, "_sovereign_prompt_handler", None,
             ),
+            # Sprint 34 — runtime_ctx is mandatory on AIAgent. The hot-
+            # swap rebuild inherits the parent agent's ctx; falling back
+            # to the Sprint 34 tests' shared empty mock when the parent
+            # somehow lacks one (test-bypass paths).
+            "runtime_ctx": getattr(agent, "_runtime_ctx", None),
         }
 
     def _resolve_model_for_tier(self, target_tier: Optional[str]) -> str:
@@ -1886,6 +1886,119 @@ class Dispatcher:
             target_tier=target_tier,
             reason=reason,
         )
+
+    # ── Sprint 35 — pre-construction classification + tier binding ──────
+
+    def _classify_and_bind_turn(
+        self,
+        agent: Any,
+        user_message: str,
+        ledger: Any,
+    ) -> None:
+        """Classify the inbound message and bind the routed tier to the Agent.
+
+        Sprint 35 — replaces ``AIAgent._maybe_route_for_turn``. Fires
+        from ``dispatch_turn`` BEFORE the generator runs so the Agent
+        never produces an LLM call at the wrong tier. The Agent's
+        reasoning loop receives the result (via the
+        ``self._current_turn_classification`` capture + the
+        ``providers._last_classification`` module global the existing
+        Sprint 29 tool filter and Sprint 28 intent record already
+        consume), it does not produce it.
+
+        Vanilla install (no ``routing.config.yaml``) returns silently —
+        ``route_for_agent`` returns ``None`` and the caller's chosen
+        model is used unchanged.
+        """
+        from grove.providers import (
+            route_for_agent,
+            current_classification,
+            current_pre_route_decision,
+            resolve_tier_to_runtime,
+        )
+        decision = route_for_agent(
+            message=user_message, explicit_model=None, explicit_tier=None,
+        )
+        if decision is None:
+            # Vanilla install (no routing config) OR caller pre-set the
+            # classification via the module global. Still snapshot the
+            # global so downstream consumers (Sprint 28 IntentRecord
+            # terminal write, Sprint 29 tool filter) see any pre-set
+            # value. Empty global on a true vanilla install is the
+            # expected None.
+            self._current_turn_classification = current_classification()
+            return
+        # Sprint 28 Phase 3 — capture for terminal IntentRecord writes
+        # and Sprint 29 tool filter. The Dispatcher's instance attr
+        # snapshot is immune to a concurrent session overwriting the
+        # ``providers._last_classification`` module global between here
+        # and the terminal write.
+        self._current_turn_classification = current_classification()
+        # Sprint 30.1 — classifier-driven pre-route escalation ledger
+        # event. Moved here from ``_drive_generator`` since classification
+        # now fires before the generator runs.
+        pre_route = current_pre_route_decision()
+        if pre_route is not None:
+            try:
+                ledger.record(
+                    "escalation_decision",
+                    source="pre_route",
+                    granted=True,
+                    current_tier=pre_route.get("current_tier"),
+                    target_tier=pre_route.get("target_tier"),
+                    complexity_signal=pre_route.get("complexity_signal"),
+                    confidence=pre_route.get("confidence"),
+                    reason=(
+                        "classifier-driven pre-route — complexity_signal in "
+                        "triggers and confidence below threshold"
+                    ),
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Dispatcher pre_route ledger write failed: %s", exc,
+                )
+        # Bind the pre-built Agent shell to the routed tier. apply_tier
+        # is the lightweight same-provider swap (model + max_tokens);
+        # switch_model rebuilds the LLM client when the provider /
+        # base_url / api_mode change. The selection rule mirrors the
+        # pre-Sprint-35 ``_maybe_route_for_turn`` logic byte-for-byte.
+        self._bind_agent_to_tier(agent, decision, resolve_tier_to_runtime)
+
+    @staticmethod
+    def _bind_agent_to_tier(
+        agent: Any,
+        decision: Any,
+        resolve_tier_to_runtime: Callable[[Any], Dict[str, Any]],
+    ) -> None:
+        """Bind the pre-built Agent shell to the routed tier.
+
+        Replaces the apply_tier / switch_model branching that lived
+        inside ``AIAgent._maybe_route_for_turn``. Same selection rule:
+        a same-provider routing change goes through the lightweight
+        ``apply_tier``; a cross-provider change rebuilds the LLM client
+        via ``switch_model``. An empty current provider is treated as
+        same-provider — the pre-Sprint-35 safe-default for fixtures
+        that replace ``self.client`` wholesale.
+        """
+        cur_provider = (getattr(agent, "provider", None) or "").strip().lower()
+        dec_provider = (decision.tier_config.provider or "").strip().lower()
+        same_provider = (not cur_provider) or (cur_provider == dec_provider)
+        if same_provider:
+            agent.apply_tier(
+                decision.tier_config.model,
+                decision.tier_config.max_tokens,
+            )
+            return
+        runtime = resolve_tier_to_runtime(decision.tier_config)
+        agent.switch_model(
+            new_model=runtime["model"],
+            new_provider=runtime["provider"] or "",
+            api_key=runtime.get("api_key") or "",
+            base_url=runtime.get("base_url") or "",
+            api_mode=runtime.get("api_mode") or "",
+        )
+        if decision.tier_config.max_tokens is not None:
+            agent.max_tokens = decision.tier_config.max_tokens
 
     @staticmethod
     def broadcast_session_id(session_id: str) -> None:

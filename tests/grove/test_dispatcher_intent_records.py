@@ -115,7 +115,16 @@ def _set_current_classification(
     goal_alignment: Optional[str] = "direct",
 ) -> ClassificationResult:
     """Pre-populate grove.providers._last_classification so the
-    Dispatcher's capture step finds a value to snapshot."""
+    Dispatcher's capture step finds a value to snapshot.
+
+    Sprint 35 — the Dispatcher's pre-construction classify path calls
+    ``route_for_agent`` and overwrites the global. To preserve the
+    test-set classification through dispatch_turn, this helper also
+    stubs ``route_for_agent`` to a no-op that leaves the global
+    untouched. Tests using this helper are simulating "classification
+    happened before dispatch_turn" — semantically identical to the
+    ``already_routed=True`` path.
+    """
     classification = ClassificationResult(
         intent_class=intent_class,
         pattern_hash="abc123",
@@ -126,6 +135,14 @@ def _set_current_classification(
     )
     from grove import providers as _providers_mod
     monkeypatch.setattr(_providers_mod, "_last_classification", classification)
+    # Sprint 35 — prevent dispatch_turn's _classify_and_bind_turn from
+    # overwriting the global. Returning None matches the vanilla-install
+    # signal (no routing config); the Dispatcher's snapshot branch then
+    # falls back to reading the pre-set global.
+    monkeypatch.setattr(
+        "grove.providers.route_for_agent",
+        lambda **kw: None,
+    )
     return classification
 
 
@@ -327,6 +344,13 @@ class TestTerminalFinalResponseWritesPending:
         _patch_classifier_green(monkeypatch)
         from grove import providers as _providers_mod
         monkeypatch.setattr(_providers_mod, "_last_classification", None)
+        # Sprint 35 — dispatch_turn now calls route_for_agent pre-
+        # generator. Stub it to None so the test's "unclassified turn"
+        # scenario survives the new path; _classify_and_bind_turn falls
+        # back to snapshotting the (None-set) global.
+        monkeypatch.setattr(
+            "grove.providers.route_for_agent", lambda **kw: None,
+        )
         msgs: List[Dict] = []
         agent = _bare_agent_with_exec(msgs)
         agent._run_turn_generator = (

@@ -647,6 +647,31 @@ def mock_memory_manager():
 
 
 @pytest.fixture()
+def mock_classification_result():
+    """A canonical ``grove.classify.ClassificationResult`` for Sprint 35
+    tests that inject a Dispatcher-captured classification.
+
+    Sprint 35 contract: ``Dispatcher.dispatch_turn`` calls
+    ``route_for_agent(message=...)`` before the generator runs;
+    ``route_for_agent`` populates the ``providers._last_classification``
+    module global and the Dispatcher snapshots it to
+    ``self._current_turn_classification``. Tests that need a specific
+    classification monkeypatch ``route_for_agent`` to return a known
+    ``RoutingDecision`` AND set the global to this fixture's value (or
+    construct the fixture themselves for non-Dispatcher consumers).
+    """
+    from grove.classify import ClassificationResult
+    return ClassificationResult(
+        intent_class="conversation",
+        pattern_hash="test:conversation:abc123",
+        confidence=0.85,
+        register_class="casual",
+        complexity_signal="simple",
+        goal_alignment="aligned",
+    )
+
+
+@pytest.fixture()
 def dispatcher_with_memory(mock_memory_store, mock_memory_manager, mock_runtime_ctx):
     """A Dispatcher wired with ``mock_memory_store`` + ``mock_memory_manager``.
 

@@ -116,6 +116,11 @@ def _bare_agent_with_state(messages: List[Dict[str, Any]]):
     agent._execute_tool_calls = (
         lambda asst, msgs, task_id, api_n: None
     )
+    # Sprint 34/35 — hot-swap rebuild copies _runtime_ctx through the
+    # carry kit; without it, the new AIAgent.__init__ raises per the
+    # Sprint 34 mandatory-runtime_ctx contract.
+    from tests._runtime_ctx import MOCK_RUNTIME_CTX
+    agent._runtime_ctx = MOCK_RUNTIME_CTX
     return agent
 
 
@@ -144,6 +149,14 @@ def _patch_classifier_green(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda action: ZoneResult(
             zone="green", matched_rule=action, source="test_force_green",
         ),
+    )
+    # Sprint 35 — dispatch_turn now calls route_for_agent pre-generator.
+    # Stub it to None so escalation tests that pre-set _last_routed_tier
+    # (e.g. to T3 for ceiling-deny scenarios) keep that setup; the
+    # Dispatcher's snapshot fallback reads the test-controlled globals
+    # rather than the live router output.
+    monkeypatch.setattr(
+        "grove.providers.route_for_agent", lambda **kw: None,
     )
 
 
