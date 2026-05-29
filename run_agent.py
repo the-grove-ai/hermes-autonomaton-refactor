@@ -1419,14 +1419,10 @@ class AIAgent:
         # would mangle the escape sequences.  None = use builtins.print.
         self._print_fn = None
         self.background_review_callback = None  # Optional sync callback for gateway delivery
-        # Governance: the per-turn RoutingDecision and ClassificationResult.
-        # Set by run_conversation() either from a pre-route (CLI passes
-        # already_routed=True after _resolve_turn_agent_config) or by
-        # self-routing when the caller didn't pre-route (webui path).
-        # Exposed in run_conversation()'s return dict for callers that
-        # render tier badges / cost lines / /why explanations.
-        self._last_routing_decision = None
-        self._last_classification_result = None
+        # Sprint 35 — Per-turn RoutingDecision + ClassificationResult
+        # are Dispatcher-owned (``_classify_and_bind_turn`` captures
+        # them pre-generator). Read via the back-reference in
+        # ``run_conversation``'s tail, not from Agent fields.
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
@@ -2765,88 +2761,11 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def _maybe_route_for_turn(self, user_message) -> None:
-        """Self-route this turn unless the caller pre-routed.
-
-        Closes the governance bypass that direct callers of
-        ``run_conversation`` would otherwise create. Calls
-        ``grove.providers.route_for_agent`` — which runs T-telemetry
-        classification, applies the routing rules, and emits the
-        ``routing_decision`` telemetry — and then applies the routed
-        tier to the live agent via ``apply_tier`` (same-provider swap)
-        or ``switch_model`` (provider/base_url/api_mode change).
-
-        Returns silently in the vanilla-install case (no
-        ``routing.config.yaml`` → route_for_agent returns None) so the
-        caller's chosen model is used unchanged. Non-string user
-        messages skip routing because the T-telemetry classifier
-        requires text input.
-        """
-        if not isinstance(user_message, str):
-            return
-        from grove.providers import (
-            route_for_agent,
-            current_classification,
-            resolve_tier_to_runtime,
-        )
-
-        # explicit_model is for OPERATOR overrides (CLI's --model flag,
-        # GROVE_INFERENCE_MODEL env, /model session command). self.model
-        # is the agent's currently-configured model, which may be a
-        # config.yaml default rather than an operator choice — passing
-        # it as explicit_model would inject a phantom operator preference
-        # and shadow escalation / upward-routing rules. The pipeline
-        # decides the tier from classification alone; if the webui (or
-        # any future caller) gains an operator-preference signal, plumb
-        # it in explicitly here.
-        decision = route_for_agent(
-            message=user_message,
-            explicit_model=None,
-            explicit_tier=None,
-        )
-        if decision is None:
-            return
-
-        # The pipeline is immutable — it runs on every turn, no
-        # exceptions. When classification fails, the router still
-        # produces a degraded RoutingDecision (reason ∈ {"default",
-        # "classifier_unavailable"} per grove/router.py) routed to the
-        # default tier with confidence=None. The turn is governed by a
-        # degraded decision, NOT ungoverned. Apply it regardless.
-        classification = current_classification()
-        self._last_routing_decision = decision
-        self._last_classification_result = classification
-
-        # Apply the routed tier to the live agent. apply_tier() is the
-        # lightweight same-client swap (model + max_tokens);
-        # switch_model() rebuilds the client when provider / base_url /
-        # api_mode change. An empty current provider means the agent
-        # wasn't bound to a specific provider's client semantics at
-        # construction (or the fixture replaced self.client wholesale,
-        # which is the test pattern) — apply_tier is the safe choice.
-        # Cross-provider rebuild only fires when BOTH providers are
-        # known AND differ, so a real cross-provider routing change
-        # (e.g. local-profile T2 omlx → T3 anthropic Opus) still goes
-        # through switch_model and gets a fresh client.
-        _cur_provider = (self.provider or "").strip().lower()
-        _dec_provider = (decision.tier_config.provider or "").strip().lower()
-        _same_provider = (not _cur_provider) or (_cur_provider == _dec_provider)
-        if _same_provider:
-            self.apply_tier(
-                decision.tier_config.model,
-                decision.tier_config.max_tokens,
-            )
-        else:
-            runtime = resolve_tier_to_runtime(decision.tier_config)
-            self.switch_model(
-                new_model=runtime["model"],
-                new_provider=runtime["provider"] or "",
-                api_key=runtime.get("api_key") or "",
-                base_url=runtime.get("base_url") or "",
-                api_mode=runtime.get("api_mode") or "",
-            )
-            if decision.tier_config.max_tokens is not None:
-                self.max_tokens = decision.tier_config.max_tokens
+    # Sprint 35 — ``_maybe_route_for_turn`` deleted. Classification +
+    # tier binding moved to ``Dispatcher._classify_and_bind_turn`` and
+    # ``Dispatcher._bind_agent_to_tier`` (called from
+    # ``dispatch_turn`` BEFORE the generator runs). The Agent's
+    # reasoning loop receives the result, does not produce it.
 
     # ── Sprint 29 Phase 2 — per-turn tool filter ─────────────────────────
 
@@ -4711,18 +4630,46 @@ class AIAgent:
                     # owns the loop and the agent-loop tools dispatch.
                     if _parent_api_mode == "codex_app_server":
                         _parent_api_mode = "codex_responses"
-                    review_agent = AIAgent(
-                        model=self.model,
-                        max_iterations=16,
-                        quiet_mode=True,
-                        platform=self.platform,
-                        provider=self.provider,
-                        api_mode=_parent_api_mode,
-                        base_url=_parent_runtime.get("base_url") or None,
-                        api_key=_parent_runtime.get("api_key") or None,
-                        credential_pool=getattr(self, "_credential_pool", None),
-                        parent_session_id=self.session_id,
-                    )
+                    # Sprint 35 — the review fork goes through the
+                    # Dispatcher inversion (Sprint 33) so it inherits
+                    # the parent's RuntimeContext (Sprint 34 mandatory),
+                    # the parent's session DB (Sprint 39), and the
+                    # parent's memory store + manager (Sprint 40) via
+                    # the Dispatcher kwargs. Without this, the direct
+                    # ``AIAgent(...)`` construction would TypeError on
+                    # the missing ``runtime_ctx`` per the Sprint 34
+                    # contract, silently in production. This fix
+                    # carries the v2.1 spine's substrate ownership
+                    # invariants into the review-fork path.
+                    from grove.dispatcher import Dispatcher as _Dispatcher
+                    _parent_disp = getattr(self, "_dispatcher_singleton", None)
+                    review_agent = _Dispatcher(
+                        runtime_ctx=self._runtime_ctx,
+                        session_db=(
+                            _parent_disp.session
+                            if _parent_disp is not None else None
+                        ),
+                        memory_store=(
+                            _parent_disp.memory_store
+                            if _parent_disp is not None else None
+                        ),
+                        memory_manager=(
+                            _parent_disp.memory_manager
+                            if _parent_disp is not None else None
+                        ),
+                        agent_kwargs=dict(
+                            model=self.model,
+                            max_iterations=16,
+                            quiet_mode=True,
+                            platform=self.platform,
+                            provider=self.provider,
+                            api_mode=_parent_api_mode,
+                            base_url=_parent_runtime.get("base_url") or None,
+                            api_key=_parent_runtime.get("api_key") or None,
+                            credential_pool=getattr(self, "_credential_pool", None),
+                            parent_session_id=self.session_id,
+                        ),
+                    ).agent
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
                     # Sprint 40 — the review fork's own Dispatcher provides
@@ -12203,7 +12150,6 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
-        already_routed: bool = False,
     ):
         """Generator-shaped turn loop per GRV-005 § IV (Sprint 26 Phase 3).
 
@@ -12310,14 +12256,12 @@ class AIAgent:
         # ── Governance pipeline ─────────────────────────────────────────
         # The webui (and any other direct caller) reaches run_conversation
         # without going through CLI's _resolve_turn_agent_config and
-        # therefore bypasses route_for_agent — the T-telemetry classifier,
-        # the tier escalation rules, and the routing telemetry. Close that
-        # bypass here. Both paths converge on grove.providers.route_for_agent;
-        # the CLI sets already_routed=True after pre-routing in
-        # _resolve_turn_agent_config so T-telemetry classification fires
-        # exactly once per turn (A2).
-        if not already_routed:
-            self._maybe_route_for_turn(user_message)
+        # Sprint 35 — classification + tier binding now fire in
+        # ``Dispatcher.dispatch_turn`` BEFORE this generator runs. The
+        # in-generator self-route is deleted. ``already_routed`` is
+        # kept on the signature as a no-op forward-compat for the CLI /
+        # oneshot callers that still pass it; a future sprint deletes
+        # the kwarg from the surface.
         # Sprint 29 Phase 2 — per-turn tool filter. Reads the
         # classification just-fired-or-already-set, looks up the
         # tool_groups taxonomy, prunes self.tools for this turn via
@@ -16258,13 +16202,20 @@ class AIAgent:
         # ClassificationResult so webui-side renderers (and any future
         # caller) can show tier badges, cost lines, and /why-style
         # explanations without re-running classification.
+        # Sprint 35 — routing decision + classification are Dispatcher-
+        # owned (``_classify_and_bind_turn`` captured them before the
+        # generator ran). Read via the back-reference instead of the
+        # deleted ``self._last_routing_decision`` /
+        # ``self._last_classification_result`` Agent fields.
         if isinstance(result, dict):
-            if self._last_routing_decision is not None:
-                result.setdefault("routing_decision", self._last_routing_decision)
-            if self._last_classification_result is not None:
-                result.setdefault(
-                    "classification_result", self._last_classification_result
-                )
+            _disp = getattr(self, "_dispatcher_singleton", None)
+            if _disp is not None:
+                _rd = _disp._current_turn_routing_decision
+                if _rd is not None:
+                    result.setdefault("routing_decision", _rd)
+                _cr = _disp._current_turn_classification
+                if _cr is not None:
+                    result.setdefault("classification_result", _cr)
 
         # Sprint 26 Phase 3 — emit FinalResponse per GRV-005 § IV before
         # returning the legacy result dict. Consumers tracking the v1

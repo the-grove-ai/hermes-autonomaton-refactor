@@ -66,7 +66,7 @@ The generator shape realizes GRV-003's invariant: "Every cognitive operation tra
 
 Jidoka, Andon, and Kaizen act as sequential, non-bypassable gates within the Dispatcher pipeline.
 
-* Message-zone classification (Jidoka) MUST fire before agent construction.  
+* Message-zone classification (Jidoka) MUST fire in the Dispatcher's pre-construction path; the Agent's reasoning loop receives the result, does not produce it.  
 * Tool-zone classification MUST fire per ToolIntent at intent-yield, prior to execution.  
 * The pipeline MUST halt (Andon) when zone discipline requires operator authorization.  
 * The Sovereign Prompt MUST surface to the operator upon an Andon halt.  

@@ -428,6 +428,10 @@ class Dispatcher:
         # instance-attribute carrier is race-free in practice.
         self._current_turn_id: Optional[str] = None
         self._current_turn_classification: Optional[Any] = None
+        # Sprint 35 — RoutingDecision the per-turn classify call produced.
+        # Read via back-reference by ``AIAgent.run_conversation``'s tail
+        # to surface ``result["routing_decision"]`` for webui consumers.
+        self._current_turn_routing_decision: Optional[Any] = None
         self._current_turn_start: Optional[float] = None
         self._current_turn_tools_yielded: List[str] = []
         self._current_turn_user_message: Optional[str] = None
@@ -962,12 +966,12 @@ class Dispatcher:
         # reset below so the reset can't overwrite the captured value
         # to ``None``. Capture the gate flag here; fire the classify
         # call after the reset.
-        already_routed = bool(kwargs.get("already_routed", False))
-        # Sprint 35 — the in-generator ``_maybe_route_for_turn`` is
-        # dead code after Phase 2; force ``already_routed=True`` so
-        # the generator's gate never fires the now-deleted path. The
-        # kwarg itself is deleted in Phase 2.
-        kwargs["already_routed"] = True
+        # Sprint 35 — ``already_routed`` is the CLI/oneshot pre-routing
+        # signal honored by the Dispatcher's pre-construction classify
+        # path. It is NOT forwarded to the generator (Phase 2 deletes
+        # ``_maybe_route_for_turn`` and the kwarg from the generator's
+        # signature).
+        already_routed = bool(kwargs.pop("already_routed", False))
         # Sprint 26 Phase 7 — Dispatcher broadcasts GROVE_SESSION_ID to
         # subprocess descendants on every turn. Authority moved here
         # from AIAgent.__init__ per GRV-005 § II/III: substrate writes
@@ -1005,6 +1009,7 @@ class Dispatcher:
         self._turn_counter += 1
         self._current_turn_id = f"{session_id or 'unknown'}#{self._turn_counter}"
         self._current_turn_classification = None
+        self._current_turn_routing_decision = None
         self._current_turn_api_call_count = 0
         self._current_turn_start = _time.monotonic()
         self._current_turn_tools_yielded = []
@@ -1599,11 +1604,11 @@ class Dispatcher:
         new_gen = new_agent._run_turn_generator(
             user_message=snapshot_user_message,
             conversation_history=snapshot_messages,
-            # already_routed=True so the new turn doesn't re-classify
-            # (we know which tier we want; the routing decision is the
-            # escalation grant). Sprint 12's classify_for_routing skips
-            # when already_routed.
-            already_routed=True,
+            # Sprint 35 — the new turn doesn't re-classify because the
+            # in-generator ``_maybe_route_for_turn`` is deleted. The
+            # escalation grant IS the routing decision; this generator
+            # picks up at the escalated tier (model already bound on
+            # ``new_agent``).
         )
         return {
             "action": "grant_hot_swap",
@@ -1927,6 +1932,7 @@ class Dispatcher:
             # value. Empty global on a true vanilla install is the
             # expected None.
             self._current_turn_classification = current_classification()
+            self._current_turn_routing_decision = None
             return
         # Sprint 28 Phase 3 — capture for terminal IntentRecord writes
         # and Sprint 29 tool filter. The Dispatcher's instance attr
@@ -1934,6 +1940,11 @@ class Dispatcher:
         # ``providers._last_classification`` module global between here
         # and the terminal write.
         self._current_turn_classification = current_classification()
+        # Sprint 35 — webui consumers expect the RoutingDecision in the
+        # terminal result dict (``result["routing_decision"]``); store
+        # it on the Dispatcher so ``run_conversation``'s tail reads it
+        # via the back-reference instead of the deleted Agent field.
+        self._current_turn_routing_decision = decision
         # Sprint 30.1 — classifier-driven pre-route escalation ledger
         # event. Moved here from ``_drive_generator`` since classification
         # now fires before the generator runs.

@@ -364,7 +364,11 @@ class TestDispatcherDispatchTurn:
         )
         assert captured["user_message"] == "hi"
         assert captured["task_id"] == "task_X"
-        assert captured["already_routed"] is True
+        # Sprint 35 — ``already_routed`` is consumed by the Dispatcher's
+        # pre-construction classify path and popped before forwarding
+        # to the generator. The generator no longer accepts the kwarg
+        # (``_maybe_route_for_turn`` is deleted).
+        assert "already_routed" not in captured
 
 
 # ── Protocol round-trip ───────────────────────────────────────────────────
