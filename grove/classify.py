@@ -111,6 +111,16 @@ recognition.
     distracting   — pulls focus away from goals
     no_goals_set  — goals.md empty or absent (graceful tier)
 
+  is_correction — true if the user's message indicates the system's
+    previous response was incorrect, misunderstood, or needs
+    adjustment; false otherwise. Default false.
+    Corrections (true): "actually, that's wrong", "you misunderstood",
+      "I meant X not Y", "no, that's not right", "scratch that".
+    NOT corrections (false): "thanks, now do X" (acknowledgment +
+      new task), "actually, can you also do X" (extension),
+      "no, the meeting is Tuesday" (factual answer), the operator's
+      first message in a session.
+
 OPERATOR GOALS (the alignment target):
 {goals_block}
 
@@ -178,6 +188,12 @@ class ClassificationResult:
     learning envelope is missing/malformed) round-trip cleanly with
     ``None``. The router and tier-UX surfaces ignore this field; the
     Skill Flywheel reads it from the intent record store.
+
+    ``is_correction`` is Sprint 38's learning-envelope addition. The
+    Dispatcher reads it at ``_finalize_previous_turn_pending`` time
+    to branch the previous turn's outcome between ``success`` and
+    ``correction``. ``None`` when absent or unparseable — the
+    finalizer treats None as False, biasing toward success.
     """
 
     intent_class: str
@@ -186,6 +202,7 @@ class ClassificationResult:
     register_class: str
     complexity_signal: str
     goal_alignment: Optional[str] = None
+    is_correction: Optional[bool] = None
 
 
 def classify_for_routing(message: str) -> Optional[ClassificationResult]:
@@ -211,6 +228,7 @@ def classify_for_routing(message: str) -> Optional[ClassificationResult]:
             register_class=fields["register_class"],
             complexity_signal=fields["complexity_signal"],
             goal_alignment=fields.get("goal_alignment"),
+            is_correction=fields.get("is_correction"),
         )
     except Exception as exc:
         logger.error(
@@ -375,12 +393,37 @@ def _parse_classification(raw: str) -> dict:
     else:
         goal_alignment = None
 
+    # Sprint 38 — is_correction is the learning-envelope bool the
+    # Dispatcher reads at finalization time to branch the previous
+    # turn's outcome between success and correction. Accept the JSON
+    # bool literal; accept the strings "true"/"false" as a
+    # lenient-parse aid; everything else degrades to None and the
+    # finalizer treats None as False.
+    is_correction_raw = learning.get("is_correction")
+    if isinstance(is_correction_raw, bool):
+        is_correction: Optional[bool] = is_correction_raw
+    elif isinstance(is_correction_raw, str):
+        normalized = is_correction_raw.strip().lower()
+        if normalized == "true":
+            is_correction = True
+        elif normalized == "false":
+            is_correction = False
+        else:
+            logger.debug(
+                "[classify] learning_envelope.is_correction=%r is not a "
+                "bool literal; dropping to None", is_correction_raw,
+            )
+            is_correction = None
+    else:
+        is_correction = None
+
     return {
         "intent_class": routing["intent_class"].strip(),
         "register_class": routing["register_class"].strip(),
         "complexity_signal": routing["complexity_signal"].strip(),
         "confidence": max(0.0, min(1.0, confidence)),  # clamp to 0.0-1.0
         "goal_alignment": goal_alignment,
+        "is_correction": is_correction,
     }
 
 

@@ -1026,8 +1026,6 @@ class Dispatcher:
         # Sprint 30 — reset per-turn escalation counter + events list.
         self._current_turn_escalations = 0
         self._current_turn_escalation_events = []
-        if previous_turn_id is not None:
-            self._finalize_previous_turn_pending(previous_turn_id)
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -1041,11 +1039,19 @@ class Dispatcher:
         # rebuild path) but the Dispatcher still snapshots whatever
         # ``providers._last_classification`` holds — pre-routing fills
         # the global, and downstream consumers expect the snapshot.
+        #
+        # Sprint 38 — classification MUST fire BEFORE the previous-turn
+        # finalization. The classifier's learning_envelope.is_correction
+        # is the signal that branches the previous turn's outcome
+        # between success and correction. Reordering: classify → then
+        # finalize → then drive the generator.
         if not already_routed and isinstance(user_message, str):
             self._classify_and_bind_turn(agent, user_message, ledger)
         else:
             from grove.providers import current_classification as _current_classification
             self._current_turn_classification = _current_classification()
+        if previous_turn_id is not None:
+            self._finalize_previous_turn_pending(previous_turn_id)
         gen = agent._run_turn_generator(user_message=user_message, **kwargs)
         try:
             return self._drive_generator(agent, gen, ledger)
@@ -1390,16 +1396,27 @@ class Dispatcher:
     # ── Sprint 28 Phase 4 helper (Explicit Success Finalization) ────────
 
     def _finalize_previous_turn_pending(self, previous_turn_id: str) -> None:
-        """Finalize the previous turn's pending record as success.
+        """Finalize the previous turn's pending record.
 
-        Sprint 28 Phase 4 — explicit success only per the GATE-D
-        disposition. Semantic correction detection is deferred (would
-        require either injecting prior-turn context into the routing
-        Haiku — degrading zero-shot accuracy — or a second LLM call,
-        breaking Sprint 12's one-call economics). The Implicit Success
-        Sweep at Dispatcher init catches abandoned sessions; this
-        method catches in-session continuations. Together they close
-        the loop with explicit-success semantics only.
+        Sprint 28 Phase 4 wired the explicit success path. Sprint 38
+        adds the correction branch: when the current turn's classifier
+        sets ``learning_envelope.is_correction = true``, the previous
+        turn's pending record finalizes as ``correction`` rather than
+        ``success``. The Dispatcher MUST have classified the current
+        turn before this method runs — ``dispatch_turn`` reorders the
+        per-turn block so classification fires first.
+
+        Outcome decision table (current turn's classification):
+
+        * ``is_correction = True``  → previous turn finalizes as ``correction``
+        * ``is_correction = False`` → previous turn finalizes as ``success``
+        * ``is_correction = None``  → previous turn finalizes as ``success``
+          (graceful: classifier failed or pre-Sprint-38 schema)
+
+        The Implicit Success Sweep at Dispatcher init catches abandoned
+        sessions; this method catches in-session continuations. The
+        sweep is unconditional success — only the in-session path can
+        produce ``correction``.
 
         No-op when the previous turn already terminated at Drop or
         exception (its outcome is already terminal). No-op when no
@@ -1420,15 +1437,18 @@ class Dispatcher:
                     break
             if latest is None or latest.outcome != "pending":
                 return
+            classification = self._current_turn_classification
+            is_correction = bool(getattr(classification, "is_correction", False))
+            outcome = "correction" if is_correction else "success"
             self._intent_store.append(finalize_record(
                 latest,
-                outcome="success",
+                outcome=outcome,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             ))
         except Exception as exc:
             logger.warning(
-                "[grove.dispatcher] explicit-success finalization "
-                "failed for previous turn %r: %r",
+                "[grove.dispatcher] finalization failed for previous "
+                "turn %r: %r",
                 previous_turn_id, exc,
             )
 
