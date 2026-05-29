@@ -1626,9 +1626,7 @@ class AIAgent:
         # sessions with >5-minute pauses between turns (#14971).
         self._cache_ttl = "5m"
         try:
-            from hermes_cli.config import load_config as _load_pc_cfg
-
-            _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
+            _pc_cfg = self._config_load_or().get("prompt_caching", {}) or {}
             _ttl = _pc_cfg.get("cache_ttl", "5m")
             if _ttl in {"5m", "1h"}:
                 self._cache_ttl = _ttl
@@ -1768,11 +1766,9 @@ class AIAgent:
                 # the third-party identity-injection bug.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
                 self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-                # Sprint 26 Phase 1b: use Dispatcher-cached Anthropic client when injected.
-                if (
-                    self._runtime_ctx is not None
-                    and self._runtime_ctx.anthropic_client is not None
-                ):
+                # Sprint 26 Phase 1b / Sprint 34: use Dispatcher-cached
+                # Anthropic client when it cached one; else build.
+                if self._runtime_ctx.anthropic_client is not None:
                     self._anthropic_client = self._runtime_ctx.anthropic_client
                 else:
                     self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
@@ -1791,8 +1787,7 @@ class AIAgent:
             # Guardrail config — read from config.yaml at init time.
             self._bedrock_guardrail_config = None
             try:
-                from hermes_cli.config import load_config as _load_br_cfg
-                _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
+                _gr = self._config_load_or().get("bedrock", {}).get("guardrail", {})
                 if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
                     self._bedrock_guardrail_config = {
                         "guardrailIdentifier": _gr["guardrail_identifier"],
@@ -2020,8 +2015,9 @@ class AIAgent:
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering.
-        # Sprint 26 Phase 1b: use Dispatcher-cached registry when injected.
-        if self._runtime_ctx is not None and self._runtime_ctx.tools is not None:
+        # Sprint 26 Phase 1b / Sprint 34: use Dispatcher-cached registry
+        # when it cached one; else build.
+        if self._runtime_ctx.tools is not None:
             self.tools = self._runtime_ctx.tools
         else:
             self.tools = get_tool_definitions(
@@ -2176,11 +2172,9 @@ class AIAgent:
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 if self._memory_enabled or self._user_profile_enabled:
-                    # Sprint 26 Phase 1b: use Dispatcher-cached store when injected.
-                    if (
-                        self._runtime_ctx is not None
-                        and self._runtime_ctx.memory_store is not None
-                    ):
+                    # Sprint 26 Phase 1b / Sprint 34: use Dispatcher-cached
+                    # store when it cached one; else build.
+                    if self._runtime_ctx.memory_store is not None:
                         self._memory_store = self._runtime_ctx.memory_store
                     else:
                         from tools.memory_tool import MemoryStore
@@ -2512,11 +2506,10 @@ class AIAgent:
         if _selected_engine is not None:
             self.context_compressor = _selected_engine
             # Resolve context_length for plugin engines — mirrors switch_model() path.
-            # Sprint 26 Phase 1b: use Dispatcher-cached context length when injected.
+            # Sprint 26 Phase 1b / Sprint 34: use Dispatcher-cached
+            # context length when available.
             from agent.model_metadata import get_model_context_length
-            _plugin_ctx_len = None
-            if self._runtime_ctx is not None:
-                _plugin_ctx_len = self._runtime_ctx.context_length_by_model.get(self.model)
+            _plugin_ctx_len = self._runtime_ctx.context_length_by_model.get(self.model)
             if _plugin_ctx_len is None:
                 _plugin_ctx_len = get_model_context_length(
                     self.model,
@@ -2716,60 +2709,35 @@ class AIAgent:
             "[grove.dispatcher] AIAgent.__init__ wall time: %.1f ms",
             _init_elapsed_ms,
         )
-        if os.environ.get("GROVE_INIT_TIMING") == "1":
+        if self._env_or("GROVE_INIT_TIMING") == "1":
             import sys as _sys_t
             print(
                 f"[grove.dispatcher] AIAgent.__init__: {_init_elapsed_ms:.1f}ms",
                 file=_sys_t.stderr,
             )
 
-    # ── Sprint 26 Phase 1a — D4 substrate-extraction helpers ──────────────
-    # Every env / config read in this class routes through these wrappers.
-    # When self._runtime_ctx is set (Dispatcher path), reads come from the
-    # frozen snapshot. When None (existing callers that haven't been
-    # migrated), reads fall through to direct substrate access — backward
-    # compat removed at Phase 7 cleanup.
+    # ── Sprint 34 — RuntimeContext-only substrate helpers ──────────────
+    # Sprint 26 introduced these wrappers with a fallback to direct
+    # substrate. Sprint 34 made RuntimeContext mandatory; the fallback
+    # arms are gone. Every env / config read in this class routes
+    # through these wrappers, which route through RuntimeContext.
 
     def _env_or(self, key: str, default: str = "") -> str:
-        """Read one env var via runtime_ctx, falling back to os.environ."""
-        if self._runtime_ctx is not None:
-            return self._runtime_ctx.env_get(key, default)
-        return os.environ.get(key, default)
+        """Read one env var via runtime_ctx."""
+        return self._runtime_ctx.env_get(key, default)
 
     def _env_or_int(self, key: str, default: int) -> int:
         """Read an env var as int; default on missing or unparseable."""
-        if self._runtime_ctx is not None:
-            return self._runtime_ctx.env_get_int(key, default)
-        raw = os.environ.get(key)
-        if raw is None or raw == "":
-            return default
-        try:
-            return int(raw)
-        except (ValueError, TypeError):
-            return default
+        return self._runtime_ctx.env_get_int(key, default)
 
     def _env_or_float(self, key: str, default: float) -> float:
         """Read an env var as float; default on missing or unparseable."""
-        if self._runtime_ctx is not None:
-            return self._runtime_ctx.env_get_float(key, default)
-        raw = os.environ.get(key)
-        if raw is None or raw == "":
-            return default
-        try:
-            return float(raw)
-        except (ValueError, TypeError):
-            return default
+        return self._runtime_ctx.env_get_float(key, default)
 
     def _config_load_or(self) -> Dict[str, Any]:
-        """Return config snapshot via runtime_ctx; else live load_config()."""
-        if self._runtime_ctx is not None:
-            return self._runtime_ctx.config
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config()
-            return cfg if isinstance(cfg, dict) else {}
-        except Exception:
-            return {}
+        """Return the config snapshot from runtime_ctx."""
+        cfg = self._runtime_ctx.config
+        return cfg if isinstance(cfg, dict) else {}
 
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
@@ -3707,11 +3675,7 @@ class AIAgent:
             # measured the bypassed call (get_model_context_length →
             # _query_ollama_api_show → httpx.post) as ~96% of the
             # warm-path AIAgent.__init__ cost.
-            cached_probe = (
-                self._runtime_ctx.compression_probe
-                if self._runtime_ctx is not None
-                else None
-            )
+            cached_probe = self._runtime_ctx.compression_probe
 
             if cached_probe is not None:
                 aux_model = cached_probe.aux_model
@@ -3989,8 +3953,8 @@ class AIAgent:
         if cfg is not None:
             return cfg, False
 
-        env_timeout = os.getenv("GROVE_API_CALL_STALE_TIMEOUT")
-        if env_timeout is not None:
+        env_timeout = self._env_or("GROVE_API_CALL_STALE_TIMEOUT")
+        if env_timeout:
             return float(env_timeout), False
 
         return 300.0, True
@@ -6111,9 +6075,8 @@ class AIAgent:
         the private ``_turn_failed_file_mutations`` state dict.
         """
         try:
-            import os as _os
-            env = _os.environ.get("GROVE_FILE_MUTATION_VERIFIER")
-            if env is not None:
+            env = self._env_or("GROVE_FILE_MUTATION_VERIFIER")
+            if env:
                 return env.strip().lower() not in ("0", "false", "no", "off")
             # Read from the persisted config.yaml so gateway and CLI share
             # the same setting. Sprint 26 Phase 1a: routes through
@@ -6737,7 +6700,7 @@ class AIAgent:
             # mode).  The gateway process runs from the hermes-agent install
             # dir, so os.getcwd() would pick up the repo's AGENTS.md and
             # other dev files — inflating token usage by ~10k for no benefit.
-            _context_cwd = os.getenv("TERMINAL_CWD") or None
+            _context_cwd = self._env_or("TERMINAL_CWD") or None
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_identity_loaded)
             if context_files_prompt:
@@ -7969,7 +7932,7 @@ class AIAgent:
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, self._env_or_int("GROVE_NOUS_MIN_KEY_TTL_SECONDS", 1800)),
-                timeout_seconds=float(os.getenv("GROVE_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=self._env_or_float("GROVE_NOUS_TIMEOUT_SECONDS", 15.0),
                 force_mint=force,
             )
         except Exception as exc:
@@ -8746,14 +8709,14 @@ class AIAgent:
             _base_timeout = (
                 _provider_timeout_cfg
                 if _provider_timeout_cfg is not None
-                else float(os.getenv("GROVE_API_TIMEOUT", 1800.0))
+                else self._env_or_float("GROVE_API_TIMEOUT", 1800.0)
             )
             # Read timeout: config wins here too.  Otherwise use
             # GROVE_STREAM_READ_TIMEOUT (default 120s) for cloud providers.
             if _provider_timeout_cfg is not None:
                 _stream_read_timeout = _provider_timeout_cfg
             else:
-                _stream_read_timeout = float(os.getenv("GROVE_STREAM_READ_TIMEOUT", 120.0))
+                _stream_read_timeout = self._env_or_float("GROVE_STREAM_READ_TIMEOUT", 120.0)
                 # Local providers (Ollama, llama.cpp, vLLM) can take minutes for
                 # prefill on large contexts before producing the first token.
                 # Auto-increase the httpx read timeout unless the user explicitly
@@ -9104,7 +9067,7 @@ class AIAgent:
         def _call():
             import httpx as _httpx
 
-            _max_stream_retries = int(os.getenv("GROVE_STREAM_RETRIES", 2))
+            _max_stream_retries = self._env_or_int("GROVE_STREAM_RETRIES", 2)
 
             try:
                 for _stream_attempt in range(_max_stream_retries + 1):
@@ -9363,7 +9326,7 @@ class AIAgent:
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
-        _stream_stale_timeout_base = float(os.getenv("GROVE_STREAM_STALE_TIMEOUT", 180.0))
+        _stream_stale_timeout_base = self._env_or_float("GROVE_STREAM_STALE_TIMEOUT", 180.0)
         # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
         # for prefill on large contexts.  Disable the stale detector unless
         # the user explicitly set GROVE_STREAM_STALE_TIMEOUT.
@@ -11652,7 +11615,7 @@ class AIAgent:
             try:
                 cmd = function_args.get("command", "")
                 if _is_destructive_command(cmd):
-                    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                    cwd = function_args.get("workdir") or self._env_or("TERMINAL_CWD") or os.getcwd()
                     self._checkpoint_mgr.ensure_checkpoint(
                         cwd, f"before terminal: {cmd[:60]}",
                     )
@@ -16103,7 +16066,7 @@ class AIAgent:
             # protocol violation).  The agent loop strips tools before calling
             # _handle_max_iterations, so the model cannot call kanban_block
             # itself — we must do it on its behalf.
-            _kanban_task = os.environ.get("GROVE_KANBAN_TASK")
+            _kanban_task = self._env_or("GROVE_KANBAN_TASK")
             if _kanban_task:
                 try:
                     handle_function_call(

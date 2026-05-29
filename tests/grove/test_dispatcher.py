@@ -284,15 +284,18 @@ class TestDispatcherGracefulDegradation:
 
 class TestAIAgentRuntimeCtxInjection:
     """Smoke tests confirming AIAgent's _env_or / _config_load_or helpers
-    route through runtime_ctx when injected, and fall back to direct
-    substrate access when None (backward-compat path).
+    route through runtime_ctx.
+
+    Sprint 34 made RuntimeContext mandatory; the substrate-fallback arms
+    that the helpers held during Sprint 26-33 are gone. The remaining
+    tests assert the only contract: helpers read from ``self._runtime_ctx``.
 
     These tests do NOT instantiate a full AIAgent (too heavy). They
     construct a bare AIAgent via ``object.__new__`` and set only the
     state the helpers read.
     """
 
-    def _bare_agent(self, ctx=None):
+    def _bare_agent(self, ctx):
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
         agent._runtime_ctx = ctx
@@ -307,24 +310,10 @@ class TestAIAgentRuntimeCtxInjection:
         monkeypatch.setenv("GROVE_PROBE", "from-env")
         assert agent._env_or("GROVE_PROBE") == "from-ctx"
 
-    def test_env_or_falls_back_to_os_environ_when_ctx_is_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        agent = self._bare_agent(ctx=None)
-        monkeypatch.setenv("GROVE_PROBE", "from-env")
-        assert agent._env_or("GROVE_PROBE") == "from-env"
-
     def test_env_or_int_routes_through_ctx(self):
         ctx = RuntimeContext(env={"TIMEOUT": "1800"}, config={})
         agent = self._bare_agent(ctx)
         assert agent._env_or_int("TIMEOUT", 60) == 1800
-
-    def test_env_or_int_fallback_on_unparseable(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        agent = self._bare_agent(ctx=None)
-        monkeypatch.setenv("TIMEOUT", "not-int")
-        assert agent._env_or_int("TIMEOUT", 60) == 60
 
     def test_env_or_float_routes_through_ctx(self):
         ctx = RuntimeContext(env={"TIMEOUT": "1800.5"}, config={})
@@ -335,27 +324,6 @@ class TestAIAgentRuntimeCtxInjection:
         ctx = RuntimeContext(env={}, config={"injected": True})
         agent = self._bare_agent(ctx)
         assert agent._config_load_or() == {"injected": True}
-
-    def test_config_load_or_falls_back_to_live_load_when_ctx_is_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        # When runtime_ctx is None, _config_load_or calls
-        # hermes_cli.config.load_config directly.
-        agent = self._bare_agent(ctx=None)
-        import hermes_cli.config as hcfg
-        monkeypatch.setattr(hcfg, "load_config", lambda: {"from": "live-load"})
-        assert agent._config_load_or() == {"from": "live-load"}
-
-    def test_config_load_or_handles_live_load_failure(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        agent = self._bare_agent(ctx=None)
-        import hermes_cli.config as hcfg
-
-        def _boom():
-            raise RuntimeError("config broken")
-        monkeypatch.setattr(hcfg, "load_config", _boom)
-        assert agent._config_load_or() == {}
 
 
 # ── Phase 1b heavy-resource injection ─────────────────────────────────────
