@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +29,7 @@ class TestFlushDeduplication:
         """Create a minimal AIAgent with a real session DB."""
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
-            agent = AIAgent(
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
@@ -274,7 +275,7 @@ class TestFlushIdxInit:
         """Agent starts with _last_flushed_db_idx = 0."""
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
-            agent = AIAgent(
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
@@ -288,7 +289,7 @@ class TestFlushIdxInit:
         """Without session_db, flush is a no-op and doesn't crash."""
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
-            agent = AIAgent(
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",

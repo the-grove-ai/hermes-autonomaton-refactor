@@ -9,6 +9,7 @@ from hermes_cli.models import _PROVIDER_MODELS, _PROVIDER_LABELS, _PROVIDER_ALIA
 from hermes_cli.model_normalize import normalize_model_for_provider, detect_vendor
 from agent.model_metadata import get_model_context_length
 from agent.models_dev import PROVIDER_TO_MODELS_DEV, list_agentic_models, _NOISE_PATTERNS
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ── Provider Registry ──
@@ -192,7 +193,7 @@ class TestGeminiAgentInit:
         with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
             mock_client.return_value = MagicMock()
             from run_agent import AIAgent
-            agent = AIAgent(
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="test-key",
@@ -209,7 +210,7 @@ class TestGeminiAgentInit:
             mock_client.return_value = MagicMock()
             mock_compressor.return_value = MagicMock(context_length=1048576, threshold_tokens=524288)
             from run_agent import AIAgent
-            AIAgent(
+            AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="AIzaSy_REAL_KEY",
@@ -226,7 +227,7 @@ class TestGeminiAgentInit:
             mock_openai.return_value = MagicMock()
             mock_compressor.return_value = MagicMock(context_length=128000, threshold_tokens=64000)
             from run_agent import AIAgent
-            AIAgent(
+            AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="AIzaSy_REAL_KEY",
@@ -242,7 +243,7 @@ class TestGeminiAgentInit:
             mock_openai.return_value = MagicMock()
             mock_compressor.return_value = MagicMock(context_length=1048576, threshold_tokens=524288)
             from run_agent import AIAgent
-            AIAgent(
+            AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="AIzaSy_REAL_KEY",

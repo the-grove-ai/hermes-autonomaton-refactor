@@ -20,6 +20,7 @@ import pytest
 from agent.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
 import run_agent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +87,7 @@ def agent():
         patch("run_agent.OpenAI"),
     ):
         from grove.sovereign_prompt_handlers import silent_approve_handler
-        a = AIAgent(
+        a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,

@@ -30,6 +30,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +124,7 @@ class TestPrimaryClientWiring:
         token = _make_codex_jwt("acct-primary-init")
         with patch("run_agent.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            AIAgent(
+            AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key=token,
                 base_url="https://chatgpt.com/backend-api/codex",
                 provider="openai-codex",
@@ -143,7 +144,7 @@ class TestPrimaryClientWiring:
         token = _make_codex_jwt("acct-rotation")
         with patch("run_agent.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            agent = AIAgent(
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="placeholder-openrouter-key",
                 base_url="https://openrouter.ai/api/v1",
                 provider="openrouter",
@@ -168,7 +169,7 @@ class TestPrimaryClientWiring:
         token = _make_codex_jwt()
         with patch("run_agent.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            agent = AIAgent(
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key=token,
                 base_url="https://chatgpt.com/backend-api/codex",
                 provider="openai-codex",
@@ -189,7 +190,7 @@ class TestPrimaryClientWiring:
         from run_agent import AIAgent
         with patch("run_agent.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            AIAgent(
+            AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="sk-or-test",
                 base_url="https://openrouter.ai/api/v1",
                 provider="openrouter",

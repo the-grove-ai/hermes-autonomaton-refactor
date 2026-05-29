@@ -490,11 +490,12 @@ class Dispatcher:
         self.agent: Optional[Any] = None
         if agent_kwargs is not None:
             from run_agent import AIAgent
+            # Sprint 34 — the Dispatcher owns the substrate snapshot,
+            # so forward it into the Agent. setdefault preserves any
+            # explicit ctx the caller put into agent_kwargs (rare;
+            # mostly tests that build a richer ctx).
+            agent_kwargs.setdefault("runtime_ctx", self._base_runtime_ctx)
             self.agent = AIAgent(**agent_kwargs)
-            # Back-reference so the Agent's run_conversation() reaches
-            # this Dispatcher instead of lazily building a new one.
-            # Phase 2 inlines the singleton's remaining responsibility
-            # into run_conversation() and deletes the helper method.
             self.agent._dispatcher_singleton = self
 
     @property

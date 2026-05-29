@@ -3,6 +3,7 @@ when primary provider credentials are exhausted."""
 import pytest
 from unittest.mock import patch, MagicMock
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_tool_defs():
@@ -34,7 +35,7 @@ def test_init_tries_fallback_when_primary_returns_none():
          patch("run_agent.check_toolset_requirements", return_value={}), \
          patch("run_agent.OpenAI", return_value=MagicMock()):
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             provider="alibaba-coding-plan",
             model="qwen3.6-plus",
             api_key=None,
@@ -57,7 +58,7 @@ def test_init_raises_when_no_fallback_configured():
          patch("run_agent.OpenAI", return_value=MagicMock()):
 
         with pytest.raises(RuntimeError, match="no API key was found"):
-            AIAgent(
+            AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 provider="alibaba-coding-plan",
                 model="qwen3.6-plus",
                 api_key=None,

@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # Load ~/.grove/.env so live runs pick up OPENROUTER_API_KEY without
@@ -58,7 +59,7 @@ LIVE_MODEL = "google/gemini-2.5-flash"
 def _make_live_agent():
     from run_agent import AIAgent
 
-    return AIAgent(
+    return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         model=LIVE_MODEL,
         provider="openrouter",
         api_key=OR_KEY,

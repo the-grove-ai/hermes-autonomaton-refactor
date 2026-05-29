@@ -7,12 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 @patch("run_agent.OpenAI")
 def test_openrouter_base_url_applies_or_headers(mock_openai):
     mock_openai.return_value = MagicMock()
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         model="test/model",
@@ -31,7 +32,7 @@ def test_openrouter_base_url_applies_or_headers(mock_openai):
 @patch("run_agent.OpenAI")
 def test_ai_gateway_base_url_applies_attribution_headers(mock_openai):
     mock_openai.return_value = MagicMock()
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         model="test/model",
@@ -51,7 +52,7 @@ def test_ai_gateway_base_url_applies_attribution_headers(mock_openai):
 @patch("run_agent.OpenAI")
 def test_routermint_base_url_applies_user_agent_header(mock_openai):
     mock_openai.return_value = MagicMock()
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://api.routermint.com/v1",
         model="test/model",
@@ -69,7 +70,7 @@ def test_routermint_base_url_applies_user_agent_header(mock_openai):
 @patch("run_agent.OpenAI")
 def test_nvidia_cloud_base_url_applies_billing_origin_header(mock_openai):
     mock_openai.return_value = MagicMock()
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://integrate.api.nvidia.com/v1",
         model="nvidia/test-model",
@@ -90,7 +91,7 @@ def test_nvidia_cloud_base_url_applies_billing_origin_header(mock_openai):
 @patch("run_agent.OpenAI")
 def test_nvidia_local_base_url_does_not_apply_billing_origin_header(mock_openai):
     mock_openai.return_value = MagicMock()
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://integrate.api.nvidia.com/v1",
         model="nvidia/test-model",
@@ -121,7 +122,7 @@ def test_routed_client_preserves_openai_sdk_custom_headers(mock_openai):
         routed_client,
         "nvidia/test-model",
     )):
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             provider="nvidia",
             model="nvidia/test-model",
             quiet_mode=True,
@@ -142,7 +143,7 @@ def test_gmi_base_url_picks_up_profile_user_agent(mock_openai):
     branch is needed in run_agent.
     """
     mock_openai.return_value = MagicMock()
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://api.gmi-serving.com/v1",
         model="test/model",
@@ -161,7 +162,7 @@ def test_gmi_base_url_picks_up_profile_user_agent(mock_openai):
 @patch("run_agent.OpenAI")
 def test_unknown_base_url_clears_default_headers(mock_openai):
     mock_openai.return_value = MagicMock()
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         model="test/model",
@@ -180,7 +181,7 @@ def test_unknown_base_url_clears_default_headers(mock_openai):
 def test_openrouter_headers_include_response_cache_when_enabled(mock_openai):
     """When openrouter.response_cache is True, the cache header is injected."""
     mock_openai.return_value = MagicMock()
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         model="test/model",
@@ -204,7 +205,7 @@ def test_openrouter_headers_include_response_cache_when_enabled(mock_openai):
 def test_openrouter_headers_no_cache_when_disabled(mock_openai):
     """When openrouter.response_cache is False, no cache headers are sent."""
     mock_openai.return_value = MagicMock()
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         model="test/model",

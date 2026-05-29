@@ -1,12 +1,13 @@
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_copilot_agent():
     with patch("run_agent.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="gh-token",
             base_url="https://api.githubcopilot.com",
             provider="copilot",

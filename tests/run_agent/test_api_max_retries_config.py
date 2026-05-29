@@ -7,6 +7,7 @@ faster on flaky primaries instead of burning ~3x180s on the same stall.
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_agent(api_max_retries=None):
@@ -18,7 +19,7 @@ def _make_agent(api_max_retries=None):
 
     with patch("run_agent.OpenAI"), \
          patch("hermes_cli.config.load_config", return_value=cfg):
-        return AIAgent(
+        return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",

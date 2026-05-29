@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 
@@ -87,7 +88,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
         patch("run_agent.OpenAI"),
     ):
         from grove.sovereign_prompt_handlers import silent_approve_handler
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             max_iterations=max_iterations,

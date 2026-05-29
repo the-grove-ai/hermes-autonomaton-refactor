@@ -12,6 +12,7 @@ import json
 import os
 
 import pytest
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ---------------------------------------------------------------------------
@@ -859,7 +860,7 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
     from run_agent import AIAgent
-    a = AIAgent(
+    a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test",
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,
@@ -882,7 +883,7 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
     from run_agent import AIAgent
-    a = AIAgent(
+    a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test",
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,

@@ -19,6 +19,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -66,7 +67,7 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
     base_url="https://openrouter.ai/api/v1",
     api_key="test-key",
     base_url="https://openrouter.ai/api/v1",
-    return AIAgent(**kwargs)
+    return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, **kwargs)
 
 
 # ── _build_api_kwargs tests ─────────────────────────────────────────────────

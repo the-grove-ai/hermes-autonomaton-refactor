@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +31,7 @@ def test_session_id_env_broadcast_via_dispatcher():
     """
     from grove.dispatcher import Dispatcher
 
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,
@@ -56,7 +57,7 @@ def test_session_id_env_broadcast_uses_provided_id():
     from grove.dispatcher import Dispatcher
 
     custom_id = "20260511_120000_abc12345"
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         session_id=custom_id,
@@ -72,7 +73,7 @@ def test_session_id_env_broadcast_uses_provided_id():
 def test_session_id_contextvar_set():
     """AIAgent.__init__ also sets the ContextVar for concurrency safety."""
     custom_id = "20260511_130000_def67890"
-    AIAgent(
+    AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         session_id=custom_id,

@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # A plausible-looking OAuth token (``sk-ant-`` without the ``-api`` suffix).
@@ -38,7 +39,7 @@ def agent():
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
-        a = AIAgent(
+        a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
@@ -132,7 +133,7 @@ class TestOAuthFlagOnConstruction:
             patch("agent.anthropic_adapter.resolve_anthropic_token",
                   return_value=_OAUTH_LIKE_TOKEN),
         ):
-            agent = AIAgent(
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="minimax-key-1234",
                 base_url="https://api.minimax.io/anthropic",
                 provider="minimax",

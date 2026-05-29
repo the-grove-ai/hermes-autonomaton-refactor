@@ -1,6 +1,7 @@
 import pytest
 import json
 from types import SimpleNamespace
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _tool_call(name: str, arguments):
@@ -59,7 +60,7 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
     )
 
     from grove.sovereign_prompt_handlers import silent_approve_handler
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         model="test-model",
         api_key="test-key",
         base_url="http://localhost:8080/v1",

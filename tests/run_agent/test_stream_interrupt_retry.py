@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_agent(**kwargs):
@@ -29,7 +30,7 @@ def _make_agent(**kwargs):
         skip_memory=True,
     )
     defaults.update(kwargs)
-    agent = AIAgent(**defaults)
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, **defaults)
     agent.api_mode = "chat_completions"
     return agent
 

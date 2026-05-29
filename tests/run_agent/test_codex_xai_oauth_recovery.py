@@ -30,6 +30,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ def _make_codex_agent():
     """Build a minimal AIAgent wired for codex_responses streaming tests."""
     from run_agent import AIAgent
 
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://api.x.ai/v1",
         model="grok-4.3",

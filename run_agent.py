@@ -1280,32 +1280,15 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
-        # ── Sprint 26 Phase 1a (D4 substrate extraction) ──────────────
-        # When provided by a Dispatcher, env-var reads and config loads
-        # route through this snapshot. When None, the Agent's helper
-        # methods (_env_or / _config_load_or) fall back to direct
-        # substrate reads.
-        #
-        # Sprint 27 caller-migration-v1 audit (caller-migration-v1):
-        # zero production callers (cli.py, hermes_cli/oneshot.py,
-        # batch_runner.py, gateway/*, cron/scheduler.py,
-        # tui_gateway/server.py, acp_adapter/session.py,
-        # tools/delegate_tool.py, agent/curator.py,
-        # grove/kaizen/curator.py) pass runtime_ctx. They all rely on
-        # this fallback. Removing it would force every caller to
-        # pre-construct a Dispatcher and call ``runtime_context_for(...)``,
-        # which is out of Sprint 27 scope. The fallback stays.
-        #
-        # Sprint 33 Phase 2 (caller-migration-v2) inverted construction:
-        # production callers construct the Dispatcher first and access
-        # the Agent via ``Dispatcher(agent_kwargs={...}).agent``. The
-        # Dispatcher sets ``agent._dispatcher_singleton = self`` as a
-        # back-reference so the Agent's ``run_conversation`` reaches
-        # the Dispatcher constructed by the caller. The inline lazy
-        # build inside ``run_conversation`` remains for tests that
-        # construct ``AIAgent`` directly without going through the
-        # Dispatcher inversion.
-        runtime_ctx: Optional["RuntimeContext"] = None,
+        # ── Sprint 34 — RuntimeContext required, kwonly ───────────────
+        # Production callers reach AIAgent via
+        # ``Dispatcher(agent_kwargs={...}).agent``; the Dispatcher
+        # forwards its substrate snapshot. Tests use the shared
+        # ``tests._runtime_ctx.MOCK_RUNTIME_CTX`` constant (or the
+        # ``mock_runtime_ctx`` fixture). Absence raises immediately
+        # — no None default, no substrate fallback.
+        *,
+        runtime_ctx: "RuntimeContext",
         # Non-TTY callers (gateway, batch, tests) inject a handler so
         # Andon halts route through the correct surface instead of the
         # default TTY prompt that hangs without stdin. Forwarded to
@@ -1364,6 +1347,19 @@ class AIAgent:
                 identity even when skip_context_files=True. Project context files from the cwd
                 remain skipped.
         """
+        # ── Sprint 34 — fail-loud on missing RuntimeContext ─────────────
+        # The kwonly signature catches the no-arg case at the language
+        # level; this guard catches the explicit-None case (callers
+        # that forwarded a None they got from somewhere else). Both
+        # raise loud, named errors pointing at the Dispatcher path.
+        if runtime_ctx is None:
+            raise ValueError(
+                "AIAgent requires a RuntimeContext (Sprint 34). "
+                "Construct via Dispatcher(agent_kwargs={...}).agent — "
+                "the Dispatcher forwards its substrate snapshot. Tests "
+                "use tests._runtime_ctx.MOCK_RUNTIME_CTX or the "
+                "mock_runtime_ctx pytest fixture."
+            )
         # ── Sprint 26 Phase 1 — D5 baseline instrumentation ─────────────
         # Captures total AIAgent.__init__ wall time. Operator sets
         # GROVE_INIT_TIMING=1 to print to stderr; otherwise the timing
@@ -16490,6 +16486,7 @@ class AIAgent:
             from grove.dispatcher import Dispatcher
             from grove.intent_store import get_store as _get_intent_store
             dispatcher = Dispatcher(
+                runtime_ctx=self._runtime_ctx,
                 sovereign_prompt_handler=getattr(
                     self, "_sovereign_prompt_handler", None,
                 ),

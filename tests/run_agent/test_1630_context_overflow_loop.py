@@ -11,6 +11,7 @@ Verifies that:
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +31,7 @@ class TestGeneric400Heuristic:
             patch("run_agent.OpenAI"),
         ):
             from run_agent import AIAgent
-            a = AIAgent(
+            a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="test-key-12345",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,

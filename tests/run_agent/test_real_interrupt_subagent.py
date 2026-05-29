@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from tools.interrupt import set_interrupt, is_interrupted
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_slow_api_response(delay=5.0):
@@ -107,7 +108,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                         with patch.object(AIAgent, 'run_conversation', patched_run):
                             # Build a real child agent (AIAgent is NOT patched here,
                             # only run_conversation and _build_system_prompt are)
-                            child = AIAgent(
+                            child = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                                 base_url="http://localhost:1",
                                 api_key="test-key",
                                 model="test/model",

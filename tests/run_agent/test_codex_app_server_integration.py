@@ -18,6 +18,7 @@ import pytest
 
 import run_agent
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 @pytest.fixture
@@ -53,7 +54,7 @@ def _make_codex_agent():
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
-    return run_agent.AIAgent(
+    return run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="stub",
         base_url="https://stub.invalid",
         provider="openai",

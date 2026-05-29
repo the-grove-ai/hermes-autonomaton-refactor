@@ -23,10 +23,11 @@ from unittest.mock import patch
 import httpx
 
 from run_agent import AIAgent, _get_proxy_from_env, _get_proxy_for_base_url
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_agent():
-    return AIAgent(
+    return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://chatgpt.com/backend-api/codex",
         provider="openai-codex",

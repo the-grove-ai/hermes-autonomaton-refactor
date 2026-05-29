@@ -22,6 +22,7 @@ import pytest
 
 from grove.dispatcher import Dispatcher, RuntimeContext
 from grove.intents import ToolBatchYield, FinalResponse, Observation, ToolIntent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # Sprint 26 Phase 6 — every test in this file constructs Dispatchers
@@ -216,6 +217,7 @@ class TestPhase7RunConversationDelegation:
     def _bare_agent_with_state(self, msgs: List[Dict]):
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
+        agent._runtime_ctx = MOCK_RUNTIME_CTX
         agent._current_messages = msgs
         agent.session_id = "phase7_delegation_session"
         agent.model = "m"
@@ -384,6 +386,7 @@ class TestProtocolRoundTrip:
         msgs: List[Dict] = []
         import run_agent
         agent = object.__new__(run_agent.AIAgent)
+        agent._runtime_ctx = MOCK_RUNTIME_CTX
         agent._current_assistant_message = {
             "role": "assistant",
             "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],

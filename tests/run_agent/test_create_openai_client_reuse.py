@@ -19,10 +19,11 @@ network, so it runs in CI on every PR.
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_agent():
-    return AIAgent(
+    return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         model="test/model",

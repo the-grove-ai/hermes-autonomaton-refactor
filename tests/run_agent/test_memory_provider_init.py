@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import patch
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def test_blank_memory_provider_does_not_auto_enable_honcho():
@@ -24,7 +25,7 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
     ):
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,

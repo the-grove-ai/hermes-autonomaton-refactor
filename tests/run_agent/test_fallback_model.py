@@ -12,6 +12,7 @@ import pytest
 
 from run_agent import AIAgent
 import run_agent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +45,7 @@ def _make_agent(fallback_model=None):
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,

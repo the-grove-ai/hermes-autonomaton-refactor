@@ -14,6 +14,7 @@ import pytest
 
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 @pytest.fixture(autouse=True)
@@ -53,12 +54,13 @@ def _make_agent(
     agent._aux_compression_context_length_config = None
     agent._custom_providers = []
     agent.tools = []
-    # Sprint 26 Phase 1b: _check_compression_model_feasibility reads
-    # self._runtime_ctx to decide between the cached probe path and the
-    # legacy live probe. AIAgent.__init__ sets this; tests that bypass
-    # __init__ via __new__ must set it explicitly. None routes through
-    # the legacy live probe path that these tests verify.
-    agent._runtime_ctx = None
+    # Sprint 34: _runtime_ctx is mandatory; the substrate fallback is
+    # gone. Tests that bypass __init__ via __new__ must set a non-None
+    # ctx. An empty RuntimeContext (no cached compression_probe) makes
+    # _check_compression_model_feasibility fall through to the live
+    # probe path these tests exercise — the same scenario the previous
+    # _runtime_ctx = None setup produced, now via the contract path.
+    agent._runtime_ctx = MOCK_RUNTIME_CTX
 
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
@@ -262,7 +264,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_client, "custom/big-model")),
         patch("agent.model_metadata.get_model_context_length", return_value=1_000_000) as mock_ctx_len,
     ):
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,

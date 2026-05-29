@@ -15,6 +15,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_runner():
@@ -322,7 +323,7 @@ class TestAgentCacheLifecycle:
         sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["hermes-telegram"], "")
 
         # First message — create and cache
-        agent1 = AIAgent(
+        agent1 = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
@@ -348,7 +349,7 @@ class TestAgentCacheLifecycle:
                     "provider": "openrouter", "api_mode": "chat_completions"}
 
         old_sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["hermes-telegram"], "")
-        agent1 = AIAgent(
+        agent1 = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
@@ -372,7 +373,7 @@ class TestAgentCacheLifecycle:
         runner = _make_runner()
         session_key = "telegram:12345"
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
@@ -403,7 +404,7 @@ class TestAgentCacheLifecycle:
         """Reasoning config can be set on a cached agent without eviction."""
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
@@ -426,7 +427,7 @@ class TestAgentCacheLifecycle:
         """The cached agent's system prompt stays identical across turns."""
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
@@ -445,7 +446,7 @@ class TestAgentCacheLifecycle:
         """Per-message callbacks can be set on cached agent."""
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
@@ -882,7 +883,7 @@ class TestAgentCacheSpilloverLive:
     def _real_agent(self):
         """A genuine AIAgent; no API calls are made during these tests."""
         from run_agent import AIAgent
-        return AIAgent(
+        return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
@@ -1030,7 +1031,7 @@ class TestAgentCacheIdleResume:
         """release_clients must not call process_registry.kill_all for task_id."""
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
@@ -1063,7 +1064,7 @@ class TestAgentCacheIdleResume:
         from tools import terminal_tool as _tt
         from tools import browser_tool as _bt
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
@@ -1100,7 +1101,7 @@ class TestAgentCacheIdleResume:
         """release_clients IS expected to close the OpenAI/httpx client."""
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
@@ -1126,14 +1127,14 @@ class TestAgentCacheIdleResume:
 
         # Agent A: evicted from cache (soft) — terminal survives.
         # Agent B: session expired (hard) — terminal torn down.
-        agent_a = AIAgent(
+        agent_a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
             session_id="soft-session",
         )
-        agent_b = AIAgent(
+        agent_b = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
@@ -1174,7 +1175,7 @@ class TestAgentCacheIdleResume:
 
         # Build an agent representing a stale (idle) session.
         SESSION_ID = "long-lived-user-session"
-        old = AIAgent(
+        old = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
@@ -1196,7 +1197,7 @@ class TestAgentCacheIdleResume:
         assert old.client is None
 
         # User comes back — new agent built for the SAME session_id.
-        new_agent = AIAgent(
+        new_agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,

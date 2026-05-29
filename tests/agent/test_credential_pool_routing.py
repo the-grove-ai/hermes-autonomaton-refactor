@@ -10,6 +10,7 @@ Covers:
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +85,7 @@ class TestEagerFallbackWithPool:
         from run_agent import AIAgent
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
-            agent = AIAgent()
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX)
 
         agent._credential_pool = None
         if has_pool:
@@ -151,7 +152,7 @@ class TestPoolRotationCycle:
         from run_agent import AIAgent
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
-            agent = AIAgent()
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX)
 
         entries = []
         for i in range(pool_entries):
@@ -230,7 +231,7 @@ class TestPoolRotationCycle:
         from run_agent import AIAgent
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
-            agent = AIAgent()
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX)
         agent._credential_pool = None
 
         recovered, has_retried = agent._recover_with_credential_pool(

@@ -551,6 +551,20 @@ def mock_config():
     }
 
 
+@pytest.fixture()
+def mock_runtime_ctx():
+    """Empty RuntimeContext for tests that construct AIAgent without
+    exercising real substrate.
+
+    Returns the same shared frozen instance as
+    ``tests._runtime_ctx.MOCK_RUNTIME_CTX`` — the fixture is the
+    pytest-parameter form; the module constant is the direct-import form
+    used by the Sprint 34 scripted migration.
+    """
+    from tests._runtime_ctx import MOCK_RUNTIME_CTX
+    return MOCK_RUNTIME_CTX
+
+
 # ── Global test timeout ─────────────────────────────────────────────────────
 # Kill any individual test that takes longer than 30 seconds.
 # Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the

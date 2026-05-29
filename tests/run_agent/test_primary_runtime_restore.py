@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from run_agent import AIAgent
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -39,7 +40,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key-12345678",
             base_url=base_url,
             provider=provider,
@@ -93,7 +94,7 @@ class TestPrimaryRuntimeSnapshot:
             patch("run_agent.OpenAI"),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
-            agent = AIAgent(
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="sk-ant-test-12345678",
                 base_url="https://api.anthropic.com",
                 provider="anthropic",

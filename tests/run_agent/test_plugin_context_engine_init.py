@@ -7,6 +7,7 @@ context_length, causing the CLI status bar to show 'ctx --'.
 from unittest.mock import MagicMock, patch
 
 from agent.context_engine import ContextEngine
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 class _StubEngine(ContextEngine):
@@ -43,7 +44,7 @@ def test_plugin_engine_gets_context_length_on_init():
     ):
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
@@ -73,7 +74,7 @@ def test_plugin_engine_update_model_args():
     ):
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             model="openrouter/auto",
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -79,7 +80,7 @@ class TestStreamingAccumulator:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -121,7 +122,7 @@ class TestStreamingAccumulator:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -168,7 +169,7 @@ class TestStreamingAccumulator:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -216,7 +217,7 @@ class TestStreamingAccumulator:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -256,7 +257,7 @@ class TestStreamingAccumulator:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -298,7 +299,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -332,7 +333,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -365,7 +366,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -405,7 +406,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -442,7 +443,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -491,7 +492,7 @@ class TestStreamingFallback:
         )
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -520,7 +521,7 @@ class TestStreamingFallback:
         )
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -544,7 +545,7 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = Exception("stream broke")
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -569,7 +570,7 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = httpx.ConnectError("socket closed")
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -613,7 +614,7 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = sse_error
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -650,7 +651,7 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = sse_error
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -694,7 +695,7 @@ class TestReasoningStreaming:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -723,7 +724,7 @@ class TestHasStreamConsumers:
 
     def test_no_consumers(self):
         from run_agent import AIAgent
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -735,7 +736,7 @@ class TestHasStreamConsumers:
 
     def test_delta_callback_set(self):
         from run_agent import AIAgent
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -748,7 +749,7 @@ class TestHasStreamConsumers:
 
     def test_stream_callback_set(self):
         from run_agent import AIAgent
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -771,7 +772,7 @@ class TestCodexStreamCallbacks:
 
         deltas = []
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -814,7 +815,7 @@ class TestCodexStreamCallbacks:
     def test_codex_stream_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -879,7 +880,7 @@ class TestCodexStreamCallbacks:
             "peer closed connection without sending complete message body"
         )
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -899,7 +900,7 @@ class TestCodexStreamCallbacks:
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -952,7 +953,7 @@ class TestAnthropicStreamCallbacks:
     def test_anthropic_stream_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -1006,7 +1007,7 @@ class TestAnthropicStreamCallbacks:
         """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None."""
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://api.minimax.io/anthropic",
             provider="minimax",
@@ -1057,7 +1058,7 @@ class TestAnthropicStreamCallbacks:
         """Only known provider stream parser ValueErrors are treated as transient."""
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://api.minimax.io/anthropic",
             provider="minimax",
@@ -1123,7 +1124,7 @@ class TestPartialToolCallWarning:
         mock_client.chat.completions.create.side_effect = lambda *a, **kw: _stalling_stream()
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -1184,7 +1185,7 @@ class TestPartialToolCallWarning:
         mock_client.chat.completions.create.side_effect = lambda *a, **kw: _stalling_stream()
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -1270,7 +1271,7 @@ class TestSilentRetryMidToolCall:
         mock_client.chat.completions.create.side_effect = _pick_stream
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -1344,7 +1345,7 @@ class TestSilentRetryMidToolCall:
         mock_client.chat.completions.create.side_effect = lambda *a, **kw: _always_fails()
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -1402,7 +1403,7 @@ class TestSilentRetryMidToolCall:
         mock_client.chat.completions.create.side_effect = _text_stall
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
@@ -1464,7 +1465,7 @@ def _make_acp_agent(provider="copilot-acp", base_url="acp://copilot"):
     so _has_stream_consumers() returns True (ensuring the test exercises the
     ACP exclusion, not the no-consumer branch)."""
     from run_agent import AIAgent
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         api_key="test-acp-key",
         base_url=base_url,
         provider=provider,
@@ -1563,7 +1564,7 @@ class TestCopilotACPStreamingDecision:
     def test_non_acp_provider_allows_streaming(self):
         """Regular providers still get streaming enabled."""
         from run_agent import AIAgent
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             provider="openrouter",

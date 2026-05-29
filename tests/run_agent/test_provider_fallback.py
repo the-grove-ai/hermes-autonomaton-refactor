@@ -8,6 +8,7 @@ advancement through multiple providers.
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _make_agent(fallback_model=None):
@@ -17,7 +18,7 @@ def _make_agent(fallback_model=None):
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
-        agent = AIAgent(
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,

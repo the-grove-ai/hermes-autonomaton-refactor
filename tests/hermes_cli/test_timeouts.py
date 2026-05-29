@@ -6,6 +6,7 @@ from hermes_cli.timeouts import (
     get_provider_request_timeout,
     get_provider_stale_timeout,
 )
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 def _write_config(tmp_path, body: str) -> None:
@@ -167,7 +168,7 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     monkeypatch.setenv("GROVE_API_TIMEOUT", "999")
 
     from run_agent import AIAgent
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         model="openai/gpt-4o-mini",
         provider="openrouter",
         api_key="sk-dummy",
@@ -195,7 +196,7 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     import run_agent as ra_mod
     importlib.reload(ra_mod)
 
-    agent2 = ra_mod.AIAgent(
+    agent2 = ra_mod.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         model="some/model",
         provider="openrouter",
         api_key="sk-dummy",
@@ -228,7 +229,7 @@ def test_resolved_api_call_stale_timeout_priority(monkeypatch, tmp_path):
     monkeypatch.setenv("GROVE_API_CALL_STALE_TIMEOUT", "999")
 
     from run_agent import AIAgent
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         model="gpt-5.4",
         provider="openai-codex",
         api_key="sk-dummy",
@@ -252,7 +253,7 @@ def test_resolved_api_call_stale_timeout_priority(monkeypatch, tmp_path):
     import run_agent as ra_mod
     importlib.reload(ra_mod)
 
-    agent2 = ra_mod.AIAgent(
+    agent2 = ra_mod.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         model="gpt-5.4",
         provider="openai-codex",
         api_key="sk-dummy",
@@ -274,7 +275,7 @@ def test_default_non_stream_stale_timeout_auto_disables_for_local_endpoints(monk
     monkeypatch.delenv("GROVE_API_CALL_STALE_TIMEOUT", raising=False)
 
     from run_agent import AIAgent
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         model="qwen3:32b",
         provider="ollama-local",
         api_key="sk-dummy",
@@ -294,7 +295,7 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
     monkeypatch.setenv("GROVE_API_CALL_STALE_TIMEOUT", "300")
 
     from run_agent import AIAgent
-    agent = AIAgent(
+    agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         model="qwen3:32b",
         provider="ollama-local",
         api_key="sk-dummy",

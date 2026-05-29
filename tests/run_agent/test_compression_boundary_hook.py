@@ -17,13 +17,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
 class TestCompressionBoundaryHook:
     def _make_agent(self, session_db):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
-            return AIAgent(
+            return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
@@ -90,7 +91,7 @@ class TestCompressionBoundaryHook:
         """Without session_db, session_id does not rotate and the hook is not fired."""
         from run_agent import AIAgent
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            agent = AIAgent(
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
