@@ -595,6 +595,12 @@ class Dispatcher:
                 _agent_sid = getattr(self.agent, "session_id", None)
                 if _agent_sid:
                     self.session_id = _agent_sid
+            # Sprint 40 — inject memory-provider tool schemas into the
+            # Agent's tool list. Previously the Agent's __init__ did
+            # this against ``self._memory_manager``; with manager
+            # ownership relocated to the Dispatcher, injection must
+            # happen here after the Agent's tools list is built.
+            self._inject_memory_tool_schemas()
 
     @property
     def runtime_ctx(self) -> RuntimeContext:
@@ -2351,6 +2357,41 @@ class Dispatcher:
                 )
         return result
 
+    def _inject_memory_tool_schemas(self) -> None:
+        """Inject memory-provider tool schemas into ``self.agent.tools``.
+
+        Sprint 40 — relocated from ``AIAgent.__init__`` where the Agent
+        used to do this against ``self._memory_manager``. With manager
+        ownership on the Dispatcher, injection happens after Agent
+        construction so the Agent's tools list (built from its
+        toolsets) gets the memory-provider tools appended without
+        duplicating names already registered via the plugin path.
+        """
+        if self.memory_manager is None:
+            return
+        agent_tools = getattr(self.agent, "tools", None)
+        if agent_tools is None:
+            return
+        existing_names = {
+            t.get("function", {}).get("name")
+            for t in agent_tools
+            if isinstance(t, dict)
+        }
+        valid_names = getattr(self.agent, "valid_tool_names", None)
+        try:
+            schemas = self.memory_manager.get_all_tool_schemas()
+        except Exception:
+            return
+        for schema in schemas:
+            name = schema.get("name", "")
+            if name and name in existing_names:
+                continue
+            agent_tools.append({"type": "function", "function": schema})
+            if name:
+                existing_names.add(name)
+                if isinstance(valid_names, set):
+                    valid_names.add(name)
+
     def execute_memory_write(self, intent: "MemoryWriteIntent") -> "MemoryWriteResult":
         """Handle a ``MemoryWriteIntent`` — synchronous return.
 
@@ -2449,13 +2490,21 @@ class Dispatcher:
             elif event == "on_pre_compress":
                 self.memory_manager.on_pre_compress(intent.messages or [])
             elif event == "sync_turn":
+                # MemoryManager.sync_all(user_content, assistant_content, *, session_id)
+                # MemoryManager.queue_prefetch_all(query, *, session_id)
+                # Skip on interrupted turns — matches the Agent's pre-Sprint-40
+                # behavior (partial output is not durable conversational truth).
+                if intent.interrupted:
+                    return
+                sid = self.session_id or ""
                 self.memory_manager.sync_all(
-                    original_user_message=intent.original_user_message,
-                    final_response=intent.final_response,
-                    interrupted=intent.interrupted,
+                    intent.original_user_message or "",
+                    intent.final_response or "",
+                    session_id=sid,
                 )
                 self.memory_manager.queue_prefetch_all(
-                    original_user_message=intent.original_user_message,
+                    intent.original_user_message or "",
+                    session_id=sid,
                 )
             elif event == "shutdown":
                 self.memory_manager.shutdown_all()

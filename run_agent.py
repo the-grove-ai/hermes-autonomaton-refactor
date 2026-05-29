@@ -2166,8 +2166,13 @@ class AIAgent:
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
 
-        # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
-        self._memory_store = None
+        # Sprint 40 — operator-memory authority moved to the Dispatcher.
+        # The store + manager construction, the provider-init kwargs
+        # building, and the memory-tool-schema injection all happen on
+        # ``Dispatcher.open_memory(...)`` (called from
+        # ``Dispatcher.__init__`` before AIAgent construction). The
+        # Agent keeps only the lightweight nudge / rotation counters
+        # below — they're per-Agent reasoning state, not substrate.
         self._memory_enabled = False
         self._user_profile_enabled = False
         self._memory_nudge_interval = 10
@@ -2179,106 +2184,8 @@ class AIAgent:
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
-                if self._memory_enabled or self._user_profile_enabled:
-                    # Sprint 26 Phase 1b / Sprint 34: use Dispatcher-cached
-                    # store when it cached one; else build.
-                    if self._runtime_ctx.memory_store is not None:
-                        self._memory_store = self._runtime_ctx.memory_store
-                    else:
-                        from tools.memory_tool import MemoryStore
-                        self._memory_store = MemoryStore(
-                            memory_char_limit=mem_config.get("memory_char_limit", 2200),
-                            user_char_limit=mem_config.get("user_char_limit", 1375),
-                        )
-                        self._memory_store.load_from_disk()
             except Exception:
                 pass  # Memory is optional -- don't break agent init
-        
-
-
-        # Memory provider plugin (external — one at a time, alongside built-in)
-        # Reads memory.provider from config to select which plugin to activate.
-        self._memory_manager = None
-        if not skip_memory:
-            try:
-                _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
-
-                if _mem_provider_name:
-                    from agent.memory_manager import MemoryManager as _MemoryManager
-                    from plugins.memory import load_memory_provider as _load_mem
-                    self._memory_manager = _MemoryManager()
-                    _mp = _load_mem(_mem_provider_name)
-                    if _mp and _mp.is_available():
-                        self._memory_manager.add_provider(_mp)
-                    if self._memory_manager.providers:
-                        _init_kwargs = {
-                            "session_id": self.session_id,
-                            "platform": platform or "cli",
-                            "hermes_home": str(get_hermes_home()),
-                            "agent_context": "primary",
-                        }
-                        # Thread session title for memory provider scoping
-                        # (e.g. honcho uses this to derive chat-scoped session keys).
-                        # Sprint 39 — pre-read by the Dispatcher and passed
-                        # through agent_kwargs; ``_dispatcher_singleton`` is not
-                        # yet wired at __init__ time (the Dispatcher sets it
-                        # after AIAgent(...) returns).
-                        if self._session_title:
-                            _init_kwargs["session_title"] = self._session_title
-                        # Thread gateway user identity for per-user memory scoping
-                        if self._user_id:
-                            _init_kwargs["user_id"] = self._user_id
-                        if self._user_name:
-                            _init_kwargs["user_name"] = self._user_name
-                        if self._chat_id:
-                            _init_kwargs["chat_id"] = self._chat_id
-                        if self._chat_name:
-                            _init_kwargs["chat_name"] = self._chat_name
-                        if self._chat_type:
-                            _init_kwargs["chat_type"] = self._chat_type
-                        if self._thread_id:
-                            _init_kwargs["thread_id"] = self._thread_id
-                        # Thread gateway session key for stable per-chat Honcho session isolation
-                        if self._gateway_session_key:
-                            _init_kwargs["gateway_session_key"] = self._gateway_session_key
-                        # Profile identity for per-profile provider scoping
-                        try:
-                            from hermes_cli.profiles import get_active_profile_name
-                            _profile = get_active_profile_name()
-                            _init_kwargs["agent_identity"] = _profile
-                            _init_kwargs["agent_workspace"] = "hermes"
-                        except Exception:
-                            pass
-                        self._memory_manager.initialize_all(**_init_kwargs)
-                        logger.info("Memory provider '%s' activated", _mem_provider_name)
-                    else:
-                        logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
-                        self._memory_manager = None
-            except Exception as _mpe:
-                logger.warning("Memory provider plugin init failed: %s", _mpe)
-                self._memory_manager = None
-
-        # Inject memory provider tool schemas into the tool surface.
-        # Skip tools whose names already exist (plugins may register the
-        # same tools via ctx.register_tool(), which lands in self.tools
-        # through get_tool_definitions()).  Duplicate function names cause
-        # 400 errors on providers that enforce unique names (e.g. Xiaomi
-        # MiMo via Nous Portal).
-        if self._memory_manager and self.tools is not None:
-            _existing_tool_names = {
-                t.get("function", {}).get("name")
-                for t in self.tools
-                if isinstance(t, dict)
-            }
-            for _schema in self._memory_manager.get_all_tool_schemas():
-                _tname = _schema.get("name", "")
-                if _tname and _tname in _existing_tool_names:
-                    continue  # already registered via plugin path
-                _wrapped = {"type": "function", "function": _schema}
-                self.tools.append(_wrapped)
-                if _tname:
-                    self.valid_tool_names.add(_tname)
-                    _existing_tool_names.add(_tname)
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
@@ -2762,6 +2669,29 @@ class AIAgent:
         """
         disp = getattr(self, "_dispatcher_singleton", None)
         return disp.session if disp is not None else None
+
+    def _memory_store_via_dispatcher(self):
+        """Return the Dispatcher-owned MemoryStore or None when no back-ref.
+
+        Sprint 40 — the Agent no longer holds ``_memory_store``. Reads
+        route through the Dispatcher back-reference; writes route through
+        ``MemoryWriteIntent`` yields (when call site is in a generator)
+        or back-reference calls to ``Dispatcher.execute_memory_write``
+        (when not).
+        """
+        disp = getattr(self, "_dispatcher_singleton", None)
+        return disp.memory_store if disp is not None else None
+
+    def _memory_manager_via_dispatcher(self):
+        """Return the Dispatcher-owned MemoryManager or None when no back-ref.
+
+        Sprint 40 — the Agent no longer holds ``_memory_manager``.
+        Lifecycle events route through ``MemoryLifecycleIntent`` yields
+        (generator context) or back-reference calls to
+        ``Dispatcher.execute_memory_lifecycle``.
+        """
+        disp = getattr(self, "_dispatcher_singleton", None)
+        return disp.memory_manager if disp is not None else None
 
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
@@ -4795,7 +4725,12 @@ class AIAgent:
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
-                    review_agent._memory_store = self._memory_store
+                    # Sprint 40 — the review fork's own Dispatcher provides
+                    # the memory_store via its back-reference. The review
+                    # Dispatcher was constructed in this same spawn flow
+                    # with memory_store inherited from the parent's
+                    # Dispatcher (see ``_spawn_background_review``'s
+                    # Dispatcher kwargs below).
                     review_agent._memory_enabled = self._memory_enabled
                     review_agent._user_profile_enabled = self._user_profile_enabled
                     review_agent._memory_nudge_interval = 0
@@ -6248,15 +6183,20 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
-        if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception:
-                pass
-            try:
-                self._memory_manager.shutdown_all()
-            except Exception:
-                pass
+        # Sprint 40 — memory lifecycle mediated through the Dispatcher.
+        # Non-generator method, so we use the back-reference call
+        # rather than a yield; the Dispatcher's execute_memory_lifecycle
+        # method is the same executor a yielded MemoryLifecycleIntent
+        # would route to.
+        disp = getattr(self, "_dispatcher_singleton", None)
+        if disp is not None and disp.memory_manager is not None:
+            from grove.intents import MemoryLifecycleIntent
+            disp.execute_memory_lifecycle(MemoryLifecycleIntent(
+                event="on_session_end", messages=messages or [],
+            ))
+            disp.execute_memory_lifecycle(MemoryLifecycleIntent(
+                event="shutdown",
+            ))
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
@@ -6272,11 +6212,12 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
-        if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception:
-                pass
+        disp = getattr(self, "_dispatcher_singleton", None)
+        if disp is not None and disp.memory_manager is not None:
+            from grove.intents import MemoryLifecycleIntent
+            disp.execute_memory_lifecycle(MemoryLifecycleIntent(
+                event="on_session_end", messages=messages or [],
+            ))
         # Notify context engine of session end too — same lifecycle moment as
         # the memory manager's on_session_end. Without this, engines that
         # accumulate per-session state (DAGs, summaries) leak that state from
@@ -6327,19 +6268,18 @@ class AIAgent:
         """
         if interrupted:
             return
-        if not (self._memory_manager and final_response and original_user_message):
+        disp = getattr(self, "_dispatcher_singleton", None)
+        if disp is None or disp.memory_manager is None:
             return
-        try:
-            self._memory_manager.sync_all(
-                original_user_message, final_response,
-                session_id=self.session_id or "",
-            )
-            self._memory_manager.queue_prefetch_all(
-                original_user_message,
-                session_id=self.session_id or "",
-            )
-        except Exception:
-            pass
+        if not (final_response and original_user_message):
+            return
+        from grove.intents import MemoryLifecycleIntent
+        disp.execute_memory_lifecycle(MemoryLifecycleIntent(
+            event="sync_turn",
+            original_user_message=original_user_message,
+            final_response=final_response,
+            interrupted=False,
+        ))
 
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
@@ -6697,21 +6637,26 @@ class AIAgent:
         # ── Volatile tier (changes per session/turn — never cached) ───
         volatile_parts: List[Tuple[str, str]] = []
 
-        if self._memory_store:
+        # Sprint 40 — memory READS route through the Dispatcher back-
+        # reference. The store/manager live on ``self._dispatcher_singleton``
+        # (set by ``Dispatcher(agent_kwargs=...).agent``). Identical
+        # semantics to the pre-Sprint-40 inline reads against
+        # ``self._memory_store`` / ``self._memory_manager``.
+        _mem_store = self._memory_store_via_dispatcher()
+        if _mem_store:
             if self._memory_enabled:
-                mem_block = self._memory_store.format_for_system_prompt("memory")
+                mem_block = _mem_store.format_for_system_prompt("memory")
                 if mem_block:
                     volatile_parts.append(("memory", mem_block))
-            # USER.md is always included when enabled.
             if self._user_profile_enabled:
-                user_block = self._memory_store.format_for_system_prompt("user")
+                user_block = _mem_store.format_for_system_prompt("user")
                 if user_block:
                     volatile_parts.append(("user_profile", user_block))
 
-        # External memory provider system prompt block (additive to built-in)
-        if self._memory_manager:
+        _mem_manager = self._memory_manager_via_dispatcher()
+        if _mem_manager:
             try:
-                _ext_mem_block = self._memory_manager.build_system_prompt()
+                _ext_mem_block = _mem_manager.build_system_prompt()
                 if _ext_mem_block:
                     volatile_parts.append(("external_memory", _ext_mem_block))
             except Exception:
@@ -7142,8 +7087,9 @@ class AIAgent:
         so the rebuilt prompt captures any writes from this session.
         """
         self._cached_system_prompt = None
-        if self._memory_store:
-            self._memory_store.load_from_disk()
+        _mem_store = self._memory_store_via_dispatcher()
+        if _mem_store:
+            _mem_store.load_from_disk()
 
     def set_session_register(self, name: Optional[str]) -> None:
         """Sprint 23 — set or clear the session-overlay register.
@@ -11198,12 +11144,16 @@ class AIAgent:
             "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
         )
 
-        # Notify external memory provider before compression discards context
-        if self._memory_manager:
-            try:
-                self._memory_manager.on_pre_compress(messages)
-            except Exception:
-                pass
+        # Sprint 40 — yield a MemoryLifecycleIntent for the pre-compress
+        # notification so external providers can flush state before
+        # compression discards context. ``_compress_context`` is a
+        # generator (Sprint 39); the Dispatcher catches the intent and
+        # routes it to ``memory_manager.on_pre_compress(messages)``.
+        if self._memory_manager_via_dispatcher() is not None:
+            from grove.intents import MemoryLifecycleIntent
+            yield MemoryLifecycleIntent(
+                event="on_pre_compress", messages=messages,
+            )
 
         try:
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
@@ -11287,17 +11237,19 @@ class AIAgent:
         # accumulated turn buffers, counters) refreshes. reset=False because
         # the logical conversation continues; only the id and DB row rolled
         # over. See #6672.
-        try:
-            _old_sid = locals().get("old_session_id")
-            if _old_sid and self._memory_manager:
-                self._memory_manager.on_session_switch(
-                    self.session_id or "",
-                    parent_session_id=_old_sid,
-                    reset=False,
-                    reason="compression",
-                )
-        except Exception as _me_err:
-            logger.debug("memory manager on_session_switch (compression): %s", _me_err)
+        # Sprint 40 — yield a MemoryLifecycleIntent for the session-switch
+        # notification. The Dispatcher routes it to
+        # ``memory_manager.on_session_switch(...)`` and uses its own
+        # ``self.session_id`` as the new id (already rotated by the
+        # SessionRotateIntent earlier in this generator).
+        _old_sid = locals().get("old_session_id")
+        if _old_sid and self._memory_manager_via_dispatcher() is not None:
+            from grove.intents import MemoryLifecycleIntent
+            yield MemoryLifecycleIntent(
+                event="on_session_switch",
+                parent_session_id=_old_sid,
+                reason="compression",
+            )
 
         # Warn on repeated compressions (quality degrades with each pass)
         _cc = self.context_compressor.compression_count
@@ -11438,30 +11390,32 @@ class AIAgent:
                 current_session_id=self.session_id,
             )
         elif function_name == "memory":
-            target = function_args.get("target", "memory")
-            from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
+            # Sprint 40 — mediated via MemoryWriteIntent. The Dispatcher
+            # owns the store + manager; it executes the tool against
+            # its handles AND fires the on_memory_write bridge to
+            # external providers. The Agent receives a MemoryWriteResult
+            # whose ``value`` is the tool's LLM-visible result string.
+            from grove.intents import MemoryWriteIntent
+            disp = getattr(self, "_dispatcher_singleton", None)
+            if disp is None:
+                return json.dumps({
+                    "success": False,
+                    "error": "memory tool requires Dispatcher (Sprint 40)",
+                })
+            result = disp.execute_memory_write(MemoryWriteIntent(
+                kind="builtin_memory",
                 action=function_args.get("action"),
-                target=target,
+                target=function_args.get("target", "memory"),
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
-                store=self._memory_store,
-            )
-            # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in {"add", "replace"}:
-                try:
-                    self._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
-                        target,
-                        function_args.get("content", ""),
-                        metadata=self._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=tool_call_id,
-                        ),
-                    )
-                except Exception:
-                    pass
-            return result
+                metadata=self._build_memory_write_metadata(
+                    task_id=effective_task_id,
+                    tool_call_id=tool_call_id,
+                ),
+            ))
+            return result.value if result.success else json.dumps({
+                "success": False, "error": result.error or "memory write failed",
+            })
         elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
             # Sprint 31 Phase 1b: context-engine tools (lcm_grep,
             # lcm_describe, lcm_expand, etc.) were sequential-only
@@ -11486,8 +11440,24 @@ class AIAgent:
                 return _json.dumps({
                     "error": f"Context engine tool '{function_name}' failed: {tool_error}",
                 })
-        elif self._memory_manager and self._memory_manager.has_tool(function_name):
-            return self._memory_manager.handle_tool_call(function_name, function_args)
+        elif (
+            self._memory_manager_via_dispatcher() is not None
+            and self._memory_manager_via_dispatcher().has_tool(function_name)
+        ):
+            # Sprint 40 — provider memory tool dispatch routes through
+            # the Dispatcher's MemoryWriteIntent handler so the Agent
+            # never holds the manager handle.
+            from grove.intents import MemoryWriteIntent
+            disp = self._dispatcher_singleton
+            result = disp.execute_memory_write(MemoryWriteIntent(
+                kind="provider_tool",
+                tool_name=function_name,
+                arguments=dict(function_args),
+            ))
+            return result.value if result.success else json.dumps({
+                "success": False,
+                "error": result.error or "provider memory tool failed",
+            })
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
             return _clarify_tool(
@@ -11866,7 +11836,8 @@ class AIAgent:
             return
 
         # memory_manager tools — spinner if both quiet gates pass
-        if self._memory_manager and self._memory_manager.has_tool(function_name):
+        _spinner_mem_mgr = self._memory_manager_via_dispatcher()
+        if _spinner_mem_mgr is not None and _spinner_mem_mgr.has_tool(function_name):
             if not (self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner()):
                 return
             face = random.choice(KawaiiSpinner.get_waiting_faces())
@@ -12482,7 +12453,7 @@ class AIAgent:
         _should_review_memory = False
         if (self._memory_nudge_interval > 0
                 and "memory" in self.valid_tool_names
-                and self._memory_store):
+                and self._memory_store_via_dispatcher() is not None):
             self._turns_since_memory += 1
             if self._turns_since_memory >= self._memory_nudge_interval:
                 _should_review_memory = True
@@ -12694,10 +12665,11 @@ class AIAgent:
         # Notify memory providers of the new turn so cadence tracking works.
         # Must happen BEFORE prefetch_all() so providers know which turn it is
         # and can gate context/dialectic refresh via contextCadence/dialecticCadence.
-        if self._memory_manager:
+        _mem_mgr = self._memory_manager_via_dispatcher()
+        if _mem_mgr is not None:
             try:
                 _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
-                self._memory_manager.on_turn_start(self._user_turn_count, _turn_msg)
+                _mem_mgr.on_turn_start(self._user_turn_count, _turn_msg)
             except Exception:
                 pass
 
@@ -12707,10 +12679,10 @@ class AIAgent:
         # Use original_user_message (clean input) — user_message may contain
         # injected skill content that bloats / breaks provider queries.
         _ext_prefetch_cache = ""
-        if self._memory_manager:
+        if _mem_mgr is not None:
             try:
                 _query = original_user_message if isinstance(original_user_message, str) else ""
-                _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
+                _ext_prefetch_cache = _mem_mgr.prefetch_all(_query) or ""
             except Exception:
                 pass
 

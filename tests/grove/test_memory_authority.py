@@ -315,6 +315,7 @@ class TestMemoryLifecycleIntent:
         self, dispatcher_with_memory, mock_memory_manager,
     ):
         d = dispatcher_with_memory
+        d.session_id = "sess_42"
 
         def gen():
             yield MemoryLifecycleIntent(
@@ -326,14 +327,31 @@ class TestMemoryLifecycleIntent:
             yield FinalResponse(content="done")
 
         d._drive_generator(MagicMock(), gen(), MagicMock())
+        # MemoryManager.sync_all(user_content, assistant_content, *, session_id)
         mock_memory_manager.sync_all.assert_called_once_with(
-            original_user_message="hello",
-            final_response="hi back",
-            interrupted=False,
+            "hello", "hi back", session_id="sess_42",
         )
         mock_memory_manager.queue_prefetch_all.assert_called_once_with(
-            original_user_message="hello",
+            "hello", session_id="sess_42",
         )
+
+    def test_sync_turn_skips_when_interrupted(
+        self, dispatcher_with_memory, mock_memory_manager,
+    ):
+        d = dispatcher_with_memory
+
+        def gen():
+            yield MemoryLifecycleIntent(
+                event="sync_turn",
+                original_user_message="hello",
+                final_response="partial",
+                interrupted=True,
+            )
+            yield FinalResponse(content="done")
+
+        d._drive_generator(MagicMock(), gen(), MagicMock())
+        mock_memory_manager.sync_all.assert_not_called()
+        mock_memory_manager.queue_prefetch_all.assert_not_called()
 
     def test_shutdown_routes_to_shutdown_all(
         self, dispatcher_with_memory, mock_memory_manager,
