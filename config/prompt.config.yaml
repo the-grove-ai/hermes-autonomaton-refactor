@@ -1,0 +1,130 @@
+# ============================================================================
+# prompt.config.yaml — Declarative system-prompt composition (GRV-007)
+# ============================================================================
+# Sprint 36 introduced the PromptComposer (grove/prompt/composer.py). Each
+# section of the system prompt is a named provider registered at a tier
+# (stable / context / volatile) and an order. This file is the operator
+# surface for tuning section ordering and gating.
+#
+# GRV-007 § IV — ordering MUST be config-driven.
+# GRV-007 § V  — gating is dual-layer: ``enabled: false`` here disables a
+#                section globally; the provider returns None for runtime
+#                gating (e.g., a tool-guidance provider returns None when
+#                the gated tool isn't loaded).
+# GRV-007 § VI — the composer MUST NOT cache across turns. Anthropic's
+#                prompt-prefix cache handles cross-turn optimization
+#                content-based.
+#
+# Per-section fields:
+#   tier    — "stable" | "context" | "volatile". Tier order is FIXED in this
+#             order; ``order`` sequences sections within a tier.
+#   order   — lower number renders earlier within the tier.
+#   enabled — false disables the section globally (no provider call).
+#
+# Vanilla install (this file absent or unreadable): the composer falls back
+# to the in-code defaults from ``build_default_composer`` — same ordering
+# this file declares.
+# ============================================================================
+
+prompt:
+  sections:
+
+    # ── Stable tier ───────────────────────────────────────────────────────
+    # Sections that are constant across the Agent's lifetime — identity,
+    # tool guidance, model-family hints, platform hints. Earliest in the
+    # joined prompt so Anthropic's prefix cache catches them.
+
+    identity:
+      tier: stable
+      order: 10
+      enabled: true
+
+    grove_agent_help:
+      tier: stable
+      order: 20
+      enabled: true
+
+    tool_guidance:
+      tier: stable
+      order: 30
+      enabled: true
+
+    computer_use_guidance:
+      tier: stable
+      order: 31
+      enabled: true
+
+    nous_subscription:
+      tier: stable
+      order: 35
+      enabled: true
+
+    tool_use_enforcement:
+      tier: stable
+      order: 40
+      enabled: true
+
+    model_operational_guidance:
+      tier: stable
+      order: 41
+      enabled: true
+
+    skills_index:
+      tier: stable
+      order: 50
+      enabled: true
+
+    alibaba_model_override:
+      tier: stable
+      order: 55
+      enabled: true
+
+    environment_hints:
+      tier: stable
+      order: 60
+      enabled: true
+
+    platform_hint:
+      tier: stable
+      order: 70
+      enabled: true
+
+    # ── Context tier ──────────────────────────────────────────────────────
+    # cwd-dependent sections that may change between sessions but stay
+    # stable within one. Sprint 37 will register the contextual preamble
+    # here at order: 15 (between system_message and context_files).
+
+    system_message:
+      tier: context
+      order: 10
+      enabled: true
+
+    context_files:
+      tier: context
+      order: 20
+      enabled: true
+
+    # ── Volatile tier ─────────────────────────────────────────────────────
+    # Changes per session or per turn. Last in the joined prompt — placing
+    # turn-volatile content after the cache-warm prefix avoids invalidating
+    # the upstream prefix cache.
+
+    memory:
+      tier: volatile
+      order: 10
+      enabled: true
+
+    user_profile:
+      tier: volatile
+      order: 20
+      enabled: true
+
+    external_memory:
+      tier: volatile
+      order: 30
+      enabled: true
+
+    timestamp:
+      tier: volatile
+      order: 100
+      enabled: true
