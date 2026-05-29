@@ -64,7 +64,7 @@ async def test_compress_command_reports_noop_without_success_banner():
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
     agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
+    agent_instance._composed_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
@@ -101,7 +101,7 @@ async def test_compress_command_explains_when_token_estimate_rises():
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
     agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
+    agent_instance._composed_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
@@ -147,7 +147,7 @@ async def test_compress_command_appends_warning_when_summary_generation_fails():
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
     agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
+    agent_instance._composed_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     # Simulate summary-generation failure: fallback flag set, dropped count
@@ -206,7 +206,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
     agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
+    agent_instance._composed_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     # Fallback placeholder was NOT used — recovery succeeded.

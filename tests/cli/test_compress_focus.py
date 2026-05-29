@@ -25,7 +25,7 @@ def test_focus_topic_extracted_and_passed(capsys):
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent._compress_context.return_value = (compressed, "")
 
     def _estimate(messages):
@@ -52,7 +52,7 @@ def test_no_focus_topic_when_bare_command(capsys):
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent._compress_context.return_value = (list(history), "")
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
@@ -70,7 +70,7 @@ def test_empty_focus_after_command_treated_as_none(capsys):
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent._compress_context.return_value = (list(history), "")
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
@@ -89,7 +89,7 @@ def test_focus_topic_printed_in_compression_banner(capsys):
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent._compress_context.return_value = (compressed, "")
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
@@ -107,7 +107,7 @@ def test_no_focus_prints_standard_banner(capsys):
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent._compress_context.return_value = (compressed, "")
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):

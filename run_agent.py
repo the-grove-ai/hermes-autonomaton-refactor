@@ -2109,8 +2109,13 @@ class AIAgent:
         self._memory_write_origin = "assistant_tool"
         self._memory_write_context = "foreground"
         
-        # Cached system prompt -- built once per session, only rebuilt on compression
-        self._cached_system_prompt: Optional[str] = None
+        # Sprint 36 — Composed system prompt set by
+        # ``Dispatcher._compose_and_inject_system_prompt`` after
+        # construction. The Agent receives this string per GRV-007 § II;
+        # it does not produce it. Recomposition on compression / session-
+        # register change routes through ``self._dispatcher_singleton
+        # .recompose_system_prompt(...)`` via the back-reference.
+        self._composed_system_prompt: Optional[str] = None
 
         # Sprint 23 (soul-affordances-register-v1) — session-overlay
         # register name. None means "compose with the soul.md frontmatter
@@ -3022,7 +3027,7 @@ class AIAgent:
             )
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──
-        self._cached_system_prompt = None
+        self._composed_system_prompt = None
 
         # ── Update _primary_runtime so the change persists across turns ──
         _cc = self.context_compressor if hasattr(self, "context_compressor") and self.context_compressor else None
@@ -4700,7 +4705,7 @@ class AIAgent:
                     # issue #25322 and PR #17276 for the full analysis +
                     # measured impact (~26% end-to-end cost reduction on
                     # Sonnet 4.5).
-                    review_agent._cached_system_prompt = self._cached_system_prompt
+                    review_agent._composed_system_prompt = self._composed_system_prompt
                     # Defensive: pin session_start + session_id to the
                     # parent's so any code path that re-renders parts of
                     # the system prompt (compression, plugin hooks) still
@@ -5725,7 +5730,7 @@ class AIAgent:
                 "platform": self.platform,
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
-                "system_prompt": self._cached_system_prompt or "",
+                "system_prompt": self._composed_system_prompt or "",
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
@@ -6377,293 +6382,56 @@ class AIAgent:
 
 
 
-    def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
-        """Assemble the system prompt as three ordered parts.
-
-        Returns a dict with three keys:
-          * ``stable``   — identity, tool guidance, skills prompt,
-            environment hints, platform hints, model-family operational
-            guidance.
-          * ``context``  — context files (AGENTS.md, .cursorrules, etc.)
-            and caller-supplied system_message.
-          * ``volatile`` — memory snapshot, user profile, external
-            memory provider block, timestamp line.
-
-        Joined into a single string by ``_build_system_prompt`` and
-        cached on ``_cached_system_prompt`` for the lifetime of the
-        AIAgent.  Hermes never re-renders parts of this string mid-
-        session — that's the only way to keep upstream prompt caches
-        warm across turns.
-        """
-        # ── Stable tier ────────────────────────────────────────────────
-        # Sprint 24a (context-instrumentation-v1): each accumulator is now a
-        # List[Tuple[label, text)] so the per-section breakdown is recoverable
-        # for the /context handler without changing existing callers' output.
-        # The labels are taken as-discovered (faithful reporting > editorial
-        # cleanup); renames are a Sprint 24c+ concern. The return block
-        # joins text values (backward-compat keys) and synthesizes a fourth
-        # `_sections` key keyed by label.
-        stable_parts: List[Tuple[str, str]] = []
-
-        # Sprint 07 (persona-soul-retrofit-v1): compose the operator's
-        # declared identity into the stable tier — constitution → soul →
-        # operator → goals (design D4 precedence order).
-        #
-        # constitution and soul are Jidoka-tier: load_identity() raises
-        # IdentityError if either is missing AND cannot be seeded from
-        # config/identity/. That exception is allowed to propagate — the
-        # Autonomaton must not start without sovereignty guardrails or an
-        # identity. No silent degradation.
-        #
-        # The gate preserves existing skip behavior: batch / trajectory
-        # modes (skip_context_files=True, load_soul_identity=False) compose
-        # no identity, so load_identity() is not called and no Jidoka check
-        # fires for them. memory.md and agents.md keep their existing
-        # delivery mechanisms (MemoryStore volatile tier, context-files
-        # prompt); the identity layer loads them into the composition
-        # object but Phase 3 injects only the four stable-tier files.
-        _identity_loaded = False
-        if self.load_soul_identity or not self.skip_context_files:
-            from grove.identity import load_identity
-            # Sprint 23 D6 — thread the session-overlay register through.
-            # When self.session_register is None (the default), composition
-            # defers to soul.md frontmatter. When the /register slash
-            # command has set an override, the explicit value wins for
-            # this and subsequent turns until /register reset.
-            _identity_block = load_identity(
-                session_register=self.session_register,
-            ).compose_stable()
-            if _identity_block:
-                stable_parts.append(("identity", _identity_block))
-                _identity_loaded = True
-
-        if not _identity_loaded:
-            # No identity composed (batch / trajectory mode). Fall back to
-            # the hardcoded identity.
-            stable_parts.append(("identity", DEFAULT_AGENT_IDENTITY))
-
-        # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-        stable_parts.append(("grove_agent_help", GROVE_AGENT_HELP_GUIDANCE))
-
-        # Tool-aware behavioral guidance: only inject when the tools are loaded
-        tool_guidance = []
-        if "memory" in self.valid_tool_names:
-            tool_guidance.append(MEMORY_GUIDANCE)
-        if "session_search" in self.valid_tool_names:
-            tool_guidance.append(SESSION_SEARCH_GUIDANCE)
-        if "skill_manage" in self.valid_tool_names:
-            tool_guidance.append(SKILLS_GUIDANCE)
-        # Sprint 30 — escalation surface. Only when the synthetic
-        # `escalate` tool is in the registry (it's in the Sprint 29
-        # `core` chunk so it loads on every classified-intent turn).
-        if "escalate" in self.valid_tool_names:
-            tool_guidance.append(ESCALATION_GUIDANCE)
-        # Kanban worker/orchestrator lifecycle — only present when the
-        # dispatcher spawned this process (kanban_show check_fn gates on
-        # GROVE_KANBAN_TASK env var). Normal chat sessions never see
-        # this block.
-        if "kanban_show" in self.valid_tool_names:
-            tool_guidance.append(KANBAN_GUIDANCE)
-        if tool_guidance:
-            stable_parts.append(("tool_guidance", " ".join(tool_guidance)))
-
-        # Computer-use (macOS) — goes in as its own block rather than being
-        # merged into tool_guidance because the content is multi-paragraph.
-        if "computer_use" in self.valid_tool_names:
-            from agent.prompt_builder import COMPUTER_USE_GUIDANCE
-            stable_parts.append(("computer_use_guidance", COMPUTER_USE_GUIDANCE))
-
-        nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
-        if nous_subscription_prompt:
-            stable_parts.append(("nous_subscription", nous_subscription_prompt))
-        # Tool-use enforcement: tells the model to actually call tools instead
-        # of describing intended actions.  Controlled by config.yaml
-        # agent.tool_use_enforcement:
-        #   "auto" (default) — matches TOOL_USE_ENFORCEMENT_MODELS
-        #   true  — always inject (all models)
-        #   false — never inject
-        #   list  — custom model-name substrings to match
-        if self.valid_tool_names:
-            _enforce = self._tool_use_enforcement
-            _inject = False
-            if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
-                _inject = True
-            elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
-                _inject = False
-            elif isinstance(_enforce, list):
-                model_lower = (self.model or "").lower()
-                _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
-            else:
-                # "auto" or any unrecognised value — use hardcoded defaults
-                model_lower = (self.model or "").lower()
-                _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
-            if _inject:
-                stable_parts.append(("tool_use_enforcement", TOOL_USE_ENFORCEMENT_GUIDANCE))
-                _model_lower = (self.model or "").lower()
-                # Google model operational guidance (conciseness, absolute
-                # paths, parallel tool calls, verify-before-edit, etc.)
-                if "gemini" in _model_lower or "gemma" in _model_lower:
-                    stable_parts.append(("model_operational_guidance", GOOGLE_MODEL_OPERATIONAL_GUIDANCE))
-                # OpenAI GPT/Codex execution discipline (tool persistence,
-                # prerequisite checks, verification, anti-hallucination).
-                if "gpt" in _model_lower or "codex" in _model_lower:
-                    stable_parts.append(("model_operational_guidance", OPENAI_MODEL_EXECUTION_GUIDANCE))
-
-        has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
-        if has_skills_tools:
-            avail_toolsets = {
-                toolset
-                for toolset in (
-                    get_toolset_for_tool(tool_name) for tool_name in self.valid_tool_names
-                )
-                if toolset
-            }
-            skills_prompt = build_skills_system_prompt(
-                available_tools=self.valid_tool_names,
-                available_toolsets=avail_toolsets,
-            )
-        else:
-            skills_prompt = ""
-        if skills_prompt:
-            stable_parts.append(("skills_index", skills_prompt))
-
-        # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
-        # of the requested model. Inject explicit model identity into the system prompt
-        # so the agent can correctly report which model it is (workaround for API bug).
-        # Stable for the lifetime of an agent instance — model and provider are fixed
-        # at construction time.
-        if self.provider == "alibaba":
-            _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
-            stable_parts.append((
-                "alibaba_model_override",
-                f"You are powered by the model named {_model_short}. "
-                f"The exact model ID is {self.model}. "
-                f"When asked what model you are, always answer based on this information, "
-                f"not on any model name returned by the API.",
-            ))
-
-        # Environment hints (WSL, Termux, etc.) — tell the agent about the
-        # execution environment so it can translate paths and adapt behavior.
-        # Stable for the lifetime of the process.
-        _env_hints = build_environment_hints()
-        if _env_hints:
-            stable_parts.append(("environment_hints", _env_hints))
-
-        platform_key = (self.platform or "").lower().strip()
-        if platform_key in PLATFORM_HINTS:
-            stable_parts.append(("platform_hint", PLATFORM_HINTS[platform_key]))
-        elif platform_key:
-            # Check plugin registry for platform-specific LLM guidance
+    # Sprint 36 — production prompt composition lives on the Dispatcher
+    # (GRV-007 § II). ``Dispatcher._compose_and_inject_system_prompt(agent)``
+    # runs after agent construction; ``Dispatcher.recompose_system_prompt(...)``
+    # is the back-reference path the Agent calls on compression / session-
+    # register changes. The Agent's ``_composed_system_prompt`` field holds
+    # the result; the reasoning loop reads it, does not produce it.
+    #
+    # ``_build_system_prompt`` below is a thin shim that delegates to the
+    # composer. Production code never calls it — it exists so tests and
+    # tooling can peek at the composed prompt for a given Agent state
+    # without going through the Dispatcher's injection lifecycle. No cache.
+    def _build_system_prompt(self, system_message=None):
+        dispatcher = getattr(self, "_dispatcher_singleton", None)
+        if dispatcher is not None:
+            return dispatcher.compose_system_prompt(self, system_message=system_message)
+        from grove.prompt.composer import build_default_composer
+        rc = getattr(self, "_runtime_ctx", None)
+        prompt_cfg = None
+        if rc is not None and hasattr(rc, "config"):
             try:
-                from gateway.platform_registry import platform_registry
-                _entry = platform_registry.get(platform_key)
-                if _entry and _entry.platform_hint:
-                    stable_parts.append(("platform_hint", _entry.platform_hint))
+                prompt_cfg = rc.config.get("prompt") if rc.config else None
             except Exception:
-                pass
-
-        # ── Context tier (cwd-dependent, may change between sessions) ─
-        context_parts: List[Tuple[str, str]] = []
-
-        # Note: ephemeral_system_prompt is NOT included here. It's injected at
-        # API-call time only so it stays out of the cached/stored system prompt.
-        if system_message is not None:
-            context_parts.append(("system_message", system_message))
-
-        if not self.skip_context_files:
-            # Use TERMINAL_CWD for context file discovery when set (gateway
-            # mode).  The gateway process runs from the hermes-agent install
-            # dir, so os.getcwd() would pick up the repo's AGENTS.md and
-            # other dev files — inflating token usage by ~10k for no benefit.
-            _context_cwd = self._env_or("TERMINAL_CWD") or None
-            context_files_prompt = build_context_files_prompt(
-                cwd=_context_cwd, skip_soul=_identity_loaded)
-            if context_files_prompt:
-                context_parts.append(("context_files", context_files_prompt))
-
-        # ── Volatile tier (changes per session/turn — never cached) ───
-        volatile_parts: List[Tuple[str, str]] = []
-
-        # Sprint 40 — memory READS route through the Dispatcher back-
-        # reference. The store/manager live on ``self._dispatcher_singleton``
-        # (set by ``Dispatcher(agent_kwargs=...).agent``). Identical
-        # semantics to the pre-Sprint-40 inline reads against
-        # ``self._memory_store`` / ``self._memory_manager``.
-        _mem_store = self._memory_store_via_dispatcher()
-        if _mem_store:
-            if self._memory_enabled:
-                mem_block = _mem_store.format_for_system_prompt("memory")
-                if mem_block:
-                    volatile_parts.append(("memory", mem_block))
-            if self._user_profile_enabled:
-                user_block = _mem_store.format_for_system_prompt("user")
-                if user_block:
-                    volatile_parts.append(("user_profile", user_block))
-
-        _mem_manager = self._memory_manager_via_dispatcher()
-        if _mem_manager:
+                prompt_cfg = None
+        composer = build_default_composer(config=prompt_cfg)
+        terminal_cwd = None
+        if rc is not None and hasattr(rc, "env"):
             try:
-                _ext_mem_block = _mem_manager.build_system_prompt()
-                if _ext_mem_block:
-                    volatile_parts.append(("external_memory", _ext_mem_block))
+                terminal_cwd = rc.env.get("TERMINAL_CWD")
             except Exception:
-                pass
-
-        from hermes_time import now as _hermes_now
-        now = _hermes_now()
-        timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
-        if self.pass_session_id and self.session_id:
-            timestamp_line += f"\nSession ID: {self.session_id}"
-        if self.model:
-            timestamp_line += f"\nModel: {self.model}"
-        if self.provider:
-            timestamp_line += f"\nProvider: {self.provider}"
-        volatile_parts.append(("timestamp", timestamp_line))
-
-        # Sprint 24a: helper that joins only the text values from
-        # List[Tuple[label, text]] so existing call sites (only
-        # _build_system_prompt at the moment) keep getting byte-identical
-        # output for the stable/context/volatile keys.
-        def _join_texts(parts: List[Tuple[str, str]]) -> str:
-            return "\n\n".join(t.strip() for _, t in parts if t and t.strip())
-
-        # `_sections` carries the labeled breakdown for grove.context_report.
-        # Empty / whitespace-only entries are dropped to match the join's
-        # filter, so token counts stay aligned. If a label appears twice
-        # (e.g., identity could in theory fire from both branches; in
-        # practice only one fires per call), last-wins per dict semantics —
-        # documented here so a future maintainer who hits a collision knows
-        # the contract.
-        _sections: Dict[str, str] = {}
-        for label, text in (*stable_parts, *context_parts, *volatile_parts):
-            if text and text.strip():
-                _sections[label] = text.strip()
-
-        return {
-            "stable":   _join_texts(stable_parts),
-            "context":  _join_texts(context_parts),
-            "volatile": _join_texts(volatile_parts),
-            "_sections": _sections,
+                terminal_cwd = None
+        context = {
+            "valid_tool_names": getattr(self, "valid_tool_names", set()),
+            "model": getattr(self, "model", ""),
+            "provider": getattr(self, "provider", ""),
+            "platform": getattr(self, "platform", ""),
+            "session_id": getattr(self, "session_id", None),
+            "skip_context_files": getattr(self, "skip_context_files", False),
+            "load_soul_identity": getattr(self, "load_soul_identity", False),
+            "memory_enabled": getattr(self, "_memory_enabled", False),
+            "user_profile_enabled": getattr(self, "_user_profile_enabled", False),
+            "pass_session_id": getattr(self, "pass_session_id", False),
+            "session_register": getattr(self, "session_register", None),
+            "tool_use_enforcement": getattr(self, "_tool_use_enforcement", None),
+            "memory_store": getattr(self, "memory_store", None),
+            "memory_manager": getattr(self, "memory_manager", None),
+            "terminal_cwd": terminal_cwd,
+            "system_message": system_message,
         }
+        return composer.compose(**context).text
 
-    def _build_system_prompt(self, system_message: str = None) -> str:
-        """
-        Assemble the full system prompt from all layers.
-
-        Called once per session (cached on self._cached_system_prompt) and only
-        rebuilt after context compression events. This ensures the system prompt
-        is stable across all turns in a session, maximizing prefix cache hits.
-
-        Layers are ordered cache-friendly: stable identity/guidance first,
-        then session-stable context files, then per-call volatile content
-        (memory, USER profile, timestamp).  The whole string is treated as
-        one cached block — Hermes never rebuilds or reinjects parts of it
-        mid-session, which is the only way to keep upstream prompt caches
-        warm across turns.
-        """
-        parts = self._build_system_prompt_parts(system_message=system_message)
-        joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
-        return joined
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -7033,7 +6801,7 @@ class AIAgent:
         Called after context compression events. Also reloads memory from disk
         so the rebuilt prompt captures any writes from this session.
         """
-        self._cached_system_prompt = None
+        self._composed_system_prompt = None
         _mem_store = self._memory_store_via_dispatcher()
         if _mem_store:
             _mem_store.load_from_disk()
@@ -7057,7 +6825,7 @@ class AIAgent:
         rejection.
         """
         self.session_register = name
-        self._cached_system_prompt = None
+        self._composed_system_prompt = None
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
@@ -11139,9 +10907,20 @@ class AIAgent:
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
 
+        # Sprint 36 — request a recomposition from the Dispatcher.
+        # The Dispatcher walks the same provider registry it used at
+        # construction; the prompt is re-rendered against the live
+        # Agent state (post-compression tool list, freshly reloaded
+        # memory). Falls back to the existing prompt if no back-
+        # reference is wired (test-bypass agents).
         self._invalidate_system_prompt()
-        new_system_prompt = self._build_system_prompt(system_message)
-        self._cached_system_prompt = new_system_prompt
+        _disp = getattr(self, "_dispatcher_singleton", None)
+        if _disp is not None:
+            new_system_prompt = _disp.recompose_system_prompt(
+                system_message=system_message,
+            )
+        else:
+            new_system_prompt = self._composed_system_prompt or ""
 
         # Sprint 39 — session-authority. Trigger memory extraction on
         # the old session before rotating, then yield the rotation as
@@ -11951,7 +11730,7 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
-            effective_system = self._cached_system_prompt or ""
+            effective_system = self._composed_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
             if effective_system:
@@ -12413,59 +12192,57 @@ class AIAgent:
             _print_preview = _summarize_user_message_for_log(user_message)
             self._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
         
-        # ── System prompt (cached per session for prefix caching) ──
-        # Built once on first call, reused for all subsequent calls.
-        # Only rebuilt after context compression events (which invalidate
-        # the cache and reload memory from disk).
-        #
-        # For continuing sessions (gateway creates a fresh AIAgent per
-        # message), we load the stored system prompt from the session DB
-        # instead of rebuilding.  Rebuilding would pick up memory changes
-        # from disk that the model already knows about (it wrote them!),
-        # producing a different system prompt and breaking the Anthropic
-        # prefix cache.
-        if self._cached_system_prompt is None:
-            stored_prompt = None
-            _sess = self._session_via_dispatcher()
-            if conversation_history and _sess:
-                try:
-                    session_row = _sess.get_session(self.session_id)
-                    if session_row:
-                        stored_prompt = session_row.get("system_prompt") or None
-                except Exception:
-                    pass  # Fall through to build fresh
+        # Sprint 36 — system prompt is composed by the Dispatcher per
+        # GRV-007 § II and set on ``self._composed_system_prompt`` at
+        # agent construction. For continuing sessions (gateway creates
+        # a fresh AIAgent per message), we prefer the stored prompt
+        # from the session DB so the Anthropic prefix cache matches
+        # the previous turn's prompt byte-for-byte; otherwise the
+        # Dispatcher-composed prompt set at construction stands. The
+        # one-time on_session_start plugin hook fires only when we
+        # neither find a stored prompt nor inherit a pre-composed one
+        # (true first-turn-of-new-session signal).
+        _sess = self._session_via_dispatcher()
+        stored_prompt = None
+        if conversation_history and _sess:
+            try:
+                session_row = _sess.get_session(self.session_id)
+                if session_row:
+                    stored_prompt = session_row.get("system_prompt") or None
+            except Exception:
+                pass
+        if stored_prompt:
+            self._composed_system_prompt = stored_prompt
+        elif self._composed_system_prompt is None:
+            # No Dispatcher composition and no stored prompt — true
+            # first-turn-of-new-session signal. Request composition
+            # from the Dispatcher (back-reference) and fire the
+            # on_session_start plugin hook.
+            _disp = getattr(self, "_dispatcher_singleton", None)
+            if _disp is not None:
+                self._composed_system_prompt = _disp.recompose_system_prompt(
+                    system_message=system_message,
+                )
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_session_start",
+                    session_id=self.session_id,
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                )
+            except Exception as exc:
+                logger.warning("on_session_start hook failed: %s", exc)
 
-            if stored_prompt:
-                # Continuing session — reuse the exact system prompt from
-                # the previous turn so the Anthropic cache prefix matches.
-                self._cached_system_prompt = stored_prompt
-            else:
-                # First turn of a new session — build from scratch.
-                self._cached_system_prompt = self._build_system_prompt(system_message)
-                # Plugin hook: on_session_start
-                # Fired once when a brand-new session is created (not on
-                # continuation).  Plugins can use this to initialise
-                # session-scoped state (e.g. warm a memory cache).
-                try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
-                    _invoke_hook(
-                        "on_session_start",
-                        session_id=self.session_id,
-                        model=self.model,
-                        platform=getattr(self, "platform", None) or "",
-                    )
-                except Exception as exc:
-                    logger.warning("on_session_start hook failed: %s", exc)
+        if self._composed_system_prompt and _sess:
+            try:
+                _sess.update_system_prompt(
+                    self.session_id, self._composed_system_prompt,
+                )
+            except Exception as e:
+                logger.debug("Session DB update_system_prompt failed: %s", e)
 
-                # Store the system prompt snapshot in SQLite
-                _sess = self._session_via_dispatcher()
-                if _sess:
-                    try:
-                        _sess.update_system_prompt(self.session_id, self._cached_system_prompt)
-                    except Exception as e:
-                        logger.debug("Session DB update_system_prompt failed: %s", e)
-
-        active_system_prompt = self._cached_system_prompt
+        active_system_prompt = self._composed_system_prompt or ""
 
         # ── Preflight context compression ──
         # Before entering the main loop, check if the loaded conversation
@@ -12844,7 +12621,7 @@ class AIAgent:
             # cache prefix.  The system prompt is reserved for Hermes internals.
             #
             # Hermes invariant: the system prompt is built ONCE per session
-            # (cached on ``_cached_system_prompt``) and replayed verbatim on
+            # (cached on ``_composed_system_prompt``) and replayed verbatim on
             # every turn.  We send it as a single content string so the
             # bytes are byte-stable across turns and upstream prompt caches
             # stay warm.
@@ -13812,7 +13589,7 @@ class AIAgent:
                                 _sanitized_system = _strip_non_ascii(active_system_prompt)
                                 if _sanitized_system != active_system_prompt:
                                     active_system_prompt = _sanitized_system
-                                    self._cached_system_prompt = _sanitized_system
+                                    self._composed_system_prompt = _sanitized_system
                                     _system_sanitized = True
                             if isinstance(getattr(self, "ephemeral_system_prompt", None), str):
                                 _sanitized_ephemeral = _strip_non_ascii(self.ephemeral_system_prompt)

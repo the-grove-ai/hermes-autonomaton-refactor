@@ -27,7 +27,7 @@ def _make_agent(chain):
     agent._anthropic_base_url = None
     agent._anthropic_client = None
     agent._is_anthropic_oauth = False
-    agent._cached_system_prompt = "cached"
+    agent._composed_system_prompt = "cached"
     agent._primary_runtime = {}
     agent._fallback_activated = False
     agent._fallback_index = 0

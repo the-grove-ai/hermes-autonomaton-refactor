@@ -99,7 +99,7 @@ def agent():
             sovereign_prompt_handler=silent_approve_handler,
         )
         a.client = MagicMock()
-        a._cached_system_prompt = "You are helpful."
+        a._composed_system_prompt = "You are helpful."
         a._use_prompt_caching = False
         a.tool_delay = 0
         a.compression_enabled = False

@@ -1055,7 +1055,7 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
         provider = "openrouter"
         base_url = ""
         api_key = ""
-        _cached_system_prompt = ""
+        _composed_system_prompt = ""
 
         def run_conversation(self, prompt, **kw):
             return {
@@ -1865,7 +1865,7 @@ def test_config_set_personality_rejects_unknown_name(monkeypatch):
 
 def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     agent = types.SimpleNamespace(
-        ephemeral_system_prompt=None, _cached_system_prompt="old"
+        ephemeral_system_prompt=None, _composed_system_prompt="old"
     )
     session = _session(
         agent=agent,
@@ -1905,7 +1905,7 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     assert session["history_version"] == 5
     # Agent's system prompt was updated in-place; cached prompt untouched
     assert agent.ephemeral_system_prompt == "You are helpful."
-    assert agent._cached_system_prompt == "old"
+    assert agent._composed_system_prompt == "old"
     assert ("session.info", "sid", {"model": "?"}) in emits
 
 

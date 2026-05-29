@@ -32,7 +32,7 @@ def _make_agent_stub(agent_cls):
     agent._skill_nudge_interval = 5
     agent.background_review_callback = None
     agent.status_callback = None
-    agent._cached_system_prompt = None
+    agent._composed_system_prompt = None
     import datetime as _dt
     agent.session_start = _dt.datetime(2026, 1, 1, 12, 0, 0)
     agent._MEMORY_REVIEW_PROMPT = "review memory"

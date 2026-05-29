@@ -26,7 +26,7 @@ def _make_agent_with_engine(engine):
     agent._todo_store.format_for_injection.return_value = ""
     agent._memory_manager = None
     agent._session_db = None
-    agent._cached_system_prompt = None
+    agent._composed_system_prompt = None
     agent.log_prefix = ""
     agent._vprint = lambda *a, **kw: None
     agent._last_flushed_db_idx = 0

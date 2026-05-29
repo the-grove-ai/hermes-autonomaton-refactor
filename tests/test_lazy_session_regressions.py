@@ -140,7 +140,7 @@ class TestSyncSessionKeyAfterAutoCompress:
             """Agent that simulates compression-driven session_id rotation."""
             def __init__(self):
                 self.session_id = "pre-compress-key"
-                self._cached_system_prompt = ""
+                self._composed_system_prompt = ""
 
             def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
                 # Simulate what _compress_context does: rotate session_id
@@ -220,7 +220,7 @@ class TestPendingTitleValueError:
 
         class _Agent:
             session_id = "test-session"
-            _cached_system_prompt = ""
+            _composed_system_prompt = ""
             def run_conversation(self, prompt, **kw):
                 return {
                     "final_response": "ok",
@@ -274,7 +274,7 @@ class TestPendingTitleValueError:
 
         class _Agent:
             session_id = "test-session"
-            _cached_system_prompt = ""
+            _composed_system_prompt = ""
             def run_conversation(self, prompt, **kw):
                 return {
                     "final_response": "ok",

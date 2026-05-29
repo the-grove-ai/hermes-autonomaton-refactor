@@ -29,7 +29,7 @@ def _make_agent_stub(agent_cls):
     agent._skill_nudge_interval = 5
     agent.background_review_callback = None
     agent.status_callback = None
-    agent._cached_system_prompt = (
+    agent._composed_system_prompt = (
         "PARENT-SYSTEM-PROMPT-BYTES — must be inherited verbatim "
         "for prefix-cache parity"
     )
@@ -56,7 +56,7 @@ class _ReviewAgentRecorder:
     """Stand-in for the review-fork AIAgent that records the prompt assignment."""
 
     def __init__(self, *args, **kwargs):
-        self._cached_system_prompt = None
+        self._composed_system_prompt = None
         self._memory_write_origin = None
         self._memory_write_context = None
         self._memory_store = None
@@ -76,8 +76,8 @@ class _ReviewAgentRecorder:
         pass
 
 
-def test_review_fork_inherits_parent_cached_system_prompt():
-    """The review fork's _cached_system_prompt must equal the parent's byte-for-byte.
+def test_review_fork_inherits_parent_composed_system_prompt():
+    """The review fork's _composed_system_prompt must equal the parent's byte-for-byte.
 
     Anthropic's prefix cache keys on exact bytes; any divergence (timestamp
     minute tick, fresh session_id, narrower skills_prompt) shifts the key
@@ -89,25 +89,25 @@ def test_review_fork_inherits_parent_cached_system_prompt():
     agent = _make_agent_stub(run_agent.AIAgent)
 
     captured = {}
-    parent_prompt = agent._cached_system_prompt
+    parent_prompt = agent._composed_system_prompt
 
     # Hook the assignment site: record what gets put on the review agent.
     real_recorder_init = _ReviewAgentRecorder.__init__
 
     def _recorder_init(self, *args, **kwargs):
         real_recorder_init(self, *args, **kwargs)
-        # The actual production code assigns _cached_system_prompt AFTER __init__,
+        # The actual production code assigns _composed_system_prompt AFTER __init__,
         # so we need to capture it on attribute set. Use a property-style sentinel
         # via __setattr__ on this instance.
 
     with patch.object(run_agent, "AIAgent", _ReviewAgentRecorder), \
          patch("threading.Thread", _SyncThread):
-        # Wrap the recorder's __setattr__ so we can see the _cached_system_prompt
+        # Wrap the recorder's __setattr__ so we can see the _composed_system_prompt
         # write that _spawn_background_review performs after construction.
         orig_setattr = _ReviewAgentRecorder.__setattr__
 
         def _spy_setattr(self, name, value):
-            if name == "_cached_system_prompt":
+            if name == "_composed_system_prompt":
                 captured["written_prompt"] = value
             orig_setattr(self, name, value)
 
@@ -119,10 +119,10 @@ def test_review_fork_inherits_parent_cached_system_prompt():
             )
 
     assert "written_prompt" in captured, (
-        "_spawn_background_review never assigned _cached_system_prompt on the review agent"
+        "_spawn_background_review never assigned _composed_system_prompt on the review agent"
     )
     assert captured["written_prompt"] == parent_prompt, (
-        f"Review fork's _cached_system_prompt diverged from parent's. "
+        f"Review fork's _composed_system_prompt diverged from parent's. "
         f"Got {captured['written_prompt']!r}, expected {parent_prompt!r}. "
         "This breaks Anthropic/OpenRouter prefix-cache parity (#25322)."
     )
@@ -131,7 +131,7 @@ def test_review_fork_inherits_parent_cached_system_prompt():
 def test_review_fork_pins_session_start_and_session_id():
     """Defensive complement to cached-system-prompt inheritance.
 
-    Even though ``_cached_system_prompt`` inheritance short-circuits the
+    Even though ``_composed_system_prompt`` inheritance short-circuits the
     normal rebuild path, pinning ``session_start`` and ``session_id`` to
     the parent's guarantees byte-identical output from any code path that
     re-renders parts of the system prompt (compression, plugin hooks).
@@ -144,7 +144,7 @@ def test_review_fork_pins_session_start_and_session_id():
 
     class _Recorder:
         def __init__(self, *args, **kwargs):
-            self._cached_system_prompt = None
+            self._composed_system_prompt = None
             self._memory_write_origin = None
             self._memory_write_context = None
             self._memory_store = None

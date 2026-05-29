@@ -588,6 +588,14 @@ class Dispatcher:
                     agent_kwargs.setdefault("session_title", pre_title)
             self.agent = AIAgent(**agent_kwargs)
             self.agent._dispatcher_singleton = self
+            # Sprint 36 — compose the system prompt POST-construction so
+            # the providers see the Agent's resolved ``valid_tool_names``
+            # (Sprint 29 filter runs at runtime, not at compose time, but
+            # the base toolset is set during ``AIAgent.__init__``).
+            # The composed string lives on the Agent under
+            # ``_composed_system_prompt`` per GRV-007 § II — the Agent
+            # receives the prompt, does not produce it.
+            self._compose_and_inject_system_prompt(self.agent)
             # Sprint 39 — sync Agent-generated session_id back so the
             # Dispatcher's lifecycle methods (open_turn_row, append,
             # rotate, etc.) see the live value. Production callers who
@@ -2515,6 +2523,102 @@ class Dispatcher:
                 existing_names.add(name)
                 if isinstance(valid_names, set):
                     valid_names.add(name)
+
+    # ── Sprint 36 — prompt composition (GRV-007) ────────────────────────
+
+    def _get_or_build_prompt_composer(self) -> Any:
+        """Lazily build the ``PromptComposer`` with config from
+        ``runtime_ctx.config["prompt"]``. One composer per Dispatcher.
+
+        Multiple ``compose()`` calls on the same composer are safe per
+        GRV-007 § IX.3; the composer holds only registration state.
+        """
+        cached = getattr(self, "_prompt_composer", None)
+        if cached is not None:
+            return cached
+        from grove.prompt import build_default_composer
+        cfg = self._base_runtime_ctx.config or {}
+        prompt_cfg = cfg.get("prompt") if isinstance(cfg, dict) else None
+        composer = build_default_composer(config=prompt_cfg)
+        self._prompt_composer = composer
+        return composer
+
+    def compose_system_prompt(
+        self,
+        agent: Any,
+        *,
+        system_message: Optional[str] = None,
+    ) -> str:
+        """Compose the system prompt for ``agent`` and return the joined text.
+
+        Pulls turn-and-Agent state out of ``agent``'s public attributes
+        and feeds them into the composer's ``compose(**context)`` call.
+        The composer's providers never touch the Agent directly — all
+        state flows through the context dict per GRV-007 § III.
+
+        Callers that recompose mid-session (compression rotation,
+        session_register change) re-invoke this method via the Agent's
+        back-reference and store the new string back on the Agent.
+        """
+        composer = self._get_or_build_prompt_composer()
+        memory_store = self.memory_store
+        memory_manager = self.memory_manager
+        try:
+            terminal_cwd = self._base_runtime_ctx.env.get("TERMINAL_CWD") or None
+        except Exception:
+            terminal_cwd = None
+        result = composer.compose(
+            valid_tool_names=getattr(agent, "valid_tool_names", set()) or set(),
+            model=getattr(agent, "model", "") or "",
+            provider=getattr(agent, "provider", "") or "",
+            platform=getattr(agent, "platform", "") or "",
+            session_id=self.session_id or getattr(agent, "session_id", None),
+            skip_context_files=bool(getattr(agent, "skip_context_files", False)),
+            load_soul_identity=bool(getattr(agent, "load_soul_identity", False)),
+            memory_enabled=bool(getattr(agent, "_memory_enabled", False)),
+            user_profile_enabled=bool(getattr(agent, "_user_profile_enabled", False)),
+            pass_session_id=bool(getattr(agent, "pass_session_id", False)),
+            system_message=system_message,
+            session_register=getattr(agent, "session_register", None),
+            tool_use_enforcement=getattr(agent, "_tool_use_enforcement", None),
+            memory_store=memory_store,
+            memory_manager=memory_manager,
+            terminal_cwd=terminal_cwd,
+        )
+        return result.text
+
+    def _compose_and_inject_system_prompt(
+        self,
+        agent: Any,
+        *,
+        system_message: Optional[str] = None,
+    ) -> None:
+        """Compose and store the prompt on ``agent._composed_system_prompt``.
+
+        Called from ``__init__`` after agent construction and from
+        ``recompose_system_prompt`` for mid-session rebuilds.
+        """
+        agent._composed_system_prompt = self.compose_system_prompt(
+            agent, system_message=system_message,
+        )
+
+    def recompose_system_prompt(
+        self,
+        *,
+        system_message: Optional[str] = None,
+    ) -> str:
+        """Recompose the prompt for ``self.agent`` and update its field.
+
+        Mid-session rebuild path — invoked by the Agent via the back-
+        reference when a compression boundary fires or the operator
+        changes ``session_register``. Returns the new composed text.
+        """
+        if self.agent is None:
+            return ""
+        self._compose_and_inject_system_prompt(
+            self.agent, system_message=system_message,
+        )
+        return self.agent._composed_system_prompt
 
     def execute_memory_write(self, intent: "MemoryWriteIntent") -> "MemoryWriteResult":
         """Handle a ``MemoryWriteIntent`` — synchronous return.

@@ -272,7 +272,7 @@ class TestSessionOps:
         state = mock_manager.create_session(cwd="/tmp")
         state.history = [{"role": "user", "content": "hello"}]
         state.agent.context_compressor = MagicMock(context_length=100_000)
-        state.agent._cached_system_prompt = "system"
+        state.agent._composed_system_prompt = "system"
         state.agent.tools = [{"type": "function", "function": {"name": "demo"}}]
 
         with patch(
@@ -957,7 +957,7 @@ class TestSlashCommands:
             context_length=100_000,
             threshold_tokens=80_000,
         )
-        state.agent._cached_system_prompt = "system"
+        state.agent._composed_system_prompt = "system"
         state.agent.tools = [{"type": "function", "function": {"name": "demo"}}]
 
         with patch(
@@ -1008,7 +1008,7 @@ class TestSlashCommands:
             {"role": "assistant", "content": "four"},
         ]
         state.agent.compression_enabled = True
-        state.agent._cached_system_prompt = "system"
+        state.agent._composed_system_prompt = "system"
         state.agent.tools = None
         original_session_db = object()
         state.agent._session_db = original_session_db
@@ -1228,7 +1228,7 @@ class TestRegisterSessionMcpServers:
         state.agent.disabled_toolsets = None
         state.agent.tools = []
         state.agent.valid_tool_names = set()
-        state.agent._cached_system_prompt = "old prompt"
+        state.agent._composed_system_prompt = "old prompt"
 
         server = McpServerStdio(
             name="srv",

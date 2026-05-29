@@ -517,20 +517,20 @@ def test_set_session_register_updates_attribute_and_invalidates_cache() -> None:
     import run_agent
     agent = object.__new__(run_agent.AIAgent)
     agent.session_register = None
-    agent._cached_system_prompt = "previously-cached-prompt-value"
+    agent._composed_system_prompt = "previously-cached-prompt-value"
     agent.set_session_register("editorial")
     assert agent.session_register == "editorial"
-    assert agent._cached_system_prompt is None
+    assert agent._composed_system_prompt is None
 
 
 def test_set_session_register_accepts_none_to_clear() -> None:
     import run_agent
     agent = object.__new__(run_agent.AIAgent)
     agent.session_register = "editorial"
-    agent._cached_system_prompt = "cached"
+    agent._composed_system_prompt = "cached"
     agent.set_session_register(None)
     assert agent.session_register is None
-    assert agent._cached_system_prompt is None
+    assert agent._composed_system_prompt is None
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -542,12 +542,12 @@ class _FakeAgent:
     def __init__(self, initial: Optional[str] = None) -> None:
         self.session_register = initial
         self.set_calls: list[Optional[str]] = []
-        self._cached_system_prompt = "cached"
+        self._composed_system_prompt = "cached"
 
     def set_session_register(self, name: Optional[str]) -> None:
         self.session_register = name
         self.set_calls.append(name)
-        self._cached_system_prompt = None
+        self._composed_system_prompt = None
 
 
 def _bare_cli(agent: Optional[_FakeAgent] = None) -> cli.HermesCLI:

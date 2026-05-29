@@ -20,7 +20,7 @@ def test_manual_compress_reports_noop_without_success_banner(capsys):
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id  # no-op compression: no split
     shell.agent._compress_context.return_value = (list(history), "")
@@ -49,7 +49,7 @@ def test_manual_compress_explains_when_token_estimate_rises(capsys):
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id  # no-op: no split
     shell.agent._compress_context.return_value = (compressed, "")
@@ -90,7 +90,7 @@ def test_manual_compress_syncs_session_id_after_split():
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent.tools = None
     # Simulate _compress_context mutating agent.session_id as a side effect.
     def _fake_compress(*args, **kwargs):
@@ -131,7 +131,7 @@ def test_manual_compress_flushes_compressed_history_to_child_session_db():
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent.session_id = old_id
 
     def _fake_compress(*args, **kwargs):
@@ -152,7 +152,7 @@ def test_manual_compress_does_not_flush_full_history_when_session_id_unchanged()
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent.session_id = shell.session_id
     shell.agent._compress_context.return_value = (list(history), "")
 
@@ -171,7 +171,7 @@ def test_manual_compress_no_sync_when_session_id_unchanged():
     shell.conversation_history = history
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
+    shell.agent._composed_system_prompt = ""
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id
     shell.agent._compress_context.return_value = (list(history), "")

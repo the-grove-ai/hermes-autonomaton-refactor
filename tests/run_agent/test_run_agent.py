@@ -1223,14 +1223,14 @@ class TestToolUseEnforcementConfig:
 
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
-        agent._cached_system_prompt = "cached value"
+        agent._composed_system_prompt = "cached value"
         agent._invalidate_system_prompt()
-        assert agent._cached_system_prompt is None
+        assert agent._composed_system_prompt is None
 
     def test_reloads_memory_store(self, agent):
         mock_store = MagicMock()
         agent._memory_store = mock_store
-        agent._cached_system_prompt = "cached"
+        agent._composed_system_prompt = "cached"
         agent._invalidate_system_prompt()
         mock_store.load_from_disk.assert_called_once()
 
@@ -2363,7 +2363,7 @@ class TestHandleMaxIterations:
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")
         agent.client.chat.completions.create.return_value = resp
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
         result = agent._handle_max_iterations(messages, 60)
         assert isinstance(result, str)
@@ -2372,7 +2372,7 @@ class TestHandleMaxIterations:
 
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
         result = agent._handle_max_iterations(messages, 60)
         assert isinstance(result, str)
@@ -2384,7 +2384,7 @@ class TestHandleMaxIterations:
         agent.model = "minimax/minimax-m2.5"
         resp = _mock_response(content="Summary")
         agent.client.chat.completions.create.return_value = resp
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
 
         result = agent._handle_max_iterations(messages, 60)
@@ -2398,7 +2398,7 @@ class TestHandleMaxIterations:
         orphan tool results (tool_call_id with no matching assistant tool_call)."""
         resp = _mock_response(content="Summary of work done.")
         agent.client.chat.completions.create.return_value = resp
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
         messages = [
             {"role": "user", "content": "Analyze finance-data-router"},
             {"role": "assistant", "content": "[Session Arc Summary] ..."},
@@ -2424,7 +2424,7 @@ class TestHandleMaxIterations:
         summary request, a stub must be inserted to satisfy the API contract."""
         resp = _mock_response(content="Summary")
         agent.client.chat.completions.create.return_value = resp
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
         messages = [
             {"role": "user", "content": "do stuff"},
             {"role": "assistant", "tool_calls": [{"id": "call_no_result", "function": {"name": "terminal", "arguments": "{}"}}]},
@@ -2448,7 +2448,7 @@ class TestHandleMaxIterations:
         agent.provider = "openai"
         agent.providers_allowed = ["Anthropic"]
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
 
         result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
 
@@ -2462,7 +2462,7 @@ class TestHandleMaxIterations:
         agent.provider = "openrouter"
         agent.providers_allowed = ["Anthropic"]
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
 
         result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
 
@@ -2477,7 +2477,7 @@ class TestHandleMaxIterations:
         agent._base_url_lower = agent.base_url.lower()
         agent._base_url_hostname = "chatgpt.com"
         agent.model = "gpt-5.5"
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
         captured = {}
 
         def fake_run_codex_stream(kwargs):
@@ -2547,7 +2547,7 @@ class TestRunConversation:
 
     def _setup_agent(self, agent):
         """Common setup for run_conversation tests."""
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
         agent._use_prompt_caching = False
         agent.tool_delay = 0
         agent.compression_enabled = False
@@ -3527,7 +3527,7 @@ class TestRetryExhaustion:
     """
 
     def _setup_agent(self, agent):
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
         agent._use_prompt_caching = False
         agent.tool_delay = 0
         agent.compression_enabled = False
@@ -4027,8 +4027,8 @@ class TestSystemPromptStability:
             {"role": "assistant", "content": "hi"},
         ]
 
-        # First call — _cached_system_prompt is None, history is non-empty
-        agent._cached_system_prompt = None
+        # First call — _composed_system_prompt is None, history is non-empty
+        agent._composed_system_prompt = None
 
         # Patch run_conversation internals to just test the system prompt logic.
         # We'll call the prompt caching block directly by simulating what
@@ -4036,7 +4036,7 @@ class TestSystemPromptStability:
         conversation_history = history
 
         # The block under test (from run_conversation):
-        if agent._cached_system_prompt is None:
+        if agent._composed_system_prompt is None:
             stored_prompt = None
             if conversation_history and agent._session_db:
                 try:
@@ -4047,9 +4047,9 @@ class TestSystemPromptStability:
                     pass
 
             if stored_prompt:
-                agent._cached_system_prompt = stored_prompt
+                agent._composed_system_prompt = stored_prompt
 
-        assert agent._cached_system_prompt == stored
+        assert agent._composed_system_prompt == stored
         mock_db.get_session.assert_called_once_with(agent.session_id)
 
     def test_fresh_build_when_no_history(self, agent):
@@ -4057,11 +4057,11 @@ class TestSystemPromptStability:
         mock_db = MagicMock()
         agent._session_db = mock_db
 
-        agent._cached_system_prompt = None
+        agent._composed_system_prompt = None
         conversation_history = []
 
         # The block under test:
-        if agent._cached_system_prompt is None:
+        if agent._composed_system_prompt is None:
             stored_prompt = None
             if conversation_history and agent._session_db:
                 session_row = agent._session_db.get_session(agent.session_id)
@@ -4069,14 +4069,14 @@ class TestSystemPromptStability:
                     stored_prompt = session_row.get("system_prompt") or None
 
             if stored_prompt:
-                agent._cached_system_prompt = stored_prompt
+                agent._composed_system_prompt = stored_prompt
             else:
-                agent._cached_system_prompt = agent._build_system_prompt()
+                agent._composed_system_prompt = agent._build_system_prompt()
 
         # Should have built fresh, not queried the DB
         mock_db.get_session.assert_not_called()
-        assert agent._cached_system_prompt is not None
-        assert "Hermes Agent" in agent._cached_system_prompt
+        assert agent._composed_system_prompt is not None
+        assert "Hermes Agent" in agent._composed_system_prompt
 
     def test_fresh_build_when_db_has_no_prompt(self, agent):
         """If the session DB has no stored prompt, build fresh even with history."""
@@ -4084,10 +4084,10 @@ class TestSystemPromptStability:
         mock_db.get_session.return_value = {"system_prompt": ""}
         agent._session_db = mock_db
 
-        agent._cached_system_prompt = None
+        agent._composed_system_prompt = None
         conversation_history = [{"role": "user", "content": "hi"}]
 
-        if agent._cached_system_prompt is None:
+        if agent._composed_system_prompt is None:
             stored_prompt = None
             if conversation_history and agent._session_db:
                 try:
@@ -4098,12 +4098,12 @@ class TestSystemPromptStability:
                     pass
 
             if stored_prompt:
-                agent._cached_system_prompt = stored_prompt
+                agent._composed_system_prompt = stored_prompt
             else:
-                agent._cached_system_prompt = agent._build_system_prompt()
+                agent._composed_system_prompt = agent._build_system_prompt()
 
         # Empty string is falsy, so should fall through to fresh build
-        assert "Hermes Agent" in agent._cached_system_prompt
+        assert "Hermes Agent" in agent._composed_system_prompt
 
 class TestBudgetPressure:
     """Budget exhaustion grace call system."""
@@ -5014,7 +5014,7 @@ class TestReasoningReplayForStrictProviders:
     """Assistant replay must preserve provider-native reasoning fields."""
 
     def _setup_agent(self, agent):
-        agent._cached_system_prompt = "You are helpful."
+        agent._composed_system_prompt = "You are helpful."
         agent._use_prompt_caching = False
         agent.tool_delay = 0
         agent.compression_enabled = False

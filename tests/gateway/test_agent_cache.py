@@ -418,9 +418,9 @@ class TestAgentCacheLifecycle:
 
         # System prompt should not be affected by reasoning change
         prompt1 = agent._build_system_prompt()
-        agent._cached_system_prompt = prompt1  # simulate run_conversation caching
+        agent._composed_system_prompt = prompt1  # simulate run_conversation caching
         agent.reasoning_config = {"enabled": True, "effort": "low"}
-        prompt2 = agent._cached_system_prompt
+        prompt2 = agent._composed_system_prompt
         assert prompt1 is prompt2  # same object — not invalidated by reasoning change
 
     def test_system_prompt_frozen_across_cache_reuse(self):
@@ -436,10 +436,10 @@ class TestAgentCacheLifecycle:
 
         # Build system prompt (simulates first run_conversation)
         prompt1 = agent._build_system_prompt()
-        agent._cached_system_prompt = prompt1
+        agent._composed_system_prompt = prompt1
 
         # Simulate second turn — prompt should be frozen
-        prompt2 = agent._cached_system_prompt
+        prompt2 = agent._composed_system_prompt
         assert prompt1 is prompt2  # same object, not rebuilt
 
     def test_callbacks_update_without_cache_eviction(self):

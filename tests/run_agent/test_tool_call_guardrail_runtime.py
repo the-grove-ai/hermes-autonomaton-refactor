@@ -102,7 +102,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
             sovereign_prompt_handler=silent_approve_handler,
         )
     agent.client = MagicMock()
-    agent._cached_system_prompt = "You are helpful."
+    agent._composed_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
     agent.tool_delay = 0
     agent.compression_enabled = False
