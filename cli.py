@@ -4786,7 +4786,7 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
-            self.agent = Dispatcher(agent_kwargs=dict(
+            self.agent = Dispatcher(session_db=self._session_db, agent_kwargs=dict(
                 model=effective_model,
                 max_tokens=max_tokens,
                 api_key=runtime.get("api_key"),
@@ -4815,7 +4815,6 @@ class HermesCLI:
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id,
                 platform="cli",
-                session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),
 
@@ -8656,7 +8655,7 @@ class HermesCLI:
             except Exception:
                 pass
             try:
-                bg_agent = Dispatcher(agent_kwargs=dict(
+                bg_agent = Dispatcher(session_db=self._session_db, agent_kwargs=dict(
                     model=turn_route["model"],
                     max_tokens=turn_route["max_tokens"],
                     api_key=turn_route["runtime"].get("api_key"),
@@ -8671,7 +8670,6 @@ class HermesCLI:
                     verbose_logging=False,
                     session_id=task_id,
                     platform="cli",
-                    session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),

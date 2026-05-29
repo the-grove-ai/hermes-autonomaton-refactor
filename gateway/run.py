@@ -10648,7 +10648,7 @@ class GatewayRunner:
                         logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
-                agent = Dispatcher(agent_kwargs=dict(
+                agent = Dispatcher(session_db=self._session_db, agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
@@ -10673,7 +10673,6 @@ class GatewayRunner:
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
-                    session_db=self._session_db,
                     fallback_model=self._fallback_model,
                     # Sprint 27 Phase 3 — background task: no live operator
                     # surface. Andon halts auto-skip with Kaizen Ledger record.
@@ -15274,7 +15273,7 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
-                agent = Dispatcher(agent_kwargs=dict(
+                agent = Dispatcher(session_db=self._session_db, agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
@@ -15302,7 +15301,6 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
-                    session_db=self._session_db,
                     fallback_model=self._fallback_model,
                     # Sprint 27 Phase 3 — live gateway turn (Telegram/Discord/etc).
                     # Andon halts auto-skip; future work routes Sovereign Prompts

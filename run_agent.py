@@ -1270,7 +1270,12 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
-        session_db=None,
+        # Sprint 39 — session-authority extraction. The Dispatcher owns
+        # ``self.session``; the Agent no longer holds a SessionDB handle.
+        # ``session_title`` is pre-read by the Dispatcher at construction
+        # so the Agent's memory-provider init (which runs during __init__,
+        # before ``_dispatcher_singleton`` is wired) can scope by it.
+        session_title: Optional[str] = None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
@@ -2127,11 +2132,14 @@ class AIAgent:
             max_file_size_mb=checkpoint_max_file_size_mb,
         )
         
-        # SQLite session store (optional -- provided by CLI or gateway)
-        self._session_db = session_db
+        # Sprint 39 — session-authority. The SessionDB handle lives on
+        # ``self._dispatcher_singleton.session`` (the Dispatcher owns it).
+        # Reads use the back-reference; writes are mediated through
+        # declarative intents (SessionRotateIntent / SessionUpdateTokensIntent)
+        # or the turn-boundary append handled by the Dispatcher.
+        self._session_title = session_title  # Dispatcher-supplied; memory-provider scope
         self._parent_session_id = parent_session_id
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
-        self._session_db_created = False  # DB row deferred to run_conversation()
         self._session_init_model_config = {
             "max_iterations": self.max_iterations,
             "reasoning_config": reasoning_config,
@@ -2210,14 +2218,13 @@ class AIAgent:
                             "agent_context": "primary",
                         }
                         # Thread session title for memory provider scoping
-                        # (e.g. honcho uses this to derive chat-scoped session keys)
-                        if self._session_db:
-                            try:
-                                _st = self._session_db.get_session_title(self.session_id)
-                                if _st:
-                                    _init_kwargs["session_title"] = _st
-                            except Exception:
-                                pass
+                        # (e.g. honcho uses this to derive chat-scoped session keys).
+                        # Sprint 39 — pre-read by the Dispatcher and passed
+                        # through agent_kwargs; ``_dispatcher_singleton`` is not
+                        # yet wired at __init__ time (the Dispatcher sets it
+                        # after AIAgent(...) returns).
+                        if self._session_title:
+                            _init_kwargs["session_title"] = self._session_title
                         # Thread gateway user identity for per-user memory scoping
                         if self._user_id:
                             _init_kwargs["user_id"] = self._user_id
@@ -2739,46 +2746,22 @@ class AIAgent:
         cfg = self._runtime_ctx.config
         return cfg if isinstance(cfg, dict) else {}
 
-    def _get_session_db_for_recall(self):
-        """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
+    def _session_via_dispatcher(self):
+        """Return the Dispatcher-owned SessionDB or None when no back-ref is wired.
 
-        Most frontends pass ``session_db`` into ``AIAgent`` explicitly, but recall
-        is important enough that a missing constructor argument should degrade by
-        opening the default state DB instead of making the advertised
-        ``session_search`` tool unusable.
+        Sprint 39 — replaces ``_get_session_db_for_recall`` and the
+        ``self._session_db`` direct handle. Every Agent-side read of
+        the session goes through the Dispatcher singleton; writes
+        either mediate through declarative intents or land at the
+        turn-boundary via ``Dispatcher.append_messages``.
+
+        Returns None when ``_dispatcher_singleton`` is not yet wired
+        (rare: __init__-time code paths or bypass-built test agents).
+        Callers MUST handle the None case explicitly — there is no
+        silent SessionDB bootstrap.
         """
-        if self._session_db is not None:
-            return self._session_db
-        try:
-            from hermes_state import SessionDB
-
-            self._session_db = SessionDB()
-            return self._session_db
-        except Exception as exc:
-            logger.debug("SessionDB unavailable for recall", exc_info=True)
-            return None
-
-    def _ensure_db_session(self) -> None:
-        """Create session DB row on first use. Disables _session_db on failure."""
-        if self._session_db_created or not self._session_db:
-            return
-        try:
-            self._session_db.create_session(
-                session_id=self.session_id,
-                source=self.platform or self._env_or("GROVE_SESSION_SOURCE", "cli"),
-                model=self.model,
-                model_config=self._session_init_model_config,
-                system_prompt=self._cached_system_prompt,
-                user_id=None,
-                parent_session_id=self._parent_session_id,
-            )
-            self._session_db_created = True
-        except Exception as e:
-            # Transient failure (e.g. SQLite lock). Keep _session_db alive —
-            # _session_db_created stays False so next run_conversation() retries.
-            logger.warning(
-                "Session DB creation failed (will retry next turn): %s", e
-            )
+        disp = getattr(self, "_dispatcher_singleton", None)
+        return disp.session if disp is not None else None
 
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
@@ -5162,31 +5145,35 @@ class AIAgent:
         return repairs
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
-        """Persist any un-flushed messages to the SQLite session store.
+        """Persist any un-flushed messages via the Dispatcher-owned session.
 
-        Uses _last_flushed_db_idx to track which messages have already been
-        written, so repeated calls (from multiple exit paths) only write
-        truly new messages — preventing the duplicate-write bug (#860).
+        Sprint 39 — the Agent no longer holds a SessionDB handle. The
+        per-turn flush builds a clean kwargs dict per message (content
+        normalization, tool_calls extraction) and hands the list to
+        ``Dispatcher.append_messages`` via the back-reference. The
+        Dispatcher performs the actual ``append_message`` calls.
+
+        Uses ``_last_flushed_db_idx`` to track which messages have
+        already been written; repeated calls only write truly new
+        messages (prevents the duplicate-write bug, #860).
         """
-        if not self._session_db:
+        disp = getattr(self, "_dispatcher_singleton", None)
+        if disp is None or disp.session is None:
             return
         self._apply_persist_user_message_override(messages)
         try:
-            # Retry row creation if the earlier attempt failed transiently.
-            if not self._session_db_created:
-                self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
+            normalized: List[Dict[str, Any]] = []
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
-                # Persist multimodal tool results as their text summary only —
-                # base64 images would bloat the session DB and aren't useful
-                # for cross-session replay.
+                # Persist multimodal tool results as their text summary —
+                # base64 images would bloat the session DB and aren't
+                # useful for cross-session replay.
                 if _is_multimodal_tool_result(content):
                     content = _multimodal_text_summary(content)
                 elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
                     _txt = []
                     for p in content:
                         if isinstance(p, dict) and p.get("type") == "text":
@@ -5202,23 +5189,24 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
-                    session_id=self.session_id,
-                    role=role,
-                    content=content,
-                    tool_name=msg.get("tool_name"),
-                    tool_calls=tool_calls_data,
-                    tool_call_id=msg.get("tool_call_id"),
-                    finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning") if role == "assistant" else None,
-                    reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
-                    reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                    codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                    codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                )
-            self._last_flushed_db_idx = len(messages)
+                normalized.append({
+                    "role": role,
+                    "content": content,
+                    "tool_name": msg.get("tool_name"),
+                    "tool_calls": tool_calls_data,
+                    "tool_call_id": msg.get("tool_call_id"),
+                    "finish_reason": msg.get("finish_reason"),
+                    "reasoning": msg.get("reasoning") if role == "assistant" else None,
+                    "reasoning_content": msg.get("reasoning_content") if role == "assistant" else None,
+                    "reasoning_details": msg.get("reasoning_details") if role == "assistant" else None,
+                    "codex_reasoning_items": msg.get("codex_reasoning_items") if role == "assistant" else None,
+                    "codex_message_items": msg.get("codex_message_items") if role == "assistant" else None,
+                })
+            written = disp.append_messages(normalized, starting_index=0)
+            if written:
+                self._last_flushed_db_idx = flush_from + written
         except Exception as e:
-            logger.warning("Session DB append_message failed: %s", e)
+            logger.warning("Session DB append via Dispatcher failed: %s", e)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
@@ -11181,7 +11169,14 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None):
+        # Sprint 39 — generator. Yields ``SessionRotateIntent`` at the
+        # compression boundary so the Dispatcher executes the DB rotation
+        # against its owned session. Callers must consume with
+        # ``yield from`` to propagate the intent through the outer
+        # generator (``_run_turn_generator``). Returns
+        # ``(compressed_messages, new_system_prompt)`` via the generator's
+        # final ``return`` (StopIteration.value).
         """Compress conversation context and split the session in SQLite.
 
         Args:
@@ -11251,58 +11246,25 @@ class AIAgent:
         new_system_prompt = self._build_system_prompt(system_message)
         self._cached_system_prompt = new_system_prompt
 
-        if self._session_db:
-            try:
-                # Propagate title to the new session with auto-numbering
-                old_title = self._session_db.get_session_title(self.session_id)
-                # Trigger memory extraction on the old session before it rotates.
-                self.commit_memory_session(messages)
-                self._session_db.end_session(self.session_id, "compression")
-                old_session_id = self.session_id
-                self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-                # Sprint 26 Phase 7 — env broadcast routed through the
-                # Dispatcher per GRV-005 § II/III. The Agent declares
-                # its rotated session_id; the Dispatcher writes
-                # os.environ for subprocess descendants.
-                # Sprint 33 Phase 2: prefer the back-referenced Dispatcher
-                # (set by Dispatcher(agent_kwargs=...).agent). If absent —
-                # only possible for callers that bypass the Dispatcher
-                # inversion, mostly tests constructed via AIAgent(...)
-                # directly — skip the broadcast rather than incur the
-                # construction cost of a transient Dispatcher just for
-                # one env write. Sprint 34 makes the Dispatcher
-                # construction mandatory and deletes this guard.
-                _disp = getattr(self, "_dispatcher_singleton", None)
-                if _disp is not None:
-                    _disp.broadcast_session_id(self.session_id)
-                try:
-                    from gateway.session_context import _SESSION_ID
-                    _SESSION_ID.set(self.session_id)
-                except Exception:
-                    pass
-                # Update session_log_file to point to the new session's JSON file
-                self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
-                self._session_db_created = False
-                self._session_db.create_session(
-                    session_id=self.session_id,
-                    source=self.platform or self._env_or("GROVE_SESSION_SOURCE", "cli"),
-                    model=self.model,
-                    model_config=self._session_init_model_config,
-                    parent_session_id=old_session_id,
-                )
-                self._session_db_created = True
-                # Auto-number the title for the continuation session
-                if old_title:
-                    try:
-                        new_title = self._session_db.get_next_title_in_lineage(old_title)
-                        self._session_db.set_session_title(self.session_id, new_title)
-                    except (ValueError, Exception) as e:
-                        logger.debug("Could not propagate title on compression: %s", e)
-                self._session_db.update_system_prompt(self.session_id, new_system_prompt)
-                # Reset flush cursor — new session starts with no messages written
-                self._last_flushed_db_idx = 0
-            except Exception as e:
-                logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+        # Sprint 39 — session-authority. Trigger memory extraction on
+        # the old session before rotating, then yield the rotation as
+        # a declarative SessionRotateIntent. The Dispatcher executes
+        # the 7-call DB sequence (end_session, create_session, propagate
+        # title via get_next_title_in_lineage, update_system_prompt,
+        # broadcast new id) against its owned ``self.session`` and
+        # returns the new session_id via the Observation.
+        old_session_id = self.session_id
+        self.commit_memory_session(messages)
+        from grove.intents import SessionRotateIntent
+        _rot_obs = yield SessionRotateIntent(
+            reason="compression", new_system_prompt=new_system_prompt,
+        )
+        if _rot_obs is not None and _rot_obs.success and _rot_obs.value:
+            self.session_id = _rot_obs.value
+        # Update session_log_file to point to the new session's JSON file
+        self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+        # Reset flush cursor — new session starts with no messages written
+        self._last_flushed_db_idx = 0
 
         # Notify the context engine that the session_id rotated because of
         # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
@@ -11463,7 +11425,7 @@ class AIAgent:
                 store=self._todo_store,
             )
         elif function_name == "session_search":
-            session_db = self._get_session_db_for_recall()
+            session_db = self._session_via_dispatcher()
             if not session_db:
                 from hermes_state import format_session_db_unavailable
                 return json.dumps({"success": False, "error": format_session_db_unavailable()})
@@ -12329,7 +12291,9 @@ class AIAgent:
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
 
-        self._ensure_db_session()
+        # Sprint 39 — turn-boundary DB row creation moved to
+        # Dispatcher.dispatch_turn → Dispatcher.open_turn_row(). The
+        # Agent's substrate authority is gone.
 
         # Tell auxiliary_client what the live main provider/model are for
         # this turn. Used by tools whose behaviour depends on the active
@@ -12547,9 +12511,10 @@ class AIAgent:
         # prefix cache.
         if self._cached_system_prompt is None:
             stored_prompt = None
-            if conversation_history and self._session_db:
+            _sess = self._session_via_dispatcher()
+            if conversation_history and _sess:
                 try:
-                    session_row = self._session_db.get_session(self.session_id)
+                    session_row = _sess.get_session(self.session_id)
                     if session_row:
                         stored_prompt = session_row.get("system_prompt") or None
                 except Exception:
@@ -12578,9 +12543,10 @@ class AIAgent:
                     logger.warning("on_session_start hook failed: %s", exc)
 
                 # Store the system prompt snapshot in SQLite
-                if self._session_db:
+                _sess = self._session_via_dispatcher()
+                if _sess:
                     try:
-                        self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
+                        _sess.update_system_prompt(self.session_id, self._cached_system_prompt)
                     except Exception as e:
                         logger.debug("Session DB update_system_prompt failed: %s", e)
 
@@ -12623,7 +12589,7 @@ class AIAgent:
                 # context windows (each pass summarises the middle N turns).
                 for _pass in range(3):
                     _orig_len = len(messages)
-                    messages, active_system_prompt = self._compress_context(
+                    messages, active_system_prompt = yield from self._compress_context(
                         messages, system_message, approx_tokens=_preflight_tokens,
                         task_id=effective_task_id,
                     )
@@ -13755,49 +13721,30 @@ class AIAgent:
                         self.session_cost_status = cost_result.status
                         self.session_cost_source = cost_result.source
 
-                        # Persist token counts to session DB for /insights.
-                        # Do this for every platform with a session_id so non-CLI
-                        # sessions (gateway, cron, delegated runs) cannot lose
-                        # token/accounting data if a higher-level persistence path
-                        # is skipped or fails. Gateway/session-store writes use
-                        # absolute totals, so they safely overwrite these per-call
-                        # deltas instead of double-counting them.
-                        if self._session_db and self.session_id:
-                            try:
-                                # Ensure the session row exists before attempting UPDATE.
-                                # Under concurrent load (cron/kanban), the initial
-                                # _ensure_db_session() may have failed due to SQLite
-                                # locking.  Retry here so per-call token deltas are
-                                # not silently lost (UPDATE on a non-existent row
-                                # affects 0 rows without error).
-                                if not self._session_db_created:
-                                    self._ensure_db_session()
-                                self._session_db.update_token_counts(
-                                    self.session_id,
-                                    input_tokens=canonical_usage.input_tokens,
-                                    output_tokens=canonical_usage.output_tokens,
-                                    cache_read_tokens=canonical_usage.cache_read_tokens,
-                                    cache_write_tokens=canonical_usage.cache_write_tokens,
-                                    reasoning_tokens=canonical_usage.reasoning_tokens,
-                                    estimated_cost_usd=float(cost_result.amount_usd)
-                                    if cost_result.amount_usd is not None else None,
-                                    cost_status=cost_result.status,
-                                    cost_source=cost_result.source,
-                                    billing_provider=self.provider,
-                                    billing_base_url=self.base_url,
-                                    billing_mode="subscription_included"
-                                    if cost_result.status == "included" else None,
-                                    model=self.model,
-                                    api_call_count=1,
-                                )
-                            except Exception as e:
-                                # Log token persistence failures so they're
-                                # visible in agent.log — silent loss here is
-                                # the root cause of undercounted analytics.
-                                logger.debug(
-                                    "Token persistence failed (session=%s, tokens=%d): %s",
-                                    self.session_id, total_tokens, e,
-                                )
+                        # Sprint 39 — per-API-call telemetry now flows
+                        # through a declarative SessionUpdateTokensIntent
+                        # yield. The Dispatcher catches and writes against
+                        # ``self.session``. Fire-and-forget: the
+                        # Observation is sent back but not inspected.
+                        if self.session_id:
+                            from grove.intents import SessionUpdateTokensIntent
+                            yield SessionUpdateTokensIntent(
+                                input_tokens=canonical_usage.input_tokens,
+                                output_tokens=canonical_usage.output_tokens,
+                                cache_read_tokens=canonical_usage.cache_read_tokens,
+                                cache_write_tokens=canonical_usage.cache_write_tokens,
+                                reasoning_tokens=canonical_usage.reasoning_tokens,
+                                estimated_cost_usd=float(cost_result.amount_usd)
+                                if cost_result.amount_usd is not None else None,
+                                cost_status=cost_result.status,
+                                cost_source=cost_result.source,
+                                billing_provider=self.provider,
+                                billing_base_url=self.base_url,
+                                billing_mode="subscription_included"
+                                if cost_result.status == "included" else None,
+                                model=self.model,
+                                api_call_count=1,
+                            )
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
@@ -14484,7 +14431,7 @@ class AIAgent:
                         compression_attempts += 1
                         if compression_attempts <= max_compression_attempts:
                             original_len = len(messages)
-                            messages, active_system_prompt = self._compress_context(
+                            messages, active_system_prompt = yield from self._compress_context(
                                 messages, system_message,
                                 approx_tokens=approx_tokens,
                                 task_id=effective_task_id,
@@ -14618,7 +14565,7 @@ class AIAgent:
                         self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
-                        messages, active_system_prompt = self._compress_context(
+                        messages, active_system_prompt = yield from self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
@@ -14775,7 +14722,7 @@ class AIAgent:
                         self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                         original_len = len(messages)
-                        messages, active_system_prompt = self._compress_context(
+                        messages, active_system_prompt = yield from self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
@@ -15642,7 +15589,7 @@ class AIAgent:
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         self._safe_print("  ⟳ compacting context…")
-                        messages, active_system_prompt = self._compress_context(
+                        messages, active_system_prompt = yield from self._compress_context(
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,
                             task_id=effective_task_id,

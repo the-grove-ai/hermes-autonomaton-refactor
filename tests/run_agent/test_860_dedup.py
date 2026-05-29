@@ -34,7 +34,6 @@ class TestFlushDeduplication:
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
-                session_db=session_db,
                 session_id="test-session-860",
                 skip_context_files=True,
                 skip_memory=True,

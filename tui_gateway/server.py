@@ -1884,7 +1884,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         requested=requested_provider,
         target_model=model or None,
     )
-    return Dispatcher(agent_kwargs=dict(
+    return Dispatcher(session_db=_get_db(), agent_kwargs=dict(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
         provider=runtime.get("provider"),
@@ -1901,7 +1901,6 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         enabled_toolsets=_load_enabled_toolsets(),
         platform="tui",
         session_id=session_id or key,
-        session_db=_get_db(),
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("GROVE_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("GROVE_TUI_PASS_SESSION_ID")),

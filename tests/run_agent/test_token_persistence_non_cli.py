@@ -1,9 +1,7 @@
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-import json
-import sys
 
-from run_agent import AIAgent
+from grove.dispatcher import Dispatcher
 from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
@@ -18,21 +16,31 @@ def _mock_response(*, usage: dict, content: str = "done"):
 
 
 def _make_agent(session_db, *, platform: str):
+    """Sprint 39 — construct via Dispatcher so per-API-call
+    ``SessionUpdateTokensIntent`` yields land at the Dispatcher's
+    ``self.session`` (the test-supplied mock)."""
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
-        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
+        d = Dispatcher(
+            runtime_ctx=MOCK_RUNTIME_CTX,
             session_db=session_db,
-            session_id=f"{platform}-session",
-            platform=platform,
+            agent_kwargs=dict(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                session_id=f"{platform}-session",
+                platform=platform,
+            ),
         )
+    agent = d.agent
+    # Mark the session row as created so the Dispatcher's
+    # update_token_counts handler doesn't bail out early.
+    d._session_row_created = True
     agent.client = MagicMock()
     agent.client.chat.completions.create.return_value = _mock_response(
         usage={
@@ -66,31 +74,12 @@ def test_run_conversation_persists_tokens_for_cron_sessions():
     assert session_db.update_token_counts.call_args.args[0] == "cron-session"
 
 
-def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):
-    sentinel_db = object()
-    captured = {}
-
-    class FakeSessionDB:
-        def __new__(cls):
-            return sentinel_db
-
-    hermes_state = ModuleType("hermes_state")
-    hermes_state.SessionDB = FakeSessionDB
-    monkeypatch.setitem(sys.modules, "hermes_state", hermes_state)
-
-    session_search_mod = ModuleType("tools.session_search_tool")
-
-    def fake_session_search(**kwargs):
-        captured.update(kwargs)
-        return json.dumps({"success": True, "results": []})
-
-    session_search_mod.session_search = fake_session_search
-    monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
-
-    agent = _make_agent(None, platform="acp")
-    result = json.loads(agent._invoke_tool("session_search", {"query": "Hermes"}, "task-id"))
-
-    assert result["success"] is True
-    assert captured["db"] is sentinel_db
-    assert captured["query"] == "Hermes"
-    assert agent._session_db is sentinel_db
+# Sprint 39 — the third test in this file
+# (``test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one``)
+# exercised the now-deleted ``_get_session_db_for_recall`` silent-
+# fallback bootstrap. Sprint 39 removed that path: the recall tool reads
+# through ``self._dispatcher_singleton.session`` and there is no Agent-
+# side SessionDB construction. The scenario the test asserted no longer
+# exists; the test is deleted rather than repurposed (the contract it
+# verified — "Agent creates a SessionDB when entrypoint forgot" — is
+# specifically what Sprint 39 deletes as silent degradation).

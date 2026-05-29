@@ -341,6 +341,8 @@ class Dispatcher:
         intent_store: Optional[Any] = None,
         agent_kwargs: Optional[Dict[str, Any]] = None,
         session_db: Optional[Any] = None,
+        session_id: Optional[str] = None,
+        resume: bool = False,
     ) -> None:
         """Capture the substrate snapshot and install Phase 5 disposition handler.
 
@@ -509,6 +511,15 @@ class Dispatcher:
         # the existing UX of empty sessions not surfacing in lists.
         self._session_row_created: bool = False
 
+        # Sprint 39 — when a caller hands the Dispatcher a session_id
+        # (or a resume target), open the session BEFORE constructing
+        # the Agent so the Dispatcher's session_id and row state are
+        # populated by the time the Agent's first method touches them.
+        # This is the load-bearing path for Sprint 35: open_session
+        # works pre-Agent-construction.
+        if session_id is not None or resume:
+            self.open_session(session_id=session_id, resume=resume)
+
         self.agent: Optional[Any] = None
         if agent_kwargs is not None:
             from run_agent import AIAgent
@@ -517,8 +528,36 @@ class Dispatcher:
             # explicit ctx the caller put into agent_kwargs (rare;
             # mostly tests that build a richer ctx).
             agent_kwargs.setdefault("runtime_ctx", self._base_runtime_ctx)
+            # Sprint 39 — session_id flows from the Dispatcher's owned
+            # value when one was opened pre-Agent; setdefault preserves
+            # any explicit caller value (rare; mostly tests).
+            if self.session_id is not None:
+                agent_kwargs.setdefault("session_id", self.session_id)
+            # Sprint 39 — pre-read session_title here so the Agent's
+            # memory-provider init (which runs during __init__, before
+            # ``_dispatcher_singleton`` is wired) can scope by it. For
+            # fresh sessions this is None; for resumed sessions it is
+            # the title the previous session ended with.
+            if self.session is not None and self.session_id:
+                try:
+                    pre_title = self.session.get_session_title(self.session_id)
+                except Exception:
+                    pre_title = None
+                if pre_title:
+                    agent_kwargs.setdefault("session_title", pre_title)
             self.agent = AIAgent(**agent_kwargs)
             self.agent._dispatcher_singleton = self
+            # Sprint 39 — sync Agent-generated session_id back so the
+            # Dispatcher's lifecycle methods (open_turn_row, append,
+            # rotate, etc.) see the live value. Production callers who
+            # pre-opened via session_id Dispatcher-kwarg already have
+            # self.session_id set; this catches the case where session_id
+            # was passed only through agent_kwargs and AIAgent auto-
+            # generated or echoed it.
+            if self.session_id is None:
+                _agent_sid = getattr(self.agent, "session_id", None)
+                if _agent_sid:
+                    self.session_id = _agent_sid
 
     @property
     def runtime_ctx(self) -> RuntimeContext:
@@ -880,9 +919,26 @@ class Dispatcher:
         # subprocess descendants on every turn. Authority moved here
         # from AIAgent.__init__ per GRV-005 § II/III: substrate writes
         # are Dispatcher-owned. Idempotent — safe to re-write per turn.
-        session_id = getattr(agent, "session_id", None)
+        # Sprint 39 — prefer self.session_id (the Dispatcher's owned id)
+        # over the Agent's. Falls back to the Agent's for legacy callers
+        # that bypass open_session() and pass session_id only through
+        # agent_kwargs (e.g. test paths constructing AIAgent directly).
+        session_id = self.session_id or getattr(agent, "session_id", None)
         if session_id:
             self.broadcast_session_id(str(session_id))
+        # Sprint 39 — turn-boundary lifecycle hook. The Dispatcher
+        # creates the session DB row on first use, replacing the
+        # AIAgent._ensure_db_session() call that previously fired
+        # inside the Agent's run_conversation flow. Idempotent: a row
+        # already created (_session_row_created=True) is a no-op.
+        if self.session is not None and self.session_id:
+            self.open_turn_row(
+                source=getattr(agent, "platform", None) or "cli",
+                model=getattr(agent, "model", ""),
+                model_config=getattr(agent, "_session_init_model_config", None),
+                system_prompt=getattr(agent, "_cached_system_prompt", None),
+                parent_session_id=getattr(agent, "_parent_session_id", None),
+            )
         # Sprint 28 Phase 4 — explicit success finalization. Capture the
         # PREVIOUS turn's id before reset so we can finalize its pending
         # record (if any) as success. The first turn for this Dispatcher
@@ -1915,30 +1971,28 @@ class Dispatcher:
     ) -> int:
         """Append messages to the current session — turn-boundary writer.
 
-        Mirrors ``AIAgent._flush_messages_to_session_db``: appends every
-        message at indices ``>= starting_index``, returning the new
-        flush cursor. The Agent's per-turn flush yields this through
-        the Dispatcher (Phase 2) instead of writing directly.
+        Each message dict in ``messages[starting_index:]`` is splatted
+        as kwargs into ``session.append_message`` after stamping
+        ``session_id``. The Agent's ``_flush_messages_to_session_db``
+        normalizes content (multimodal strip, tool_calls extraction)
+        before calling this method; the Dispatcher does the write.
+
+        Returns the new flush cursor (one past the last successfully
+        written index). On a write failure the cursor is left at the
+        last successful index so the next call retries the offender.
         """
         if self.session is None or not self.session_id:
             return starting_index
         if not self._session_row_created:
-            # Best-effort: the Agent's pre-turn open_turn_row() may have
-            # failed (SQLite lock). Drop the write silently; next turn
-            # retries via the lifecycle hook.
+            # Pre-turn open_turn_row() may have failed (SQLite lock).
+            # Drop the write silently; next turn retries via the
+            # lifecycle hook.
             return starting_index
         flushed = starting_index
         for idx in range(starting_index, len(messages)):
             msg = messages[idx]
             try:
-                self.session.append_message(
-                    session_id=self.session_id,
-                    role=msg.get("role", "assistant"),
-                    content=msg.get("content"),
-                    name=msg.get("name"),
-                    tool_call_id=msg.get("tool_call_id"),
-                    tool_calls=msg.get("tool_calls"),
-                )
+                self.session.append_message(session_id=self.session_id, **msg)
                 flushed = idx + 1
             except Exception as exc:
                 logger.warning(
@@ -2048,6 +2102,8 @@ class Dispatcher:
                 billing_provider=intent.billing_provider,
                 billing_base_url=intent.billing_base_url,
                 billing_mode=intent.billing_mode,
+                model=intent.model,
+                api_call_count=intent.api_call_count,
             )
         except Exception as exc:
             logger.debug(

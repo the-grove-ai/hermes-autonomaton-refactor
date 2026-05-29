@@ -1098,7 +1098,12 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
-    child = Dispatcher(agent_kwargs=dict(
+    # Sprint 39 — inherit the parent's session DB via the Dispatcher's
+    # back-reference instead of the now-deleted parent_agent._session_db
+    # handle. Subagents write to the same session lifecycle.
+    _parent_disp = getattr(parent_agent, "_dispatcher_singleton", None)
+    _parent_session_db = _parent_disp.session if _parent_disp is not None else None
+    child = Dispatcher(session_db=_parent_session_db, agent_kwargs=dict(
         base_url=effective_base_url,
         api_key=effective_api_key,
         model=effective_model,
@@ -1120,7 +1125,6 @@ def _build_child_agent(
         skip_memory=True,
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
-        session_db=getattr(parent_agent, "_session_db", None),
         parent_session_id=getattr(parent_agent, "session_id", None),
         providers_allowed=child_providers_allowed,
         providers_ignored=child_providers_ignored,

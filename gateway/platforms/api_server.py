@@ -857,7 +857,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
 
-        agent = Dispatcher(agent_kwargs=dict(
+        agent = Dispatcher(session_db=self._ensure_session_db(), agent_kwargs=dict(
             model=model,
             **runtime_kwargs,
             max_iterations=max_iterations,
@@ -871,7 +871,6 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
-            session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,

@@ -321,3 +321,5 @@ class SessionUpdateTokensIntent:
     billing_provider: Optional[str] = None
     billing_base_url: Optional[str] = None
     billing_mode: Optional[str] = None
+    model: Optional[str] = None
+    api_call_count: int = 1

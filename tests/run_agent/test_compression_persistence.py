@@ -42,7 +42,6 @@ class TestFlushAfterCompression:
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
-                session_db=session_db,
                 session_id="original-session",
                 skip_context_files=True,
                 skip_memory=True,

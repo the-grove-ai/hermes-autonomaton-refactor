@@ -395,7 +395,7 @@ def _run_agent(
     from grove.cellar import retrieve_cellar_context
     _cellar_context = retrieve_cellar_context(prompt)
 
-    agent = Dispatcher(agent_kwargs=dict(
+    agent = Dispatcher(session_db=session_db, agent_kwargs=dict(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
@@ -404,7 +404,6 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
-        session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:

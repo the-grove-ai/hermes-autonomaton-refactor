@@ -1435,7 +1435,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
-        agent = Dispatcher(agent_kwargs=dict(
+        agent = Dispatcher(session_db=_session_db, agent_kwargs=dict(
             model=model,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -1465,7 +1465,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",
             session_id=_cron_session_id,
-            session_db=_session_db,
         )).agent
         
         # Run the agent with an *inactivity*-based timeout: the job can run
