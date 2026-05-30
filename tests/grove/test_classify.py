@@ -1,6 +1,6 @@
 """Tests for grove.classify — the T-telemetry classifier (Sprint 12).
 
-All Anthropic calls are mocked — no real Haiku calls.
+All provider calls are mocked — no live T-telemetry calls.
 """
 
 import logging
@@ -12,14 +12,27 @@ from grove.classify import (
     ClassificationResult,
     classify_for_routing,
 )
+from grove.router import TierConfig
 
 _FAKE_RUNTIME = {
-    "model": "claude-haiku-4-5-20251001",
+    "model": "test-classifier-model",
     "provider": "anthropic",
     "api_key": "test-key",
     "base_url": None,
     "api_mode": "anthropic_messages",
 }
+
+_FAKE_TIER_CONFIG = TierConfig(
+    tier="T1",
+    handler=None,
+    provider="anthropic",
+    model="test-classifier-model",
+    max_tokens=4096,
+    max_latency_ms=None,
+    description="",
+    cost_per_mtok_input=1.0,
+    cost_per_mtok_output=5.0,
+)
 
 # What the fake Anthropic returns: the JSON object minus the prefilled "{".
 _VALID_BODY = (
@@ -63,8 +76,10 @@ def _install_fake_anthropic(monkeypatch, *, text=None, usage=None, error=None):
 def _stub_runtime(monkeypatch):
     """Stub the telemetry-tier resolution; reset the cost counter."""
     monkeypatch.setattr(
-        classify, "_telemetry_tier_runtime", lambda: dict(_FAKE_RUNTIME)
+        classify, "_telemetry_tier_runtime",
+        lambda: (dict(_FAKE_RUNTIME), _FAKE_TIER_CONFIG),
     )
+    classify._missing_cost_warned = False
     classify._cumulative_cost_usd = 0.0
     classify._budget_warned = False
     yield
@@ -146,6 +161,62 @@ def test_cost_warns_past_budget(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="grove.classify"):
         classify_for_routing("expensive")
     assert "spend has passed" in caplog.text
+
+
+def test_missing_cost_constants_skips_accumulation(monkeypatch, caplog):
+    """When the tier_config carries no cost_per_mtok_input/output,
+    the spend tracker emits one loud warning and skips accumulation.
+    Classification continues; cumulative cost stays at zero."""
+    tier_config_no_cost = TierConfig(
+        tier="T1",
+        handler=None,
+        provider="anthropic",
+        model="test-classifier-model",
+        max_tokens=4096,
+        max_latency_ms=None,
+        description="",
+        cost_per_mtok_input=None,
+        cost_per_mtok_output=None,
+    )
+    monkeypatch.setattr(
+        classify, "_telemetry_tier_runtime",
+        lambda: (dict(_FAKE_RUNTIME), tier_config_no_cost),
+    )
+    _install_fake_anthropic(
+        monkeypatch, text=_VALID_BODY, usage=_FakeUsage(1000, 200),
+    )
+    with caplog.at_level(logging.WARNING, logger="grove.classify"):
+        result = classify_for_routing("classify me")
+    assert result is not None
+    assert classify._cumulative_cost_usd == 0.0
+    assert "declares no cost_per_mtok_input/output" in caplog.text
+
+
+def test_missing_cost_warns_only_once_per_process(monkeypatch, caplog):
+    """The fail-loud warning is once-per-process, not once-per-call."""
+    tier_config_no_cost = TierConfig(
+        tier="T1",
+        handler=None,
+        provider="anthropic",
+        model="test-classifier-model",
+        max_tokens=4096,
+        max_latency_ms=None,
+        description="",
+        cost_per_mtok_input=None,
+        cost_per_mtok_output=None,
+    )
+    monkeypatch.setattr(
+        classify, "_telemetry_tier_runtime",
+        lambda: (dict(_FAKE_RUNTIME), tier_config_no_cost),
+    )
+    _install_fake_anthropic(
+        monkeypatch, text=_VALID_BODY, usage=_FakeUsage(1000, 200),
+    )
+    with caplog.at_level(logging.WARNING, logger="grove.classify"):
+        classify_for_routing("call one")
+        classify_for_routing("call two")
+        classify_for_routing("call three")
+    assert caplog.text.count("declares no cost_per_mtok_input/output") == 1
 
 
 def test_cumulative_cost_usd_accessor():

@@ -66,6 +66,12 @@ routing:
         Price: ~$1 / ~$5 per million input / output tokens —
         roughly $0.003 per average interaction.
       max_tokens: 4096
+      # USD per million tokens. Read by the T-telemetry spend tracker in
+      # grove/classify.py to compute cumulative cost without hardcoding
+      # a model-specific constant. Update whenever the binding changes
+      # or the provider's list price moves.
+      cost_per_mtok_input: 1.0
+      cost_per_mtok_output: 5.0
 
     T2:
       provider: anthropic
@@ -78,6 +84,8 @@ routing:
         Price: ~$3 / ~$15 per million input / output tokens —
         roughly $0.02 per average interaction.
       max_tokens: 8192
+      cost_per_mtok_input: 3.0
+      cost_per_mtok_output: 15.0
 
     # ----- LOCAL BINDING — run T2 on-device with Ollama -------------------
     # The T2 block above runs on a cloud model. To make the daily driver
@@ -119,6 +127,8 @@ routing:
         roughly $0.08 per average interaction, about four times the
         cost of a T2 interaction.
       max_tokens: 16384
+      cost_per_mtok_input: 5.0
+      cost_per_mtok_output: 25.0
 
   escalation:
     threshold: 0.6

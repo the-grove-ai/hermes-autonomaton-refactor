@@ -1,19 +1,26 @@
 """T-telemetry classifier for the Grove Autonomaton.
 
-Sprint 12 (haiku-telemetry-normalization-v1). One Haiku call per operator
-request produces a structured classification — intent, register,
-complexity, confidence — plus a deterministic pattern hash. The
-classification feeds two consumers: route() (confidence drives tier
+Sprint 12 (telemetry-normalization-v1). One T-telemetry classification
+call per operator request produces a structured classification — intent,
+register, complexity, confidence — plus a deterministic pattern hash.
+The classification feeds two consumers: route() (confidence drives tier
 escalation) and the telemetry log (the enrichment Kaizen's Ratchet mines).
 
-The classifier runs on the T1 tier declared in routing.config.yaml
-(telemetry.tier). The intent taxonomy is code, not operator-editable
-config: it is the system's own model of what work looks like.
+The classifier runs on whichever tier ``routing.config.yaml`` binds to
+``telemetry.tier`` — by default T1, but operators may rebind. The
+intent taxonomy is code, not operator-editable config: it is the
+system's own model of what work looks like.
 
 Failure is the one commanded graceful degradation (Sprint 12 D4): on any
 API error, timeout, or malformed response, classify_for_routing() logs
 loudly and returns None. route() then falls back to default-tier
 behaviour — the agent always runs.
+
+Cost telemetry reads ``cost_per_mtok_input`` / ``cost_per_mtok_output``
+off the T-telemetry tier's ``TierConfig`` (loaded from
+``routing.config.yaml``). No model-specific constants live in this
+module — when the operator rebinds the telemetry tier, the spend
+tracker follows the binding automatically.
 """
 
 from __future__ import annotations
@@ -42,10 +49,11 @@ INTENT_CLASSES = (
 REGISTER_CLASSES = ("technical", "strategic", "casual", "formal")
 COMPLEXITY_SIGNALS = ("simple", "moderate", "complex", "novel")
 
-# Sprint 28 Phase 2 — goal-alignment taxonomy. The Haiku classifier scores
-# each request against the operator's current goals.md content. The closed
-# set protects downstream consumers (Skill Flywheel, future Cognitive
-# Router learning) from arbitrary string values accumulating in the feed.
+# Sprint 28 Phase 2 — goal-alignment taxonomy. The T-telemetry classifier
+# scores each request against the operator's current goals.md content. The
+# closed set protects downstream consumers (Skill Flywheel, future
+# Cognitive Router learning) from arbitrary string values accumulating in
+# the feed.
 GOAL_ALIGNMENT_VALUES = (
     "direct",         # directly advances a stated goal
     "indirect",       # supports something that helps a goal
@@ -163,9 +171,11 @@ def _read_goals_content() -> str:
 _MAX_OUTPUT_TOKENS = 280  # Sprint 28 Phase 2: room for two envelopes
 _STEM_CHARS = 100  # message-stem length for the pattern hash (D9)
 
-# Haiku list pricing, May 2026 (USD per million tokens) — cost tracking (D5).
-_HAIKU_INPUT_USD_PER_MTOK = 1.0
-_HAIKU_OUTPUT_USD_PER_MTOK = 5.0
+# Cost telemetry: USD-per-million-tokens values are read from the
+# T-telemetry ``TierConfig`` per call (``cost_per_mtok_input`` /
+# ``cost_per_mtok_output``). No model-specific constants are declared
+# here — the operator rebinds the telemetry tier and the spend tracker
+# follows automatically.
 _DEFAULT_BUDGET_WARN_USD = 20.0
 
 # Cumulative T-telemetry spend this process — a runaway-loop guard, not an
@@ -206,7 +216,7 @@ class ClassificationResult:
 
 
 def classify_for_routing(message: str) -> Optional[ClassificationResult]:
-    """Classify one operator request via a single Haiku call.
+    """Classify one operator request via a single T-telemetry call.
 
     Returns a ClassificationResult, or None on any failure — an empty
     message, an uninitialized router, an API error, or a malformed
@@ -218,8 +228,8 @@ def classify_for_routing(message: str) -> Optional[ClassificationResult]:
         return None
 
     try:
-        runtime = _telemetry_tier_runtime()
-        raw = _call_classifier(runtime, message)
+        runtime, tier_config = _telemetry_tier_runtime()
+        raw = _call_classifier(runtime, message, tier_config=tier_config)
         fields = _parse_classification(raw)
         return ClassificationResult(
             intent_class=fields["intent_class"],
@@ -240,8 +250,16 @@ def classify_for_routing(message: str) -> Optional[ClassificationResult]:
 # ----- internals --------------------------------------------------------------
 
 
-def _telemetry_tier_runtime() -> dict:
-    """Resolve runtime (api_key, base_url, model) for the T-telemetry tier.
+def _telemetry_tier_runtime():
+    """Resolve runtime + TierConfig for the T-telemetry tier.
+
+    Returns a ``(runtime_dict, tier_config)`` pair. The runtime dict
+    carries the agent-ready call surface (api_key, base_url, model,
+    api_mode, auth_type, credential_pool); the tier_config carries the
+    declarative policy fields the call site reads — currently
+    ``cost_per_mtok_input`` / ``cost_per_mtok_output`` for spend
+    tracking. Returning both avoids a second router lookup at the
+    caller and keeps the cost-telemetry plumbing model-binding-agnostic.
 
     Lazy imports of grove.providers avoid a circular import — providers
     imports this module for the route-time classification.
@@ -258,11 +276,20 @@ def _telemetry_tier_runtime() -> dict:
             f"telemetry tier resolves api_mode {runtime.get('api_mode')!r}; "
             f"the v0.1 classifier requires an Anthropic-native tier"
         )
-    return runtime
+    return runtime, tier_config
 
 
-def _call_classifier(runtime: dict, message: str) -> str:
-    """Make the Haiku classification call; return the raw JSON text.
+def _call_classifier(
+    runtime: dict,
+    message: str,
+    *,
+    tier_config: "Optional[Any]" = None,
+) -> str:
+    """Make the T-telemetry classification call; return the raw JSON text.
+
+    ``tier_config`` is the T-telemetry ``TierConfig`` resolved by
+    ``_telemetry_tier_runtime``; its ``cost_per_mtok_input`` /
+    ``cost_per_mtok_output`` fields drive the spend tracker.
 
     S22.1 — credential-aware client construction. The bare
     ``anthropic.Anthropic(api_key=...)`` constructor always sends the
@@ -299,8 +326,8 @@ def _call_classifier(runtime: dict, message: str) -> str:
     )
     # Sprint 28 Phase 2: build the system prompt per-call so a goals.md
     # edit takes effect on the next classify without restarting the
-    # process. The file is small and the cost is trivial against a
-    # Haiku call's existing baseline.
+    # process. The file is small and the cost is trivial against the
+    # T-telemetry classifier's existing baseline.
     system_prompt = _build_classification_system_prompt(_read_goals_content())
     response = client.messages.create(
         model=runtime["model"],
@@ -311,7 +338,7 @@ def _call_classifier(runtime: dict, message: str) -> str:
             {"role": "assistant", "content": "{"},  # prefill — force JSON
         ],
     )
-    _track_cost(response.usage)
+    _track_cost(response.usage, tier_config=tier_config)
     # Prefill: the model continues from "{"; rejoin for a full object.
     return "{" + response.content[0].text
 
@@ -456,19 +483,46 @@ def _budget_warn_threshold() -> float:
         return _DEFAULT_BUDGET_WARN_USD
 
 
-def _track_cost(usage) -> None:
+_missing_cost_warned = False
+
+
+def _track_cost(usage, *, tier_config) -> None:
     """Accumulate T-telemetry spend; warn once past the budget (D5).
+
+    USD-per-million-tokens values come from the T-telemetry tier's
+    ``TierConfig`` (``cost_per_mtok_input`` / ``cost_per_mtok_output``).
+    When either is ``None`` — operator has not declared cost for the
+    bound tier — accumulate nothing and emit one loud warning per
+    process (Jidoka pattern: surface the gap, do not silently default
+    to zero). The classification call itself continues unaffected.
 
     Cost discipline, not a hard block — classification continues, the
     operator decides. The Jidoka pattern: surface the signal loudly,
     never silently stop.
     """
-    global _cumulative_cost_usd, _budget_warned
+    global _cumulative_cost_usd, _budget_warned, _missing_cost_warned
     input_tokens = getattr(usage, "input_tokens", 0) or 0
     output_tokens = getattr(usage, "output_tokens", 0) or 0
+
+    cost_in = getattr(tier_config, "cost_per_mtok_input", None)
+    cost_out = getattr(tier_config, "cost_per_mtok_output", None)
+    if cost_in is None or cost_out is None:
+        if not _missing_cost_warned:
+            _missing_cost_warned = True
+            tier_name = getattr(tier_config, "tier", "?")
+            logger.warning(
+                "[classify] T-telemetry tier %r declares no "
+                "cost_per_mtok_input/output in routing.config.yaml; "
+                "skipping spend accumulation for this process. "
+                "Classification continues. Declare the values under the "
+                "tier's block to restore cost tracking.",
+                tier_name,
+            )
+        return
+
     _cumulative_cost_usd += (
-        input_tokens / 1_000_000 * _HAIKU_INPUT_USD_PER_MTOK
-        + output_tokens / 1_000_000 * _HAIKU_OUTPUT_USD_PER_MTOK
+        input_tokens / 1_000_000 * float(cost_in)
+        + output_tokens / 1_000_000 * float(cost_out)
     )
     threshold = _budget_warn_threshold()
     if not _budget_warned and _cumulative_cost_usd > threshold:

@@ -43,6 +43,14 @@ class TierConfig:
     and ``None`` for provider-backed tiers; ``provider``/``model`` are the
     reverse. The loader does not interpret any of these — they are opaque
     config values.
+
+    ``cost_per_mtok_input`` and ``cost_per_mtok_output`` are USD-per-
+    million-tokens list prices the operator declares per tier. Optional
+    so legacy ``routing.config.yaml`` files without the field round-trip
+    cleanly; consumers that compute cost telemetry (the T-telemetry
+    classifier's spend tracker) treat None as "operator has not
+    declared cost; emit a one-shot warning and skip accumulation"
+    rather than silently defaulting to zero.
     """
 
     tier: str
@@ -52,6 +60,8 @@ class TierConfig:
     max_tokens: Optional[int]
     max_latency_ms: Optional[int]
     description: str
+    cost_per_mtok_input: Optional[float] = None
+    cost_per_mtok_output: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -364,6 +374,8 @@ class CognitiveRouter:
             spec = spec or {}
             if not isinstance(spec, dict):
                 raise ValueError(f"tier {name!r} is not a mapping")
+            cost_input_raw = spec.get("cost_per_mtok_input")
+            cost_output_raw = spec.get("cost_per_mtok_output")
             tiers[name] = TierConfig(
                 tier=name,
                 handler=spec.get("handler"),
@@ -372,6 +384,12 @@ class CognitiveRouter:
                 max_tokens=spec.get("max_tokens"),
                 max_latency_ms=spec.get("max_latency_ms"),
                 description=str(spec.get("description") or "").strip(),
+                cost_per_mtok_input=(
+                    float(cost_input_raw) if cost_input_raw is not None else None
+                ),
+                cost_per_mtok_output=(
+                    float(cost_output_raw) if cost_output_raw is not None else None
+                ),
             )
 
         zone_overrides = routing.get("zone_overrides") or {}

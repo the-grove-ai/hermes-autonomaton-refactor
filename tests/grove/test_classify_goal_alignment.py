@@ -27,15 +27,28 @@ from grove.classify import (
     _parse_classification,
     classify_for_routing,
 )
+from grove.router import TierConfig
 
 
 _FAKE_RUNTIME = {
-    "model": "claude-haiku-4-5-20251001",
+    "model": "test-classifier-model",
     "provider": "anthropic",
     "api_key": "test-key",
     "base_url": None,
     "api_mode": "anthropic_messages",
 }
+
+_FAKE_TIER_CONFIG = TierConfig(
+    tier="T1",
+    handler=None,
+    provider="anthropic",
+    model="test-classifier-model",
+    max_tokens=4096,
+    max_latency_ms=None,
+    description="",
+    cost_per_mtok_input=1.0,
+    cost_per_mtok_output=5.0,
+)
 
 
 def _two_envelope_body(
@@ -101,13 +114,16 @@ def _install_fake_anthropic(monkeypatch, *, text=None, usage=None):
 @pytest.fixture(autouse=True)
 def _stub_runtime(monkeypatch):
     monkeypatch.setattr(
-        classify, "_telemetry_tier_runtime", lambda: dict(_FAKE_RUNTIME)
+        classify, "_telemetry_tier_runtime",
+        lambda: (dict(_FAKE_RUNTIME), _FAKE_TIER_CONFIG),
     )
     classify._cumulative_cost_usd = 0.0
     classify._budget_warned = False
+    classify._missing_cost_warned = False
     yield
     classify._cumulative_cost_usd = 0.0
     classify._budget_warned = False
+    classify._missing_cost_warned = False
 
 
 @pytest.fixture
