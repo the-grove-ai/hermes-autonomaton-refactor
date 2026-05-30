@@ -57,6 +57,13 @@ routing:
 
     T1:
       provider: anthropic
+      # The wire protocol the runtime uses to call this tier's provider.
+      # ``anthropic_messages`` = the /v1/messages POST surface; the
+      # OpenAI-compatible /v1/chat/completions surface is the default
+      # when this field is absent, which silently 404s against
+      # api.anthropic.com. Declare it explicitly so the runtime never
+      # has to guess from the base_url.
+      api_mode: anthropic_messages
       model: claude-haiku-4-5-20251001
       description: |
         Cheap, fast cognition — a small model for quick, well-scoped
@@ -75,6 +82,7 @@ routing:
 
     T2:
       provider: anthropic
+      api_mode: anthropic_messages
       model: claude-sonnet-4-6
       description: |
         Premium cognition — the default for most of your work: real
@@ -116,6 +124,7 @@ routing:
 
     T3:
       provider: anthropic
+      api_mode: anthropic_messages
       model: claude-opus-4-6   # 4.6, not 4.7 — predictable tokenization
       description: |
         Apex cognition — the strongest model, for the hardest problems:
