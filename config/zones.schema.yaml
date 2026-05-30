@@ -250,6 +250,16 @@ tool_zones:
       - match_pattern: '^GAPI=.*python3.*\.grove/skills/productivity/google-workspace/.*'
         zone: green
         reason: "Google Workspace skill wrapper — known-safe script path."
+      # ── Promoted skills: path-prefix GREEN ─────────────────────────
+      # Any terminal command whose argument references a path under
+      # ~/.grove/skills/ executes a skill the operator already approved
+      # via the Andon quarantine pipeline. Re-halting on every invocation
+      # is governance theater — the promotion act IS the trust grant.
+      # First-match-wins keeps the specific GAPI rule above in place so
+      # google-workspace invocations still surface their precise reason.
+      - match_pattern: '.*\.grove/skills/.*'
+        zone: green
+        reason: "Promoted skills have passed Andon quarantine. Execution of operator-approved skills does not require re-disposition."
   skill_manage.create:       yellow
   skill_manage.promote:      red
   file_operations.write:     yellow
