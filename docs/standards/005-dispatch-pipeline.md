@@ -1,8 +1,10 @@
 # **The Dispatch Pipeline**
 
 *Runtime Physics for Conformant Autonomatons*  
-**GRV-005 · v1.0 · May 2026 · CC BY 4.0 International**  
+**GRV-005 · v1.1 · May 2026 · CC BY 4.0 International**  
 Jim Calhoun · The Grove Foundation
+
+> **v1.1 amendment (Sprint 32 — sovereignty-ux-v1):** § VI replaces the v1.0 two-option Skip/Drop disposition surface with a four-choice Kaizen-register prompt. Implementation details (zone names, regex patterns, rule sources, intent indices) MUST move to the Kaizen Ledger; operator-facing text MUST use plain language.
 
 ## **I. Preamble**
 
@@ -76,15 +78,24 @@ Jidoka, Andon, and Kaizen act as sequential, non-bypassable gates within the Dis
 
 Zone classification implements GRV-002's sovereignty mechanism: "No API provider can restrict what the operator has classified as Green. No model vendor can require human approval for what the operator has classified as autonomous." \[GRV-002 Part III\]
 
-## **VI. Mid-Execution Andon — Disposition Semantics**
+## **VI. Mid-Execution Andon — Disposition Semantics** *(v1.1)*
 
-When tool-zone discipline triggers an Andon halt, the Dispatcher hands authority back to the human endpoint.  
-The Sovereign Prompt MUST present at least two disposition options:
+**v1.1.** When tool-zone discipline triggers an Andon halt, the Dispatcher hands authority back to the operator. The operator-facing Sovereign Prompt MUST use plain language — Kaizen register. Zone names, matched regex patterns, source identifiers, and rule indices MUST NOT surface in the operator prompt; they MUST be recorded to the Kaizen Ledger.
 
-1. **Skip this step.** The Dispatcher preserves the conversation history and injects a denial Observation. The Agent is allowed to recover, re-reason, or pivot.  
-2. **Drop the task entirely.** The Dispatcher flushes ephemeral turn state. The Agent resets to a neutral posture without preserving the failed attempt.
+The Sovereign Prompt MUST present exactly four disposition options:
 
-Additional disposition options are out of v1 scope (Section X).
+1. **Allow once.** The Dispatcher executes the action for this invocation only. The same action on a future turn re-prompts.
+2. **Allow for this session.** The Dispatcher executes the action and caches a session-scoped allow. Subsequent identical invocations (same tool, same arguments) execute silently within the session.
+3. **Always allow.** The Dispatcher executes the action, caches a session allow, and queues a ZonePromotionProposal to the GRV-008 proposal queue (`~/.grove/proposals.jsonl`). The promotion takes effect only after operator approval via `autonomaton flywheel approve`.
+4. **Don't allow.** The Dispatcher injects a denial Observation; the Agent may recover, re-reason, or pivot. The denial is cached for the session; subsequent identical invocations auto-deny silently.
+
+The v1.0 `Skip` disposition maps to `Don't allow`. The v1.0 `Drop` disposition is removed — turn-flush as an operator escape hatch is replaced by the cumulative session deny cache + the Section VII red-zone hard-denial after three strikes.
+
+Non-interactive surfaces (batch, gateway) MUST map all four choices to `Allow once` with a Kaizen Ledger telemetry record. Silent surfaces (test fixtures) MUST map to `Allow once` with no record. Gateway surfaces MUST NOT queue promotion proposals from a non-TTY context — the operator has no CLI access to approve from a mobile messaging client.
+
+The Dispatcher MUST maintain two session-scoped caches (deny + allow) keyed by `(tool_name, sha256(canonical_json(arguments)))`. Cache hits MUST auto-apply silently without invoking the operator handler, and MUST emit a `session_cache_hit` event to the Kaizen Ledger with `type=deny` or `type=allow`. Cache lifetime is the Dispatcher instance — a new Dispatcher starts with empty caches.
+
+The Dispatcher MUST maintain a per-turn, per-tool red-zone strike counter. On every red-zone halt the counter MUST increment for the triggering tool. At three strikes the Dispatcher MUST force a hard-denial path WITHOUT invoking the operator handler: the injected denial Observation MUST carry the directive text `"HARD DENIAL: This action is prohibited. Do not attempt this tool with these arguments again."` and a metadata marker `is_hard_denial=true` so the Agent can detect "do not retry" without parsing the text. The counter resets at every `dispatch_turn` entry; cross-turn enforcement remains architectural via the zone rule itself.
 
 ## **VII. The Escalation Contract**
 
