@@ -52,6 +52,12 @@ core:
   - skill_view        # show a skill's contents
   - read_file         # filesystem read
   - skills_list       # discover skills
+  - terminal          # skill execution vehicle (GAPI path). Co-located
+                      # with skill_view because discovery without
+                      # execution is the skill_view → clarify freeze
+                      # loop. Domain chunks that use terminal for
+                      # non-skill work keep their declaration too —
+                      # set-union at filter time dedupes.
   - escalate          # Sprint 30 — request more capability (declarative;
                       # Dispatcher decides). Synthetic tool; LLM-call gets
                       # intercepted before classification.

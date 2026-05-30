@@ -34,6 +34,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CO_LOCATED_TOOLS",
     "load_taxonomy",
     "resolve_tool_set",
     "filter_tools_by_name",
@@ -45,6 +46,52 @@ _REQUIRED_TOP_LEVEL = frozenset({
     "version", "core", "domain_chunks", "exploratory", "mcp_notion",
 })
 _REQUIRED_MCP_KEYS = frozenset({"reads", "writes", "write_intents"})
+
+
+# ── Co-location guard ────────────────────────────────────────────────
+# Discovery tools and their execution vehicles MUST appear in the same
+# resolved tool set. Loading discovery without execution is the
+# silent-degradation antipattern that produced the skill_view → clarify
+# freeze loop: the Agent could SEE skills but not RUN them, asked the
+# operator a clarifying question, looked again, asked again, dead air.
+#
+# Each tuple is ``(discovery_tool, execution_tool)``. The guard fires
+# AFTER ``resolve_tool_set`` computes the per-turn set: if the discovery
+# tool is present and the execution tool is missing, RuntimeError. No
+# fallback that silently loads the missing tool — the operator gets
+# told exactly which pair broke for which intent, and where to fix the
+# taxonomy. Per the Architectural Prime Directive: fail loud.
+#
+# v0.1 seed. Future pairs (e.g., MCP discovery + MCP execute) add one
+# tuple here; the validator is automatic.
+CO_LOCATED_TOOLS = (
+    ("skill_view", "terminal"),
+)
+
+
+def _validate_co_location(
+    selected: Set[str],
+    intent_class: str,
+) -> None:
+    """Raise RuntimeError if any CO_LOCATED_TOOLS pair is half-loaded.
+
+    Runs against the materialized per-turn set, never against the
+    maximal-fallback (None) path — when every tool is loaded the
+    invariant holds trivially. The Agent sees this at construction
+    time; the Andon is the message, not a downstream hang.
+    """
+    for discovery, execution in CO_LOCATED_TOOLS:
+        if discovery in selected and execution not in selected:
+            raise RuntimeError(
+                f"co-location invariant violated: discovery tool "
+                f"{discovery!r} is in the resolved tool set for "
+                f"intent_class={intent_class!r}, but its execution "
+                f"vehicle {execution!r} is not. Add {execution!r} to "
+                f"the ``core`` chunk in tool_groups.yaml (or to the "
+                f"domain chunk for {intent_class!r}). Discovery without "
+                f"execution is the silent-degradation antipattern that "
+                f"freezes the Agent in a discover-clarify loop."
+            )
 
 
 # Module-level cache. Reset between tests via the conftest fixture.
@@ -193,6 +240,7 @@ def resolve_tool_set(
         selected.update(taxonomy["exploratory"])
     if intent_class in taxonomy["mcp_notion"]["write_intents"]:
         selected.update(taxonomy["mcp_notion"]["writes"])
+    _validate_co_location(selected, intent_class)
     return selected
 
 

@@ -251,6 +251,107 @@ class TestResolveToolSet:
         assert "mcp_notion_API_post_page" not in result
 
 
+# ── Co-location guard ────────────────────────────────────────────────────
+
+
+class TestCoLocationGuard:
+    """Discovery tools and their execution vehicles MUST appear in the
+    same resolved set. Loading discovery without execution is the
+    silent-degradation antipattern that froze the Agent in a
+    skill_view → clarify loop."""
+
+    def _taxonomy_with(self, core: list, domain: dict | None = None) -> dict:
+        tax = _minimal_taxonomy()
+        tax["core"] = list(core)
+        if domain is not None:
+            tax["domain_chunks"] = dict(domain)
+        return tax
+
+    def test_skill_view_without_terminal_raises(self) -> None:
+        """The exact bug reproduction: skill_view in core, terminal
+        absent from both core and the domain chunk → RuntimeError."""
+        tax = self._taxonomy_with(
+            core=["clarify", "skill_view", "read_file"],
+            domain={"factual_retrieval": ["web_search"]},
+        )
+        with pytest.raises(RuntimeError) as exc_info:
+            resolve_tool_set("factual_retrieval", "simple", tax)
+        message = str(exc_info.value)
+        assert "skill_view" in message
+        assert "terminal" in message
+        assert "factual_retrieval" in message
+        assert "co-location invariant" in message
+
+    def test_happy_path_both_present_in_core(self) -> None:
+        """skill_view AND terminal in core → no error for any intent."""
+        tax = self._taxonomy_with(
+            core=["clarify", "skill_view", "terminal", "read_file"],
+            domain={"conversation": [], "factual_retrieval": ["web_search"]},
+        )
+        for intent in ("conversation", "factual_retrieval", "code_generation"):
+            tax["domain_chunks"].setdefault(intent, [])
+            result = resolve_tool_set(intent, "simple", tax)
+            assert "skill_view" in result
+            assert "terminal" in result
+
+    def test_happy_path_terminal_in_domain_chunk(self) -> None:
+        """skill_view in core + terminal in domain chunk → no error."""
+        tax = self._taxonomy_with(
+            core=["clarify", "skill_view"],
+            domain={"system_admin": ["terminal", "process"]},
+        )
+        result = resolve_tool_set("system_admin", "simple", tax)
+        assert "skill_view" in result
+        assert "terminal" in result
+
+    def test_guard_skipped_on_maximal_fallback(self) -> None:
+        """Unknown-intent maximal fallback returns None — every tool
+        is loaded, so the invariant holds trivially and the guard
+        MUST NOT run on the None path."""
+        tax = self._taxonomy_with(
+            core=["clarify", "skill_view"],  # missing terminal — would fail guard
+            domain={"factual_retrieval": ["web_search"]},
+        )
+        result = resolve_tool_set("unknown", "simple", tax)
+        assert result is None  # maximal fallback signal
+
+    def test_message_points_at_fix_path(self) -> None:
+        """The Andon message MUST tell the operator exactly where to
+        edit — tool_groups.yaml, with the specific chunks named."""
+        tax = self._taxonomy_with(
+            core=["clarify", "skill_view"],
+            domain={"factual_retrieval": ["web_search"]},
+        )
+        with pytest.raises(RuntimeError) as exc_info:
+            resolve_tool_set("factual_retrieval", "simple", tax)
+        message = str(exc_info.value)
+        assert "tool_groups.yaml" in message
+        assert "core" in message
+
+    def test_repo_template_satisfies_guard_for_every_intent(self) -> None:
+        """The shipped ``config/tool_groups.yaml`` MUST satisfy the
+        co-location invariant for every intent_class × complexity
+        combination — the architectural commitment ships, not just
+        the validation logic."""
+        from grove.context_budget import load_taxonomy
+        reset_taxonomy_cache()
+        tax = load_taxonomy()
+        intents = [
+            "code_generation", "debugging", "analysis", "planning",
+            "factual_retrieval", "creative_writing", "system_admin",
+            "conversation",
+        ]
+        for intent in intents:
+            for complexity in ("simple", "moderate", "complex", "novel"):
+                result = resolve_tool_set(intent, complexity, tax)
+                assert result is not None
+                if "skill_view" in result:
+                    assert "terminal" in result, (
+                        f"co-location broken: {intent}/{complexity} "
+                        f"loads skill_view without terminal"
+                    )
+
+
 # ── filter_tools_by_name ──────────────────────────────────────────────────
 
 
