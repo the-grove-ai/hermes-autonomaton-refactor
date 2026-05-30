@@ -164,6 +164,7 @@ class TestDispatcherConstructsAgent:
         agent_kwargs = dict(
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -182,6 +183,7 @@ class TestDispatcherConstructsAgent:
         agent_kwargs = dict(
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -230,6 +232,7 @@ class TestDispatcherConstructsAgent:
         agent_kwargs = dict(
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -676,6 +679,7 @@ class TestDispatcherHandlerInjection:
         agent_kwargs = dict(
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

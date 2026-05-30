@@ -1432,6 +1432,17 @@ class AIAgent:
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         self.base_url = base_url or ""
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
+        # Belt-and-suspenders: collapse any falsy value (empty string,
+        # 0, False) the upstream resolver might pass through to a true
+        # None so the ``provider_name is None`` gates in the detection
+        # chain below cannot be silently bypassed by a non-None falsy.
+        # Same for ``api_mode`` — the set-membership check below treats
+        # an empty string as "no match" and falls through to detection
+        # without registering it as an explicit operator override
+        # (line ~1500's ``api_mode is None`` re-check); normalizing to
+        # None up front makes that intent explicit.
+        provider_name = provider_name or None
+        api_mode = api_mode or None
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
@@ -1466,7 +1477,22 @@ class AIAgent:
             # (bedrock-runtime.<region>.amazonaws.com).
             self.api_mode = "bedrock_converse"
         else:
-            self.api_mode = "chat_completions"
+            # Sprint 47 hotfix — no silent fallback to chat_completions.
+            # The prior silent default constructed an OpenAI client
+            # against ``api.anthropic.com`` when the provider string was
+            # empty, producing a 404 with no surfaced error. Architecture
+            # is the guarantee: if the system cannot positively identify
+            # the wire protocol from provider + base_url, it raises.
+            # Operators declare ``api_mode`` explicitly in
+            # ``routing.config.yaml`` (anthropic_messages |
+            # chat_completions | bedrock_converse | codex_responses).
+            from grove.errors import ProviderDetectionError
+            raise ProviderDetectionError(
+                f"Cannot determine api_mode for model={self.model!r}, "
+                f"base_url={self.base_url!r}, provider={provider_name!r}. "
+                f"Declare api_mode explicitly in routing.config.yaml "
+                f"(anthropic_messages | chat_completions | bedrock_converse)."
+            )
 
         # Eagerly warm the transport cache so import errors surface at init,
         # not mid-conversation.  Also validates the api_mode is registered.
