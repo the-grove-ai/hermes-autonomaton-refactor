@@ -1008,35 +1008,42 @@ class TestPhase5SovereignPromptDefault:
     is injected. These tests verify its structure without actually
     requiring TTY input."""
 
-    def test_default_prompt_returns_skip_on_skip_input(
+    def test_default_prompt_returns_deny_on_deny_input(
         self, monkeypatch: pytest.MonkeyPatch
     ):
+        # Sprint 32 v1.1: the typed alias "deny" resolves to the
+        # deny disposition (v1.0 "skip" semantic).
         from grove.dispatcher import AndonHalt, _default_sovereign_prompt
         from grove.zones import ZoneResult
 
-        # Stub builtins.input to return "skip"
-        monkeypatch.setattr("builtins.input", lambda prompt="": "skip")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "deny")
         intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
         zr = [ZoneResult(zone="red", matched_rule="r", source="s")]
         halt = AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
-        assert _default_sovereign_prompt(halt) == "skip"
+        assert _default_sovereign_prompt(halt) == "deny"
 
-    def test_default_prompt_returns_drop_on_drop_input(
+    def test_default_prompt_returns_once_on_choice_one(
         self, monkeypatch: pytest.MonkeyPatch
     ):
+        # Sprint 32 v1.1: "1" maps to the once disposition (execute).
+        # v1.0 "drop" is no longer offered through the prompt; the
+        # legacy alias remains accepted at the dispatcher level for
+        # test fixtures that exercise the drop pipeline directly.
         from grove.dispatcher import AndonHalt, _default_sovereign_prompt
         from grove.zones import ZoneResult
 
-        monkeypatch.setattr("builtins.input", lambda prompt="": "2")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "1")
         intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
         zr = [ZoneResult(zone="red", matched_rule="r", source="s")]
         halt = AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
-        assert _default_sovereign_prompt(halt) == "drop"
+        assert _default_sovereign_prompt(halt) == "once"
 
-    def test_default_prompt_drops_on_eof(
+    def test_default_prompt_denies_on_eof(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        # EOFError → safest default is Drop (don't auto-skip).
+        # Sprint 32 v1.1: EOFError → safest default is Deny (fail-
+        # safe; absence-of-input means "block this action"). v1.0
+        # defaulted to Drop.
         from grove.dispatcher import AndonHalt, _default_sovereign_prompt
         from grove.zones import ZoneResult
 
@@ -1046,7 +1053,7 @@ class TestPhase5SovereignPromptDefault:
         intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
         zr = [ZoneResult(zone="red", matched_rule="r", source="s")]
         halt = AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
-        assert _default_sovereign_prompt(halt) == "drop"
+        assert _default_sovereign_prompt(halt) == "deny"
 
 
 # ── Phase 6 — Kaizen Ledger wiring + Tier Override ────────────────────────

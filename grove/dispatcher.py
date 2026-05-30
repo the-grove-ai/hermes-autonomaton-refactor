@@ -44,7 +44,7 @@ import sys as _sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +455,19 @@ class Dispatcher:
         # Track all escalation events that fired this turn so the
         # IntentRecord write at terminal sites captures them.
         self._current_turn_escalation_events: List[Dict[str, Any]] = []
+        # ── Sprint 32 — Kaizen session caches (sovereignty-ux-v1) ────
+        # Operator dispositions remembered for the lifetime of THIS
+        # Dispatcher instance. Keyed by (tool_name, sha256(canonical
+        # JSON of arguments)). The deny cache populates on operator
+        # "Don't allow"; the allow cache populates on "Allow for this
+        # session" and "Always allow". Subsequent identical halts
+        # auto-apply silently and log a session_cache_hit telemetry
+        # event to the Kaizen Ledger. The caches live on the
+        # Dispatcher (not the handler) so they survive a per-call
+        # handler swap and reset automatically when the operator
+        # starts a new session (new Dispatcher = empty caches).
+        self._session_deny_cache: Set[Tuple[str, str]] = set()
+        self._session_allow_cache: Set[Tuple[str, str]] = set()
         if self._intent_store is not None:
             # Sprint 28 Phase 3 — Implicit Success Sweep on Dispatcher
             # construction. Stale ``pending`` records from previous
@@ -1169,8 +1182,11 @@ class Dispatcher:
                                 for zr in halt.zone_results
                             ],
                         )
-                        # Phase 5 — Sovereign Prompt + disposition flow
-                        disposition = self._handle_andon_halt(agent, halt)
+                        # Sprint 32 — Kaizen Sovereign Prompt + disposition.
+                        # The handler may now return v1.1 vocabulary
+                        # (once / session / always / deny) or v1.0
+                        # legacy values (skip / drop / shadow_approve).
+                        disposition = self._handle_andon_halt(agent, halt, ledger=ledger)
                         ledger.record(
                             "andon_disposition",
                             disposition=disposition,
@@ -1178,12 +1194,23 @@ class Dispatcher:
                             matched_rule=halt.matched_rule,
                             triggering_tool=halt.intents[halt.triggering_index].tool_name,
                         )
-                        if disposition == "skip":
+                        # ── Deny branch ──────────────────────────────
+                        # v1.1 ``deny`` and v1.0 ``skip`` both inject
+                        # denial Observations and let the agent recover.
+                        if disposition in ("deny", "skip"):
                             observations = self._build_skip_observations(
                                 agent, halt.intents,
                             )
                             yielded = gen.send(observations)
                             continue
+                        # ── Drop branch (legacy v1.0 — deprecated) ──
+                        # Sprint 32 retains the turn-flush affordance
+                        # for v1.0 callers and tests; the v1.1
+                        # operator-facing prompt no longer exposes
+                        # this disposition. New code SHOULD return
+                        # ``deny`` (which uses the deny cache to
+                        # achieve the same operational effect
+                        # cumulatively across the session).
                         if disposition == "drop":
                             ledger.record(
                                 "turn_dropped",
@@ -1191,20 +1218,20 @@ class Dispatcher:
                                 zone=halt.zone,
                                 matched_rule=halt.matched_rule,
                             )
-                            # Sprint 28 Phase 3 — drop terminal. Outcome
-                            # is terminal (no Phase 4 finalization).
                             self._write_intent_record(agent, outcome="drop")
                             return self._format_drop_result(agent, halt)
-                        if disposition != "shadow_approve":
+                        # ── Allow branches ───────────────────────────
+                        # v1.1 ``once``, ``session``, ``always`` and
+                        # v1.0 ``shadow_approve`` all fall through to
+                        # the Green-path executor below. The handler
+                        # already mutated caches per disposition.
+                        if disposition not in ("once", "session", "always", "shadow_approve"):
                             raise ValueError(
                                 f"Sovereign prompt returned unknown disposition: "
-                                f"{disposition!r} (expected 'skip', 'drop', "
-                                f"or 'shadow_approve')"
+                                f"{disposition!r} (expected 'once' / 'session' / "
+                                f"'always' / 'deny' or legacy 'skip' / 'drop' / "
+                                f"'shadow_approve')"
                             )
-                        # shadow_approve: fall through to Green path. The
-                        # halt is already in the ledger via "andon_halt"
-                        # above; "andon_disposition" above records the
-                        # shadow_approve outcome for calibration review.
                     # Green path: execute the batch via the executor.
                     # Sprint 31 Phase 2 — direct invocation, no agent
                     # shim in the path. ``_current_messages`` is still
@@ -2917,31 +2944,65 @@ class Dispatcher:
 
     # ── Phase 5 helpers (disposition flow + pending_andon marker) ────────
 
-    def _handle_andon_halt(self, agent: Any, halt: "AndonHalt") -> str:
-        """Write the pending_andon marker, prompt the operator, clear marker.
+    def _kaizen_cache_key(
+        self, tool_name: str, arguments: Any,
+    ) -> Tuple[str, str]:
+        """Compute the session-cache key for a halted intent.
 
-        Returns the operator's disposition: ``"skip"``, ``"drop"``, or
-        ``"shadow_approve"`` (when ``GROVE_ZONE_SHADOW=1`` is set).
+        Sprint 32 — keyed by ``(tool_name, sha256(canonical JSON of
+        arguments))``. Canonical JSON: ``json.dumps(args, sort_keys=
+        True, default=str)``. Non-JSON-serializable values stringify
+        safely so the hash never crashes on an unusual argument type.
+        """
+        import hashlib
+        try:
+            payload = _json_mod.dumps(
+                arguments or {}, sort_keys=True, default=str,
+            )
+        except Exception:
+            payload = str(arguments)
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return (tool_name, digest)
 
-        The marker write happens BEFORE the prompt so a process killed
-        mid-prompt leaves a recoverable trail. The marker clear runs in
-        a ``finally`` so it always fires, including when the prompt
-        raises.
+    def _handle_andon_halt(
+        self, agent: Any, halt: "AndonHalt", ledger: Optional[Any] = None,
+    ) -> str:
+        """Write the pending marker, check caches, prompt, clear marker.
+
+        Sprint 32 (sovereignty-ux-v1) — the Kaizen-register handler.
+        Returns one of:
+
+        * v1.1 vocabulary: ``"once"``, ``"session"``, ``"always"``,
+          ``"deny"``.
+        * v1.0 vocabulary (deprecated but honored): ``"skip"`` (alias
+          for ``"deny"``), ``"drop"`` (legacy turn-flush), and
+          ``"shadow_approve"`` (the value returned in shadow mode
+          and from the v1.0 ``silent_approve_handler``; alias for
+          ``"once"``).
+
+        Flow:
+
+        1. Shadow mode short-circuit: ``GROVE_ZONE_SHADOW=1`` returns
+           ``"shadow_approve"`` without writing the marker or prompting.
+        2. Cache check — keyed by ``(tool_name, sha256(arguments))``:
+           * Deny cache hit → log telemetry, return ``"deny"`` silently.
+           * Allow cache hit → log telemetry, return ``"once"`` silently.
+        3. Write the pending_andon marker (recoverable trail).
+        4. Invoke the operator handler.
+        5. Mutate caches by disposition:
+           * ``"deny"`` / ``"skip"`` → add to deny cache.
+           * ``"session"`` / ``"always"`` → add to allow cache.
+           * ``"once"`` / ``"shadow_approve"`` → no cache mutation.
+           * ``"drop"`` → no cache mutation (legacy turn-flush).
+        6. ``"always"`` queues a ZonePromotionProposal to the
+           GRV-008 proposal queue (Phase 2 — Phase 1 stubs the call).
+        7. Clear the pending_andon marker in ``finally``.
 
         Per D3 lock: pending_andon is a structural persistent marker —
         not a serialization of the generator state (which contains
         unpicklable references like LLM clients and thread locks). On
         process restart, ``check_pending_andon()`` surfaces the marker
-        so the operator can acknowledge the lost turn (Phase 5 MVP) or
-        — in a future sprint — invoke a recovery flow.
-
-        Shadow mode (``GROVE_ZONE_SHADOW=1``): the would-have-been halt
-        is already captured in the Kaizen Ledger by the caller's
-        ``andon_halt`` record (with full intent + zone_result detail).
-        This handler short-circuits the marker write + sovereign
-        prompt and returns ``"shadow_approve"`` so the caller falls
-        through to the Green-path executor. The tool runs; the ledger
-        carries the halt for later calibration review.
+        so the operator can acknowledge the lost turn.
         """
         if os.environ.get("GROVE_ZONE_SHADOW") == "1":
             triggering = halt.intents[halt.triggering_index].tool_name
@@ -2951,12 +3012,85 @@ class Dispatcher:
                 file=_sys.stderr,
             )
             return "shadow_approve"
+
+        triggering_intent = halt.intents[halt.triggering_index]
+        cache_key = self._kaizen_cache_key(
+            triggering_intent.tool_name, triggering_intent.arguments,
+        )
+
+        # Cache check — silent auto-apply on hit.
+        if cache_key in self._session_deny_cache:
+            self._log_session_cache_hit(
+                triggering_intent.tool_name, "deny", ledger=ledger,
+            )
+            return "deny"
+        if cache_key in self._session_allow_cache:
+            self._log_session_cache_hit(
+                triggering_intent.tool_name, "allow", ledger=ledger,
+            )
+            return "once"
+
         marker_path = self._write_pending_andon(agent, halt)
         try:
             disposition = self._sovereign_prompt_handler(halt)
         finally:
             self._clear_pending_andon(agent, marker_path)
+
+        # Cache mutation by disposition (v1.1 + v1.0 aliases).
+        if disposition in ("deny", "skip"):
+            self._session_deny_cache.add(cache_key)
+        elif disposition in ("session", "always"):
+            self._session_allow_cache.add(cache_key)
+        # "once" / "shadow_approve" / "drop" — no cache mutation.
+
+        # Phase 2 hook — "always" queues a ZonePromotionProposal.
+        # Phase 1 logs intent without queueing so smoke tests can
+        # verify the flow without proposal-queue plumbing. Gateway
+        # handlers MUST NOT trigger the queue per Sprint 32 A4 lock
+        # (no CLI access for the operator to approve from a mobile
+        # surface); the gateway downgrade lands in Phase 2 alongside
+        # the actual queue write.
+        if disposition == "always":
+            logger.info(
+                "[grove.dispatcher] Kaizen 'always' disposition received "
+                "for tool=%s — promotion proposal queueing lands in "
+                "Phase 2", triggering_intent.tool_name,
+            )
+
         return disposition
+
+    def _log_session_cache_hit(
+        self,
+        tool_name: str,
+        cache_type: str,
+        *,
+        ledger: Optional[Any] = None,
+    ) -> None:
+        """Emit a kaizen_ledger ``session_cache_hit`` event.
+
+        Sprint 32 — every silent cache hit MUST land in the ledger so
+        the operator's audit trail captures actions the agent
+        executed (or refused) without re-prompting. The prompt-shown
+        case writes its own ledger record upstream via the
+        ``andon_halt`` / ``andon_disposition`` pair.
+
+        Best-effort: a ledger that raises on record does NOT block
+        the dispatch — the cache decision is the operational truth;
+        telemetry is observability around it.
+        """
+        if ledger is None:
+            return
+        try:
+            ledger.record(
+                "session_cache_hit",
+                tool=tool_name,
+                type=cache_type,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[grove.dispatcher] session_cache_hit ledger write "
+                "failed (non-fatal): %r", exc,
+            )
 
     def _build_skip_observations(
         self, agent: Any, intents: List[Any],
