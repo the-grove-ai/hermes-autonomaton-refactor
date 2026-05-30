@@ -787,12 +787,68 @@ class KawaiiSpinner:
 # Cute tool message (completion line that replaces the spinner)
 # =========================================================================
 
+_DIAGNOSTIC_MAX_CHARS = 80
+
+
+def _extract_tool_error_diagnostic(result: str | None) -> str:
+    """Pull the human-readable diagnostic message out of a tool error result.
+
+    Sprint 32.x bugfix — the v1.0 display layer rendered a bare badge
+    (``[error]`` / ``[exit N]`` / ``[full]``) when a tool failed; the
+    diagnostic body never reached the operator. The original fix routed
+    the body through ``logger.warning`` — but the CLI has no terminal
+    handler attached to that logger, so the operator never saw it.
+
+    This helper extracts and returns the diagnostic STRING so the
+    caller can append it to the badge suffix directly. The badge line
+    is rendered to the terminal the operator is already reading, so
+    the diagnostic lands where the eye is.
+
+    Returns ``""`` when no extractable message is present, including
+    when extraction itself raises (display-layer faults MUST NOT crash
+    the agent run — the badge has already been chosen by the caller).
+
+    Truncates at :data:`_DIAGNOSTIC_MAX_CHARS` (80) so a runaway error
+    body cannot wrap the operator's terminal into an unreadable wall.
+    """
+    try:
+        if not isinstance(result, str):
+            return ""
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
+            err = data.get("error")
+            if err:
+                return str(err)[:_DIAGNOSTIC_MAX_CHARS]
+        if result.startswith("Error"):
+            # Strip the leading "Error: " prefix when present so the
+            # badge already says "[error]" and the body adds value.
+            body = result[6:].lstrip(" :") if result.startswith("Error:") else result
+            return body[:_DIAGNOSTIC_MAX_CHARS]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "_extract_tool_error_diagnostic failed: %r", exc,
+        )
+    return ""
+
+
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Inspect a tool result string for signs of failure.
 
     Returns ``(is_failure, suffix)`` where *suffix* is an informational tag
     like ``" [exit 1]"`` for terminal failures, or ``" [error]"`` for generic
     failures.  On success, returns ``(False, "")``.
+
+    Sprint 32.x bugfix — when a failure is detected the suffix is
+    augmented with the actual diagnostic body (extracted via
+    :func:`_extract_tool_error_diagnostic`, truncated to 80 chars).
+    Example outputs:
+
+        " [error] memory tool requires Dispatcher (Sprint 40)"
+        " [exit 1] ENOENT: file not found: /tmp/missing"
+        " [full] memory store would exceed the limit (1024 items)"
+
+    When no diagnostic body can be extracted the suffix falls back to
+    the bare badge — operators still see the failure indicator.
     """
     if result is None:
         return False, ""
@@ -804,7 +860,9 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
-                return True, f" [exit {exit_code}]"
+                diag = _extract_tool_error_diagnostic(result)
+                badge = f" [exit {exit_code}]"
+                return True, f"{badge} {diag}" if diag else badge
         return False, ""
 
     # Memory-specific: distinguish "full" from real errors
@@ -812,7 +870,8 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         data = safe_json_loads(result)
         if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
-                return True, " [full]"
+                diag = _extract_tool_error_diagnostic(result)
+                return True, f" [full] {diag}" if diag else " [full]"
 
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
@@ -821,7 +880,8 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         return False, ""
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
-        return True, " [error]"
+        diag = _extract_tool_error_diagnostic(result)
+        return True, f" [error] {diag}" if diag else " [error]"
 
     return False, ""
 

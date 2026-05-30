@@ -11,6 +11,8 @@ from agent.display import (
     extract_edit_diff,
     get_cute_tool_message,
     set_tool_preview_max_len,
+    _detect_tool_failure,
+    _extract_tool_error_diagnostic,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
@@ -277,3 +279,97 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+
+# ── Sprint 32.x bugfix — tool error diagnostic in the badge suffix ───
+
+
+class TestToolErrorDiagnosticInSuffix:
+    """Bug 2 (Sprint 32.x) — when ``_detect_tool_failure`` flags a tool
+    result as an error, the diagnostic body MUST be appended to the
+    badge suffix string so it appears on the line the operator is
+    already reading. The first-pass amendment routed the body through
+    ``logger.warning`` but the CLI has no terminal handler attached,
+    so the operator never saw it. The correct surface is the suffix
+    string the CLI prints to stdout/stderr alongside the badge.
+    """
+
+    def test_generic_json_error_appended_to_suffix(self):
+        result = '{"success": false, "error": "memory tool requires Dispatcher (Sprint 40)"}'
+        is_failure, suffix = _detect_tool_failure("memory", result)
+        assert is_failure is True
+        assert suffix == " [error] memory tool requires Dispatcher (Sprint 40)"
+
+    def test_string_starting_with_error_appended(self):
+        result = "Error: connection refused while reading memory store"
+        is_failure, suffix = _detect_tool_failure("memory", result)
+        assert is_failure is True
+        # The leading "Error: " prefix is stripped — the badge already
+        # says "[error]" so re-stating it in the body adds no value.
+        assert suffix == " [error] connection refused while reading memory store"
+
+    def test_terminal_nonzero_exit_appends_error_field(self):
+        """Terminal failures (exit_code != 0) get
+        ``[exit N] <diagnostic>``."""
+        result = '{"exit_code": 1, "error": "ENOENT: file not found: /tmp/missing"}'
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+        assert is_failure is True
+        assert suffix == " [exit 1] ENOENT: file not found: /tmp/missing"
+
+    def test_memory_full_appends_diagnostic(self):
+        result = '{"success": false, "error": "memory store would exceed the limit (1024 items)"}'
+        is_failure, suffix = _detect_tool_failure("memory", result)
+        assert is_failure is True
+        assert suffix == " [full] memory store would exceed the limit (1024 items)"
+
+    def test_truncation_at_80_chars(self):
+        """Diagnostic caps at 80 chars so a runaway error body
+        cannot wrap the operator's terminal into an unreadable wall."""
+        long_msg = "X" * 1000
+        result = '{"success": false, "error": "' + long_msg + '"}'
+        _, suffix = _detect_tool_failure("memory", result)
+        # The suffix is " [error] " (9 chars) + up to 80 chars of body.
+        # Total length ≤ 89.
+        assert len(suffix) <= 89
+        assert suffix.startswith(" [error] ")
+        # The body portion is exactly 80 X's.
+        body = suffix[len(" [error] "):]
+        assert body == "X" * 80
+
+    def test_malformed_json_falls_back_to_bare_badge(self):
+        """Trap 2 mitigation: a result that LOOKS like JSON but isn't
+        MUST NOT crash the display layer. safe_json_loads handles it;
+        the outer try/except in _extract_tool_error_diagnostic is the
+        belt-and-suspenders fallback. When no body extracts, the
+        suffix is the bare badge."""
+        result = '{"error": "unterminated string ...'
+        is_failure, suffix = _detect_tool_failure("memory", result)
+        # The substring scan still tags it as a failure even when
+        # JSON parsing yields no extractable body.
+        assert is_failure is True
+        # Bare badge with no diagnostic since extraction failed.
+        assert suffix == " [error]"
+
+    def test_extractor_handles_non_string_result_silently(self):
+        """Defense-in-depth: passing a non-string into the extractor
+        MUST NOT raise."""
+        assert _extract_tool_error_diagnostic(None) == ""  # type: ignore[arg-type]
+        assert _extract_tool_error_diagnostic(42) == ""  # type: ignore[arg-type]
+        assert _extract_tool_error_diagnostic({"error": "x"}) == ""  # type: ignore[arg-type]
+
+    def test_clean_result_returns_empty_suffix(self):
+        """Sanity: when there's no error, the suffix stays empty."""
+        result = '{"success": true, "result": "ok"}'
+        is_failure, suffix = _detect_tool_failure("memory", result)
+        assert is_failure is False
+        assert suffix == ""
+
+    def test_failure_without_extractable_body_keeps_bare_badge(self):
+        """A generic-failure pattern (substring ``"failed"``) with no
+        ``error`` key falls back to the bare ``[error]`` badge — the
+        operator still sees the failure indicator even when no
+        diagnostic body is available."""
+        result = '{"success": false, "failed": true}'
+        is_failure, suffix = _detect_tool_failure("memory", result)
+        assert is_failure is True
+        assert suffix == " [error]"
