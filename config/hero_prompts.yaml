@@ -1,0 +1,172 @@
+# ============================================================================
+# hero_prompts.yaml — The Armory regression set (GRV-008 § I)
+# ============================================================================
+# Curated prompts that every flywheel proposal MUST clear before reaching the
+# operator review surface. Per GRV-008 § I, the local runner pipes each
+# proposed system state through this list; any assertion failure silently
+# drops the proposal. The harness exercises classification + routing + tool
+# composition + compose-time preamble — no Agent generation, no tool
+# execution.
+#
+# Per-prompt fields
+# -----------------
+#   id                       slug, kebab-case; the Proposal Queue's
+#                            ``prompts_failed`` records refer to this.
+#   message                  the operator-message text the T-telemetry
+#                            classifier sees.
+#   expected.intent_class    EXACT match required against
+#                            ClassificationResult.intent_class.
+#   expected.complexity_signal_in
+#                            allowed set; the classifier MAY pick any
+#                            value in the set without failing the prompt.
+#   expected.tier_in         allowed tier set; routing rules may
+#                            legitimately route to either of two tiers
+#                            based on confidence.
+#   expected.tools_must_include
+#                            tools the per-turn composition MUST include
+#                            given the expected intent_class.
+#   expected.tools_must_not_include
+#                            tools the composition MUST NOT include
+#                            (exploratory / browser tools should not load
+#                            on simple turns).
+#   expected.is_correction   bool (when asserted) or omitted (any value
+#                            accepted).
+#   expected.andon_halt      false on every hero prompt (golden path);
+#                            no hero prompt expects a halt.
+#   expected.preamble_should_hit
+#                            "optional" (default) admits "do not assert";
+#                            "yes" / "no" mark the hard-asserted cases.
+#
+# Coverage
+# --------
+# 8 of 8 INTENT_CLASSES represented (code_generation, debugging × 2 to
+# cover both ends of the complexity gradient, analysis, planning,
+# factual_retrieval, creative_writing, system_admin, conversation);
+# 1 correction-trigger to exercise is_correction=true; 1 unknown-intent
+# degenerate input to exercise the maximal-fallback path through
+# ``resolve_tool_set``.
+# ============================================================================
+
+hero_prompts:
+
+  - id: code-gen-moderate
+    message: "Write a Python function to parse JSON with a 5MB input limit."
+    expected:
+      intent_class: code_generation
+      complexity_signal_in: [simple, moderate]
+      tier_in: [T2]
+      tools_must_include: [write_file, terminal]
+      tools_must_not_include: [browser_navigate, browser_cdp]
+      is_correction: false
+      andon_halt: false
+
+  - id: debug-simple
+    message: "Why is my for loop printing twice?"
+    expected:
+      intent_class: debugging
+      complexity_signal_in: [simple, moderate]
+      tier_in: [T2]
+      tools_must_include: [search_files, terminal]
+      tools_must_not_include: [browser_navigate, image_generate]
+      is_correction: false
+      andon_halt: false
+
+  - id: debug-novel
+    message: "The integration test fails only on Tuesday afternoons and only when my machine is plugged in. What's going on?"
+    expected:
+      intent_class: debugging
+      complexity_signal_in: [complex, novel]
+      tier_in: [T2, T3]
+      tools_must_include: [search_files, terminal, delegate_task]
+      tools_must_not_include: [image_generate, video_generate]
+      is_correction: false
+      andon_halt: false
+
+  - id: analysis-complex
+    message: "Compare the cognitive throughput trade-offs of routing all turns through T2 versus allowing T0 pattern cache hits."
+    expected:
+      intent_class: analysis
+      complexity_signal_in: [moderate, complex, novel]
+      tier_in: [T2, T3]
+      tools_must_include: [search_files, web_search]
+      tools_must_not_include: [image_generate, video_generate]
+      is_correction: false
+      andon_halt: false
+
+  - id: planning-moderate
+    message: "Draft the sprint plan for the v0.2 roadmap."
+    expected:
+      intent_class: planning
+      complexity_signal_in: [simple, moderate, complex]
+      tier_in: [T2, T3]
+      tools_must_include: [write_file, web_search]
+      tools_must_not_include: [browser_navigate]
+      is_correction: false
+      andon_halt: false
+
+  - id: factual-simple
+    message: "What's the latest stable release of Claude?"
+    expected:
+      intent_class: factual_retrieval
+      complexity_signal_in: [simple, moderate]
+      tier_in: [T2]
+      tools_must_include: [web_search]
+      tools_must_not_include: [image_generate, browser_navigate]
+      is_correction: false
+      andon_halt: false
+
+  - id: creative-moderate
+    message: "Write a short LinkedIn post announcing the Sprint 38 correction-signal work."
+    expected:
+      intent_class: creative_writing
+      complexity_signal_in: [simple, moderate]
+      tier_in: [T2]
+      tools_must_include: [write_file]
+      tools_must_not_include: [browser_navigate, browser_cdp]
+      is_correction: false
+      andon_halt: false
+
+  - id: sysadmin-simple
+    message: "Set up a nightly cronjob to run the hero suite at 3am."
+    expected:
+      intent_class: system_admin
+      complexity_signal_in: [simple, moderate]
+      tier_in: [T2]
+      tools_must_include: [terminal, cronjob]
+      tools_must_not_include: [image_generate, browser_navigate]
+      is_correction: false
+      andon_halt: false
+
+  - id: conversation-simple
+    message: "Thanks!"
+    expected:
+      intent_class: conversation
+      complexity_signal_in: [simple]
+      tier_in: [T2]
+      tools_must_include: [clarify, memory]
+      tools_must_not_include: [write_file, terminal, browser_navigate]
+      is_correction: false
+      andon_halt: false
+
+  - id: correction-trigger
+    message: "Actually, that's wrong — I meant the Sprint 37 work, not Sprint 36."
+    expected:
+      intent_class: conversation
+      complexity_signal_in: [simple, moderate]
+      tier_in: [T2]
+      tools_must_include: [clarify, memory]
+      tools_must_not_include: [write_file, browser_navigate]
+      is_correction: true
+      andon_halt: false
+
+  - id: unknown-fallback
+    message: " "
+    expected:
+      intent_class: unknown
+      complexity_signal_in: [simple, moderate, complex, novel, unknown]
+      tier_in: [T2]
+      tools_must_include: []
+      tools_must_not_include: []
+      is_correction: false
+      andon_halt: false
+      tool_set_is_maximal_fallback: true
