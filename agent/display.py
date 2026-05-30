@@ -990,7 +990,16 @@ def get_cute_tool_message(
     if tool_name == "session_search":
         return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
     if tool_name == "memory":
-        action = args.get("action", "?")
+        action = args.get("action")
+        # Sprint 32.x bugfix — when the renderer is called without an
+        # ``action`` key in ``args`` (callers that lost the args dict
+        # on the way to the renderer; the executor-callback path that
+        # used to pass ``{}``), emit an empty line rather than the
+        # misleading literal "?" placeholder. The empty return surfaces
+        # the omission to the caller; the operator never sees a stale
+        # preview that contradicts the actual tool result.
+        if not action:
+            return ""
         target = args.get("target", "")
         if action == "add":
             return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")

@@ -11326,19 +11326,28 @@ class AIAgent:
             print(f"  📞 Tool {index_1_based}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
     def _log_tool_complete_line(
-        self, index_1_based: int, function_name: str, function_result, tool_duration: float,
+        self, index_1_based: int, function_name: str, function_args: dict,
+        function_result, tool_duration: float,
     ) -> None:
         """Display callback — per-tool completion line + UI tracker reset.
 
         Concurrent-path variant: prints the cute message via _safe_print
         when quiet+emit (the concurrent path doesn't run per-tool
         spinners), or the ✅ line via plain print when non-quiet.
+
+        Sprint 32.x bugfix — ``function_args`` is the LLM-emitted args
+        dict. Pre-bugfix the call passed ``{}`` here, so
+        ``get_cute_tool_message`` fell through to the empty-args path
+        and rendered ``?`` placeholders (e.g. ``🧠 memory  ?  0.0s``
+        for a memory tool that had actually succeeded). Threading the
+        real args through restores the real preview.
         """
         if self._should_emit_quiet_tool_messages():
             cute_msg = _get_cute_tool_message_impl(
-                function_name, {}, tool_duration, result=function_result,
+                function_name, function_args or {}, tool_duration, result=function_result,
             )
-            self._safe_print(f"  {cute_msg}")
+            if cute_msg:
+                self._safe_print(f"  {cute_msg}")
         elif not self.quiet_mode:
             _preview_str = _multimodal_text_summary(function_result)
             if self.verbose_logging:
@@ -11353,7 +11362,8 @@ class AIAgent:
         self._current_tool = None
 
     def _log_tool_complete_line_sequential(
-        self, index_1_based: int, function_name: str, function_result, tool_duration: float,
+        self, index_1_based: int, function_name: str, function_args: dict,
+        function_result, tool_duration: float,
     ) -> None:
         """Display callback — sequential-path per-tool completion line.
 
@@ -11362,7 +11372,12 @@ class AIAgent:
         spinner's stop or via _vprint for fast inline tools). This
         helper only owns the non-quiet ✅ line so there's no duplicate
         cute-message output.
+
+        Sprint 32.x bugfix — accepts ``function_args`` to match the
+        unified callback signature even though this variant doesn't
+        render the cute message itself.
         """
+        del function_args  # not used in sequential path
         if not self.quiet_mode:
             _preview_str = _multimodal_text_summary(function_result)
             if self.verbose_logging:
@@ -11621,18 +11636,23 @@ class AIAgent:
             self._per_tool_spinner.start()
 
     def _tool_display_close(
-        self, function_name: str, function_result, tool_duration: float,
+        self, function_name: str, function_args: dict,
+        function_result, tool_duration: float,
     ) -> None:
         """Per-tool display teardown. Stops the spinner if one was started;
         prints a cute message via vprint for fast inline tools that
         didn't get a spinner.
+
+        Sprint 32.x bugfix — ``function_args`` threaded through so the
+        cute message renders the real action / target / content.
+        Pre-bugfix this passed ``{}`` and rendered ``?`` placeholders.
         """
         spinner = getattr(self, "_per_tool_spinner", None)
         cute_msg = None
         if self._should_emit_quiet_tool_messages():
             try:
                 cute_msg = _get_cute_tool_message_impl(
-                    function_name, {}, tool_duration, result=function_result,
+                    function_name, function_args or {}, tool_duration, result=function_result,
                 )
             except Exception:
                 cute_msg = None

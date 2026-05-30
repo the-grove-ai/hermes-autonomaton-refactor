@@ -373,3 +373,74 @@ class TestToolErrorDiagnosticInSuffix:
         is_failure, suffix = _detect_tool_failure("memory", result)
         assert is_failure is True
         assert suffix == " [error]"
+
+
+# ── Sprint 32.x bugfix — memory args reach the renderer ──────────────
+
+
+class TestMemoryRendererArgsPropagation:
+    """Bug (Sprint 32.x) — the executor callback path that built the
+    "tool completion" cute message used to call the renderer with
+    ``args={}`` (the args dict was dropped between the executor
+    callsite and the callback). The renderer fell through to its
+    fallback branch and emitted ``? 0.0s``-shaped placeholders that
+    looked like the memory tool had silently failed.
+
+    The fix threads ``function_args`` through the callbacks; the
+    display layer adds a defense-in-depth early-return so any future
+    caller that drops args still produces an empty line rather than
+    a misleading ``?`` badge."""
+
+    def test_memory_add_renders_real_args(self):
+        line = get_cute_tool_message(
+            "memory",
+            {"action": "add", "target": "user", "content": "favorite team: SF Giants"},
+            duration=0.42,
+        )
+        assert "memory" in line
+        assert "+user" in line
+        assert "SF Giants" in line
+        # The literal "?" fallback MUST NOT appear when args are present.
+        assert " ?  " not in line
+
+    def test_memory_replace_renders_real_args(self):
+        line = get_cute_tool_message(
+            "memory",
+            {
+                "action": "replace",
+                "target": "user",
+                "old_text": "Favorite baseball team: SF Giants",
+                "content": "Favorite baseball team: SF Giants",
+            },
+            duration=0.42,
+        )
+        assert "~user" in line
+        assert "SF Giants" in line
+        assert " ?  " not in line
+
+    def test_memory_empty_args_returns_empty_line(self):
+        """Defense-in-depth — when args is empty (the bug shape), the
+        renderer returns an empty string. The caller is then expected
+        to skip the line entirely so the operator never sees a
+        misleading ``?`` badge."""
+        line = get_cute_tool_message("memory", {}, duration=0.0)
+        assert line == ""
+
+    def test_memory_missing_action_returns_empty_line(self):
+        """``args`` dict present but lacking the ``action`` key is the
+        same bug class as fully-empty args — also empty return."""
+        line = get_cute_tool_message(
+            "memory", {"target": "user"}, duration=0.0,
+        )
+        assert line == ""
+
+    def test_memory_unknown_action_still_renders(self):
+        """A non-empty ``action`` value (even one not in
+        add/replace/remove) still renders the generic line — the
+        early-return only fires on missing/empty action, not on
+        unrecognised actions."""
+        line = get_cute_tool_message(
+            "memory", {"action": "experimental_op"}, duration=0.42,
+        )
+        assert "memory" in line
+        assert "experimental_op" in line

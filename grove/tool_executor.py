@@ -119,8 +119,12 @@ class ObservabilityCallbacks:
     # Per-tool descriptive print (the "📞 Tool N: name(args) - preview" lines)
     log_tool_call_line: Optional[Callable[[int, str, dict], None]] = None
     # signature: (index_1_based, tool_name, tool_args)
-    log_tool_complete_line: Optional[Callable[[int, str, Any, float], None]] = None
-    # signature: (index_1_based, tool_name, result, duration_s)
+    log_tool_complete_line: Optional[Callable[[int, str, dict, Any, float], None]] = None
+    # signature: (index_1_based, tool_name, tool_args, result, duration_s).
+    # ``tool_args`` is the args dict the LLM emitted so the completion-line
+    # cute message can show the same payload context the start-preview did
+    # (Sprint 32.x bugfix — the prior signature dropped args and the
+    # downstream renderer fell back to the literal "?" placeholder).
     log_batch_header_line: Optional[Callable[[int, str], None]] = None
     # signature: (num_tools, names_summary)
 
@@ -129,8 +133,10 @@ class ObservabilityCallbacks:
     # imports KawaiiSpinner. GATE-B path (i).)
     tool_display_open: Optional[Callable[[str, dict], None]] = None
     # signature: (tool_name, tool_args)
-    tool_display_close: Optional[Callable[[str, Any, float], None]] = None
-    # signature: (tool_name, result, duration_s)
+    tool_display_close: Optional[Callable[[str, dict, Any, float], None]] = None
+    # signature: (tool_name, tool_args, result, duration_s). Same Sprint 32.x
+    # bugfix — args carried through so the cute message renders the real
+    # action / target / content, not a placeholder.
 
     # Verbose tracing and console activity hooks
     vprint: Optional[Callable[..., None]] = None  # accepts (text, force=False) like agent._vprint
@@ -646,7 +652,10 @@ class ToolExecutor:
             # Per-tool completion display
             if cb.log_tool_complete_line is not None:
                 try:
-                    cb.log_tool_complete_line(i + 1, intent.tool_name, function_result, tool_duration)
+                    cb.log_tool_complete_line(
+                        i + 1, intent.tool_name, dict(intent.arguments or {}),
+                        function_result, tool_duration,
+                    )
                 except Exception:
                     pass
 
@@ -896,7 +905,10 @@ class ToolExecutor:
             # ── Per-tool display close ──────────────────────────
             if not execution_blocked and cb.tool_display_close is not None:
                 try:
-                    cb.tool_display_close(function_name, function_result, tool_duration)
+                    cb.tool_display_close(
+                        function_name, dict(function_args or {}),
+                        function_result, tool_duration,
+                    )
                 except Exception:
                     pass
 
@@ -1013,7 +1025,10 @@ class ToolExecutor:
             # ── Per-tool completion-line display ────────────────
             if cb.log_tool_complete_line is not None:
                 try:
-                    cb.log_tool_complete_line(i, function_name, function_result, tool_duration)
+                    cb.log_tool_complete_line(
+                        i, function_name, dict(function_args or {}),
+                        function_result, tool_duration,
+                    )
                 except Exception:
                     pass
 
