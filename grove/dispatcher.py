@@ -3043,21 +3043,70 @@ class Dispatcher:
             self._session_allow_cache.add(cache_key)
         # "once" / "shadow_approve" / "drop" — no cache mutation.
 
-        # Phase 2 hook — "always" queues a ZonePromotionProposal.
-        # Phase 1 logs intent without queueing so smoke tests can
-        # verify the flow without proposal-queue plumbing. Gateway
-        # handlers MUST NOT trigger the queue per Sprint 32 A4 lock
-        # (no CLI access for the operator to approve from a mobile
-        # surface); the gateway downgrade lands in Phase 2 alongside
-        # the actual queue write.
+        # Sprint 32 Phase 2 — "always" builds and queues a
+        # ZonePromotionProposal. Failures degrade gracefully: the
+        # session_allow cache mutation above already gave the
+        # operator session-scoped relief; failing the queue write
+        # surfaces a warning but does NOT block the action.
+        # Non-TTY handlers (gateway, batch) never return "always"
+        # so this branch is implicitly TTY-scoped per the GATE-A
+        # A4 lock — the queue is not written from a surface the
+        # operator can't reach `autonomaton flywheel approve` from.
         if disposition == "always":
-            logger.info(
-                "[grove.dispatcher] Kaizen 'always' disposition received "
-                "for tool=%s — promotion proposal queueing lands in "
-                "Phase 2", triggering_intent.tool_name,
-            )
+            self._queue_zone_promotion_proposal(triggering_intent)
 
         return disposition
+
+    def _queue_zone_promotion_proposal(self, intent: Any) -> None:
+        """Build + append a ZonePromotionProposal to the GRV-008 queue.
+
+        Sprint 32 Phase 2. Best-effort: a queue-write failure logs a
+        warning and returns silently — the operator-level relief
+        already landed via the session_allow cache. The
+        ``always``-path is observable through both the cache
+        population and (on success) the queue file.
+        """
+        try:
+            from grove.kaizen_promotion import build_zone_promotion_proposal
+            from grove.eval.proposal_queue import append as _queue_append
+
+            arguments = intent.arguments or {}
+            # For terminal halts the operator-faced command string
+            # lives under the ``command`` key by convention; fall
+            # back to the stringified arguments dict otherwise so
+            # the regex generator still produces a usable pattern.
+            command_string = (
+                arguments.get("command")
+                if isinstance(arguments, dict) and "command" in arguments
+                else str(arguments)
+            )
+            evidence_turn_id = self._current_turn_id or ""
+            proposal, _payload = build_zone_promotion_proposal(
+                tool_name=intent.tool_name,
+                command_string=command_string or "",
+                evidence_turn_id=evidence_turn_id,
+            )
+            appended = _queue_append(proposal)
+            if appended:
+                logger.info(
+                    "[grove.dispatcher] Kaizen 'always' queued "
+                    "zone_promotion proposal: tool=%s pattern=%r id=%s",
+                    intent.tool_name,
+                    proposal.payload.get("pattern"),
+                    proposal.proposal_id,
+                )
+            else:
+                logger.info(
+                    "[grove.dispatcher] Kaizen 'always' proposal already "
+                    "in queue for tool=%s — idempotent skip",
+                    intent.tool_name,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[grove.dispatcher] Kaizen 'always' proposal queueing "
+                "failed (non-fatal; session_allow cache still applies): "
+                "%r", exc,
+            )
 
     def _log_session_cache_hit(
         self,

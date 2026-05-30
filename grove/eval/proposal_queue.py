@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "RoutingProposal",
+    "PROPOSAL_TYPE_ROUTING_ADJUSTMENT",
+    "PROPOSAL_TYPE_ZONE_PROMOTION",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -44,6 +46,20 @@ __all__ = [
     "read",
     "remove",
 ]
+
+
+# ── Proposal type discriminators (Sprint 32 2a) ──────────────────────
+#
+# Each value lives in the ``type`` field on the queue's JSON Lines
+# records. The CLI approve handler routes on this string; new proposal
+# classes register a new value and a matching translator. Sprint 47
+# shipped the queue with the literal ``"routing_update"``; Sprint 32
+# renames that to ``"routing_adjustment"`` to align with GRV-008 § II's
+# naming. The legacy string is honored on read for back-compat with any
+# live queue entries an operator might have already accumulated.
+PROPOSAL_TYPE_ROUTING_ADJUSTMENT = "routing_adjustment"
+PROPOSAL_TYPE_ZONE_PROMOTION = "zone_promotion"
+_LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 
 # ── Public dataclass ─────────────────────────────────────────────────
@@ -167,6 +183,14 @@ def _read_records(path: Path) -> List[RoutingProposal]:
                 continue
             if isinstance(data.get("evidence"), list):
                 data["evidence"] = tuple(data["evidence"])
+            # Sprint 32 2a — backward compat for queue entries that
+            # predate the ``type`` field. The Sprint 47 legacy spelling
+            # ``routing_update`` round-trips as-is; the CLI dispatch
+            # accepts both ``routing_update`` and the Sprint 32
+            # canonical ``routing_adjustment`` so existing live queue
+            # entries continue to approve correctly.
+            if data.get("type") is None:
+                data["type"] = PROPOSAL_TYPE_ROUTING_ADJUSTMENT
             try:
                 out.append(RoutingProposal(**data))
             except (TypeError, ValueError) as exc:

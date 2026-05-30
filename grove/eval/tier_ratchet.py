@@ -42,6 +42,7 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from grove.eval.proposal_queue import (
+    PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
     RoutingProposal,
     _now_iso,
     compute_proposal_id,
@@ -164,9 +165,9 @@ def _maybe_downward(
     evidence = stats["evidence_turn_ids"]
     return RoutingProposal(
         proposal_id=compute_proposal_id(
-            type="routing_update", payload=payload, evidence=evidence,
+            type=PROPOSAL_TYPE_ROUTING_ADJUSTMENT, payload=payload, evidence=evidence,
         ),
-        type="routing_update",
+        type=PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         payload=payload,
         evidence=evidence,
         eval_hash="",  # set by gate_proposal after the suite passes
@@ -198,9 +199,9 @@ def _maybe_upward(
     evidence = stats["evidence_turn_ids"]
     return RoutingProposal(
         proposal_id=compute_proposal_id(
-            type="routing_update", payload=payload, evidence=evidence,
+            type=PROPOSAL_TYPE_ROUTING_ADJUSTMENT, payload=payload, evidence=evidence,
         ),
-        type="routing_update",
+        type=PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         payload=payload,
         evidence=evidence,
         eval_hash="",

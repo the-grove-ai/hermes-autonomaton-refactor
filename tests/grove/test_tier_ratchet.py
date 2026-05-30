@@ -89,7 +89,9 @@ class TestDownwardProposal:
         proposals = propose_routing_adjustments(records)
         assert len(proposals) == 1
         p = proposals[0]
-        assert p.type == "routing_update"
+        # Sprint 32 renamed the type from Sprint 47's "routing_update"
+        # to the GRV-008 § II canonical "routing_adjustment".
+        assert p.type == "routing_adjustment"
         assert p.payload == {"rule": "downward", "add_intents": ["conversation"]}
         assert len(p.evidence) == MIN_SAMPLE
 
