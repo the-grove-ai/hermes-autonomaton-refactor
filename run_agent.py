@@ -5860,8 +5860,7 @@ class AIAgent:
         # __init__.
         _executor = getattr(self, "_tool_executor", None)
         if _executor is not None:
-            with _executor.worker_threads_lock:
-                _worker_tids = list(_executor.worker_threads)
+            _worker_tids = list(_executor.worker_threads)
             for _wtid in _worker_tids:
                 try:
                     _set_interrupt(False, _wtid)
