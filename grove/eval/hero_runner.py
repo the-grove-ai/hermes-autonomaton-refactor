@@ -50,7 +50,7 @@ from grove.context_budget import (
     resolve_tool_set,
 )
 from grove.providers import _ensure_router
-from grove.router import RoutingDecision
+from grove.router import CognitiveRouter, RoutingDecision
 from grove.prompt.composer import build_default_composer
 
 
@@ -211,12 +211,21 @@ def _classify(message: str) -> Optional[ClassificationResult]:
 
 def _route(
     classification: Optional[ClassificationResult],
+    *,
+    router: Optional[CognitiveRouter] = None,
 ) -> Optional[RoutingDecision]:
-    """Route via the production router; None when no routing config."""
-    router = _ensure_router()
-    if router is None:
+    """Route via the supplied router, falling back to the production one.
+
+    Sprint 47 — ``router`` is the gate-proposal sandbox injection seam.
+    Passing a fresh ``CognitiveRouter(tmp_path)`` lets ``gate_proposal``
+    evaluate a proposed routing diff against the hero suite without
+    mutating the module-level ``_default_router``. Production callers
+    leave ``router=None``.
+    """
+    active = router if router is not None else _ensure_router()
+    if active is None:
         return None
-    return router.route(
+    return active.route(
         intent=classification.intent_class if classification else None,
         confidence=classification.confidence if classification else None,
         complexity_signal=(
@@ -395,6 +404,7 @@ def _evaluate_one(
     *,
     preamble_enabled: bool,
     classifier=_classify,
+    router: Optional[CognitiveRouter] = None,
 ) -> PromptResult:
     """Run one hero prompt through the pipeline, capture observed values."""
     t0 = time.monotonic()
@@ -415,7 +425,7 @@ def _evaluate_one(
 
     if not andon_halt:
         try:
-            routing = _route(classification)
+            routing = _route(classification, router=router)
         except Exception as exc:
             andon_halt = True
             andon_reason = f"route: {exc!r}"
@@ -488,11 +498,19 @@ def evaluate(
     *,
     preamble_enabled: bool = True,
     classifier=_classify,
+    router: Optional[CognitiveRouter] = None,
 ) -> EvalReport:
     """Run the full pipeline over ``prompts`` and return an EvalReport.
 
     ``classifier`` is an injection seam used by meta-tests; production
     callers leave it at the default (the live T-telemetry classifier).
+
+    Sprint 47 — ``router`` is the gate-proposal sandbox seam. When
+    supplied, the harness routes against this router instead of the
+    module-level production one; the sandbox path constructs a fresh
+    ``CognitiveRouter(tmp_path)`` from the proposed routing config and
+    threads it through evaluate without mutating any module-level
+    state.
     """
     t0 = time.monotonic()
     results = tuple(
@@ -500,6 +518,7 @@ def evaluate(
             prompt,
             preamble_enabled=preamble_enabled,
             classifier=classifier,
+            router=router,
         )
         for prompt in prompts
     )
@@ -518,38 +537,83 @@ def gate_proposal(
     proposed_state: Optional[Dict[str, Any]] = None,
     *,
     prompts_path: Optional[Path] = None,
+    operator_config_path: Optional[Path] = None,
+    machine_config_path: Optional[Path] = None,
 ) -> GateResult:
     """GRV-008 § I gate-before-propose entry point.
 
-    Sprint 46 ships v0.1 — evaluates against the CURRENT routing /
-    tool-taxonomy / prompt-composer state and returns a structured
-    ``GateResult``. Sprint 47 (tier-ratchet-active) extends this to
-    temporarily install ``proposed_state`` before evaluating, then
-    restore on the way out.
+    ``proposed_state=None`` — evaluate against the current production
+    state (the module-level ``_default_router``). This is the path
+    Sprint 46's ``gate_proposal`` shipped; meta-tests and direct
+    operator runs use it.
 
-    Per GRV-008 § I, a failing GateResult MUST silently drop the
-    proposal at the call site — Sprint 47's TierRatchet honors that.
+    ``proposed_state`` not None — Sprint 47 lift. The ``proposed_state``
+    is a routing-config DIFF dict (``{"routing": {"routing_rules":
+    {...}}}`` or a partial within that). The gate:
 
-    ``proposed_state`` is reserved. Passing anything other than
-    ``None`` raises ``NotImplementedError`` — Sprint 46's contract is
-    "the surface exists; lifting the proposed-state swap is the
-    Sprint 47 commit." The fail-loud is by design: a silent no-op
-    would let Sprint 47 ship without anyone noticing the swap path
-    was never wired.
+    1. Loads the operator's ``routing.config.yaml`` (read-only) and the
+       machine's ``routing.autonomaton.yaml`` (read-only).
+    2. Deep-merges them per GRV-008 § III with operator-wins precedence.
+    3. Deep-merges ``proposed_state`` ON TOP — emulating the post-
+       approval merged state.
+    4. Writes the merged config to a per-call ``tempfile.TemporaryDirectory``.
+    5. Constructs a fresh ``CognitiveRouter(tmp_path)`` and runs the
+       hero suite against it (no module-level state mutated).
+    6. Returns ``GateResult`` carrying the EvalReport.
+
+    Per GRV-008 § I, a failing ``GateResult`` MUST silently drop the
+    proposal at the call site — TierRatchet honors that.
     """
-    if proposed_state is not None:
-        raise NotImplementedError(
-            "Sprint 46 ships gate_proposal() against the current state. "
-            "Proposed-state swap-and-restore is Sprint 47 (tier-ratchet-"
-            "active). Pass proposed_state=None to evaluate the current "
-            "state."
+    if proposed_state is None:
+        prompts = load_hero_prompts(prompts_path)
+        report = evaluate(prompts)
+        failed = tuple(r.prompt_id for r in report.results if not r.passed)
+        summary = (
+            f"hero_runner: {report.n_passed}/{report.n_total} passed "
+            f"in {report.duration_seconds:.2f}s "
+            f"(preamble_enabled={report.preamble_enabled})"
         )
+        return GateResult(
+            passed=report.passed,
+            prompts_failed=failed,
+            eval_report=report,
+            summary=summary,
+        )
+
+    # ── Sprint 47 sandbox path ──────────────────────────────────────
+    import tempfile
+    import yaml
+    from grove.router_merge import (
+        _deep_merge,
+        load_merged_routing_config,
+    )
+
+    if operator_config_path is None:
+        from hermes_constants import get_hermes_home
+        operator_config_path = Path(get_hermes_home()) / "routing.config.yaml"
+    if machine_config_path is None:
+        from hermes_constants import get_hermes_home
+        machine_config_path = Path(get_hermes_home()) / "routing.autonomaton.yaml"
+
+    base = load_merged_routing_config(
+        operator_path=operator_config_path,
+        machine_path=machine_config_path if machine_config_path.exists() else None,
+    )
+    merged = _deep_merge(base, proposed_state)
+
     prompts = load_hero_prompts(prompts_path)
-    report = evaluate(prompts)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_config = Path(tmpdir) / "routing.merged.yaml"
+        tmp_config.write_text(
+            yaml.safe_dump(merged, sort_keys=False), encoding="utf-8",
+        )
+        sandbox_router = CognitiveRouter(tmp_config)
+        report = evaluate(prompts, router=sandbox_router)
+
     failed = tuple(r.prompt_id for r in report.results if not r.passed)
     summary = (
-        f"hero_runner: {report.n_passed}/{report.n_total} passed "
-        f"in {report.duration_seconds:.2f}s "
+        f"hero_runner (proposed): {report.n_passed}/{report.n_total} "
+        f"passed in {report.duration_seconds:.2f}s "
         f"(preamble_enabled={report.preamble_enabled})"
     )
     return GateResult(

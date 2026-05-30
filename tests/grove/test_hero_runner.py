@@ -334,13 +334,48 @@ class TestPreambleSlot:
         )
 
 
-# ── gate_proposal: Sprint 47 fail-loud contract ──────────────────────
+# ── gate_proposal: Sprint 47 lifted the fail-loud; both paths return ──
 
 
 class TestGateProposalContract:
-    def test_non_none_proposed_state_raises_not_implemented(self) -> None:
-        with pytest.raises(NotImplementedError, match="Sprint 47"):
-            gate_proposal(proposed_state={"some": "diff"})
+    def test_non_none_proposed_state_lifted_in_sprint_47(self, monkeypatch, tmp_path) -> None:
+        """Sprint 46 raised NotImplementedError on non-None
+        proposed_state; Sprint 47 lifts that and runs the sandbox.
+        Detailed sandbox behavior is in test_gate_proposal_lift.py;
+        this meta-test just asserts the lift happened."""
+        import grove.eval.hero_runner as _hr
+        import yaml
+        op = tmp_path / "routing.config.yaml"
+        op.write_text(yaml.safe_dump({
+            "routing": {
+                "schema_version": 1,
+                "default_tier": "T2",
+                "zone_overrides": {},
+                "tier_preferences": {
+                    "T1": {"provider": "anthropic", "model": "test-haiku", "max_tokens": 4096},
+                    "T2": {"provider": "anthropic", "model": "test-sonnet", "max_tokens": 8192},
+                    "T3": {"provider": "anthropic", "model": "test-opus", "max_tokens": 16384},
+                },
+                "routing_rules": {
+                    "downward": {"enabled": True, "match": {"intents": ["conversation"]}, "target_tier": "T1"},
+                    "upward": {"enabled": True, "match": {"intents": ["debugging"], "complexity": ["complex", "novel"]}, "target_tier": "T3"},
+                    "escalation": {"enabled": True, "match": {"max_confidence": 0.6}, "action": "step_up"},
+                },
+                "telemetry": {"tier": "T1"},
+                "escalation": {"threshold": 0.6},
+            },
+        }, sort_keys=False))
+        monkeypatch.setattr(
+            _hr, "_classify",
+            lambda msg: _classification(intent_class="planning"),
+        )
+        # The Sprint 46 NotImplementedError MUST be gone.
+        result = gate_proposal(
+            proposed_state={"routing": {"routing_rules": {"downward": {"match": {"intents": ["creative_writing"]}}}}},
+            operator_config_path=op,
+            machine_config_path=None,
+        )
+        assert isinstance(result, GateResult)
 
     def test_none_proposed_state_returns_gate_result(self, monkeypatch) -> None:
         # Use a small subset by injecting a tmp prompts file.
