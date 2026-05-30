@@ -63,16 +63,6 @@ class TestCacheMutationByDisposition:
         assert len(dispatcher._session_deny_cache) == 1
         assert not dispatcher._session_allow_cache
 
-    def test_skip_legacy_alias_populates_deny_cache(
-        self, dispatcher, agent_stub,
-    ):
-        """v1.0 "skip" maps to deny semantics and still populates the
-        deny cache for back-compat."""
-        dispatcher._sovereign_prompt_handler = lambda halt: "skip"
-        result = dispatcher._handle_andon_halt(agent_stub, _halt())
-        assert result == "skip"
-        assert len(dispatcher._session_deny_cache) == 1
-
     def test_session_populates_allow_cache(self, dispatcher, agent_stub):
         dispatcher._sovereign_prompt_handler = lambda halt: "session"
         result = dispatcher._handle_andon_halt(agent_stub, _halt())
@@ -94,18 +84,6 @@ class TestCacheMutationByDisposition:
         assert result == "once"
         assert not dispatcher._session_deny_cache
         assert not dispatcher._session_allow_cache
-
-    def test_drop_legacy_does_not_populate_either_cache(
-        self, dispatcher, agent_stub,
-    ):
-        """The deprecated drop disposition doesn't mutate either cache
-        — turn-flush is a one-shot, not a memorable preference."""
-        dispatcher._sovereign_prompt_handler = lambda halt: "drop"
-        result = dispatcher._handle_andon_halt(agent_stub, _halt())
-        assert result == "drop"
-        assert not dispatcher._session_deny_cache
-        assert not dispatcher._session_allow_cache
-
 
 # ── Cache hit auto-applies silently ──────────────────────────────────
 

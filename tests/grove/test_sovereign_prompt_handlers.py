@@ -1,19 +1,17 @@
-"""Tests for grove.sovereign_prompt_handlers — Sprint 32 sovereignty-ux-v1.
+"""Tests for grove.sovereign_prompt_handlers — GRV-005 § VI v1.1.
 
-Sprint 32 replaced the v1.0 Skip/Drop binary with the Kaizen-register
-four-choice prompt. v1.0 vocabulary is preserved through deprecated
-aliases — both surfaces are pinned here.
+Sprint 32.1 removed the v1.0 disposition aliases (skip / drop /
+shadow_approve) and the legacy alias functions. The only handler
+surfaces are the v1.1 ones below; the only valid handler return
+values are ``once`` / ``session`` / ``always`` / ``deny``.
 
 Test categories:
 
-* v1.1 surface (``tty_sovereign_prompt`` with four-choice prompt,
-  ``batch_auto_allow_handler``, ``gateway_auto_allow_handler``,
-  ``silent_allow_handler``, ``silent_deny_handler``,
-  ``silent_promote_handler``).
-* v1.0 deprecated aliases (``batch_auto_skip_handler``,
-  ``gateway_auto_skip_handler``, ``silent_skip_handler``,
-  ``silent_approve_handler``) — verifying they map to the new
-  vocabulary cleanly.
+* The Kaizen-register TTY prompt (``tty_sovereign_prompt``) —
+  four-choice rendering and the four return values.
+* Non-interactive handlers — ``batch_auto_allow_handler``,
+  ``gateway_auto_allow_handler``, ``silent_allow_handler``,
+  ``silent_deny_handler``, ``silent_promote_handler``.
 * The Kaizen template (``describe_action_kaizen``) — the four
   template rows + the skill-name extraction.
 """
@@ -28,15 +26,11 @@ from grove.dispatcher import AndonHalt
 from grove.intents import ToolIntent
 from grove.sovereign_prompt_handlers import (
     batch_auto_allow_handler,
-    batch_auto_skip_handler,
     describe_action_kaizen,
     gateway_auto_allow_handler,
-    gateway_auto_skip_handler,
     silent_allow_handler,
-    silent_approve_handler,
     silent_deny_handler,
     silent_promote_handler,
-    silent_skip_handler,
     tty_sovereign_prompt,
 )
 from grove.zones import ZoneResult
@@ -230,25 +224,3 @@ class TestSilentPromoteHandler:
         assert caplog.records == []
 
 
-# ── Legacy v1.0 aliases (deprecated but functional) ──────────────────
-
-
-class TestLegacyAliases:
-    """The v1.0 names continue to load. Behavior maps to the v1.1
-    semantic the alias is documented to take."""
-
-    def test_batch_auto_skip_returns_once(self):
-        # Sprint 32 inverted batch from auto-deny to auto-allow.
-        assert batch_auto_skip_handler(_build_halt()) == "once"
-
-    def test_gateway_auto_skip_returns_once(self):
-        assert gateway_auto_skip_handler(_build_halt()) == "once"
-
-    def test_silent_skip_returns_deny(self):
-        # silent_skip_handler maps to the v1.1 deny semantic (the
-        # closest operational match to v1.0 "skip").
-        assert silent_skip_handler(_build_halt()) == "deny"
-
-    def test_silent_approve_returns_always(self):
-        # silent_approve_handler now drives the always-promote flow.
-        assert silent_approve_handler(_build_halt()) == "always"

@@ -181,7 +181,7 @@ class TestHardDenialObservation:
         )
         obs = observations[0]
         assert "HARD DENIAL" not in obs.value
-        assert "Operator skipped" in obs.value
+        assert "Operator denied" in obs.value
         assert obs.metadata.get("is_hard_denial", False) is False
 
 

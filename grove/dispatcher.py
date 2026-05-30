@@ -375,7 +375,9 @@ class Dispatcher:
         ``dispatch_turn``. Defaults to the TTY-mode
         ``_default_sovereign_prompt``. Non-TTY callers (gateway, web)
         inject a callback that surfaces the prompt through their UX
-        layer and returns one of ``"skip"`` or ``"drop"``.
+        layer and returns one of the four GRV-005 § VI v1.1
+        disposition strings (``"once"`` / ``"session"`` / ``"always"``
+        / ``"deny"``).
         """
         # Sprint 26 Phase 7 hotfix: prime the zone classifier singleton so
         # Phase 4's classify() at ToolIntent yield has it ready.
@@ -1222,48 +1224,33 @@ class Dispatcher:
                             triggering_tool=halt.intents[halt.triggering_index].tool_name,
                         )
                         # ── Deny branch ──────────────────────────────
-                        # v1.1 ``deny`` and v1.0 ``skip`` both inject
-                        # denial Observations and let the agent recover.
-                        # Sprint 32 Phase 3a — ``deny_hard`` is the
-                        # red-zone strike-limit forced denial; emits
-                        # the same Observation pipeline with explicit
-                        # directive text so the LLM does not re-attempt
-                        # this tool with these arguments on the turn.
-                        if disposition in ("deny", "skip", "deny_hard"):
+                        # ``deny`` injects a denial Observation and
+                        # lets the agent recover. ``deny_hard`` is the
+                        # Sprint 32 Phase 3a red-zone strike-limit
+                        # forced denial; same Observation pipeline with
+                        # explicit directive text so the LLM does not
+                        # re-attempt this tool with these arguments on
+                        # the turn. (``deny_hard`` is set internally
+                        # by the Dispatcher's strike counter, never
+                        # returned by a handler.)
+                        if disposition in ("deny", "deny_hard"):
                             observations = self._build_skip_observations(
                                 agent, halt.intents,
                                 hard=(disposition == "deny_hard"),
                             )
                             yielded = gen.send(observations)
                             continue
-                        # ── Drop branch (legacy v1.0 — deprecated) ──
-                        # Sprint 32 retains the turn-flush affordance
-                        # for v1.0 callers and tests; the v1.1
-                        # operator-facing prompt no longer exposes
-                        # this disposition. New code SHOULD return
-                        # ``deny`` (which uses the deny cache to
-                        # achieve the same operational effect
-                        # cumulatively across the session).
-                        if disposition == "drop":
-                            ledger.record(
-                                "turn_dropped",
-                                triggering_tool=halt.intents[halt.triggering_index].tool_name,
-                                zone=halt.zone,
-                                matched_rule=halt.matched_rule,
-                            )
-                            self._write_intent_record(agent, outcome="drop")
-                            return self._format_drop_result(agent, halt)
                         # ── Allow branches ───────────────────────────
-                        # v1.1 ``once``, ``session``, ``always`` and
-                        # v1.0 ``shadow_approve`` all fall through to
-                        # the Green-path executor below. The handler
-                        # already mutated caches per disposition.
-                        if disposition not in ("once", "session", "always", "shadow_approve"):
+                        # ``once``, ``session``, and ``always`` all
+                        # fall through to the Green-path executor
+                        # below. The handler already mutated caches
+                        # per disposition.
+                        if disposition not in ("once", "session", "always"):
                             raise ValueError(
-                                f"Sovereign prompt returned unknown disposition: "
-                                f"{disposition!r} (expected 'once' / 'session' / "
-                                f"'always' / 'deny' or legacy 'skip' / 'drop' / "
-                                f"'shadow_approve')"
+                                f"Sovereign prompt returned unknown "
+                                f"disposition: {disposition!r}. "
+                                f"Valid: 'once' / 'session' / 'always' / "
+                                f"'deny' per GRV-005 § VI v1.1."
                             )
                     # Green path: execute the batch via the executor.
                     # Sprint 31 Phase 2 — direct invocation, no agent
@@ -3002,34 +2989,33 @@ class Dispatcher:
     ) -> str:
         """Write the pending marker, check caches, prompt, clear marker.
 
-        Sprint 32 (sovereignty-ux-v1) — the Kaizen-register handler.
-        Returns one of:
-
-        * v1.1 vocabulary: ``"once"``, ``"session"``, ``"always"``,
-          ``"deny"``.
-        * v1.0 vocabulary (deprecated but honored): ``"skip"`` (alias
-          for ``"deny"``), ``"drop"`` (legacy turn-flush), and
-          ``"shadow_approve"`` (the value returned in shadow mode
-          and from the v1.0 ``silent_approve_handler``; alias for
-          ``"once"``).
+        Returns one of the GRV-005 § VI v1.1 disposition strings:
+        ``"once"``, ``"session"``, ``"always"``, or ``"deny"``. The
+        Dispatcher itself may also set ``"deny_hard"`` internally
+        when the red-zone strike counter overflows (the handler is
+        bypassed on that path).
 
         Flow:
 
         1. Shadow mode short-circuit: ``GROVE_ZONE_SHADOW=1`` returns
-           ``"shadow_approve"`` without writing the marker or prompting.
-        2. Cache check — keyed by ``(tool_name, sha256(arguments))``:
+           ``"once"`` without writing the marker or prompting (the
+           Green-path executor runs the tool; the would-have-been halt
+           remains in the ledger for calibration review).
+        2. Red-zone strike check (Phase 3a) — increments the per-turn
+           per-tool counter; at threshold returns ``"deny_hard"``
+           silently.
+        3. Cache check — keyed by ``(tool_name, sha256(arguments))``:
            * Deny cache hit → log telemetry, return ``"deny"`` silently.
            * Allow cache hit → log telemetry, return ``"once"`` silently.
-        3. Write the pending_andon marker (recoverable trail).
-        4. Invoke the operator handler.
-        5. Mutate caches by disposition:
-           * ``"deny"`` / ``"skip"`` → add to deny cache.
+        4. Write the pending_andon marker (recoverable trail).
+        5. Invoke the operator handler.
+        6. Mutate caches by disposition:
+           * ``"deny"`` → add to deny cache.
            * ``"session"`` / ``"always"`` → add to allow cache.
-           * ``"once"`` / ``"shadow_approve"`` → no cache mutation.
-           * ``"drop"`` → no cache mutation (legacy turn-flush).
-        6. ``"always"`` queues a ZonePromotionProposal to the
-           GRV-008 proposal queue (Phase 2 — Phase 1 stubs the call).
-        7. Clear the pending_andon marker in ``finally``.
+           * ``"once"`` → no cache mutation.
+        7. ``"always"`` queues a ZonePromotionProposal to the
+           GRV-008 proposal queue.
+        8. Clear the pending_andon marker in ``finally``.
 
         Per D3 lock: pending_andon is a structural persistent marker —
         not a serialization of the generator state (which contains
@@ -3044,7 +3030,7 @@ class Dispatcher:
                 f"({halt.zone}, {halt.matched_rule})",
                 file=_sys.stderr,
             )
-            return "shadow_approve"
+            return "once"
 
         triggering_intent = halt.intents[halt.triggering_index]
         cache_key = self._kaizen_cache_key(
@@ -3107,12 +3093,12 @@ class Dispatcher:
         finally:
             self._clear_pending_andon(agent, marker_path)
 
-        # Cache mutation by disposition (v1.1 + v1.0 aliases).
-        if disposition in ("deny", "skip"):
+        # Cache mutation by disposition.
+        if disposition == "deny":
             self._session_deny_cache.add(cache_key)
         elif disposition in ("session", "always"):
             self._session_allow_cache.add(cache_key)
-        # "once" / "shadow_approve" / "drop" — no cache mutation.
+        # "once" — no cache mutation.
 
         # Sprint 32 Phase 2 — "always" builds and queues a
         # ZonePromotionProposal. Failures degrade gracefully: the
@@ -3265,12 +3251,12 @@ class Dispatcher:
                 }
             else:
                 denial = (
-                    f"⚠ Operator skipped tool '{intent.tool_name}' at Andon halt. "
+                    f"⚠ Operator denied tool '{intent.tool_name}' at Andon halt. "
                     f"This call did not execute; the operator declined to run it."
                 )
                 metadata = {
-                    "disposition": "skip",
-                    "reason": "andon_skip",
+                    "disposition": "deny",
+                    "reason": "andon_deny",
                 }
             tool_call_id = intent.call_id or ""
             msgs.append({
@@ -3285,55 +3271,6 @@ class Dispatcher:
                 metadata=metadata,
             ))
         return observations
-
-    def _format_drop_result(
-        self, agent: Any, halt: "AndonHalt",
-    ) -> Dict[str, Any]:
-        """Phase 5 Drop — flush volatile turn state; persistent unchanged.
-
-        Per § IX(3): "Disposition: Drop — The Dispatcher MUST forcefully
-        terminate the generator. The volatile context array MUST be
-        flushed. The persistent state MUST remain identical to the
-        millisecond before the operator initiated the turn."
-
-        The ``gen.close()`` call in the outer ``dispatch_turn`` (via the
-        ``finally`` block) raises GeneratorExit at the yield point, the
-        generator's own finally clears ``agent._current_*``, and the
-        in-flight messages list (volatile) is discarded — it was never
-        committed to the persistent session store because the legacy
-        code path only persists at specific commit points that haven't
-        been reached when an intent-yield halt fires.
-
-        For Phase 5 MVP, this method returns a result dict carrying the
-        Drop outcome. The caller's persistent session_db is unchanged
-        (no writes happen here).
-        """
-        triggering_intent = halt.intents[halt.triggering_index]
-        return {
-            "final_response": (
-                f"⚠ Turn dropped by operator (Andon: tool "
-                f"'{triggering_intent.tool_name}' classified as "
-                f"{halt.zone} zone)."
-            ),
-            "completed": False,
-            "interrupted": False,
-            "partial": True,
-            "messages": [],  # volatile state flushed per § IX(3)
-            "api_calls": self._current_turn_api_call_count or 0,
-            "turn_exit_reason": "andon_drop",
-            "andon_disposition": {
-                "disposition": "drop",
-                "zone": halt.zone,
-                "matched_rule": halt.matched_rule,
-                "triggering_intent": {
-                    "tool_name": triggering_intent.tool_name,
-                    "arguments": dict(triggering_intent.arguments),
-                    "call_id": triggering_intent.call_id,
-                },
-            },
-            "model": getattr(agent, "model", ""),
-            "provider": getattr(agent, "provider", ""),
-        }
 
     # ── D3 pending_andon marker (Phase 5 — process-restart resilience) ───
 

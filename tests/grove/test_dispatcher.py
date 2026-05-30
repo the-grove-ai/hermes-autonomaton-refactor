@@ -636,10 +636,10 @@ class TestDispatcherHandlerInjection:
     """
 
     def test_injected_handler_stored_on_dispatcher(self):
-        from grove.sovereign_prompt_handlers import gateway_auto_skip_handler
+        from grove.sovereign_prompt_handlers import gateway_auto_allow_handler
 
-        d = Dispatcher(sovereign_prompt_handler=gateway_auto_skip_handler)
-        assert d._sovereign_prompt_handler is gateway_auto_skip_handler
+        d = Dispatcher(sovereign_prompt_handler=gateway_auto_allow_handler)
+        assert d._sovereign_prompt_handler is gateway_auto_allow_handler
 
     def test_default_handler_used_when_none_injected(self):
         # When no handler is provided, the Dispatcher falls back to the
@@ -655,15 +655,15 @@ class TestDispatcherHandlerInjection:
         # implicit; post-Sprint-33 each Dispatcher instance is an
         # independent object, so the property is structural.
         from grove.sovereign_prompt_handlers import (
-            batch_auto_skip_handler,
-            gateway_auto_skip_handler,
+            batch_auto_allow_handler,
+            gateway_auto_allow_handler,
         )
 
-        batch_disp = Dispatcher(sovereign_prompt_handler=batch_auto_skip_handler)
-        gateway_disp = Dispatcher(sovereign_prompt_handler=gateway_auto_skip_handler)
+        batch_disp = Dispatcher(sovereign_prompt_handler=batch_auto_allow_handler)
+        gateway_disp = Dispatcher(sovereign_prompt_handler=gateway_auto_allow_handler)
         assert batch_disp is not gateway_disp
-        assert batch_disp._sovereign_prompt_handler is batch_auto_skip_handler
-        assert gateway_disp._sovereign_prompt_handler is gateway_auto_skip_handler
+        assert batch_disp._sovereign_prompt_handler is batch_auto_allow_handler
+        assert gateway_disp._sovereign_prompt_handler is gateway_auto_allow_handler
 
     def test_handler_threads_through_agent_kwargs_construction(self):
         # The full inversion-of-construction path: the caller passes
@@ -674,7 +674,7 @@ class TestDispatcherHandlerInjection:
         # run_conversation when an Agent was constructed without
         # going through the Dispatcher).
         from unittest.mock import patch
-        from grove.sovereign_prompt_handlers import batch_auto_skip_handler
+        from grove.sovereign_prompt_handlers import batch_auto_allow_handler
 
         agent_kwargs = dict(
             api_key="test-key-1234567890",
@@ -683,7 +683,7 @@ class TestDispatcherHandlerInjection:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            sovereign_prompt_handler=batch_auto_skip_handler,
+            sovereign_prompt_handler=batch_auto_allow_handler,
         )
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
@@ -691,9 +691,9 @@ class TestDispatcherHandlerInjection:
             patch("run_agent.OpenAI"),
         ):
             d = Dispatcher(
-                sovereign_prompt_handler=batch_auto_skip_handler,
+                sovereign_prompt_handler=batch_auto_allow_handler,
                 agent_kwargs=agent_kwargs,
             )
-        assert d._sovereign_prompt_handler is batch_auto_skip_handler
-        assert d.agent._sovereign_prompt_handler is batch_auto_skip_handler
+        assert d._sovereign_prompt_handler is batch_auto_allow_handler
+        assert d.agent._sovereign_prompt_handler is batch_auto_allow_handler
         assert d.agent._dispatcher_singleton is d

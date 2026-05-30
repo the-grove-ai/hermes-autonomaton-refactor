@@ -1,16 +1,16 @@
-"""Sovereign Prompt handler implementations — Sprint 32 sovereignty-ux-v1.
+"""Sovereign Prompt handler implementations — GRV-005 § VI v1.1.
 
 The Dispatcher accepts a ``sovereign_prompt_handler: Callable[[AndonHalt], str]``
 at construction and calls it when ``_handle_andon_halt`` fires — unless
 shadow mode (``GROVE_ZONE_SHADOW=1``) short-circuits the call.
 
-Sprint 32 (sovereignty-ux-v1) replaces the v1.0 developer-facing
-``Skip / Drop`` binary with a Kaizen-register four-choice prompt. The
-operator never sees zone names, regex patterns, or disposition jargon.
-Plain language describes WHAT the action will do; the four options
-describe WHAT THE OPERATOR DECIDES.
+Per GRV-005 § VI v1.1, the operator-facing Sovereign Prompt is a
+Kaizen-register four-choice menu. The operator never sees zone names,
+regex patterns, or disposition jargon. Plain language describes WHAT
+the action will do; the four options describe WHAT THE OPERATOR
+DECIDES.
 
-v1.1 disposition vocabulary (per GRV-005 § VI v1.1):
+Disposition vocabulary (the only strings handlers MAY return):
 
 * ``"once"``    — execute the action this invocation only; same action
                   on a future turn re-prompts.
@@ -26,16 +26,9 @@ v1.1 disposition vocabulary (per GRV-005 § VI v1.1):
                   re-reason, or pivot. The denial is cached for the
                   session.
 
-Legacy v1.0 vocabulary (deprecated but still honored):
-
-* ``"skip"``           — alias for ``"deny"``.
-* ``"shadow_approve"`` — alias for ``"once"``; preserved for the
-                         test fixture :func:`silent_promote_handler`
-                         legacy entry-point.
-* ``"drop"``           — legacy turn-flush. Preserved for back-compat
-                         with v1.0 callers and tests that exercise the
-                         drop pipeline. Slated for removal in a future
-                         sprint; new code SHOULD use ``"deny"``.
+Sprint 32.1 — the v1.0 vocabulary (``skip`` / ``drop`` /
+``shadow_approve``) is removed entirely. Any other return value from a
+handler raises ``ValueError`` at the Dispatcher's disposition gate.
 
 This module ships handler implementations for each caller context:
 
@@ -46,9 +39,8 @@ This module ships handler implementations for each caller context:
   with an INFO log.
 * :func:`gateway_auto_allow_handler` — non-interactive auto-``once``
   for gateway callers (Telegram, Discord, API). Returns ``"once"``
-  with an INFO log. Gateway "always" is silently downgraded to
-  "session" at the dispatcher; gateway callers MUST NOT queue
-  proposals from a non-TTY surface (no CLI access for approval).
+  with an INFO log. Gateway callers MUST NOT return ``"always"`` —
+  the operator has no CLI access for approval from a mobile surface.
 * :func:`silent_allow_handler` — test fixture; returns ``"once"`` with
   no I/O.
 * :func:`silent_deny_handler` — test fixture; returns ``"deny"`` with
@@ -56,19 +48,6 @@ This module ships handler implementations for each caller context:
 * :func:`silent_promote_handler` — test fixture; returns ``"always"``
   with no I/O. Use when a test needs to drive the promotion-proposal
   path.
-
-Legacy aliases (deprecated):
-
-* :func:`batch_auto_skip_handler`   — alias of
-  :func:`batch_auto_allow_handler`.
-* :func:`gateway_auto_skip_handler` — alias of
-  :func:`gateway_auto_allow_handler`.
-* :func:`silent_skip_handler`       — preserved as an alias of
-  :func:`silent_deny_handler` (the closest semantic match to the
-  v1.0 "skip" behavior). Callers wanting v1.1 "auto-allow-once"
-  semantics should migrate to :func:`silent_allow_handler`.
-* :func:`silent_approve_handler`    — alias of
-  :func:`silent_promote_handler`.
 """
 
 from __future__ import annotations
@@ -87,11 +66,6 @@ __all__ = [
     "silent_allow_handler",
     "silent_deny_handler",
     "silent_promote_handler",
-    # Deprecated aliases preserved for v1.0 callers:
-    "batch_auto_skip_handler",
-    "gateway_auto_skip_handler",
-    "silent_skip_handler",
-    "silent_approve_handler",
     # Public for the Dispatcher's Kaizen-register prompt rendering:
     "describe_action_kaizen",
 ]
@@ -332,44 +306,3 @@ def silent_promote_handler(halt: "AndonHalt") -> str:
     return "always"
 
 
-# ── Legacy aliases (deprecated) ──────────────────────────────────────
-
-
-def batch_auto_skip_handler(halt: "AndonHalt") -> str:
-    """DEPRECATED v1.0 alias.
-
-    Sprint 32 changed batch semantics from auto-deny to auto-allow.
-    The legacy name is preserved so v1.0 callers continue to load.
-    New code SHOULD use :func:`batch_auto_allow_handler`.
-    """
-    return batch_auto_allow_handler(halt)
-
-
-def gateway_auto_skip_handler(halt: "AndonHalt") -> str:
-    """DEPRECATED v1.0 alias.
-
-    Sprint 32 changed gateway semantics from auto-deny to auto-allow.
-    The legacy name is preserved so v1.0 callers continue to load.
-    New code SHOULD use :func:`gateway_auto_allow_handler`.
-    """
-    return gateway_auto_allow_handler(halt)
-
-
-def silent_skip_handler(halt: "AndonHalt") -> str:
-    """DEPRECATED v1.0 alias mapping to :func:`silent_deny_handler`.
-
-    The closest semantic match to the v1.0 "skip" behavior. Test
-    fixtures that wanted v1.1 "auto-allow-once" semantics from this
-    handler SHOULD migrate to :func:`silent_allow_handler`.
-    """
-    return silent_deny_handler(halt)
-
-
-def silent_approve_handler(halt: "AndonHalt") -> str:
-    """DEPRECATED v1.0 alias mapping to :func:`silent_promote_handler`.
-
-    Returns ``"always"`` instead of v1.0's ``"shadow_approve"``. The
-    Dispatcher honors both — ``shadow_approve`` is itself a v1.0
-    alias for ``once`` semantics.
-    """
-    return silent_promote_handler(halt)

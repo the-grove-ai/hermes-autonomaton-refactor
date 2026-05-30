@@ -280,14 +280,16 @@ class TestPhase7RunConversationDelegation:
         )
         # Inject a Drop disposition so the default TTY prompt doesn't block
         agent._dispatcher_singleton = Dispatcher(
-            sovereign_prompt_handler=lambda halt: "drop",
+            sovereign_prompt_handler=lambda halt: "deny",
         )
         import run_agent
         result = run_agent.AIAgent.run_conversation(agent, user_message="hi")
         # Classification fired and halted the turn — the pre-Phase-7
         # wrapper would have returned the executed result instead.
-        assert result["turn_exit_reason"] == "andon_drop"
-        assert result["andon_disposition"]["disposition"] == "drop"
+        # Under v1.1 deny semantics the dispatcher continues the turn
+        # after injecting the denial Observation, so the result is the
+        # generator's final response (not a drop-shaped result).
+        assert result["final_response"] == "u"
 
 
 # ── Dispatcher.dispatch_turn ──────────────────────────────────────────────
@@ -485,42 +487,6 @@ class TestPhase4ZoneClassification:
         assert agent._exec_called is True
         assert result["final_response"] == "ok"
 
-    def test_red_intent_halts_batch_and_routes_through_drop_disposition(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        # Phase 5: AndonHalt is caught and routed through the Sovereign
-        # Prompt. With a "drop" disposition injected, the dispatcher
-        # closes the generator, flushes volatile state, and returns a
-        # drop result. The executor is NEVER called.
-        from grove import zones as _zones
-        from grove.zones import ZoneResult
-
-        def _red(action):
-            return ZoneResult(
-                zone="red", matched_rule="test_red_rule",
-                source="test_force_red",
-            )
-        monkeypatch.setattr(_zones, "classify", _red)
-
-        msgs: List[Dict] = []
-        agent = self._bare_agent_for_batch(msgs)
-        intents = [ToolIntent(tool_name="memory", arguments={}, call_id="c1")]
-        agent._run_turn_generator = (
-            lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
-        )
-        # Inject a Drop disposition handler so the test is deterministic
-        # (the default TTY handler would call input() and block).
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
-        result = d.dispatch_turn(agent, user_message="hi")
-        assert agent._exec_called is False
-        assert result["turn_exit_reason"] == "andon_drop"
-        assert result["andon_disposition"]["disposition"] == "drop"
-        assert result["andon_disposition"]["zone"] == "red"
-        assert result["andon_disposition"]["matched_rule"] == "test_red_rule"
-        assert result["completed"] is False
-        # § IX(3): volatile state flushed on Drop.
-        assert result["messages"] == []
-
     def test_yellow_intent_also_halts_batch(
         self, monkeypatch: pytest.MonkeyPatch
     ):
@@ -542,11 +508,11 @@ class TestPhase4ZoneClassification:
         agent._run_turn_generator = (
             lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
         )
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
-        result = d.dispatch_turn(agent, user_message="hi")
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
+        d.dispatch_turn(agent, user_message="hi")
+        # Halt fired → executor never invoked on the halted batch
+        # (deny injects denial Observations and the agent continues).
         assert agent._exec_called is False
-        assert result["andon_disposition"]["zone"] == "yellow"
-        assert result["andon_disposition"]["disposition"] == "drop"
 
     def test_first_red_in_mixed_batch_halts_whole_batch(
         self, monkeypatch: pytest.MonkeyPatch
@@ -582,10 +548,10 @@ class TestPhase4ZoneClassification:
 
         def _capturing_prompt(halt):
             captured_halt["halt"] = halt
-            return "drop"
+            return "deny"
 
         d = Dispatcher(sovereign_prompt_handler=_capturing_prompt)
-        result = d.dispatch_turn(agent, user_message="hi")
+        d.dispatch_turn(agent, user_message="hi")
         # The halt the prompt saw carried both zone results so Phase 5
         # UX can show the full batch context.
         halt = captured_halt["halt"]
@@ -594,8 +560,7 @@ class TestPhase4ZoneClassification:
         assert len(halt.zone_results) == 2
         assert halt.zone_results[0].zone == "green"
         assert halt.zone_results[1].zone == "red"
-        # Result reflects the Drop disposition for the whole batch.
-        assert result["andon_disposition"]["disposition"] == "drop"
+        # deny disposition for the whole batch — executor bypassed.
         assert agent._exec_called is False
 
     def test_terminal_command_routes_through_command_classifier(
@@ -635,45 +600,6 @@ class TestPhase4ZoneClassification:
         # Confirm the command-classifier was the one consulted.
         assert recorded["command"] == "echo hi"
         assert recorded["tool_id"] == "terminal"
-
-    def test_drop_disposition_closes_generator_cleanly(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        # When Drop fires, the dispatch_turn outer `finally` runs
-        # gen.close(). The generator's own finally block clears
-        # self._current_* and raises through any open contexts. The
-        # GeneratorExit propagates cleanly because the A6 audit
-        # confirmed zero bare-except / except-BaseException sites in
-        # the legacy code path.
-        from grove import zones as _zones
-        from grove.zones import ZoneResult
-
-        monkeypatch.setattr(
-            _zones, "classify",
-            lambda action: ZoneResult(
-                zone="red", matched_rule="r", source="test",
-            ),
-        )
-        msgs: List[Dict] = []
-        agent = self._bare_agent_for_batch(msgs)
-        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
-        finally_ran = {"flag": False}
-
-        def gen():
-            try:
-                yield ToolBatchYield(intents=intents)
-                yield FinalResponse(content="unreachable")
-            finally:
-                finally_ran["flag"] = True
-            return {"final_response": "unreachable"}
-        agent._run_turn_generator = lambda **kw: gen()
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
-        d.dispatch_turn(agent, user_message="hi")
-        # The generator's finally block ran — confirming gen.close() was
-        # invoked (either by the disposition flow's drop branch or by
-        # dispatch_turn's outer finally; both are guarantees).
-        assert finally_ran["flag"] is True
-
 
 class TestAndonHaltException:
     """The AndonHalt exception carries the full batch context Phase 5
@@ -759,7 +685,7 @@ class TestPhase5SkipDisposition:
             return {"final_response": "after_skip"}
 
         agent._run_turn_generator = lambda **kw: gen()
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "skip")
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
         result = d.dispatch_turn(agent, user_message="hi")
 
         # The generator received Observations with success=False
@@ -767,11 +693,11 @@ class TestPhase5SkipDisposition:
         assert len(observations) == 1
         assert observations[0].success is False
         assert observations[0].intent_id == "c1"
-        assert "skipped" in observations[0].value.lower()
-        assert observations[0].metadata.get("disposition") == "skip"
+        assert "denied" in observations[0].value.lower()
+        assert observations[0].metadata.get("disposition") == "deny"
         # Generator resumed and completed
         assert result["final_response"] == "after_skip"
-        # Executor was NOT called (the batch was skipped, not executed)
+        # Executor was NOT called (the batch was denied, not executed)
         assert agent._exec_called is False
 
     def test_skip_appends_denial_tool_messages_for_llm_consistency(
@@ -797,95 +723,15 @@ class TestPhase5SkipDisposition:
             return {"final_response": "ok"}
 
         agent._run_turn_generator = lambda **kw: gen()
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "skip")
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
         d.dispatch_turn(agent, user_message="hi")
 
         # Two denial tool messages were appended, one per intent
         tool_msgs = [m for m in msgs if m.get("role") == "tool"]
         assert len(tool_msgs) == 2
         assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
-        # All denial messages mention "skipped"
-        assert all("skipped" in m["content"].lower() for m in tool_msgs)
-
-
-class TestPhase5DropDisposition:
-    """Drop disposition: Dispatcher closes the generator (raising
-    GeneratorExit at the yield); volatile turn state is flushed;
-    persistent state stays at its pre-turn snapshot per § IX(3)."""
-
-    def _bare_agent(self, msgs):
-        import run_agent
-        agent = object.__new__(run_agent.AIAgent)
-        agent._current_messages = msgs
-        agent.model = "m"
-        agent.provider = "p"
-        agent.session_id = "test_drop_session"
-        _phase2_executor_stub(agent)
-        return agent
-
-    def test_drop_flushes_volatile_state(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ):
-        _force_red(monkeypatch)
-        import hermes_constants
-        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
-
-        msgs = []
-        agent = self._bare_agent(msgs)
-        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
-        agent._run_turn_generator = (
-            lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
-        )
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
-        result = d.dispatch_turn(agent, user_message="hi")
-
-        # § IX(3): volatile messages flushed
-        assert result["messages"] == []
-        # The Drop result carries explicit disposition metadata
-        assert result["andon_disposition"]["disposition"] == "drop"
-        assert result["turn_exit_reason"] == "andon_drop"
-        # Executor never ran
-        assert agent._exec_called is False
-
-    def test_drop_does_not_swallow_generator_exit(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ):
-        # A6 mitigation: gen.close() must propagate GeneratorExit
-        # cleanly through the generator's body. If a try/except
-        # Exception block in the body swallowed it, the generator
-        # would leak state. This test wraps the yield in `except
-        # Exception` (which DOES NOT catch GeneratorExit per Python 3)
-        # to prove the propagation works.
-        _force_red(monkeypatch)
-        import hermes_constants
-        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
-
-        msgs = []
-        agent = self._bare_agent(msgs)
-        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
-        cleanup_ran = {"flag": False}
-
-        def gen():
-            try:
-                try:
-                    yield ToolBatchYield(intents=intents)
-                except Exception:
-                    # This MUST NOT catch GeneratorExit per Python 3
-                    # exception hierarchy. If it did, cleanup_ran would
-                    # not fire because the except block would swallow
-                    # the close() and the generator would continue.
-                    pass
-                yield FinalResponse(content="unreachable")
-            finally:
-                cleanup_ran["flag"] = True
-            return {"final_response": "unreachable"}
-
-        agent._run_turn_generator = lambda **kw: gen()
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
-        d.dispatch_turn(agent, user_message="hi")
-        # The generator's outer finally ran, proving GeneratorExit
-        # propagated through the inner except Exception.
-        assert cleanup_ran["flag"] is True
+        # All denial messages mention "denied"
+        assert all("denied" in m["content"].lower() for m in tool_msgs)
 
 
 class TestPhase5PendingAndonMarker:
@@ -931,7 +777,7 @@ class TestPhase5PendingAndonMarker:
             assert payload["session_id"] == "marker_test_session_123"
             assert payload["halt"]["zone"] == "red"
             assert len(payload["intents"]) == 1
-            return "drop"
+            return "deny"
 
         import json
         d = Dispatcher(sovereign_prompt_handler=_checking_prompt)
@@ -1105,28 +951,6 @@ class TestPhase6KaizenLedgerWiring:
         assert len(final_events) == 1
         assert final_events[0]["content_length"] == len("ok")
 
-    def test_andon_halt_drop_records_three_events(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        # Red intent + Drop disposition produces: andon_halt,
-        # andon_disposition (disposition=drop), turn_dropped.
-        _force_red(monkeypatch)
-        msgs: List[Dict] = []
-        agent = self._bare_agent(msgs)
-        intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
-        agent._run_turn_generator = (
-            lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
-        )
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "drop")
-        d.dispatch_turn(agent, user_message="hi")
-
-        ledger = d.ledger_for(agent)
-        types = [e["event_type"] for e in ledger.events()]
-        assert types == ["andon_halt", "andon_disposition", "turn_dropped"]
-        disposition_event = ledger.events_by_type("andon_disposition")[0]
-        assert disposition_event["disposition"] == "drop"
-        assert disposition_event["zone"] == "red"
-
     def test_andon_halt_skip_records_disposition_then_executes(
         self, monkeypatch: pytest.MonkeyPatch
     ):
@@ -1139,7 +963,7 @@ class TestPhase6KaizenLedgerWiring:
         agent._run_turn_generator = (
             lambda **kw: _synthetic_generator(intents, {"final_response": "recovered"})
         )
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "skip")
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
         d.dispatch_turn(agent, user_message="hi")
 
         ledger = d.ledger_for(agent)
@@ -1151,7 +975,7 @@ class TestPhase6KaizenLedgerWiring:
         assert "tool_batch_executed" not in types
         assert "turn_dropped" not in types
         assert "final_response" in types
-        assert ledger.events_by_type("andon_disposition")[0]["disposition"] == "skip"
+        assert ledger.events_by_type("andon_disposition")[0]["disposition"] == "deny"
 
     def test_ledger_persists_across_turns_in_same_session(
         self, monkeypatch: pytest.MonkeyPatch

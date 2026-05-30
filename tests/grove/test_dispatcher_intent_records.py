@@ -368,42 +368,6 @@ class TestTerminalFinalResponseWritesPending:
         assert rec.goal_alignment is None
 
 
-class TestTerminalDropWritesDrop:
-    def test_writes_drop_record_on_drop_disposition(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
-    ):
-        # Force a Red zone classification so the batch halts; inject a
-        # Drop disposition so the Dispatcher takes the drop terminal.
-        from grove import zones as _zones
-        from grove.zones import ZoneResult
-        monkeypatch.setattr(
-            _zones, "classify",
-            lambda action: ZoneResult(
-                zone="red", matched_rule="r", source="sovereign",
-            ),
-        )
-        _set_current_classification(monkeypatch)
-        msgs: List[Dict] = []
-        agent = _bare_agent_with_exec(msgs)
-        intents = [ToolIntent(tool_name="t", arguments={}, call_id="c1")]
-        agent._run_turn_generator = (
-            lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
-        )
-        d = Dispatcher(
-            intent_store=tmp_store,
-            sovereign_prompt_handler=lambda halt: "drop",
-        )
-        d.dispatch_turn(agent, user_message="rm -rf /")
-
-        records = list(tmp_store.records())
-        # The sweep may have already finalized nothing (fresh store);
-        # only the drop terminal write should be present.
-        drops = [r for r in records if r.outcome == "drop"]
-        assert len(drops) == 1
-        assert drops[0].session_id == "test-session"
-        assert drops[0].user_message_stem == "rm -rf /"
-
-
 class TestTerminalExceptionWritesError:
     def test_writes_error_record_when_generator_raises(
         self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
@@ -586,42 +550,6 @@ class TestPhase4ExplicitSuccessFinalization:
         assert finalized.goal_alignment == "direct"
         assert finalized.tools_yielded == ("search_files",)
         assert finalized.user_message_stem == "strategic question"
-
-    def test_previous_drop_is_not_re_finalized(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
-    ):
-        # Turn 1 ends at Drop terminal (outcome=drop). The Phase 4
-        # finalization at turn 2 start must NOT overwrite drop → success.
-        from grove import zones as _zones
-        from grove.zones import ZoneResult
-        monkeypatch.setattr(
-            _zones, "classify",
-            lambda action: ZoneResult(
-                zone="red", matched_rule="r", source="sovereign",
-            ),
-        )
-        _set_current_classification(monkeypatch)
-        d = Dispatcher(
-            intent_store=tmp_store,
-            sovereign_prompt_handler=lambda halt: "drop",
-        )
-        agent = _bare_agent_with_exec([])
-        intents = [ToolIntent(tool_name="t", arguments={}, call_id="c1")]
-        agent._run_turn_generator = (
-            lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
-        )
-        d.dispatch_turn(agent, user_message="dangerous")
-
-        # Turn 2: same Dispatcher, normal flow now.
-        _patch_classifier_green(monkeypatch)
-        agent._run_turn_generator = (
-            lambda **kw: _synthetic_generator(None, {"final_response": "y"}, final_text="y")
-        )
-        d.dispatch_turn(agent, user_message="next")
-
-        latest_by_turn = {r.turn_id: r.outcome for r in tmp_store.latest_by_turn()}
-        assert latest_by_turn["test-session#1"] == "drop"
-        assert latest_by_turn["test-session#2"] == "pending"
 
     def test_previous_error_is_not_re_finalized(
         self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
