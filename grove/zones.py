@@ -455,31 +455,36 @@ class ZoneClassifier:
             )
         compiled_rules = []
         for idx, rule_raw in enumerate(rules_raw):
+            # Sprint 32 Phase 3b — schema faults raise at load time.
+            # The agent does NOT start with malformed governance.
+            # Replaces the v1.0 graceful "drop the bad rule + continue
+            # loading" pattern that silently degraded the policy
+            # surface. Error messages name the tool, the rule index,
+            # the failed check, and where in the file to look.
+            from grove.errors import SchemaConfigurationError
             if not isinstance(rule_raw, dict):
-                logger.error(
-                    "[zones] tool_zones[%r].rules[%d] is not a mapping; "
-                    "dropping rule. Got: %r",
-                    tool_id, idx, rule_raw,
+                raise SchemaConfigurationError(
+                    f"zones.schema.yaml: tool_zones[{tool_id!r}]."
+                    f"rules[{idx}] must be a mapping; got {rule_raw!r}. "
+                    f"Fix the rule entry or remove it from the file."
                 )
-                continue
             pattern = rule_raw.get("match_pattern")
             zone = rule_raw.get("zone")
             reason = str(rule_raw.get("reason") or "").strip()
             if zone not in ("green", "yellow", "red"):
-                logger.error(
-                    "[zones] tool_zones[%r].rules[%d].zone must be one of "
-                    "green/yellow/red; dropping rule. Got: %r",
-                    tool_id, idx, zone,
+                raise SchemaConfigurationError(
+                    f"zones.schema.yaml: tool_zones[{tool_id!r}]."
+                    f"rules[{idx}].zone must be one of green/yellow/red; "
+                    f"got {zone!r}. Fix the rule entry."
                 )
-                continue
             ok, why = check_pattern_safety(pattern)
             if not ok:
-                logger.error(
-                    "[zones] tool_zones[%r].rules[%d] rejected: %s "
-                    "(pattern=%r). Dropping rule; rest of schema continues to load.",
-                    tool_id, idx, why, pattern,
+                raise SchemaConfigurationError(
+                    f"zones.schema.yaml: tool_zones[{tool_id!r}]."
+                    f"rules[{idx}].match_pattern rejected by safety check: "
+                    f"{why}. pattern={pattern!r}. "
+                    f"Tighten the pattern or remove the rule."
                 )
-                continue
             compiled_rules.append(
                 ZoneRule(
                     match_pattern=pattern,

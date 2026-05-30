@@ -466,12 +466,20 @@ class TestSaveZoneRule:
 
 
 class TestReDoSProtection:
-    """Per-rule ReDoS rejection: a bad pattern drops that rule with a
-    loud log but does not invalidate the rest of the schema."""
+    """Per-rule ReDoS rejection. Sprint 22 originally logged the
+    bad rule and dropped it (graceful-degradation). Sprint 32
+    Phase 3b inverts this: malformed governance is a load-time
+    failure — the agent does not start with a schema that carries
+    a known-unsafe rule. The new ``test_nested_quantifier_raises_
+    schema_configuration_error`` test pins that v1.1 behavior."""
 
-    def test_nested_quantifier_pattern_dropped_schema_loads(
-        self, tmp_path: Path, caplog
+    def test_nested_quantifier_raises_schema_configuration_error(
+        self, tmp_path: Path,
     ):
+        """Sprint 32 Phase 3b — schema-load fails loud on an unsafe
+        pattern. The agent does not start with malformed governance."""
+        from grove.errors import SchemaConfigurationError
+
         schema = tmp_path / "zones.schema.yaml"
         schema.write_text(textwrap.dedent(r"""
             schema_version: 1
@@ -487,20 +495,12 @@ class TestReDoSProtection:
                     zone: green
                     reason: "Safe — must survive."
         """).lstrip())
-        import logging
-        with caplog.at_level(logging.ERROR):
-            cls = ZoneClassifier(schema)
-        # Loud log for the dropped rule:
-        assert any(
-            "rejected" in rec.getMessage() and "(a+)+" in rec.getMessage()
-            for rec in caplog.records
-        ), "Expected loud log for the rejected ReDoS rule."
-        # The safe rule survives:
-        r = cls.classify_command_string(
-            "echo hello", "command.execute.echo", tool_id="terminal",
-        )
-        assert r.zone == "green"
-        assert r.matched_rule == r"^echo\s+hello$"
+        with pytest.raises(SchemaConfigurationError) as exc_info:
+            ZoneClassifier(schema)
+        # The error message MUST name the offending tool and pattern.
+        message = str(exc_info.value)
+        assert "terminal" in message
+        assert "(a+)+" in message
 
     def test_forbidden_bare_pattern_rejected(self):
         ok, why = gz.check_pattern_safety(".*")

@@ -257,6 +257,17 @@ from grove.sovereign_prompt_handlers import (
 )
 
 
+# ── Sprint 32 Phase 3a — red-zone strike threshold ────────────────────
+#
+# Three red-zone halts on the same tool within a single turn force a
+# hard-denial Observation that explicitly directs the LLM not to
+# attempt the tool with the same arguments again. The counter resets
+# at the turn boundary; cross-turn red-zone enforcement is
+# architectural (the zone rule persists), so a reset-per-turn pattern
+# prevents intra-turn loops without weakening cross-turn discipline.
+_RED_ZONE_STRIKE_LIMIT = 3
+
+
 # ── Andon halt exception (Sprint 26 Phase 4) ──────────────────────────────
 
 
@@ -468,6 +479,17 @@ class Dispatcher:
         # starts a new session (new Dispatcher = empty caches).
         self._session_deny_cache: Set[Tuple[str, str]] = set()
         self._session_allow_cache: Set[Tuple[str, str]] = set()
+        # ── Sprint 32 Phase 3a — red-zone strike counter ─────────────
+        # Per-turn, per-tool. Increments on each red-zone halt. At
+        # ``_RED_ZONE_STRIKE_LIMIT`` strikes the Dispatcher forces a
+        # hard-denial Observation containing the directive
+        # "HARD DENIAL: ... Do not attempt this tool with these
+        # arguments again." per the operator's Trap-B lock — making
+        # the denial structurally terminal for that specific vector
+        # within the turn. Resets at every ``dispatch_turn`` entry
+        # so cross-turn enforcement remains architectural (the zone
+        # rule itself persists across turns).
+        self._current_turn_andon_strikes: Dict[str, int] = {}
         if self._intent_store is not None:
             # Sprint 28 Phase 3 — Implicit Success Sweep on Dispatcher
             # construction. Stale ``pending`` records from previous
@@ -1039,6 +1061,11 @@ class Dispatcher:
         # Sprint 30 — reset per-turn escalation counter + events list.
         self._current_turn_escalations = 0
         self._current_turn_escalation_events = []
+        # Sprint 32 Phase 3a — reset per-turn red-zone strike counter.
+        # Cross-turn enforcement remains architectural (the zone rule
+        # itself blocks every turn); per-turn counter prevents the
+        # agent from looping within a single turn.
+        self._current_turn_andon_strikes = {}
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -1197,9 +1224,15 @@ class Dispatcher:
                         # ── Deny branch ──────────────────────────────
                         # v1.1 ``deny`` and v1.0 ``skip`` both inject
                         # denial Observations and let the agent recover.
-                        if disposition in ("deny", "skip"):
+                        # Sprint 32 Phase 3a — ``deny_hard`` is the
+                        # red-zone strike-limit forced denial; emits
+                        # the same Observation pipeline with explicit
+                        # directive text so the LLM does not re-attempt
+                        # this tool with these arguments on the turn.
+                        if disposition in ("deny", "skip", "deny_hard"):
                             observations = self._build_skip_observations(
                                 agent, halt.intents,
+                                hard=(disposition == "deny_hard"),
                             )
                             yielded = gen.send(observations)
                             continue
@@ -3018,6 +3051,44 @@ class Dispatcher:
             triggering_intent.tool_name, triggering_intent.arguments,
         )
 
+        # ── Sprint 32 Phase 3a — red-zone strike counter ─────────────
+        # Red halts count strikes per-tool per-turn. At threshold the
+        # Dispatcher forces a hard-denial Observation whose text
+        # explicitly directs the LLM not to attempt the same tool
+        # with the same arguments again — making the denial
+        # structurally terminal for that specific vector within the
+        # turn (Trap-B mitigation locked at GATE-A clarification).
+        # The hard-denial Observation is wired into the
+        # ``_build_skip_observations`` path with a sentinel disposition
+        # ``"deny_hard"`` so the LLM-visible denial text differs from
+        # the soft-deny case.
+        if halt.zone == "red":
+            tool_name = triggering_intent.tool_name
+            strikes_now = self._current_turn_andon_strikes.get(tool_name, 0) + 1
+            self._current_turn_andon_strikes[tool_name] = strikes_now
+            if strikes_now >= _RED_ZONE_STRIKE_LIMIT:
+                logger.warning(
+                    "[grove.dispatcher] Red-zone strike limit reached "
+                    "for tool=%s this turn (strikes=%d, limit=%d) — "
+                    "forcing hard denial; handler bypassed.",
+                    tool_name, strikes_now, _RED_ZONE_STRIKE_LIMIT,
+                )
+                if ledger is not None:
+                    try:
+                        ledger.record(
+                            "andon_hard_denial",
+                            tool=tool_name,
+                            strikes=strikes_now,
+                            limit=_RED_ZONE_STRIKE_LIMIT,
+                            zone="red",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "[grove.dispatcher] andon_hard_denial ledger "
+                            "write failed (non-fatal): %r", exc,
+                        )
+                return "deny_hard"
+
         # Cache check — silent auto-apply on hit.
         if cache_key in self._session_deny_cache:
             self._log_session_cache_hit(
@@ -3142,9 +3213,13 @@ class Dispatcher:
             )
 
     def _build_skip_observations(
-        self, agent: Any, intents: List[Any],
+        self,
+        agent: Any,
+        intents: List[Any],
+        *,
+        hard: bool = False,
     ) -> List[Any]:
-        """Phase 5 Skip — append denial tool messages + build Observations.
+        """Phase 5 Skip + Sprint 32 Phase 3a Hard-denial — denial Observations.
 
         For each intent in the halted batch:
           * Append a tool message to the agent's messages list with a
@@ -3152,10 +3227,20 @@ class Dispatcher:
             response for every assistant tool_call — required by every
             provider's API).
           * Build an Observation carrying ``success=False`` and the
-            denial body as ``value``; the generator's downstream
-            consumer (Phase 4 says Observations are informational
-            because messages is the source of truth — Phase 5's Skip
-            keeps that invariant).
+            denial body as ``value``.
+
+        When ``hard=True`` (the Sprint 32 Phase 3a forced-denial path
+        after three red-zone strikes), the denial body uses an
+        explicit directive phrasing:
+
+            HARD DENIAL: This action is prohibited. Do not attempt
+            this tool with these arguments again.
+
+        plus a ``metadata.is_hard_denial=True`` marker so future
+        Agent logic can detect "do not retry" without parsing the
+        denial text. The per-turn architecture stays correct — the
+        strike counter resets at the next turn — but the explicit
+        directive prevents the agent from looping within the turn.
         """
         from grove.intents import Observation
 
@@ -3167,10 +3252,26 @@ class Dispatcher:
             msgs = []
         observations: List[Any] = []
         for intent in intents:
-            denial = (
-                f"⚠ Operator skipped tool '{intent.tool_name}' at Andon halt. "
-                f"This call did not execute; the operator declined to run it."
-            )
+            if hard:
+                denial = (
+                    f"HARD DENIAL: This action is prohibited. "
+                    f"Do not attempt this tool with these arguments again. "
+                    f"(tool: {intent.tool_name})"
+                )
+                metadata = {
+                    "disposition": "deny_hard",
+                    "reason": "andon_hard_denial",
+                    "is_hard_denial": True,
+                }
+            else:
+                denial = (
+                    f"⚠ Operator skipped tool '{intent.tool_name}' at Andon halt. "
+                    f"This call did not execute; the operator declined to run it."
+                )
+                metadata = {
+                    "disposition": "skip",
+                    "reason": "andon_skip",
+                }
             tool_call_id = intent.call_id or ""
             msgs.append({
                 "role": "tool",
@@ -3181,7 +3282,7 @@ class Dispatcher:
                 intent_id=intent.call_id,
                 success=False,
                 value=denial,
-                metadata={"disposition": "skip", "reason": "andon_skip"},
+                metadata=metadata,
             ))
         return observations
 

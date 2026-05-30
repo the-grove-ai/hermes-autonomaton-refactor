@@ -28,3 +28,20 @@ class ProviderDetectionError(GroveError):
     ``api.anthropic.com``, producing a 404 with no surfaced error.
     Andon over fallback — the system MUST NOT guess.
     """
+
+
+class SchemaConfigurationError(GroveError):
+    """A schema file the runtime depends on contains a structural fault.
+
+    Raised by ``grove.zones._build_tool_entry`` when a per-rule
+    safety check (length cap, catch-all rejection, nested
+    quantifier detection, alternation-branch cap, or syntactic
+    validity) fails on a rule in ``zones.schema.yaml``.
+
+    Sprint 32 Phase 3b: replaces the v1.0 "log error + drop the
+    bad rule + keep loading" graceful-degradation path. Schema
+    faults are now load-time failures — the agent does not start
+    on malformed governance. The error message names the offending
+    tool, the rule pattern, and the specific safety check that
+    failed so the operator can locate and fix without reading code.
+    """
