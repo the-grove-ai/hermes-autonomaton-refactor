@@ -11340,6 +11340,37 @@ class AIAgent:
         for a memory tool that had actually succeeded). Threading the
         real args through restores the real preview.
         """
+        # Sprint 51 Phase 3 (B1 fix) — failure badges penetrate ALL
+        # display suppression. Errors are operational data, not UI
+        # chrome: an operator running in any mode (``--quiet`` for
+        # automation, default interactive with ``tool_progress_mode=off``,
+        # or anything else) needs the diagnostic when a tool call fails
+        # mid-turn. The cute message (including the
+        # ``[error]/[exit N]/[full]`` suffix with up to 80 chars of
+        # diagnostic body from agent/display.py:_detect_tool_failure)
+        # routes to stderr so stdout stays clean for automation wrappers
+        # parsing the agent's final response. The existing print paths
+        # below target stdout for successes (✅ lines) or the
+        # quiet+emit case; this stderr path covers failures
+        # universally without double-painting successes.
+        try:
+            is_failure, _ = _detect_tool_failure(function_name, function_result)
+        except Exception:
+            is_failure = False
+        if is_failure:
+            try:
+                _failure_msg = _get_cute_tool_message_impl(
+                    function_name, function_args or {}, tool_duration,
+                    result=function_result,
+                )
+            except Exception:
+                _failure_msg = None
+            if _failure_msg:
+                try:
+                    print(f"  {_failure_msg}", file=sys.stderr, flush=True)
+                except Exception:
+                    pass
+
         if self._should_emit_quiet_tool_messages():
             cute_msg = _get_cute_tool_message_impl(
                 function_name, function_args or {}, tool_duration, result=function_result,
@@ -11654,6 +11685,32 @@ class AIAgent:
                 )
             except Exception:
                 cute_msg = None
+
+        # Sprint 51 Phase 3 (B1 fix) — sequential-path counterpart to
+        # the concurrent ``_log_tool_complete_line`` fix. Always emit
+        # failure badges to stderr regardless of suppression mode.
+        # Only fires when the existing spinner / cute-msg path didn't
+        # already produce a non-empty cute_msg (avoids double-printing
+        # when the quiet+emit path is active). The spinner consumes
+        # cute_msg or "" below; not affected.
+        if cute_msg is None:
+            try:
+                is_failure, _ = _detect_tool_failure(function_name, function_result)
+            except Exception:
+                is_failure = False
+            if is_failure:
+                try:
+                    _failure_msg = _get_cute_tool_message_impl(
+                        function_name, function_args or {}, tool_duration,
+                        result=function_result,
+                    )
+                except Exception:
+                    _failure_msg = None
+                if _failure_msg:
+                    try:
+                        print(f"  {_failure_msg}", file=sys.stderr, flush=True)
+                    except Exception:
+                        pass
 
         if spinner is not None:
             try:
