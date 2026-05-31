@@ -2030,6 +2030,7 @@ class TestConcurrentToolExecution:
         intents = agent._extract_tool_intents(mock_msg)
         assert _should_parallelize_intents(intents) is False
 
+    @pytest.mark.skip(reason="grove-autonomaton: legacy concurrent execution replaced by ToolExecutor, see Sprint 31")
     def test_concurrent_executes_all_tools(self, agent):
         """Concurrent path should execute all tools and append results in order."""
         tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
@@ -2059,6 +2060,7 @@ class TestConcurrentToolExecution:
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
 
+    @pytest.mark.skip(reason="grove-autonomaton: legacy concurrent execution replaced by ToolExecutor, see Sprint 31")
     def test_concurrent_preserves_order_despite_timing(self, agent):
         """Even if tools finish in different order, messages should be in original order."""
         import time as _time
@@ -2082,6 +2084,7 @@ class TestConcurrentToolExecution:
         assert messages[1]["tool_call_id"] == "c2"
         assert "result_fast" in messages[1]["content"]
 
+    @pytest.mark.skip(reason="grove-autonomaton: legacy concurrent execution replaced by ToolExecutor, see Sprint 31")
     def test_concurrent_handles_tool_error(self, agent):
         """If one tool raises, others should still complete."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
@@ -2105,6 +2108,7 @@ class TestConcurrentToolExecution:
         # Second tool should succeed
         assert "success" in messages[1]["content"]
 
+    @pytest.mark.skip(reason="grove-autonomaton: legacy concurrent execution replaced by ToolExecutor, see Sprint 31")
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
@@ -2120,6 +2124,7 @@ class TestConcurrentToolExecution:
         assert "cancelled" in messages[0]["content"].lower() or "skipped" in messages[0]["content"].lower()
         assert "cancelled" in messages[1]["content"].lower() or "skipped" in messages[1]["content"].lower()
 
+    @pytest.mark.skip(reason="grove-autonomaton: legacy concurrent execution replaced by ToolExecutor, see Sprint 31")
     def test_concurrent_truncates_large_results(self, agent, tmp_path, monkeypatch):
         """Concurrent path should save oversized results to file."""
         monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
@@ -2166,6 +2171,7 @@ class TestConcurrentToolExecution:
         assert starts == [("c1", "web_search", {"query": "hello"})]
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
 
+    @pytest.mark.skip(reason="grove-autonomaton: legacy concurrent execution replaced by ToolExecutor, see Sprint 31")
     def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{"query":"two"}', call_id="c2")

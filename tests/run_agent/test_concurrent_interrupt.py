@@ -7,6 +7,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Sprint 52 GATE-B Override #2 (grove-autonomaton fork) — both tests
+# in this file build a stub via
+# ``stub._execute_tool_calls_concurrent = _ra.AIAgent._execute_tool_
+# calls_concurrent.__get__(stub)`` (in ``_make_agent`` around line
+# 77). Sprint 31 Phase 2.1 moved that method out of AIAgent and into
+# ``grove.tool_executor.ToolExecutor.execute_batch_concurrent``. The
+# new architecture's interrupt-fanout semantics are verified by
+# ``tests/grove/test_tool_executor_*.py``. These tests pre-date the
+# extraction and rigidly assert against the deleted in-Agent method;
+# mark rather than rewrite per the SPEC's expected-skip rule.
+pytestmark = pytest.mark.skip(
+    reason="grove-autonomaton: legacy concurrent execution replaced by ToolExecutor, see Sprint 31",
+)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_hermes(tmp_path, monkeypatch):
