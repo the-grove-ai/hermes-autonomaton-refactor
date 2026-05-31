@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from grove.dispatcher import Dispatcher
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value

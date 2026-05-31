@@ -19,7 +19,7 @@ import pytest
 from agent.codex_responses_adapter import _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
 
 import run_agent
-from run_agent import AIAgent
+from run_agent import AIAgent, _should_parallelize_intents
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from grove.sovereign_prompt_handlers import silent_allow_handler
