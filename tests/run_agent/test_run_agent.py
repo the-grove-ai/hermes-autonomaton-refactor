@@ -22,7 +22,7 @@ import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
-from grove.sovereign_prompt_handlers import silent_approve_handler
+from grove.sovereign_prompt_handlers import silent_allow_handler
 from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
@@ -100,7 +100,7 @@ def test_is_destructive_command_treats_install_as_mutating():
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading.
 
-    Sprint 27 Phase 4: ``sovereign_prompt_handler=silent_approve_handler``
+    Sprint 27 Phase 4: ``sovereign_prompt_handler=silent_allow_handler``
     keeps the test suite deterministic — any incidental Andon halt from
     the mocked tool surface auto-skips silently instead of blocking on
     the default TTY ``input()``. Tests that specifically verify Andon
@@ -119,7 +119,7 @@ def agent():
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            sovereign_prompt_handler=silent_approve_handler,
+            sovereign_prompt_handler=silent_allow_handler,
         )
         a.client = MagicMock()
         return a
@@ -129,7 +129,7 @@ def agent():
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'.
 
-    Sprint 27 Phase 4: silent_approve_handler injection rationale — see
+    Sprint 27 Phase 4: silent_allow_handler injection rationale — see
     ``agent`` fixture above.
     """
     with (
@@ -146,7 +146,7 @@ def agent_with_memory_tool():
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            sovereign_prompt_handler=silent_approve_handler,
+            sovereign_prompt_handler=silent_allow_handler,
         )
         a.client = MagicMock()
         return a

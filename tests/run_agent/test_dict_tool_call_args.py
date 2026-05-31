@@ -59,7 +59,7 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
         lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True, "args": args}),
     )
 
-    from grove.sovereign_prompt_handlers import silent_approve_handler
+    from grove.sovereign_prompt_handlers import silent_allow_handler
     agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
         model="test-model",
         api_key="test-key",
@@ -71,7 +71,7 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
         # Sprint 27 Phase 4 — silent_skip keeps the dict-args validation
         # test deterministic. It verifies argument shape handling, not
         # Andon behavior.
-        sovereign_prompt_handler=silent_approve_handler,
+        sovereign_prompt_handler=silent_allow_handler,
     )
     agent._disable_streaming = True
 

@@ -86,7 +86,7 @@ def agent():
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
-        from grove.sovereign_prompt_handlers import silent_approve_handler
+        from grove.sovereign_prompt_handlers import silent_allow_handler
         a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
@@ -96,7 +96,7 @@ def agent():
             # Sprint 27 Phase 4 — silent_skip keeps compression tests
             # deterministic. These verify compression triggering, not
             # Andon behavior.
-            sovereign_prompt_handler=silent_approve_handler,
+            sovereign_prompt_handler=silent_allow_handler,
         )
         a.client = MagicMock()
         a._composed_system_prompt = "You are helpful."

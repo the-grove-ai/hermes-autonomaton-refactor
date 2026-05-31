@@ -87,7 +87,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
         patch("hermes_cli.config.load_config", return_value=config or {}),
         patch("run_agent.OpenAI"),
     ):
-        from grove.sovereign_prompt_handlers import silent_approve_handler
+        from grove.sovereign_prompt_handlers import silent_allow_handler
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
@@ -99,7 +99,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
             # deterministic if mock tool surface incidentally triggers
             # an Andon halt. These tests verify guardrail behavior, not
             # Andon behavior.
-            sovereign_prompt_handler=silent_approve_handler,
+            sovereign_prompt_handler=silent_allow_handler,
         )
     agent.client = MagicMock()
     agent._composed_system_prompt = "You are helpful."
