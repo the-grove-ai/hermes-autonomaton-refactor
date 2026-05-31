@@ -1,13 +1,19 @@
 """Scaffolding for tests in tests/cron/.
 
-Opts every test in this directory out of run_conversation's self-route
+Opts every test in this directory out of dispatch_turn's self-route
 on entry (W3.0 webui-governance-pipeline-v1).
 
-Production semantics: AIAgent.run_conversation calls
-``_maybe_route_for_turn(user_message)`` on entry unless the caller sets
-``already_routed=True`` — both CLI (after _resolve_turn_agent_config)
-and webui (architecture-guarantee, the W3.0 bypass closer) converge on
-grove.providers.route_for_agent.
+Production semantics: ``grove.dispatcher.Dispatcher.dispatch_turn``
+calls ``_classify_and_bind_turn(agent, user_message, ledger)`` on
+entry unless the caller sets ``already_routed=True`` — both CLI (after
+_resolve_turn_agent_config) and webui (architecture-guarantee, the
+W3.0 bypass closer) converge on grove.providers.route_for_agent.
+
+Sprint 35 moved the routing decision from
+``AIAgent._maybe_route_for_turn`` (deleted) to
+``Dispatcher._classify_and_bind_turn`` (docstring at
+grove/dispatcher.py:1980 names the replacement explicitly).
+The fixture target was updated to follow.
 
 Tests in this directory test cron job execution paths (codex transport
 handling, 401 refresh logic) with hand-constructed AIAgent skeletons
@@ -28,9 +34,20 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _skip_self_routing_for_cron_tests(monkeypatch):
-    """Opt every test in this directory out of W3.0 self-routing."""
+    """Opt every test in this directory out of W3.0 self-routing.
+
+    Sprint 35 moved the routing entry point from
+    ``AIAgent._maybe_route_for_turn`` (deleted) to
+    ``Dispatcher._classify_and_bind_turn``. This fixture targets the
+    new method so the isolation guarantee the fixture has always
+    provided is preserved.
+    """
     try:
-        from run_agent import AIAgent
+        from grove.dispatcher import Dispatcher
     except ImportError:
         return
-    monkeypatch.setattr(AIAgent, "_maybe_route_for_turn", lambda self, msg: None)
+    monkeypatch.setattr(
+        Dispatcher,
+        "_classify_and_bind_turn",
+        lambda self, agent, user_message, ledger: None,
+    )

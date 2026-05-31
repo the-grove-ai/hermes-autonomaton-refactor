@@ -52,6 +52,18 @@ import grove.classify
 from grove.classify import ClassificationResult
 from run_agent import AIAgent
 
+# Sprint 52 GATE-B (grove-autonomaton fork) — same rationale as
+# tests/test_w3_0_governance_pipeline.py. These invariant tests verify
+# the legacy in-Agent ``_maybe_route_for_turn`` call stack that
+# Sprint 35 deleted (routing moved to
+# ``grove.dispatcher.Dispatcher._classify_and_bind_turn``). The
+# governance invariants themselves still hold; they are exercised by
+# the Dispatcher-side test suite at ``tests/grove/``. Marked rather
+# than rewritten per GATE-B Override #1.
+pytestmark = pytest.mark.skip(
+    reason="grove-autonomaton: legacy routing replaced by Dispatcher, see Sprint 35",
+)
+
 
 # ── shared fixtures ────────────────────────────────────────────────
 

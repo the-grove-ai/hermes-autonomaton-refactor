@@ -36,14 +36,22 @@ def _fast_retry_backoff(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _skip_self_routing_for_run_agent_tests(monkeypatch):
-    """Opt every test in this directory out of run_conversation's
+    """Opt every test in this directory out of dispatch_turn's
     self-route on entry (W3.0 webui-governance-pipeline-v1).
 
-    Production semantics: AIAgent.run_conversation calls
-    ``_maybe_route_for_turn(user_message)`` on entry unless the caller
-    sets ``already_routed=True`` — both CLI (after _resolve_turn_agent_
-    config) and webui (architecture-guarantee, the W3.0 bypass closer)
-    converge on grove.providers.route_for_agent.
+    Production semantics: ``grove.dispatcher.Dispatcher.dispatch_turn``
+    calls ``_classify_and_bind_turn(agent, user_message, ledger)`` on
+    entry unless the caller sets ``already_routed=True`` — both CLI
+    (after _resolve_turn_agent_config) and webui (architecture-
+    guarantee, the W3.0 bypass closer) converge on
+    grove.providers.route_for_agent.
+
+    Sprint 35 moved the routing decision from
+    ``AIAgent._maybe_route_for_turn`` (deleted) to
+    ``Dispatcher._classify_and_bind_turn`` (grove/dispatcher.py:1980
+    docstring names the replacement explicitly). The fixture target
+    was updated to follow so the isolation guarantee the fixture has
+    always provided is preserved.
 
     Tests in this directory test run_conversation's internal behavior
     (retry loops, continuation logic, codex transport quirks, token
@@ -57,11 +65,17 @@ def _skip_self_routing_for_run_agent_tests(monkeypatch):
 
     Tests that DO want to exercise the governance pipeline are at
     ``tests/test_w3_0_governance_pipeline.py`` (outside this directory,
-    so this autouse does not apply); they invoke
-    ``_maybe_route_for_turn`` directly on bare agent skeletons.
+    so this autouse does not apply); those tests assert against the
+    deleted ``_maybe_route_for_turn`` and are marked
+    ``@pytest.mark.skip`` per Sprint 52 GATE-B (legacy pre-Dispatcher
+    internal call stack).
     """
     try:
-        from run_agent import AIAgent
+        from grove.dispatcher import Dispatcher
     except ImportError:
         return
-    monkeypatch.setattr(AIAgent, "_maybe_route_for_turn", lambda self, msg: None)
+    monkeypatch.setattr(
+        Dispatcher,
+        "_classify_and_bind_turn",
+        lambda self, agent, user_message, ledger: None,
+    )

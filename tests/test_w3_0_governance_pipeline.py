@@ -39,6 +39,20 @@ import grove.router
 from grove.classify import ClassificationResult
 from run_agent import AIAgent
 
+# Sprint 52 GATE-B (grove-autonomaton fork) — every test in this file
+# asserts against ``AIAgent._maybe_route_for_turn``, which Sprint 35
+# deleted when the routing decision moved into
+# ``grove.dispatcher.Dispatcher._classify_and_bind_turn``. These tests
+# pre-date the Dispatcher inversion and verify the legacy in-Agent
+# routing call stack; the new architecture is verified by
+# ``tests/grove/test_dispatcher_*.py``. Marked rather than rewritten
+# per GATE-B Override #1 — rewriting would require constructing a
+# different test harness that asserts on Dispatcher state, which is a
+# separate sprint's worth of work.
+pytestmark = pytest.mark.skip(
+    reason="grove-autonomaton: legacy routing replaced by Dispatcher, see Sprint 35",
+)
+
 
 VALID_ROUTING_CONFIG = """\
 routing:
