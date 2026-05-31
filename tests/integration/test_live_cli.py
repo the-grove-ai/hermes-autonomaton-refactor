@@ -57,14 +57,37 @@ KAIZEN_MENU_RE = re.escape(KAIZEN_FIRST_OPTION)
 TURN_COMPLETE_RE = r"↳\s*T\d"
 
 
-# ── Skill choice for Kaizen tests ─────────────────────────────────────
+# ── Deterministic Kaizen trigger ──────────────────────────────────────
 #
-# The SPEC's choice for T3-T6 is "what is on my calendar today?" — it
-# invokes a productivity tool that the default zones.config.yaml puts
-# in the yellow zone, firing the Kaizen disposition. If the operator's
-# config doesn't gate the calendar tool, T3 will time out waiting for
-# the four-choice menu and the failure message will say so explicitly.
-KAIZEN_TRIGGER_PROMPT = "what is on my calendar today?"
+# Phase 2 used "what is on my calendar today?" as the trigger; Phase 2
+# results (GATE-C § B5) showed that's non-deterministic — the calendar
+# query routes through google-workspace skills which the operator's
+# zones.schema.yaml whitelists as green via the
+# ``\.grove/skills/.*`` rule, so Kaizen never fires.
+#
+# Phase 3 pivots to a raw ``echo`` command via the terminal tool.
+# The operator's ``terminal: default_zone: yellow`` (with explicit
+# green rules for sudo/su/doas RED, and for skill-path patterns
+# GREEN) means any command that doesn't match a green rule falls
+# through to yellow — exactly the trigger condition the test needs.
+# A unique marker per-test prevents cross-test cache hits and lets
+# the conftest's PID-snapshot orphan check stay clean.
+def _make_kaizen_trigger_command() -> tuple[str, str]:
+    """Return (command, query) for a Kaizen-triggering terminal call.
+
+    The command is ``echo S51_KAIZEN_TRIGGER_<uuid>`` — unique per
+    call so concurrent or repeat test runs can't cross-pollute the
+    session/always allow caches that T4/T5/T6 exercise. The query
+    is a forcing prompt the LLM reliably translates into a terminal
+    tool call.
+    """
+    marker = f"S51_KAIZEN_TRIGGER_{uuid.uuid4().hex[:8]}"
+    command = f"echo {marker}"
+    query = (
+        f"Use the terminal tool to run this exact command, "
+        f"nothing else: {command}"
+    )
+    return command, query
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -132,7 +155,11 @@ def test_T1_trivial_query_clean_exit():
         ["chat", "-q", "what is 2 + 2", "--quiet"],
         mode="pipe",
     ) as runner:
-        rc = runner.wait_for_exit(timeout=30.0)
+        # 60s budget covers cold-start plugin discovery + MCP server
+        # spawn + skill sync + LLM round-trip. Phase 3 first-run-in-
+        # session can spike past 30s under MCP jitter (notion-mcp-server
+        # ``npx`` fetch on a cache miss is the typical culprit).
+        rc = runner.wait_for_exit(timeout=60.0)
     assert rc == 0, (
         f"hermes chat -q --quiet exited non-zero ({rc}).\n"
         f"stderr:\n{runner.stderr()}"
@@ -255,14 +282,14 @@ def test_T3_kaizen_prompt_renders():
     disposition rather than hanging on stdin, wait for the turn to
     complete, then Ctrl+D so atexit runs.
     """
+    _command, query = _make_kaizen_trigger_command()
     with LiveCliRunner(["chat"], mode="pty") as runner:
         _pty_setup(runner)
-        runner.send_input(KAIZEN_TRIGGER_PROMPT + "\r")
-        # Wait for the four-choice menu. If the operator's config
-        # doesn't gate the calendar tool, this times out and the
-        # diagnostic dump shows the agent went green-path instead
-        # of halting — that's a configuration finding, not a bridge
-        # bug.
+        runner.send_input(query + "\r")
+        # Wait for the four-choice menu. With the Phase 3 trigger
+        # (a bare ``echo`` command that doesn't match any green
+        # rule), this fires reliably under terminal's
+        # ``default_zone: yellow``.
         runner.wait_for_pattern(KAIZEN_MENU_RE, timeout=90.0)
         # All four option labels MUST be visible. The bridge writes
         # them via tty_sovereign_prompt directly to stderr inside
@@ -302,9 +329,10 @@ def test_T4_kaizen_allow_once():
     """Trigger Kaizen, send ``1`` (Allow this once), verify the tool
     actually runs and the turn completes. Exercises the
     ``disposition="once"`` branch in the Dispatcher's halt handler."""
+    command, query = _make_kaizen_trigger_command()
     with LiveCliRunner(["chat"], mode="pty") as runner:
         _pty_setup(runner)
-        runner.send_input(KAIZEN_TRIGGER_PROMPT + "\r")
+        runner.send_input(query + "\r")
         runner.wait_for_pattern(KAIZEN_MENU_RE, timeout=90.0)
         # ``1`` → ``once``: allow the tool to execute this single time.
         runner.send_input("1\r")
@@ -315,6 +343,15 @@ def test_T4_kaizen_allow_once():
         # missing data — that's a richer assertion left for a future
         # sprint (content-shape testing is brittle).
         runner.wait_for_pattern(TURN_COMPLETE_RE, timeout=120.0)
+        # The unique marker MUST appear in stdout — it's the echo
+        # output the terminal tool emitted, proving the ``once``
+        # disposition actually let the command run.
+        marker = command.split()[-1]
+        assert marker in runner.stdout(), (
+            f"T4 ran to turn-complete but the echo marker {marker!r} "
+            f"never appeared in stdout. The 'allow once' disposition "
+            f"may have been recorded but the tool didn't execute."
+        )
         runner.send_input("\x04")
         rc = runner.wait_for_exit(timeout=15.0)
     assert rc in (0, 1, -15), (
@@ -335,10 +372,14 @@ def test_T5_kaizen_session_cache_suppresses_second_prompt():
     NOT contain the ``[1] Allow this once`` sentinel. Stays sound
     even if the model's response text happens to contain the digits
     1-4 in some unrelated context."""
+    # Session cache is keyed by (tool_name, args). Both turns must
+    # invoke the SAME terminal command for the cache to apply, so the
+    # marker is allocated once and reused.
+    _command, query = _make_kaizen_trigger_command()
     with LiveCliRunner(["chat"], mode="pty") as runner:
         _pty_setup(runner)
         # ── Turn 1: trigger + allow-session ────────────────────
-        runner.send_input(KAIZEN_TRIGGER_PROMPT + "\r")
+        runner.send_input(query + "\r")
         runner.wait_for_pattern(KAIZEN_MENU_RE, timeout=90.0)
         runner.send_input("2\r")
         runner.wait_for_pattern(TURN_COMPLETE_RE, timeout=120.0)
@@ -346,7 +387,7 @@ def test_T5_kaizen_session_cache_suppresses_second_prompt():
         # what we'll check for the absence of the Kaizen menu.
         mark = runner.stdout_len()
         # ── Turn 2: same trigger, no prompt expected ───────────
-        runner.send_input(KAIZEN_TRIGGER_PROMPT + "\r")
+        runner.send_input(query + "\r")
         runner.wait_for_pattern(TURN_COMPLETE_RE, timeout=120.0)
         runner.send_input("\x04")
         rc = runner.wait_for_exit(timeout=15.0)
@@ -366,60 +407,72 @@ def test_T5_kaizen_session_cache_suppresses_second_prompt():
 # ── T6 — Deny + retry behavior ────────────────────────────────────────
 
 
-def test_T6_kaizen_deny_then_retry_observation():
-    """Send ``4`` (Don't allow this), then immediately ask for the
-    same action again. Observe whether the retry hits the prompt
-    again or is auto-denied.
+def test_T6_kaizen_deny_caches_for_session():
+    """Send ``4`` (Don't allow), then ask for the same action again.
+    The second turn MUST NOT show the menu — the dispatcher's
+    session-scoped deny cache catches the retry silently.
 
-    Sprint 51 SPEC asserted "Same action auto-denied on retry"; the
-    Sprint 32 Phase 3a strike-count machinery delivers ``deny_hard``
-    only after multiple consecutive denials, not on the first
-    retry. This test documents the observed behavior rather than
-    asserting one or the other so GATE-C surfaces whichever shape
-    the live binary actually produces:
+    Phase 2 wrote this as an open observation. Phase 3 ran the live
+    test and discovered the SPEC's original "auto-denied on retry"
+    was correct: ``grove.dispatcher.Dispatcher`` line 3079-3083
+    explicitly checks ``_session_deny_cache`` BEFORE the operator
+    handler fires, returning ``"deny"`` silently on a hit. The
+    docstring at line 3007-3013 names the contract:
 
-    * If the menu re-appears on retry → operator must answer again
-      (matches "deny is one-time" reading).
-    * If the menu does NOT re-appear on retry → the dispatcher is
-      caching deny dispositions (matches SPEC reading; would imply
-      either a cache we haven't documented, or ``deny_hard`` firing
-      on strike count 1).
+        Cache check — keyed by (tool_name, sha256(arguments)):
+        * Deny cache hit → log telemetry, return "deny" silently.
+        * Allow cache hit → log telemetry, return "once" silently.
+        ...
+        Mutate caches by disposition:
+        * "deny"    → add to deny cache.
+        * "session" / "always" → add to allow cache.
+        * "once"    → no cache mutation.
 
-    Either branch ends with a clean shutdown; the assertion is on
-    exit code only. The observed behavior is logged in stderr (via
-    the diagnostic dump if the test reports) for GATE-C cataloging.
+    Symmetry with T5 (``session`` allow cache) is the actual model:
+    ``once`` is no-cache; ``session``, ``always``, and ``deny`` all
+    cache for the session. ``always`` additionally writes a
+    persistent zone rule via the proposal queue.
+
+    Sprint 32 Phase 3a's ``deny_hard`` is a different mechanism —
+    a per-turn, per-tool strike counter that forces an LLM-visible
+    hard-denial when the model retries the same intent within ONE
+    turn. T6 exercises cross-turn behavior; ``deny_hard`` doesn't
+    fire here.
     """
+    # Same marker across both turns — the cache key is
+    # (tool_name, sha256(arguments)), so same args must be used.
+    _command, query = _make_kaizen_trigger_command()
     with LiveCliRunner(["chat"], mode="pty") as runner:
         _pty_setup(runner)
         # ── Turn 1: trigger + deny ─────────────────────────────
-        runner.send_input(KAIZEN_TRIGGER_PROMPT + "\r")
+        runner.send_input(query + "\r")
         runner.wait_for_pattern(KAIZEN_MENU_RE, timeout=90.0)
         runner.send_input("4\r")
         runner.wait_for_pattern(TURN_COMPLETE_RE, timeout=120.0)
-        # Snapshot for the retry observation.
+        # Snapshot buffer so we check ONLY the second-turn output —
+        # Turn 1's menu text would otherwise contaminate a naive
+        # ``in stdout`` check.
         mark = runner.stdout_len()
-        # ── Turn 2: same action, observe re-prompt vs auto-deny ──
-        runner.send_input(KAIZEN_TRIGGER_PROMPT + "\r")
-        # Whichever path the dispatcher takes, the turn ends with
-        # the tier/cost footer. We only assert on that + clean
-        # shutdown; the retry-prompt observation goes to stdout for
-        # GATE-C inspection via the diagnostic dump.
+        # ── Turn 2: same action, menu MUST NOT re-appear ───────
+        runner.send_input(query + "\r")
+        # No menu fires; the cache returns ``deny`` silently and
+        # the agent receives a hard-denial Observation. The turn
+        # completes with the model composing a brief response.
         runner.wait_for_pattern(TURN_COMPLETE_RE, timeout=120.0)
-        # Record the observation in a way the test reporter
-        # captures even on pass.
-        second_turn_output = runner.stdout_since(mark)
-        reprompted = KAIZEN_FIRST_OPTION in second_turn_output
-        # The print lands in the captured-stderr that pytest shows
-        # alongside the test name when -v is set; not a true
-        # assertion failure.
-        print(
-            f"T6 observation: retry "
-            f"{'RE-PROMPTED' if reprompted else 'AUTO-HANDLED (no menu shown)'}"
-        )
         runner.send_input("\x04")
         rc = runner.wait_for_exit(timeout=15.0)
+    second_turn_output = runner.stdout_since(mark)
+    assert KAIZEN_FIRST_OPTION not in second_turn_output, (
+        f"T6 contract violated: the Kaizen menu RE-APPEARED on the "
+        f"retry after ``deny``. Per the Dispatcher docstring at "
+        f"grove/dispatcher.py:3007-3013, ``deny`` populates the "
+        f"session deny cache, and subsequent hits return ``deny`` "
+        f"silently without prompting. If the menu fires twice, the "
+        f"cache write or cache check is broken.\n"
+        f"second-turn output:\n{second_turn_output[:2000]}"
+    )
     assert rc in (0, 1, -15), (
-        f"T6 exited with unexpected code {rc} after deny+retry."
+        f"T6 exited with unexpected code {rc} after deny+cached-retry."
     )
 
 
@@ -530,47 +583,32 @@ def test_T9_tool_error_diagnostic_in_badge():
     chars) to the badge suffix so operators see the failure reason
     inline. Phase 1 ran this via ``--quiet`` pipes and skipped —
     ``--quiet`` mode suppresses the tool-completion line entirely
-    (GATE-B § B1 catalog finding, deferred to Phase 3). Phase 2
-    moves T9 to PTY so the real display path runs and the badge
-    fires.
+    (GATE-B § B1 catalog finding, fixed in Phase 3).
 
     Forcing function: ask the agent to ``cat`` a path that cannot
-    exist. The terminal tool runs it, the shell exits 1, the badge
-    line MUST contain a diagnostic body such as
-    ``[exit 1] cat: ...: No such file or directory``.
+    exist. The operator's ``terminal: default_zone: yellow`` means
+    the terminal tool ALWAYS hits Kaizen on first use (no green
+    rule matches ``cat /tmp/<random>``), so the menu paint is
+    deterministic — same flow as T4, no conditional polling.
 
-    Terminal-tool first use under the operator's default zone config
-    may itself trigger a Kaizen halt; if so, the test answers ``1``
-    (Allow once) to let the tool run and surface its error.
+    Phase 3 also discovered that the terminal tool's result schema
+    puts the failure text in ``output`` (combined stdout+stderr),
+    not ``error`` (which is reserved for tool-level errors and is
+    ``None`` for command-level failures). The Phase 3 fix to
+    ``agent/display.py:_detect_tool_failure`` adds the ``output``
+    fallback so the badge picks up the diagnostic body.
     """
     nonexistent = f"/tmp/s51_t9_definitely_missing_{uuid.uuid4().hex[:6]}.txt"
     query = (
-        f"Use the terminal tool to run this exact command: "
-        f"cat {nonexistent}"
+        f"Use the terminal tool to run this exact command, "
+        f"nothing else: cat {nonexistent}"
     )
     with LiveCliRunner(["chat"], mode="pty") as runner:
         _pty_setup(runner)
         runner.send_input(query + "\r")
-        # Wait for EITHER the Kaizen menu OR the turn-complete
-        # footer. If terminal is yellow-zoned, the menu appears
-        # first — answer Allow-once. If it's green-zoned, the tool
-        # runs immediately and the footer arrives without a prompt.
-        # The harness can't ``wait_for_pattern`` on an alternation
-        # in a single call cleanly, so we poll both within the
-        # 90s window.
-        deadline = time.monotonic() + 90.0
-        saw_menu = False
-        while time.monotonic() < deadline:
-            buf = runner.stdout()
-            if KAIZEN_FIRST_OPTION in buf:
-                saw_menu = True
-                break
-            if re.search(TURN_COMPLETE_RE, buf):
-                break
-            time.sleep(0.2)
-        if saw_menu:
-            runner.send_input("1\r")
-        # Now wait for the turn to complete one way or the other.
+        runner.wait_for_pattern(KAIZEN_MENU_RE, timeout=90.0)
+        # ``1`` → ``once``: let the tool execute and fail with exit 1.
+        runner.send_input("1\r")
         runner.wait_for_pattern(TURN_COMPLETE_RE, timeout=120.0)
         runner.send_input("\x04")
         rc = runner.wait_for_exit(timeout=15.0)
@@ -586,9 +624,12 @@ def test_T9_tool_error_diagnostic_in_badge():
         f"display layer is silently dropping failures.\n"
         f"stdout tail:\n{combined[-3000:]}"
     )
-    # The 8d10dbf3f contract: the badge MUST carry a body after
-    # the bracket. Strip the bracket and any leading space; non-
-    # empty remainder means a diagnostic landed.
+    # The 8d10dbf3f + Phase 3 contract: the badge MUST carry a body
+    # after the bracket. Strip the bracket and any leading space;
+    # non-empty remainder means a diagnostic landed. The Phase 3
+    # display.py fix pulls from ``output`` when ``error`` is None
+    # (terminal commands), so ``cat: ...: No such file or directory``
+    # surfaces as the body.
     diagnostic_bodies = [
         b[b.index("]") + 1:].strip()
         for b in badge_matches
@@ -596,7 +637,8 @@ def test_T9_tool_error_diagnostic_in_badge():
     ]
     assert any(diagnostic_bodies), (
         f"All error badges were bare (no diagnostic message after "
-        f"the bracket). Sprint 50 contract violated.\n"
+        f"the bracket). Sprint 50 contract + Phase 3 terminal-output "
+        f"fallback both violated.\n"
         f"badges: {badge_matches}"
     )
     assert rc in (0, 1, -15), (
