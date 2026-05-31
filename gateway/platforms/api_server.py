@@ -50,6 +50,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from grove.dispatcher import Dispatcher
 from grove.sovereign_prompt_handlers import gateway_auto_allow_handler
 
 logger = logging.getLogger(__name__)

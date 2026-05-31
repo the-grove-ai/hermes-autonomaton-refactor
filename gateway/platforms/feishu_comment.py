@@ -27,6 +27,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from grove.dispatcher import Dispatcher
 from grove.sovereign_prompt_handlers import gateway_auto_allow_handler
 
 logger = logging.getLogger(__name__)

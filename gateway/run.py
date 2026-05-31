@@ -52,6 +52,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from grove.dispatcher import Dispatcher
 from grove.sovereign_prompt_handlers import (
     batch_auto_allow_handler,
     gateway_auto_allow_handler,
