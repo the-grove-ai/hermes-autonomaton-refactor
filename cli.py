@@ -2816,6 +2816,13 @@ class HermesCLI:
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
+        # asyncio loop the prompt_toolkit Application runs on, captured via
+        # the ``pre_run`` hook at app start so background threads (agent
+        # thread, process_loop) can marshal work onto the main loop via
+        # ``asyncio.run_coroutine_threadsafe``. Used by the Sovereign Prompt
+        # bridge to pause the status bar and release stdin for the
+        # operator's Kaizen disposition input.
+        self._app_loop = None
         
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
@@ -2860,6 +2867,7 @@ class HermesCLI:
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
         self._app = None
+        self._app_loop = None  # captured at app.run() start; see __init__ comment
 
         # State shared by interactive run() and single-query chat mode.
         # These must exist before any direct chat() call because single-query
@@ -4786,7 +4794,10 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
-            self.agent = Dispatcher(session_db=self._session_db, agent_kwargs=dict(
+            self.agent = Dispatcher(
+                session_db=self._session_db,
+                sovereign_prompt_handler=self._sovereign_prompt_callback,
+                agent_kwargs=dict(
                 model=effective_model,
                 max_tokens=max_tokens,
                 api_key=runtime.get("api_key"),
@@ -10772,6 +10783,105 @@ class HermesCLI:
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
 
+    def _sovereign_prompt_callback(self, halt) -> str:
+        """Sovereign Prompt bridge for the Kaizen four-choice menu.
+
+        Called by the Dispatcher (on the agent's execution thread) when
+        an AndonHalt fires. The default
+        ``grove.sovereign_prompt_handlers.tty_sovereign_prompt`` would
+        ``input()`` from stdin — but when the interactive
+        prompt_toolkit Application is running on the main thread, it
+        owns stdin in raw mode and the operator's keystrokes never
+        reach the agent thread's ``input()``. The status bar / spinner
+        keep painting on top of the prompt and the disposition hangs.
+
+        Bridge mechanics: schedule a coroutine onto the application's
+        asyncio loop via ``asyncio.run_coroutine_threadsafe``. The
+        coroutine hides the status bar, calls
+        ``prompt_toolkit.application.run_in_terminal`` to release the
+        terminal from the application's raw-mode reader, runs the
+        canonical ``tty_sovereign_prompt`` inside that released
+        context (so its ``input()`` lands on cooked-mode stdio that
+        actually receives the operator's keystrokes), then restores
+        the status bar. The agent thread blocks on a Queue until the
+        coroutine posts the disposition string back.
+
+        Fail-safe: returns ``"deny"`` on timeout, missing loop, or any
+        exception inside the bridge — never propagates an exception
+        back into the Dispatcher (which would crash the turn).
+        Falls back to the direct prompt when there is no application
+        (``-q`` quiet mode, oneshot, gateway).
+        """
+        import threading
+        from grove.sovereign_prompt_handlers import tty_sovereign_prompt
+
+        loop = self._app_loop
+        # No live prompt_toolkit Application (oneshot / -q mode / unit tests),
+        # or we are already on the main thread (no bridge needed and
+        # ``run_coroutine_threadsafe`` would deadlock the loop): call the
+        # canonical prompt directly. ``input()`` lands on cooked-mode stdio
+        # because no raw-mode reader is in the way.
+        if (
+            self._app is None
+            or loop is None
+            or not loop.is_running()
+            or threading.current_thread() is threading.main_thread()
+        ):
+            return tty_sovereign_prompt(halt)
+
+        response_queue: queue.Queue = queue.Queue(maxsize=1)
+
+        async def _runner() -> None:
+            from prompt_toolkit.application import run_in_terminal
+            was_visible = self._status_bar_visible
+            self._status_bar_visible = False
+            try:
+                self._app.invalidate()
+            except Exception:
+                pass
+            try:
+                # ``run_in_terminal`` pauses the application's screen
+                # output and gives the called function exclusive
+                # stdin/stdout in cooked mode. ``tty_sovereign_prompt``
+                # prints the four-choice menu to stderr and reads the
+                # operator's selection from stdin.
+                choice = await run_in_terminal(
+                    lambda: tty_sovereign_prompt(halt)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "sovereign prompt run_in_terminal failed: %s", exc,
+                )
+                choice = "deny"
+            finally:
+                self._status_bar_visible = was_visible
+                try:
+                    self._app.invalidate()
+                except Exception:
+                    pass
+            response_queue.put(choice or "deny")
+
+        try:
+            import asyncio as _aio_sp
+            _aio_sp.run_coroutine_threadsafe(_runner(), loop)
+        except Exception as exc:
+            logger.warning(
+                "sovereign prompt schedule failed: %s — falling back to direct prompt",
+                exc,
+            )
+            return tty_sovereign_prompt(halt)
+
+        try:
+            # 5-minute ceiling. The operator either decides or the
+            # turn fails-safe to deny. Matches the clarify_callback
+            # timeout class.
+            return response_queue.get(timeout=300)
+        except queue.Empty:
+            logger.warning(
+                "sovereign prompt timed out after 300s — denying action",
+            )
+            return "deny"
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -14351,7 +14461,22 @@ class HermesCLI:
                     pass  # No running loop -- nothing to patch
                 except Exception:
                     pass
-                app.run()
+
+                def _capture_app_loop() -> None:
+                    """Stash the asyncio loop the application is now running
+                    on so background threads (agent thread, process_loop)
+                    can schedule work onto it via
+                    ``asyncio.run_coroutine_threadsafe``. Used by the
+                    Sovereign Prompt bridge — see ``_sovereign_prompt_callback``."""
+                    try:
+                        import asyncio as _aio_capture
+                        self._app_loop = _aio_capture.get_running_loop()
+                    except RuntimeError:
+                        self._app_loop = None
+                    except Exception:
+                        self._app_loop = None
+
+                app.run(pre_run=_capture_app_loop)
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
         except (KeyError, OSError) as _stdin_err:
