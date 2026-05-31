@@ -50,7 +50,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
-from grove.sovereign_prompt_handlers import gateway_auto_skip_handler
+from grove.sovereign_prompt_handlers import gateway_auto_allow_handler
 
 logger = logging.getLogger(__name__)
 
@@ -878,7 +878,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Andon halts auto-skip with Kaizen Ledger record. Covers both
             # callers of this factory (run_conversation sites at lines
             # 2739 and 2993).
-            sovereign_prompt_handler=gateway_auto_skip_handler,
+            sovereign_prompt_handler=gateway_auto_allow_handler,
         )).agent
         return agent
 

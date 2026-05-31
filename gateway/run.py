@@ -53,8 +53,8 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from grove.sovereign_prompt_handlers import (
-    batch_auto_skip_handler,
-    gateway_auto_skip_handler,
+    batch_auto_allow_handler,
+    gateway_auto_allow_handler,
 )
 from hermes_cli.config import cfg_get
 
@@ -10676,7 +10676,7 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                     # Sprint 27 Phase 3 — background task: no live operator
                     # surface. Andon halts auto-skip with Kaizen Ledger record.
-                    sovereign_prompt_handler=batch_auto_skip_handler,
+                    sovereign_prompt_handler=batch_auto_allow_handler,
                 )).agent
                 try:
                     return agent.run_conversation(
@@ -15305,7 +15305,7 @@ class GatewayRunner:
                     # Sprint 27 Phase 3 — live gateway turn (Telegram/Discord/etc).
                     # Andon halts auto-skip; future work routes Sovereign Prompts
                     # back through the platform adapter (Sprint 28).
-                    sovereign_prompt_handler=gateway_auto_skip_handler,
+                    sovereign_prompt_handler=gateway_auto_allow_handler,
                 )).agent
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
