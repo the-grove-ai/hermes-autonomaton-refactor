@@ -266,6 +266,52 @@ class LiveCliRunner:
                 )
             data = data[n:]
 
+    # ── signals ───────────────────────────────────────────────────────
+
+    def send_signal(self, sig: int) -> None:
+        """Deliver a signal to the child process (not the whole pgroup).
+
+        Used by T8 to drive a SIGINT while the agent is mid-stream — the
+        interactive ``hermes chat`` registers Ctrl+C handlers via
+        prompt_toolkit that should interrupt the in-flight LLM call
+        cleanly. ``os.kill(pid, SIGINT)`` targets the CLI wrapper, not
+        the whole process group, so any MCP children that are
+        legitimately reading stdin stay alive — they're reaped on
+        normal shutdown.
+
+        Idempotent on an already-exited child (returns ``False``).
+        Returns ``True`` if the signal was delivered.
+        """
+        if self.process is None or self.process.poll() is not None:
+            return False
+        try:
+            os.kill(self.process.pid, sig)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+    # ── stdout snapshot helpers ──────────────────────────────────────
+
+    def stdout_len(self) -> int:
+        """Length (in characters) of the accumulated stdout. Cheap to
+        sample so a test can mark a position before sending input and
+        later inspect only the bytes that arrived after that mark.
+
+        Used by T5/T6 which assert "no second Kaizen prompt fired on the
+        retry turn": the post-mark slice MUST NOT contain the
+        ``Choose [1-4]`` sentinel.
+        """
+        with self._buf_lock:
+            return sum(len(s) for s in self._stdout_buf)
+
+    def stdout_since(self, offset: int) -> str:
+        """Return the stdout text that arrived after ``offset`` (a value
+        previously returned by :meth:`stdout_len`).
+        """
+        with self._buf_lock:
+            full = "".join(self._stdout_buf)
+        return full[offset:]
+
     # ── waits ─────────────────────────────────────────────────────────
 
     def wait_for_pattern(
