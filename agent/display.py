@@ -861,6 +861,19 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
                 diag = _extract_tool_error_diagnostic(result)
+                # Sprint 51 Phase 3 fix — terminal tool's result schema
+                # is ``{output, exit_code, error}`` where ``error`` is
+                # ``None`` for command failures (it's reserved for
+                # tool-level errors like sandbox-spawn failures). The
+                # actual stderr text is in ``output`` (the subprocess
+                # combines stdout+stderr in this codebase). Fall back
+                # to the first non-empty line of ``output`` so the
+                # badge carries the diagnostic operators expect.
+                if not diag:
+                    output = data.get("output") or ""
+                    if isinstance(output, str) and output.strip():
+                        first_line = output.strip().split("\n", 1)[0].strip()
+                        diag = first_line[:_DIAGNOSTIC_MAX_CHARS]
                 badge = f" [exit {exit_code}]"
                 return True, f"{badge} {diag}" if diag else badge
         return False, ""
