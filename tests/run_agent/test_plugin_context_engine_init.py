@@ -45,6 +45,7 @@ def test_plugin_engine_gets_context_length_on_init():
         from run_agent import AIAgent
 
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
@@ -75,6 +76,7 @@ def test_plugin_engine_update_model_args():
         from run_agent import AIAgent
 
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             model="openrouter/auto",
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",

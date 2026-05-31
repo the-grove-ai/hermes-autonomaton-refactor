@@ -19,6 +19,7 @@ def _make_agent(fallback_model=None):
         patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,

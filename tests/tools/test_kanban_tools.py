@@ -861,6 +861,7 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
 
     from run_agent import AIAgent
     a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         api_key="test",
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,
@@ -884,6 +885,7 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
 
     from run_agent import AIAgent
     a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         api_key="test",
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,

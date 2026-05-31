@@ -265,6 +265,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         patch("agent.model_metadata.get_model_context_length", return_value=1_000_000) as mock_ctx_len,
     ):
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,

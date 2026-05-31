@@ -43,6 +43,7 @@ def _make_codex_agent():
     from run_agent import AIAgent
 
     agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         api_key="test-key",
         base_url="https://api.x.ai/v1",
         model="grok-4.3",

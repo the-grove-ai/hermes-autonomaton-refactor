@@ -22,6 +22,7 @@ def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-
         from run_agent import AIAgent
 
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             model=model,
             api_key="test-key-1234567890",
             base_url=base_url,

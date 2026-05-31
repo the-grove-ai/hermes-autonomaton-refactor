@@ -24,6 +24,7 @@ from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 def _make_agent():
     return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         model="test/model",

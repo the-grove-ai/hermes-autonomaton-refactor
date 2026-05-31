@@ -44,6 +44,7 @@ def _build_agent(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
 
     agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         model="gpt-5-codex",
         base_url="https://chatgpt.com/backend-api/codex",
         api_key="codex-token",
@@ -62,7 +63,7 @@ def _build_agent(monkeypatch):
 def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     _patch_agent_bootstrap(monkeypatch)
 
-    agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+    agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
         model=model,
         provider="copilot",
         api_mode="codex_responses",
@@ -202,6 +203,7 @@ def _codex_request_kwargs():
 def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         model="gpt-5-codex",
         base_url="https://openrouter.ai/api/v1",
         provider="openai-codex",
@@ -218,6 +220,7 @@ def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
 def test_api_mode_normalizes_provider_case(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         model="gpt-5-codex",
         base_url="https://openrouter.ai/api/v1",
         provider="OpenAI-Codex",
@@ -240,6 +243,7 @@ def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypat
     """
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         model="gpt-5-codex",
         base_url="https://chatgpt.com/backend-api/codex",
         provider="openrouter",
@@ -256,6 +260,7 @@ def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypat
 def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         model="gpt-5.4-mini",
         base_url="acp://copilot",
         provider="copilot-acp",
@@ -271,7 +276,7 @@ def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
 
 def test_copilot_gpt_5_mini_stays_on_chat_completions(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
-    agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+    agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
         model="gpt-5-mini",
         base_url="https://api.githubcopilot.com",
         provider="copilot",
@@ -324,6 +329,7 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
 
     agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         model="gpt-5-codex",
         base_url="https://chatgpt.com/backend-api/codex",
         api_key="codex-token",
@@ -354,6 +360,7 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
 
     for effort in ("low", "medium", "high", "xhigh"):
         agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             model="gpt-5-codex",
             base_url="https://chatgpt.com/backend-api/codex",
             api_key="codex-token",
@@ -581,7 +588,7 @@ def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
 
 def _build_xai_oauth_agent(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
-    agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+    agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
         model="grok-4.3",
         provider="xai-oauth",
         api_mode="codex_responses",
@@ -1582,6 +1589,7 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     import json
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         model="gpt-4o",
         base_url="http://127.0.0.1:9208/v1",
         api_key="test-key",

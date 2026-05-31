@@ -194,6 +194,7 @@ class TestGeminiAgentInit:
             mock_client.return_value = MagicMock()
             from run_agent import AIAgent
             agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="test-key",
@@ -211,6 +212,7 @@ class TestGeminiAgentInit:
             mock_compressor.return_value = MagicMock(context_length=1048576, threshold_tokens=524288)
             from run_agent import AIAgent
             AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="AIzaSy_REAL_KEY",
@@ -228,6 +230,7 @@ class TestGeminiAgentInit:
             mock_compressor.return_value = MagicMock(context_length=128000, threshold_tokens=64000)
             from run_agent import AIAgent
             AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="AIzaSy_REAL_KEY",
@@ -244,6 +247,7 @@ class TestGeminiAgentInit:
             mock_compressor.return_value = MagicMock(context_length=1048576, threshold_tokens=524288)
             from run_agent import AIAgent
             AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="AIzaSy_REAL_KEY",

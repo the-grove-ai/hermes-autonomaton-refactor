@@ -61,6 +61,7 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
 
     from grove.sovereign_prompt_handlers import silent_allow_handler
     agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         model="test-model",
         api_key="test-key",
         base_url="http://localhost:8080/v1",

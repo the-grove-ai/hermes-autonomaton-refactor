@@ -89,6 +89,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
     ):
         from grove.sovereign_prompt_handlers import silent_allow_handler
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             max_iterations=max_iterations,

@@ -54,7 +54,7 @@ def _make_codex_agent():
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
-    return run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+    return run_agent.AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
         api_key="stub",
         base_url="https://stub.invalid",
         provider="openai",

@@ -114,6 +114,7 @@ def agent():
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
@@ -141,6 +142,7 @@ def agent_with_memory_tool():
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="test-k...7890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
@@ -179,6 +181,7 @@ def test_aiagent_reuses_existing_errors_log_handler():
             patch("run_agent.OpenAI"),
         ):
             AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
@@ -186,6 +189,7 @@ def test_aiagent_reuses_existing_errors_log_handler():
                 skip_memory=True,
             )
             AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
@@ -218,6 +222,7 @@ class TestProviderModelNormalization:
             patch("run_agent.OpenAI"),
         ):
             agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 model="zai/glm-5.1",
                 provider="zai",
                 base_url="https://api.z.ai/api/paas/v4",
@@ -238,6 +243,7 @@ class TestProviderModelNormalization:
             patch("run_agent.OpenAI"),
         ):
             agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 model="anthropic/claude-sonnet-4.6",
                 provider="openrouter",
                 base_url="https://openrouter.ai/api/v1",
@@ -701,6 +707,7 @@ class TestInit:
             patch("agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
         ):
             agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-key-1234567890",
                 base_url="https://api.anthropic.com/v1/",
                 quiet_mode=True,
@@ -718,6 +725,7 @@ class TestInit:
             patch("run_agent.OpenAI"),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 model="anthropic/claude-sonnet-4-20250514",
                 base_url="https://openrouter.ai/api/v1",
@@ -735,6 +743,7 @@ class TestInit:
             patch("run_agent.OpenAI"),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-key-1234567890",
                 base_url="https://openrouter.ai/api/v1",
                 model="openai/gpt-4o",
@@ -752,6 +761,7 @@ class TestInit:
             patch("run_agent.OpenAI"),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-key-1234567890",
                 model="anthropic/claude-sonnet-4-20250514",
                 base_url="http://localhost:8080/v1",
@@ -769,6 +779,7 @@ class TestInit:
             patch("agent.anthropic_adapter._anthropic_sdk"),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-key-1234567890",
                 base_url="https://api.anthropic.com/v1/",
                 quiet_mode=True,
@@ -787,6 +798,7 @@ class TestInit:
             patch("hermes_cli.config.load_config", return_value={}),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 model="anthropic/claude-sonnet-4-20250514",
                 base_url="https://openrouter.ai/api/v1",
@@ -808,6 +820,7 @@ class TestInit:
             ),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 model="anthropic/claude-sonnet-4-20250514",
                 base_url="https://openrouter.ai/api/v1",
@@ -829,6 +842,7 @@ class TestInit:
             ),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 provider="custom",
                 model="claude-opus-4-6-thinking",
@@ -855,6 +869,7 @@ class TestInit:
             ),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 provider="custom",
                 model="claude-opus-4-6-thinking",
@@ -879,6 +894,7 @@ class TestInit:
             ),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 model="anthropic/claude-sonnet-4-20250514",
                 base_url="https://openrouter.ai/api/v1",
@@ -897,6 +913,7 @@ class TestInit:
             patch("run_agent.OpenAI"),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-key-1234567890",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
@@ -913,6 +930,7 @@ class TestInit:
             patch("run_agent.OpenAI"),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-key-1234567890",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
@@ -1021,6 +1039,7 @@ class TestBuildSystemPrompt:
             patch("grove.identity.load_identity", return_value=fake_identity),
         ):
             agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
@@ -1079,6 +1098,7 @@ class TestBuildSystemPrompt:
             patch("run_agent.OpenAI"),
         ):
             agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-k...7890",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
@@ -1111,6 +1131,7 @@ class TestToolUseEnforcementConfig:
             ),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 model=model,
                 api_key="test-key-1234567890",
                 base_url="https://openrouter.ai/api/v1",
@@ -1209,6 +1230,7 @@ class TestToolUseEnforcementConfig:
             ),
         ):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-key-1234567890",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
@@ -4395,6 +4417,7 @@ def test_aiagent_uses_copilot_acp_client():
         mock_acp_client.return_value = acp_client
 
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="copilot-acp",
             base_url="acp://copilot",
             provider="copilot-acp",
@@ -4487,7 +4510,7 @@ class TestAnthropicBaseUrlPassthrough:
             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             mock_build.return_value = MagicMock()
-            a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
                 api_key="sk-ant-api03-test1234567890",
                 base_url="https://llm-proxy.company.com/v1",
                 api_mode="anthropic_messages",
@@ -4506,7 +4529,7 @@ class TestAnthropicBaseUrlPassthrough:
             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             mock_build.return_value = MagicMock()
-            a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
                 api_key="sk-ant...7890",
                 api_mode="anthropic_messages",
                 quiet_mode=True,
@@ -4529,7 +4552,7 @@ class TestAnthropicCredentialRefresh:
             old_client = MagicMock()
             new_client = MagicMock()
             mock_build.side_effect = [old_client, new_client]
-            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
                 api_key="sk-ant-oat01-stale-token",
                 base_url="https://openrouter.ai/api/v1",
                 api_mode="anthropic_messages",
@@ -4562,7 +4585,7 @@ class TestAnthropicCredentialRefresh:
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
-            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
                 api_key="sk-ant-oat01-same-token",
                 base_url="https://openrouter.ai/api/v1",
                 api_mode="anthropic_messages",
@@ -4590,7 +4613,7 @@ class TestAnthropicCredentialRefresh:
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
-            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
                 api_key="sk-ant-oat01-current-token",
                 base_url="https://openrouter.ai/api/v1",
                 api_mode="anthropic_messages",
@@ -5282,6 +5305,7 @@ class TestMemoryNudgeCounterPersistence:
         """Counters must exist on the agent after __init__."""
         with patch("run_agent.get_tool_definitions", return_value=[]):
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 model="test", api_key="test-key", base_url="http://localhost:1234/v1",
                 provider="openrouter", skip_context_files=True, skip_memory=True,
             )

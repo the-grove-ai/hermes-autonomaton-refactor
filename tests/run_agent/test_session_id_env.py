@@ -32,6 +32,7 @@ def test_session_id_env_broadcast_via_dispatcher():
     from grove.dispatcher import Dispatcher
 
     agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,
@@ -58,6 +59,7 @@ def test_session_id_env_broadcast_uses_provided_id():
 
     custom_id = "20260511_120000_abc12345"
     agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         session_id=custom_id,
@@ -74,6 +76,7 @@ def test_session_id_contextvar_set():
     """AIAgent.__init__ also sets the ContextVar for concurrency safety."""
     custom_id = "20260511_130000_def67890"
     AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         session_id=custom_id,

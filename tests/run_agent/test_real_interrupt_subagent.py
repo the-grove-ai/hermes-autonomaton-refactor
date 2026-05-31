@@ -108,7 +108,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                         with patch.object(AIAgent, 'run_conversation', patched_run):
                             # Build a real child agent (AIAgent is NOT patched here,
                             # only run_conversation and _build_system_prompt are)
-                            child = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                            child = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
                                 base_url="http://localhost:1",
                                 api_key="test-key",
                                 model="test/model",

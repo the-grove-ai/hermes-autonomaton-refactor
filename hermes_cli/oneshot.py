@@ -29,6 +29,8 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
+from grove.dispatcher import Dispatcher
+
 
 class ModelConfigError(RuntimeError):
     """No model could be resolved for a oneshot (-z) run — not from --model,

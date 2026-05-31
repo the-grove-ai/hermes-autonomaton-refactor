@@ -20,6 +20,7 @@ def _make_agent(api_max_retries=None):
     with patch("run_agent.OpenAI"), \
          patch("hermes_cli.config.load_config", return_value=cfg):
         return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",

@@ -36,6 +36,7 @@ def test_init_tries_fallback_when_primary_returns_none():
          patch("run_agent.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             provider="alibaba-coding-plan",
             model="qwen3.6-plus",
             api_key=None,
@@ -59,6 +60,7 @@ def test_init_raises_when_no_fallback_configured():
 
         with pytest.raises(RuntimeError, match="no API key was found"):
             AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 provider="alibaba-coding-plan",
                 model="qwen3.6-plus",
                 api_key=None,

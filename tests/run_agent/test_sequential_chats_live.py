@@ -60,6 +60,7 @@ def _make_live_agent():
     from run_agent import AIAgent
 
     return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        api_mode="chat_completions",
         model=LIVE_MODEL,
         provider="openrouter",
         api_key=OR_KEY,

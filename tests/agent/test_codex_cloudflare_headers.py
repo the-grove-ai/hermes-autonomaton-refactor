@@ -125,6 +125,7 @@ class TestPrimaryClientWiring:
         with patch("run_agent.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key=token,
                 base_url="https://chatgpt.com/backend-api/codex",
                 provider="openai-codex",
@@ -145,6 +146,7 @@ class TestPrimaryClientWiring:
         with patch("run_agent.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="placeholder-openrouter-key",
                 base_url="https://openrouter.ai/api/v1",
                 provider="openrouter",
@@ -170,6 +172,7 @@ class TestPrimaryClientWiring:
         with patch("run_agent.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key=token,
                 base_url="https://chatgpt.com/backend-api/codex",
                 provider="openai-codex",
@@ -191,6 +194,7 @@ class TestPrimaryClientWiring:
         with patch("run_agent.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="sk-or-test",
                 base_url="https://openrouter.ai/api/v1",
                 provider="openrouter",

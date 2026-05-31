@@ -362,6 +362,7 @@ class TestOllamaCloudAgentInit:
             mock_openai.return_value = MagicMock()
             from run_agent import AIAgent
             agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 model="qwen3.5:397b",
                 provider="ollama-cloud",
                 api_key="test-key",

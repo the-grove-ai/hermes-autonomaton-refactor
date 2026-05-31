@@ -26,6 +26,7 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
         from run_agent import AIAgent
 
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,

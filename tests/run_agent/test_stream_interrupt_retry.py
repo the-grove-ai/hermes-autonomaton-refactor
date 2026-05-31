@@ -25,6 +25,7 @@ def _make_agent(**kwargs):
         api_key="test-key",
         base_url="https://example.com/v1",
         model="test/model",
+        api_mode="chat_completions",
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,

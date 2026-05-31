@@ -8,6 +8,7 @@ def _make_copilot_agent():
     with patch("run_agent.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()
         agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            api_mode="chat_completions",
             api_key="gh-token",
             base_url="https://api.githubcopilot.com",
             provider="copilot",

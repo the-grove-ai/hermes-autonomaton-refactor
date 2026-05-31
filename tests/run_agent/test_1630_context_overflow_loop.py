@@ -32,6 +32,7 @@ class TestGeneric400Heuristic:
         ):
             from run_agent import AIAgent
             a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+                api_mode="chat_completions",
                 api_key="test-key-12345",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
