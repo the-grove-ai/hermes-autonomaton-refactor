@@ -147,7 +147,7 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
 # ── TTY (operator-facing) prompt ─────────────────────────────────────
 
 
-def tty_sovereign_prompt(halt: "AndonHalt") -> str:
+def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
     """The Kaizen-register Sovereign Prompt (Sprint 32 v1.1).
 
     Renders a plain-language two-sentence description of the action
@@ -164,41 +164,54 @@ def tty_sovereign_prompt(halt: "AndonHalt") -> str:
     Returns one of ``"once"``, ``"session"``, ``"always"``, ``"deny"``.
     Defaults to ``"deny"`` on EOF / KeyboardInterrupt (fail-safe).
 
+    ``out`` is the destination stream for the menu and the
+    fail-safe / unknown-choice messages; defaults to ``sys.stderr``
+    so direct callers (oneshot, ``--quiet`` mode, unit tests using
+    ``capsys``) get the normal capture behavior. The interactive CLI
+    bridge in ``HermesCLI._sovereign_prompt_callback`` overrides this
+    with ``sys.__stderr__`` to bypass prompt_toolkit's
+    ``patch_stdout`` buffering — without that override the menu text
+    sits in the StdoutProxy queue until the renderer flushes, which
+    it doesn't reliably do from inside ``run_in_terminal``. Sprint 51
+    Phase 3 finding.
+
     Zone names, regex patterns, match sources, and intent indices
     are deliberately absent from the prompt — they belong in the
     Kaizen Ledger (the Dispatcher's upstream ``andon_halt`` record
     carries them). Operator-facing text is plain language; debug
     detail lives in telemetry.
     """
+    if out is None:
+        out = sys.stderr
     triggering = halt.intents[halt.triggering_index]
     description = describe_action_kaizen(
         triggering.tool_name, triggering.arguments or {},
     )
 
-    print(file=sys.stderr)
+    print(file=out)
     print(
         f"The agent wants to {description}.",
-        file=sys.stderr,
+        file=out,
     )
     print(
         "This requires a decision before it can continue.",
-        file=sys.stderr,
+        file=out,
     )
-    print(file=sys.stderr)
-    print("  [1] Allow this once", file=sys.stderr)
-    print("  [2] Allow for this session", file=sys.stderr)
+    print(file=out)
+    print("  [1] Allow this once", file=out)
+    print("  [2] Allow for this session", file=out)
     print(
         "  [3] Always allow this — I'll save the preference",
-        file=sys.stderr,
+        file=out,
     )
-    print("  [4] Don't allow this", file=sys.stderr)
-    print(file=sys.stderr)
+    print("  [4] Don't allow this", file=out)
+    print(file=out)
 
     while True:
         try:
             choice = input("Choose [1-4]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("(no input — declining the action)", file=sys.stderr)
+            print("(no input — declining the action)", file=out)
             return "deny"
         if choice in ("1", "once", "allow", "yes", "y"):
             return "once"
@@ -210,7 +223,7 @@ def tty_sovereign_prompt(halt: "AndonHalt") -> str:
             return "deny"
         print(
             f"Unknown choice {choice!r}; pick 1, 2, 3, or 4.",
-            file=sys.stderr,
+            file=out,
         )
 
 

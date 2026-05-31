@@ -10816,11 +10816,11 @@ class HermesCLI:
         from grove.sovereign_prompt_handlers import tty_sovereign_prompt
 
         loop = self._app_loop
-        # No live prompt_toolkit Application (oneshot / -q mode / unit tests),
-        # or we are already on the main thread (no bridge needed and
-        # ``run_coroutine_threadsafe`` would deadlock the loop): call the
-        # canonical prompt directly. ``input()`` lands on cooked-mode stdio
-        # because no raw-mode reader is in the way.
+        # No live prompt_toolkit Application (oneshot / -q mode / unit
+        # tests), or we are already on the main thread (no bridge needed
+        # and the cross-thread schedule would deadlock the loop): call
+        # the canonical prompt directly. ``input()`` lands on cooked-mode
+        # stdio because no raw-mode reader is in the way.
         if (
             self._app is None
             or loop is None
@@ -10831,42 +10831,61 @@ class HermesCLI:
 
         response_queue: queue.Queue = queue.Queue(maxsize=1)
 
-        async def _runner() -> None:
-            from prompt_toolkit.application import run_in_terminal
-            was_visible = self._status_bar_visible
-            self._status_bar_visible = False
+        def _kick_in_terminal() -> None:
+            """Scheduled on the prompt_toolkit asyncio loop via
+            ``call_soon_threadsafe``. Mirrors the synchronous
+            ``run_in_terminal`` pattern used by ``_run_curses_picker``
+            / ``_prompt_text_input`` at cli.py:7011. ``run_in_terminal``
+            pauses the application's renderer and runs the callable
+            with cooked stdio. The callable posts the disposition to
+            ``response_queue`` so the agent thread can return it."""
             try:
-                self._app.invalidate()
-            except Exception:
-                pass
-            try:
-                # ``run_in_terminal`` pauses the application's screen
-                # output and gives the called function exclusive
-                # stdin/stdout in cooked mode. ``tty_sovereign_prompt``
-                # prints the four-choice menu to stderr and reads the
-                # operator's selection from stdin.
-                choice = await run_in_terminal(
-                    lambda: tty_sovereign_prompt(halt)
-                )
-            except Exception as exc:
-                logger.warning(
-                    "sovereign prompt run_in_terminal failed: %s", exc,
-                )
-                choice = "deny"
-            finally:
-                self._status_bar_visible = was_visible
+                from prompt_toolkit.application import run_in_terminal
+                was_visible = self._status_bar_visible
+                self._status_bar_visible = False
                 try:
                     self._app.invalidate()
                 except Exception:
                     pass
-            response_queue.put(choice or "deny")
+
+                def _prompt_and_post() -> None:
+                    try:
+                        # ``out=sys.__stderr__`` bypasses prompt_toolkit's
+                        # ``patch_stdout`` proxy. ``run_in_terminal``
+                        # pauses the renderer but writes through the
+                        # proxy still queue without flushing, so the
+                        # operator (or, here, the PTY test harness)
+                        # never sees the menu. The unpatched original
+                        # stderr writes directly to fd 2. Sprint 51
+                        # Phase 3 finding.
+                        import sys as _sp_sys
+                        _out = getattr(_sp_sys, "__stderr__", None) or _sp_sys.stderr
+                        choice = tty_sovereign_prompt(halt, out=_out)
+                    except Exception as exc:
+                        logger.warning(
+                            "tty_sovereign_prompt failed inside run_in_terminal: %s",
+                            exc,
+                        )
+                        choice = "deny"
+                    response_queue.put(choice or "deny")
+                    self._status_bar_visible = was_visible
+                    try:
+                        self._app.invalidate()
+                    except Exception:
+                        pass
+
+                run_in_terminal(_prompt_and_post)
+            except Exception as exc:
+                logger.warning(
+                    "sovereign prompt schedule onto loop failed: %s", exc,
+                )
+                response_queue.put("deny")
 
         try:
-            import asyncio as _aio_sp
-            _aio_sp.run_coroutine_threadsafe(_runner(), loop)
+            loop.call_soon_threadsafe(_kick_in_terminal)
         except Exception as exc:
             logger.warning(
-                "sovereign prompt schedule failed: %s — falling back to direct prompt",
+                "sovereign prompt call_soon_threadsafe failed: %s — falling back to direct prompt",
                 exc,
             )
             return tty_sovereign_prompt(halt)
