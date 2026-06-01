@@ -128,14 +128,16 @@ CLARIFY_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
-registry.register(
-    name="clarify",
-    toolset="clarify",
-    schema=CLARIFY_SCHEMA,
-    handler=lambda args, **kw: clarify_tool(
-        question=args.get("question", ""),
-        choices=args.get("choices"),
-        callback=kw.get("callback")),
-    check_fn=check_clarify_requirements,
-    emoji="❓",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="clarify",
+        toolset="clarify",
+        schema=CLARIFY_SCHEMA,
+        handler=lambda args, **kw: clarify_tool(
+            question=args.get("question", ""),
+            choices=args.get("choices"),
+            callback=kw.get("callback")),
+        check_fn=check_clarify_requirements,
+        emoji="❓",
+    )

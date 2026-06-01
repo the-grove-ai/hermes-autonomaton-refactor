@@ -1522,16 +1522,6 @@ SKILL_VIEW_SCHEMA = {
     },
 }
 
-registry.register(
-    name="skills_list",
-    toolset="skills",
-    schema=SKILLS_LIST_SCHEMA,
-    handler=lambda args, **kw: skills_list(
-        category=args.get("category"), task_id=kw.get("task_id")
-    ),
-    check_fn=check_skills_requirements,
-    emoji="📚",
-)
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count on success. Best-effort: a
     telemetry failure never breaks the tool call."""
@@ -1556,13 +1546,23 @@ def _skill_view_with_bump(args, **kw):
         pass
     return result
 
-
-registry.register(
-    name="skill_view",
-    toolset="skills",
-    schema=SKILL_VIEW_SCHEMA,
-    handler=_skill_view_with_bump,
-    check_fn=check_skills_requirements,
-    emoji="📚",
-)
-
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="skills_list",
+        toolset="skills",
+        schema=SKILLS_LIST_SCHEMA,
+        handler=lambda args, **kw: skills_list(
+            category=args.get("category"), task_id=kw.get("task_id")
+        ),
+        check_fn=check_skills_requirements,
+        emoji="📚",
+    )
+    reg.register(
+        name="skill_view",
+        toolset="skills",
+        schema=SKILL_VIEW_SCHEMA,
+        handler=_skill_view_with_bump,
+        check_fn=check_skills_requirements,
+        emoji="📚",
+    )

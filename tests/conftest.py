@@ -37,6 +37,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+# ── Sprint 53 transitional singleton bootstrap ─────────────────────────────
+# tools/registry.py no longer auto-populates the module-level ``registry``
+# singleton (a tool module is often the first importer; the registry's
+# auto-populate would race the partial module load).  Production paths
+# bootstrap it via ``model_tools.py``.  Tests bootstrap it here so that
+# legacy tests still expecting a populated singleton see one.  Idempotent.
+def _bootstrap_tool_singleton() -> None:
+    from tools.registry import register_builtin_tools, registry
+    register_builtin_tools(registry)
+
+
+_bootstrap_tool_singleton()
+
+
 # ── Credential env-var filter ──────────────────────────────────────────────
 #
 # Any env var in the current process matching ONE of these patterns is

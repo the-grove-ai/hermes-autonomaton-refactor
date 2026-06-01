@@ -20,6 +20,9 @@ def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
     memory_tool = importlib.import_module("tools.memory_tool")
+    # Sprint 53 — module import no longer registers tools as a side
+    # effect. Call the module's explicit ``register(reg)`` entry point.
+    memory_tool.register(registry)
     monkeypatch.setattr(memory_tool, "get_memory_dir", lambda: tmp_path)
 
     store = memory_tool.MemoryStore(memory_char_limit=200, user_char_limit=200)

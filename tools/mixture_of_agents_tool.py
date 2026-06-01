@@ -530,13 +530,15 @@ MOA_SCHEMA = {
     }
 }
 
-registry.register(
-    name="mixture_of_agents",
-    toolset="moa",
-    schema=MOA_SCHEMA,
-    handler=lambda args, **kw: mixture_of_agents_tool(user_prompt=args.get("user_prompt", "")),
-    check_fn=check_moa_requirements,
-    requires_env=["OPENROUTER_API_KEY"],
-    is_async=True,
-    emoji="🧠",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="mixture_of_agents",
+        toolset="moa",
+        schema=MOA_SCHEMA,
+        handler=lambda args, **kw: mixture_of_agents_tool(user_prompt=args.get("user_prompt", "")),
+        check_fn=check_moa_requirements,
+        requires_env=["OPENROUTER_API_KEY"],
+        is_async=True,
+        emoji="🧠",
+    )

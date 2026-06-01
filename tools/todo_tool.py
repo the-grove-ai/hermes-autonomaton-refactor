@@ -266,12 +266,14 @@ TODO_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
-registry.register(
-    name="todo",
-    toolset="todo",
-    schema=TODO_SCHEMA,
-    handler=lambda args, **kw: todo_tool(
-        todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
-    check_fn=check_todo_requirements,
-    emoji="📋",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="todo",
+        toolset="todo",
+        schema=TODO_SCHEMA,
+        handler=lambda args, **kw: todo_tool(
+            todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
+        check_fn=check_todo_requirements,
+        emoji="📋",
+    )

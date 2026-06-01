@@ -132,17 +132,18 @@ def _browser_dialog_check() -> bool:
         return False
     return _browser_cdp_check()
 
-
-registry.register(
-    name="browser_dialog",
-    toolset="browser-cdp",
-    schema=BROWSER_DIALOG_SCHEMA,
-    handler=lambda args, **kw: browser_dialog(
-        action=args.get("action", ""),
-        prompt_text=args.get("prompt_text"),
-        dialog_id=args.get("dialog_id"),
-        task_id=kw.get("task_id"),
-    ),
-    check_fn=_browser_dialog_check,
-    emoji="💬",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="browser_dialog",
+        toolset="browser-cdp",
+        schema=BROWSER_DIALOG_SCHEMA,
+        handler=lambda args, **kw: browser_dialog(
+            action=args.get("action", ""),
+            prompt_text=args.get("prompt_text"),
+            dialog_id=args.get("dialog_id"),
+            task_id=kw.get("task_id"),
+        ),
+        check_fn=_browser_dialog_check,
+        emoji="💬",
+    )

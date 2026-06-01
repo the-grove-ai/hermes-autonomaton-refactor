@@ -28,7 +28,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import discover_builtin_tools, registry
+from tools.registry import register_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -173,10 +173,16 @@ def _run_async(coro):
 
 
 # =============================================================================
-# Tool Discovery  (importing each module triggers its registry.register calls)
+# Tool Discovery  (Sprint 53 — Dispatcher-driven; transitional singleton)
 # =============================================================================
-
-discover_builtin_tools()
+# Sprint-pre-53: each tool module side-effect-registered itself into the
+# module-level ``registry`` singleton on import.  Sprint 53 inverts that:
+# tool modules expose ``def register(reg)`` and the Dispatcher walks them
+# at its own ``__init__``.  The module-level singleton survives Phase 1
+# for the legacy consumers in this module's public API; the explicit
+# bootstrap below populates it from the same path the Dispatcher uses.
+# Phase 2 deletes both the singleton and this call.
+register_builtin_tools(registry)
 
 # MCP tool discovery (external MCP servers from config) used to run here as
 # a module-level side effect.  It was removed because discover_mcp_tools()

@@ -411,14 +411,15 @@ def _handle_x_search(args, **kw):
         enable_video_understanding=bool(args.get("enable_video_understanding", False)),
     )
 
-
-registry.register(
-    name="x_search",
-    toolset="x_search",
-    schema=X_SEARCH_SCHEMA,
-    handler=_handle_x_search,
-    check_fn=check_x_search_requirements,
-    requires_env=["XAI_API_KEY"],
-    emoji="🐦",
-    max_result_size_chars=100_000,
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="x_search",
+        toolset="x_search",
+        schema=X_SEARCH_SCHEMA,
+        handler=_handle_x_search,
+        check_fn=check_x_search_requirements,
+        requires_env=["XAI_API_KEY"],
+        emoji="🐦",
+        max_result_size_chars=100_000,
+    )

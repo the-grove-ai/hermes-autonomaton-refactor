@@ -1890,11 +1890,13 @@ async def _send_yuanbao(chat_id, message, media_files=None):
 # --- Registry ---
 from tools.registry import registry, tool_error
 
-registry.register(
-    name="send_message",
-    toolset="messaging",
-    schema=SEND_MESSAGE_SCHEMA,
-    handler=send_message_tool,
-    check_fn=_check_send_message,
-    emoji="📨",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="send_message",
+        toolset="messaging",
+        schema=SEND_MESSAGE_SCHEMA,
+        handler=send_message_tool,
+        check_fn=_check_send_message,
+        emoji="📨",
+    )

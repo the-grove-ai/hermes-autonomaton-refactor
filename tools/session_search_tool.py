@@ -597,16 +597,18 @@ SESSION_SEARCH_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
-registry.register(
-    name="session_search",
-    toolset="session_search",
-    schema=SESSION_SEARCH_SCHEMA,
-    handler=lambda args, **kw: session_search(
-        query=args.get("query") or "",
-        role_filter=args.get("role_filter"),
-        limit=args.get("limit", 3),
-        db=kw.get("db"),
-        current_session_id=kw.get("current_session_id")),
-    check_fn=check_session_search_requirements,
-    emoji="🔍",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="session_search",
+        toolset="session_search",
+        schema=SESSION_SEARCH_SCHEMA,
+        handler=lambda args, **kw: session_search(
+            query=args.get("query") or "",
+            role_filter=args.get("role_filter"),
+            limit=args.get("limit", 3),
+            db=kw.get("db"),
+            current_session_id=kw.get("current_session_id")),
+        check_fn=check_session_search_requirements,
+        emoji="🔍",
+    )

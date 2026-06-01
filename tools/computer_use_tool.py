@@ -16,20 +16,6 @@ from tools.computer_use.tool import (
 from tools.registry import registry
 
 
-registry.register(
-    name="computer_use",
-    toolset="computer_use",
-    schema=COMPUTER_USE_SCHEMA,
-    handler=lambda args, **kw: handle_computer_use(args, **kw),
-    check_fn=check_computer_use_requirements,
-    requires_env=[],
-    description=(
-        "Universal macOS desktop control via cua-driver. Works with any "
-        "tool-capable model (Anthropic, OpenAI, OpenRouter, local vLLM, "
-        "etc.). Background computer-use: does NOT steal the user's cursor "
-        "or keyboard focus."
-    ),
-)
 
 
 __all__ = [
@@ -37,3 +23,20 @@ __all__ = [
     "set_approval_callback",
     "check_computer_use_requirements",
 ]
+
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="computer_use",
+        toolset="computer_use",
+        schema=COMPUTER_USE_SCHEMA,
+        handler=lambda args, **kw: handle_computer_use(args, **kw),
+        check_fn=check_computer_use_requirements,
+        requires_env=[],
+        description=(
+            "Universal macOS desktop control via cua-driver. Works with any "
+            "tool-capable model (Anthropic, OpenAI, OpenRouter, local vLLM, "
+            "etc.). Background computer-use: does NOT steal the user's cursor "
+            "or keyboard focus."
+        ),
+    )

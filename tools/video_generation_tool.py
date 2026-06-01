@@ -547,15 +547,16 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
 # Registry
 # ---------------------------------------------------------------------------
 
-
-registry.register(
-    name="video_generate",
-    toolset="video_gen",
-    schema=VIDEO_GENERATE_SCHEMA,
-    handler=_handle_video_generate,
-    check_fn=check_video_generation_requirements,
-    requires_env=[],
-    is_async=False,
-    emoji="🎬",
-    dynamic_schema_overrides=_build_dynamic_video_schema,
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="video_generate",
+        toolset="video_gen",
+        schema=VIDEO_GENERATE_SCHEMA,
+        handler=_handle_video_generate,
+        check_fn=check_video_generation_requirements,
+        requires_env=[],
+        is_async=False,
+        emoji="🎬",
+        dynamic_schema_overrides=_build_dynamic_video_schema,
+    )

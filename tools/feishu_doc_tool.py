@@ -125,14 +125,16 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
 # Registration
 # ---------------------------------------------------------------------------
 
-registry.register(
-    name="feishu_doc_read",
-    toolset="feishu_doc",
-    schema=FEISHU_DOC_READ_SCHEMA,
-    handler=_handle_feishu_doc_read,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="Read Feishu document content",
-    emoji="\U0001f4c4",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="feishu_doc_read",
+        toolset="feishu_doc",
+        schema=FEISHU_DOC_READ_SCHEMA,
+        handler=_handle_feishu_doc_read,
+        check_fn=_check_feishu,
+        requires_env=[],
+        is_async=False,
+        description="Read Feishu document content",
+        emoji="\U0001f4c4",
+    )

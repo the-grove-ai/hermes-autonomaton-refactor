@@ -5,7 +5,12 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.registry import ToolRegistry, _module_registers_tools, discover_builtin_tools
+from tools.registry import (
+    ToolRegistry,
+    _module_exposes_register,
+    discover_builtin_tools,
+    register_builtin_tools,
+)
 
 
 def _dummy_handler(args, **kwargs):
@@ -289,55 +294,118 @@ class TestCheckFnExceptionHandling:
 
 
 class TestBuiltinDiscovery:
-    def test_discovers_all_real_self_registering_builtin_tool_modules(self):
+    """Sprint 53 — tool modules expose ``def register(reg):`` and the
+    Dispatcher walks the list to populate its owned ToolRegistry.
+    Module import is no longer a registration side effect."""
+
+    def test_discovers_all_real_builtin_tool_modules(self):
         tools_dir = Path(__file__).resolve().parents[2] / "tools"
         expected = [
             f"tools.{path.stem}"
             for path in sorted(tools_dir.glob("*.py"))
             if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
-            and _module_registers_tools(path)
+            and _module_exposes_register(path)
         ]
+        # discover_builtin_tools no longer imports — pure AST scan.
+        assert discover_builtin_tools(tools_dir) == expected
 
-        with patch("tools.registry.importlib.import_module"):
-            imported = discover_builtin_tools(tools_dir)
-
-        assert imported == expected
-
-    def test_imports_only_self_registering_modules(self, tmp_path):
+    def test_lists_only_modules_with_register_function(self, tmp_path):
         tools_dir = tmp_path / "tools"
         tools_dir.mkdir()
         (tools_dir / "__init__.py").write_text("", encoding="utf-8")
         (tools_dir / "registry.py").write_text("", encoding="utf-8")
         (tools_dir / "alpha.py").write_text(
-            "from tools.registry import registry\nregistry.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            "def register(reg):\n"
+            "    reg.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
             encoding="utf-8",
         )
         (tools_dir / "beta.py").write_text("VALUE = 1\n", encoding="utf-8")
+        # gamma.py mimics application-domain helpers (clarify_gateway,
+        # slash_confirm): top-level ``def register(...)`` that takes more
+        # than one positional argument and is NOT the tool-registration
+        # convention.
+        (tools_dir / "gamma.py").write_text(
+            "def register(session_key, confirm_id, command, handler):\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        assert discover_builtin_tools(tools_dir) == ["tools.alpha"]
 
-        with patch("tools.registry.importlib.import_module") as mock_import:
-            imported = discover_builtin_tools(tools_dir)
-
-        assert imported == ["tools.alpha"]
-        mock_import.assert_called_once_with("tools.alpha")
-
-    def test_skips_mcp_tool_even_if_it_registers(self, tmp_path):
+    def test_skips_mcp_tool_even_if_it_exposes_register(self, tmp_path):
         tools_dir = tmp_path / "tools"
         tools_dir.mkdir()
         (tools_dir / "__init__.py").write_text("", encoding="utf-8")
         (tools_dir / "mcp_tool.py").write_text(
-            "from tools.registry import registry\nregistry.register(name='mcp_alpha', toolset='mcp-test', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            "def register(reg):\n"
+            "    reg.register(name='mcp_alpha', toolset='mcp-test', schema={}, handler=lambda *_a, **_k: '{}')\n",
             encoding="utf-8",
         )
         (tools_dir / "alpha.py").write_text(
-            "from tools.registry import registry\nregistry.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            "def register(reg):\n"
+            "    reg.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
             encoding="utf-8",
         )
+        assert discover_builtin_tools(tools_dir) == ["tools.alpha"]
 
-        with patch("tools.registry.importlib.import_module") as mock_import:
-            imported = discover_builtin_tools(tools_dir)
 
-        assert imported == ["tools.alpha"]
-        mock_import.assert_called_once_with("tools.alpha")
+class TestRegisterBuiltinTools:
+    """Sprint 53 — register_builtin_tools(reg) is the Dispatcher's
+    bootstrap. Imports each discovered tool module and calls its
+    ``register(reg)`` against the supplied registry."""
+
+    def test_populates_registry_from_real_tool_modules(self, tmp_path, monkeypatch):
+        tools_dir = tmp_path / "tools_pkg"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "alpha.py").write_text(
+            "def register(reg):\n"
+            "    reg.register(name='alpha', toolset='x', schema={'name':'alpha','description':'','parameters':{'type':'object','properties':{}}}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+        (tools_dir / "beta.py").write_text(
+            "def register(reg):\n"
+            "    reg.register(name='beta', toolset='y', schema={'name':'beta','description':'','parameters':{'type':'object','properties':{}}}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+        import sys
+        monkeypatch.syspath_prepend(str(tmp_path))
+        # Map "tools.<stem>" to the synthetic package so importlib resolves.
+        monkeypatch.setattr(
+            "tools.registry.importlib.import_module",
+            lambda name: __import__(name.replace("tools.", "tools_pkg."), fromlist=["*"]),
+        )
+
+        reg = ToolRegistry()
+        registered = register_builtin_tools(reg, tools_dir)
+        assert sorted(registered) == ["tools.alpha", "tools.beta"]
+        assert reg.get_entry("alpha") is not None
+        assert reg.get_entry("beta") is not None
+
+    def test_skips_module_with_failing_register(self, tmp_path, monkeypatch):
+        tools_dir = tmp_path / "tools_pkg2"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "good.py").write_text(
+            "def register(reg):\n"
+            "    reg.register(name='good', toolset='x', schema={'name':'good','description':'','parameters':{'type':'object','properties':{}}}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+        (tools_dir / "bad.py").write_text(
+            "def register(reg):\n"
+            "    raise RuntimeError('boom')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(
+            "tools.registry.importlib.import_module",
+            lambda name: __import__(name.replace("tools.", "tools_pkg2."), fromlist=["*"]),
+        )
+
+        reg = ToolRegistry()
+        registered = register_builtin_tools(reg, tools_dir)
+        assert registered == ["tools.good"]
+        assert reg.get_entry("good") is not None
+        assert reg.get_entry("bad") is None
 
 
 class TestEmojiMetadata:

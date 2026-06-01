@@ -133,13 +133,90 @@ def get_skin_tool_prefix() -> str:
     return "┊"
 
 
+# Canonical emoji map for built-in tools. Each entry mirrors the
+# ``emoji=`` kwarg on the tool's ``registry.register(...)`` call in
+# ``tools/*.py``. Display metadata is intentionally NOT part of the
+# capability state — the registry is owned by the Dispatcher and the
+# Agent reaches it through a read-only callback; emoji lookup must
+# work in any context (CLI, gateway, test, or no-Dispatcher path)
+# without taking a dependency on the registry. Sprint 53.
+_TOOL_EMOJI: dict[str, str] = {
+    "browser_back": "◀️",
+    "browser_cdp": "🧪",
+    "browser_click": "👆",
+    "browser_console": "🖥️",
+    "browser_dialog": "💬",
+    "browser_get_images": "🖼️",
+    "browser_navigate": "🌐",
+    "browser_press": "⌨️",
+    "browser_scroll": "📜",
+    "browser_snapshot": "📸",
+    "browser_type": "⌨️",
+    "browser_vision": "👁️",
+    "clarify": "❓",
+    "cronjob": "⏰",
+    "delegate_task": "🔀",
+    "escalate": "⬆",
+    "execute_code": "🐍",
+    "feishu_doc_read": "📄",
+    "feishu_drive_add_comment": "✉️",
+    "feishu_drive_list_comment_replies": "💬",
+    "feishu_drive_list_comments": "💬",
+    "feishu_drive_reply_comment": "✉️",
+    "ha_call_service": "🏠",
+    "ha_get_state": "🏠",
+    "ha_list_entities": "🏠",
+    "ha_list_services": "🏠",
+    "image_generate": "🎨",
+    "kanban_block": "⏸",
+    "kanban_comment": "💬",
+    "kanban_complete": "✔",
+    "kanban_create": "➕",
+    "kanban_heartbeat": "💓",
+    "kanban_link": "🔗",
+    "kanban_list": "📋",
+    "kanban_show": "📋",
+    "kanban_unblock": "▶",
+    "memory": "🧠",
+    "mixture_of_agents": "🧠",
+    "patch": "🔧",
+    "process": "⚙️",
+    "read_file": "📖",
+    "search_files": "🔎",
+    "send_message": "📨",
+    "session_search": "🔍",
+    "skill_manage": "📝",
+    "skill_view": "📚",
+    "skills_list": "📚",
+    "terminal": "💻",
+    "text_to_speech": "🔊",
+    "todo": "📋",
+    "video_analyze": "🎬",
+    "video_generate": "🎬",
+    "vision_analyze": "👁️",
+    "web_extract": "📄",
+    "web_search": "🔍",
+    "write_file": "✍️",
+    "x_search": "🐦",
+    "yb_query_group_info": "👥",
+    "yb_query_group_members": "📋",
+    "yb_search_sticker": "🔍",
+    "yb_send_dm": "✉️",
+    "yb_send_sticker": "🎨",
+}
+
+
 def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     """Get the display emoji for a tool.
 
     Resolution order:
     1. Active skin's ``tool_emojis`` overrides (if a skin is loaded)
-    2. Tool registry's per-tool ``emoji`` field
+    2. Canonical ``_TOOL_EMOJI`` map (mirrors ``registry.register(emoji=...)`` values)
     3. *default* fallback
+
+    Sprint 53 — extracted from ``ToolRegistry.get_emoji`` because
+    display metadata is not capability state and must not depend on
+    the Dispatcher-owned registry.
     """
     # 1. Skin override
     skin = _get_skin()
@@ -147,14 +224,10 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
         override = skin.tool_emojis.get(tool_name)
         if override:
             return override
-    # 2. Registry default
-    try:
-        from tools.registry import registry
-        emoji = registry.get_emoji(tool_name, default="")
-        if emoji:
-            return emoji
-    except Exception:
-        pass
+    # 2. Canonical built-in map
+    emoji = _TOOL_EMOJI.get(tool_name)
+    if emoji:
+        return emoji
     # 3. Hardcoded fallback
     return default
 

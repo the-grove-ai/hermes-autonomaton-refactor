@@ -23,7 +23,11 @@ class TestRegisterServerTools:
 
     def test_exposes_live_server_aliases(self, mock_registry):
         """Registered MCP tools are reachable via live raw-server aliases."""
-        server = MCPServerTask("my_srv")
+        # Sprint 53 — MCPServerTask carries its registry; _register_server_tools
+        # reads it from ``server._registry`` rather than the module-level
+        # singleton.  ``toolsets.resolve_toolset`` still reads the singleton
+        # under Phase 1, so patch it to mock_registry for this assertion.
+        server = MCPServerTask("my_srv", registry=mock_registry)
         server._tools = [_make_mcp_tool("my_tool", "desc")]
         server.session = MagicMock()
         from toolsets import resolve_toolset, validate_toolset
@@ -46,7 +50,9 @@ class TestRefreshTools:
     @pytest.mark.asyncio
     async def test_nuke_and_repave(self, mock_registry):
         """Old tools are removed and new tools registered on refresh."""
-        server = MCPServerTask("live_srv")
+        # Sprint 53 — pass the test's mock_registry as the server's
+        # owned registry; _refresh_tools reads it from self._registry.
+        server = MCPServerTask("live_srv", registry=mock_registry)
         server._refresh_lock = asyncio.Lock()
         server._config = {}
         from toolsets import resolve_toolset
@@ -67,6 +73,10 @@ class TestRefreshTools:
             )
         )
 
+        # toolsets.resolve_toolset reads the module-level singleton in
+        # Phase 1 — patch it to mock_registry so the assertion sees the
+        # same backing store ``_refresh_tools`` is writing to via
+        # ``server._registry``.
         with patch("tools.registry.registry", mock_registry):
             await server._refresh_tools()
             assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
@@ -87,7 +97,7 @@ class TestMessageHandler:
 
         from mcp.types import ServerNotification, ToolListChangedNotification
 
-        server = MCPServerTask("notif_srv")
+        server = MCPServerTask("notif_srv", registry=ToolRegistry())
         # Product now schedules the refresh as a background task (see
         # _schedule_tools_refresh in mcp_tool.py ~L918) rather than awaiting
         # it directly, to avoid wedging the stdio JSON-RPC stream. Patch at
@@ -103,7 +113,7 @@ class TestMessageHandler:
 
     @pytest.mark.asyncio
     async def test_ignores_exceptions_and_other_messages(self):
-        server = MCPServerTask("notif_srv")
+        server = MCPServerTask("notif_srv", registry=ToolRegistry())
         with patch.object(MCPServerTask, "_schedule_tools_refresh") as mock_schedule:
             handler = server._make_message_handler()
             # Exceptions should not trigger refresh

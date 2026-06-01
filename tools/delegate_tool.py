@@ -2780,22 +2780,24 @@ DELEGATE_TASK_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
-registry.register(
-    name="delegate_task",
-    toolset="delegation",
-    schema=DELEGATE_TASK_SCHEMA,
-    handler=lambda args, **kw: delegate_task(
-        goal=args.get("goal"),
-        context=args.get("context"),
-        toolsets=args.get("toolsets"),
-        tasks=args.get("tasks"),
-        max_iterations=args.get("max_iterations"),
-        acp_command=args.get("acp_command"),
-        acp_args=args.get("acp_args"),
-        role=args.get("role"),
-        parent_agent=kw.get("parent_agent"),
-    ),
-    check_fn=check_delegate_requirements,
-    emoji="🔀",
-    dynamic_schema_overrides=_build_dynamic_schema_overrides,
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="delegate_task",
+        toolset="delegation",
+        schema=DELEGATE_TASK_SCHEMA,
+        handler=lambda args, **kw: delegate_task(
+            goal=args.get("goal"),
+            context=args.get("context"),
+            toolsets=args.get("toolsets"),
+            tasks=args.get("tasks"),
+            max_iterations=args.get("max_iterations"),
+            acp_command=args.get("acp_command"),
+            acp_args=args.get("acp_args"),
+            role=args.get("role"),
+            parent_agent=kw.get("parent_agent"),
+        ),
+        check_fn=check_delegate_requirements,
+        emoji="🔀",
+        dynamic_schema_overrides=_build_dynamic_schema_overrides,
+    )

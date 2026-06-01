@@ -1767,15 +1767,17 @@ EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 # --- Registry ---
 from tools.registry import registry, tool_error
 
-registry.register(
-    name="execute_code",
-    toolset="code_execution",
-    schema=EXECUTE_CODE_SCHEMA,
-    handler=lambda args, **kw: execute_code(
-        code=args.get("code", ""),
-        task_id=kw.get("task_id"),
-        enabled_tools=kw.get("enabled_tools")),
-    check_fn=check_sandbox_requirements,
-    emoji="🐍",
-    max_result_size_chars=100_000,
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="execute_code",
+        toolset="code_execution",
+        schema=EXECUTE_CODE_SCHEMA,
+        handler=lambda args, **kw: execute_code(
+            code=args.get("code", ""),
+            task_id=kw.get("task_id"),
+            enabled_tools=kw.get("enabled_tools")),
+        check_fn=check_sandbox_requirements,
+        emoji="🐍",
+        max_result_size_chars=100_000,
+    )

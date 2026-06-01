@@ -178,14 +178,22 @@ def _probe_single_server(
         _connect_server,
         _stop_mcp_loop,
     )
+    from tools.registry import ToolRegistry
 
     _ensure_mcp_loop()
+
+    # Sprint 53 — the probe is a read-only listing operation; it does
+    # not register tools against any Dispatcher.  Hand the underlying
+    # MCPServerTask a throwaway ToolRegistry so the type contract is
+    # respected without polluting production state.
+    probe_registry = ToolRegistry()
 
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
         server = await asyncio.wait_for(
-            _connect_server(name, config), timeout=connect_timeout
+            _connect_server(name, config, registry=probe_registry),
+            timeout=connect_timeout,
         )
         for t in server._tools:
             desc = getattr(t, "description", "") or ""

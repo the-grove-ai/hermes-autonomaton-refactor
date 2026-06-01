@@ -1524,11 +1524,12 @@ def _handle_process(args, **kw):
             return json.dumps(process_registry.close_stdin(session_id), ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close")
 
-
-registry.register(
-    name="process",
-    toolset="terminal",
-    schema=PROCESS_SCHEMA,
-    handler=_handle_process,
-    emoji="⚙️",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="process",
+        toolset="terminal",
+        schema=PROCESS_SCHEMA,
+        handler=_handle_process,
+        emoji="⚙️",
+    )

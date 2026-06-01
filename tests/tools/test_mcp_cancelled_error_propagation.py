@@ -21,6 +21,7 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+from tools.registry import ToolRegistry
 
 
 async def _hanging_run(self, cfg):
@@ -34,7 +35,7 @@ class TestCancelledErrorPropagation:
         so the reconnect loop terminates cleanly on cancel — not stay wedged."""
         from tools.mcp_tool import MCPServerTask
 
-        server = MCPServerTask("cancel-test")
+        server = MCPServerTask("cancel-test", registry=ToolRegistry())
 
         async def drive():
             with patch.object(MCPServerTask, "_run_stdio", _hanging_run), \
@@ -73,7 +74,7 @@ class TestCancelledErrorPropagation:
         otherwise ``await self._task`` hangs indefinitely."""
         from tools.mcp_tool import MCPServerTask
 
-        server = MCPServerTask("shutdown-cancel-test")
+        server = MCPServerTask("shutdown-cancel-test", registry=ToolRegistry())
 
         async def drive():
             with patch.object(MCPServerTask, "_run_stdio", _hanging_run), \

@@ -1057,83 +1057,77 @@ KANBAN_LINK_SCHEMA = {
 # Registration
 # ---------------------------------------------------------------------------
 
-registry.register(
-    name="kanban_show",
-    toolset="kanban",
-    schema=KANBAN_SHOW_SCHEMA,
-    handler=_handle_show,
-    check_fn=_check_kanban_mode,
-    emoji="📋",
-)
-
-registry.register(
-    name="kanban_list",
-    toolset="kanban",
-    schema=KANBAN_LIST_SCHEMA,
-    handler=_handle_list,
-    check_fn=_check_kanban_orchestrator_mode,
-    emoji="📋",
-)
-
-registry.register(
-    name="kanban_complete",
-    toolset="kanban",
-    schema=KANBAN_COMPLETE_SCHEMA,
-    handler=_handle_complete,
-    check_fn=_check_kanban_mode,
-    emoji="✔",
-)
-
-registry.register(
-    name="kanban_block",
-    toolset="kanban",
-    schema=KANBAN_BLOCK_SCHEMA,
-    handler=_handle_block,
-    check_fn=_check_kanban_mode,
-    emoji="⏸",
-)
-
-registry.register(
-    name="kanban_heartbeat",
-    toolset="kanban",
-    schema=KANBAN_HEARTBEAT_SCHEMA,
-    handler=_handle_heartbeat,
-    check_fn=_check_kanban_mode,
-    emoji="💓",
-)
-
-registry.register(
-    name="kanban_comment",
-    toolset="kanban",
-    schema=KANBAN_COMMENT_SCHEMA,
-    handler=_handle_comment,
-    check_fn=_check_kanban_mode,
-    emoji="💬",
-)
-
-registry.register(
-    name="kanban_create",
-    toolset="kanban",
-    schema=KANBAN_CREATE_SCHEMA,
-    handler=_handle_create,
-    check_fn=_check_kanban_mode,
-    emoji="➕",
-)
-
-registry.register(
-    name="kanban_unblock",
-    toolset="kanban",
-    schema=KANBAN_UNBLOCK_SCHEMA,
-    handler=_handle_unblock,
-    check_fn=_check_kanban_orchestrator_mode,
-    emoji="▶",
-)
-
-registry.register(
-    name="kanban_link",
-    toolset="kanban",
-    schema=KANBAN_LINK_SCHEMA,
-    handler=_handle_link,
-    check_fn=_check_kanban_mode,
-    emoji="🔗",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="kanban_show",
+        toolset="kanban",
+        schema=KANBAN_SHOW_SCHEMA,
+        handler=_handle_show,
+        check_fn=_check_kanban_mode,
+        emoji="📋",
+    )
+    reg.register(
+        name="kanban_list",
+        toolset="kanban",
+        schema=KANBAN_LIST_SCHEMA,
+        handler=_handle_list,
+        check_fn=_check_kanban_orchestrator_mode,
+        emoji="📋",
+    )
+    reg.register(
+        name="kanban_complete",
+        toolset="kanban",
+        schema=KANBAN_COMPLETE_SCHEMA,
+        handler=_handle_complete,
+        check_fn=_check_kanban_mode,
+        emoji="✔",
+    )
+    reg.register(
+        name="kanban_block",
+        toolset="kanban",
+        schema=KANBAN_BLOCK_SCHEMA,
+        handler=_handle_block,
+        check_fn=_check_kanban_mode,
+        emoji="⏸",
+    )
+    reg.register(
+        name="kanban_heartbeat",
+        toolset="kanban",
+        schema=KANBAN_HEARTBEAT_SCHEMA,
+        handler=_handle_heartbeat,
+        check_fn=_check_kanban_mode,
+        emoji="💓",
+    )
+    reg.register(
+        name="kanban_comment",
+        toolset="kanban",
+        schema=KANBAN_COMMENT_SCHEMA,
+        handler=_handle_comment,
+        check_fn=_check_kanban_mode,
+        emoji="💬",
+    )
+    reg.register(
+        name="kanban_create",
+        toolset="kanban",
+        schema=KANBAN_CREATE_SCHEMA,
+        handler=_handle_create,
+        check_fn=_check_kanban_mode,
+        emoji="➕",
+    )
+    reg.register(
+        name="kanban_unblock",
+        toolset="kanban",
+        schema=KANBAN_UNBLOCK_SCHEMA,
+        handler=_handle_unblock,
+        check_fn=_check_kanban_orchestrator_mode,
+        emoji="▶",
+    )
+    reg.register(
+        name="kanban_link",
+        toolset="kanban",
+        schema=KANBAN_LINK_SCHEMA,
+        handler=_handle_link,
+        check_fn=_check_kanban_mode,
+        emoji="🔗",
+    )

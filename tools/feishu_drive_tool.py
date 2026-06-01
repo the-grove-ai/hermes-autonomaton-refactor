@@ -382,50 +382,49 @@ def _handle_add_comment(args: dict, **kwargs) -> str:
 # Registration
 # ---------------------------------------------------------------------------
 
-registry.register(
-    name="feishu_drive_list_comments",
-    toolset="feishu_drive",
-    schema=FEISHU_DRIVE_LIST_COMMENTS_SCHEMA,
-    handler=_handle_list_comments,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="List document comments",
-    emoji="\U0001f4ac",
-)
-
-registry.register(
-    name="feishu_drive_list_comment_replies",
-    toolset="feishu_drive",
-    schema=FEISHU_DRIVE_LIST_REPLIES_SCHEMA,
-    handler=_handle_list_replies,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="List comment replies",
-    emoji="\U0001f4ac",
-)
-
-registry.register(
-    name="feishu_drive_reply_comment",
-    toolset="feishu_drive",
-    schema=FEISHU_DRIVE_REPLY_SCHEMA,
-    handler=_handle_reply_comment,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="Reply to a document comment",
-    emoji="\u2709\ufe0f",
-)
-
-registry.register(
-    name="feishu_drive_add_comment",
-    toolset="feishu_drive",
-    schema=FEISHU_DRIVE_ADD_COMMENT_SCHEMA,
-    handler=_handle_add_comment,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="Add a whole-document comment",
-    emoji="\u2709\ufe0f",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="feishu_drive_list_comments",
+        toolset="feishu_drive",
+        schema=FEISHU_DRIVE_LIST_COMMENTS_SCHEMA,
+        handler=_handle_list_comments,
+        check_fn=_check_feishu,
+        requires_env=[],
+        is_async=False,
+        description="List document comments",
+        emoji="\U0001f4ac",
+    )
+    reg.register(
+        name="feishu_drive_list_comment_replies",
+        toolset="feishu_drive",
+        schema=FEISHU_DRIVE_LIST_REPLIES_SCHEMA,
+        handler=_handle_list_replies,
+        check_fn=_check_feishu,
+        requires_env=[],
+        is_async=False,
+        description="List comment replies",
+        emoji="\U0001f4ac",
+    )
+    reg.register(
+        name="feishu_drive_reply_comment",
+        toolset="feishu_drive",
+        schema=FEISHU_DRIVE_REPLY_SCHEMA,
+        handler=_handle_reply_comment,
+        check_fn=_check_feishu,
+        requires_env=[],
+        is_async=False,
+        description="Reply to a document comment",
+        emoji="\u2709\ufe0f",
+    )
+    reg.register(
+        name="feishu_drive_add_comment",
+        toolset="feishu_drive",
+        schema=FEISHU_DRIVE_ADD_COMMENT_SCHEMA,
+        handler=_handle_add_comment,
+        check_fn=_check_feishu,
+        requires_env=[],
+        is_async=False,
+        description="Add a whole-document comment",
+        emoji="\u2709\ufe0f",
+    )

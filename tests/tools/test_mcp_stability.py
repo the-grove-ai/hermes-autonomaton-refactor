@@ -7,6 +7,7 @@ import threading
 from unittest.mock import patch, MagicMock
 
 import pytest
+from tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +238,7 @@ class TestMCPInitialConnectionRetry:
 
         async def _run():
             nonlocal call_count
-            server = MCPServerTask("test-retry")
+            server = MCPServerTask("test-retry", registry=ToolRegistry())
 
             # Track calls via patching the method on the class
             original_run_stdio = MCPServerTask._run_stdio
@@ -273,7 +274,7 @@ class TestMCPInitialConnectionRetry:
 
         async def _run():
             nonlocal call_count
-            server = MCPServerTask("test-exhaust")
+            server = MCPServerTask("test-exhaust", registry=ToolRegistry())
 
             async def fake_run_stdio(self_inner, config):
                 nonlocal call_count
@@ -299,7 +300,7 @@ class TestMCPInitialConnectionRetry:
         from tools.mcp_tool import MCPServerTask
 
         async def _run():
-            server = MCPServerTask("test-shutdown")
+            server = MCPServerTask("test-shutdown", registry=ToolRegistry())
             attempt = 0
 
             async def fake_run_stdio(self_inner, config):

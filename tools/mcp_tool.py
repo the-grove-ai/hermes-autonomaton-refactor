@@ -90,7 +90,10 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -959,10 +962,15 @@ class MCPServerTask:
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
         "initialize_result",
+        # Sprint 53 — Dispatcher-owned ToolRegistry into which discovered
+        # MCP tools are registered. Replaces the ambient module-level
+        # singleton import that survived previous sprints.
+        "_registry",
     )
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, *, registry: "ToolRegistry"):
         self.name = name
+        self._registry = registry
         self.session: Optional[Any] = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
         self._task: Optional[asyncio.Task] = None
@@ -1069,7 +1077,9 @@ class MCPServerTask:
         After the initial ``await`` (list_tools), all mutations are synchronous
         — atomic from the event loop's perspective.
         """
-        from tools.registry import registry
+        # Sprint 53 — registry is the Dispatcher-owned instance handed
+        # to this MCPServerTask at construction time.
+        registry = self._registry
 
         async with self._refresh_lock:
             # Capture old tool names for change diff
@@ -1608,7 +1618,9 @@ class MCPServerTask:
 
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
-        from tools.registry import registry
+        # Sprint 53 — registry is the Dispatcher-owned instance handed
+        # to this MCPServerTask at construction time.
+        registry = self._registry
 
         self._shutdown_event.set()
         # Defensive: if _wait_for_lifecycle_event is blocking, we need ANY
@@ -2451,18 +2463,25 @@ def _load_mcp_config() -> Dict[str, dict]:
 # Server connection helper
 # ---------------------------------------------------------------------------
 
-async def _connect_server(name: str, config: dict) -> MCPServerTask:
+async def _connect_server(
+    name: str, config: dict, *, registry: "ToolRegistry"
+) -> MCPServerTask:
     """Create an MCPServerTask, start it, and return when ready.
 
     The server Task keeps the connection alive in the background.
     Call ``server.shutdown()`` (on the same event loop) to tear it down.
+
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry into
+    which discovered MCP tools will be registered. The MCPServerTask
+    stores it and uses it for dynamic registration / deregistration
+    over the server's lifetime.
 
     Raises:
         ValueError: if required config keys are missing.
         ImportError: if HTTP transport is needed but not available.
         Exception: on connection or initialization failure.
     """
-    server = MCPServerTask(name)
+    server = MCPServerTask(name, registry=registry)
     await server.start(config)
     return server
 
@@ -3230,7 +3249,9 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     Returns:
         List of registered prefixed tool names.
     """
-    from tools.registry import registry
+    # Sprint 53 — read the Dispatcher-owned registry from the server
+    # task itself.  No module-level singleton is consulted.
+    registry = server._registry
 
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
@@ -3326,14 +3347,16 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     return registered_names
 
 
-async def _discover_and_register_server(name: str, config: dict) -> List[str]:
+async def _discover_and_register_server(
+    name: str, config: dict, *, registry: "ToolRegistry"
+) -> List[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
     Returns list of registered tool names.
     """
     connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
     server = await asyncio.wait_for(
-        _connect_server(name, config),
+        _connect_server(name, config, registry=registry),
         timeout=connect_timeout,
     )
     with _lock:
@@ -3355,14 +3378,22 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+def register_mcp_servers(
+    servers: Dict[str, dict], *, registry: "ToolRegistry"
+) -> List[str]:
     """Connect to explicit MCP servers and register their tools.
 
     Idempotent for already-connected server names. Servers with
     ``enabled: false`` are skipped without disconnecting existing sessions.
 
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry that
+    receives the discovered MCP tools. There is no module-level
+    fallback; callers must supply the registry their Dispatcher owns.
+
     Args:
         servers: Mapping of ``{server_name: server_config}``.
+        registry: Dispatcher-owned ToolRegistry into which MCP tools
+            will be registered.
 
     Returns:
         List of all currently registered MCP tool names.
@@ -3398,7 +3429,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     async def _discover_one(name: str, cfg: dict) -> List[str]:
         """Connect to a single server and return its registered tool names."""
-        return await _discover_and_register_server(name, cfg)
+        return await _discover_and_register_server(name, cfg, registry=registry)
 
     async def _discover_all():
         server_names = list(new_servers.keys())
@@ -3450,14 +3481,18 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
-def discover_mcp_tools() -> List[str]:
+def discover_mcp_tools(*, registry: "ToolRegistry") -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
-    Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
-    the ``mcp`` package is not installed (returns empty list).
+    Called from the Dispatcher's bootstrap after ``register_builtin_tools()``.
+    Safe to call even when the ``mcp`` package is not installed (returns
+    empty list).
 
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
+
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry that
+    receives the discovered MCP tools.
 
     Returns:
         List of all registered MCP tool names.
@@ -3478,7 +3513,7 @@ def discover_mcp_tools() -> List[str]:
             if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
         ]
 
-    tool_names = register_mcp_servers(servers)
+    tool_names = register_mcp_servers(servers, registry=registry)
     if not new_server_names:
         return tool_names
 

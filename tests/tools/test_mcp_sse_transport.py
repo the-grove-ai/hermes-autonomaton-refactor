@@ -20,6 +20,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from tools.registry import ToolRegistry
 
 
 async def _noop_initialize():
@@ -32,7 +33,7 @@ def _build_server_with_sse(oauth: bool = False):
     real network call."""
     from tools.mcp_tool import MCPServerTask
 
-    server = MCPServerTask("sse-test")
+    server = MCPServerTask("sse-test", registry=ToolRegistry())
     server._auth_type = "oauth" if oauth else ""
     server._sampling = None
     return server

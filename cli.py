@@ -10064,8 +10064,11 @@ class HermesCLI:
             # Shutdown existing connections
             shutdown_mcp_servers()
 
-            # Reconnect (reads config.yaml fresh)
-            new_tools = discover_mcp_tools()
+            # Reconnect (reads config.yaml fresh).  Sprint 53 — the
+            # Dispatcher owns the tool registry; MCP discovery registers
+            # into the Dispatcher's instance, not a module-level
+            # singleton.
+            new_tools = discover_mcp_tools(registry=self.agent.registry)
 
             # Compute what changed
             with _lock:

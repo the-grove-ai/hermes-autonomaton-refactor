@@ -940,20 +940,21 @@ _STATIC_ADMIN_SCHEMA = _build_schema(
     list(_ADMIN_ACTIONS.keys()), caps={"detected": False}, tool_name="discord_admin",
 )
 
-registry.register(
-    name="discord",
-    toolset="discord",
-    schema=_STATIC_CORE_SCHEMA,
-    handler=_make_handler(discord_core),
-    check_fn=check_discord_tool_requirements,
-    requires_env=["DISCORD_BOT_TOKEN"],
-)
-
-registry.register(
-    name="discord_admin",
-    toolset="discord_admin",
-    schema=_STATIC_ADMIN_SCHEMA,
-    handler=_make_handler(discord_admin_handler),
-    check_fn=check_discord_tool_requirements,
-    requires_env=["DISCORD_BOT_TOKEN"],
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="discord",
+        toolset="discord",
+        schema=_STATIC_CORE_SCHEMA,
+        handler=_make_handler(discord_core),
+        check_fn=check_discord_tool_requirements,
+        requires_env=["DISCORD_BOT_TOKEN"],
+    )
+    reg.register(
+        name="discord_admin",
+        toolset="discord_admin",
+        schema=_STATIC_ADMIN_SCHEMA,
+        handler=_make_handler(discord_admin_handler),
+        check_fn=check_discord_tool_requirements,
+        requires_env=["DISCORD_BOT_TOKEN"],
+    )

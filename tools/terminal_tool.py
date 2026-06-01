@@ -2376,13 +2376,14 @@ def _handle_terminal(args, **kw):
         watch_patterns=args.get("watch_patterns"),
     )
 
-
-registry.register(
-    name="terminal",
-    toolset="terminal",
-    schema=TERMINAL_SCHEMA,
-    handler=_handle_terminal,
-    check_fn=check_terminal_requirements,
-    emoji="💻",
-    max_result_size_chars=100_000,
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="terminal",
+        toolset="terminal",
+        schema=TERMINAL_SCHEMA,
+        handler=_handle_terminal,
+        check_fn=check_terminal_requirements,
+        emoji="💻",
+        max_result_size_chars=100_000,
+    )

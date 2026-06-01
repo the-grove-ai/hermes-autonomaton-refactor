@@ -3,11 +3,11 @@
 Background
 ==========
 ``cron/scheduler.py:run_job()`` constructs ``AIAgent(...)`` directly without
-calling ``discover_mcp_tools()`` — the initialization that CLI and gateway
+calling ``discover_mcp_tools(registry=ToolRegistry())`` — the initialization that CLI and gateway
 paths do at startup. Cron jobs therefore never saw any MCP tools from
 ``mcp_servers`` in config.yaml. See #4219.
 
-The fix inserts ``discover_mcp_tools()`` before the ``AIAgent(...)`` call,
+The fix inserts ``discover_mcp_tools(registry=ToolRegistry())`` before the ``AIAgent(...)`` call,
 wrapped in try/except so a broken MCP server can't kill an otherwise
 working cron job. ``discover_mcp_tools`` is idempotent — subsequent ticks
 short-circuit on already-connected servers.

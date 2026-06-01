@@ -58,7 +58,7 @@ class TestProbeMcpServerTools:
         mock_server._tools = [mock_tool_1, mock_tool_2]
         mock_server.shutdown = AsyncMock()
 
-        async def fake_connect(name, cfg):
+        async def fake_connect(name, cfg, **_kw):
             return mock_server
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
@@ -99,7 +99,7 @@ class TestProbeMcpServerTools:
         mock_server._tools = [mock_tool]
         mock_server.shutdown = AsyncMock()
 
-        async def fake_connect(name, cfg):
+        async def fake_connect(name, cfg, **_kw):
             if name == "broken":
                 raise ConnectionError("Server not found")
             return mock_server
@@ -136,7 +136,7 @@ class TestProbeMcpServerTools:
         mock_server._tools = [mock_tool]
         mock_server.shutdown = AsyncMock()
 
-        async def fake_connect(name, cfg):
+        async def fake_connect(name, cfg, **_kw):
             return mock_server
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
@@ -190,7 +190,7 @@ class TestProbeMcpServerTools:
 
         connect_calls = []
 
-        async def fake_connect(name, cfg):
+        async def fake_connect(name, cfg, **_kw):
             connect_calls.append(name)
             return mock_server
 

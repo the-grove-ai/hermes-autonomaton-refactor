@@ -26,24 +26,16 @@ from typing import Callable, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 
-def _is_registry_register_call(node: ast.AST) -> bool:
-    """Return True when *node* is a ``registry.register(...)`` call expression."""
-    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
-        return False
-    func = node.value.func
-    return (
-        isinstance(func, ast.Attribute)
-        and func.attr == "register"
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "registry"
-    )
+def _module_exposes_register(module_path: Path) -> bool:
+    """Return True when the module defines a top-level ``def register(reg)``.
 
-
-def _module_registers_tools(module_path: Path) -> bool:
-    """Return True when the module contains a top-level ``registry.register(...)`` call.
-
-    Only inspects module-body statements so that helper modules which happen
-    to call ``registry.register()`` inside a function are not picked up.
+    Sprint 53 — replaces the Sprint-pre-53 detection of bottom-of-module
+    ``registry.register(...)`` side-effect calls. The new convention is
+    that every tool module exposes ``def register(reg): reg.register(...)``
+    and the Dispatcher walks tool modules to populate its own
+    ToolRegistry. Module imports no longer have registration side
+    effects; the AST check stays so that helper modules which happen to
+    import the registry are not mistaken for tool modules.
     """
     try:
         source = module_path.read_text(encoding="utf-8")
@@ -51,27 +43,81 @@ def _module_registers_tools(module_path: Path) -> bool:
     except (OSError, SyntaxError):
         return False
 
-    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.FunctionDef) or stmt.name != "register":
+            continue
+        args = stmt.args
+        # Tool-module convention: ``def register(reg):`` — exactly one
+        # positional arg, no varargs, no kwonly, no defaults. Tight
+        # enough to distinguish from application-domain ``register(...)``
+        # helpers (clarify_gateway.register, slash_confirm.register) that
+        # take multiple args.
+        if (
+            len(args.args) == 1
+            and not args.posonlyargs
+            and not args.vararg
+            and not args.kwonlyargs
+            and not args.kw_defaults
+            and not args.kwarg
+            and not args.defaults
+        ):
+            return True
+    return False
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
-    """Import built-in self-registering tool modules and return their module names."""
+    """Return the qualified module names of tool modules under ``tools/``.
+
+    A tool module is any ``tools/*.py`` file (other than ``__init__``,
+    ``registry``, ``mcp_tool``) that exposes a top-level ``register(reg)``
+    function. The Dispatcher walks this list and calls each module's
+    ``register`` against its owned registry. Module import is NOT a
+    registration side effect under the Sprint 53 contract — only an
+    explicit ``module.register(reg)`` call materializes tools.
+    """
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
-    module_names = [
+    return [
         f"tools.{path.stem}"
         for path in sorted(tools_path.glob("*.py"))
         if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
-        and _module_registers_tools(path)
+        and _module_exposes_register(path)
     ]
 
-    imported: List[str] = []
-    for mod_name in module_names:
+
+def register_builtin_tools(reg: "ToolRegistry", tools_dir: Optional[Path] = None) -> List[str]:
+    """Populate *reg* by importing every tool module under ``tools/`` and
+    calling its ``register(reg)``.
+
+    Sprint 53 — the Dispatcher's bootstrap path for owning the tool
+    registry. Builds on :func:`discover_builtin_tools` for module
+    enumeration. A module whose ``register`` call raises is logged and
+    skipped (matching the pre-Sprint-53 import-failure tolerance) — the
+    rest of the registry is still populated. Returns the list of module
+    names actually registered.
+    """
+    registered: List[str] = []
+    for mod_name in discover_builtin_tools(tools_dir):
         try:
-            importlib.import_module(mod_name)
-            imported.append(mod_name)
-        except Exception as e:
-            logger.warning("Could not import tool module %s: %s", mod_name, e)
-    return imported
+            mod = importlib.import_module(mod_name)
+        except Exception as exc:
+            logger.warning("Could not import tool module %s: %s", mod_name, exc)
+            continue
+        register_fn = getattr(mod, "register", None)
+        if not callable(register_fn):
+            logger.warning(
+                "Tool module %s has no callable register() — skipping",
+                mod_name,
+            )
+            continue
+        try:
+            register_fn(reg)
+            registered.append(mod_name)
+        except Exception as exc:
+            logger.warning(
+                "Tool module %s register(reg) raised: %s — skipping",
+                mod_name, exc,
+            )
+    return registered
 
 
 class ToolEntry:
@@ -587,3 +633,24 @@ def tool_result(data=None, **kwargs) -> str:
     if data is not None:
         return json.dumps(data, ensure_ascii=False)
     return json.dumps(kwargs, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Phase-1 transitional bootstrap (Sprint 53)
+# ---------------------------------------------------------------------------
+# The module-level ``registry`` singleton survives Phase 1 to keep legacy
+# consumers compiling while the Dispatcher takes ownership of the
+# ToolRegistry it constructs in its ``__init__``.  Sprint-pre-53 tool
+# modules side-effect-registered themselves on import; the new
+# convention is ``def register(reg):`` and an explicit
+# ``register_builtin_tools(reg)`` call by the Dispatcher.
+#
+# The singleton's population is NOT auto-triggered from this file —
+# that would race against the import chain (a tool module is often the
+# first importer of ``tools.registry``, and at that moment it is
+# mid-import and its ``register(reg)`` has not yet been defined).
+# Instead, the explicit bootstrap is invoked by:
+#   - model_tools.py  (after its own imports complete)
+#   - tests/conftest.py at session start (for the test process)
+# Phase 2 deletes both ``registry = ToolRegistry()`` and the bootstrap
+# call sites.

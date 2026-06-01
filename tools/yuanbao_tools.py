@@ -498,239 +498,235 @@ async def _handle_yb_send_sticker(args, **kw):
 
 _TOOLSET = "hermes-yuanbao"
 
-registry.register(
-    name="yb_query_group_info",
-    toolset=_TOOLSET,
-    schema={
-        "name": "yb_query_group_info",
-        "description": (
-            "Query basic info about a group (called '派/Pai' in the app), "
-            "including group name, owner, and member count."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "group_code": {
-                    "type": "string",
-                    "description": "The unique group identifier (group_code).",
-                },
-            },
-            "required": ["group_code"],
-        },
-    },
-    handler=_handle_yb_query_group_info,
-    check_fn=_check_yuanbao,
-    is_async=True,
-    emoji="👥",
-)
-
-registry.register(
-    name="yb_query_group_members",
-    toolset=_TOOLSET,
-    schema={
-        "name": "yb_query_group_members",
-        "description": (
-            "Query members of a group (called '派/Pai' in the app). "
-            "Use this tool when you need to @mention someone, find a user by name, "
-            "list bots (including Yuanbao AI), or list all members. "
-            "IMPORTANT: You MUST call this tool before @mentioning any user, "
-            "because you need the exact nickname to construct the @mention format."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "group_code": {
-                    "type": "string",
-                    "description": "The unique group identifier (group_code).",
-                },
-                "action": {
-                    "type": "string",
-                    "enum": ["find", "list_bots", "list_all"],
-                    "description": (
-                        "find — search a user by name (use when you need to @mention or look up someone); "
-                        "list_bots — list bots and Yuanbao AI assistants; "
-                        "list_all — list all members."
-                    ),
-                },
-                "name": {
-                    "type": "string",
-                    "description": (
-                        "User name to search (partial match, case-insensitive). "
-                        "Required for 'find'. Use the name the user mentioned in the conversation."
-                    ),
-                },
-                "mention": {
-                    "type": "boolean",
-                    "description": (
-                        "Set to true when you need to @mention/at someone in your reply. "
-                        "The response will include the exact @mention format to use."
-                    ),
-                },
-            },
-            "required": ["group_code", "action"],
-        },
-    },
-    handler=_handle_yb_query_group_members,
-    check_fn=_check_yuanbao,
-    is_async=True,
-    emoji="📋",
-)
-
-registry.register(
-    name="yb_send_dm",
-    toolset=_TOOLSET,
-    schema={
-        "name": "yb_send_dm",
-        "description": (
-            "Send a private/direct message (DM) to a user in a group, with optional media files. "
-            "This tool automatically looks up the user by name in the group member list "
-            "and sends the message. Use this when someone asks to privately message / 私信 / DM a user. "
-            "Supports text, images, and file attachments. "
-            "You can also provide user_id directly if already known."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "group_code": {
-                    "type": "string",
-                    "description": (
-                        "The group where the target user belongs. "
-                        "Extract from chat_id: 'group:328306697' → '328306697'. "
-                        "Required when user_id is not provided."
-                    ),
-                },
-                "name": {
-                    "type": "string",
-                    "description": (
-                        "Target user's display name (partial match, case-insensitive). "
-                        "Required when user_id is not provided."
-                    ),
-                },
-                "message": {
-                    "type": "string",
-                    "description": "The message text to send as a DM. Can be empty if only sending media.",
-                },
-                "user_id": {
-                    "type": "string",
-                    "description": (
-                        "Target user's account ID. If provided, skips the member lookup. "
-                        "Usually obtained from a previous yb_query_group_members call."
-                    ),
-                },
-                "media_files": {
-                    "type": "array",
-                    "description": (
-                        "Optional list of media files to send along with the DM. "
-                        "Images (.jpg/.png/.gif/.webp/.bmp) are sent as image messages; "
-                        "other files are sent as document attachments."
-                    ),
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Absolute local file path of the media to send.",
-                            },
-                            "is_voice": {
-                                "type": "boolean",
-                                "description": "Whether this file is a voice message (default false).",
-                            },
-                        },
-                        "required": ["path"],
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="yb_query_group_info",
+        toolset=_TOOLSET,
+        schema={
+            "name": "yb_query_group_info",
+            "description": (
+                "Query basic info about a group (called '派/Pai' in the app), "
+                "including group name, owner, and member count."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "group_code": {
+                        "type": "string",
+                        "description": "The unique group identifier (group_code).",
                     },
                 },
+                "required": ["group_code"],
             },
-            "required": [],
         },
-    },
-    handler=_handle_yb_send_dm,
-    check_fn=_check_yuanbao,
-    is_async=True,
-    emoji="✉️",
-)
-
-
-registry.register(
-    name="yb_search_sticker",
-    toolset=_TOOLSET,
-    schema={
-        "name": "yb_search_sticker",
-        "description": (
-            "Search the built-in Yuanbao sticker (TIM face / 表情包) catalogue by keyword. "
-            "Returns the top matching candidates with sticker_id, name, and description. "
-            "Use this BEFORE yb_send_sticker to discover the right sticker_id. "
-            "Sticker = 贴纸 = TIM face — NOT a message reaction. "
-            "Prefer sending a sticker over bare Unicode emoji when reacting/expressing emotion."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": (
-                        "Search keyword (Chinese or English, e.g. '666', '比心', 'cool', '吃瓜'). "
-                        "Empty string returns the first N stickers."
-                    ),
+        handler=_handle_yb_query_group_info,
+        check_fn=_check_yuanbao,
+        is_async=True,
+        emoji="👥",
+    )
+    reg.register(
+        name="yb_query_group_members",
+        toolset=_TOOLSET,
+        schema={
+            "name": "yb_query_group_members",
+            "description": (
+                "Query members of a group (called '派/Pai' in the app). "
+                "Use this tool when you need to @mention someone, find a user by name, "
+                "list bots (including Yuanbao AI), or list all members. "
+                "IMPORTANT: You MUST call this tool before @mentioning any user, "
+                "because you need the exact nickname to construct the @mention format."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "group_code": {
+                        "type": "string",
+                        "description": "The unique group identifier (group_code).",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["find", "list_bots", "list_all"],
+                        "description": (
+                            "find — search a user by name (use when you need to @mention or look up someone); "
+                            "list_bots — list bots and Yuanbao AI assistants; "
+                            "list_all — list all members."
+                        ),
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "User name to search (partial match, case-insensitive). "
+                            "Required for 'find'. Use the name the user mentioned in the conversation."
+                        ),
+                    },
+                    "mention": {
+                        "type": "boolean",
+                        "description": (
+                            "Set to true when you need to @mention/at someone in your reply. "
+                            "The response will include the exact @mention format to use."
+                        ),
+                    },
                 },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max number of candidates to return (default 10, max 50).",
-                },
+                "required": ["group_code", "action"],
             },
-            "required": [],
         },
-    },
-    handler=_handle_yb_search_sticker,
-    check_fn=_check_yuanbao,
-    is_async=True,
-    emoji="🔍",
-)
-
-
-registry.register(
-    name="yb_send_sticker",
-    toolset=_TOOLSET,
-    schema={
-        "name": "yb_send_sticker",
-        "description": (
-            "Send a built-in sticker (TIMFaceElem / 贴纸表情) to the current Yuanbao chat. "
-            "Call yb_search_sticker first if you don't know the sticker_id/name. "
-            "Sticker = 贴纸 = TIM face — NOT a message reaction. "
-            "CRITICAL: Whenever the user asks you to send a sticker / 贴纸 / 表情包, you MUST "
-            "use this tool. DO NOT draw a PNG via execute_code / Pillow / matplotlib and "
-            "then call send_image_file — that produces a fake 'sticker' image instead of a "
-            "real TIM face and is the WRONG path. If no suitable sticker_id is known, call "
-            "yb_search_sticker first. When the recent thread shows users sending stickers, "
-            "prefer matching that tone by replying with a sticker instead of (or in "
-            "addition to) text."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "sticker": {
-                    "type": "string",
-                    "description": (
-                        "Sticker name (e.g. '六六六', '比心', 'ok') or numeric sticker_id "
-                        "(e.g. '278'). Empty string sends a random built-in sticker."
-                    ),
+        handler=_handle_yb_query_group_members,
+        check_fn=_check_yuanbao,
+        is_async=True,
+        emoji="📋",
+    )
+    reg.register(
+        name="yb_send_dm",
+        toolset=_TOOLSET,
+        schema={
+            "name": "yb_send_dm",
+            "description": (
+                "Send a private/direct message (DM) to a user in a group, with optional media files. "
+                "This tool automatically looks up the user by name in the group member list "
+                "and sends the message. Use this when someone asks to privately message / 私信 / DM a user. "
+                "Supports text, images, and file attachments. "
+                "You can also provide user_id directly if already known."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "group_code": {
+                        "type": "string",
+                        "description": (
+                            "The group where the target user belongs. "
+                            "Extract from chat_id: 'group:328306697' → '328306697'. "
+                            "Required when user_id is not provided."
+                        ),
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Target user's display name (partial match, case-insensitive). "
+                            "Required when user_id is not provided."
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The message text to send as a DM. Can be empty if only sending media.",
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": (
+                            "Target user's account ID. If provided, skips the member lookup. "
+                            "Usually obtained from a previous yb_query_group_members call."
+                        ),
+                    },
+                    "media_files": {
+                        "type": "array",
+                        "description": (
+                            "Optional list of media files to send along with the DM. "
+                            "Images (.jpg/.png/.gif/.webp/.bmp) are sent as image messages; "
+                            "other files are sent as document attachments."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute local file path of the media to send.",
+                                },
+                                "is_voice": {
+                                    "type": "boolean",
+                                    "description": "Whether this file is a voice message (default false).",
+                                },
+                            },
+                            "required": ["path"],
+                        },
+                    },
                 },
-                "chat_id": {
-                    "type": "string",
-                    "description": (
-                        "Target chat. Defaults to the current session. "
-                        "Format: 'direct:{account_id}', 'group:{group_code}', or bare account_id."
-                    ),
-                },
-                "reply_to": {
-                    "type": "string",
-                    "description": "Optional ref_msg_id to quote-reply (group chat only).",
-                },
+                "required": [],
             },
-            "required": [],
         },
-    },
-    handler=_handle_yb_send_sticker,
-    check_fn=_check_yuanbao,
-    is_async=True,
-    emoji="🎨",
-)
+        handler=_handle_yb_send_dm,
+        check_fn=_check_yuanbao,
+        is_async=True,
+        emoji="✉️",
+    )
+    reg.register(
+        name="yb_search_sticker",
+        toolset=_TOOLSET,
+        schema={
+            "name": "yb_search_sticker",
+            "description": (
+                "Search the built-in Yuanbao sticker (TIM face / 表情包) catalogue by keyword. "
+                "Returns the top matching candidates with sticker_id, name, and description. "
+                "Use this BEFORE yb_send_sticker to discover the right sticker_id. "
+                "Sticker = 贴纸 = TIM face — NOT a message reaction. "
+                "Prefer sending a sticker over bare Unicode emoji when reacting/expressing emotion."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Search keyword (Chinese or English, e.g. '666', '比心', 'cool', '吃瓜'). "
+                            "Empty string returns the first N stickers."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max number of candidates to return (default 10, max 50).",
+                    },
+                },
+                "required": [],
+            },
+        },
+        handler=_handle_yb_search_sticker,
+        check_fn=_check_yuanbao,
+        is_async=True,
+        emoji="🔍",
+    )
+    reg.register(
+        name="yb_send_sticker",
+        toolset=_TOOLSET,
+        schema={
+            "name": "yb_send_sticker",
+            "description": (
+                "Send a built-in sticker (TIMFaceElem / 贴纸表情) to the current Yuanbao chat. "
+                "Call yb_search_sticker first if you don't know the sticker_id/name. "
+                "Sticker = 贴纸 = TIM face — NOT a message reaction. "
+                "CRITICAL: Whenever the user asks you to send a sticker / 贴纸 / 表情包, you MUST "
+                "use this tool. DO NOT draw a PNG via execute_code / Pillow / matplotlib and "
+                "then call send_image_file — that produces a fake 'sticker' image instead of a "
+                "real TIM face and is the WRONG path. If no suitable sticker_id is known, call "
+                "yb_search_sticker first. When the recent thread shows users sending stickers, "
+                "prefer matching that tone by replying with a sticker instead of (or in "
+                "addition to) text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sticker": {
+                        "type": "string",
+                        "description": (
+                            "Sticker name (e.g. '六六六', '比心', 'ok') or numeric sticker_id "
+                            "(e.g. '278'). Empty string sends a random built-in sticker."
+                        ),
+                    },
+                    "chat_id": {
+                        "type": "string",
+                        "description": (
+                            "Target chat. Defaults to the current session. "
+                            "Format: 'direct:{account_id}', 'group:{group_code}', or bare account_id."
+                        ),
+                    },
+                    "reply_to": {
+                        "type": "string",
+                        "description": "Optional ref_msg_id to quote-reply (group chat only).",
+                    },
+                },
+                "required": [],
+            },
+        },
+        handler=_handle_yb_send_sticker,
+        check_fn=_check_yuanbao,
+        is_async=True,
+        emoji="🎨",
+    )

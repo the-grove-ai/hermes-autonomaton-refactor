@@ -476,38 +476,37 @@ HA_CALL_SERVICE_SCHEMA = {
 
 from tools.registry import registry, tool_error
 
-registry.register(
-    name="ha_list_entities",
-    toolset="homeassistant",
-    schema=HA_LIST_ENTITIES_SCHEMA,
-    handler=_handle_list_entities,
-    check_fn=_check_ha_available,
-    emoji="🏠",
-)
-
-registry.register(
-    name="ha_get_state",
-    toolset="homeassistant",
-    schema=HA_GET_STATE_SCHEMA,
-    handler=_handle_get_state,
-    check_fn=_check_ha_available,
-    emoji="🏠",
-)
-
-registry.register(
-    name="ha_list_services",
-    toolset="homeassistant",
-    schema=HA_LIST_SERVICES_SCHEMA,
-    handler=_handle_list_services,
-    check_fn=_check_ha_available,
-    emoji="🏠",
-)
-
-registry.register(
-    name="ha_call_service",
-    toolset="homeassistant",
-    schema=HA_CALL_SERVICE_SCHEMA,
-    handler=_handle_call_service,
-    check_fn=_check_ha_available,
-    emoji="🏠",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="ha_list_entities",
+        toolset="homeassistant",
+        schema=HA_LIST_ENTITIES_SCHEMA,
+        handler=_handle_list_entities,
+        check_fn=_check_ha_available,
+        emoji="🏠",
+    )
+    reg.register(
+        name="ha_get_state",
+        toolset="homeassistant",
+        schema=HA_GET_STATE_SCHEMA,
+        handler=_handle_get_state,
+        check_fn=_check_ha_available,
+        emoji="🏠",
+    )
+    reg.register(
+        name="ha_list_services",
+        toolset="homeassistant",
+        schema=HA_LIST_SERVICES_SCHEMA,
+        handler=_handle_list_services,
+        check_fn=_check_ha_available,
+        emoji="🏠",
+    )
+    reg.register(
+        name="ha_call_service",
+        toolset="homeassistant",
+        schema=HA_CALL_SERVICE_SCHEMA,
+        handler=_handle_call_service,
+        check_fn=_check_ha_available,
+        emoji="🏠",
+    )

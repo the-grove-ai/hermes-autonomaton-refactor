@@ -12510,19 +12510,14 @@ Examples:
                 "plugin discovery failed at CLI startup",
                 exc_info=True,
             )
-        try:
-            # MCP tool discovery — no event loop running in CLI/TUI startup,
-            # so inline is safe.  Moved here from model_tools.py module scope
-            # to avoid freezing the gateway's event loop on its first message
-            # via the same lazy import path (#16856).
-            from tools.mcp_tool import discover_mcp_tools
-
-            discover_mcp_tools()
-        except Exception:
-            logger.debug(
-                "MCP tool discovery failed at CLI startup",
-                exc_info=True,
-            )
+        # Sprint 53 — MCP tool discovery moved into the Dispatcher's
+        # bootstrap so it registers into the Dispatcher-owned
+        # ToolRegistry.  The CLI-startup pre-warm previously here is no
+        # longer correct (no registry to target before the Dispatcher
+        # exists), and the architectural concern from #16856 (avoid
+        # blocking the gateway event loop on first message) is now met
+        # by the Dispatcher discovering MCP tools at construction time
+        # on the same CLI startup path.
         try:
             from hermes_cli.config import load_config
             from agent.shell_hooks import register_from_config

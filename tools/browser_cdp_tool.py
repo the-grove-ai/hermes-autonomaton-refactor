@@ -551,19 +551,20 @@ def _browser_cdp_check() -> bool:
         return False
     return bool(_get_cdp_override())
 
-
-registry.register(
-    name="browser_cdp",
-    toolset="browser-cdp",
-    schema=BROWSER_CDP_SCHEMA,
-    handler=lambda args, **kw: browser_cdp(
-        method=args.get("method", ""),
-        params=args.get("params"),
-        target_id=args.get("target_id"),
-        frame_id=args.get("frame_id"),
-        timeout=args.get("timeout", 30.0),
-        task_id=kw.get("task_id"),
-    ),
-    check_fn=_browser_cdp_check,
-    emoji="🧪",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="browser_cdp",
+        toolset="browser-cdp",
+        schema=BROWSER_CDP_SCHEMA,
+        handler=lambda args, **kw: browser_cdp(
+            method=args.get("method", ""),
+            params=args.get("params"),
+            target_id=args.get("target_id"),
+            frame_id=args.get("frame_id"),
+            timeout=args.get("timeout", 30.0),
+            task_id=kw.get("task_id"),
+        ),
+        check_fn=_browser_cdp_check,
+        emoji="🧪",
+    )

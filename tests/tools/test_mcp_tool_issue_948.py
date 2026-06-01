@@ -3,6 +3,7 @@ import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from tools.registry import ToolRegistry
 
 import pytest
 
@@ -85,7 +86,7 @@ def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
              patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
              patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
              patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
-            server = MCPServerTask("srv")
+            server = MCPServerTask("srv", registry=ToolRegistry())
             await server.start({"command": "npx", "args": ["-y", "pkg"], "env": {"PATH": "/usr/bin"}})
 
             call_kwargs = mock_params.call_args.kwargs

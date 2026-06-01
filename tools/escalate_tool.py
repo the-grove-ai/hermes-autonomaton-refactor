@@ -116,15 +116,17 @@ def check_escalate_requirements() -> bool:
 # --- Registry ---
 from tools.registry import registry  # noqa: E402
 
-registry.register(
-    name="escalate",
-    toolset="escalate",
-    schema=ESCALATE_SCHEMA,
-    handler=lambda args, **kw: escalate_tool(
-        reasoning_depth=args.get("reasoning_depth", ""),
-        context_size=args.get("context_size", ""),
-        blocker=args.get("blocker", ""),
-    ),
-    check_fn=check_escalate_requirements,
-    emoji="⬆",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="escalate",
+        toolset="escalate",
+        schema=ESCALATE_SCHEMA,
+        handler=lambda args, **kw: escalate_tool(
+            reasoning_depth=args.get("reasoning_depth", ""),
+            context_size=args.get("context_size", ""),
+            blocker=args.get("blocker", ""),
+        ),
+        check_fn=check_escalate_requirements,
+        emoji="⬆",
+    )

@@ -1047,15 +1047,6 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     return vision_analyze_tool(image_url, full_prompt, model)
 
 
-registry.register(
-    name="vision_analyze",
-    toolset="vision",
-    schema=VISION_ANALYZE_SCHEMA,
-    handler=_handle_vision_analyze,
-    check_fn=check_vision_requirements,
-    is_async=True,
-    emoji="👁️",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -1409,13 +1400,23 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return video_analyze_tool(video_url, full_prompt, model)
 
-
-registry.register(
-    name="video_analyze",
-    toolset="video",
-    schema=VIDEO_ANALYZE_SCHEMA,
-    handler=_handle_video_analyze,
-    check_fn=check_vision_requirements,
-    is_async=True,
-    emoji="🎬",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="vision_analyze",
+        toolset="vision",
+        schema=VISION_ANALYZE_SCHEMA,
+        handler=_handle_vision_analyze,
+        check_fn=check_vision_requirements,
+        is_async=True,
+        emoji="👁️",
+    )
+    reg.register(
+        name="video_analyze",
+        toolset="video",
+        schema=VIDEO_ANALYZE_SCHEMA,
+        handler=_handle_video_analyze,
+        check_fn=check_vision_requirements,
+        is_async=True,
+        emoji="🎬",
+    )

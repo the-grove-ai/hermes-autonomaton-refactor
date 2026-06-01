@@ -2272,13 +2272,15 @@ TTS_SCHEMA = {
     }
 }
 
-registry.register(
-    name="text_to_speech",
-    toolset="tts",
-    schema=TTS_SCHEMA,
-    handler=lambda args, **kw: text_to_speech_tool(
-        text=args.get("text", ""),
-        output_path=args.get("output_path")),
-    check_fn=check_tts_requirements,
-    emoji="🔊",
-)
+def register(reg):
+    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    reg.register(
+        name="text_to_speech",
+        toolset="tts",
+        schema=TTS_SCHEMA,
+        handler=lambda args, **kw: text_to_speech_tool(
+            text=args.get("text", ""),
+            output_path=args.get("output_path")),
+        check_fn=check_tts_requirements,
+        emoji="🔊",
+    )
