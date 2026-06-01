@@ -45,7 +45,10 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
@@ -443,10 +446,13 @@ def _rpc_server_loop(
     tool_call_counter: list,   # mutable [int] so the thread can increment
     max_tool_calls: int,
     allowed_tools: frozenset,
+    registry: "ToolRegistry",
 ):
-    """
-    Accept one client connection and dispatch tool-call requests until
-    the client disconnects or the call limit is reached.
+    """Accept one client connection and dispatch tool-call requests.
+
+    Sprint 53 — *registry* is the parent Dispatcher's ToolRegistry; the
+    sandbox child re-enters ``handle_function_call`` against it so its
+    capability set matches the parent's exactly.
     """
     from model_tools import handle_function_call
 
@@ -522,7 +528,7 @@ def _rpc_server_loop(
                         sys.stdout = devnull
                         sys.stderr = devnull
                         result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
+                            registry, tool_name, tool_args, task_id=task_id
                         )
                     finally:
                         sys.stdout, sys.stderr = _real_stdout, _real_stderr
@@ -705,12 +711,12 @@ def _rpc_poll_loop(
     max_tool_calls: int,
     allowed_tools: frozenset,
     stop_event: threading.Event,
+    registry: "ToolRegistry",
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
-    Runs in a background thread.  Each ``env.execute()`` spawns an
-    independent process, so these calls run safely concurrent with the
-    script-execution thread.
+    Sprint 53 — *registry* is the parent Dispatcher's ToolRegistry; the
+    sandbox child re-enters ``handle_function_call`` against it.
     """
     from model_tools import handle_function_call
 
@@ -796,7 +802,7 @@ def _rpc_poll_loop(
                             sys.stdout = devnull
                             sys.stderr = devnull
                             tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
+                                registry, tool_name, tool_args, task_id=task_id
                             )
                         finally:
                             sys.stdout, sys.stderr = _real_stdout, _real_stderr
@@ -842,6 +848,7 @@ def _execute_remote(
     code: str,
     task_id: Optional[str],
     enabled_tools: Optional[List[str]],
+    registry: "ToolRegistry",
 ) -> str:
     """Run a script on the remote terminal backend via file-based RPC.
 
@@ -904,13 +911,15 @@ def _execute_remote(
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py", tools_src)
         _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
 
-        # Start RPC polling thread
+        # Start RPC polling thread.  Sprint 53 — pass the registry so
+        # the sandbox child re-enters handle_function_call against the
+        # same Dispatcher-owned ToolRegistry.
         rpc_thread = threading.Thread(
             target=_rpc_poll_loop,
             args=(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
-                sandbox_tools, stop_event,
+                sandbox_tools, stop_event, registry,
             ),
             daemon=True,
         )
@@ -1037,6 +1046,7 @@ def execute_code(
     code: str,
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    registry: "ToolRegistry" = None,
 ) -> str:
     """
     Run a Python script in a sandboxed child process with RPC access
@@ -1067,7 +1077,7 @@ def execute_code(
     from tools.terminal_tool import _get_env_config
     env_type = _get_env_config()["env_type"]
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        return _execute_remote(code, task_id, enabled_tools, registry)
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1152,11 +1162,14 @@ def execute_code(
             os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
+        # Sprint 53 — pass the parent's Dispatcher-owned registry so
+        # the sandbox child re-enters handle_function_call against it.
         rpc_thread = threading.Thread(
             target=_rpc_server_loop,
             args=(
                 server_sock, task_id, tool_call_log,
                 tool_call_counter, max_tool_calls, sandbox_tools,
+                registry,
             ),
             daemon=True,
         )
@@ -1765,10 +1778,15 @@ EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
-
+from tools.registry import tool_error
 def register(reg):
-    """Sprint 53 — Dispatcher-driven registration entrypoint."""
+    """Sprint 53 — Dispatcher-driven registration entrypoint.
+
+    The sandbox child re-enters ``handle_function_call`` for tool calls
+    it dispatches over RPC; the parent's ``ToolRegistry`` is threaded
+    through via the dispatch ``kwargs`` (``registry=...``) so the child
+    sees the same capability set the parent does.
+    """
     reg.register(
         name="execute_code",
         toolset="code_execution",
@@ -1776,7 +1794,9 @@ def register(reg):
         handler=lambda args, **kw: execute_code(
             code=args.get("code", ""),
             task_id=kw.get("task_id"),
-            enabled_tools=kw.get("enabled_tools")),
+            enabled_tools=kw.get("enabled_tools"),
+            registry=kw.get("registry"),
+        ),
         check_fn=check_sandbox_requirements,
         emoji="🐍",
         max_result_size_chars=100_000,

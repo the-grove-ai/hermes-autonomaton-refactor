@@ -4,7 +4,10 @@ Per-tool resolution: pinned > config overrides > registry > default.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 # Tools whose thresholds must never be overridden.
 # read_file=inf prevents infinite persist->read->persist loops.
@@ -34,16 +37,19 @@ class BudgetConfig:
     preview_size: int = DEFAULT_PREVIEW_SIZE_CHARS
     tool_overrides: Dict[str, int] = field(default_factory=dict)
 
-    def resolve_threshold(self, tool_name: str) -> int | float:
+    def resolve_threshold(
+        self, tool_name: str, registry: "ToolRegistry"
+    ) -> int | float:
         """Resolve the persistence threshold for a tool.
 
-        Priority: pinned -> tool_overrides -> registry per-tool -> default.
+        Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry the
+        per-tool ``max_result_size`` is read from. Priority:
+        pinned -> tool_overrides -> registry per-tool -> default.
         """
         if tool_name in PINNED_THRESHOLDS:
             return PINNED_THRESHOLDS[tool_name]
         if tool_name in self.tool_overrides:
             return self.tool_overrides[tool_name]
-        from tools.registry import registry
         return registry.get_max_result_size(tool_name, default=self.default_result_size)
 
 

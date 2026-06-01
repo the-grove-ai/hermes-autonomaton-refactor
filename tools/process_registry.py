@@ -1449,8 +1449,7 @@ def format_process_notification(evt: dict) -> "str | None":
 # ---------------------------------------------------------------------------
 # Registry -- the "process" tool schema + handler
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
-
+from tools.registry import tool_error
 PROCESS_SCHEMA = {
     "name": "process",
     "description": (

@@ -2731,11 +2731,18 @@ class HermesCLI:
         self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
 
         if toolsets and "all" not in toolsets and "*" not in toolsets:
-            # Validate each toolset — MCP server names are resolved via
-            # live registry aliases (registered during discover_mcp_tools),
-            # but discovery hasn't run yet at this point, so exclude them.
+            # Validate each toolset.  Sprint 53 — this runs BEFORE the
+            # Dispatcher is constructed, so the validation registry is
+            # an ad-hoc one with built-in tools only.  MCP server names
+            # are excluded as before; plugin-provided toolsets are also
+            # checked because discover_plugins re-runs at Dispatcher
+            # init.
+            from tools.registry import ToolRegistry as _ToolRegistry
+            from tools.registry import register_builtin_tools as _rbt
+            _validation_reg = _ToolRegistry()
+            _rbt(_validation_reg)
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
+            invalid = [t for t in toolsets if not validate_toolset(t, _validation_reg) and t not in mcp_names]
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         
@@ -4917,12 +4924,14 @@ class HermesCLI:
             self._console_print(_build_compact_banner())
             self._show_status()
         else:
-            # Get tools for display
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            
+            # Get tools for display.  Sprint 53 — reach the
+            # Dispatcher-owned registry through self.agent.
+            _registry = self.agent.registry
+            tools = get_tool_definitions(_registry, enabled_toolsets=self.enabled_toolsets, quiet_mode=True) if _registry else []
+
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-            
+
             # Build and display the banner
             build_welcome_banner(
                 console=self.console,
@@ -4932,6 +4941,7 @@ class HermesCLI:
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
                 context_length=ctx_len,
+                registry=_registry,
             )
         
         # Show tool availability warnings if any tools are disabled
@@ -5692,8 +5702,13 @@ class HermesCLI:
         """Show warnings about disabled tools due to missing API keys."""
         try:
             from model_tools import check_tool_availability
-            
-            available, unavailable = check_tool_availability()
+            # Sprint 53 — read through the Dispatcher-owned registry.
+            if not self.agent:
+                return
+            _reg = self.agent.registry
+            if _reg is None:
+                return
+            available, unavailable = check_tool_availability(_reg)
             
             # Filter to only those missing API keys (not system deps)
             api_key_missing = [u for u in unavailable if u["missing_vars"]]
@@ -5712,8 +5727,9 @@ class HermesCLI:
     
     def _show_status(self):
         """Show compact startup status line."""
-        # Get tool count
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+        # Sprint 53 — read through the Dispatcher-owned registry.
+        _registry = self.agent.registry
+        tools = get_tool_definitions(_registry, enabled_toolsets=self.enabled_toolsets, quiet_mode=True) if _registry else []
         tool_count = len(tools) if tools else 0
 
         # Format model name (shorten if needed)
@@ -5858,7 +5874,12 @@ class HermesCLI:
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+        # Sprint 53 — read through the Dispatcher-owned registry.
+        _registry = self.agent.registry
+        if _registry is None:
+            print("(;_;) No agent active — bring up a session first")
+            return
+        tools = get_tool_definitions(_registry, enabled_toolsets=self.enabled_toolsets, quiet_mode=True) if _registry else []
         
         if not tools:
             print("(;_;) No tools available")
@@ -5878,7 +5899,7 @@ class HermesCLI:
         toolsets = {}
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):
             name = tool["function"]["name"]
-            toolset = get_toolset_for_tool(name) or "unknown"
+            toolset = get_toolset_for_tool(_registry, name) or "unknown"
             if toolset not in toolsets:
                 toolsets[toolset] = []
             desc = tool["function"].get("description", "")
@@ -5979,8 +6000,13 @@ class HermesCLI:
 
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
-        all_toolsets = get_all_toolsets()
-        
+        # Sprint 53 — read through the Dispatcher-owned registry.
+        _registry = self.agent.registry
+        if _registry is None:
+            print("(;_;) No agent active — bring up a session first")
+            return
+        all_toolsets = get_all_toolsets(_registry)
+
         # Header
         print()
         title = "(^_^)b Available Toolsets"
@@ -5990,9 +6016,9 @@ class HermesCLI:
         print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
         print("+" + "-" * width + "+")
         print()
-        
+
         for name in sorted(all_toolsets.keys()):
-            info = get_toolset_info(name)
+            info = get_toolset_info(name, _registry)
             if info:
                 tool_count = info["tool_count"]
                 desc = info["description"]
@@ -8239,7 +8265,10 @@ class HermesCLI:
                 if self.compact or term_w < 80:
                     cc.print(_build_compact_banner())
                 else:
-                    tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                    # Sprint 53 — reach the Dispatcher-owned registry
+                    # through self.agent.
+                    _registry = self.agent.registry
+                    tools = get_tool_definitions(_registry, enabled_toolsets=self.enabled_toolsets, quiet_mode=True) if _registry else []
                     cwd = os.getenv("TERMINAL_CWD", os.getcwd())
                     ctx_len = None
                     if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
@@ -8252,6 +8281,7 @@ class HermesCLI:
                         enabled_toolsets=self.enabled_toolsets,
                         session_id=self.session_id,
                         context_length=ctx_len,
+                        registry=_registry,
                     )
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
@@ -10092,6 +10122,7 @@ class HermesCLI:
             # Refresh the agent's tool list so the model can call new tools
             if self.agent is not None:
                 self.agent.tools = get_tool_definitions(
+                    self.agent.registry,
                     enabled_toolsets=self.agent.enabled_toolsets
                     if hasattr(self.agent, "enabled_toolsets") else None,
                     quiet_mode=True,

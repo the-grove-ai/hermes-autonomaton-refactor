@@ -76,7 +76,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
-from tools.registry import registry, tool_error
+from tools.registry import tool_error
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
 

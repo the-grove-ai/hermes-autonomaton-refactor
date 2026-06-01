@@ -53,8 +53,7 @@ from agent.video_gen_provider import (
     DEFAULT_RESOLUTION,
     error_response,
 )
-from tools.registry import registry, tool_error
-
+from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 

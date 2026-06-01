@@ -26,12 +26,16 @@ import logging
 import os
 import shlex
 import uuid
+from typing import TYPE_CHECKING
 
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
     DEFAULT_BUDGET,
 )
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
@@ -123,20 +127,22 @@ def maybe_persist_tool_result(
     content: str,
     tool_name: str,
     tool_use_id: str,
+    registry: "ToolRegistry",
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
     threshold: int | float | None = None,
 ) -> str:
     """Layer 2: persist oversized result into the sandbox, return preview + path.
 
-    Writes via env.execute() so the file is accessible from any backend
-    (local, Docker, SSH, Modal, Daytona). Falls back to inline truncation
-    if write fails or no env is available.
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry the
+    per-tool ``max_result_size`` threshold is read from when neither
+    ``threshold`` nor an override on *config* is set.
 
     Args:
         content: Raw tool result string.
         tool_name: Name of the tool (used for threshold lookup).
         tool_use_id: Unique ID for this tool call (used as filename).
+        registry: Dispatcher-owned ToolRegistry.
         env: The active BaseEnvironment instance, or None.
         config: BudgetConfig controlling thresholds and preview size.
         threshold: Explicit override; takes precedence over config resolution.
@@ -144,7 +150,10 @@ def maybe_persist_tool_result(
     Returns:
         Original content if small, or <persisted-output> replacement.
     """
-    effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
+    effective_threshold = (
+        threshold if threshold is not None
+        else config.resolve_threshold(tool_name, registry)
+    )
 
     if effective_threshold == float("inf"):
         return content
@@ -180,14 +189,16 @@ def maybe_persist_tool_result(
 
 def enforce_turn_budget(
     tool_messages: list[dict],
+    registry: "ToolRegistry",
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
 ) -> list[dict]:
     """Layer 3: enforce aggregate budget across all tool results in a turn.
 
-    If total chars exceed budget, persist the largest non-persisted results
-    first (via sandbox write) until under budget. Already-persisted results
-    are skipped.
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry; it is
+    passed through to :func:`maybe_persist_tool_result` for the
+    per-tool threshold lookup path even though the budget-driven spill
+    always passes ``threshold=0`` and short-circuits that lookup.
 
     Mutates the list in-place and returns it.
     """
@@ -216,6 +227,7 @@ def enforce_turn_budget(
             content=content,
             tool_name=_BUDGET_TOOL_NAME,
             tool_use_id=tool_use_id,
+            registry=registry,
             env=env,
             config=config,
             threshold=0,

@@ -114,7 +114,6 @@ def check_escalate_requirements() -> bool:
 
 
 # --- Registry ---
-from tools.registry import registry  # noqa: E402
 
 def register(reg):
     """Sprint 53 — Dispatcher-driven registration entrypoint."""

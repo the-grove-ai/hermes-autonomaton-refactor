@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from tools.registry import registry, tool_error
+from tools.registry import tool_error
 from tools.xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
 
 logger = logging.getLogger(__name__)

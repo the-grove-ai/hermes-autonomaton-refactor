@@ -2905,7 +2905,7 @@ async def get_toolsets():
     result = []
     for name, label, desc in _get_effective_configurable_toolsets():
         try:
-            tools = sorted(set(resolve_toolset(name)))
+            tools = sorted(set(resolve_toolset(name, _cli_registry())))
         except Exception:
             tools = []
         is_enabled = name in enabled_toolsets
@@ -3131,6 +3131,23 @@ async def get_models_analytics(days: int = 30):
 
 import re
 import asyncio
+
+
+# Sprint 53 — ad-hoc Dispatcher-style ToolRegistry built once per
+# process for read-only CLI introspection paths.
+_CLI_REGISTRY = None
+def _cli_registry():
+    global _CLI_REGISTRY
+    if _CLI_REGISTRY is None:
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _CLI_REGISTRY = ToolRegistry()
+        register_builtin_tools(_CLI_REGISTRY)
+        try:
+            from hermes_cli.plugins import discover_plugins as _dp
+            _dp(registry=_CLI_REGISTRY)
+        except Exception:
+            pass
+    return _CLI_REGISTRY
 
 # PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
 # Windows the import raises; catch and leave PtyBridge=None so the rest of
@@ -4078,16 +4095,19 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             source in {"user", "git"} and under_user_tree and Path(dir_str).is_dir()
         )
 
-        # Check if this plugin provides tools that require auth
+        # Check if this plugin provides tools that require auth.
+        # Sprint 53 — use the same ad-hoc registry the plugins-hub
+        # auth-status branch above built; this is a sibling loop in
+        # the same function.
         auth_required = False
         auth_command = ""
         manifest_data = _read_plugin_manifest_at(dir_path)
         provides_tools = manifest_data.get("provides_tools") or []
         if provides_tools:
             try:
-                from tools.registry import registry
+                _registry = _cli_registry()
                 for tname in provides_tools:
-                    entry = registry.get_entry(tname)
+                    entry = _registry.get_entry(tname)
                     if entry and entry.check_fn and not entry.check_fn():
                         auth_required = True
                         auth_command = f"hermes auth {name}"

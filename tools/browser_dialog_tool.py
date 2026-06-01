@@ -20,8 +20,6 @@ import logging
 from typing import Any, Dict, Optional
 
 from tools.browser_supervisor import SUPERVISOR_REGISTRY
-from tools.registry import registry
-
 logger = logging.getLogger(__name__)
 
 

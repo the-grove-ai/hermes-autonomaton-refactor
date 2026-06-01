@@ -452,8 +452,14 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
-                         context_length: int = None):
+                         context_length: int = None,
+                         registry=None):
     """Build and print a welcome banner with caduceus on left and info on right.
+
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry used to
+    resolve tool availability and per-toolset requirements.  Callers
+    that do not have a Dispatcher (rare; mostly tests) get a fast-fail
+    when this is omitted.
 
     Args:
         console: Rich Console instance.
@@ -464,23 +470,27 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
+        registry: Dispatcher-owned ToolRegistry (Sprint 53).
     """
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from model_tools import check_tool_availability, get_toolset_requirements
     if get_toolset_for_tool is None:
-        from model_tools import get_toolset_for_tool
+        from model_tools import get_toolset_for_tool as _gtf
+        # Adapt the new (registry, name) signature back to the (name)
+        # call shape the rest of this function uses.
+        get_toolset_for_tool = lambda name: _gtf(registry, name)
 
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
 
-    _, unavailable_toolsets = check_tool_availability(quiet=True)
+    _, unavailable_toolsets = check_tool_availability(registry, quiet=True)
+    _toolset_requirements = get_toolset_requirements(registry)
     disabled_tools = set()
-    # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
-    # homeassistant) — they show as unavailable at banner time because the
-    # check hasn't run yet, but they aren't misconfigured.
+    # Tools whose toolset has a check_fn are lazy-initialized — they
+    # show as unavailable at banner time but aren't misconfigured.
     lazy_tools = set()
     for item in unavailable_toolsets:
         toolset_name = item.get("name", "")
-        ts_req = TOOLSET_REQUIREMENTS.get(toolset_name, {})
+        ts_req = _toolset_requirements.get(toolset_name, {})
         tools_in_ts = item.get("tools", [])
         if ts_req.get("check_fn"):
             lazy_tools.update(tools_in_ts)

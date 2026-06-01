@@ -32,6 +32,23 @@ from typing import Optional
 from grove.dispatcher import Dispatcher
 
 
+
+# Sprint 53 — ad-hoc Dispatcher-style ToolRegistry built once per
+# process for read-only CLI introspection paths.
+_CLI_REGISTRY = None
+def _cli_registry():
+    global _CLI_REGISTRY
+    if _CLI_REGISTRY is None:
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _CLI_REGISTRY = ToolRegistry()
+        register_builtin_tools(_CLI_REGISTRY)
+        try:
+            from hermes_cli.plugins import discover_plugins as _dp
+            _dp(registry=_CLI_REGISTRY)
+        except Exception:
+            pass
+    return _CLI_REGISTRY
+
 class ModelConfigError(RuntimeError):
     """No model could be resolved for a oneshot (-z) run — not from --model,
     GROVE_INFERENCE_MODEL, config, or the Cognitive Router. Fail loud: the
@@ -106,7 +123,7 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     except Exception as exc:
         return None, f"autonomaton -z: failed to validate --toolsets: {exc}\n"
 
-    built_in = [name for name in normalized if validate_toolset(name)]
+    built_in = [name for name in normalized if validate_toolset(name, _cli_registry())]
     unresolved = [name for name in normalized if name not in built_in]
 
     if unresolved:
@@ -114,7 +131,7 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
             from hermes_cli.plugins import discover_plugins
 
             discover_plugins()
-            plugin_valid = [name for name in unresolved if validate_toolset(name)]
+            plugin_valid = [name for name in unresolved if validate_toolset(name, _cli_registry())]
         except Exception:
             plugin_valid = []
 

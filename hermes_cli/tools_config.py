@@ -156,6 +156,23 @@ def _get_plugin_toolset_keys() -> set:
 # compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
 
+
+# Sprint 53 — ad-hoc Dispatcher-style ToolRegistry built once per
+# process for read-only CLI introspection paths.
+_CLI_REGISTRY = None
+def _cli_registry():
+    global _CLI_REGISTRY
+    if _CLI_REGISTRY is None:
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _CLI_REGISTRY = ToolRegistry()
+        register_builtin_tools(_CLI_REGISTRY)
+        try:
+            from hermes_cli.plugins import discover_plugins as _dp
+            _dp(registry=_CLI_REGISTRY)
+        except Exception:
+            pass
+    return _CLI_REGISTRY
+
 PLATFORMS = {
     k: {"label": info.label, "default_toolset": info.default_toolset}
     for k, info in _PLATFORMS_REGISTRY.items()
@@ -1136,14 +1153,14 @@ def _get_platform_tools(
                 continue
             if ts_name not in TOOLSETS:
                 continue
-            composite_tools.update(resolve_toolset(ts_name))
+            composite_tools.update(resolve_toolset(ts_name, _cli_registry()))
 
         if composite_tools:
             expanded = set()
             for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
                 if not _toolset_allowed_for_platform(ts_key, platform):
                     continue
-                ts_tools = set(resolve_toolset(ts_key))
+                ts_tools = set(resolve_toolset(ts_key, _cli_registry()))
                 if ts_tools and ts_tools.issubset(composite_tools):
                     expanded.add(ts_key)
 
@@ -1160,13 +1177,13 @@ def _get_platform_tools(
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
         all_tool_names = set()
         for ts_name in toolset_names:
-            all_tool_names.update(resolve_toolset(ts_name))
+            all_tool_names.update(resolve_toolset(ts_name, _cli_registry()))
 
         enabled_toolsets = set()
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
             if not _toolset_allowed_for_platform(ts_key, platform):
                 continue
-            ts_tools = set(resolve_toolset(ts_key))
+            ts_tools = set(resolve_toolset(ts_key, _cli_registry()))
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
@@ -1197,13 +1214,13 @@ def _get_platform_tools(
     # to True) silently drops them.
     _plat_info = PLATFORMS.get(platform)
     _default_ts = _plat_info["default_toolset"] if _plat_info else f"hermes-{platform}"
-    platform_tool_universe = set(resolve_toolset(_default_ts))
+    platform_tool_universe = set(resolve_toolset(_default_ts, _cli_registry()))
     configurable_tool_universe = set()
     for ck in configurable_keys:
-        configurable_tool_universe.update(resolve_toolset(ck))
+        configurable_tool_universe.update(resolve_toolset(ck, _cli_registry()))
     claimed = set()
     for ts_key in enabled_toolsets:
-        claimed.update(resolve_toolset(ts_key))
+        claimed.update(resolve_toolset(ts_key, _cli_registry()))
     skip = configurable_keys | plugin_ts_keys | platform_default_keys
     skip |= {k for k in TOOLSETS if k.startswith("hermes-")}
     skip |= set(_DEFAULT_OFF_TOOLSETS) - {platform}
@@ -1212,7 +1229,7 @@ def _get_platform_tools(
             continue
         if ts_def.get("includes"):
             continue
-        ts_tools = set(resolve_toolset(ts_key))
+        ts_tools = set(resolve_toolset(ts_key, _cli_registry()))
         if not ts_tools or not ts_tools.issubset(platform_tool_universe):
             continue
         if ts_tools.issubset(configurable_tool_universe):
@@ -1421,21 +1438,19 @@ def _estimate_tool_tokens() -> Dict[str, int]:
         _tool_token_cache = {}
         return _tool_token_cache
 
+    # Sprint 53 — use the module-local ad-hoc Dispatcher-style
+    # registry helper rather than reaching the orphaned singleton.
     try:
-        # Trigger full tool discovery (imports all tool modules).
-        import model_tools  # noqa: F401
-        from tools.registry import registry
+        _registry = _cli_registry()
     except Exception:
         logger.debug("Tool registry unavailable; skipping token estimation")
         _tool_token_cache = {}
         return _tool_token_cache
 
     counts: Dict[str, int] = {}
-    for name in registry.get_all_tool_names():
-        schema = registry.get_schema(name)
+    for name in _registry.get_all_tool_names():
+        schema = _registry.get_schema(name)
         if schema:
-            # Mirror what gets sent to the API:
-            # {"type": "function", "function": <schema>}
             text = _json.dumps({"type": "function", "function": schema})
             counts[name] = len(enc.encode(text))
     _tool_token_cache = counts
@@ -1478,7 +1493,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: 
             # Collect unique tool names across all selected toolsets
             all_tools: set = set()
             for idx in chosen:
-                all_tools.update(resolve_toolset(ts_keys[idx]))
+                all_tools.update(resolve_toolset(ts_keys[idx], _cli_registry()))
             total = sum(tool_tokens.get(name, 0) for name in all_tools)
             if total >= 1000:
                 return f"Est. tool context: ~{total / 1000:.1f}k tokens"

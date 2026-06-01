@@ -266,24 +266,11 @@ def main(argv: list[str] | None = None) -> None:
     import acp
     from .server import HermesACPAgent
 
-    # MCP tool discovery from config.yaml — run before asyncio.run() so
-    # it's safe to use blocking waits.  (ACP also registers per-session
-    # MCP servers dynamically via asyncio.to_thread inside the event
-    # loop; that path is unaffected.)  Moved from model_tools.py module
-    # scope to avoid freezing the gateway's loop on lazy import (#16856).
-    try:
-        # Sprint 53 hotfix — discover_mcp_tools requires a registry; ACP
-        # startup builds an ad-hoc Dispatcher-style registry so MCP
-        # tools register before the first session's Dispatcher
-        # constructs. Per-session Dispatchers re-run discovery against
-        # their own registries inside Dispatcher.__init__ (idempotent).
-        from tools.mcp_tool import discover_mcp_tools
-        from tools.registry import ToolRegistry, register_builtin_tools
-        _bootstrap_registry = ToolRegistry()
-        register_builtin_tools(_bootstrap_registry)
-        discover_mcp_tools(registry=_bootstrap_registry)
-    except Exception:
-        logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
+    # Sprint 53 — MCP tool discovery is now driven by the Dispatcher's
+    # ``__init__``. The ACP startup pre-warm against an ad-hoc registry
+    # was a silent fallback for the missing-Dispatcher case; it has
+    # been removed. Per-session Dispatchers discover MCP servers
+    # against their own registries.
 
     agent = HermesACPAgent()
     try:

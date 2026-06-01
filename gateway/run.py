@@ -13799,12 +13799,13 @@ class GatewayRunner:
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
-        try:
-            from tools.registry import registry
-
-            out["tools.registry_generation"] = getattr(registry, "_generation", None)
-        except Exception:
-            out["tools.registry_generation"] = None
+        # Sprint 53 — the module-level singleton no longer participates
+        # in cache busting; each per-session Dispatcher owns its
+        # ``ToolRegistry`` and tracks its own ``_generation`` locally.
+        # The cache-busting signature drops this field; agent cache
+        # invalidation on MCP / plugin changes now falls out of the
+        # per-session Dispatcher's own state.
+        out["tools.registry_generation"] = None
         return out
 
     @staticmethod

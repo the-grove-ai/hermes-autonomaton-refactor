@@ -1360,24 +1360,29 @@ def dashboard_install_plugin(
 def _get_plugin_toolset_key(name: str) -> Optional[str]:
     """Return the toolset key a plugin registers its tools under, or None.
 
-    Queries the live tool registry — the plugin must already be loaded.
-    Falls back to reading ``provides_tools`` from plugin.yaml and looking
-    up the toolset from the registry for the first tool name found.
+    Sprint 53 — this is a hermes-cli introspection helper called from
+    CLI subcommands that do not have a running Dispatcher.  An ad-hoc
+    Dispatcher-style registry is constructed locally and populated via
+    ``register_builtin_tools`` + ``discover_plugins(registry=...)`` so
+    the toolset key lookup is correct against the same registration
+    contract a live Dispatcher would use.
     """
     try:
-        from tools.registry import registry
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _adhoc_registry = ToolRegistry()
+        register_builtin_tools(_adhoc_registry)
     except Exception:
         return None
 
     # Check the plugin manager for tools this plugin registered
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        discover_plugins()  # idempotent — ensures plugins are loaded
+        discover_plugins(registry=_adhoc_registry)
         manager = get_plugin_manager()
         for _key, loaded in manager._plugins.items():
             if loaded.manifest.name == name or _key == name:
                 for tool_name in loaded.tools_registered:
-                    entry = registry.get_entry(tool_name)
+                    entry = _adhoc_registry.get_entry(tool_name)
                     if entry and entry.toolset:
                         return entry.toolset
                 break
@@ -1394,7 +1399,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
             if candidate.is_dir():
                 manifest = _read_manifest(candidate)
                 for tool_name in manifest.get("provides_tools") or []:
-                    entry = registry.get_entry(tool_name)
+                    entry = _adhoc_registry.get_entry(tool_name)
                     if entry and entry.toolset:
                         return entry.toolset
     except Exception:

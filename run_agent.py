@@ -1303,6 +1303,15 @@ class AIAgent:
         # for tests that bypass the Dispatcher inversion. None
         # preserves the legacy TTY default (CLI / oneshot).
         sovereign_prompt_handler: callable = None,
+        # ── Sprint 53 — Capability Provider callback ──────────────────
+        # The Dispatcher supplies a callable that returns the filtered
+        # OpenAI-format tool list the Agent may call.  The Agent reads
+        # tool definitions exclusively through this callback and holds
+        # no reference to the underlying ToolRegistry.  When None
+        # (legacy / test callers that bypass the Dispatcher), the
+        # capability resolves through the model_tools API against the
+        # Dispatcher back-reference's registry.
+        get_available_tools: callable = None,
     ):
         """
         Initialize the AI Agent.
@@ -1386,6 +1395,10 @@ class AIAgent:
         # bypass the inversion). None → Dispatcher uses the default
         # TTY handler.
         self._sovereign_prompt_handler = sovereign_prompt_handler
+        # Sprint 53 — capability provider callback supplied by the
+        # Dispatcher. The Agent reads its filtered tool list through
+        # this callback and holds no ToolRegistry reference.
+        self._get_available_tools = get_available_tools
         # Sprint 29 Phase 2 — per-turn tool filter (context-budget-v1).
         # ``_tools_for_turn`` overrides ``self.tools`` at every LLM call
         # site via the ``_tools_for_api`` property; ``_maybe_apply_tool_filter``
@@ -2042,15 +2055,27 @@ class AIAgent:
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering.
-        # Sprint 26 Phase 1b / Sprint 34: use Dispatcher-cached registry
-        # when it cached one; else build.
+        # Sprint 53 — the Dispatcher supplies a capability provider
+        # callback that returns the filtered OpenAI-format tool list.
+        # Sprint 53 — the capability provider callback is the sole
+        # path for the Agent to read its filtered tool list. Production
+        # callers (Dispatcher) supply ``get_available_tools``; absent
+        # supply we raise rather than silently degrade.
         if self._runtime_ctx.tools is not None:
             self.tools = self._runtime_ctx.tools
-        else:
-            self.tools = get_tool_definitions(
+        elif self._get_available_tools is not None:
+            self.tools = self._get_available_tools(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
                 quiet_mode=self.quiet_mode,
+            )
+        else:
+            raise RuntimeError(
+                "AIAgent constructed without a capability provider — "
+                "the Dispatcher must supply ``get_available_tools`` so "
+                "the Agent can read its filtered tool set. Construct "
+                "AIAgent via ``Dispatcher(agent_kwargs=...).agent`` "
+                "instead of calling ``AIAgent(...)`` directly."
             )
         
         # Show tool configuration and store valid tool names for validation
@@ -2071,7 +2096,14 @@ class AIAgent:
         
         # Check tool requirements
         if self.tools and not self.quiet_mode:
-            requirements = check_toolset_requirements()
+            # Sprint 53 — read from the Dispatcher-owned registry.
+            _disp = getattr(self, "_dispatcher_singleton", None)
+            _req_registry = _disp.registry if _disp is not None else None
+            if _req_registry is None:
+                # Pre-Dispatcher path: skip requirements check.
+                requirements = {}
+            else:
+                requirements = check_toolset_requirements(_req_registry)
             missing_reqs = [name for name, available in requirements.items() if not available]
             if missing_reqs:
                 print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
@@ -4748,13 +4780,21 @@ class AIAgent:
                         clear_thread_tool_whitelist,
                     )
 
-                    review_whitelist = {
-                        t["function"]["name"]
-                        for t in get_tool_definitions(
-                            enabled_toolsets=["memory", "skills"],
-                            quiet_mode=True,
-                        )
-                    }
+                    # Sprint 53 — read tool definitions through the
+                    # Dispatcher-owned registry.
+                    _bg_disp = getattr(self, "_dispatcher_singleton", None)
+                    _bg_registry = _bg_disp.registry if _bg_disp is not None else None
+                    if _bg_registry is None:
+                        review_whitelist = set()
+                    else:
+                        review_whitelist = {
+                            t["function"]["name"]
+                            for t in get_tool_definitions(
+                                _bg_registry,
+                                enabled_toolsets=["memory", "skills"],
+                                quiet_mode=True,
+                            )
+                        }
                     set_thread_tool_whitelist(
                         review_whitelist,
                         deny_msg_fmt=(
@@ -11218,7 +11258,9 @@ class AIAgent:
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
         else:
+            # Sprint 53 — dispatch through the Dispatcher-owned registry.
             return handle_function_call(
+                self._dispatcher_singleton.registry,
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
@@ -11466,10 +11508,18 @@ class AIAgent:
             ExecutionContext, ExecutorConfig,
             ObservabilityCallbacks, SideEffectCallbacks,
         )
-        from tools.registry import registry as _tool_registry
-        from tools.tool_result_storage import maybe_persist_tool_result as _persist
+        # Sprint 53 — the Agent does not import the ToolRegistry; it
+        # reads the Dispatcher-owned instance through the back-reference
+        # established at Dispatcher construction time.
+        _tool_registry = self._dispatcher_singleton.registry
+        from functools import partial
+        from tools.tool_result_storage import maybe_persist_tool_result
         from tools.terminal_tool import get_active_env as _env_for_task
         from hermes_cli.plugins import get_pre_tool_call_block_message as _plugin_block
+        # Sprint 53 — bind the registry once so the ToolExecutor's
+        # ``persist_tool_result`` callback keeps its (content,
+        # tool_name, tool_use_id, env) signature.
+        _persist = partial(maybe_persist_tool_result, registry=_tool_registry)
 
         # Snapshot parent-thread callbacks for worker-thread propagation
         _parent_approval_cb = _get_approval_callback()
@@ -11583,7 +11633,12 @@ class AIAgent:
         if num_tools > 0:
             turn_tool_msgs = messages[-num_tools:]
             try:
-                enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+                # Sprint 53 — read registry through the Dispatcher back-ref.
+                enforce_turn_budget(
+                    turn_tool_msgs,
+                    self._dispatcher_singleton.registry,
+                    env=get_active_env(effective_task_id),
+                )
             except Exception:
                 pass
             self._apply_pending_steer_to_tool_results(messages, num_tools)
@@ -11744,10 +11799,18 @@ class AIAgent:
             ExecutionContext, ExecutorConfig,
             ObservabilityCallbacks, SideEffectCallbacks,
         )
-        from tools.registry import registry as _tool_registry
-        from tools.tool_result_storage import maybe_persist_tool_result as _persist
+        # Sprint 53 — the Agent does not import the ToolRegistry; it
+        # reads the Dispatcher-owned instance through the back-reference
+        # established at Dispatcher construction time.
+        _tool_registry = self._dispatcher_singleton.registry
+        from functools import partial
+        from tools.tool_result_storage import maybe_persist_tool_result
         from tools.terminal_tool import get_active_env as _env_for_task
         from hermes_cli.plugins import get_pre_tool_call_block_message as _plugin_block
+        # Sprint 53 — bind the registry once so the ToolExecutor's
+        # ``persist_tool_result`` callback keeps its (content,
+        # tool_name, tool_use_id, env) signature.
+        _persist = partial(maybe_persist_tool_result, registry=_tool_registry)
 
         def _safe_plugin_block(name: str, args: dict, task_id: str):
             try:
@@ -15811,6 +15874,7 @@ class AIAgent:
             if _kanban_task:
                 try:
                     handle_function_call(
+                        self._dispatcher_singleton.registry,
                         "kanban_block",
                         {
                             "task_id": _kanban_task,
@@ -16427,22 +16491,28 @@ def main(
     if list_tools:
         from model_tools import get_all_tool_names, get_available_toolsets
         from toolsets import get_all_toolsets, get_toolset_info
-        
+        # Sprint 53 — build an ad-hoc Dispatcher-style registry so the
+        # CLI subcommand renders the live toolset/tool inventory without
+        # constructing a full Dispatcher.
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _list_registry = ToolRegistry()
+        register_builtin_tools(_list_registry)
+
         print("📋 Available Tools & Toolsets:")
         print("-" * 50)
-        
+
         # Show new toolsets system
         print("\n🎯 Predefined Toolsets (New System):")
         print("-" * 40)
-        all_toolsets = get_all_toolsets()
-        
+        all_toolsets = get_all_toolsets(_list_registry)
+
         # Group by category
         basic_toolsets = []
         composite_toolsets = []
         scenario_toolsets = []
-        
+
         for name, toolset in all_toolsets.items():
-            info = get_toolset_info(name)
+            info = get_toolset_info(name, _list_registry)
             if info:
                 entry = (name, info)
                 if name in {"web", "terminal", "vision", "creative", "reasoning"}:
@@ -16476,18 +16546,18 @@ def main(
         
         # Show legacy toolset compatibility
         print("\n📦 Legacy Toolsets (for backward compatibility):")
-        legacy_toolsets = get_available_toolsets()
+        legacy_toolsets = get_available_toolsets(_list_registry)
         for name, info in legacy_toolsets.items():
             status = "✅" if info["available"] else "❌"
             print(f"  {status} {name}: {info['description']}")
             if not info["available"]:
                 print(f"    Requirements: {', '.join(info['requirements'])}")
-        
+
         # Show individual tools
-        all_tools = get_all_tool_names()
+        all_tools = get_all_tool_names(_list_registry)
         print(f"\n🔧 Individual Tools ({len(all_tools)} available):")
         for tool_name in sorted(all_tools):
-            toolset = get_toolset_for_tool(tool_name)
+            toolset = get_toolset_for_tool(_list_registry, tool_name)
             print(f"  📌 {tool_name} (from {toolset})")
         
         print("\n💡 Usage Examples:")

@@ -22,8 +22,7 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from tools.registry import registry, tool_error
-
+from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"

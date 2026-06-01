@@ -562,8 +562,7 @@ MEMORY_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
-
+from tools.registry import tool_error
 def register(reg):
     """Sprint 53 — Dispatcher-driven registration entrypoint."""
     reg.register(

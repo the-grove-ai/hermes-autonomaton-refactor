@@ -347,9 +347,15 @@ def _skills_index_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         return None
     from agent.prompt_builder import build_skills_system_prompt
     from model_tools import get_toolset_for_tool
+    # Sprint 53 — composer providers receive the Dispatcher-owned
+    # registry via the ctx dict. ``ctx["registry"]`` is populated by
+    # Dispatcher._compose_and_inject_system_prompt.
+    registry = ctx.get("registry")
+    if registry is None:
+        return None
     avail_toolsets = {
         toolset for toolset in (
-            get_toolset_for_tool(tool_name) for tool_name in valid
+            get_toolset_for_tool(registry, tool_name) for tool_name in valid
         )
         if toolset
     }

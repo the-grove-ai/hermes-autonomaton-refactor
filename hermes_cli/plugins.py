@@ -285,11 +285,22 @@ class LoadedPlugin:
 # ---------------------------------------------------------------------------
 
 class PluginContext:
-    """Facade given to plugins so they can register tools and hooks."""
+    """Facade given to plugins so they can register tools and hooks.
 
-    def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
+    Sprint 53 — *registry* is the Dispatcher-owned ``ToolRegistry`` the
+    plugin's ``register_tool`` calls land in. PluginManager forwards it
+    from the Dispatcher's ``discover_plugins(registry=...)`` invocation.
+    """
+
+    def __init__(
+        self,
+        manifest: PluginManifest,
+        manager: "PluginManager",
+        registry: Any,
+    ):
         self.manifest = manifest
         self._manager = manager
+        self._registry = registry
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
 
@@ -327,16 +338,13 @@ class PluginContext:
         emoji: str = "",
         override: bool = False,
     ) -> None:
-        """Register a tool in the global registry **and** track it as plugin-provided.
+        """Register a tool in the Dispatcher-owned registry **and** track it as plugin-provided.
 
-        Pass ``override=True`` to replace an existing built-in tool with the
-        same name (e.g. swap the default ``browser_navigate`` for a custom
-        CDP-backed implementation). Without it, attempting to register a name
-        already claimed by a different toolset is rejected.
+        Sprint 53 — registrations land in ``self._registry`` (the
+        Dispatcher-owned ToolRegistry handed to the PluginContext at
+        construction). Override semantics are unchanged.
         """
-        from tools.registry import registry
-
-        registry.register(
+        self._registry.register(
             name=name,
             toolset=toolset,
             schema=schema,
@@ -481,7 +489,9 @@ class PluginContext:
         Returns:
             JSON string from the tool handler (same format as model tool calls).
         """
-        from tools.registry import registry
+        # Sprint 53 — dispatch through the Dispatcher-owned registry
+        # stashed on the PluginContext at construction.
+        registry = self._registry
 
         # Wire up parent agent context when available (CLI mode).
         # In gateway mode _cli_ref is None — tools degrade gracefully
@@ -750,18 +760,40 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        # Sprint 53 — the Dispatcher-owned ToolRegistry plugin tool
+        # registrations land in.  Populated by ``discover_and_load``.
+        self._registry: Any = None
 
     # -----------------------------------------------------------------------
     # Public
     # -----------------------------------------------------------------------
 
-    def discover_and_load(self, force: bool = False) -> None:
+    def discover_and_load(
+        self, force: bool = False, registry: Any = None,
+    ) -> None:
         """Scan all plugin sources and load each plugin found.
 
-        When ``force`` is true, clear cached discovery state first so config
-        changes or newly-added bundled backends become visible in long-lived
-        sessions without requiring a full agent restart.
+        Sprint 53 — *registry* is the Dispatcher-owned ``ToolRegistry``
+        plugin tool registrations land in.  Replays plugin registration
+        when called with a new registry, so multiple Dispatchers in one
+        process each receive plugin tools in their owned registry.
+
+        When ``force`` is true OR the supplied *registry* differs from
+        the one used on the prior discovery pass, clears cached
+        discovery state first.
         """
+        if registry is not None and registry is not self._registry:
+            # New registry — replay registrations against it.
+            force = True
+            self._registry = registry
+        elif registry is None and self._registry is None:
+            # Sprint 53 — no prior registry and none supplied.
+            # Surface this loud rather than silently no-op against
+            # an ad-hoc registry that no Dispatcher will see.
+            raise TypeError(
+                "PluginManager.discover_and_load requires a Sprint 53 "
+                "Dispatcher-owned registry; pass registry=dispatcher.registry"
+            )
         if self._discovered and not force:
             return
         if force:
@@ -1133,7 +1165,13 @@ class PluginManager:
     # -----------------------------------------------------------------------
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
-        """Import a plugin module and call its ``register(ctx)`` function."""
+        """Import a plugin module and call its ``register(ctx)`` function.
+
+        Sprint 53 — the PluginManager keeps ``self._registry`` (set by
+        ``discover_and_load(registry=...)``); each plugin's
+        ``register(ctx)`` lands its tool registrations in that registry
+        via the ``PluginContext`` facade.
+        """
         loaded = LoadedPlugin(manifest=manifest)
         logger.debug(
             "Loading plugin '%s' (source=%s, kind=%s, path=%s)",
@@ -1154,7 +1192,7 @@ class PluginManager:
                 loaded.error = "no register() function"
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
-                ctx = PluginContext(manifest, self)
+                ctx = PluginContext(manifest, self, registry=self._registry)
                 register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names
@@ -1360,13 +1398,16 @@ def get_plugin_manager() -> PluginManager:
     return _plugin_manager
 
 
-def discover_plugins(force: bool = False) -> None:
+def discover_plugins(force: bool = False, registry: Any = None) -> None:
     """Discover and load all plugins.
 
-    Default behavior is idempotent. Pass ``force=True`` to rescan plugin
-    manifests and reload state in the current process.
+    Sprint 53 — *registry* is the Dispatcher-owned ``ToolRegistry`` that
+    receives the plugins' tool registrations. Idempotent for the same
+    registry; supplying a new registry replays the registration phase
+    against it so each Dispatcher gets a fresh set of plugin-provided
+    tools.
     """
-    get_plugin_manager().discover_and_load(force=force)
+    get_plugin_manager().discover_and_load(force=force, registry=registry)
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
@@ -1440,10 +1481,31 @@ def get_pre_tool_call_block_message(
 def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
     """Return the global manager after ensuring plugin discovery has run.
 
+    Sprint 53 — Dispatcher-resident registration. The manager's
+    registry MUST be set by a prior ``Dispatcher.__init__`` call
+    (which runs ``discover_plugins(registry=self.registry)``); this
+    helper only re-runs discovery if force=True. When the manager
+    already has registrations from a test's direct
+    ``ctx.register_command`` calls but no full discovery has run,
+    the existing registrations stay intact.
+
     Pass ``force=True`` to rescan in the current process.
     """
     manager = get_plugin_manager()
-    manager.discover_and_load(force=force)
+    # If manager already has any plugin registrations and discovery
+    # was not explicitly requested via force, don't re-discover —
+    # tests inject registrations directly.
+    if not force and (manager._plugin_commands or manager._plugin_tool_names or manager._hooks):
+        return manager
+    if manager._registry is None:
+        raise RuntimeError(
+            "PluginManager has no registry — Sprint 53 requires a "
+            "Dispatcher to have run ``discover_plugins(registry=...)`` "
+            "before any code path that calls "
+            "``_ensure_plugins_discovered``. Construct a Dispatcher "
+            "or call ``discover_plugins(registry=...)`` explicitly."
+        )
+    manager.discover_and_load(force=force, registry=manager._registry)
     return manager
 
 
@@ -1516,19 +1578,22 @@ def get_plugin_commands() -> Dict[str, dict]:
     return _ensure_plugins_discovered()._plugin_commands
 
 
-def get_plugin_toolsets() -> List[tuple]:
+def get_plugin_toolsets(registry: Any = None) -> List[tuple]:
     """Return plugin toolsets as ``(key, label, description)`` tuples.
 
-    Used by the ``hermes tools`` TUI so plugin-provided toolsets appear
-    alongside the built-in ones and can be toggled on/off per platform.
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry; when
+    omitted, fall back to the PluginManager's last-used registry (set
+    by the most recent ``discover_and_load(registry=...)`` call). The
+    TUI passes its Dispatcher's registry; pre-Sprint-53 introspection
+    callers continue to work against the manager's recorded registry.
     """
     manager = get_plugin_manager()
     if not manager._plugin_tool_names:
         return []
 
-    try:
-        from tools.registry import registry
-    except Exception:
+    if registry is None:
+        registry = manager._registry
+    if registry is None:
         return []
 
     # Group plugin tool names by their toolset

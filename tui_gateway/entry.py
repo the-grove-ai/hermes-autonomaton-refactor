@@ -193,36 +193,11 @@ def main():
     # startup calls to avoid freezing the gateway's loop on lazy import
     # (#16856).
     #
-    # Cold-start guard: importing ``tools.mcp_tool`` transitively pulls the
-    # full MCP SDK (mcp, pydantic, httpx, jsonschema, starlette parsers —
-    # ~200ms on macOS), which runs on the TUI's critical path before
-    # ``gateway.ready`` can be emitted.  The overwhelming majority of users
-    # have no ``mcp_servers`` configured, in which case every byte of that
-    # import is wasted.  Check the config first (cheap — it's already been
-    # loaded once by ``_config_mtime`` elsewhere) and only pay the import
-    # cost when there's actually MCP work to do.
-    try:
-        from hermes_cli.config import read_raw_config
-        _mcp_servers = (read_raw_config() or {}).get("mcp_servers")
-        _has_mcp_servers = isinstance(_mcp_servers, dict) and len(_mcp_servers) > 0
-    except Exception:
-        # Be conservative: if we can't decide, fall back to the old
-        # behaviour and let the discovery path handle its own errors.
-        _has_mcp_servers = True
-    if _has_mcp_servers:
-        try:
-            # Sprint 53 hotfix — discover_mcp_tools requires a registry;
-            # TUI gateway startup builds an ad-hoc Dispatcher-style
-            # registry so MCP tools register before the first session's
-            # Dispatcher constructs. Per-session Dispatchers re-run
-            # discovery against their own registries (idempotent).
-            from tools.mcp_tool import discover_mcp_tools
-            from tools.registry import ToolRegistry, register_builtin_tools
-            _bootstrap_registry = ToolRegistry()
-            register_builtin_tools(_bootstrap_registry)
-            discover_mcp_tools(registry=_bootstrap_registry)
-        except Exception:
-            pass
+    # Sprint 53 — MCP tool discovery is now driven by the Dispatcher's
+    # ``__init__``. The TUI-gateway startup pre-warm against an ad-hoc
+    # registry was a silent fallback for the missing-Dispatcher case;
+    # it has been removed. Per-session Dispatchers discover MCP
+    # servers against their own registries.
 
     if not write_json({
         "jsonrpc": "2.0",

@@ -4327,27 +4327,17 @@ def _(rid, params: dict) -> dict:
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
         shutdown_mcp_servers()
-        # Sprint 53 hotfix — discover_mcp_tools requires a registry.
-        # When a session is active, route discovery into the live
-        # Agent's Dispatcher-owned registry so the agent sees the
-        # refreshed tool set; otherwise build an ad-hoc registry so
-        # the call doesn't raise.
-        if session:
-            agent = session["agent"]
-            _disp = getattr(agent, "_dispatcher_singleton", None)
-            _registry_target = _disp.registry if _disp is not None else None
-        else:
-            agent = None
-            _registry_target = None
-        if _registry_target is None:
-            from tools.registry import ToolRegistry, register_builtin_tools
-            _registry_target = ToolRegistry()
-            register_builtin_tools(_registry_target)
-        discover_mcp_tools(registry=_registry_target)
-        if session and agent is not None:
-            if hasattr(agent, "refresh_tools"):
-                agent.refresh_tools()
-            _emit("session.info", params.get("session_id", ""), _session_info(agent))
+        # Sprint 53 — /reload-mcp requires an active session whose
+        # Dispatcher owns the registry the refresh writes to. No
+        # ad-hoc fallback: if there is no session the reload is a
+        # no-op (nothing to refresh against).
+        if not session:
+            return
+        agent = session["agent"]
+        discover_mcp_tools(registry=agent._dispatcher_singleton.registry)
+        if hasattr(agent, "refresh_tools"):
+            agent.refresh_tools()
+        _emit("session.info", params.get("session_id", ""), _session_info(agent))
 
         # Honor `always=true` by persisting the opt-out to config.
         if bool(params.get("always", False)):

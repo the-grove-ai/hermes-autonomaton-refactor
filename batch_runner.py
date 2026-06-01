@@ -53,17 +53,28 @@ from toolset_distributions import (
     sample_toolsets_from_distribution,
     validate_distribution
 )
-from model_tools import TOOL_TO_TOOLSET_MAP
+from model_tools import get_tool_to_toolset_map
 
 
 # Global configuration for worker processes
 _WORKER_CONFIG = {}
 
-# All possible tools - auto-derived from the master mapping in model_tools.py.
-# This stays in sync automatically when new tools are added to TOOL_TO_TOOLSET_MAP.
-# Used for consistent schema in Arrow/Parquet (HuggingFace datasets) and for
-# filtering corrupted entries during trajectory combination.
-ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
+# All possible tools - auto-derived from the canonical built-in tool
+# set.  Sprint 53 — TOOL_TO_TOOLSET_MAP is no longer a module-level
+# constant; it is computed against a Dispatcher-owned ToolRegistry.
+# The batch runner builds an ad-hoc registry for this single read
+# because batches enumerate tool names ahead of any Dispatcher
+# construction (worker processes each construct their own Dispatcher
+# later).  Plugin / MCP tools are not in scope for batch parquet
+# schema stability — they depend on per-run external state.
+def _build_all_possible_tools() -> set:
+    from tools.registry import ToolRegistry, register_builtin_tools
+    _registry = ToolRegistry()
+    register_builtin_tools(_registry)
+    return set(get_tool_to_toolset_map(_registry).keys())
+
+
+ALL_POSSIBLE_TOOLS = _build_all_possible_tools()
 
 # Default stats for tools that weren't used
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
@@ -315,8 +326,15 @@ def _process_single_prompt(
             print(f"   Prompt {prompt_index}: Using container image {container_image}")
     
     try:
-        # Sample toolsets from distribution for this prompt
-        selected_toolsets = sample_toolsets_from_distribution(config["distribution"])
+        # Sample toolsets from distribution for this prompt.  Sprint 53
+        # — sampling validates against an ad-hoc Dispatcher-style
+        # registry because the Dispatcher for this prompt is
+        # constructed below, after the toolset selection is finalized.
+        from tools.registry import ToolRegistry as _ToolRegistry
+        from tools.registry import register_builtin_tools as _rbt
+        _sample_registry = _ToolRegistry()
+        _rbt(_sample_registry)
+        selected_toolsets = sample_toolsets_from_distribution(config["distribution"], _sample_registry)
         
         if config.get("verbose"):
             print(f"   Prompt {prompt_index}: Using toolsets {selected_toolsets}")

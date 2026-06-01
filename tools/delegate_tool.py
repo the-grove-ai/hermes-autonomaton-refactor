@@ -448,18 +448,17 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
-def _is_mcp_toolset_name(name: str) -> bool:
-    """Return True for canonical MCP toolsets and their registered aliases."""
+def _is_mcp_toolset_name(name: str, registry: "ToolRegistry") -> bool:
+    """Return True for canonical MCP toolsets and their registered aliases.
+
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry; alias
+    targets are read from it.
+    """
     if not name:
         return False
     if str(name).startswith("mcp-"):
         return True
-    try:
-        from tools.registry import registry
-
-        target = registry.get_toolset_alias_target(str(name))
-    except Exception:
-        target = None
+    target = registry.get_toolset_alias_target(str(name))
     return bool(target and str(target).startswith("mcp-"))
 
 
@@ -495,12 +494,16 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
 
 
 def _preserve_parent_mcp_toolsets(
-    child_toolsets: List[str], parent_toolsets: set[str]
+    child_toolsets: List[str], parent_toolsets: set[str], registry: "ToolRegistry"
 ) -> List[str]:
-    """Append any parent MCP toolsets that are missing from a narrowed child."""
+    """Append any parent MCP toolsets that are missing from a narrowed child.
+
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry passed
+    through to :func:`_is_mcp_toolset_name`.
+    """
     preserved = list(child_toolsets)
     for toolset_name in sorted(parent_toolsets):
-        if _is_mcp_toolset_name(toolset_name) and toolset_name not in preserved:
+        if _is_mcp_toolset_name(toolset_name, registry) and toolset_name not in preserved:
             preserved.append(toolset_name)
     return preserved
 
@@ -919,21 +922,26 @@ def _build_child_agent(
 
     delegation_cfg = _load_config()
 
+    # Sprint 53 — reach the Dispatcher-owned registry via the parent
+    # Agent's back-reference; the Agent itself is blind to the registry.
+    _parent_dispatcher = getattr(parent_agent, "_dispatcher_singleton", None)
+    parent_registry = (
+        _parent_dispatcher.registry if _parent_dispatcher is not None else None
+    )
+
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
-    # Note: enabled_toolsets=None means "all tools enabled" (the default),
-    # so we must derive effective toolsets from the parent's loaded tools.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
         parent_toolsets = set(parent_enabled)
-    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
+    elif parent_agent and hasattr(parent_agent, "valid_tool_names") and parent_registry is not None:
         # enabled_toolsets is None (all tools) — derive from loaded tool names
         import model_tools
 
         parent_toolsets = {
             ts
             for name in parent_agent.valid_tool_names
-            if (ts := model_tools.get_toolset_for_tool(name)) is not None
+            if (ts := model_tools.get_toolset_for_tool(parent_registry, name)) is not None
         }
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
@@ -944,9 +952,9 @@ def _build_child_agent(
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
+        if _get_inherit_mcp_toolsets() and parent_registry is not None:
             child_toolsets = _preserve_parent_mcp_toolsets(
-                child_toolsets, parent_toolsets
+                child_toolsets, parent_toolsets, parent_registry
             )
         child_toolsets = _strip_blocked_tools(child_toolsets)
     elif parent_agent and parent_enabled is not None:
@@ -2778,8 +2786,7 @@ DELEGATE_TASK_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
-
+from tools.registry import tool_error
 def register(reg):
     """Sprint 53 — Dispatcher-driven registration entrypoint."""
     reg.register(

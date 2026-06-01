@@ -28,8 +28,11 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import register_builtin_tools, registry
+from typing import TYPE_CHECKING
 from toolsets import resolve_toolset, validate_toolset
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -173,49 +176,39 @@ def _run_async(coro):
 
 
 # =============================================================================
-# Tool Discovery  (Sprint 53 — Dispatcher-driven; transitional singleton)
+# Tool / plugin / MCP discovery
 # =============================================================================
-# Sprint-pre-53: each tool module side-effect-registered itself into the
-# module-level ``registry`` singleton on import.  Sprint 53 inverts that:
-# tool modules expose ``def register(reg)`` and the Dispatcher walks them
-# at its own ``__init__``.  The module-level singleton survives Phase 1
-# for the legacy consumers in this module's public API; the explicit
-# bootstrap below populates it from the same path the Dispatcher uses.
-# Phase 2 deletes both the singleton and this call.
-register_builtin_tools(registry)
-
-# MCP tool discovery (external MCP servers from config) used to run here as
-# a module-level side effect.  It was removed because discover_mcp_tools()
-# internally uses a blocking future.result(timeout=120) wait, and the
-# gateway lazy-imports this module from inside the asyncio event loop on
-# the first user message — freezing Discord/Telegram heartbeats for up to
-# 120s whenever any configured MCP server was slow or unreachable (#16856).
-#
-# Each entry point now runs discovery explicitly at its own startup:
-#   - gateway/run.py            -> start_gateway() uses run_in_executor
-#   - cli.py, hermes_cli/*      -> inline on startup (no event loop)
-#   - tui_gateway/server.py     -> inline on startup (no event loop)
-#   - acp_adapter/server.py     -> asyncio.to_thread on session init
-
-# Plugin tool discovery (user/project/pip plugins)
-try:
-    from hermes_cli.plugins import discover_plugins
-    discover_plugins()
-except Exception as e:
-    logger.debug("Plugin discovery failed: %s", e)
-
-
-# =============================================================================
-# Backward-compat constants  (built once after discovery)
-# =============================================================================
-
-TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
-
-TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
+# Sprint 53 — the Dispatcher constructs its own ``ToolRegistry`` at
+# ``__init__`` and calls ``register_builtin_tools(self.registry)`` plus
+# plugin and MCP discovery against it.  This module no longer
+# auto-registers tools at import time; every public API below takes
+# ``registry`` explicitly.  The Sprint-pre-53 module-level constants
+# (``TOOL_TO_TOOLSET_MAP``, ``TOOLSET_REQUIREMENTS``) are replaced by
+# the ``get_tool_to_toolset_map(registry)`` and
+# ``get_toolset_requirements(registry)`` helpers below — callers pass
+# the Dispatcher's registry rather than relying on import-time state.
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
+
+
+def get_tool_to_toolset_map(registry: "ToolRegistry") -> Dict[str, str]:
+    """Return a ``{tool_name: toolset_name}`` map for *registry*.
+
+    Sprint 53 — replaces the module-level ``TOOL_TO_TOOLSET_MAP``
+    constant that was computed at import time from the singleton.
+    """
+    return registry.get_tool_to_toolset_map()
+
+
+def get_toolset_requirements(registry: "ToolRegistry") -> Dict[str, dict]:
+    """Return ``{toolset: {env_vars, tools, ...}}`` for *registry*.
+
+    Sprint 53 — replaces the module-level ``TOOLSET_REQUIREMENTS``
+    constant that was computed at import time from the singleton.
+    """
+    return registry.get_toolset_requirements()
 
 
 # =============================================================================
@@ -267,16 +260,19 @@ def _clear_tool_defs_cache() -> None:
 
 
 def get_tool_definitions(
+    registry: "ToolRegistry",
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
 ) -> List[Dict[str, Any]]:
-    """
-    Get tool definitions for model API calls with toolset-based filtering.
+    """Get tool definitions for model API calls with toolset-based filtering.
 
-    All tools must be part of a toolset to be accessible.
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry; tool
+    schemas, check_fn gating, and toolset membership are all read from
+    it. All tools must be part of a toolset to be accessible.
 
     Args:
+        registry: Dispatcher-owned ToolRegistry.
         enabled_toolsets: Only include tools from these toolsets.
         disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
         quiet_mode: Suppress status prints.
@@ -300,7 +296,12 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        # Sprint 53 — cache key now includes the registry's identity so
+        # two Dispatchers can't accidentally share each other's filtered
+        # tool list. Combined with ``_generation`` this also invalidates
+        # on MCP refresh / plugin load within a single registry.
         cache_key = (
+            id(registry),
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
@@ -308,29 +309,21 @@ def get_tool_definitions(
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
-            # Update _last_resolved_tool_names so downstream callers see
-            # consistent state even on a cache hit.
             global _last_resolved_tool_names
             _last_resolved_tool_names = [t["function"]["name"] for t in cached]
-            # Return a shallow copy of the list but share the dict references —
-            # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
+    result = _compute_tool_definitions(registry, enabled_toolsets, disabled_toolsets, quiet_mode)
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
-        # downstream mutations (e.g. run_agent appending memory/LCM tool
-        # schemas to self.tools) don't poison the cache. Without this, a
-        # long-lived Gateway process accumulates duplicate tool names across
-        # agent inits and providers that enforce unique tool names
-        # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
-        # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
+        # downstream mutations don't poison the cache. (issue #17335)
         _tool_defs_cache[cache_key] = result
         return list(result)
     return result
 
 
 def _compute_tool_definitions(
+    registry: "ToolRegistry",
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
@@ -341,8 +334,8 @@ def _compute_tool_definitions(
 
     if enabled_toolsets is not None:
         for toolset_name in enabled_toolsets:
-            if validate_toolset(toolset_name):
-                resolved = resolve_toolset(toolset_name)
+            if validate_toolset(toolset_name, registry):
+                resolved = resolve_toolset(toolset_name, registry)
                 tools_to_include.update(resolved)
                 if not quiet_mode:
                     print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
@@ -356,17 +349,16 @@ def _compute_tool_definitions(
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
+        for ts_name in get_all_toolsets(registry):
+            tools_to_include.update(resolve_toolset(ts_name, registry))
 
     # Always apply disabled toolsets as a subtraction step at the end.
-    # This ensures that even if a composite toolset (like hermes-cli)
-    # is enabled, any tools belonging to a disabled toolset are strictly
-    # stripped out. See issue #17309.
+    # This ensures composite toolsets like hermes-cli still get tools
+    # belonging to a disabled toolset stripped out. See issue #17309.
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
-            if validate_toolset(toolset_name):
-                resolved = resolve_toolset(toolset_name)
+            if validate_toolset(toolset_name, registry):
+                resolved = resolve_toolset(toolset_name, registry)
                 tools_to_include.difference_update(resolved)
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
@@ -538,7 +530,9 @@ def _sanitize_tool_error(error_msg: str) -> str:
 # Tool argument type coercion
 # =========================================================================
 
-def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def coerce_tool_args(
+    registry: "ToolRegistry", tool_name: str, args: Dict[str, Any]
+) -> Dict[str, Any]:
     """Coerce tool call arguments to match their JSON Schema types.
 
     LLMs frequently return numbers as strings (``"42"`` instead of ``42``)
@@ -735,6 +729,7 @@ def _coerce_boolean(value: str):
 
 
 def handle_function_call(
+    registry: "ToolRegistry",
     function_name: str,
     function_args: Dict[str, Any],
     task_id: Optional[str] = None,
@@ -744,10 +739,14 @@ def handle_function_call(
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
 ) -> str:
-    """
-    Main function call dispatcher that routes calls to the tool registry.
+    """Main function call dispatcher that routes calls to the tool registry.
+
+    Sprint 53 — *registry* is the Dispatcher-owned ToolRegistry; the
+    handler resolves schemas, dispatches the call, and returns the
+    JSON-string result against it.
 
     Args:
+        registry: Dispatcher-owned ToolRegistry.
         function_name: Name of the function to call.
         function_args: Arguments for the function.
         task_id: Unique identifier for terminal/browser session isolation.
@@ -761,7 +760,7 @@ def handle_function_call(
         Function result as a JSON string.
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
-    function_args = coerce_tool_args(function_name, function_args)
+    function_args = coerce_tool_args(registry, function_name, function_args)
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
@@ -813,12 +812,15 @@ def handle_function_call(
         _dispatch_start = time.monotonic()
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
+            # the parent's tool set via the process-global.  Sprint 53 —
+            # the sandbox child re-enters handle_function_call against
+            # this same registry, so it's forwarded as a dispatch kwarg.
             sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
+                registry=registry,
             )
         else:
             result = registry.dispatch(
@@ -877,29 +879,33 @@ def handle_function_call(
 
 
 # =============================================================================
-# Backward-compat wrapper functions
+# Registry-routed accessors (Sprint 53)
 # =============================================================================
+# Sprint 53 — each accessor takes the Dispatcher-owned ``ToolRegistry``
+# rather than reading a module-level singleton.
 
-def get_all_tool_names() -> List[str]:
+def get_all_tool_names(registry: "ToolRegistry") -> List[str]:
     """Return all registered tool names."""
     return registry.get_all_tool_names()
 
 
-def get_toolset_for_tool(tool_name: str) -> Optional[str]:
+def get_toolset_for_tool(registry: "ToolRegistry", tool_name: str) -> Optional[str]:
     """Return the toolset a tool belongs to."""
     return registry.get_toolset_for_tool(tool_name)
 
 
-def get_available_toolsets() -> Dict[str, dict]:
+def get_available_toolsets(registry: "ToolRegistry") -> Dict[str, dict]:
     """Return toolset availability info for UI display."""
     return registry.get_available_toolsets()
 
 
-def check_toolset_requirements() -> Dict[str, bool]:
+def check_toolset_requirements(registry: "ToolRegistry") -> Dict[str, bool]:
     """Return {toolset: available_bool} for every registered toolset."""
     return registry.check_toolset_requirements()
 
 
-def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
+def check_tool_availability(
+    registry: "ToolRegistry", quiet: bool = False
+) -> Tuple[List[str], List[dict]]:
     """Return (available_toolsets, unavailable_info)."""
     return registry.check_tool_availability(quiet=quiet)

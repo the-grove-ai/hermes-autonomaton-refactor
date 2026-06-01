@@ -86,13 +86,30 @@ from typing import Any, Iterable, Optional
 from toolsets import get_toolset_names
 
 
+
+# Sprint 53 — ad-hoc Dispatcher-style ToolRegistry built once per
+# process for read-only CLI introspection paths.
+_CLI_REGISTRY = None
+def _cli_registry():
+    global _CLI_REGISTRY
+    if _CLI_REGISTRY is None:
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _CLI_REGISTRY = ToolRegistry()
+        register_builtin_tools(_CLI_REGISTRY)
+        try:
+            from hermes_cli.plugins import discover_plugins as _dp
+            _dp(registry=_CLI_REGISTRY)
+        except Exception:
+            pass
+    return _CLI_REGISTRY
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
-KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names(_cli_registry()))
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call

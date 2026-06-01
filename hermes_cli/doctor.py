@@ -1633,13 +1633,26 @@ def run_doctor(args):
     try:
         # Add project root to path for imports
         sys.path.insert(0, str(PROJECT_ROOT))
-        from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
-        
-        available, unavailable = check_tool_availability()
+        from model_tools import check_tool_availability, get_toolset_requirements
+        # Sprint 53 — doctor runs as a CLI subcommand with no live
+        # Dispatcher; build an ad-hoc registry so the availability
+        # check sees the built-in tool surface plus any plugin tools
+        # that load idempotently against it.
+        from tools.registry import ToolRegistry, register_builtin_tools
+        from hermes_cli.plugins import discover_plugins as _disc_plugins
+        _registry = ToolRegistry()
+        register_builtin_tools(_registry)
+        try:
+            _disc_plugins(registry=_registry)
+        except Exception:
+            pass
+
+        available, unavailable = check_tool_availability(_registry)
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
-        
+
+        _toolset_requirements = get_toolset_requirements(_registry)
         for tid in available:
-            info = TOOLSET_REQUIREMENTS.get(tid, {})
+            info = _toolset_requirements.get(tid, {})
             check_ok(info.get("name", tid), _doctor_tool_availability_detail(tid))
         
         for item in unavailable:

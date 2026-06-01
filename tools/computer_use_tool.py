@@ -13,11 +13,6 @@ from tools.computer_use.tool import (
     handle_computer_use,
     set_approval_callback,
 )
-from tools.registry import registry
-
-
-
-
 __all__ = [
     "handle_computer_use",
     "set_approval_callback",

@@ -21,6 +21,23 @@ from tools.tool_backend_helpers import (
 )
 
 
+
+# Sprint 53 — ad-hoc Dispatcher-style ToolRegistry built once per
+# process for read-only CLI introspection paths.
+_CLI_REGISTRY = None
+def _cli_registry():
+    global _CLI_REGISTRY
+    if _CLI_REGISTRY is None:
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _CLI_REGISTRY = ToolRegistry()
+        register_builtin_tools(_CLI_REGISTRY)
+        try:
+            from hermes_cli.plugins import discover_plugins as _dp
+            _dp(registry=_CLI_REGISTRY)
+        except Exception:
+            pass
+    return _CLI_REGISTRY
+
 _DEFAULT_PLATFORM_TOOLSETS = {
     "cli": "hermes-cli",
 }
@@ -96,7 +113,7 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
     if not isinstance(platform_toolsets, dict) or not platform_toolsets:
         platform_toolsets = {"cli": [_DEFAULT_PLATFORM_TOOLSETS["cli"]]}
 
-    target_tools = set(resolve_toolset(toolset_key))
+    target_tools = set(resolve_toolset(toolset_key, _cli_registry()))
     if not target_tools:
         return False
 
@@ -116,7 +133,7 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
             if not isinstance(toolset_name, str) or not toolset_name:
                 continue
             try:
-                available_tools.update(resolve_toolset(toolset_name))
+                available_tools.update(resolve_toolset(toolset_name, _cli_registry()))
             except Exception:
                 continue
 

@@ -21,7 +21,12 @@ Usage:
 
 from typing import Dict, List, Optional
 import random
+from typing import TYPE_CHECKING
+
 from toolsets import validate_toolset
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 
 # Distribution definitions
@@ -244,7 +249,9 @@ def list_distributions() -> Dict[str, Dict]:
     return DISTRIBUTIONS.copy()
 
 
-def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
+def sample_toolsets_from_distribution(
+    distribution_name: str, registry: "ToolRegistry"
+) -> List[str]:
     """
     Sample toolsets based on a distribution's probabilities.
     
@@ -269,7 +276,7 @@ def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
     
     for toolset_name, probability in dist["toolsets"].items():
         # Validate toolset exists
-        if not validate_toolset(toolset_name):
+        if not validate_toolset(toolset_name, registry):
             print(f"⚠️  Warning: Toolset '{toolset_name}' in distribution '{distribution_name}' is not valid")
             continue
         
@@ -282,7 +289,7 @@ def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
     if not selected_toolsets and dist["toolsets"]:
         # Find toolset with highest probability
         highest_prob_toolset = max(dist["toolsets"].items(), key=lambda x: x[1])[0]
-        if validate_toolset(highest_prob_toolset):
+        if validate_toolset(highest_prob_toolset, registry):
             selected_toolsets.append(highest_prob_toolset)
     
     return selected_toolsets
@@ -339,6 +346,11 @@ if __name__ == "__main__":
     # Demo sampling
     print("\n\n🎲 Sampling Examples:")
     print("-" * 40)
+    # Sprint 53 — ad-hoc Dispatcher-style registry for the demo block.
+    from tools.registry import ToolRegistry as _ToolRegistry
+    from tools.registry import register_builtin_tools as _rbt
+    _demo_registry = _ToolRegistry()
+    _rbt(_demo_registry)
     
     test_distributions = ["image_gen", "research", "balanced", "default"]
     
@@ -347,7 +359,7 @@ if __name__ == "__main__":
         # Sample 5 times to show variability
         samples = []
         for _ in range(5):
-            sampled = sample_toolsets_from_distribution(dist_name)
+            sampled = sample_toolsets_from_distribution(dist_name, _demo_registry)
             samples.append(sorted(sampled))
         
         print(f"  Sample 1: {samples[0]}")

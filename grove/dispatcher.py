@@ -382,6 +382,44 @@ class Dispatcher:
         # Sprint 26 Phase 7 hotfix: prime the zone classifier singleton so
         # Phase 4's classify() at ToolIntent yield has it ready.
         import grove.zones as _zones; _zones.initialize()
+
+        # ── Sprint 53 — Dispatcher-owned ToolRegistry (router-resident) ──
+        # GRV-005 § III: tool registration is router-resident.  The
+        # Dispatcher constructs its own ToolRegistry, populates it with
+        # built-in tools via the explicit ``register_builtin_tools``
+        # bootstrap, then discovers user plugins and MCP servers against
+        # it.  The module-level singleton at ``tools.registry.registry``
+        # is orphaned in Phase 1 and deleted in Phase 2; the Agent never
+        # holds a reference to either — it reads the authorized tool set
+        # through the ``_get_available_tools`` callback below.
+        from tools.registry import ToolRegistry, register_builtin_tools
+        self.registry: ToolRegistry = ToolRegistry()
+        register_builtin_tools(self.registry)
+        # Discover user / project / pip plugins.  Idempotent — multiple
+        # Dispatchers in one process replay registrations against each
+        # owned registry. Plugin discovery failures (manifest errors,
+        # backend import errors) are non-fatal and surfaced via the
+        # PluginManager's per-plugin ``error`` field for introspection.
+        try:
+            from hermes_cli.plugins import discover_plugins as _discover_plugins
+            _discover_plugins(registry=self.registry)
+        except Exception as _plugin_exc:
+            logger.debug(
+                "[grove.dispatcher] plugin discovery failed at Dispatcher init: %r",
+                _plugin_exc,
+            )
+        # MCP discovery — explicit, against this Dispatcher's registry.
+        # Failures are non-fatal; the rest of the Dispatcher init
+        # continues and tools that depend on MCP servers fail at
+        # call-time with a clear error.
+        try:
+            from tools.mcp_tool import discover_mcp_tools as _discover_mcp_tools
+            _discover_mcp_tools(registry=self.registry)
+        except Exception as _mcp_exc:
+            logger.debug(
+                "[grove.dispatcher] MCP discovery failed at Dispatcher init: %r",
+                _mcp_exc,
+            )
         # Sprint 33 — runtime_ctx injection. Callers that hold a constructed
         # RuntimeContext pass it directly; the env/config fallback below is
         # the runtime_ctx=None path Sprint 34 removes once every production
@@ -606,6 +644,13 @@ class Dispatcher:
             # explicit ctx the caller put into agent_kwargs (rare;
             # mostly tests that build a richer ctx).
             agent_kwargs.setdefault("runtime_ctx", self._base_runtime_ctx)
+            # Sprint 53 — capability provider callback. The Agent has
+            # no registry reference; it reads the authorized tool set
+            # exclusively through this callback. setdefault preserves
+            # any explicit override (tests inject a stub).
+            agent_kwargs.setdefault(
+                "get_available_tools", self.get_authorized_tools,
+            )
             # Sprint 39 — session_id flows from the Dispatcher's owned
             # value when one was opened pre-Agent; setdefault preserves
             # any explicit caller value (rare; mostly tests).
@@ -772,9 +817,8 @@ class Dispatcher:
     ) -> List[Dict[str, Any]]:
         """Build (or return cached) tool registry for the given toolset shape.
 
-        Cache key is a tuple of sorted toolset names. The same call shape
-        returns the same list instance across constructions, saving the
-        20-100ms cost of ``get_tool_definitions``.
+        Sprint 53 — reads through the Dispatcher-owned ``self.registry``;
+        ``get_tool_definitions`` no longer reaches a module-level singleton.
         """
         key = (
             tuple(sorted(enabled_toolsets or ())),
@@ -784,22 +828,36 @@ class Dispatcher:
         cached = self._tools_cache.get(key)
         if cached is not None:
             return cached
-        try:
-            from model_tools import get_tool_definitions
-        except ImportError as exc:
-            logger.warning(
-                "[grove.dispatcher] model_tools unavailable for tools cache (%r); "
-                "Agent will fall back to its own construction path",
-                exc,
-            )
-            return []
+        from model_tools import get_tool_definitions
         tools = get_tool_definitions(
+            self.registry,
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             quiet_mode=quiet_mode,
         )
         self._tools_cache[key] = tools
         return tools
+
+    # ── Sprint 53 — Capability Provider ──────────────────────────────────
+    def get_authorized_tools(
+        self,
+        enabled_toolsets: Optional[List[str]] = None,
+        disabled_toolsets: Optional[List[str]] = None,
+        quiet_mode: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Return the filtered OpenAI-format tool list the Agent may call.
+
+        Sprint 53 § III — this is the capability provider the Agent
+        receives as ``_get_available_tools``. It wraps
+        :func:`model_tools.get_tool_definitions` against the Dispatcher's
+        owned registry and threads through the same memoized cache used
+        by ``_get_or_build_tools``. The Agent never sees the registry
+        itself; it only reads the filtered snapshot through this
+        callback.
+        """
+        return self._get_or_build_tools(
+            enabled_toolsets, disabled_toolsets, quiet_mode,
+        )
 
     def _get_or_build_memory_store(self) -> Optional[Any]:
         """Build (or return cached) memory store with disk content pre-loaded.
@@ -2639,6 +2697,10 @@ class Dispatcher:
         intent_class = getattr(classification, "intent_class", None) if classification else None
         result = composer.compose(
             valid_tool_names=getattr(agent, "valid_tool_names", set()) or set(),
+            # Sprint 53 — composer providers that need toolset
+            # membership (e.g. _skills_index_provider) read the
+            # Dispatcher-owned registry through this ctx field.
+            registry=self.registry,
             model=getattr(agent, "model", "") or "",
             provider=getattr(agent, "provider", "") or "",
             platform=getattr(agent, "platform", "") or "",
