@@ -3624,6 +3624,13 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
 
     _ensure_mcp_loop()
 
+    # Sprint 53 hotfix — probe is a read-only listing; hand each
+    # MCPServerTask a throwaway ToolRegistry so the constructor's
+    # required-registry contract is satisfied without polluting any
+    # Dispatcher's state.
+    from tools.registry import ToolRegistry as _ProbeToolRegistry
+    _probe_registry = _ProbeToolRegistry()
+
     result: Dict[str, List[tuple]] = {}
     probed_servers: List[MCPServerTask] = []
 
@@ -3632,7 +3639,10 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         coros = []
         for name, cfg in enabled.items():
             ct = cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
-            coros.append(asyncio.wait_for(_connect_server(name, cfg), timeout=ct))
+            coros.append(asyncio.wait_for(
+                _connect_server(name, cfg, registry=_probe_registry),
+                timeout=ct,
+            ))
 
         outcomes = await asyncio.gather(*coros, return_exceptions=True)
 

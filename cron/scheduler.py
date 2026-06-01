@@ -1422,8 +1422,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
         try:
+            # Sprint 53 hotfix — discover_mcp_tools requires a registry;
+            # cron tick builds an ad-hoc Dispatcher-style registry so
+            # the configured MCP servers initialize before the job's
+            # AIAgent constructs. The agent's per-session Dispatcher
+            # will re-run discovery against its own registry inside
+            # ``__init__`` (idempotent — already-connected servers
+            # short-circuit).
             from tools.mcp_tool import discover_mcp_tools
-            _mcp_tools = discover_mcp_tools()
+            from tools.registry import ToolRegistry, register_builtin_tools
+            _cron_registry = ToolRegistry()
+            register_builtin_tools(_cron_registry)
+            _mcp_tools = discover_mcp_tools(registry=_cron_registry)
             if _mcp_tools:
                 logger.info(
                     "Job '%s': %d MCP tool(s) available",

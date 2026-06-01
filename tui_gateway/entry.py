@@ -211,8 +211,16 @@ def main():
         _has_mcp_servers = True
     if _has_mcp_servers:
         try:
+            # Sprint 53 hotfix — discover_mcp_tools requires a registry;
+            # TUI gateway startup builds an ad-hoc Dispatcher-style
+            # registry so MCP tools register before the first session's
+            # Dispatcher constructs. Per-session Dispatchers re-run
+            # discovery against their own registries (idempotent).
             from tools.mcp_tool import discover_mcp_tools
-            discover_mcp_tools()
+            from tools.registry import ToolRegistry, register_builtin_tools
+            _bootstrap_registry = ToolRegistry()
+            register_builtin_tools(_bootstrap_registry)
+            discover_mcp_tools(registry=_bootstrap_registry)
         except Exception:
             pass
 

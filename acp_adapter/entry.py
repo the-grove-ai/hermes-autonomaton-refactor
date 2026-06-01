@@ -272,8 +272,16 @@ def main(argv: list[str] | None = None) -> None:
     # loop; that path is unaffected.)  Moved from model_tools.py module
     # scope to avoid freezing the gateway's loop on lazy import (#16856).
     try:
+        # Sprint 53 hotfix — discover_mcp_tools requires a registry; ACP
+        # startup builds an ad-hoc Dispatcher-style registry so MCP
+        # tools register before the first session's Dispatcher
+        # constructs. Per-session Dispatchers re-run discovery against
+        # their own registries inside Dispatcher.__init__ (idempotent).
         from tools.mcp_tool import discover_mcp_tools
-        discover_mcp_tools()
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _bootstrap_registry = ToolRegistry()
+        register_builtin_tools(_bootstrap_registry)
+        discover_mcp_tools(registry=_bootstrap_registry)
     except Exception:
         logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
