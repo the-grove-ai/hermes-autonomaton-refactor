@@ -586,10 +586,6 @@ class ToolRegistry:
         return available, unavailable
 
 
-# Module-level singleton
-registry = ToolRegistry()
-
-
 # ---------------------------------------------------------------------------
 # Helpers for tool response serialization
 # ---------------------------------------------------------------------------
@@ -598,7 +594,7 @@ registry = ToolRegistry()
 # hundreds of times across tool files.
 #
 # Usage:
-#   from tools.registry import registry, tool_error, tool_result
+#   from tools.registry import tool_error, tool_result
 #
 #   return tool_error("something went wrong")
 #   return tool_error("not found", code=404)

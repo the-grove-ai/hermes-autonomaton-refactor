@@ -40,20 +40,14 @@ if str(PROJECT_ROOT) not in sys.path:
 # ── Sprint 53 — Dispatcher-owned tool registry test fixture ────────────────
 # Production paths construct a fresh ToolRegistry per Dispatcher and
 # populate it explicitly via ``register_builtin_tools``. Tests do the
-# same via the ``tool_registry`` fixture below.  The module-level
-# singleton at ``tools.registry.registry`` is orphaned (Phase 2 deletes
-# it) and is no longer populated from this conftest. Legacy tests that
-# reach for ``from tools.registry import registry`` see an empty
-# singleton and must migrate to the fixture.
+# same via the ``tool_registry`` fixture below.
 
 
 @pytest.fixture
 def tool_registry():
     """Dispatcher-style ToolRegistry pre-populated with built-in tools.
 
-    Sprint 53 — replaces direct singleton imports in tests. Hand the
-    instance to anything that previously consumed the module-level
-    ``tools.registry.registry`` global:
+    Hand the instance to anything that needs a registry:
 
         from tools.registry import ToolRegistry  # type alias for hints
         def test_x(tool_registry: ToolRegistry):

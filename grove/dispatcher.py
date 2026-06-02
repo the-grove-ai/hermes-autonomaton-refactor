@@ -388,10 +388,9 @@ class Dispatcher:
         # Dispatcher constructs its own ToolRegistry, populates it with
         # built-in tools via the explicit ``register_builtin_tools``
         # bootstrap, then discovers user plugins and MCP servers against
-        # it.  The module-level singleton at ``tools.registry.registry``
-        # is orphaned in Phase 1 and deleted in Phase 2; the Agent never
-        # holds a reference to either — it reads the authorized tool set
-        # through the ``_get_available_tools`` callback below.
+        # it.  The Agent never holds a reference to the registry — it
+        # reads the authorized tool set through the
+        # ``_get_available_tools`` callback below.
         from tools.registry import ToolRegistry, register_builtin_tools
         self.registry: ToolRegistry = ToolRegistry()
         register_builtin_tools(self.registry)

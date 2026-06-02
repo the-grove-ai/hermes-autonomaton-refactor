@@ -1354,8 +1354,7 @@ class TestPluginDispatchTool:
 
         with patch("hermes_cli.plugins.PluginContext.dispatch_tool.__module__", "hermes_cli.plugins"):
             with patch.dict("sys.modules", {}):
-                with patch("tools.registry.registry", mock_registry):
-                    result = ctx.dispatch_tool("web_search", {"query": "test"})
+                result = ctx.dispatch_tool("web_search", {"query": "test"})
 
         assert result == '{"result": "ok"}'
 
@@ -1373,8 +1372,7 @@ class TestPluginDispatchTool:
 
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
-            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+        ctx.dispatch_tool("delegate_task", {"goal": "test"})
 
         mock_registry.dispatch.assert_called_once()
         call_kwargs = mock_registry.dispatch.call_args
@@ -1390,8 +1388,7 @@ class TestPluginDispatchTool:
 
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
-            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+        ctx.dispatch_tool("delegate_task", {"goal": "test"})
 
         call_kwargs = mock_registry.dispatch.call_args
         assert "parent_agent" not in call_kwargs[1]
@@ -1409,8 +1406,7 @@ class TestPluginDispatchTool:
 
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
-            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+        ctx.dispatch_tool("delegate_task", {"goal": "test"})
 
         call_kwargs = mock_registry.dispatch.call_args
         assert "parent_agent" not in call_kwargs[1]
@@ -1431,8 +1427,7 @@ class TestPluginDispatchTool:
 
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
-            ctx.dispatch_tool("delegate_task", {"goal": "test"}, parent_agent=explicit_agent)
+        ctx.dispatch_tool("delegate_task", {"goal": "test"}, parent_agent=explicit_agent)
 
         call_kwargs = mock_registry.dispatch.call_args
         assert call_kwargs[1]["parent_agent"] is explicit_agent
@@ -1447,8 +1442,7 @@ class TestPluginDispatchTool:
 
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
-            ctx.dispatch_tool("some_tool", {"x": 1}, task_id="test-123")
+        ctx.dispatch_tool("some_tool", {"x": 1}, task_id="test-123")
 
         call_kwargs = mock_registry.dispatch.call_args
         assert call_kwargs[1]["task_id"] == "test-123"
@@ -1463,8 +1457,7 @@ class TestPluginDispatchTool:
 
         mock_registry.dispatch.return_value = '{"error": "Unknown tool: fake"}'
 
-        with patch("tools.registry.registry", mock_registry):
-            result = ctx.dispatch_tool("fake", {})
+        result = ctx.dispatch_tool("fake", {})
 
         assert '"error"' in result
 

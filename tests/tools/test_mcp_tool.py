@@ -688,8 +688,7 @@ class TestDiscoverAndRegister:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             registered = asyncio.run(
                 _discover_and_register_server("fs", {"command": "npx", "args": []}, registry=mock_registry)
             )
@@ -717,8 +716,7 @@ class TestDiscoverAndRegister:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             asyncio.run(
                 _discover_and_register_server("myserver", {"command": "test"}, registry=mock_registry)
             )
@@ -745,8 +743,7 @@ class TestDiscoverAndRegister:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             asyncio.run(
                 _discover_and_register_server("srv", {"command": "test"}, registry=mock_registry)
             )
@@ -840,34 +837,33 @@ class TestMCPServerTask:
             return_value=SimpleNamespace(tools=[_make_mcp_tool("keep"), _make_mcp_tool("new")])
         )
 
-        with patch("tools.registry.registry", mock_registry):
-            mock_registry.register(
-                name="mcp_srv_old",
-                toolset="mcp-srv",
-                schema={"name": "mcp_srv_old", "description": "Old"},
-                handler=lambda *_args, **_kwargs: "{}",
-            )
-            mock_registry.register(
-                name="mcp_srv_keep",
-                toolset="mcp-srv",
-                schema={"name": "mcp_srv_keep", "description": "Keep"},
-                handler=lambda *_args, **_kwargs: "{}",
-            )
+        mock_registry.register(
+            name="mcp_srv_old",
+            toolset="mcp-srv",
+            schema={"name": "mcp_srv_old", "description": "Old"},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        mock_registry.register(
+            name="mcp_srv_keep",
+            toolset="mcp-srv",
+            schema={"name": "mcp_srv_keep", "description": "Keep"},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
 
-            asyncio.run(server._refresh_tools())
+        asyncio.run(server._refresh_tools())
 
-            names = mock_registry.get_all_tool_names()
-            assert "mcp_srv_old" not in names
-            assert "mcp_srv_keep" in names
-            assert "mcp_srv_new" in names
-            assert set(server._registered_tool_names) == {
-                "mcp_srv_keep",
-                "mcp_srv_new",
-                "mcp_srv_list_resources",
-                "mcp_srv_read_resource",
-                "mcp_srv_list_prompts",
-                "mcp_srv_get_prompt",
-            }
+        names = mock_registry.get_all_tool_names()
+        assert "mcp_srv_old" not in names
+        assert "mcp_srv_keep" in names
+        assert "mcp_srv_new" in names
+        assert set(server._registered_tool_names) == {
+            "mcp_srv_keep",
+            "mcp_srv_new",
+            "mcp_srv_list_resources",
+            "mcp_srv_read_resource",
+            "mcp_srv_list_prompts",
+            "mcp_srv_get_prompt",
+        }
 
     def test_schedule_tools_refresh_keeps_task_until_done(self):
         """Background refresh tasks are strongly referenced and then discarded."""
@@ -1012,8 +1008,7 @@ class TestToolsetInjection:
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._servers", fresh_servers), \
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
-             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             from tools.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools(registry=mock_registry)
 
@@ -1051,7 +1046,6 @@ class TestToolsetInjection:
              patch("tools.mcp_tool._servers", fresh_servers), \
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry), \
              patch("toolsets.TOOLSETS", fake_toolsets):
             from tools.mcp_tool import discover_mcp_tools
             discover_mcp_tools(registry=mock_registry)
@@ -2130,8 +2124,7 @@ class TestUtilityToolRegistration:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             registered = asyncio.run(
                 _discover_and_register_server("fs", {"command": "npx", "args": []}, registry=mock_registry)
             )
@@ -2165,8 +2158,7 @@ class TestUtilityToolRegistration:
             server._tools = []
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             asyncio.run(
                 _discover_and_register_server("myserv", {"command": "test"}, registry=mock_registry)
             )
@@ -2194,8 +2186,7 @@ class TestUtilityToolRegistration:
             server._tools = []
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             asyncio.run(
                 _discover_and_register_server("chk", {"command": "test"}, registry=mock_registry)
             )
@@ -3258,7 +3249,6 @@ class TestMCPSelectiveToolLoading:
 
         async def run():
             with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-                 patch("tools.registry.registry", mock_registry), \
                  patch("toolsets.create_custom_toolset"):
                 return await _discover_and_register_server(name, config, registry=mock_registry)
 
@@ -3383,7 +3373,6 @@ class TestMCPSelectiveToolLoading:
         async def run():
             with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
                  patch.dict("tools.mcp_tool._servers", {}, clear=True), \
-                 patch("tools.registry.registry", mock_registry), \
                  patch("toolsets.create_custom_toolset"):
                 registered = await _discover_and_register_server(
                     "ink_existing",
@@ -3410,7 +3399,6 @@ class TestMCPSelectiveToolLoading:
 
         async def run():
             with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-                 patch("tools.registry.registry", mock_registry), \
                  patch("toolsets.create_custom_toolset", mock_create):
                 return await _discover_and_register_server(
                     "ink_none",
@@ -3535,8 +3523,7 @@ class TestMCPBuiltinCollisionGuard:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             registered = asyncio.run(
                 _discover_and_register_server("abc", {"command": "test", "args": []}, registry=mock_registry)
             )
@@ -3562,8 +3549,7 @@ class TestMCPBuiltinCollisionGuard:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             registered = asyncio.run(
                 _discover_and_register_server("minimax", {"command": "test", "args": []}, registry=mock_registry)
             )
@@ -3600,8 +3586,7 @@ class TestMCPBuiltinCollisionGuard:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
             registered = asyncio.run(
                 _discover_and_register_server("srv", {"command": "test", "args": []}, registry=mock_registry)
             )
