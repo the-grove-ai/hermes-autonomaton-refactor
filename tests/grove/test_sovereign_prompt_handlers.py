@@ -28,6 +28,7 @@ from grove.sovereign_prompt_handlers import (
     batch_auto_allow_handler,
     describe_action_kaizen,
     gateway_auto_allow_handler,
+    normalize_command,
     silent_allow_handler,
     silent_deny_handler,
     silent_promote_handler,
@@ -83,6 +84,187 @@ class TestKaizenTemplate:
             {"command": "bash /Users/x/.grove/skills/foo/run.sh"},
         )
         assert desc == "run a skill (foo)"
+
+
+# ── Sprint 32.2 — normalize_command + category templates ─────────────
+
+
+class TestNormalizeCommand:
+    """The shared shell-variable normalizer reused by the template
+    matcher and the zone-promotion regex generator."""
+
+    def test_dollar_braces_home_expanded(self):
+        import os
+        home = os.path.expanduser("~")
+        assert normalize_command("${HOME}/foo") == f"{home}/foo"
+
+    def test_bare_dollar_home_expanded(self):
+        import os
+        home = os.path.expanduser("~")
+        assert normalize_command("$HOME/foo") == f"{home}/foo"
+
+    def test_leading_tilde_expanded(self):
+        import os
+        home = os.path.expanduser("~")
+        assert normalize_command("~/foo") == f"{home}/foo"
+
+    def test_non_leading_tilde_not_expanded(self):
+        # The brief scopes ``~`` expansion to LEADING ``~/`` only —
+        # don't mangle paths that happen to contain a tilde elsewhere.
+        assert normalize_command("/tmp/~backup") == "/tmp/~backup"
+
+    def test_already_expanded_idempotent(self):
+        assert normalize_command("/Users/x/foo") == "/Users/x/foo"
+
+    def test_empty_passes_through(self):
+        assert normalize_command("") == ""
+
+    def test_unknown_shell_variable_not_expanded(self):
+        # Andon scope: only $HOME / ${HOME} / leading ~/ are handled.
+        # Other shell vars stay literal so they fall through to the
+        # generic template; the operator still sees a prompt.
+        assert normalize_command("$XDG_CONFIG_HOME/foo") == "$XDG_CONFIG_HOME/foo"
+
+
+class TestKaizenTemplateSprint322:
+    """Sprint 32.2 — the bug repro + the new category templates.
+
+    The repro case: a skill invocation written with ``${HOME}`` or
+    ``$HOME`` previously fell through to the generic "run a command
+    on your machine" template because the ``.grove/skills/``
+    substring was split by the unexpanded shell variable.  After the
+    fix, the matcher normalizes the command before the substring
+    check and the skill template fires correctly.
+    """
+
+    # ── repro cases (Parts 1 + 3) ────────────────────────────────
+
+    def test_dollar_braces_home_skill_path(self):
+        desc = describe_action_kaizen(
+            "terminal",
+            {"command": (
+                'GAPI="/opt/homebrew/bin/python3.13 '
+                '${HOME}/.grove/skills/productivity/google-workspace/'
+                'scripts/google_api.py" calendar today'
+            )},
+        )
+        assert desc == "run a skill (google-workspace)"
+
+    def test_bare_dollar_home_skill_path(self):
+        desc = describe_action_kaizen(
+            "terminal",
+            {"command": (
+                "python $HOME/.grove/skills/productivity/"
+                "google-workspace/scripts/google_api.py"
+            )},
+        )
+        assert desc == "run a skill (google-workspace)"
+
+    def test_literal_home_skill_path_with_category(self):
+        # No shell variables, but the path goes through a category
+        # directory — the extractor must walk past ``productivity``
+        # and return ``google-workspace``.
+        import os
+        home = os.path.expanduser("~")
+        desc = describe_action_kaizen(
+            "terminal",
+            {"command": (
+                f"python {home}/.grove/skills/productivity/"
+                f"google-workspace/scripts/google_api.py"
+            )},
+        )
+        assert desc == "run a skill (google-workspace)"
+
+    # ── package-installation templates (Part 2) ──────────────────
+
+    def test_brew_install_extracts_package(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "brew install ripgrep"},
+        )
+        assert desc == "install software on your machine (ripgrep)"
+
+    def test_brew_uninstall_extracts_package(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "brew uninstall ripgrep"},
+        )
+        assert desc == "uninstall software from your machine (ripgrep)"
+
+    def test_pip_install_extracts_package(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "pip install pydantic"},
+        )
+        assert desc == "install a Python package (pydantic)"
+
+    def test_npm_install_extracts_package(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "npm install react"},
+        )
+        assert desc == "install a Node.js package (react)"
+
+    def test_install_skips_leading_flags(self):
+        # ``brew install -v ripgrep`` should pick ``ripgrep``, not ``-v``.
+        desc = describe_action_kaizen(
+            "terminal", {"command": "brew install -v ripgrep"},
+        )
+        assert desc == "install software on your machine (ripgrep)"
+
+    # ── destructive-operation templates ──────────────────────────
+
+    def test_rm_rf_more_specific_than_plain_rm(self):
+        # Row order matters: rm -rf MUST precede rm so the
+        # "permanently delete" message wins on -rf invocations.
+        desc = describe_action_kaizen(
+            "terminal", {"command": "rm -rf /tmp/stuff"},
+        )
+        assert desc == "permanently delete files on your machine"
+
+    def test_plain_rm(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "rm /tmp/file.txt"},
+        )
+        assert desc == "delete files on your machine"
+
+    # ── network-operation templates ──────────────────────────────
+
+    def test_curl_renders_network_request(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "curl https://example.com"},
+        )
+        assert desc == "make a network request"
+
+    def test_wget_renders_download(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "wget https://example.com/x.tar.gz"},
+        )
+        assert desc == "download a file from the internet"
+
+    def test_ssh_renders_remote_connect(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "ssh user@host.example.com"},
+        )
+        assert desc == "connect to a remote machine"
+
+    # ── git state-change templates ───────────────────────────────
+
+    def test_git_push_renders_push(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "git push origin main"},
+        )
+        assert desc == "push code to a remote repository"
+
+    def test_git_reset_renders_reset(self):
+        desc = describe_action_kaizen(
+            "terminal", {"command": "git reset --hard HEAD~3"},
+        )
+        assert desc == "reset your git history"
+
+    def test_git_status_falls_through_to_generic(self):
+        # Read-only git commands aren't in the table — should
+        # land on the generic "run a command" row.
+        desc = describe_action_kaizen(
+            "terminal", {"command": "git status"},
+        )
+        assert desc == "run a command on your machine"
 
 
 # ── tty_sovereign_prompt (Sprint 32 v1.1 four-choice) ────────────────

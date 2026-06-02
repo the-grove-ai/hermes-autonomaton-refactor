@@ -22,8 +22,13 @@ Pattern normalization (v0.1 per GATE-A):
   tool name itself (the bare-string zone form), encoded into the
   green rule for normalization symmetry.
 
-Shell-variable expansion (``$HOME``, environment variables) is a
-v0.2 concern per the GATE-A A7 disposition.
+Sprint 32.2 — shell-variable expansion (``$HOME``, ``${HOME}``,
+leading ``~/``) is now handled before the substring match.  The
+A7 limitation that punted this to v0.2 is closed for the three
+common forms; arbitrary shell evaluation remains out of scope.
+The normalization itself lives in
+``grove.sovereign_prompt_handlers.normalize_command`` so the
+template matcher and this generator see the same expanded path.
 """
 
 from __future__ import annotations
@@ -38,7 +43,10 @@ from grove.eval.proposal_queue import (
     _now_iso,
     compute_proposal_id,
 )
-from grove.sovereign_prompt_handlers import _extract_skill_name
+from grove.sovereign_prompt_handlers import (
+    _extract_skill_name,
+    normalize_command,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +76,20 @@ def normalize_pattern(tool_name: str, command_string: str) -> str:
     * Non-terminal tool → the tool name as a literal (the bare-string
       zone form encoded into a green rule for normalization symmetry).
 
-    Shell-variable expansion is a v0.2 concern (GATE-A A7).
+    Sprint 32.2 — ``$HOME`` / ``${HOME}`` / leading ``~/`` are
+    expanded before the substring match via the shared
+    :func:`grove.sovereign_prompt_handlers.normalize_command`
+    helper, closing the GATE-A A7 v0.2 limitation for the three
+    common forms.  Arbitrary shell evaluation (other variables,
+    command substitution, nested expansions) remains out of scope.
     """
     if tool_name == "terminal":
-        skill_name = _extract_skill_name(command_string or "")
+        normalized = normalize_command(command_string or "")
+        skill_name = _extract_skill_name(normalized)
         if skill_name != "unknown":
             return r".*\.grove/skills/" + re.escape(skill_name) + r"/.*"
-        if command_string:
-            return "^" + re.escape(command_string) + "$"
+        if normalized:
+            return "^" + re.escape(normalized) + "$"
         return "^.*$"  # degenerate; will fail safety check, surfacing the issue
     return re.escape(tool_name)
 
@@ -86,9 +100,14 @@ def _kaizen_reason(tool_name: str, command_string: str) -> str:
     Matches the brief's example: "Operator approved: allow
     SKILL_NAME to execute via terminal" for skill paths; generic
     fallback otherwise.
+
+    Sprint 32.2 — same normalization as :func:`normalize_pattern`
+    so a ``${HOME}/.grove/skills/...`` halt produces the skill-
+    specific rationale string instead of the generic terminal one.
     """
     if tool_name == "terminal":
-        skill_name = _extract_skill_name(command_string or "")
+        normalized = normalize_command(command_string or "")
+        skill_name = _extract_skill_name(normalized)
         if skill_name != "unknown":
             return (
                 f"Operator approved: allow {skill_name} to execute via "

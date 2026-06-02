@@ -53,6 +53,7 @@ This module ships handler implementations for each caller context:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -68,6 +69,10 @@ __all__ = [
     "silent_promote_handler",
     # Public for the Dispatcher's Kaizen-register prompt rendering:
     "describe_action_kaizen",
+    # Sprint 32.2 — shared shell-variable normalization, reused by the
+    # zone-promotion proposal generator so the template matcher and
+    # the promotion regex see the same expanded path string.
+    "normalize_command",
 ]
 
 logger = logging.getLogger(__name__)
@@ -94,32 +99,183 @@ logger = logging.getLogger(__name__)
 # the next time the tool halts; no code recompile required for the
 # UI text.
 _KAIZEN_PROMPT_TEMPLATES: Tuple[Tuple[Optional[str], Optional[str], str], ...] = (
-    ("terminal",     ".grove/skills/",  "run a skill ({skill_name})"),
-    ("terminal",     None,              "run a command on your machine"),
-    ("execute_code", None,              "execute code"),
+    # Sprint 32.2 — category-specific rows above the generic terminal
+    # fallback. First match wins, so order matters: skill execution
+    # comes first (highest specificity, the bug this sprint fixes),
+    # then package installation, destructive ops, network ops, git
+    # state changes, and finally the generic "run a command" row.
+    #
+    # Templates are descriptive UX, not permission grants. The zone
+    # rules in zones.schema.yaml decide what halts in the first place;
+    # these strings only describe WHAT halted, in plain language the
+    # operator can decide on without reading regex.
+
+    # Skill execution — the bug this sprint fixes.
+    ("terminal",     ".grove/skills/",   "run a skill ({skill_name})"),
+
+    # Package installation — extract the package being touched.
+    ("terminal",     "brew install",     "install software on your machine ({package})"),
+    ("terminal",     "brew uninstall",   "uninstall software from your machine ({package})"),
+    ("terminal",     "apt install",      "install software on your machine ({package})"),
+    ("terminal",     "apt remove",       "remove software from your machine ({package})"),
+    ("terminal",     "pip install",      "install a Python package ({package})"),
+    ("terminal",     "npm install",      "install a Node.js package ({package})"),
+
+    # Destructive operations — rm -rf is more specific than rm so it
+    # must precede it. The trailing space on the bare "rm " prevents
+    # matching "rmdir" or "rmlink".
+    ("terminal",     "rm -rf",           "permanently delete files on your machine"),
+    ("terminal",     "rm ",              "delete files on your machine"),
+
+    # Network operations — trailing space avoids matching "curls" /
+    # "wgetfile" / "sshd".
+    ("terminal",     "curl ",            "make a network request"),
+    ("terminal",     "wget ",            "download a file from the internet"),
+    ("terminal",     "ssh ",             "connect to a remote machine"),
+
+    # Git state changes — push/reset are the destructive ones; status
+    # / log / diff stay on the generic fallback.
+    ("terminal",     "git push",         "push code to a remote repository"),
+    ("terminal",     "git reset",        "reset your git history"),
+
+    # Generic fallback rows (existing, unchanged).
+    ("terminal",     None,               "run a command on your machine"),
+    ("execute_code", None,               "execute code"),
     # Fallback row — matches every tool not above.
-    (None,           None,              "perform an action ({tool_name})"),
+    (None,           None,               "perform an action ({tool_name})"),
 )
+
+
+def normalize_command(command_string: str) -> str:
+    """Expand ``$HOME`` / ``${HOME}`` / leading ``~`` to the operator's home.
+
+    Sprint 32.2 — fixes the Kaizen template-matcher bug where a skill
+    invocation written as ``${HOME}/.grove/skills/<name>/...`` slipped
+    past the ``.grove/skills/`` substring match because the literal
+    home prefix was unexpanded.  After this call, every downstream
+    substring check sees a fully-resolved path.
+
+    Scope (v0.1, GATE-A A1): only ``$HOME``, ``${HOME}``, and a
+    leading ``~/`` are expanded.  Other shell variables, quoted
+    forms, nested expansions, command substitution, and
+    glob-expanded paths are out of scope — the helper is a string
+    replacement, not a shell evaluator.  Andon-class shell tricks
+    fall through to the generic "run a command" template and the
+    operator still sees a prompt; no silent matching beyond what
+    these three forms cover.
+
+    Idempotent: a string with no shell-variable forms is returned
+    unchanged.  Safe to call on arbitrary user input — never invokes
+    a subprocess.
+    """
+    if not command_string:
+        return command_string
+    home = os.path.expanduser("~")
+    out = command_string.replace("${HOME}", home).replace("$HOME", home)
+    if out.startswith("~/"):
+        out = home + out[1:]
+    return out
+
+
+_SKILL_PAYLOAD_MARKERS = frozenset({
+    "scripts", "references", "tests", "SKILL.md", "README.md",
+})
 
 
 def _extract_skill_name(arguments_str: str) -> str:
     """Pull the skill directory name out of a command argument blob.
 
-    Looks for ``.grove/skills/<name>/`` or ``.grove/skills/<name>``
-    and returns the ``<name>`` segment. Returns ``"unknown"`` when
-    no skill path is present.
+    Looks for ``.grove/skills/`` in the input and walks the path
+    segments that follow, returning the deepest segment that is
+    neither a filename (contains ``.`` but not as a leading dot
+    file) nor a skill-payload directory (``scripts``, ``references``,
+    ``tests``, etc.).  Returns ``"unknown"`` when no path is present
+    or every segment looks like a file.
+
+    Sprint 32.2 — handles both the single-level layout
+    (``.grove/skills/<name>/run.py`` → ``<name>``) AND the
+    category layout (``.grove/skills/<category>/<name>/scripts/x.py``
+    → ``<name>``).  Operator-authored skills under the category
+    layout were the bug surface: a ``google-workspace`` skill living
+    under ``productivity/`` returned ``"productivity"`` from the
+    pre-32.2 extractor, which leaked the category name into the
+    Kaizen prompt.
+
+    Sprint 32.2 — callers MUST pass an already-normalized argument
+    blob (run :func:`normalize_command` first if the input may carry
+    unexpanded ``$HOME`` / ``${HOME}`` / ``~``).  Without
+    normalization, a ``${HOME}/.grove/skills/...`` invocation
+    returns ``"unknown"`` because the substring is split by the
+    unexpanded variable.
     """
     marker = ".grove/skills/"
     idx = arguments_str.find(marker)
     if idx < 0:
         return "unknown"
     tail = arguments_str[idx + len(marker):]
+    # Collect path bytes until a path-terminating delimiter.  Quotes,
+    # whitespace, and shell metachars end the path; ``/`` stays so
+    # we can split into segments below.
     end = 0
     for ch in tail:
-        if ch in "/'\" \t\n":
+        if ch in "'\" \t\n":
             break
         end += 1
-    return tail[:end] or "unknown"
+    path_part = tail[:end]
+    if not path_part:
+        return "unknown"
+    candidate = None
+    for seg in path_part.split("/"):
+        if not seg:
+            continue
+        # Filename heuristic: a non-leading-dot segment containing
+        # ``.`` is a filename (e.g. ``run.py`` / ``google_api.py``).
+        # Once we hit one, the previous segment is the skill name.
+        if "." in seg and not seg.startswith("."):
+            break
+        # Payload subdir: a directory the skill is structured around
+        # rather than the skill itself.  Stop and return the segment
+        # we last saw at this level.
+        if seg in _SKILL_PAYLOAD_MARKERS:
+            break
+        candidate = seg
+    return candidate or "unknown"
+
+
+def _extract_install_package(arguments_str: str, install_verb: str) -> str:
+    """Pull the package name out of an install/uninstall command.
+
+    ``install_verb`` is the template's matched substring (e.g.
+    ``"brew install"``, ``"pip install"``).  Returns the first
+    non-flag token after the verb; ``"unknown"`` when no token is
+    present (a bare ``brew install`` with no args).
+
+    Flag tokens are anything starting with ``-``; quoted package
+    names (rare but possible) have their surrounding quote stripped.
+    Multi-package invocations (``brew install foo bar baz``) report
+    only the first — the template's job is to give the operator the
+    headline, not enumerate.
+    """
+    idx = arguments_str.find(install_verb)
+    if idx < 0:
+        return "unknown"
+    tail = arguments_str[idx + len(install_verb):].strip()
+    if not tail:
+        return "unknown"
+    for token in tail.split():
+        # Strip a single layer of surrounding quotes.
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
+            token = token[1:-1]
+        if not token or token.startswith("-"):
+            continue
+        # Trim trailing punctuation that bleeds in from the
+        # stringified args dict — commas, quotes, braces — in one
+        # rstrip pass so a chain like ``ripgrep'}`` collapses to
+        # ``ripgrep`` rather than ``ripgrep'``.
+        token = token.rstrip(",'\"}")
+        if token:
+            return token
+    return "unknown"
 
 
 def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
@@ -128,16 +284,34 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
     Used by :func:`tty_sovereign_prompt` to build the prompt's header
     line. Exposed publicly so the Dispatcher's batch / gateway INFO
     log lines can carry the same description for telemetry parity.
+
+    Sprint 32.2 — the raw stringified arguments are passed through
+    :func:`normalize_command` before substring matching so a skill
+    invocation written as ``${HOME}/.grove/skills/<name>/...`` is
+    matched against the skill template instead of falling through to
+    the generic "run a command on your machine" row.
     """
-    args_str = str(dict(arguments)) if arguments else ""
+    raw_args_str = str(dict(arguments)) if arguments else ""
+    args_str = normalize_command(raw_args_str)
     for tmpl_tool, tmpl_substring, tmpl_text in _KAIZEN_PROMPT_TEMPLATES:
         if tmpl_tool is not None and tmpl_tool != tool_name:
             continue
         if tmpl_substring is not None and tmpl_substring not in args_str:
             continue
+        # Per-template interpolation: rows with ``{package}`` pull the
+        # first non-flag argument out of the matched verb; ``{skill_name}``
+        # rows pull the directory name under .grove/skills/; ``{tool_name}``
+        # rows interpolate the dispatching tool.  Templates without
+        # placeholders pass through unchanged via str.format's keyword
+        # args.
         return tmpl_text.format(
             tool_name=tool_name,
             skill_name=_extract_skill_name(args_str),
+            package=(
+                _extract_install_package(args_str, tmpl_substring)
+                if "{package}" in tmpl_text and tmpl_substring
+                else ""
+            ),
         )
     # Unreachable: the fallback row matches every tool. Keep an
     # explicit return for type-checker happiness.
