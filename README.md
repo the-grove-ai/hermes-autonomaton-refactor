@@ -1,10 +1,16 @@
 # The Hermes Autonomaton Refactor
 
+![Status: Pre-Alpha](https://img.shields.io/badge/status-pre--alpha-critical.svg)
+
 A fork of [NousResearch's Hermes Agent](https://github.com/NousResearch/hermes-agent) (~176K★), restructured around the [Autonomaton Pattern](https://the-grove.ai/standards/001). Released by [The Grove Foundation](https://the-grove.ai).
 
 The EU AI Act's high-risk obligations — human oversight, record-keeping, transparency, robustness — require architectural answers, not bolt-on compliance layers. This fork demonstrates that those answers can be applied to an existing, capable agent framework without replacing it. We took NousResearch's Hermes Agent, moved state, memory, and tool execution out of the agent, and handed them to a deterministic dispatcher. The language model still does what it does well — reasoning, judgment, creativity. It just no longer owns the run.
 
 The result is a governed agent that satisfies the structural requirements emerging from the EU AI Act and the broader regulatory landscape, while preserving the full capability of the upstream framework. We continue developing and testing this demo release to bring forth the full Autonomaton benefits — model independence (already supporting Gemma 4 via MLX, Ollama, and any OpenAI-compatible provider alongside Anthropic), self-improving routing, and operator-declared governance that domain experts can read and revise without touching code.
+
+> [!WARNING]
+> **Pre-Alpha / Active Research Implementation**
+> This fork is heavily under active development. The core agent "god object" has been successfully replaced with a deterministic dispatcher, backed by a green suite of 24,000+ tests. However, this is a **pre-alpha** reference implementation. Expect bugs, breaking changes, and shifting APIs as we build out the self-authoring and pattern compilation pipelines. This is a proof-of-concept for the Autonomaton Pattern, not yet a production-ready framework.
 
 ---
 
@@ -18,9 +24,9 @@ The [Autonomaton Pattern](https://the-grove.ai/standards/001) goes further: a mo
 
 ---
 
-## Preview Status
+## Pre-Alpha Status
 
-This is a working fork under active development. The core governance architecture is implemented and tested. Daily-driver stability is improving sprint over sprint. Some rough edges remain.
+This is a working, exploratory fork under active development. The core governance surgery is complete and the test suite is holding the line, but this is a pre-alpha reference implementation. We are actively proving out the architecture. Rough edges, unimplemented features, and bugs are guaranteed.
 
 | Layer | Status | Notes |
 |---|---|---|
