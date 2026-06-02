@@ -4801,9 +4801,18 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            # Sprint 54 — wire the IntentStore at CLI Dispatcher
+            # construction so the interactive ``hermes chat`` path
+            # writes IntentRecords on every turn.  Without this the
+            # Flywheel TierRatchet sees only the records run_agent.py
+            # writes on its own auto-construct path (a narrow set of
+            # call sites), and the operator's day-to-day interactive
+            # turns leave no telemetry for the Flywheel to learn from.
+            from grove.intent_store import get_store as _get_intent_store
             self.agent = Dispatcher(
                 session_db=self._session_db,
                 sovereign_prompt_handler=self._sovereign_prompt_callback,
+                intent_store=_get_intent_store(),
                 agent_kwargs=dict(
                 model=effective_model,
                 max_tokens=max_tokens,

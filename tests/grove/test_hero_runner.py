@@ -80,22 +80,36 @@ def _prompt(**expected) -> HeroPrompt:
 
 
 class TestLoadHeroPrompts:
-    def test_default_path_loads_11_prompts(self) -> None:
+    def test_default_path_loads_full_v2_coverage(self) -> None:
+        # Sprint 54 (intent-taxonomy-v2): 15-of-15 INTENT_CLASSES coverage
+        # plus 1 correction-trigger and 1 unknown-fallback = 18 prompts.
         prompts = load_hero_prompts()
-        assert len(prompts) == 11
+        assert len(prompts) == 18
         ids = {p.id for p in prompts}
-        # Coverage spot-check — every intent class is represented.
+        # Knowledge / architect work — Sprint 12 intents that survive
+        # into v2 unchanged.
         assert "code-gen-moderate" in ids
         assert "debug-simple" in ids
         assert "debug-novel" in ids
         assert "analysis-complex" in ids
         assert "planning-moderate" in ids
-        assert "factual-simple" in ids
         assert "creative-moderate" in ids
         assert "sysadmin-simple" in ids
         assert "conversation-simple" in ids
         assert "correction-trigger" in ids
         assert "unknown-fallback" in ids
+        # Sprint 54 — daily-driver / T1-native (and one new T2-native:
+        # ``research``).  Mandatory operator requirement: every new
+        # intent must have at least one hero entry so the Flywheel's
+        # TierRatchet has evaluation surface for proposals against it.
+        assert "factual-simple" in ids
+        assert "memory-operation-simple" in ids
+        assert "scheduling-simple" in ids
+        assert "messaging-simple" in ids
+        assert "retrieval-cached-artifact" in ids
+        assert "summarization-simple" in ids
+        assert "translation-simple" in ids
+        assert "research-moderate" in ids
 
     def test_missing_path_raises_filenotfound(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):

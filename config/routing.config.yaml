@@ -31,8 +31,16 @@ routing:
   schema_version: 1
 
   # The tier used for ordinary work, when nothing routes a request
-  # elsewhere. Most interactions run here.
-  default_tier: T2
+  # elsewhere.
+  #
+  # Sprint 54 (intent-taxonomy-v2): inverted from T2 to T1.  T1 is now
+  # the floor; the classifier drives upward escalation for the
+  # knowledge-work and architect intents.  Daily-driver intents
+  # (memory_operation, scheduling, messaging, retrieval, summarization,
+  # translation, conversation, factual_lookup) run on the cheap tier by
+  # default — the economic engine of the Autonomaton Pattern (T3 pays
+  # once, retrieval is forever cheap).
+  default_tier: T1
 
   # Optional. Pin a tier for every action the zone classifier places in a
   # given zone (green / yellow / red). An empty map — the default — means
@@ -151,10 +159,23 @@ routing:
 
   # ----------------------------------------------------------------------
   # Declarative routing rules. After operator overrides (--tier / --model)
-  # are checked, each enabled rule below is tested in order — downward,
-  # then upward, then escalation — against the telemetry classifier's read
-  # of the request. The first rule that matches decides the tier; if none
-  # match, the request runs on default_tier.
+  # are checked, each enabled rule below is tested in order —
+  # upward_moderate, then upward, then escalation — against the telemetry
+  # classifier's read of the request. The first rule that matches decides
+  # the tier; if none match, the request runs on default_tier (T1).
+  #
+  # Sprint 54 (intent-taxonomy-v2): the floor inverted from T2 to T1.
+  # The legacy ``downward`` block is gone — T1 is the default, so there
+  # is no tier to descend to.  Two upward rules replace it:
+  #
+  #   * upward_moderate — moderate-complexity knowledge-work and
+  #     architect intents (planning is here at moderate so its FLOOR is
+  #     T2, never T1).
+  #   * upward — complex/novel work in the same family escalates to T3.
+  #
+  # The escalation step_up rule is narrowed: T1-native intents do NOT
+  # step up on low confidence (let Haiku handle uncertain chit-chat;
+  # stepping it to T2 is economic waste).
   #
   # This is the dial that makes routing yours: change a threshold, an
   # intent list, or an `enabled` flag and the Autonomaton routes
@@ -162,39 +183,43 @@ routing:
   # ----------------------------------------------------------------------
   routing_rules:
 
-    # Send easy, high-confidence work DOWN to the cheap tier. Off by
-    # default — turn it on once you trust the classifier on your work.
-    # The `intents` filter restricts which kinds of "simple" requests
-    # route down: chat and prose drafting are T1's strengths. Tool-
-    # needing categories (factual_retrieval, system_admin) classify
-    # as simple but require skill loading + tool calls a lighter model
-    # is less reliable about — keep those on T2. Widen the list as you
-    # build confidence in the classifier on your own workload.
-    downward:
-      enabled: false
+    # Send moderate-complexity knowledge work UP to Premium Cognition.
+    # Catches the bulk of code, debugging, analysis, research, writing,
+    # and system-admin work that needs T2 but not T3.  ``planning`` is
+    # included so its FLOOR is T2 — a moderate planning task must never
+    # fall through to T1 Haiku.
+    upward_moderate:
+      enabled: true
       match:
-        complexity: simple
-        min_confidence: 0.85
-        intents: [conversation, creative_writing]
-      target_tier: T1
+        complexity: moderate
+        intents: [code_generation, debugging, analysis, research,
+                  creative_writing, system_admin, planning]
+      target_tier: T2
 
-    # Send hard work UP to the apex tier: complex or novel requests that
-    # are also planning, analysis, code generation, or debugging.
+    # Send hard work UP to the apex tier: complex or novel requests in
+    # the knowledge-work / architect family.
     upward:
       enabled: true
       match:
         complexity: [complex, novel]
-        intents: [planning, analysis, code_generation, debugging]
+        intents: [planning, analysis, code_generation, debugging,
+                  research, system_admin]
       target_tier: T3
 
     # When the classifier is not confident it has the right tier, step
     # the request up one rung rather than risk a weak answer on a cheaper
-    # model. `max_confidence` here overrides escalation.threshold above;
-    # drop it to fall back to that value.
+    # model.  Sprint 54: narrowed to T2/T3-native intents only.  Daily-
+    # driver intents (conversation, factual_lookup, retrieval,
+    # summarization, translation, scheduling, messaging,
+    # memory_operation) stay on T1 even at low confidence — the cost of
+    # an uncertain Haiku reply is well below the cost of escalating
+    # every uncertain chit-chat to Sonnet.
     escalation:
       enabled: true
       match:
         max_confidence: 0.6
+        intents: [code_generation, debugging, analysis, research,
+                  creative_writing, system_admin, planning]
       action: step_up
 
   telemetry:

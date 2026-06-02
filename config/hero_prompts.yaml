@@ -39,12 +39,17 @@
 #
 # Coverage
 # --------
-# 8 of 8 INTENT_CLASSES represented (code_generation, debugging × 2 to
-# cover both ends of the complexity gradient, analysis, planning,
-# factual_retrieval, creative_writing, system_admin, conversation);
-# 1 correction-trigger to exercise is_correction=true; 1 unknown-intent
-# degenerate input to exercise the maximal-fallback path through
-# ``resolve_tool_set``.
+# Sprint 54 (intent-taxonomy-v2): 15 of 15 INTENT_CLASSES represented.
+# Daily-driver / T1-native intents (memory_operation, scheduling,
+# messaging, retrieval, summarization, translation, conversation,
+# factual_lookup) each get at least one entry so TierRatchet has
+# evaluation surface for downward-mobility proposals; without these
+# the Flywheel could never confirm a T1 promotion proposal.  Knowledge-
+# work / T2-native intents (code_generation, debugging × 2,
+# analysis, research, creative_writing, system_admin) and architect /
+# T3-native (planning) round out the taxonomy.  1 correction-trigger
+# exercises is_correction=true; 1 unknown-intent degenerate input
+# exercises the maximal-fallback path through ``resolve_tool_set``.
 # ============================================================================
 
 hero_prompts:
@@ -107,9 +112,9 @@ hero_prompts:
   - id: factual-simple
     message: "What's the latest stable release of Claude?"
     expected:
-      intent_class: factual_retrieval
+      intent_class: factual_lookup
       complexity_signal_in: [simple, moderate]
-      tier_in: [T2]
+      tier_in: [T1, T2]
       tools_must_include: [web_search]
       tools_must_not_include: [image_generate, browser_navigate]
       is_correction: false
@@ -142,7 +147,7 @@ hero_prompts:
     expected:
       intent_class: conversation
       complexity_signal_in: [simple]
-      tier_in: [T2]
+      tier_in: [T1]
       tools_must_include: [clarify, memory]
       tools_must_not_include: [write_file, terminal, browser_navigate]
       is_correction: false
@@ -153,10 +158,99 @@ hero_prompts:
     expected:
       intent_class: conversation
       complexity_signal_in: [simple, moderate]
-      tier_in: [T2]
+      tier_in: [T1, T2]
       tools_must_include: [clarify, memory]
       tools_must_not_include: [write_file, browser_navigate]
       is_correction: true
+      andon_halt: false
+
+  # ── Sprint 54 v2 taxonomy — new daily-driver / T1-native intents ──────
+  # One entry per T1-native intent (mandatory operator requirement).  The
+  # Flywheel's TierRatchet needs evaluation surface across every intent
+  # it might propose against; without these the proposal queue cannot
+  # surface T1-promotion decisions for new daily-driver work.
+
+  - id: memory-operation-simple
+    message: "Remember that my preferred deploy target is staging."
+    expected:
+      intent_class: memory_operation
+      complexity_signal_in: [simple]
+      tier_in: [T1]
+      tools_must_include: [memory]
+      tools_must_not_include: [browser_navigate, image_generate]
+      is_correction: false
+      andon_halt: false
+
+  - id: scheduling-simple
+    message: "What's on my calendar for tomorrow afternoon?"
+    expected:
+      intent_class: scheduling
+      complexity_signal_in: [simple]
+      tier_in: [T1]
+      tools_must_include: [clarify, skill_view]
+      tools_must_not_include: [browser_navigate, image_generate, write_file]
+      is_correction: false
+      andon_halt: false
+
+  - id: messaging-simple
+    message: "Draft a one-line reply to Jim saying I'll be late."
+    expected:
+      intent_class: messaging
+      complexity_signal_in: [simple]
+      tier_in: [T1]
+      tools_must_include: [clarify, skill_view]
+      tools_must_not_include: [browser_navigate, image_generate]
+      is_correction: false
+      andon_halt: false
+
+  - id: retrieval-cached-artifact
+    message: "Pull up the payment system architecture we designed yesterday."
+    expected:
+      intent_class: retrieval
+      complexity_signal_in: [simple, moderate]
+      tier_in: [T1]
+      tools_must_include: [session_search]
+      tools_must_not_include: [image_generate, video_generate, write_file]
+      is_correction: false
+      andon_halt: false
+
+  - id: summarization-simple
+    message: "Summarize this paragraph in two sentences."
+    expected:
+      intent_class: summarization
+      complexity_signal_in: [simple]
+      tier_in: [T1]
+      tools_must_include: [clarify]
+      tools_must_not_include: [browser_navigate, image_generate]
+      is_correction: false
+      andon_halt: false
+
+  - id: translation-simple
+    message: "Translate this to Portuguese: 'Good morning, how can I help?'"
+    expected:
+      intent_class: translation
+      complexity_signal_in: [simple]
+      tier_in: [T1]
+      tools_must_include: [clarify]
+      tools_must_not_include: [browser_navigate, image_generate, write_file]
+      is_correction: false
+      andon_halt: false
+
+  # ── Sprint 54 v2 taxonomy — new T2-native intent ──────────────────────
+  # ``research`` carves the multi-source investigation surface out of
+  # the Sprint 12 ``analysis`` label so the classifier can distinguish
+  # synthesis-on-what-is-in-front-of-you (analysis) from go-find-it
+  # (research).
+
+  - id: research-moderate
+    message: "Compare React Server Components and Solid signals for our use case."
+    expected:
+      intent_class: research
+      complexity_signal_in: [moderate, complex]
+      tier_in: [T2, T3]
+      tools_must_include: [web_search, web_extract]
+      tools_must_not_include: [image_generate, video_generate]
+      is_correction: false
       andon_halt: false
 
   - id: unknown-fallback
@@ -164,7 +258,7 @@ hero_prompts:
     expected:
       intent_class: unknown
       complexity_signal_in: [simple, moderate, complex, novel, unknown]
-      tier_in: [T2]
+      tier_in: [T1]
       tools_must_include: []
       tools_must_not_include: []
       is_correction: false
