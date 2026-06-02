@@ -4924,10 +4924,19 @@ class HermesCLI:
             self._console_print(_build_compact_banner())
             self._show_status()
         else:
-            # Get tools for display.  Sprint 53 — reach the
-            # Dispatcher-owned registry through self.agent.
-            _registry = self.agent.registry
-            tools = get_tool_definitions(_registry, enabled_toolsets=self.enabled_toolsets, quiet_mode=True) if _registry else []
+            # Get tools for display.  Sprint 53 — banner-time tool
+            # listing is a pre-Dispatcher CLI introspection path
+            # (called from `run()` before the lazy `_init_agent` and
+            # by `--list-tools` / `--list-toolsets` which explicitly
+            # skip agent init). Build an ad-hoc registry the same way
+            # the toolset-validation block above does — built-in tools
+            # only; MCP / plugin tools surface in the live registry
+            # after the Dispatcher attaches them at first-turn boot.
+            from tools.registry import ToolRegistry as _ToolRegistry
+            from tools.registry import register_builtin_tools as _rbt
+            _registry = _ToolRegistry()
+            _rbt(_registry)
+            tools = get_tool_definitions(_registry, enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
 
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
