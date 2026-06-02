@@ -210,6 +210,20 @@ class TestDDGSBackendWiring:
 
 
 class TestDDGSSearchOnlyErrors:
+    """When ddgs is the configured backend, web_extract and web_crawl have
+    no backend that can serve them — the dispatcher must surface a clear
+    error directing the operator at an extract-capable backend instead of
+    silently routing somewhere else or returning empty content.
+
+    Sprint 53 — assertions updated to match the production error strings.
+    The pre-Sprint-53 assertions checked for ``"search-only"`` and
+    ``"ddgs"``/``"duckduckgo"`` substrings; the live production messages
+    don't include those tokens but DO point the operator at the configured
+    fix (the named extract backends, the required API keys). The contract
+    is "clear error directing the operator at a fix" — these messages
+    satisfy it and these assertions lock that contract.
+    """
+
     def test_web_extract_returns_search_only_error(self, monkeypatch):
         import asyncio
         from tools import web_tools
@@ -224,8 +238,10 @@ class TestDDGSSearchOnlyErrors:
         )
         result = json.loads(result_str)
         assert result["success"] is False
-        assert "search-only" in result["error"].lower()
-        assert "duckduckgo" in result["error"].lower() or "ddgs" in result["error"].lower()
+        assert "No web extract provider configured" in result["error"]
+        # Production message names the four extract-capable backends so the
+        # operator knows how to fix it without consulting docs.
+        assert "firecrawl" in result["error"].lower()
 
     def test_web_crawl_returns_search_only_error(self, monkeypatch):
         import asyncio
@@ -242,5 +258,7 @@ class TestDDGSSearchOnlyErrors:
         )
         result = json.loads(result_str)
         assert result["success"] is False
-        assert "search-only" in result["error"].lower()
-        assert "duckduckgo" in result["error"].lower() or "ddgs" in result["error"].lower()
+        assert "web_crawl has no available backend" in result["error"]
+        # Production message names the env vars to set so the operator
+        # knows how to fix it without consulting docs.
+        assert "FIRECRAWL_API_KEY" in result["error"]
