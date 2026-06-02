@@ -649,6 +649,165 @@ def test_T9_tool_error_diagnostic_in_badge():
 # ── T10 — Orphan-process invariant sanity ─────────────────────────────
 
 
+# ── T11/T12/T13 — Sprint 54 tier routing assertions ──────────────────
+#
+# Sprint 54 inverts the floor from T2 to T1 and adds an upward_moderate
+# rule so moderate-complexity knowledge work escalates from T1 to T2.
+# These three tests pin the routing outcome end-to-end against the live
+# CLI: trivial → T1, code generation → T2 (escalated), complex planning
+# → T3 (escalated). Each asserts the tier indicator the run_agent
+# turn-end footer prints (``↳ T<n>``) appears in stdout — content-
+# agnostic so flaky model output doesn't poison the routing assertion.
+#
+# Timeouts are sized for the heaviest tier on each branch:
+#   T11 (T1 Haiku, trivial)         60s   — same budget as T1
+#   T12 (T2 Sonnet, hello world)    90s   — moderate code generation
+#   T13 (T3 Opus, complex planning) 300s  — Opus on a complex/novel
+#                                            architecture turn routinely
+#                                            runs 90–120s on tool-using
+#                                            paths; 300s leaves headroom
+#                                            for cold-start MCP jitter.
+
+
+_TIER_FOOTER_RE = r"↳\s+T(?P<tier>\d)"
+
+
+def _assert_tier(stdout: str, expected_tier: str, query: str) -> None:
+    """Assert the turn-end ``↳ T<n>`` footer reports the expected tier.
+
+    Strictly routing-outcome only: the assertion examines the
+    run_agent turn-end footer (a content-agnostic, deterministically
+    emitted artifact) and never inspects the LLM's prose.  Sprint 51
+    established that model output is non-deterministic; routing
+    decisions are not.
+
+    Asserts EXACTLY one footer is present so an unintended mid-turn
+    escalation (which would emit two footers) can't quietly mask the
+    expected routing outcome by virtue of being last.
+
+    Surfaces the actual tier and stdout trail in the failure message
+    so a regression names the misroute precisely (which tier
+    actually fired) without a re-run.
+    """
+    matches = re.findall(_TIER_FOOTER_RE, stdout)
+    assert matches, (
+        f"no tier footer found in stdout for query {query!r}.\n"
+        f"Expected a line matching {_TIER_FOOTER_RE!r}.\n"
+        f"stdout:\n{stdout[:3000]}"
+    )
+    assert len(matches) == 1, (
+        f"expected exactly one tier footer for query {query!r}, "
+        f"found {len(matches)} (tiers: {['T' + m for m in matches]}).\n"
+        f"Multiple footers signal a mid-turn escalation that this "
+        f"test is not designed to disambiguate.\n"
+        f"stdout:\n{stdout[:3000]}"
+    )
+    actual_tier = f"T{matches[0]}"
+    assert actual_tier == expected_tier, (
+        f"query {query!r} routed to {actual_tier}, expected {expected_tier}.\n"
+        f"stdout:\n{stdout[:3000]}"
+    )
+
+
+def test_T11_trivial_query_routes_to_T1():
+    """Trivial arithmetic must route to T1 under the v2 default.
+
+    Pre-Sprint-54 this would have landed on T2 (the old default_tier).
+    The inversion makes T1 the floor for daily-driver intents like
+    factual_lookup — and the classifier has rated "what is 2 + 2" as
+    factual_lookup with high confidence, so no upward rule fires.
+
+    Andon trigger: if this lands on T2 the inversion regressed somewhere
+    between the classifier and the router (most likely a stale operator
+    copy of routing.config.yaml, or a config-loader cache that missed
+    the default_tier reload).
+    """
+    query = "what is 2 + 2"
+    with LiveCliRunner(
+        ["chat", "-q", query],
+        mode="pipe",
+    ) as runner:
+        rc = runner.wait_for_exit(timeout=60.0)
+    assert rc == 0, (
+        f"hermes chat exited non-zero ({rc}) for query {query!r}.\n"
+        f"stderr:\n{runner.stderr()[:2000]}"
+    )
+    _assert_tier(runner.stdout(), "T1", query)
+
+
+def test_T12_moderate_code_generation_routes_to_T2():
+    """Moderate-complexity code generation must escalate from T1 to T2.
+
+    The Sprint 54 ``upward_moderate`` routing rule catches
+    moderate-complexity code_generation / debugging / analysis /
+    research / creative_writing / system_admin / planning turns and
+    routes them to T2 from the T1 floor.
+
+    Phrasing matters and the classifier has measurable run-to-run
+    variance — the test selects a query empirically validated as
+    stably moderate across 3 cold-start classifier runs:
+
+      - "Python CSV parser"            → moderate, but fragile (one
+                                         phrasing variant rates simple)
+      - "function to parse a CSV file" → simple (legitimate T1)
+      - "SQL migration ... backfill"   → bistable between runs
+      - "thread-safe LRU cache"        → moderate, 3/3 stable runs ✓
+
+    The thread-safe-LRU phrasing carries an explicit complexity cue
+    ("thread-safe" implies concurrency reasoning) that holds up across
+    classifier runs.  The brief's "hello world" example would have
+    legitimately stayed on T1; this test asserts the escalation path,
+    not a fragile trivial-vs-moderate boundary.
+
+    Andon trigger: if this lands on T1 the upward_moderate rule did not
+    fire — most likely the router missed parsing the new rule (the
+    ``_parse_routing_rules`` loop in grove/router.py must include
+    "upward_moderate" in the name iteration).
+    """
+    query = "implement a thread-safe LRU cache in Python"
+    with LiveCliRunner(
+        ["chat", "-q", query],
+        mode="pipe",
+    ) as runner:
+        rc = runner.wait_for_exit(timeout=90.0)
+    assert rc == 0, (
+        f"hermes chat exited non-zero ({rc}) for query {query!r}.\n"
+        f"stderr:\n{runner.stderr()[:2000]}"
+    )
+    _assert_tier(runner.stdout(), "T2", query)
+
+
+def test_T13_complex_planning_routes_to_T3():
+    """Complex planning must escalate to T3 via the upward rule.
+
+    The Sprint 54 ``upward`` rule catches complex/novel turns in the
+    knowledge-work + architect family and routes them to T3. Planning
+    is the canonical T3-native intent — novel architectural synthesis
+    is exactly what Apex Cognition is for.
+
+    The 300s timeout is sized for Opus on an artifact-producing turn.
+    Phase 3 smoke testing measured 1m 55s wall-clock for the
+    distributed-cache query (4,579 tokens, 4 tool calls). 300s leaves
+    headroom for cold-start MCP jitter on the first run in a fresh
+    process.
+
+    Andon trigger: if this lands on T2 the upward rule didn't fire —
+    classifier may have rated it ``moderate`` instead of ``complex``,
+    or planning is missing from the upward rule's intents list.
+    """
+    query = "design a microservices architecture for a payment system"
+    with LiveCliRunner(
+        ["chat", "-q", query],
+        mode="pipe",
+    ) as runner:
+        rc = runner.wait_for_exit(timeout=300.0)
+    assert rc == 0, (
+        f"hermes chat exited non-zero ({rc}) for query {query!r}.\n"
+        f"stderr:\n{runner.stderr()[:2000]}"
+    )
+    _assert_tier(runner.stdout(), "T3", query)
+
+
 def test_T10_orphan_invariant_holds():
     """Sanity check that the conftest's orphan-detection fixture is
     actually running for this directory.
