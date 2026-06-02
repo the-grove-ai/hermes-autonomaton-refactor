@@ -8070,6 +8070,22 @@ class GatewayRunner:
 
             return response
             
+        except (ImportError, ModuleNotFoundError, AttributeError,
+                TypeError, NameError, RuntimeError):
+            # Andon: architectural integrity violations propagate.
+            # These are not transient API failures; they signal a broken
+            # substrate (consumer miss after a rename, Dispatcher wiring
+            # drift, fail-loud assertion, etc.) and must surface to the
+            # operator rather than degrade to a friendly Telegram reply.
+            # The legitimate UX surface below remains for the narrow
+            # class of transient API / network errors it was built for.
+            try:
+                _err_adapter = self.adapters.get(source.platform)
+                if _err_adapter and hasattr(_err_adapter, "stop_typing"):
+                    await _err_adapter.stop_typing(source.chat_id)
+            except Exception:
+                pass
+            raise
         except Exception as e:
             # Stop typing indicator on error too
             try:
