@@ -20,7 +20,7 @@ import pytest
 from agent.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
 import run_agent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER, wire_mock_dispatcher
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ def agent():
             # Sprint 27 Phase 4 — silent_skip keeps compression tests
             # deterministic. These verify compression triggering, not
             # Andon behavior.
-            sovereign_prompt_handler=silent_allow_handler,
+            sovereign_prompt_handler=silent_allow_handler, get_available_tools=lambda *_a, **_k: (_make_tool_defs("web_search"))
         )
         a.client = MagicMock()
         a._composed_system_prompt = "You are helpful."
@@ -105,6 +105,7 @@ def agent():
         a.tool_delay = 0
         a.compression_enabled = False
         a.save_trajectories = False
+        wire_mock_dispatcher(a)
         return a
 
 
@@ -135,10 +136,14 @@ class TestHTTP413Compression:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             # Compression reduces 3 messages down to 1
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "hello"}],
                 "compressed prompt",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
@@ -162,10 +167,14 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "hello"}],
                 "compressed",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         # If 413 were treated as generic 4xx, result would have "failed": True
@@ -189,10 +198,14 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "hello"}],
                 "compressed",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
@@ -227,10 +240,14 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "summary"}],
                 "compressed prompt",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             agent.run_conversation("hello", conversation_history=big_history)
 
         assert len(persist_calls) >= 1, "Expected at least one _persist_session call"
@@ -266,10 +283,14 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "summary"}],
                 "compressed prompt",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             agent.run_conversation("hello", conversation_history=big_history)
 
         assert len(persist_calls) >= 1
@@ -306,10 +327,14 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "hello"}],
                 "compressed prompt",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
@@ -338,10 +363,14 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "hello"}],
                 "compressed",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
@@ -378,10 +407,14 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "compressed summary"}],
                 "compressed prompt",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         assert result["completed"] is True
@@ -408,10 +441,14 @@ class TestHTTP413Compression:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             # Compression returns same number of messages → can't compress further
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "hello"}],
                 "same prompt",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello")
 
         assert result["completed"] is False
@@ -431,16 +468,28 @@ class TestPreflightCompression:
             events.append(("compress", "started"))
             return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
 
+        # Sprint 53 — _build_system_prompt delegates to the Dispatcher
+        # when one is wired, so patch the Dispatcher's method as well
+        # to keep the test deterministic.
         with (
             patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
             patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
+            patch.object(agent._dispatcher_singleton, "compose_system_prompt", return_value="new system prompt"),
             patch("run_agent.estimate_request_tokens_rough", return_value=42),
         ):
-            compressed, new_system_prompt = agent._compress_context(
+            # Sprint 26 Phase 3 — _compress_context is a generator that
+            # returns (compressed, prompt) via StopIteration. Drive it
+            # and capture the value.
+            _gen = agent._compress_context(
                 [{"role": "user", "content": "hello"}],
                 "system prompt",
                 approx_tokens=1234,
             )
+            try:
+                while True:
+                    next(_gen)
+            except StopIteration as _stop:
+                compressed, new_system_prompt = _stop.value
 
         assert compressed == [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
         assert new_system_prompt == "new system prompt"
@@ -475,13 +524,17 @@ class TestPreflightCompression:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             # Simulate compression reducing messages to a small set that fits
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [
                     {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
                     {"role": "user", "content": "hello"},
                 ],
                 "new system prompt",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello", conversation_history=big_history)
 
         # Preflight compression is a multi-pass loop (up to 3 passes for very
@@ -584,9 +637,13 @@ class TestToolResultPreflightCompression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "hello"}], "compressed prompt",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello")
 
         mock_compress.assert_called_once()
@@ -612,9 +669,13 @@ class TestToolResultPreflightCompression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
+            def _compress_gen(*_a, **_k):
+                if False:
+                    yield
+                return (
                 [{"role": "user", "content": "hello"}], "compressed",
-            )
+                        )
+            mock_compress.side_effect = _compress_gen
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()

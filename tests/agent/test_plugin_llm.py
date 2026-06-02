@@ -34,6 +34,12 @@ from agent.plugin_llm import (
 )
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -783,7 +789,7 @@ class TestPluginContextIntegration:
 
         manifest = PluginManifest(name="test-plugin", source="test", key="test-plugin")
         manager = PluginManager()
-        ctx = PluginContext(manifest, manager)
+        ctx = PluginContext(manifest, manager, registry=_REGISTRY)
         first = ctx.llm
         second = ctx.llm
         assert first is second
@@ -797,7 +803,7 @@ class TestPluginContextIntegration:
             name="bare-name", source="test", key="image_gen/openai"
         )
         manager = PluginManager()
-        ctx = PluginContext(manifest, manager)
+        ctx = PluginContext(manifest, manager, registry=_REGISTRY)
         assert ctx.llm._plugin_id == "image_gen/openai"  # type: ignore[attr-defined]
 
 
@@ -913,7 +919,7 @@ class TestHookMode:
 
         manifest = PluginManifest(name="hook-plugin", source="test", key="hook-plugin")
         manager = PluginManager()
-        ctx = PluginContext(manifest, manager)
+        ctx = PluginContext(manifest, manager, registry=_REGISTRY)
 
         # Replace ctx.llm with a stub that records what the hook called.
         captured: list = []
@@ -969,7 +975,7 @@ class TestHookMode:
 
         manifest = PluginManifest(name="hook-async", source="test", key="hook-async")
         manager = PluginManager()
-        ctx = PluginContext(manifest, manager)
+        ctx = PluginContext(manifest, manager, registry=_REGISTRY)
 
         def fake_caller(**_):
             return "openrouter", "model-x", _fake_response("ok")

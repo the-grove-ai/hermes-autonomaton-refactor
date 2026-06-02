@@ -92,7 +92,7 @@ class TestDoctorEnvFileEncoding:
         # need doctor to reach the .env read without crashing.
         fake_model_tools = types.SimpleNamespace(
             check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
-            TOOLSET_REQUIREMENTS={},
+            get_toolset_requirements=lambda *_a, **_k: {},
         )
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -209,7 +209,7 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=fake_check_tool_availability,
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -264,7 +264,7 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -311,7 +311,7 @@ class TestDoctorMemoryProviderSection:
         # Stub tool availability (returns empty) so doctor runs past it
         fake_model_tools = types.SimpleNamespace(
             check_tool_availability=lambda *a, **kw: ([], []),
-            TOOLSET_REQUIREMENTS={},
+            get_toolset_requirements=lambda *_a, **_k: {},
         )
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -418,7 +418,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -455,7 +455,7 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -502,7 +502,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -547,7 +547,7 @@ def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -583,7 +583,9 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: (["terminal"], [{"name": "browser", "env_vars": [], "tools": ["browser_navigate"]}]),
-        TOOLSET_REQUIREMENTS={
+        # Sprint 53 — TOOLSET_REQUIREMENTS module-constant retired;
+        # doctor now calls ``get_toolset_requirements(registry)``.
+        get_toolset_requirements=lambda *_a, **_k: {
             "terminal": {"name": "terminal"},
             "browser": {"name": "browser"},
         },
@@ -625,7 +627,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -673,7 +675,7 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -731,7 +733,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
@@ -876,7 +878,7 @@ def _run_doctor_with_healthy_oauth_fallback(
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
+        get_toolset_requirements=lambda *_a, **_k: {},
     )
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 

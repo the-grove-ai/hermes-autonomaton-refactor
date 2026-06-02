@@ -17,6 +17,12 @@ from plugins.teams_pipeline.store import TeamsPipelineStore
 from plugins.teams_pipeline.models import MeetingArtifact
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 class FakeGraphClient:
     def __init__(self) -> None:
         self.downloaded = False
@@ -39,7 +45,7 @@ async def _no_call_record(*args, **kwargs):
 def test_register_adds_cli_only():
     mgr = PluginManager()
     manifest = PluginManifest(name="teams_pipeline")
-    ctx = PluginContext(manifest, mgr)
+    ctx = PluginContext(manifest, mgr, registry=_REGISTRY)
 
     register(ctx)
 

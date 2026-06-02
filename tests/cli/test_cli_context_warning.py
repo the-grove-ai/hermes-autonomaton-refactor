@@ -34,9 +34,16 @@ def cli_obj(_isolate):
         obj.base_url = ""
         obj.provider = "test"
         obj._provider_source = None
-        # Mock agent with context compressor
+        # Mock agent with context compressor.  Sprint 53 — the agent
+        # also needs a ``.registry`` attribute because the banner
+        # paths read it for tool definition lookups.
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _reg = ToolRegistry()
+        register_builtin_tools(_reg)
         obj.agent = SimpleNamespace(
-            context_compressor=SimpleNamespace(context_length=None)
+            context_compressor=SimpleNamespace(context_length=None),
+            registry=_reg,
+            enabled_toolsets=None,
         )
         return obj
 

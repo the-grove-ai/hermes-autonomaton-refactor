@@ -22,7 +22,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ class TestFlushAfterCompression:
                 quiet_mode=True,
                 session_id="original-session",
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
         return agent
 

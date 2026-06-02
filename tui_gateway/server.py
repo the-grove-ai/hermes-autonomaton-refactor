@@ -909,21 +909,28 @@ def _load_enabled_toolsets() -> list[str] | None:
     cfg = None
     fallback_notice = None
 
+    # Sprint 53 — TUI gateway startup runs before any Dispatcher; the
+    # toolset validation here is a pre-Dispatcher introspection path,
+    # so construct an ad-hoc Dispatcher-style registry locally.
     try:
         from toolsets import validate_toolset
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _startup_registry = ToolRegistry()
+        register_builtin_tools(_startup_registry)
     except Exception:
         validate_toolset = None
+        _startup_registry = None
 
     if explicit and validate_toolset is not None:
-        built_in = [name for name in explicit if validate_toolset(name)]
+        built_in = [name for name in explicit if validate_toolset(name, _startup_registry)]
         unresolved = [name for name in explicit if name not in built_in]
 
         if unresolved:
             try:
                 from hermes_cli.plugins import discover_plugins
 
-                discover_plugins()
-                plugin_valid = [name for name in unresolved if validate_toolset(name)]
+                discover_plugins(registry=_startup_registry)
+                plugin_valid = [name for name in unresolved if validate_toolset(name, _startup_registry)]
             except Exception:
                 plugin_valid = []
 

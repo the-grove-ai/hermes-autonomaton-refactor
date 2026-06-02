@@ -11,7 +11,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -40,8 +40,8 @@ class _FakeOpenAI:
 
 
 def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1"):
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
-    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("run_agent.get_tool_definitions", lambda *args, **kw: _tool_defs("web_search", "terminal"))
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda *args, **kw: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
     return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
         api_key="test",
@@ -51,7 +51,7 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
         max_iterations=4,
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
 
 

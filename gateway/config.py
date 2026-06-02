@@ -779,9 +779,15 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["platforms"] = platforms_data
             # Iterate built-in platforms plus any registered plugin platforms
             # so plugin authors get the same shared-key bridging (#24836).
+            # Sprint 53 — gateway config load is a pre-Dispatcher path; the
+            # per-session Dispatchers will replay plugin discovery against
+            # their own registries.
             try:
                 from hermes_cli.plugins import discover_plugins
-                discover_plugins()  # idempotent
+                from tools.registry import ToolRegistry, register_builtin_tools
+                _cfg_reg = ToolRegistry()
+                register_builtin_tools(_cfg_reg)
+                discover_plugins(registry=_cfg_reg)
                 from gateway.platform_registry import platform_registry as _pr
             except Exception as e:
                 logger.debug("plugin discovery skipped: %s", e)
@@ -1829,8 +1835,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # project_id / subscription_name) can supply ``env_enablement_fn`` on
     # their PlatformEntry — called here BEFORE adapter construction.
     try:
+        # Sprint 53 — gateway config finalization is a pre-Dispatcher
+        # path; per-session Dispatchers replay plugin discovery
+        # against their own registries.
         from hermes_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _cfg_reg = ToolRegistry()
+        register_builtin_tools(_cfg_reg)
+        discover_plugins(registry=_cfg_reg)
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             try:

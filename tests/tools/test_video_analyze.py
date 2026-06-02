@@ -318,7 +318,9 @@ class TestVideoToolsetRegistration:
     """Verify the tool is registered correctly."""
 
     def test_registered_in_video_toolset(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry.get_entry("video_analyze")
         assert entry is not None
         assert entry.toolset == "video"

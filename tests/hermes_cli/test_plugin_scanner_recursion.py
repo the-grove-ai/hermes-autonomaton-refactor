@@ -17,6 +17,12 @@ import yaml
 from hermes_cli.plugins import PluginManager, PluginManifest
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
@@ -82,7 +88,7 @@ class TestCategoryNamespaceRecursion:
         _enable(hermes_home, "image_gen/openai")
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         assert "image_gen/openai" in mgr._plugins
         loaded = mgr._plugins["image_gen/openai"]
@@ -100,7 +106,7 @@ class TestCategoryNamespaceRecursion:
         _enable(hermes_home, "my-plugin")
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         assert "my-plugin" in mgr._plugins
         assert mgr._plugins["my-plugin"].manifest.key == "my-plugin"
@@ -118,7 +124,7 @@ class TestCategoryNamespaceRecursion:
         _write_plugin(user_plugins, ["a", "b", "c"])
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         non_bundled = [
             k for k, p in mgr._plugins.items()
@@ -142,7 +148,7 @@ class TestCategoryNamespaceRecursion:
         _enable(hermes_home, "image_gen/openai")
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         # The bundled plugins/image_gen/openai/ exists in the repo — filter
         # it out so we're only asserting on the user-dir layout.
@@ -164,7 +170,7 @@ class TestKindField:
         _enable(hermes_home, "p1")
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         assert mgr._plugins["p1"].manifest.kind == "standalone"
 
@@ -181,7 +187,7 @@ class TestKindField:
         _enable(hermes_home, "p1")
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         assert "p1" in mgr._plugins
         assert mgr._plugins["p1"].manifest.kind == kind
@@ -198,7 +204,7 @@ class TestKindField:
 
         with caplog.at_level("WARNING"):
             mgr = PluginManager()
-            mgr.discover_and_load()
+            mgr.discover_and_load(registry=_REGISTRY)
 
         assert mgr._plugins["p1"].manifest.kind == "standalone"
         assert any(
@@ -225,7 +231,7 @@ class TestBackendGate:
         # Do NOT opt in.
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         loaded = mgr._plugins["image_gen/fancy"]
         assert loaded.enabled is False
@@ -244,7 +250,7 @@ class TestBackendGate:
         _enable(hermes_home, "image_gen/fancy")
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         assert mgr._plugins["image_gen/fancy"].enabled is True
 
@@ -261,7 +267,7 @@ class TestBackendGate:
         _enable(hermes_home, "some-backend")
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         loaded = mgr._plugins["some-backend"]
         assert loaded.enabled is False
@@ -279,7 +285,7 @@ class TestBundledBackendAutoLoad:
         hermes_home = Path(os.environ["GROVE_HOME"])  # set by hermetic conftest fixture
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         assert "image_gen/openai" in mgr._plugins
         loaded = mgr._plugins["image_gen/openai"]
@@ -324,7 +330,7 @@ class TestRegisterImageGenProvider:
         _enable(hermes_home, "my-img-plugin")
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
 
         assert mgr._plugins["my-img-plugin"].enabled is True
         assert image_gen_registry.get_provider("fake-ctx") is not None
@@ -347,7 +353,7 @@ class TestRegisterImageGenProvider:
 
         with caplog.at_level("WARNING"):
             mgr = PluginManager()
-            mgr.discover_and_load()
+            mgr.discover_and_load(registry=_REGISTRY)
 
         # Plugin loaded (register returned normally) but nothing was
         # registered in the provider registry.

@@ -347,8 +347,9 @@ def test_invalid_timeout_falls_back_to_default(cdp_server):
 
 
 def test_registered_in_browser_toolset():
-    from tools.registry import registry
-
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
     entry = registry.get_entry("browser_cdp")
     assert entry is not None
     # browser_cdp lives in its own toolset so its stricter check_fn
@@ -362,8 +363,9 @@ def test_registered_in_browser_toolset():
 
 
 def test_dispatch_through_registry(cdp_server):
-    from tools.registry import registry
-
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
     cdp_server.on("Target.getTargets", lambda p, s: {"targetInfos": []})
     raw = registry.dispatch(
         "browser_cdp", {"method": "Target.getTargets"}, task_id="t1"

@@ -25,6 +25,12 @@ from hermes_cli.auth import (
 )
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):
     """Write Codex tokens into the Hermes auth store."""
     hermes_home.mkdir(parents=True, exist_ok=True)

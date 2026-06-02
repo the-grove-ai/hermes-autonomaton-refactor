@@ -4,6 +4,12 @@ from unittest.mock import patch
 
 import pytest
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # tiktoken is not in core/[all] deps — skip estimation tests when unavailable
 _has_tiktoken = True
 try:
@@ -205,7 +211,7 @@ def test_status_fn_empty_selection():
     def status_fn(chosen: set) -> str:
         all_tools: set = set()
         for idx in chosen:
-            all_tools.update(resolve_toolset(ts_keys[idx]))
+            all_tools.update(resolve_toolset(ts_keys[idx], _REGISTRY))
         total = sum(tokens.get(name, 0) for name in all_tools)
         if total >= 1000:
             return f"Est. tool context: ~{total / 1000:.1f}k tokens"
@@ -264,9 +270,9 @@ def test_curses_checklist_numbered_fallback_without_status(monkeypatch, capsys):
 
 def test_registry_get_schema_returns_schema():
     """registry.get_schema() should return a tool's schema dict."""
-    from tools.registry import registry
-
-    # Import to trigger discovery
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
     import model_tools  # noqa: F401
 
     schema = registry.get_schema("terminal")
@@ -278,6 +284,7 @@ def test_registry_get_schema_returns_schema():
 
 def test_registry_get_schema_returns_none_for_unknown():
     """registry.get_schema() should return None for unknown tools."""
-    from tools.registry import registry
-
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
     assert registry.get_schema("nonexistent_tool_xyz") is None

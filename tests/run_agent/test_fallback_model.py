@@ -12,7 +12,7 @@ import pytest
 
 from run_agent import AIAgent
 import run_agent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +52,7 @@ def _make_agent(fallback_model=None):
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            fallback_model=fallback_model,
+            fallback_model=fallback_model, get_available_tools=lambda *_a, **_k: (_make_tool_defs("web_search"))
         )
         agent.client = MagicMock()
         return agent

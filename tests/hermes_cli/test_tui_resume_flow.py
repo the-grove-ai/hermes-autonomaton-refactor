@@ -224,7 +224,7 @@ def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
+        types.SimpleNamespace(discover_plugins=lambda registry=None: None),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -262,7 +262,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
+        types.SimpleNamespace(discover_plugins=lambda registry=None: None),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -305,7 +305,7 @@ def _stub_plugin_discovery(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
+        types.SimpleNamespace(discover_plugins=lambda registry=None: None),
     )
 
 
@@ -358,15 +358,15 @@ def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
     discovered = {"ready": False}
     original_validate = toolsets.validate_toolset
 
-    def fake_validate(name):
-        return name == "plugin_demo" and discovered["ready"] or original_validate(name)
+    def fake_validate(name, registry):
+        return name == "plugin_demo" and discovered["ready"] or original_validate(name, registry)
 
     monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
         types.SimpleNamespace(
-            discover_plugins=lambda: discovered.update({"ready": True})
+            discover_plugins=lambda registry=None: discovered.update({"ready": True})
         ),
     )
 

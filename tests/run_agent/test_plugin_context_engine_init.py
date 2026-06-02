@@ -7,7 +7,7 @@ context_length, causing the CLI status bar to show 'ctx --'.
 from unittest.mock import MagicMock, patch
 
 from agent.context_engine import ContextEngine
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 class _StubEngine(ContextEngine):
@@ -50,7 +50,7 @@ def test_plugin_engine_gets_context_length_on_init():
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=lambda *_a, **_k: ([])
         )
 
     assert agent.context_compressor is engine
@@ -82,7 +82,7 @@ def test_plugin_engine_update_model_args():
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=lambda *_a, **_k: ([])
         )
 
     engine.update_model.assert_called_once()

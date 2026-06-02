@@ -13,7 +13,7 @@ function must treat its input dict as read-only.
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 @patch("run_agent.OpenAI")
@@ -26,7 +26,7 @@ def test_create_openai_client_does_not_mutate_input_kwargs(mock_openai):
         model="test/model",
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
 
     kwargs = {"api_key": "test-key", "base_url": "https://api.example.com/v1"}

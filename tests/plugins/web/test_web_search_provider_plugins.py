@@ -52,10 +52,23 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _ensure_plugins_loaded() -> None:
-    """Idempotently load plugins so the registry is populated."""
-    from hermes_cli.plugins import _ensure_plugins_discovered
+    """Idempotently load plugins so the registry is populated.
 
-    _ensure_plugins_discovered()
+    Sprint 53 — supplies a Dispatcher-style ToolRegistry on first call.
+    """
+    from hermes_cli.plugins import (
+        _ensure_plugins_discovered,
+        discover_plugins as _discover_plugins,
+        get_plugin_manager,
+    )
+    mgr = get_plugin_manager()
+    if mgr._registry is None:
+        from tools.registry import ToolRegistry, register_builtin_tools
+        reg = ToolRegistry()
+        register_builtin_tools(reg)
+        _discover_plugins(registry=reg)
+    else:
+        _ensure_plugins_discovered()
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,12 @@ import hermes_cli.plugins as plugins_mod
 from hermes_cli.plugins import PluginManager, VALID_HOOKS
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 def _make_enabled_plugin(hermes_home: Path, name: str, register_body: str) -> Path:
     """Create a plugin under <hermes_home>/plugins/<name> and opt it in."""
     plugin_dir = hermes_home / "plugins" / name
@@ -63,7 +69,7 @@ def test_hook_receives_expected_kwargs(tmp_path, monkeypatch):
     monkeypatch.setenv("GROVE_HOME", str(hermes_home))
 
     mgr = PluginManager()
-    mgr.discover_and_load()
+    mgr.discover_and_load(registry=_REGISTRY)
 
     results = mgr.invoke_hook(
         "transform_llm_output",
@@ -124,7 +130,7 @@ def test_hook_exception_does_not_replace_response(tmp_path, monkeypatch):
     monkeypatch.setenv("GROVE_HOME", str(hermes_home))
 
     mgr = PluginManager()
-    mgr.discover_and_load()
+    mgr.discover_and_load(registry=_REGISTRY)
 
     results = mgr.invoke_hook(
         "transform_llm_output",

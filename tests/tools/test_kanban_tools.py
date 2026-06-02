@@ -12,8 +12,14 @@ import json
 import os
 
 import pytest
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
+
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
 
 # ---------------------------------------------------------------------------
 # Gating
@@ -28,11 +34,14 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     monkeypatch.setenv("GROVE_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
-    from tools.registry import invalidate_check_fn_cache, registry
+    from tools.registry import invalidate_check_fn_cache
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
     from toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
-    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    schema = registry.get_definitions(set(resolve_toolset("hermes-cli", registry)), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     assert kanban == set(), (
@@ -48,11 +57,14 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     monkeypatch.setenv("GROVE_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
-    from tools.registry import invalidate_check_fn_cache, registry
+    from tools.registry import invalidate_check_fn_cache
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
     from toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
-    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    schema = registry.get_definitions(set(resolve_toolset("hermes-cli", registry)), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
@@ -76,11 +88,14 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     monkeypatch.setenv("GROVE_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
-    from tools.registry import invalidate_check_fn_cache, registry
+    from tools.registry import invalidate_check_fn_cache
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
     from toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
-    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    schema = registry.get_definitions(set(resolve_toolset("hermes-cli", registry)), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     assert {
@@ -101,11 +116,14 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     monkeypatch.setenv("GROVE_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
-    from tools.registry import invalidate_check_fn_cache, registry
+    from tools.registry import invalidate_check_fn_cache
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
     from toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
-    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    schema = registry.get_definitions(set(resolve_toolset("hermes-cli", registry)), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
@@ -866,7 +884,7 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     prompt = a._build_system_prompt()
     assert "You are a Kanban worker" not in prompt
@@ -890,7 +908,7 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     prompt = a._build_system_prompt()
     # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)

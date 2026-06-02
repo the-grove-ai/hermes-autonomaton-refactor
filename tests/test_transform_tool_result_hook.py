@@ -14,6 +14,12 @@ import hermes_cli.plugins as plugins_mod
 import model_tools
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 _UNSET = object()
 
 
@@ -26,8 +32,9 @@ def _run_handle_function_call(
     invoke_hook=_UNSET,
 ):
     """Drive ``handle_function_call`` with a mocked registry dispatch."""
-    from tools.registry import registry
-
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
     monkeypatch.setattr(
         registry, "dispatch",
         lambda name, args, **kw: dispatch_result,
@@ -39,7 +46,7 @@ def _run_handle_function_call(
         # Patch the symbol actually imported inside handle_function_call.
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
 
-    return model_tools.handle_function_call(
+    return model_tools.handle_function_call(registry,
         tool_name,
         tool_args or {},
         task_id="t1",
@@ -183,7 +190,7 @@ def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_pat
 
     # Force a fresh plugin manager so the new config is picked up.
     plugins_mod._plugin_manager = plugins_mod.PluginManager()
-    plugins_mod.discover_plugins()
+    plugins_mod.discover_plugins(registry=_REGISTRY)
 
     out = _run_handle_function_call(
         monkeypatch,

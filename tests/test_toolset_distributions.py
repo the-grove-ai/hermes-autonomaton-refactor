@@ -12,6 +12,12 @@ from toolset_distributions import (
 )
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 class TestGetDistribution:
     def test_known_distribution(self):
         dist = get_distribution("default")
@@ -58,11 +64,11 @@ class TestValidateDistribution:
 class TestSampleToolsetsFromDistribution:
     def test_unknown_raises(self):
         with pytest.raises(ValueError, match="Unknown distribution"):
-            sample_toolsets_from_distribution("nonexistent")
+            sample_toolsets_from_distribution("nonexistent", _REGISTRY)
 
     def test_default_returns_all_toolsets(self):
         # default has all at 100%, so all should be selected
-        result = sample_toolsets_from_distribution("default")
+        result = sample_toolsets_from_distribution("default", _REGISTRY)
         assert len(result) > 0
         # With 100% probability, all valid toolsets should be present
         dist = get_distribution("default")
@@ -70,11 +76,11 @@ class TestSampleToolsetsFromDistribution:
             assert ts in result
 
     def test_minimal_returns_web_only(self):
-        result = sample_toolsets_from_distribution("minimal")
+        result = sample_toolsets_from_distribution("minimal", _REGISTRY)
         assert "web" in result
 
     def test_returns_list_of_strings(self):
-        result = sample_toolsets_from_distribution("balanced")
+        result = sample_toolsets_from_distribution("balanced", _REGISTRY)
         assert isinstance(result, list)
         for item in result:
             assert isinstance(item, str)
@@ -82,7 +88,7 @@ class TestSampleToolsetsFromDistribution:
     def test_fallback_guarantees_at_least_one(self):
         # Even with low probabilities, at least one toolset should be selected
         for _ in range(20):
-            result = sample_toolsets_from_distribution("reasoning")
+            result = sample_toolsets_from_distribution("reasoning", _REGISTRY)
             assert len(result) >= 1
 
 

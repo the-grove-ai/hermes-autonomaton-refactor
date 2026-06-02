@@ -135,37 +135,47 @@ class TestBudgetConfigCustom:
 
 
 class TestResolveThreshold:
-    """Priority: pinned > tool_overrides > registry > default."""
+    """Priority: pinned > tool_overrides > registry > default.
+
+    Sprint 53 — ``resolve_threshold`` is no longer coupled to a
+    module-level singleton; callers pass a Dispatcher-owned
+    ``ToolRegistry`` explicitly.
+    """
+
+    def _stub_registry(self, value=None):
+        from unittest.mock import MagicMock
+        reg = MagicMock()
+        if value is not None:
+            reg.get_max_result_size.return_value = value
+        return reg
 
     def test_pinned_wins_over_override(self):
         """Even if tool_overrides contains read_file, pinned value wins."""
         cfg = BudgetConfig(tool_overrides={"read_file": 1})
-        result = cfg.resolve_threshold("read_file")
+        result = cfg.resolve_threshold("read_file", self._stub_registry())
         assert result == float("inf")
 
     def test_tool_override_wins_over_default(self):
         """tool_overrides should be returned before falling back to registry."""
         cfg = BudgetConfig(tool_overrides={"my_tool": 42})
-        result = cfg.resolve_threshold("my_tool")
+        result = cfg.resolve_threshold("my_tool", self._stub_registry())
         assert result == 42
 
-    @patch("tools.registry.registry")
-    def test_falls_back_to_registry(self, mock_registry):
+    def test_falls_back_to_registry(self):
         """When not pinned and not in overrides, delegate to registry."""
-        mock_registry.get_max_result_size.return_value = 77_777
+        mock_registry = self._stub_registry(77_777)
         cfg = BudgetConfig()
-        result = cfg.resolve_threshold("some_tool")
+        result = cfg.resolve_threshold("some_tool", mock_registry)
         mock_registry.get_max_result_size.assert_called_once_with(
             "some_tool", default=DEFAULT_RESULT_SIZE_CHARS
         )
         assert result == 77_777
 
-    @patch("tools.registry.registry")
-    def test_registry_receives_custom_default(self, mock_registry):
+    def test_registry_receives_custom_default(self):
         """Custom default_result_size flows through to registry call."""
-        mock_registry.get_max_result_size.return_value = 50_000
+        mock_registry = self._stub_registry(50_000)
         cfg = BudgetConfig(default_result_size=50_000)
-        cfg.resolve_threshold("unknown_tool")
+        cfg.resolve_threshold("unknown_tool", mock_registry)
         mock_registry.get_max_result_size.assert_called_once_with(
             "unknown_tool", default=50_000
         )
@@ -173,4 +183,4 @@ class TestResolveThreshold:
     def test_pinned_read_file_returns_inf(self):
         """Canonical case: read_file must always return inf."""
         cfg = BudgetConfig()
-        assert cfg.resolve_threshold("read_file") == float("inf")
+        assert cfg.resolve_threshold("read_file", self._stub_registry()) == float("inf")

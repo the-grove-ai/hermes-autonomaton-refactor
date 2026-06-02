@@ -18,6 +18,12 @@ import pytest
 import json
 import os
 
+# Sprint 53 — module-level Dispatcher-style registry for tests in this file.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
+
 os.environ["TERMINAL_ENV"] = "local"
 
 
@@ -48,8 +54,13 @@ from tools.code_execution_tool import (
 )
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
-    """Mock dispatcher that returns canned responses for each tool."""
+def _mock_handle_function_call(registry, function_name, function_args, task_id=None, user_task=None, **_kw):
+    """Mock dispatcher that returns canned responses for each tool.
+
+    Sprint 53 — first positional arg is the Dispatcher-owned registry
+    that ``model_tools.handle_function_call`` now requires; the mock
+    accepts it but ignores it.
+    """
     if function_name == "terminal":
         cmd = function_args.get("command", "")
         return json.dumps({"output": f"mock output for: {cmd}", "exit_code": 0})
@@ -163,7 +174,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
              patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
              patch("tools.code_execution_tool._ship_file_to_remote"), \
              patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
-            result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
+            result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"], _REGISTRY))
 
         self.assertEqual(result["status"], "success")
         mkdir_cmd = env.commands[1][0]
@@ -189,7 +200,7 @@ class TestExecuteCode(unittest.TestCase):
             result = execute_code(
                 code=code,
                 task_id="test-task",
-                enabled_tools=enabled_tools or list(SANDBOX_ALLOWED_TOOLS),
+                enabled_tools=enabled_tools or list(SANDBOX_ALLOWED_TOOLS), registry=_REGISTRY
             )
         return json.loads(result)
 
@@ -277,7 +288,7 @@ else:
     print(f"OK {N}/{N}")
 '''
 
-        def slow_mock(function_name, function_args, task_id=None, user_task=None):
+        def slow_mock(registry, function_name, function_args, task_id=None, user_task=None, **_kw):
             import time as _t
             if function_name == "terminal":
                 _t.sleep(0.05)  # ensure requests overlap on the socket
@@ -286,14 +297,14 @@ else:
                 out = cmd[5:] if cmd.startswith("echo ") else f"mock: {cmd}"
                 return json.dumps({"output": out, "exit_code": 0})
             return _mock_handle_function_call(
-                function_name, function_args, task_id=task_id, user_task=user_task
+                registry, function_name, function_args, task_id=task_id, user_task=user_task
             )
 
         with patch("model_tools.handle_function_call", side_effect=slow_mock):
             raw = execute_code(
                 code=code,
                 task_id="test-concurrent",
-                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS), registry=_REGISTRY
             )
         result = json.loads(raw)
         self.assertEqual(result["status"], "success", msg=result)
@@ -314,7 +325,7 @@ print(result)
 
     def test_empty_code(self):
         """Empty code string returns an error."""
-        result = json.loads(execute_code("", task_id="test"))
+        result = json.loads(execute_code("", task_id="test", registry=_REGISTRY))
         self.assertIn("error", result)
 
     def test_output_captured(self):
@@ -349,7 +360,7 @@ raise RuntimeError("deliberate crash")
                 result = json.loads(execute_code(
                     code=code,
                     task_id="test-task",
-                    enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                    enabled_tools=list(SANDBOX_ALLOWED_TOOLS), registry=_REGISTRY
                 ))
         self.assertEqual(result["status"], "timeout")
         self.assertIn("timed out", result.get("error", ""))
@@ -467,7 +478,9 @@ class TestStubSchemaDrift(unittest.TestCase):
         from tools.code_execution_tool import _TOOL_STUBS
 
         # Import the registry and trigger tool registration
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
         import tools.web_tools  # noqa: F401 - registers web_search, web_extract
 
@@ -690,7 +703,7 @@ class TestEnvVarFiltering(unittest.TestCase):
                  patch("tools.code_execution_tool._load_config",
                        return_value={"timeout": 10, "max_tool_calls": 50}):
                 raw = execute_code(code, task_id="test-env",
-                                   enabled_tools=list(SANDBOX_ALLOWED_TOOLS))
+                                   enabled_tools=list(SANDBOX_ALLOWED_TOOLS), registry=_REGISTRY)
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
@@ -782,12 +795,12 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         error is only emitted when SANDBOX_AVAILABLE is explicitly
         flipped off (e.g. for future platform-specific disables)."""
         with patch("tools.code_execution_tool.SANDBOX_AVAILABLE", False):
-            result = json.loads(execute_code("print('hi')", task_id="test"))
+            result = json.loads(execute_code("print('hi')", task_id="test", registry=_REGISTRY))
             self.assertIn("error", result)
             self.assertIn("unavailable", result["error"].lower())
 
     def test_whitespace_only_code(self):
-        result = json.loads(execute_code("   \n\t  ", task_id="test"))
+        result = json.loads(execute_code("   \n\t  ", task_id="test", registry=_REGISTRY))
         self.assertIn("error", result)
         self.assertIn("No code", result["error"])
 
@@ -801,7 +814,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         with patch("model_tools.handle_function_call",
                     return_value=json.dumps({"ok": True})):
             result = json.loads(execute_code(code, task_id="test-none",
-                                             enabled_tools=None))
+                                             enabled_tools=None, registry=_REGISTRY))
         self.assertEqual(result["status"], "success")
         self.assertIn("all imports ok", result["output"])
 
@@ -815,7 +828,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         with patch("model_tools.handle_function_call",
                     return_value=json.dumps({"ok": True})):
             result = json.loads(execute_code(code, task_id="test-empty",
-                                             enabled_tools=[]))
+                                             enabled_tools=[], registry=_REGISTRY))
         self.assertEqual(result["status"], "success")
         self.assertIn("imports ok", result["output"])
 
@@ -831,7 +844,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                     return_value=json.dumps({"ok": True})):
             result = json.loads(execute_code(
                 code, task_id="test-nonoverlap",
-                enabled_tools=["vision_analyze", "browser_snapshot"],
+                enabled_tools=["vision_analyze", "browser_snapshot"], registry=_REGISTRY
             ))
         self.assertEqual(result["status"], "success")
         self.assertIn("fallback ok", result["output"])
@@ -895,7 +908,7 @@ class TestInterruptHandling(unittest.TestCase):
                        return_value={"timeout": 30, "max_tool_calls": 50}):
                 result = json.loads(execute_code(
                     code, task_id="test-interrupt",
-                    enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                    enabled_tools=list(SANDBOX_ALLOWED_TOOLS), registry=_REGISTRY
                 ))
             self.assertEqual(result["status"], "interrupted")
             self.assertIn("interrupted", result["output"])
@@ -912,7 +925,7 @@ class TestHeadTailTruncation(unittest.TestCase):
             result = execute_code(
                 code=code,
                 task_id="test-task",
-                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS), registry=_REGISTRY
             )
         return json.loads(result)
 

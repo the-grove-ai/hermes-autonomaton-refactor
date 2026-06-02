@@ -18,9 +18,12 @@ any test-time import of tools.escalate_tool.
 from hermes_cli.config import load_config
 from hermes_cli.tools_config import _get_platform_tools
 from model_tools import get_tool_definitions
-from tools.registry import discover_builtin_tools, registry
+from tools.registry import discover_builtin_tools
 
 
+from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+registry = _Sprint53_TR()
+_Sprint53_RBT(registry)
 def test_escalate_reaches_cli_api_tools_array():
     discover_builtin_tools()
 
@@ -36,7 +39,7 @@ def test_escalate_reaches_cli_api_tools_array():
         f"_get_platform_tools — toolsets returned: {sorted(enabled)}"
     )
 
-    defs = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)
+    defs = get_tool_definitions(registry, enabled_toolsets=enabled, quiet_mode=True)
     names = {d["function"]["name"] for d in defs if "function" in d}
     assert "escalate" in names, (
         f"escalate tool missing from API tools array — Sprint 30 escalation "

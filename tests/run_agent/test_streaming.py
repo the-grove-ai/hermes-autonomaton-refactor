@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ class TestStreamingAccumulator:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -130,7 +130,7 @@ class TestStreamingAccumulator:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -178,7 +178,7 @@ class TestStreamingAccumulator:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -227,7 +227,7 @@ class TestStreamingAccumulator:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -268,7 +268,7 @@ class TestStreamingAccumulator:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -312,7 +312,7 @@ class TestStreamingCallbacks:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            stream_delta_callback=lambda t: deltas.append(t),
+            stream_delta_callback=lambda t: deltas.append(t), get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -346,7 +346,7 @@ class TestStreamingCallbacks:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -380,7 +380,7 @@ class TestStreamingCallbacks:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -422,7 +422,7 @@ class TestStreamingCallbacks:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            stream_delta_callback=lambda t: deltas.append(t),
+            stream_delta_callback=lambda t: deltas.append(t), get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -460,7 +460,7 @@ class TestStreamingCallbacks:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            stream_delta_callback=lambda t: deltas.append(t),
+            stream_delta_callback=lambda t: deltas.append(t), get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -509,7 +509,7 @@ class TestStreamingFallback:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -539,7 +539,7 @@ class TestStreamingFallback:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -564,7 +564,7 @@ class TestStreamingFallback:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -590,7 +590,7 @@ class TestStreamingFallback:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -635,7 +635,7 @@ class TestStreamingFallback:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -673,7 +673,7 @@ class TestStreamingFallback:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -720,7 +720,7 @@ class TestReasoningStreaming:
             skip_context_files=True,
             skip_memory=True,
             stream_delta_callback=lambda t: text_deltas.append(t),
-            reasoning_callback=lambda t: reasoning_deltas.append(t),
+            reasoning_callback=lambda t: reasoning_deltas.append(t), get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -748,7 +748,7 @@ class TestHasStreamConsumers:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         assert agent._has_stream_consumers() is False
 
@@ -762,7 +762,7 @@ class TestHasStreamConsumers:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            stream_delta_callback=lambda t: None,
+            stream_delta_callback=lambda t: None, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         assert agent._has_stream_consumers() is True
 
@@ -775,7 +775,7 @@ class TestHasStreamConsumers:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent._stream_callback = lambda t: None
         assert agent._has_stream_consumers() is True
@@ -800,7 +800,7 @@ class TestCodexStreamCallbacks:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            stream_delta_callback=lambda t: deltas.append(t),
+            stream_delta_callback=lambda t: deltas.append(t), get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
@@ -843,7 +843,7 @@ class TestCodexStreamCallbacks:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
@@ -909,7 +909,7 @@ class TestCodexStreamCallbacks:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
@@ -930,7 +930,7 @@ class TestCodexStreamCallbacks:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "codex_responses"
 
@@ -984,7 +984,7 @@ class TestAnthropicStreamCallbacks:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
@@ -1040,7 +1040,7 @@ class TestAnthropicStreamCallbacks:
             model="MiniMax-M2.7",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
@@ -1092,7 +1092,7 @@ class TestAnthropicStreamCallbacks:
             model="MiniMax-M2.7",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
@@ -1158,7 +1158,7 @@ class TestPartialToolCallWarning:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -1220,7 +1220,7 @@ class TestPartialToolCallWarning:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -1307,7 +1307,7 @@ class TestSilentRetryMidToolCall:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -1382,7 +1382,7 @@ class TestSilentRetryMidToolCall:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -1441,7 +1441,7 @@ class TestSilentRetryMidToolCall:
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -1506,7 +1506,7 @@ def _make_acp_agent(provider="copilot-acp", base_url="acp://copilot"):
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        stream_delta_callback=lambda text: None,
+        stream_delta_callback=lambda text: None, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     agent.api_mode = "chat_completions"
     agent._interrupt_requested = False
@@ -1606,7 +1606,7 @@ class TestCopilotACPStreamingDecision:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            stream_delta_callback=lambda text: None,
+            stream_delta_callback=lambda text: None, get_available_tools=lambda *_a, **_k: ([])
         )
         agent.api_mode = "chat_completions"
 

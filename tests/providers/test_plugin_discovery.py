@@ -15,6 +15,12 @@ from pathlib import Path
 import pytest
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -134,7 +140,7 @@ def test_general_plugin_manager_skips_model_provider_kind(tmp_path, monkeypatch)
 
     # Fresh manager
     manager = plugin_mod.PluginManager()
-    manager.discover_and_load(force=True)
+    manager.discover_and_load(force=True, registry=_REGISTRY)
 
     # The manifest should be recorded but not loaded
     loaded = manager._plugins.get("test-model-provider")

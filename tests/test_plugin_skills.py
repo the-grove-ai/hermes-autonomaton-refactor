@@ -15,6 +15,12 @@ from unittest.mock import MagicMock
 import pytest
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # ── Namespace helpers ─────────────────────────────────────────────────────
 
 
@@ -133,7 +139,7 @@ class TestPluginContextRegisterSkill:
             description="test",
             source="user",
         )
-        return PluginContext(manifest, pm)
+        return PluginContext(manifest, pm, registry=_REGISTRY)
 
     def test_happy_path(self, ctx, tmp_path):
         skill_md = tmp_path / "skills" / "my-skill" / "SKILL.md"
@@ -171,6 +177,13 @@ class TestSkillViewQualifiedName:
         from hermes_cli.plugins import PluginManager
 
         self.pm = PluginManager()
+        # Sprint 53 — wire a Dispatcher-style registry so plugin
+        # discovery does not raise on the missing-registry guard.
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        _pm_reg = _Sprint53_TR()
+        _Sprint53_RBT(_pm_reg)
+        self.pm._registry = _pm_reg
+        self.pm._discovered = True
         monkeypatch.setattr(plugins_mod, "_plugin_manager", self.pm)
 
         empty = tmp_path / "empty-skills"
@@ -279,6 +292,13 @@ class TestSkillViewPluginGuards:
         from hermes_cli.plugins import PluginManager
 
         self.pm = PluginManager()
+        # Sprint 53 — wire a Dispatcher-style registry so plugin
+        # discovery does not raise on the missing-registry guard.
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        _pm_reg = _Sprint53_TR()
+        _Sprint53_RBT(_pm_reg)
+        self.pm._registry = _pm_reg
+        self.pm._discovered = True
         monkeypatch.setattr(plugins_mod, "_plugin_manager", self.pm)
         empty = tmp_path / "empty"
         empty.mkdir()
@@ -336,6 +356,13 @@ class TestBundleContextBanner:
         from hermes_cli.plugins import PluginManager
 
         self.pm = PluginManager()
+        # Sprint 53 — wire a Dispatcher-style registry so plugin
+        # discovery does not raise on the missing-registry guard.
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        _pm_reg = _Sprint53_TR()
+        _Sprint53_RBT(_pm_reg)
+        self.pm._registry = _pm_reg
+        self.pm._discovered = True
         monkeypatch.setattr(plugins_mod, "_plugin_manager", self.pm)
         empty = tmp_path / "empty"
         empty.mkdir()

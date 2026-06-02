@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 
 import pytest
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # Load ~/.grove/.env so live runs pick up OPENROUTER_API_KEY without
@@ -71,7 +71,7 @@ def _make_live_agent():
         skip_memory=True,
         # All toolsets off so the agent just produces a single text reply
         # per turn — we want to test the HTTP client lifecycle, not tools.
-        disabled_toolsets=["*"],
+        disabled_toolsets=["*"], get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
 
 

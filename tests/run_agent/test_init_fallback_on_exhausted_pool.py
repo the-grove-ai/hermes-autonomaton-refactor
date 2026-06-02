@@ -3,7 +3,7 @@ when primary provider credentials are exhausted."""
 import pytest
 from unittest.mock import patch, MagicMock
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _make_tool_defs():
@@ -44,7 +44,7 @@ def test_init_tries_fallback_when_primary_returns_none():
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            fallback_model=[{"provider": "tencent-token-plan", "model": "kimi2.5"}],
+            fallback_model=[{"provider": "tencent-token-plan", "model": "kimi2.5"}], get_available_tools=lambda *_a, **_k: (_make_tool_defs())
         )
         assert agent.provider == "tencent-token-plan"
         assert agent.model == "kimi2.5"
@@ -68,5 +68,5 @@ def test_init_raises_when_no_fallback_configured():
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
-                fallback_model=None,
+                fallback_model=None, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )

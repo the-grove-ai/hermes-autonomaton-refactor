@@ -7,6 +7,12 @@ import hermes_cli.plugins as plugins_mod
 import tools.terminal_tool as terminal_tool_module
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 _UNSET = object()
 
 
@@ -195,7 +201,7 @@ def test_terminal_output_transform_integration_with_real_plugin(monkeypatch, tmp
 
     # Force a fresh plugin manager so the new config is picked up.
     plugins_mod._plugin_manager = plugins_mod.PluginManager()
-    plugins_mod.discover_plugins()
+    plugins_mod.discover_plugins(registry=_REGISTRY)
 
     long_output = "X" * 60000
     result, _mock_env = _run_terminal(

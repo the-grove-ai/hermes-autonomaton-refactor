@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +37,7 @@ def test_session_id_env_broadcast_via_dispatcher():
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     # AIAgent no longer sets GROVE_SESSION_ID at construction.
     # Substrate writes are Dispatcher-owned per Sprint 26 Phase 7.
@@ -65,7 +65,7 @@ def test_session_id_env_broadcast_uses_provided_id():
         session_id=custom_id,
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     Dispatcher.broadcast_session_id(agent.session_id)
     assert os.environ["GROVE_SESSION_ID"] == custom_id
@@ -82,7 +82,7 @@ def test_session_id_contextvar_set():
         session_id=custom_id,
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     from gateway.session_context import get_session_env
     assert get_session_env("GROVE_SESSION_ID") == custom_id

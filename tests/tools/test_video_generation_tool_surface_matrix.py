@@ -95,7 +95,18 @@ def _invoke_tool(home, cfg: dict, args: dict) -> dict:
     if hasattr(cfg_mod, "_invalidate_load_config_cache"):
         cfg_mod._invalidate_load_config_cache()
 
-    from tools.registry import registry
+    from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+    registry = _Sprint53_TR()
+    _Sprint53_RBT(registry)
+    # Sprint 53 — provider plugins ship as discoverable plugins; the
+    # surface-matrix tests exercise the registered tool against the
+    # live config-resolved provider, so plugin discovery must also run
+    # against this ad-hoc registry.
+    try:
+        from hermes_cli.plugins import discover_plugins as _dp
+        _dp(registry=registry)
+    except Exception:
+        pass
     handler = registry._tools["video_generate"].handler
     return json.loads(handler(args))
 

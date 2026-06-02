@@ -890,7 +890,7 @@ class TestNewEndpoints:
         monkeypatch.setattr(
             toolsets_module,
             "resolve_toolset",
-            lambda name: {
+            lambda name, registry=None, visited=None: {
                 "web": ["web_search", "web_extract"],
                 "skills": ["skills_list", "skill_view"],
                 "memory": ["memory_read"],

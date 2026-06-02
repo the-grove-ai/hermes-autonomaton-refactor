@@ -5,6 +5,7 @@ from providers import get_provider_profile, _REGISTRY
 from providers.base import ProviderProfile, OMIT_TEMPERATURE
 
 
+
 class TestRegistry:
     def test_discovery_populates_registry(self):
         p = get_provider_profile("nvidia")

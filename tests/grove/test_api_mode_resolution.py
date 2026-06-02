@@ -33,7 +33,7 @@ import pytest
 import yaml
 
 from grove.errors import ProviderDetectionError
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _build_agent(*, provider, api_mode=None, base_url, model):
@@ -55,7 +55,7 @@ def _build_agent(*, provider, api_mode=None, base_url, model):
             model=model,
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=lambda *_a, **_k: ([])
         )
 
 

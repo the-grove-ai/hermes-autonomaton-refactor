@@ -31,6 +31,12 @@ from tools.discord_tool import (
 )
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -538,7 +544,9 @@ class TestErrorHandling:
 
 class TestRegistration:
     def test_core_tool_registered(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools.get("discord")
         assert entry is not None
         assert entry.schema["name"] == "discord"
@@ -547,7 +555,9 @@ class TestRegistration:
         assert entry.requires_env == ["DISCORD_BOT_TOKEN"]
 
     def test_admin_tool_registered(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools.get("discord_admin")
         assert entry is not None
         assert entry.schema["name"] == "discord_admin"
@@ -557,14 +567,18 @@ class TestRegistration:
 
     def test_core_schema_actions(self):
         """Core static schema should list only core actions."""
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools["discord"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
         assert actions == {"fetch_messages", "search_members", "create_thread"}
 
     def test_admin_schema_actions(self):
         """Admin static schema should list only admin actions."""
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools["discord_admin"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
         expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
@@ -576,7 +590,9 @@ class TestRegistration:
         assert set(_CORE_ACTIONS.keys()) & set(_ADMIN_ACTIONS.keys()) == set()
 
     def test_schema_parameter_bounds(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools["discord"]
         props = entry.schema["parameters"]["properties"]
         assert props["limit"]["minimum"] == 1
@@ -585,7 +601,9 @@ class TestRegistration:
 
     def test_core_schema_description(self):
         """Core schema description should mention core actions."""
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools["discord"]
         desc = entry.schema["description"]
         assert "fetch_messages(channel_id)" in desc
@@ -597,7 +615,9 @@ class TestRegistration:
 
     def test_admin_schema_description(self):
         """Admin schema description should mention admin actions."""
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools["discord_admin"]
         desc = entry.schema["description"]
         assert "list_guilds()" in desc
@@ -608,7 +628,9 @@ class TestRegistration:
         assert "create_thread(" not in desc
 
     def test_handler_callable(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools["discord"]
         assert callable(entry.handler)
         entry_admin = registry._tools["discord_admin"]
@@ -1108,7 +1130,7 @@ class TestModelToolsIntegration:
         mock_req.return_value = {"flags": 0}
 
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
+        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["hermes-discord"], quiet_mode=True)
         discord_admin_tool = next(
             (t for t in tools if t.get("function", {}).get("name") == "discord_admin"),
             None,
@@ -1129,7 +1151,7 @@ class TestModelToolsIntegration:
         mock_req.return_value = {"flags": 0}
 
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
+        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["hermes-discord"], quiet_mode=True)
         names = [t.get("function", {}).get("name") for t in tools]
         assert "discord" not in names
         assert "discord_admin" not in names

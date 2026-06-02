@@ -10,6 +10,12 @@ from tools.mcp_tool import MCPServerTask, _register_server_tools
 from tools.registry import ToolRegistry
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 def _make_mcp_tool(name: str, desc: str = ""):
     return SimpleNamespace(name=name, description=desc, inputSchema=None)
 
@@ -32,12 +38,11 @@ class TestRegisterServerTools:
         server.session = MagicMock()
         from toolsets import resolve_toolset, validate_toolset
 
-        with patch("tools.registry.registry", mock_registry):
-            registered = _register_server_tools("my_srv", server, {})
-            assert "mcp_my_srv_my_tool" in registered
-            assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
-            assert validate_toolset("my_srv") is True
-            assert "mcp_my_srv_my_tool" in resolve_toolset("my_srv")
+        registered = _register_server_tools("my_srv", server, {})
+        assert "mcp_my_srv_my_tool" in registered
+        assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
+        assert validate_toolset("my_srv", mock_registry) is True
+        assert "mcp_my_srv_my_tool" in resolve_toolset("my_srv", mock_registry)
 
 
 class TestRefreshTools:
@@ -73,17 +78,15 @@ class TestRefreshTools:
             )
         )
 
-        # toolsets.resolve_toolset reads the module-level singleton in
-        # Phase 1 — patch it to mock_registry so the assertion sees the
-        # same backing store ``_refresh_tools`` is writing to via
-        # ``server._registry``.
-        with patch("tools.registry.registry", mock_registry):
-            await server._refresh_tools()
-            assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
-            assert "mcp_live_srv_old_tool" not in resolve_toolset("live_srv")
-            assert "mcp_live_srv_new_tool" in mock_registry.get_all_tool_names()
-            assert "mcp_live_srv_new_tool" in resolve_toolset("live_srv")
-            assert server._registered_tool_names == ["mcp_live_srv_new_tool"]
+        # Sprint 53 — _refresh_tools writes to server._registry; the
+        # mock_registry fixture is the same instance, so toolsets
+        # helpers see the live state directly via that registry.
+        await server._refresh_tools()
+        assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
+        assert "mcp_live_srv_old_tool" not in resolve_toolset("live_srv", mock_registry)
+        assert "mcp_live_srv_new_tool" in mock_registry.get_all_tool_names()
+        assert "mcp_live_srv_new_tool" in resolve_toolset("live_srv", mock_registry)
+        assert server._registered_tool_names == ["mcp_live_srv_new_tool"]
 
 
 class TestMessageHandler:

@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import patch
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def test_blank_memory_provider_does_not_auto_enable_honcho():
@@ -31,7 +31,7 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=False,
+            skip_memory=False, get_available_tools=lambda *_a, **_k: ([])
         )
 
     assert agent._memory_manager is None

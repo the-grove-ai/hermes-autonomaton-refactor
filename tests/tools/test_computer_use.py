@@ -81,7 +81,9 @@ class TestRegistration:
     def test_tool_registers_with_registry(self):
         # Importing the shim registers the tool.
         import tools.computer_use_tool  # noqa: F401
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools.get("computer_use")
         assert entry is not None
         assert entry.toolset == "computer_use"
@@ -89,7 +91,9 @@ class TestRegistration:
 
     def test_check_fn_is_false_on_linux(self):
         import tools.computer_use_tool  # noqa: F401
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools["computer_use"]
         if sys.platform != "darwin":
             assert entry.check_fn() is False
@@ -671,7 +675,9 @@ class TestUniversality:
     def test_no_provider_gating_in_tool_registration(self):
         """Anthropic-only gating was a #4562 artefact — must not recur."""
         import tools.computer_use_tool  # noqa: F401
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools["computer_use"]
         # check_fn should only check platform + binary availability,
         # never provider.

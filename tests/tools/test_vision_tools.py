@@ -718,16 +718,18 @@ class TestErrorClassification:
 
 class TestVisionRegistration:
     def test_vision_analyze_registered(self):
-        from tools.registry import registry
-
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools.get("vision_analyze")
         assert entry is not None
         assert entry.toolset == "vision"
         assert entry.is_async is True
 
     def test_schema_has_required_fields(self):
-        from tools.registry import registry
-
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools.get("vision_analyze")
         schema = entry.schema
         assert schema["name"] == "vision_analyze"
@@ -737,8 +739,9 @@ class TestVisionRegistration:
         assert "question" in props
 
     def test_handler_is_callable(self):
-        from tools.registry import registry
-
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         entry = registry._tools.get("vision_analyze")
         assert callable(entry.handler)
 

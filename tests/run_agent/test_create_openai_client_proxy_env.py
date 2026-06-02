@@ -23,7 +23,7 @@ from unittest.mock import patch
 import httpx
 
 from run_agent import AIAgent, _get_proxy_from_env, _get_proxy_for_base_url
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _make_agent():
@@ -35,7 +35,7 @@ def _make_agent():
         model="gpt-5.4",
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
 
 

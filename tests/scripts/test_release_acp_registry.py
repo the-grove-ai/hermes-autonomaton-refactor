@@ -15,6 +15,12 @@ import json
 from pathlib import Path
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 def _load_release_module(monkeypatch, tmp_root: Path):
     """Import scripts/release.py with REPO_ROOT pinned to a temp tree."""
     spec = importlib.util.spec_from_file_location(

@@ -134,6 +134,12 @@ from plugins.platforms.google_chat.adapter import (  # noqa: E402
 )
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -2667,7 +2673,7 @@ class TestCronSchedulerRegistry:
         # Discover first so the plugin is loaded at all.
         try:
             from hermes_cli.plugins import discover_plugins
-            discover_plugins()
+            discover_plugins(registry=_REGISTRY)
         except Exception:
             pass
         if platform_registry.get("google_chat") is not None:

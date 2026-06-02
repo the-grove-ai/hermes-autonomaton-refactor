@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from tools.interrupt import set_interrupt, is_interrupted
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _make_slow_api_response(delay=5.0):
@@ -119,7 +119,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                                 quiet_mode=True,
                                 skip_context_files=True,
                                 skip_memory=True,
-                                platform="cli",
+                                platform="cli", get_available_tools=MOCK_CAPABILITY_PROVIDER
                             )
                             child._delegate_depth = 1
                             parent._active_children.append(child)

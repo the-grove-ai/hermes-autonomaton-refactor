@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _make_copilot_agent():
@@ -15,7 +15,7 @@ def _make_copilot_agent():
             model="gpt-5.4",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
     return agent
 

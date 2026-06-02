@@ -8,23 +8,29 @@ import pytest
 from toolsets import resolve_toolset, get_toolset, validate_toolset
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 class TestHermesApiServerToolset:
     """Tests for the hermes-api-server toolset definition."""
 
     def test_toolset_exists(self):
-        ts = get_toolset("hermes-api-server")
+        ts = get_toolset("hermes-api-server", _REGISTRY)
         assert ts is not None
 
     def test_toolset_validates(self):
-        assert validate_toolset("hermes-api-server")
+        assert validate_toolset("hermes-api-server", _REGISTRY)
 
     def test_toolset_includes_web_tools(self):
-        tools = resolve_toolset("hermes-api-server")
+        tools = resolve_toolset("hermes-api-server", _REGISTRY)
         assert "web_search" in tools
         assert "web_extract" in tools
 
     def test_toolset_includes_core_tools(self):
-        tools = resolve_toolset("hermes-api-server")
+        tools = resolve_toolset("hermes-api-server", _REGISTRY)
         expected = [
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
@@ -36,27 +42,27 @@ class TestHermesApiServerToolset:
             assert tool in tools, f"Missing expected tool: {tool}"
 
     def test_toolset_includes_browser_tools(self):
-        tools = resolve_toolset("hermes-api-server")
+        tools = resolve_toolset("hermes-api-server", _REGISTRY)
         for tool in ["browser_navigate", "browser_snapshot", "browser_click",
                       "browser_type", "browser_scroll", "browser_back",
                       "browser_press"]:
             assert tool in tools, f"Missing browser tool: {tool}"
 
     def test_toolset_includes_homeassistant_tools(self):
-        tools = resolve_toolset("hermes-api-server")
+        tools = resolve_toolset("hermes-api-server", _REGISTRY)
         for tool in ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"]:
             assert tool in tools, f"Missing HA tool: {tool}"
 
     def test_toolset_excludes_clarify(self):
-        tools = resolve_toolset("hermes-api-server")
+        tools = resolve_toolset("hermes-api-server", _REGISTRY)
         assert "clarify" not in tools
 
     def test_toolset_excludes_send_message(self):
-        tools = resolve_toolset("hermes-api-server")
+        tools = resolve_toolset("hermes-api-server", _REGISTRY)
         assert "send_message" not in tools
 
     def test_toolset_excludes_text_to_speech(self):
-        tools = resolve_toolset("hermes-api-server")
+        tools = resolve_toolset("hermes-api-server", _REGISTRY)
         assert "text_to_speech" not in tools
 
 

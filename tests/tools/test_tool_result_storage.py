@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.budget_config import (
+
     DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_TURN_BUDGET_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
@@ -23,6 +24,12 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
 )
 
+
+
+# Sprint 53 — module-level Dispatcher-style registry for tests in this file.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
 
 # ── generate_preview ──────────────────────────────────────────────────
 
@@ -215,7 +222,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_123",
             env=None,
-            threshold=50_000,
+            threshold=50_000, registry=_REGISTRY
         )
         assert result == content
 
@@ -228,7 +235,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_456",
             env=env,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert PERSISTED_OUTPUT_TAG in result
         assert "tc_456.txt" in result
@@ -247,7 +254,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_json",
             env=env,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
@@ -261,7 +268,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_789",
             env=None,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert PERSISTED_OUTPUT_TAG not in result
         assert "Truncated" in result
@@ -276,7 +283,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_fail",
             env=env,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert PERSISTED_OUTPUT_TAG not in result
         assert "Truncated" in result
@@ -290,7 +297,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_exc",
             env=env,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert "Truncated" in result
 
@@ -303,7 +310,7 @@ class TestMaybePersistToolResult:
             tool_name="read_file",
             tool_use_id="tc_rf",
             env=env,
-            threshold=float("inf"),
+            threshold=float("inf"), registry=_REGISTRY
         )
         assert result == content
         env.execute.assert_not_called()
@@ -314,17 +321,19 @@ class TestMaybePersistToolResult:
         env.execute.return_value = {"output": "", "returncode": 0}
         content = "x" * 60_000
 
+        # Sprint 53 — registry is passed directly, not patched at the
+        # module level. Use a MagicMock that reports 30_000 as the
+        # per-tool threshold so 60K content triggers persistence.
         mock_registry = MagicMock()
         mock_registry.get_max_result_size.return_value = 30_000
 
-        with patch("tools.registry.registry", mock_registry):
-            result = maybe_persist_tool_result(
-                content=content,
-                tool_name="terminal",
-                tool_use_id="tc_reg",
-                env=env,
-                threshold=None,
-            )
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_reg",
+            env=env,
+            threshold=None, registry=mock_registry,
+        )
         # Should have persisted since 60K > 30K
         assert PERSISTED_OUTPUT_TAG in result or "Truncated" in result
 
@@ -337,7 +346,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_uni",
             env=env,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert PERSISTED_OUTPUT_TAG in result
         # Preview should contain unicode
@@ -349,7 +358,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_empty",
             env=None,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert result == ""
 
@@ -360,7 +369,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_ws",
             env=None,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert result == content
 
@@ -373,7 +382,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="unique_id_abc",
             env=env,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert "unique_id_abc.txt" in result
 
@@ -387,7 +396,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_prev",
             env=env,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert "DISTINCTIVE_START_MARKER" in result
 
@@ -401,7 +410,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_termux",
             env=env,
-            threshold=30_000,
+            threshold=30_000, registry=_REGISTRY
         )
         assert "/data/data/com.termux/files/usr/tmp/hermes-results/tc_termux.txt" in result
         cmd = env.execute.call_args[0][0]
@@ -416,7 +425,7 @@ class TestMaybePersistToolResult:
             tool_name="terminal",
             tool_use_id="tc_zero",
             env=env,
-            threshold=0,
+            threshold=0, registry=_REGISTRY
         )
         # Any non-empty content with threshold=0 should be persisted
         assert PERSISTED_OUTPUT_TAG in result
@@ -430,7 +439,7 @@ class TestEnforceTurnBudget:
             {"role": "tool", "tool_call_id": "t1", "content": "small"},
             {"role": "tool", "tool_call_id": "t2", "content": "also small"},
         ]
-        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000), registry=_REGISTRY)
         assert result[0]["content"] == "small"
         assert result[1]["content"] == "also small"
 
@@ -442,7 +451,7 @@ class TestEnforceTurnBudget:
             {"role": "tool", "tool_call_id": "t2", "content": "b" * 130_000},
         ]
         # Total 210K > 200K budget
-        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000), registry=_REGISTRY)
         # The larger one (130K) should be persisted first
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
 
@@ -454,7 +463,7 @@ class TestEnforceTurnBudget:
              "content": f"{PERSISTED_OUTPUT_TAG}\nalready persisted\n{PERSISTED_OUTPUT_CLOSING_TAG}"},
             {"role": "tool", "tool_call_id": "t2", "content": "x" * 250_000},
         ]
-        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000), registry=_REGISTRY)
         # t1 should be untouched (already persisted)
         assert msgs[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
         # t2 should be persisted
@@ -469,7 +478,7 @@ class TestEnforceTurnBudget:
             {"role": "tool", "tool_call_id": f"t{i}", "content": "x" * 42_000}
             for i in range(6)
         ]
-        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000), registry=_REGISTRY)
         # At least some results should be persisted to get under 200K
         persisted_count = sum(
             1 for m in msgs if PERSISTED_OUTPUT_TAG in m["content"]
@@ -480,17 +489,17 @@ class TestEnforceTurnBudget:
         msgs = [
             {"role": "tool", "tool_call_id": "t1", "content": "x" * 250_000},
         ]
-        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000), registry=_REGISTRY)
         # Should be truncated (no sandbox available)
         assert "Truncated" in msgs[0]["content"] or PERSISTED_OUTPUT_TAG in msgs[0]["content"]
 
     def test_returns_same_list(self):
         msgs = [{"role": "tool", "tool_call_id": "t1", "content": "ok"}]
-        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000), registry=_REGISTRY)
         assert result is msgs
 
     def test_empty_messages(self):
-        result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
+        result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000), registry=_REGISTRY)
         assert result == []
 
 
@@ -500,18 +509,22 @@ class TestPerToolThresholds:
     """Verify registry wiring for per-tool thresholds."""
 
     def test_registry_has_get_max_result_size(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         assert hasattr(registry, "get_max_result_size")
 
     def test_default_threshold(self):
-        from tools.registry import registry
-        # Unknown tool should return the default
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         val = registry.get_max_result_size("nonexistent_tool_xyz")
         assert val == DEFAULT_RESULT_SIZE_CHARS
 
     def test_terminal_threshold(self):
-        from tools.registry import registry
-        # Trigger import of terminal_tool to register the tool
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         try:
             import tools.terminal_tool  # noqa: F401
             val = registry.get_max_result_size("terminal")
@@ -520,7 +533,9 @@ class TestPerToolThresholds:
             pytest.skip("terminal_tool not importable in test env")
 
     def test_read_file_result_size_cap(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("read_file")
@@ -530,7 +545,9 @@ class TestPerToolThresholds:
 
     def test_read_file_registry_cap_is_100k(self):
         """Regression test: read_file must have a 100_000 char registry cap (Layer 2 safety net)."""
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("read_file")
@@ -542,7 +559,9 @@ class TestPerToolThresholds:
             pytest.skip("file_tools not importable in test env")
 
     def test_search_files_threshold(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("search_files")

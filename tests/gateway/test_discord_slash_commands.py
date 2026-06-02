@@ -615,6 +615,12 @@ async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(ada
 import discord as _discord_mod  # noqa: E402 — mock or real, used below
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 class _FakeTextChannel:
     """A channel that is NOT a discord.Thread or discord.DMChannel."""
 

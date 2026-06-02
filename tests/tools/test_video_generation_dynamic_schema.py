@@ -144,8 +144,11 @@ class TestDynamicSchemaBuilder:
         assert "image_url is REQUIRED" in desc
 
     def test_builder_wired_into_registry(self):
-        from tools.registry import discover_builtin_tools, registry
+        from tools.registry import discover_builtin_tools
 
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         discover_builtin_tools()
         entry = registry._tools["video_generate"]
         assert entry.dynamic_schema_overrides is not None

@@ -9,7 +9,8 @@ from hermes_cli.models import _PROVIDER_MODELS, _PROVIDER_LABELS, _PROVIDER_ALIA
 from hermes_cli.model_normalize import normalize_model_for_provider, detect_vendor
 from agent.model_metadata import get_model_context_length
 from agent.models_dev import PROVIDER_TO_MODELS_DEV, list_agentic_models, _NOISE_PATTERNS
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
+
 
 
 # ── Provider Registry ──
@@ -198,7 +199,7 @@ class TestGeminiAgentInit:
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="test-key",
-                base_url="https://generativelanguage.googleapis.com/v1beta",
+                base_url="https://generativelanguage.googleapis.com/v1beta", get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
             assert agent.api_mode == "chat_completions"
             assert agent.provider == "gemini"
@@ -216,7 +217,7 @@ class TestGeminiAgentInit:
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="AIzaSy_REAL_KEY",
-                base_url="https://generativelanguage.googleapis.com/v1beta",
+                base_url="https://generativelanguage.googleapis.com/v1beta", get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
         assert mock_client.called
         mock_openai.assert_not_called()
@@ -234,7 +235,7 @@ class TestGeminiAgentInit:
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="AIzaSy_REAL_KEY",
-                base_url="https://proxy.example.com/v1",
+                base_url="https://proxy.example.com/v1", get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
         mock_openai.assert_called_once()
 
@@ -251,7 +252,7 @@ class TestGeminiAgentInit:
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="AIzaSy_REAL_KEY",
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai", get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
         mock_openai.assert_called_once()
 

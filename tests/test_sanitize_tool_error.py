@@ -12,6 +12,12 @@ from __future__ import annotations
 from model_tools import _sanitize_tool_error, _TOOL_ERROR_MAX_LEN
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 class TestRoleTagStripping:
     def test_strips_tool_call_tags(self):
         out = _sanitize_tool_error("bad <tool_call>injected</tool_call> happened")
@@ -112,9 +118,9 @@ class TestHandleFunctionCallIntegration:
     def test_exception_path_error_is_sanitized(self):
         import json
         from model_tools import handle_function_call
-        from tools.registry import registry as _registry
-
-        # Force a known tool to raise with a payload containing role tags.
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        _registry = _Sprint53_TR()
+        _Sprint53_RBT(_registry)
         def boom(_args, **_kwargs):
             raise RuntimeError("<tool_call>injected</tool_call> boom")
 
@@ -124,7 +130,7 @@ class TestHandleFunctionCallIntegration:
         original = _registry._tools[target].handler
         _registry._tools[target].handler = boom
         try:
-            result_str = handle_function_call(target, {})
+            result_str = handle_function_call(_registry, target, {})
         finally:
             _registry._tools[target].handler = original
 

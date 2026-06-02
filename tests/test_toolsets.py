@@ -14,6 +14,12 @@ from toolsets import (
 )
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 def _dummy_handler(args, **kwargs):
     return "{}"
 
@@ -28,11 +34,15 @@ def _make_schema(name: str, description: str = "test tool"):
 
 class TestGetToolset:
     def test_known_toolset(self):
-        ts = get_toolset("web")
+        ts = get_toolset("web", _REGISTRY)
         assert ts is not None
         assert "web_search" in ts["tools"]
 
-    def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
+    def test_merges_registry_tools_into_builtin_toolset(self):
+        # Sprint 53 — get_toolset reads merge data directly from the
+        # passed registry, not a global singleton. The built-in static
+        # TOOLSETS["web"] entry (web_search, web_extract) merges with
+        # the registry's per-toolset tool list.
         reg = ToolRegistry()
         reg.register(
             name="web_search_plus",
@@ -41,23 +51,21 @@ class TestGetToolset:
             handler=_dummy_handler,
         )
 
-        monkeypatch.setattr("tools.registry.registry", reg)
-
-        ts = get_toolset("web")
+        ts = get_toolset("web", reg)
         assert ts is not None
         assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
 
     def test_unknown_returns_none(self):
-        assert get_toolset("nonexistent") is None
+        assert get_toolset("nonexistent", _REGISTRY) is None
 
 
 class TestResolveToolset:
     def test_leaf_toolset(self):
-        tools = resolve_toolset("web")
+        tools = resolve_toolset("web", _REGISTRY)
         assert set(tools) == {"web_search", "web_extract"}
 
     def test_composite_toolset(self):
-        tools = resolve_toolset("debugging")
+        tools = resolve_toolset("debugging", _REGISTRY)
         assert "terminal" in tools
         assert "web_search" in tools
         assert "web_extract" in tools
@@ -67,7 +75,7 @@ class TestResolveToolset:
         TOOLSETS["_cycle_a"] = {"description": "test", "tools": ["t1"], "includes": ["_cycle_b"]}
         TOOLSETS["_cycle_b"] = {"description": "test", "tools": ["t2"], "includes": ["_cycle_a"]}
         try:
-            tools = resolve_toolset("_cycle_a")
+            tools = resolve_toolset("_cycle_a", _REGISTRY)
             # Should not infinite loop — cycle is detected
             assert "t1" in tools
             assert "t2" in tools
@@ -76,9 +84,9 @@ class TestResolveToolset:
             del TOOLSETS["_cycle_b"]
 
     def test_unknown_toolset_returns_empty(self):
-        assert resolve_toolset("nonexistent") == []
+        assert resolve_toolset("nonexistent", _REGISTRY) == []
 
-    def test_plugin_toolset_uses_registry_snapshot(self, monkeypatch):
+    def test_plugin_toolset_uses_registry_snapshot(self):
         reg = ToolRegistry()
         reg.register(
             name="plugin_b",
@@ -93,22 +101,21 @@ class TestResolveToolset:
             handler=_dummy_handler,
         )
 
-        monkeypatch.setattr("tools.registry.registry", reg)
 
-        assert resolve_toolset("plugin_example") == ["plugin_a", "plugin_b"]
+        assert resolve_toolset("plugin_example", reg) == ["plugin_a", "plugin_b"]
 
     def test_all_alias(self):
-        tools = resolve_toolset("all")
+        tools = resolve_toolset("all", _REGISTRY)
         assert len(tools) > 10  # Should resolve all tools from all toolsets
 
     def test_star_alias(self):
-        tools = resolve_toolset("*")
+        tools = resolve_toolset("*", _REGISTRY)
         assert len(tools) > 10
 
 
 class TestResolveMultipleToolsets:
     def test_combines_and_deduplicates(self):
-        tools = resolve_multiple_toolsets(["web", "terminal"])
+        tools = resolve_multiple_toolsets(["web", "terminal"], _REGISTRY)
         assert "web_search" in tools
         assert "web_extract" in tools
         assert "terminal" in tools
@@ -116,22 +123,22 @@ class TestResolveMultipleToolsets:
         assert len(tools) == len(set(tools))
 
     def test_empty_list(self):
-        assert resolve_multiple_toolsets([]) == []
+        assert resolve_multiple_toolsets([], _REGISTRY) == []
 
 
 class TestValidateToolset:
     def test_valid(self):
-        assert validate_toolset("web") is True
-        assert validate_toolset("terminal") is True
+        assert validate_toolset("web", _REGISTRY) is True
+        assert validate_toolset("terminal", _REGISTRY) is True
 
     def test_all_alias_valid(self):
-        assert validate_toolset("all") is True
-        assert validate_toolset("*") is True
+        assert validate_toolset("all", _REGISTRY) is True
+        assert validate_toolset("*", _REGISTRY) is True
 
     def test_invalid(self):
-        assert validate_toolset("nonexistent") is False
+        assert validate_toolset("nonexistent", _REGISTRY) is False
 
-    def test_mcp_alias_uses_live_registry(self, monkeypatch):
+    def test_mcp_alias_uses_live_registry(self):
         reg = ToolRegistry()
         reg.register(
             name="mcp_dynserver_ping",
@@ -141,27 +148,26 @@ class TestValidateToolset:
         )
         reg.register_toolset_alias("dynserver", "mcp-dynserver")
 
-        monkeypatch.setattr("tools.registry.registry", reg)
 
-        assert validate_toolset("dynserver") is True
-        assert validate_toolset("mcp-dynserver") is True
-        assert "mcp_dynserver_ping" in resolve_toolset("dynserver")
+        assert validate_toolset("dynserver", reg) is True
+        assert validate_toolset("mcp-dynserver", reg) is True
+        assert "mcp_dynserver_ping" in resolve_toolset("dynserver", reg)
 
 
 class TestGetToolsetInfo:
     def test_leaf(self):
-        info = get_toolset_info("web")
+        info = get_toolset_info("web", _REGISTRY)
         assert info["name"] == "web"
         assert info["is_composite"] is False
         assert info["tool_count"] == 2
 
     def test_composite(self):
-        info = get_toolset_info("debugging")
+        info = get_toolset_info("debugging", _REGISTRY)
         assert info["is_composite"] is True
         assert info["tool_count"] > len(info["direct_tools"])
 
     def test_unknown_returns_none(self):
-        assert get_toolset_info("nonexistent") is None
+        assert get_toolset_info("nonexistent", _REGISTRY) is None
 
 
 class TestCreateCustomToolset:
@@ -173,16 +179,16 @@ class TestCreateCustomToolset:
             includes=["terminal"],
         )
         try:
-            tools = resolve_toolset("_test_custom")
+            tools = resolve_toolset("_test_custom", _REGISTRY)
             assert "web_search" in tools
             assert "terminal" in tools
-            assert validate_toolset("_test_custom") is True
+            assert validate_toolset("_test_custom", _REGISTRY) is True
         finally:
             del TOOLSETS["_test_custom"]
 
 
 class TestRegistryOwnedToolsets:
-    def test_registry_membership_is_live(self, monkeypatch):
+    def test_registry_membership_is_live(self):
         reg = ToolRegistry()
         reg.register(
             name="test_live_toolset_tool",
@@ -191,11 +197,10 @@ class TestRegistryOwnedToolsets:
             handler=_dummy_handler,
         )
 
-        monkeypatch.setattr("tools.registry.registry", reg)
 
-        assert validate_toolset("test-live-toolset") is True
-        assert get_toolset("test-live-toolset")["tools"] == ["test_live_toolset_tool"]
-        assert resolve_toolset("test-live-toolset") == ["test_live_toolset_tool"]
+        assert validate_toolset("test-live-toolset", reg) is True
+        assert get_toolset("test-live-toolset", reg)["tools"] == ["test_live_toolset_tool"]
+        assert resolve_toolset("test-live-toolset", reg) == ["test_live_toolset_tool"]
 
 
 class TestToolsetConsistency:
@@ -232,7 +237,7 @@ class TestToolsetConsistency:
 
 
 class TestPluginToolsets:
-    def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):
+    def test_get_all_toolsets_includes_plugin_toolset(self):
         reg = ToolRegistry()
         reg.register(
             name="plugin_tool",
@@ -241,16 +246,15 @@ class TestPluginToolsets:
             handler=_dummy_handler,
         )
 
-        monkeypatch.setattr("tools.registry.registry", reg)
 
-        all_toolsets = get_all_toolsets()
+        all_toolsets = get_all_toolsets(reg)
         assert "plugin_bundle" in all_toolsets
         assert all_toolsets["plugin_bundle"]["tools"] == ["plugin_tool"]
 
 
 class TestDefaultPlatformWebSearchCoverage:
     def test_hermes_whatsapp_toolset_includes_web_search(self):
-        assert "web_search" in resolve_toolset("hermes-whatsapp")
+        assert "web_search" in resolve_toolset("hermes-whatsapp", _REGISTRY)
 
     def test_hermes_api_server_toolset_includes_web_search(self):
-        assert "web_search" in resolve_toolset("hermes-api-server")
+        assert "web_search" in resolve_toolset("hermes-api-server", _REGISTRY)

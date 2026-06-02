@@ -5,6 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 def _import_cli():
     import hermes_cli.config as config_mod
 

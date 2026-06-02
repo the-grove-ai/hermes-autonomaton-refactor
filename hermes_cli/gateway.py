@@ -3693,13 +3693,18 @@ def _all_platforms() -> list[dict]:
     # Populate the registry so plugin platforms are visible. Idempotent.
     # Bundled platform plugins (``kind: platform``) auto-load unconditionally,
     # so every shipped messaging channel appears in the setup menu by default.
-    # User-installed platform plugins under ~/.grove/plugins/ still require
-    # opt-in via ``plugins.enabled`` (untrusted code).
+    # Sprint 53 — pre-Dispatcher CLI introspection path; build an ad-hoc
+    # Dispatcher-style registry locally.
     try:
         from hermes_cli.plugins import discover_plugins
-        discover_plugins()
-    except Exception as e:
-        logger.debug("plugin discovery failed during platform enumeration: %s", e)
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _gw_reg = ToolRegistry()
+        register_builtin_tools(_gw_reg)
+        discover_plugins(registry=_gw_reg)
+    except Exception:
+        # plugin discovery failed during platform enumeration — proceed
+        # with the built-in platform list.
+        pass
 
     platforms = [dict(p) for p in _PLATFORMS]
 

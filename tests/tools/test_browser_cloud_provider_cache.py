@@ -17,6 +17,12 @@ import pytest
 import tools.browser_tool as browser_tool
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 @pytest.fixture(autouse=True)
 def _reset_resolver_state(monkeypatch):
     monkeypatch.setattr(browser_tool, "_cached_cloud_provider", None)

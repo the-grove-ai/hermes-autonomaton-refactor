@@ -26,6 +26,12 @@ import time
 import pytest
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 pytestmark = pytest.mark.skipif(
     not shutil.which("google-chrome") and not shutil.which("chromium"),
     reason="Chrome/Chromium not installed",

@@ -10,7 +10,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +26,7 @@ def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
         run_agent,
         "get_tool_definitions",
-        lambda **kwargs: [
+        lambda *args, **kwargs: [
             {
                 "type": "function",
                 "function": {
@@ -37,7 +37,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda *args, **kw: {})
 
 
 def _build_agent(monkeypatch):
@@ -51,7 +51,7 @@ def _build_agent(monkeypatch):
         quiet_mode=True,
         max_iterations=4,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
@@ -72,7 +72,7 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
         quiet_mode=True,
         max_iterations=4,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
@@ -211,7 +211,7 @@ def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
         quiet_mode=True,
         max_iterations=1,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     assert agent.api_mode == "codex_responses"
     assert agent.provider == "openai-codex"
@@ -228,7 +228,7 @@ def test_api_mode_normalizes_provider_case(monkeypatch):
         quiet_mode=True,
         max_iterations=1,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     assert agent.provider == "openai-codex"
     assert agent.api_mode == "codex_responses"
@@ -251,7 +251,7 @@ def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypat
         quiet_mode=True,
         max_iterations=1,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     assert agent.api_mode == "codex_responses"
     assert agent.provider == "openrouter"
@@ -268,7 +268,7 @@ def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
         quiet_mode=True,
         max_iterations=1,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     assert agent.provider == "copilot-acp"
     assert agent.api_mode == "chat_completions"
@@ -285,7 +285,7 @@ def test_copilot_gpt_5_mini_stays_on_chat_completions(monkeypatch):
         quiet_mode=True,
         max_iterations=1,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     assert agent.provider == "copilot"
     assert agent.api_mode == "chat_completions"
@@ -337,7 +337,7 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
         max_iterations=4,
         skip_context_files=True,
         skip_memory=True,
-        reasoning_config={"enabled": True, "effort": "minimal"},
+        reasoning_config={"enabled": True, "effort": "minimal"}, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
@@ -368,7 +368,7 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
             max_iterations=4,
             skip_context_files=True,
             skip_memory=True,
-            reasoning_config={"enabled": True, "effort": effort},
+            reasoning_config={"enabled": True, "effort": effort}, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent._cleanup_task_resources = lambda task_id: None
         agent._persist_session = lambda messages, history=None: None
@@ -597,7 +597,7 @@ def _build_xai_oauth_agent(monkeypatch):
         quiet_mode=True,
         max_iterations=4,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
@@ -1596,7 +1596,7 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
         quiet_mode=True,
         max_iterations=1,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     agent.logs_dir = tmp_path
 

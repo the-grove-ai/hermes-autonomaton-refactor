@@ -4,6 +4,12 @@ import importlib
 
 from model_tools import get_tool_definitions
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
 
 
@@ -22,7 +28,7 @@ class TestTerminalRequirements:
             "_get_env_config",
             lambda: {"env_type": "local"},
         )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "file"], quiet_mode=True)
+        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["terminal", "file"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
         assert "terminal" in names
         assert {"read_file", "write_file", "patch", "search_files"}.issubset(names)
@@ -44,7 +50,7 @@ class TestTerminalRequirements:
             "is_managed_tool_gateway_ready",
             lambda _vendor: True,
         )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
 
         assert "terminal" in names
@@ -62,7 +68,7 @@ class TestTerminalRequirements:
             "find_spec",
             lambda _name: object(),
         )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
 
         assert "terminal" in names
@@ -84,7 +90,7 @@ class TestTerminalRequirements:
             "find_spec",
             lambda _name: object(),
         )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
 
         assert "terminal" not in names
@@ -109,7 +115,7 @@ class TestTerminalRequirements:
             "find_spec",
             lambda _name: object(),
         )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
 
         assert "terminal" not in names

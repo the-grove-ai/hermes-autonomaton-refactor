@@ -3,9 +3,9 @@
 import importlib
 import unittest
 
-from tools.registry import registry
-
-# Trigger tool discovery so feishu tools get registered
+from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+registry = _Sprint53_TR()
+_Sprint53_RBT(registry)
 importlib.import_module("tools.feishu_doc_tool")
 importlib.import_module("tools.feishu_drive_tool")
 

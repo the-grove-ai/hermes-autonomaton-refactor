@@ -22,6 +22,12 @@ from hermes_cli.auth import (
 from hermes_cli.copilot_auth import _try_gh_cli_token
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # =============================================================================
 # Provider Registry tests
 # =============================================================================

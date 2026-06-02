@@ -65,7 +65,20 @@ class _FakeVideoProvider(VideoGenProvider):
 @pytest.fixture(autouse=True)
 def _reset_registry():
     video_gen_registry._reset_for_tests()
+    # Sprint 53 — wire a Dispatcher-style registry on the plugin
+    # manager so ``_ensure_plugins_discovered`` does not raise.
+    from hermes_cli.plugins import get_plugin_manager
+    from tools.registry import ToolRegistry, register_builtin_tools
+    mgr = get_plugin_manager()
+    _saved_reg = mgr._registry
+    _saved_disc = mgr._discovered
+    _reg = ToolRegistry()
+    register_builtin_tools(_reg)
+    mgr._registry = _reg
+    mgr._discovered = True
     yield
+    mgr._registry = _saved_reg
+    mgr._discovered = _saved_disc
     video_gen_registry._reset_for_tests()
 
 

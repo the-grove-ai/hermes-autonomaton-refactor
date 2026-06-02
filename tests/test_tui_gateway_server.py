@@ -352,7 +352,7 @@ def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
+        types.SimpleNamespace(discover_plugins=lambda registry=None: None),
     )
 
     assert server._load_enabled_toolsets() == ["web"]
@@ -367,15 +367,15 @@ def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
     discovered = {"ready": False}
     original_validate = toolsets.validate_toolset
 
-    def fake_validate(name):
-        return name == "plugin_demo" and discovered["ready"] or original_validate(name)
+    def fake_validate(name, registry):
+        return name == "plugin_demo" and discovered["ready"] or original_validate(name, registry)
 
     monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
         types.SimpleNamespace(
-            discover_plugins=lambda: discovered.update({"ready": True})
+            discover_plugins=lambda registry=None: discovered.update({"ready": True})
         ),
     )
 
@@ -387,7 +387,7 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
+        types.SimpleNamespace(discover_plugins=lambda registry=None: None),
     )
 
     import hermes_cli.config as config_mod
@@ -416,7 +416,7 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
+        types.SimpleNamespace(discover_plugins=lambda registry=None: None),
     )
 
     import hermes_cli.config as config_mod
@@ -434,7 +434,7 @@ def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, cap
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
+        types.SimpleNamespace(discover_plugins=lambda registry=None: None),
     )
 
     import hermes_cli.config as config_mod
@@ -479,7 +479,7 @@ def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, caps
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
+        types.SimpleNamespace(discover_plugins=lambda registry=None: None),
     )
 
     import hermes_cli.config as config_mod

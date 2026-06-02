@@ -6,7 +6,7 @@ from hermes_cli.timeouts import (
     get_provider_request_timeout,
     get_provider_stale_timeout,
 )
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _write_config(tmp_path, body: str) -> None:
@@ -177,7 +177,7 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        platform="cli",
+        platform="cli", get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     # Per-model override wins
     assert agent._resolved_api_call_timeout() == 42.0
@@ -206,7 +206,7 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        platform="cli",
+        platform="cli", get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     assert agent2._resolved_api_call_timeout() == 999.0
 
@@ -240,7 +240,7 @@ def test_resolved_api_call_stale_timeout_priority(monkeypatch, tmp_path):
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        platform="cli",
+        platform="cli", get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     assert agent._resolved_api_call_stale_timeout_base() == (1800.0, False)
 
@@ -265,7 +265,7 @@ def test_resolved_api_call_stale_timeout_priority(monkeypatch, tmp_path):
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        platform="cli",
+        platform="cli", get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     assert agent2._resolved_api_call_stale_timeout_base() == (999.0, False)
 
@@ -288,7 +288,7 @@ def test_default_non_stream_stale_timeout_auto_disables_for_local_endpoints(monk
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        platform="cli",
+        platform="cli", get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == float("inf")
@@ -309,7 +309,7 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        platform="cli",
+        platform="cli", get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == 300.0

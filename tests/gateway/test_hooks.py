@@ -9,6 +9,12 @@ import pytest
 from gateway.hooks import HookRegistry
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 def _create_hook(hooks_dir, hook_name, events, handler_code):
     """Helper to create a hook directory with HOOK.yaml and handler.py."""
     hook_dir = hooks_dir / hook_name

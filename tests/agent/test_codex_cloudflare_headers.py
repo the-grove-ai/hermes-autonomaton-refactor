@@ -30,7 +30,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ class TestPrimaryClientWiring:
                 model="gpt-5.4",
                 quiet_mode=True,
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "codex_cli_rs"
@@ -153,7 +153,7 @@ class TestPrimaryClientWiring:
                 model="anthropic/claude-sonnet-4.6",
                 quiet_mode=True,
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
             # Simulate rotation into a Codex credential
             agent._client_kwargs["api_key"] = token
@@ -179,7 +179,7 @@ class TestPrimaryClientWiring:
                 model="gpt-5.4",
                 quiet_mode=True,
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
             # Sanity: headers are set initially
             assert "originator" in (agent._client_kwargs.get("default_headers") or {})
@@ -201,7 +201,7 @@ class TestPrimaryClientWiring:
                 model="anthropic/claude-sonnet-4.6",
                 quiet_mode=True,
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") != "codex_cli_rs"

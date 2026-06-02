@@ -111,6 +111,13 @@ def test_show_banner_does_not_print_skills():
     cli_obj = _make_real_cli(compact=False)
     cli_obj.preloaded_skills = ["hermes-agent-dev", "github-auth"]
     cli_obj.console = MagicMock()
+    # Sprint 53 — the banner reads ``self.agent.registry`` so attach a
+    # stub agent with a Dispatcher-style registry.
+    from types import SimpleNamespace
+    from tools.registry import ToolRegistry, register_builtin_tools
+    _reg = ToolRegistry()
+    register_builtin_tools(_reg)
+    cli_obj.agent = SimpleNamespace(registry=_reg, enabled_toolsets=None)
 
     with patch("cli.build_welcome_banner") as mock_banner, patch(
         "shutil.get_terminal_size", return_value=os.terminal_size((120, 40))

@@ -17,6 +17,12 @@ import threading
 from unittest.mock import patch
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 def _make_agent_stub(agent_cls):
     """Create a minimal AIAgent-like object with just enough state for _spawn_background_review."""
     agent = object.__new__(agent_cls)
@@ -144,7 +150,7 @@ def test_background_review_agent_tools_are_limited():
     """
     from toolsets import resolve_multiple_toolsets
 
-    expected_tools = set(resolve_multiple_toolsets(["memory", "skills"]))
+    expected_tools = set(resolve_multiple_toolsets(["memory", "skills"], _REGISTRY))
 
     assert "memory" in expected_tools
     assert "skill_manage" in expected_tools

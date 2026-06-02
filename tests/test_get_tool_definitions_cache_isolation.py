@@ -21,6 +21,12 @@ import pytest
 import model_tools
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     """Each test starts with an empty quiet_mode cache."""
@@ -34,7 +40,7 @@ class TestQuietModeCacheIsolation:
     def test_first_uncached_call_returns_fresh_list(self):
         """The first quiet_mode call must not alias the cached object \u2014
         otherwise a caller mutating the returned list mutates the cache."""
-        first = model_tools.get_tool_definitions(quiet_mode=True)
+        first = model_tools.get_tool_definitions(_REGISTRY, quiet_mode=True)
         assert isinstance(first, list)
         # Find the cached value to compare identity.
         assert len(model_tools._tool_defs_cache) == 1
@@ -46,8 +52,8 @@ class TestQuietModeCacheIsolation:
 
     def test_cache_hit_returns_fresh_list(self):
         """The cache-hit path already returned a copy pre-fix; pin it."""
-        first = model_tools.get_tool_definitions(quiet_mode=True)
-        second = model_tools.get_tool_definitions(quiet_mode=True)
+        first = model_tools.get_tool_definitions(_REGISTRY, quiet_mode=True)
+        second = model_tools.get_tool_definitions(_REGISTRY, quiet_mode=True)
         assert first is not second
         cached = next(iter(model_tools._tool_defs_cache.values()))
         assert second is not cached
@@ -55,14 +61,14 @@ class TestQuietModeCacheIsolation:
     def test_caller_mutation_does_not_poison_cache(self):
         """Simulate run_agent appending LCM tool schemas to the returned
         list. A second call must NOT see those appended entries."""
-        first = model_tools.get_tool_definitions(quiet_mode=True)
+        first = model_tools.get_tool_definitions(_REGISTRY, quiet_mode=True)
         baseline_len = len(first)
         # Caller mutates the returned list (this is what run_agent does
         # when it injects memory + context-engine tool schemas).
         first.append({"type": "function", "function": {"name": "lcm_grep"}})
         first.append({"type": "function", "function": {"name": "lcm_expand"}})
 
-        second = model_tools.get_tool_definitions(quiet_mode=True)
+        second = model_tools.get_tool_definitions(_REGISTRY, quiet_mode=True)
         # Length must match the original \u2014 cache pollution would make
         # second 2 entries longer.
         assert len(second) == baseline_len, (
@@ -77,11 +83,11 @@ class TestQuietModeCacheIsolation:
     def test_repeated_caller_mutation_does_not_accumulate(self):
         """The original Gateway symptom: every agent init in a long-lived
         process appends LCM schemas, accumulating duplicates over time."""
-        baseline = len(model_tools.get_tool_definitions(quiet_mode=True))
+        baseline = len(model_tools.get_tool_definitions(_REGISTRY, quiet_mode=True))
         for _ in range(5):
-            tools = model_tools.get_tool_definitions(quiet_mode=True)
+            tools = model_tools.get_tool_definitions(_REGISTRY, quiet_mode=True)
             tools.append({"type": "function", "function": {"name": "lcm_grep"}})
-        final = model_tools.get_tool_definitions(quiet_mode=True)
+        final = model_tools.get_tool_definitions(_REGISTRY, quiet_mode=True)
         assert len(final) == baseline, (
             f"Cache accumulated mutations across {5} agent inits: "
             f"baseline={baseline}, final={len(final)}."
@@ -90,5 +96,5 @@ class TestQuietModeCacheIsolation:
     def test_non_quiet_mode_does_not_use_cache(self):
         """Sanity: quiet_mode=False (TUI path) skips the cache entirely \u2014
         explains why the bug only hit Gateway."""
-        model_tools.get_tool_definitions(quiet_mode=False)
+        model_tools.get_tool_definitions(_REGISTRY, quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0

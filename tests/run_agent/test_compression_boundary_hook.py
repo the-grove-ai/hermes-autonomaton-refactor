@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 class TestCompressionBoundaryHook:
@@ -32,7 +32,7 @@ class TestCompressionBoundaryHook:
                 quiet_mode=True,
                 session_id="original-session",
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
 
     def test_on_session_start_called_with_compression_boundary(self):
@@ -99,7 +99,7 @@ class TestCompressionBoundaryHook:
                 quiet_mode=True,
                 session_id="original-session",
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
 
         compressor = MagicMock()

@@ -14,7 +14,7 @@ import pytest
 
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 @pytest.fixture(autouse=True)
@@ -270,7 +270,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=lambda *_a, **_k: ([])
         )
 
     assert agent._aux_compression_context_length_config == 1_000_000

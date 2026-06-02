@@ -15,6 +15,12 @@ import sys
 from pathlib import Path
 import pytest
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # Ensure repo root is importable
 _repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
@@ -37,8 +43,7 @@ class TestToolResolution:
     def test_terminal_and_file_toolsets_resolve_all_tools(self):
         """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(
-            enabled_toolsets=["terminal", "file"],
+        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["terminal", "file"],
             quiet_mode=True,
         )
         names = {t["function"]["name"] for t in tools}
@@ -48,8 +53,7 @@ class TestToolResolution:
     def test_terminal_tool_present(self):
         """The terminal tool must be present (not silently dropped)."""
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(
-            enabled_toolsets=["terminal", "file"],
+        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["terminal", "file"],
             quiet_mode=True,
         )
         names = [t["function"]["name"] for t in tools]

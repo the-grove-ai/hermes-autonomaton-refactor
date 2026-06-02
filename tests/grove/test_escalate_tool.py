@@ -18,12 +18,20 @@ import pytest
 import tools.escalate_tool  # noqa: F401
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # ── Tool registration + schema ────────────────────────────────────────────
 
 
 class TestEscalateToolRegistration:
     def test_escalate_is_registered(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         assert "escalate" in registry.get_all_tool_names()
 
     def test_schema_declares_three_required_params(self):

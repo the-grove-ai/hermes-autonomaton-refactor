@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ class TestFlushDeduplication:
                 quiet_mode=True,
                 session_id="test-session-860",
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
         # Simulate lazy session creation (normally done by run_conversation)
         agent._ensure_db_session()
@@ -282,7 +282,7 @@ class TestFlushIdxInit:
                 model="test/model",
                 quiet_mode=True,
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
         assert agent._last_flushed_db_idx == 0
 
@@ -297,7 +297,7 @@ class TestFlushIdxInit:
                 model="test/model",
                 quiet_mode=True,
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
             )
         messages = [{"role": "user", "content": "test"}]
         agent._flush_messages_to_session_db(messages, [])

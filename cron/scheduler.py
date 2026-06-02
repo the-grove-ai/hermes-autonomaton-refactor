@@ -175,8 +175,14 @@ def _plugin_cron_env_var(platform_name: str) -> str:
     support without editing this module.
     """
     try:
+        # Sprint 53 — pre-Dispatcher cron introspection path; build an
+        # ad-hoc Dispatcher-style registry locally so
+        # ``discover_plugins`` does not raise.
         from hermes_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _cron_reg = ToolRegistry()
+        register_builtin_tools(_cron_reg)
+        discover_plugins(registry=_cron_reg)
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name.lower())
         if entry and entry.cron_deliver_env_var:
@@ -246,8 +252,13 @@ def _iter_home_target_platforms():
     for name in _HOME_TARGET_ENV_VARS:
         yield name
     try:
+        # Sprint 53 — pre-Dispatcher cron introspection path; build an
+        # ad-hoc Dispatcher-style registry locally.
         from hermes_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
+        from tools.registry import ToolRegistry, register_builtin_tools
+        _cron_reg = ToolRegistry()
+        register_builtin_tools(_cron_reg)
+        discover_plugins(registry=_cron_reg)
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             if entry.cron_deliver_env_var and entry.name not in _HOME_TARGET_ENV_VARS:

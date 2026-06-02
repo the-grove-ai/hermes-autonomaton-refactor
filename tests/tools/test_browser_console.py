@@ -134,7 +134,9 @@ class TestBrowserConsoleToolsetWiring:
         assert "browser_console" in _LEGACY_TOOLSET_MAP["browser_tools"]
 
     def test_in_registry(self):
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         from tools import browser_tool  # noqa: F401
         assert "browser_console" in registry._tools
 

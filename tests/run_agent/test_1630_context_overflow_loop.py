@@ -11,7 +11,7 @@ Verifies that:
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ class TestGeneric400Heuristic:
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=lambda *_a, **_k: ([])
             )
             a.client = MagicMock()
             a._composed_system_prompt = "You are helpful."

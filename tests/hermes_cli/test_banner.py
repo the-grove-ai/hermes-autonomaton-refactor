@@ -9,6 +9,12 @@ import model_tools
 import tools.mcp_tool
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 def test_display_toolset_name_strips_legacy_suffix():
     assert banner._display_toolset_name("homeassistant_tools") == "homeassistant"
     assert banner._display_toolset_name("honcho_tools") == "honcho"
@@ -59,7 +65,7 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
                 "web_search": "web_tools",
                 "read_file": "file",
             }.get(name),
-        )
+         registry=_REGISTRY)
 
     output = console.export_text()
     assert "homeassistant:" in output
@@ -95,7 +101,7 @@ def test_build_welcome_banner_title_is_hyperlinked_to_release():
             session_id="abc123",
             tools=[{"function": {"name": "read_file"}}],
             get_toolset_for_tool=lambda n: "file",
-        )
+         registry=_REGISTRY)
 
     raw = buf.getvalue()
     # The existing version label must still be present in the title
@@ -128,7 +134,7 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
             session_id="abc123",
             tools=[{"function": {"name": "read_file"}}],
             get_toolset_for_tool=lambda n: "file",
-        )
+         registry=_REGISTRY)
 
     raw = buf.getvalue()
     assert "Hermes Agent v" in raw, "Version label missing from title"

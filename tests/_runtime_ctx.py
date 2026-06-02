@@ -66,3 +66,73 @@ class _LiveSubstrateRuntimeContext(RuntimeContext):
 
 
 MOCK_RUNTIME_CTX: RuntimeContext = _LiveSubstrateRuntimeContext()
+
+
+# Sprint 53 — capability provider callback for tests that construct
+# ``AIAgent`` directly (bypassing the Dispatcher). The Agent requires
+# ``get_available_tools`` to be supplied; production callers route via
+# ``Dispatcher(agent_kwargs=...).agent``. Tests use this helper which
+# constructs an ad-hoc ``ToolRegistry`` once and returns the standard
+# filtered tool list shape.
+def _mock_capability_provider(
+    enabled_toolsets=None, disabled_toolsets=None, quiet_mode=True,
+):
+    """Return the same filtered tool list a Dispatcher would supply."""
+    from tools.registry import ToolRegistry, register_builtin_tools
+    global _mock_capability_provider_registry
+    try:
+        registry = _mock_capability_provider_registry
+    except NameError:
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        _mock_capability_provider_registry = registry
+    from model_tools import get_tool_definitions
+    return get_tool_definitions(
+        registry,
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
+        quiet_mode=quiet_mode,
+    )
+
+
+MOCK_CAPABILITY_PROVIDER = _mock_capability_provider
+
+
+def wire_mock_dispatcher(agent):
+    """Attach a stub ``_dispatcher_singleton`` with the test registry
+    AND a working ``dispatch_turn`` that drives the Agent's generator.
+
+    Sprint 53 — Agent dispatch paths read the registry through
+    ``self._dispatcher_singleton.registry`` and ``run_conversation``
+    routes through ``self._dispatcher_singleton.dispatch_turn``. Tests
+    that construct ``AIAgent`` directly use this helper to install a
+    minimal back-reference object that satisfies both contracts.
+
+    Returns the agent for convenient chaining.
+    """
+    from types import SimpleNamespace
+    from tools.registry import ToolRegistry, register_builtin_tools
+    global _mock_capability_provider_registry
+    try:
+        registry = _mock_capability_provider_registry
+    except NameError:
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        _mock_capability_provider_registry = registry
+
+    # Lazy import — avoid Dispatcher import time at module load.
+    from grove.dispatcher import Dispatcher
+    from grove.sovereign_prompt_handlers import silent_allow_handler
+
+    # Build the smallest Dispatcher object that can drive the Agent's
+    # generator. Construct without ``agent_kwargs`` so it doesn't try
+    # to build a fresh Agent — we already have one. Forward the
+    # Agent's sovereign_prompt_handler when set (tests inject
+    # ``silent_allow_handler`` to keep zone classification halts from
+    # blocking deterministic runs).
+    handler = getattr(agent, "_sovereign_prompt_handler", None) or silent_allow_handler
+    disp = Dispatcher(sovereign_prompt_handler=handler)
+    disp.registry = registry
+    disp.agent = agent
+    agent._dispatcher_singleton = disp
+    return agent

@@ -723,10 +723,10 @@ class TestDiscoverAndRegister:
                 _discover_and_register_server("myserver", {"command": "test"}, registry=mock_registry)
             )
 
-            assert validate_toolset("myserver") is True
-            assert validate_toolset("mcp-myserver") is True
-            assert "mcp_myserver_ping" in resolve_toolset("myserver")
-            assert "mcp_myserver_ping" in resolve_toolset("mcp-myserver")
+            assert validate_toolset("myserver", mock_registry) is True
+            assert validate_toolset("mcp-myserver", mock_registry) is True
+            assert "mcp_myserver_ping" in resolve_toolset("myserver", mock_registry)
+            assert "mcp_myserver_ping" in resolve_toolset("mcp-myserver", mock_registry)
 
         _servers.pop("myserver", None)
 
@@ -1018,10 +1018,10 @@ class TestToolsetInjection:
             result = discover_mcp_tools(registry=mock_registry)
 
             assert "mcp_fs_list_files" in result
-            assert validate_toolset("fs") is True
-            assert validate_toolset("mcp-fs") is True
-            assert "mcp_fs_list_files" in resolve_toolset("fs")
-            assert "mcp_fs_list_files" in resolve_toolset("mcp-fs")
+            assert validate_toolset("fs", mock_registry) is True
+            assert validate_toolset("mcp-fs", mock_registry) is True
+            assert "mcp_fs_list_files" in resolve_toolset("fs", mock_registry)
+            assert "mcp_fs_list_files" in resolve_toolset("mcp-fs", mock_registry)
 
     def test_server_toolset_skips_builtin_collision(self):
         """MCP raw aliases never overwrite a built-in toolset name."""
@@ -1057,9 +1057,9 @@ class TestToolsetInjection:
             discover_mcp_tools(registry=mock_registry)
 
             assert fake_toolsets["terminal"]["description"] == "Terminal tools"
-            assert "mcp_terminal_run" not in resolve_toolset("terminal")
-            assert validate_toolset("mcp-terminal") is True
-            assert "mcp_terminal_run" in resolve_toolset("mcp-terminal")
+            assert "mcp_terminal_run" not in resolve_toolset("terminal", mock_registry)
+            assert validate_toolset("mcp-terminal", mock_registry) is True
+            assert "mcp_terminal_run" in resolve_toolset("mcp-terminal", mock_registry)
 
     def test_server_connection_failure_skipped(self):
         """If one server fails to connect, others still proceed."""
@@ -1214,7 +1214,9 @@ class TestShutdown:
         """shutdown_mcp_servers removes MCP tools and their raw alias."""
         import tools.mcp_tool as mcp_mod
         from tools.mcp_tool import MCPServerTask, shutdown_mcp_servers, _servers
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         from toolsets import resolve_toolset, validate_toolset
 
         _servers.clear()
@@ -1239,15 +1241,15 @@ class TestShutdown:
 
         mcp_mod._ensure_mcp_loop()
         try:
-            assert validate_toolset("test") is True
-            assert "mcp_test_ping" in resolve_toolset("test")
+            assert validate_toolset("test", registry) is True
+            assert "mcp_test_ping" in resolve_toolset("test", registry)
             shutdown_mcp_servers()
         finally:
             mcp_mod._mcp_loop = None
             mcp_mod._mcp_thread = None
 
         assert "mcp_test_ping" not in registry.get_all_tool_names()
-        assert validate_toolset("test") is False
+        assert validate_toolset("test", registry) is False
 
     def test_shutdown_handles_errors(self):
         """shutdown_mcp_servers handles errors during close gracefully."""
@@ -2258,6 +2260,12 @@ from tools.mcp_tool import (
     _safe_numeric,
 )
 
+
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
 
 # ---------------------------------------------------------------------------
 # Helpers for sampling tests
@@ -3676,9 +3684,8 @@ class TestSanitizeMcpNameComponent:
         )
         reg.register_toolset_alias("ai.exa/exa", "mcp-ai.exa/exa")
 
-        with patch("tools.registry.registry", reg):
-            assert validate_toolset("ai.exa/exa") is True
-            assert "mcp_ai_exa_exa_search" in resolve_toolset("ai.exa/exa")
+        assert validate_toolset("ai.exa/exa", reg) is True
+        assert "mcp_ai_exa_exa_search" in resolve_toolset("ai.exa/exa", reg)
 
 
 # ---------------------------------------------------------------------------

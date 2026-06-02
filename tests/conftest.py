@@ -37,18 +37,32 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-# ── Sprint 53 transitional singleton bootstrap ─────────────────────────────
-# tools/registry.py no longer auto-populates the module-level ``registry``
-# singleton (a tool module is often the first importer; the registry's
-# auto-populate would race the partial module load).  Production paths
-# bootstrap it via ``model_tools.py``.  Tests bootstrap it here so that
-# legacy tests still expecting a populated singleton see one.  Idempotent.
-def _bootstrap_tool_singleton() -> None:
-    from tools.registry import register_builtin_tools, registry
-    register_builtin_tools(registry)
+# ── Sprint 53 — Dispatcher-owned tool registry test fixture ────────────────
+# Production paths construct a fresh ToolRegistry per Dispatcher and
+# populate it explicitly via ``register_builtin_tools``. Tests do the
+# same via the ``tool_registry`` fixture below.  The module-level
+# singleton at ``tools.registry.registry`` is orphaned (Phase 2 deletes
+# it) and is no longer populated from this conftest. Legacy tests that
+# reach for ``from tools.registry import registry`` see an empty
+# singleton and must migrate to the fixture.
 
 
-_bootstrap_tool_singleton()
+@pytest.fixture
+def tool_registry():
+    """Dispatcher-style ToolRegistry pre-populated with built-in tools.
+
+    Sprint 53 — replaces direct singleton imports in tests. Hand the
+    instance to anything that previously consumed the module-level
+    ``tools.registry.registry`` global:
+
+        from tools.registry import ToolRegistry  # type alias for hints
+        def test_x(tool_registry: ToolRegistry):
+            assert tool_registry.get_entry("read_file") is not None
+    """
+    from tools.registry import ToolRegistry, register_builtin_tools
+    reg = ToolRegistry()
+    register_builtin_tools(reg)
+    return reg
 
 
 # ── Credential env-var filter ──────────────────────────────────────────────

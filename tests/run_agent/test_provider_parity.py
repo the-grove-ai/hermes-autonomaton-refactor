@@ -19,7 +19,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -47,8 +47,10 @@ class _FakeOpenAI:
 
 
 def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1", model=None):
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
-    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+    # Sprint 53 — get_tool_definitions on the run_agent module is no
+    # longer reached; the Agent reads its filtered tool list via the
+    # ``get_available_tools`` callback, so the stub goes there.
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda *args, **kw: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
     kwargs = dict(
         api_key="test-key",
@@ -64,10 +66,11 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
         kwargs["model"] = model
     elif provider == "nous":
         kwargs["model"] = "gpt-5"
-    base_url="https://openrouter.ai/api/v1",
-    api_key="test-key",
-    base_url="https://openrouter.ai/api/v1",
-    return AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, **kwargs)
+    return AIAgent(
+        runtime_ctx=MOCK_RUNTIME_CTX,
+        **kwargs,
+        get_available_tools=lambda *_a, **_k: _tool_defs("web_search", "terminal"),
+    )
 
 
 # ── _build_api_kwargs tests ─────────────────────────────────────────────────

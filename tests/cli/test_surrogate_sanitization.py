@@ -15,7 +15,7 @@ from run_agent import (
     _sanitize_structure_surrogates,
     _SURROGATE_RE,
 )
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 class TestSanitizeSurrogates:
@@ -321,7 +321,7 @@ class TestRunConversationSurrogateSanitization:
         mock_stream.return_value = mock_response
         mock_api.return_value = mock_response
 
-        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, model="test/model", api_mode="chat_completions", api_key="test-key", base_url="http://localhost:1234/v1", quiet_mode=True, skip_memory=True, skip_context_files=True)
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, model="test/model", api_mode="chat_completions", api_key="test-key", base_url="http://localhost:1234/v1", quiet_mode=True, skip_memory=True, skip_context_files=True, get_available_tools=MOCK_CAPABILITY_PROVIDER)
         agent.client = MagicMock()
 
         # Pass a message with surrogates

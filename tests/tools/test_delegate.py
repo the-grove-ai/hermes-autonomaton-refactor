@@ -112,7 +112,9 @@ class TestDelegateRequirements(unittest.TestCase):
         """Registry.get_definitions() must apply dynamic_schema_overrides so
         the model API call sees current values, not the static import-time text.
         """
-        from tools.registry import registry
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         defs = registry.get_definitions({"delegate_task"})
         self.assertEqual(len(defs), 1)
         fn = defs[0]["function"]

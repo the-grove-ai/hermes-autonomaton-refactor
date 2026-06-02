@@ -7,7 +7,7 @@ faster on flaky primaries instead of burning ~3x180s on the same stall.
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _make_agent(api_max_retries=None):
@@ -26,7 +26,7 @@ def _make_agent(api_max_retries=None):
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
 
 

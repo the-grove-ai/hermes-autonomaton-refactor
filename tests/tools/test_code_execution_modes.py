@@ -43,6 +43,12 @@ from tools.code_execution_tool import (
 )
 
 
+
+# Sprint 53 — Dispatcher-style registry for tests in this file.
+from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+_REGISTRY = _Sprint53_TR()
+_Sprint53_RBT(_REGISTRY)
+
 @contextmanager
 def _mock_mode(mode):
     """Context manager that pins code_execution.mode to the given value."""
@@ -51,8 +57,12 @@ def _mock_mode(mode):
         yield
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
-    """Minimal mock dispatcher reused across tests."""
+def _mock_handle_function_call(registry, function_name, function_args, task_id=None, user_task=None, **_kw):
+    """Minimal mock dispatcher reused across tests.
+
+    Sprint 53 — accepts but ignores the leading registry arg that
+    ``model_tools.handle_function_call`` now requires.
+    """
     if function_name == "terminal":
         return json.dumps({"output": "mock", "exit_code": 0})
     if function_name == "read_file":

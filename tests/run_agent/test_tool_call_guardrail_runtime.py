@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER, wire_mock_dispatcher
 
 
 
@@ -100,7 +100,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
             # deterministic if mock tool surface incidentally triggers
             # an Andon halt. These tests verify guardrail behavior, not
             # Andon behavior.
-            sovereign_prompt_handler=silent_allow_handler,
+            sovereign_prompt_handler=silent_allow_handler, get_available_tools=lambda *_a, **_k: (_make_tool_defs(*tool_names))
         )
     agent.client = MagicMock()
     agent._composed_system_prompt = "You are helpful."
@@ -108,6 +108,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
     agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
+    wire_mock_dispatcher(agent)
     return agent
 
 
@@ -221,7 +222,7 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     messages = []
     executed = []
 
-    def fake_handle(name, args, task_id, **kwargs):
+    def fake_handle(registry, name, args, task_id, **kwargs):
         executed.append((name, args, kwargs["tool_call_id"]))
         return json.dumps({"ok": args["query"]})
 

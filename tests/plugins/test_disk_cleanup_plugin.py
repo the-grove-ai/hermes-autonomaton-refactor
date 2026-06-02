@@ -20,6 +20,12 @@ from pathlib import Path
 import pytest
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
     """Isolate GROVE_HOME for each test.
@@ -376,7 +382,7 @@ class TestBundledDiscovery:
         """Bundled plugins are discovered but NOT loaded without opt-in."""
         from hermes_cli import plugins as pmod
         mgr = pmod.PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
         # Discovered — appears in the registry
         assert "disk-cleanup" in mgr._plugins
         loaded = mgr._plugins["disk-cleanup"]
@@ -390,7 +396,7 @@ class TestBundledDiscovery:
         self._write_enabled_config(_isolate_env, ["disk-cleanup"])
         from hermes_cli import plugins as pmod
         mgr = pmod.PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
         loaded = mgr._plugins["disk-cleanup"]
         assert loaded.enabled
         assert "post_tool_call" in loaded.hooks_registered
@@ -409,7 +415,7 @@ class TestBundledDiscovery:
         }))
         from hermes_cli import plugins as pmod
         mgr = pmod.PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
         loaded = mgr._plugins["disk-cleanup"]
         assert not loaded.enabled
         assert loaded.error == "disabled via config"
@@ -422,6 +428,6 @@ class TestBundledDiscovery:
         )
         from hermes_cli import plugins as pmod
         mgr = pmod.PluginManager()
-        mgr.discover_and_load()
+        mgr.discover_and_load(registry=_REGISTRY)
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins

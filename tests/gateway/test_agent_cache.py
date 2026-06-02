@@ -15,7 +15,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _make_runner():
@@ -270,15 +270,16 @@ class TestExtractCacheBustingConfig:
             assert out[f"{section}.{key}"] is None
         assert "tools.registry_generation" in out
 
-    def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
+    def test_extract_includes_live_tool_registry_generation(self):
+        """Sprint 53 — the module-level singleton's _generation no longer
+        participates in cache busting; per-session Dispatchers own
+        their own registries and track _generation locally. The field
+        is preserved as None for back-compat."""
         from gateway.run import GatewayRunner
-        from tools.registry import registry
-
-        monkeypatch.setattr(registry, "_generation", 12345)
 
         out = GatewayRunner._extract_cache_busting_config({})
 
-        assert out["tools.registry_generation"] == 12345
+        assert out["tools.registry_generation"] is None
 
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the
@@ -328,7 +329,7 @@ class TestAgentCacheLifecycle:
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
+            skip_memory=True, platform="telegram", get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         with runner._agent_cache_lock:
             runner._agent_cache[session_key] = (agent1, sig)
@@ -355,7 +356,7 @@ class TestAgentCacheLifecycle:
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
+            skip_memory=True, platform="telegram", get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         with runner._agent_cache_lock:
             runner._agent_cache[session_key] = (agent1, old_sig)
@@ -380,7 +381,7 @@ class TestAgentCacheLifecycle:
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         with runner._agent_cache_lock:
             runner._agent_cache[session_key] = (agent, "sig123")
@@ -413,7 +414,7 @@ class TestAgentCacheLifecycle:
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
             skip_memory=True,
-            reasoning_config={"enabled": True, "effort": "medium"},
+            reasoning_config={"enabled": True, "effort": "medium"}, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
 
         # Simulate per-message reasoning update
@@ -436,7 +437,7 @@ class TestAgentCacheLifecycle:
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
+            skip_memory=True, platform="telegram", get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
 
         # Build system prompt (simulates first run_conversation)
@@ -456,7 +457,7 @@ class TestAgentCacheLifecycle:
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
 
         # Set callbacks like the gateway does per-message
@@ -895,7 +896,7 @@ class TestAgentCacheSpilloverLive:
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
-            platform="telegram",
+            platform="telegram", get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
 
     def test_fill_to_cap_then_spillover(self, monkeypatch):
@@ -1044,7 +1045,7 @@ class TestAgentCacheIdleResume:
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
-            session_id="idle-resume-test-session",
+            session_id="idle-resume-test-session", get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
 
         # Spy on process_registry.kill_all — it MUST NOT be called.
@@ -1078,7 +1079,7 @@ class TestAgentCacheIdleResume:
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
-            session_id="idle-resume-test-2",
+            session_id="idle-resume-test-2", get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
 
         vm_calls: list = []
@@ -1115,7 +1116,7 @@ class TestAgentCacheIdleResume:
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
+            skip_context_files=True, skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         # Clients are lazy-built; force one to exist so we can verify close.
         assert agent.client is not None  # __init__ builds it
@@ -1143,7 +1144,7 @@ class TestAgentCacheIdleResume:
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
-            session_id="soft-session",
+            session_id="soft-session", get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         agent_b = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
             api_mode="chat_completions",
@@ -1151,7 +1152,7 @@ class TestAgentCacheIdleResume:
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
-            session_id="hard-session",
+            session_id="hard-session", get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
 
         vm_calls: list = []
@@ -1193,7 +1194,7 @@ class TestAgentCacheIdleResume:
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
-            session_id=SESSION_ID,
+            session_id=SESSION_ID, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
         old._last_activity_ts = 0.0  # force idle
         runner._agent_cache["sKey"] = (old, "sig")
@@ -1216,7 +1217,7 @@ class TestAgentCacheIdleResume:
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
-            session_id=SESSION_ID,
+            session_id=SESSION_ID, get_available_tools=MOCK_CAPABILITY_PROVIDER
         )
 
         # Same session_id means same task_id routed to tools.  The new

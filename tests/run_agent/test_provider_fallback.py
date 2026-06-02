@@ -8,7 +8,7 @@ advancement through multiple providers.
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _make_agent(fallback_model=None):
@@ -25,7 +25,7 @@ def _make_agent(fallback_model=None):
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            fallback_model=fallback_model,
+            fallback_model=fallback_model, get_available_tools=lambda *_a, **_k: ([])
         )
         agent.client = MagicMock()
         return agent

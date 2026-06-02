@@ -964,7 +964,11 @@ class TestTelegramMenuCommands:
         )
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
 
-        with patch.object(plugins_mod, "_plugin_manager", None):
+        # Sprint 53 — supply a Dispatcher-style registry so the lazy
+        # discovery in _ensure_plugins_discovered does not raise.
+        _fresh_mgr = plugins_mod.PluginManager()
+        _fresh_mgr._registry = _REGISTRY
+        with patch.object(plugins_mod, "_plugin_manager", _fresh_mgr):
             menu, _ = telegram_menu_commands(max_commands=100)
 
         menu_names = {name for name, _ in menu}
@@ -1388,6 +1392,12 @@ class TestDiscordSkillCommands:
 
 from hermes_cli.commands import discord_skill_commands_by_category  # noqa: E402
 
+
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
 
 class TestDiscordSkillCommandsByCategory:
     """Tests for discord_skill_commands_by_category() — /skill group registration."""

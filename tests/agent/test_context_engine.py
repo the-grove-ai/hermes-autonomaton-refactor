@@ -8,6 +8,12 @@ from agent.context_engine import ContextEngine
 from agent.context_compressor import ContextCompressor
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # ---------------------------------------------------------------------------
 # A minimal concrete engine for testing the ABC
 # ---------------------------------------------------------------------------
@@ -201,7 +207,7 @@ class TestPluginContextEngineSlot:
         from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
         mgr = PluginManager()
         manifest = PluginManifest(name="test-lcm")
-        ctx = PluginContext(manifest, mgr)
+        ctx = PluginContext(manifest, mgr, registry=_REGISTRY)
 
         engine = StubEngine()
         ctx.register_context_engine(engine)
@@ -213,7 +219,7 @@ class TestPluginContextEngineSlot:
         from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
         mgr = PluginManager()
         manifest = PluginManifest(name="test-lcm")
-        ctx = PluginContext(manifest, mgr)
+        ctx = PluginContext(manifest, mgr, registry=_REGISTRY)
 
         engine1 = StubEngine()
         engine2 = StubEngine()
@@ -226,7 +232,7 @@ class TestPluginContextEngineSlot:
         from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
         mgr = PluginManager()
         manifest = PluginManifest(name="test-bad")
-        ctx = PluginContext(manifest, mgr)
+        ctx = PluginContext(manifest, mgr, registry=_REGISTRY)
 
         ctx.register_context_engine("not an engine")
         assert mgr._context_engine is None
@@ -239,6 +245,9 @@ class TestPluginContextEngineSlot:
         old_mgr = plugins_mod._plugin_manager
         try:
             mgr = PluginManager()
+            # Sprint 53 — supply a registry so the lazy-discovery
+            # guard in _ensure_plugins_discovered does not fire.
+            mgr._registry = _REGISTRY
             plugins_mod._plugin_manager = mgr
 
             assert get_plugin_context_engine() is None

@@ -1,7 +1,7 @@
 import pytest
 import json
 from types import SimpleNamespace
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _tool_call(name: str, arguments):
@@ -72,7 +72,7 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
         # Sprint 27 Phase 4 — silent_skip keeps the dict-args validation
         # test deterministic. It verifies argument shape handling, not
         # Andon behavior.
-        sovereign_prompt_handler=silent_allow_handler,
+        sovereign_prompt_handler=silent_allow_handler, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     agent._disable_streaming = True
 

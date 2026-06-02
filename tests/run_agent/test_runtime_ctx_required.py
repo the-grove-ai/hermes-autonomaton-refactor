@@ -21,7 +21,7 @@ import pytest
 
 from grove.dispatcher import Dispatcher, RuntimeContext
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # ── Construction contract ──────────────────────────────────────────────
@@ -46,8 +46,8 @@ def test_construction_with_explicit_none_raises_value_error():
 
 def test_construction_with_runtime_ctx_succeeds(monkeypatch):
     """A real RuntimeContext satisfies the contract; __init__ completes."""
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **_: [])
-    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("run_agent.get_tool_definitions", lambda *args, **_: [])
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda *args, **kw: {})
     monkeypatch.setattr("run_agent.OpenAI", lambda **_: object())
     agent = AIAgent(
         model="test/model",
@@ -56,7 +56,7 @@ def test_construction_with_runtime_ctx_succeeds(monkeypatch):
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        runtime_ctx=MOCK_RUNTIME_CTX,
+        runtime_ctx=MOCK_RUNTIME_CTX, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     assert agent._runtime_ctx is MOCK_RUNTIME_CTX
 
@@ -66,8 +66,8 @@ def test_construction_with_runtime_ctx_succeeds(monkeypatch):
 
 def test_dispatcher_injects_runtime_ctx_into_constructed_agent(monkeypatch):
     """``Dispatcher(agent_kwargs=...)`` forwards ``_base_runtime_ctx``."""
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **_: [])
-    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("run_agent.get_tool_definitions", lambda *args, **_: [])
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda *args, **kw: {})
     monkeypatch.setattr("run_agent.OpenAI", lambda **_: object())
     injected = RuntimeContext(env={"INJECTED": "yes"}, config={"injected": True})
     d = Dispatcher(
@@ -91,8 +91,8 @@ def test_caller_supplied_runtime_ctx_in_agent_kwargs_wins(monkeypatch):
     The Dispatcher uses ``setdefault`` so an explicit caller-provided ctx
     is not overwritten by ``_base_runtime_ctx``.
     """
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **_: [])
-    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("run_agent.get_tool_definitions", lambda *args, **_: [])
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda *args, **kw: {})
     monkeypatch.setattr("run_agent.OpenAI", lambda **_: object())
     base = RuntimeContext(env={"BASE": "1"})
     explicit = RuntimeContext(env={"EXPLICIT": "1"})
@@ -118,8 +118,8 @@ def test_inline_lazy_dispatcher_inherits_agent_runtime_ctx(monkeypatch):
     """When an Agent without a back-reference reaches run_conversation, the
     inline lazy Dispatcher build must construct itself with the Agent's
     own ``_runtime_ctx`` — no fresh substrate snapshot, no None default."""
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **_: [])
-    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("run_agent.get_tool_definitions", lambda *args, **_: [])
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda *args, **kw: {})
     monkeypatch.setattr("run_agent.OpenAI", lambda **_: object())
     agent = AIAgent(
         model="test/model",
@@ -128,7 +128,7 @@ def test_inline_lazy_dispatcher_inherits_agent_runtime_ctx(monkeypatch):
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        runtime_ctx=MOCK_RUNTIME_CTX,
+        runtime_ctx=MOCK_RUNTIME_CTX, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     # Clear any back-reference so the inline lazy build path fires.
     if hasattr(agent, "_dispatcher_singleton"):

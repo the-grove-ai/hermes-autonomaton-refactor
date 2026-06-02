@@ -10,6 +10,12 @@ import pytest
 from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_runtime_credentials
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # =============================================================================
 # _resolve_verify: CA bundle path validation
 # =============================================================================

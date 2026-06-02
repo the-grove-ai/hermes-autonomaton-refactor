@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # A plausible-looking OAuth token (``sk-ant-`` without the ``-api`` suffix).
@@ -45,7 +45,7 @@ def agent():
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=lambda *_a, **_k: ([])
         )
         a.client = MagicMock()
         return a
@@ -142,7 +142,7 @@ class TestOAuthFlagOnConstruction:
                 model="claude-sonnet-4-6",
                 quiet_mode=True,
                 skip_context_files=True,
-                skip_memory=True,
+                skip_memory=True, get_available_tools=lambda *_a, **_k: ([])
             )
 
         # The effective key should be the explicit minimax-key, not the

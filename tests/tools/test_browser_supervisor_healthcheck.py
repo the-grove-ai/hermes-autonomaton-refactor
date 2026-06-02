@@ -15,6 +15,12 @@ import pytest
 from tools import browser_supervisor as bs
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 class _FakeLoop:
     def __init__(self, running: bool) -> None:
         self._running = running

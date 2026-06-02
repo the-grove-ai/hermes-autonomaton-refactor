@@ -30,7 +30,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ def _make_codex_agent():
         model="grok-4.3",
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
     agent.api_mode = "codex_responses"
     agent.provider = "xai-oauth"

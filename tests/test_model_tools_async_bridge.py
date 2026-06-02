@@ -357,8 +357,9 @@ class TestVisionDispatchLoopSafety:
         """After dispatching vision_analyze via the registry, the event
         loop must remain open so cached async clients don't crash on GC."""
         from model_tools import _run_async, _get_tool_loop
-        from tools.registry import registry
-
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         fake_response = _mock_vision_response()
 
         with (
@@ -401,8 +402,9 @@ class TestVisionDispatchLoopSafety:
         and share the same loop (simulates 'first call fails, second
         works' from the issue report)."""
         from model_tools import _get_tool_loop
-        from tools.registry import registry
-
+        from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+        registry = _Sprint53_TR()
+        _Sprint53_RBT(registry)
         fake_response = _mock_vision_response()
 
         with (

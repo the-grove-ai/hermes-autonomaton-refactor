@@ -1,7 +1,7 @@
 """Tests that invalid context_length values in config produce visible warnings."""
 
 from unittest.mock import patch, MagicMock, call
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-4.6"):
@@ -28,7 +28,7 @@ def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-
             base_url=base_url,
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=True, get_available_tools=lambda *_a, **_k: ([])
         )
     return agent
 

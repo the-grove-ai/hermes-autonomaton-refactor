@@ -23,6 +23,12 @@ from hermes_cli.plugins import (
 )
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 # ── PluginContext.register_cli_command ─────────────────────────────────────
 
 
@@ -30,7 +36,7 @@ class TestRegisterCliCommand:
     def _make_ctx(self):
         mgr = PluginManager()
         manifest = PluginManifest(name="test-plugin")
-        return PluginContext(manifest, mgr), mgr
+        return PluginContext(manifest, mgr, registry=_REGISTRY), mgr
 
     def test_registers_command(self):
         ctx, mgr = self._make_ctx()

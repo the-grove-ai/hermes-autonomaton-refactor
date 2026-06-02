@@ -15,15 +15,15 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER, wire_mock_dispatcher
 
 
 def _patch_bootstrap(monkeypatch):
-    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kwargs: [{
+    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda *args, **kwargs: [{
         "type": "function",
         "function": {"name": "t", "description": "t", "parameters": {"type": "object", "properties": {}}},
     }])
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda *args, **kw: {})
 
 
 class _FakeAnthropicClient:
@@ -60,7 +60,11 @@ def _make_agent(monkeypatch, api_mode, provider, response_fn):
             self._disable_streaming = True
             return super().run_conversation(msg, conversation_history=conversation_history, task_id=task_id)
 
-    return _A(runtime_ctx=MOCK_RUNTIME_CTX, model="test-model", api_key="test-key", base_url="http://localhost:1234/v1", provider=provider, api_mode=api_mode)
+    return wire_mock_dispatcher(
+        _A(runtime_ctx=MOCK_RUNTIME_CTX, model="test-model", api_key="test-key",
+           base_url="http://localhost:1234/v1", provider=provider, api_mode=api_mode,
+           get_available_tools=MOCK_CAPABILITY_PROVIDER)
+    )
 
 
 def _anthropic_resp(input_tok, output_tok, cache_read=0, cache_creation=0):

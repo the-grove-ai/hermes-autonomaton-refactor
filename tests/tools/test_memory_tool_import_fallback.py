@@ -4,9 +4,9 @@ import builtins
 import importlib
 import sys
 
-from tools.registry import registry
-
-
+from tools.registry import ToolRegistry as _Sprint53_TR, register_builtin_tools as _Sprint53_RBT
+registry = _Sprint53_TR()
+_Sprint53_RBT(registry)
 def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):
     original_import = builtins.__import__
 

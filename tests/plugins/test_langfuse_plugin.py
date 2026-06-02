@@ -11,6 +11,12 @@ import pytest
 import yaml
 
 
+
+# Sprint 53 — module-level Dispatcher-style registry for tests.
+from tools.registry import ToolRegistry as _Sprint53_TR_top, register_builtin_tools as _Sprint53_RBT_top
+_REGISTRY = _Sprint53_TR_top()
+_Sprint53_RBT_top(_REGISTRY)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_DIR = REPO_ROOT / "plugins" / "observability" / "langfuse"
 
@@ -58,7 +64,7 @@ class TestDiscovery:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         manager = plugins_mod.PluginManager()
-        manager.discover_and_load()
+        manager.discover_and_load(registry=_REGISTRY)
 
         # observability/langfuse appears in the plugin registry …
         loaded = manager._plugins.get("observability/langfuse")

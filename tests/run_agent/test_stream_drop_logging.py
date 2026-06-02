@@ -25,7 +25,7 @@ import pytest
 
 import run_agent
 from run_agent import AIAgent
-from tests._runtime_ctx import MOCK_RUNTIME_CTX
+from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
 def _make_agent() -> AIAgent:
@@ -35,7 +35,7 @@ def _make_agent() -> AIAgent:
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
     )
 
 
