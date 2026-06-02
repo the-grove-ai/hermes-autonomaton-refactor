@@ -247,7 +247,15 @@ tool_zones:
       # Daily-driver UX: asking the autonomaton "what's on my calendar"
       # routes through these wrappers and should not halt for every
       # invocation.
-      - match_pattern: '^GAPI=.*python3.*\.grove/skills/productivity/google-workspace/.*'
+      #
+      # Sprint 53 — pattern widened. The original `^GAPI=.*python3.*` prefix
+      # only matched commands of the form `GAPI=<token> python3 .../gws.py
+      # <subcommand>`; bare `gws calendar list` invocations (and any other
+      # entrypoint that doesn't carry the env-var prefix on the command
+      # line) fell through to the terminal default_zone: yellow and halted
+      # every session. The path-prefix match below is sufficient: the
+      # operator's grant of the skill via Andon promotion IS the trust act.
+      - match_pattern: '.*\.grove/skills/productivity/google-workspace/.*'
         zone: green
         reason: "Google Workspace skill wrapper — known-safe script path."
       # ── Promoted skills: path-prefix GREEN ─────────────────────────

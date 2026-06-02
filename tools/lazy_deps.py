@@ -83,6 +83,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "provider.bedrock": ("boto3==1.42.89",),
 
     # ─── Web search backends ───────────────────────────────────────────────
+    "search.ddgs": ("ddgs==9.14.4",),
     "search.exa": ("exa-py==2.10.2",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
     "search.parallel": ("parallel-web==0.4.2",),

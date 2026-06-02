@@ -384,9 +384,16 @@ class TestBackendSelection:
             assert _get_backend() == "firecrawl"
 
     def test_fallback_no_keys_defaults_to_firecrawl(self):
-        """No keys, no config → 'firecrawl' (will fail at client init)."""
+        """No keys, no config, ddgs not importable → 'firecrawl' (will fail at client init).
+
+        Sprint 53 — ddgs became the free daily-driver fallback and is installed in
+        the dev venv by default, so this test explicitly patches it out to recover
+        the historical "no backend at all" assertion. The legacy-preference walk
+        still lands on firecrawl when nothing else is available.
+        """
         from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):
@@ -608,8 +615,13 @@ class TestCheckWebApiKey:
             assert check_web_api_key() is True
 
     def test_no_keys_returns_false(self):
+        """Sprint 53 — patch ddgs out so this exercises the "no backend at all"
+        path. ddgs is the free daily-driver fallback installed in the dev venv;
+        when present it correctly flips check_web_api_key() to True even without
+        any API keys, which is the desired daily-driver behavior."""
         from tools.web_tools import check_web_api_key
-        assert check_web_api_key() is False
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
+            assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
         with patch.dict(os.environ, {

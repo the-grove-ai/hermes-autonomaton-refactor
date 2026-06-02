@@ -68,6 +68,10 @@ dependencies = [
 anthropic = ["anthropic==0.86.0"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
+# ddgs (DuckDuckGo) is the free daily-driver path — no API key required.
+# Include it in [all] so vanilla installs have a working web_search out
+# of the box; provider plugins still resolve through agent.web_search_registry.
+ddgs = ["ddgs==9.14.4"]
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
@@ -199,6 +203,7 @@ all = [
   "hermes-autonomaton[google]",
   "hermes-autonomaton[web]",
   "hermes-autonomaton[youtube]",
+  "hermes-autonomaton[ddgs]",
 ]
 
 [project.scripts]

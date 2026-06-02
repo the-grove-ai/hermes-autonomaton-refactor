@@ -1243,6 +1243,18 @@ class MCPServerTask:
             ):
                 # Capture the newly spawned subprocess PID for force-kill cleanup.
                 new_pids = _snapshot_child_pids() - pids_before
+                if not new_pids:
+                    # stdio_client just spawned a subprocess (it gave us the
+                    # streams), so an empty diff means the snapshot helper
+                    # missed it. Fail loud per Sprint 53 — orphan tracking is
+                    # disabled for this server and a hard kill will strand it.
+                    logger.warning(
+                        "MCP %s: stdio_client returned streams but "
+                        "_snapshot_child_pids() captured no new PIDs "
+                        "(platform=%s). Orphan cleanup will not track this "
+                        "child — a hard kill of the gateway will strand it.",
+                        self.name, sys.platform,
+                    )
                 if new_pids:
                     _captured: dict[int, int] = {}
                     with _lock:
@@ -2055,12 +2067,20 @@ _orphan_stdio_pids: Dict[int, tuple[str, int]] = {}  # pid -> (server_name, pgid
 def _snapshot_child_pids() -> set:
     """Return a set of current child process PIDs.
 
-    Uses /proc on Linux, falls back to psutil, then empty set.
-    Used by _run_stdio to identify the subprocess spawned by stdio_client.
+    Linux: read /proc/<pid>/task/<pid>/children directly (fastest path).
+    macOS / Windows / other: psutil (required core dep).
+
+    Sprint 53 — fail-loud rewrite. The pre-Sprint-53 helper had a bare
+    ``except Exception: pass`` swallowing every psutil failure and
+    silently returning ``set()`` — which then propagated as "no new
+    children spawned" into ``_run_stdio``, breaking orphan tracking
+    invisibly on every hard restart. Per Grove fail-loud discipline,
+    a snapshot failure now logs at WARNING level with the platform
+    name so silent degradation surfaces in the gateway log.
     """
     my_pid = os.getpid()
 
-    # Linux: read from /proc
+    # Linux: /proc fast path.
     try:
         children_path = f"/proc/{my_pid}/task/{my_pid}/children"
         with open(children_path, encoding="utf-8") as f:
@@ -2068,14 +2088,20 @@ def _snapshot_child_pids() -> set:
     except (FileNotFoundError, OSError, ValueError):
         pass
 
-    # Fallback: psutil
+    # Non-Linux: psutil is in core dependencies (pyproject.toml).
     try:
         import psutil
         return {c.pid for c in psutil.Process(my_pid).children()}
-    except Exception:
-        pass
-
-    return set()
+    except ImportError:
+        logger.warning(
+            "psutil not importable on platform=%s — MCP orphan tracking disabled. "
+            "psutil is declared in pyproject.toml core dependencies; verify the "
+            "active venv installed it.",
+            sys.platform,
+        )
+        return set()
+    except psutil.NoSuchProcess:
+        return set()
 
 
 def _safe_killpg_or_kill(pid: int, pgid: int, sig) -> None:

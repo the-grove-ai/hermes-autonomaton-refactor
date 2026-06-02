@@ -214,6 +214,57 @@ def _grove_agent_help_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     return SectionResult(label="grove_agent_help", text=GROVE_AGENT_HELP_GUIDANCE)
 
 
+def _tool_affordances_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
+    """Sprint 53 — turn-0 capability summary.
+
+    Emits a names+one-line-descriptions list of every tool currently in
+    the Dispatcher's registry, gated by the agent's ``valid_tool_names``.
+    The agent reads this at turn 0 and learns what it has — addressing
+    the Sprint 54 confabulation gap where the model invents tool calls
+    for capabilities it doesn't actually possess.
+
+    Per the Sprint 53 architectural-review addendum, this preamble is
+    self-awareness only: names + first line of each description. Full
+    JSON schemas flow separately through the API tool-list channel
+    (``get_authorized_tools()``) — duplicating them here would balloon
+    the system prompt without adding information.
+    """
+    valid = ctx.get("valid_tool_names") or set()
+    registry = ctx.get("registry")
+    if registry is None or not valid:
+        return None
+
+    lines: List[Tuple[str, str, str]] = []  # (toolset, name, one_line_desc)
+    for name in sorted(valid):
+        entry = registry.get_entry(name)
+        if entry is None:
+            continue
+        raw = (entry.description or "").strip()
+        if not raw:
+            continue
+        # First sentence-ish: stop at newline or 160 chars, whichever first.
+        first_line = raw.splitlines()[0].strip()
+        if len(first_line) > 160:
+            first_line = first_line[:157].rstrip() + "..."
+        lines.append((entry.toolset or "", name, first_line))
+
+    if not lines:
+        return None
+
+    body = "\n".join(f"- {name}: {desc}" for _, name, desc in lines)
+    text = (
+        "## Available tools (turn-0 affordances)\n"
+        "\n"
+        "You have access to the tools listed below. Full JSON schemas are "
+        "delivered separately by the API; this list is your self-awareness "
+        "summary so you can decline tasks that require tools NOT in this "
+        "list rather than confabulating a tool call.\n"
+        "\n"
+        f"{body}"
+    )
+    return SectionResult(label="tool_affordances", text=text)
+
+
 def _tool_guidance_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     """Joined tool guidance for memory / session_search / skill_manage /
     escalate / kanban tools, gated per-tool on the live valid_tool_names.
@@ -495,6 +546,7 @@ _DEFAULT_SECTIONS: Tuple[Tuple[str, SectionProvider, int, str], ...] = (
     # stable
     ("identity",                       _identity_provider,                       10, "stable"),
     ("grove_agent_help",               _grove_agent_help_provider,               20, "stable"),
+    ("tool_affordances",               _tool_affordances_provider,               25, "stable"),
     ("tool_guidance",                  _tool_guidance_provider,                  30, "stable"),
     ("computer_use_guidance",          _computer_use_guidance_provider,          31, "stable"),
     ("nous_subscription",              _nous_subscription_provider,              35, "stable"),
