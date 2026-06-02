@@ -62,11 +62,31 @@ core:
                       # Dispatcher decides). Synthetic tool; LLM-call gets
                       # intercepted before classification.
 
-# ── Domain chunks — keyed by Sprint 12 intent_class ────────────────────────
+# ── Domain chunks — keyed by Sprint 54 v2 intent_class ─────────────────────
 # Additive on top of core. Empty list = core only (e.g., conversation).
 # Tool names must match the registry; unknown names log a debug warning
 # and are skipped at filter time (fail-safe — won't crash the turn).
+#
+# Sprint 54 (intent-taxonomy-v2): 15 labels, grouped by natural tier.
+# T1-native intents lean on core (clarify, memory, skill_view, terminal,
+# read_file) and add only what a small fast model can reliably
+# orchestrate; T2/T3-native intents add their domain-specific surfaces.
 domain_chunks:
+  # ── Daily driver — T1-native ──────────────────────────────────────────
+  memory_operation: []           # core memory tools handle store/recall/forget
+  scheduling: []                 # google-workspace skill loads via skill_view
+  messaging: []                  # platform/imsg/email skills load via skill_view
+  retrieval:
+    - session_search
+    - web_search
+    - web_extract
+  summarization: []              # supplied text; read_file from core if pathed
+  translation: []                # conversational
+  conversation: []               # core only
+  factual_lookup:
+    - web_search                 # short factual answers may need a quick lookup
+
+  # ── Knowledge work — T2-native ────────────────────────────────────────
   code_generation:
     - write_file
     - patch
@@ -83,15 +103,12 @@ domain_chunks:
     - session_search
     - web_search
     - web_extract
-  planning:
-    - search_files
-    - web_search
-    - write_file
-  factual_retrieval:
+  research:
     - web_search
     - web_extract
     - x_search
     - session_search
+    - search_files
   creative_writing:
     - write_file
     - image_generate
@@ -103,7 +120,12 @@ domain_chunks:
     - cronjob
     - process
     - skill_manage
-  conversation: []   # core only
+
+  # ── Architect work — T2 floor (via upward_moderate), T3-native ────────
+  planning:
+    - search_files
+    - web_search
+    - write_file
 
 # ── Exploratory — added only for complex/novel turns ────────────────────────
 # Heavier tools that unlock capability for novel work. Browser automation,
@@ -158,6 +180,10 @@ mcp_notion:
     - mcp_notion_API_update_a_data_source
     - mcp_notion_API_create_a_data_source
     - mcp_notion_API_move_page
+  # Sprint 54 v2 taxonomy: planning + creative_writing keep their Notion
+  # write surface; memory_operation joins because storing a fact often
+  # wants to land in a Notion page (when memory targets Notion).
   write_intents:
     - planning
     - creative_writing
+    - memory_operation

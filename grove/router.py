@@ -501,13 +501,23 @@ def _as_float(value, label: str) -> Optional[float]:
 
 
 def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
-    """Build the ordered [downward, upward, escalation] routing-rule list.
+    """Build the ordered routing-rule list.
 
-    ``downward`` and ``upward`` exist only when ``routing_rules`` declares
-    them. ``escalation`` is always present: when the config omits it (a
-    config predating routing_rules), it is synthesized enabled with the
-    top-level ``escalation.threshold`` as its ``max_confidence`` — the
-    backward-compatible migration path.
+    Recognized rule names (config order, first match wins):
+      * ``downward`` (Sprint 12) — kept for backward compatibility with
+        configs predating the Sprint 54 inversion; pre-v2 configs may
+        still declare it.
+      * ``upward_moderate`` (Sprint 54) — moderate-complexity
+        knowledge-work + planning escalates to T2 from the T1 floor.
+        Planning is included so its FLOOR is T2, never T1.
+      * ``upward`` — complex/novel work escalates to T3.
+      * ``escalation`` — low-confidence step_up; always present (a
+        config predating routing_rules synthesizes it with the
+        top-level ``escalation.threshold`` as ``max_confidence``).
+
+    The escalation rule's ``match`` block accepts an ``intents:`` filter
+    (Sprint 54) so the operator can narrow the step_up to a subset of
+    intents — T1-native intents stay on T1 even at low confidence.
     """
     raw = routing.get("routing_rules") or {}
     if not isinstance(raw, dict):
@@ -515,7 +525,7 @@ def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
 
     rules: list = []
 
-    for name in ("downward", "upward"):
+    for name in ("downward", "upward_moderate", "upward"):
         spec = raw.get(name)
         if spec is None:
             continue
@@ -588,8 +598,12 @@ def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
                 enabled=bool(esc.get("enabled", True)),
                 target_tier=None,
                 action="step_up",
+                # Sprint 54 — accept an ``intents:`` filter so the
+                # operator can narrow step_up to specific intent
+                # classes. Omitted/empty → fires on any intent
+                # (Sprint 12 behaviour).
                 complexity=frozenset(),
-                intents=frozenset(),
+                intents=_as_frozenset(esc_match.get("intents")),
                 min_confidence=None,
                 max_confidence=max_confidence,
             )

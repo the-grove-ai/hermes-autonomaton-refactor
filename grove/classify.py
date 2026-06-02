@@ -36,15 +36,40 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # The intent taxonomy — the system's model of what operator work looks like.
+# Sprint 54 (intent-taxonomy-v2): 8 → 15 labels.  Carves the daily-driver
+# work the original Sprint 12 taxonomy collapsed under "conversation" /
+# "factual_retrieval" / "system_admin" out into its own first-class
+# intents.  T1 is the floor under the inverted routing config, so the
+# taxonomy must distinguish work that is naturally cheap (memory recall,
+# scheduling, messaging, summarization, translation, retrieval of cached
+# T3 artifacts) from work that needs Premium Cognition (code, analysis,
+# research) and Apex (planning).
+#
+# Knowledge-cascade discipline (the economic engine): RETRIEVING a past
+# architectural plan or complex analysis from memory is ``retrieval`` or
+# ``memory_operation`` — a T1 task — even though CREATING the artifact
+# the first time was ``planning`` / T3 work.  T3 pays once; every later
+# fetch is cheap.
 INTENT_CLASSES = (
+    # Daily driver — T1-native under the v2 routing config.
+    "memory_operation",
+    "scheduling",
+    "messaging",
+    "retrieval",
+    "summarization",
+    "translation",
+    "conversation",
+    "factual_lookup",
+    # Knowledge work — T2-native; escalates to T3 on complex/novel.
     "code_generation",
     "debugging",
     "analysis",
-    "planning",
-    "factual_retrieval",
+    "research",
     "creative_writing",
     "system_admin",
-    "conversation",
+    # Architect work — T2 floor (via upward_moderate), T3-native on
+    # complex/novel.
+    "planning",
 )
 REGISTER_CLASSES = ("technical", "strategic", "casual", "formal")
 COMPLEXITY_SIGNALS = ("simple", "moderate", "complex", "novel")
@@ -89,15 +114,52 @@ Return ONE JSON object with TWO envelopes:
 "routing_envelope" — drives tier selection. Keep these reliable; routing
 accuracy depends on them.
 
-  intent_class — the kind of work the operator is asking for:
-    code_generation    writing or extending code
-    debugging          diagnosing an error or a failing test
-    analysis           examining data, code, or a situation for conclusions
-    planning           strategy, architecture, breaking work into steps
-    factual_retrieval  answering a knowledge question or looking something up
-    creative_writing   drafting prose, narrative, or expressive content
-    system_admin       file, config, shell, or environment operations
-    conversation       casual exchange, clarification, or meta-discussion
+  intent_class — the kind of work the operator is asking for. Pick the
+    single best label.
+
+    Daily driver:
+      memory_operation   storing, recalling, updating, or forgetting
+                         operator-owned facts AND retrieving past
+                         architectural plans, complex analyses, or any
+                         earlier system-generated artifact from memory
+      scheduling         calendar, reminders, time-of-day management
+      messaging          drafting, sending, or replying to short
+                         interpersonal messages (email, chat, iMessage)
+      retrieval          fetching a known item from the operator's
+                         cellar, recent web context, project docs, or
+                         memory — INCLUDING past plans and analyses
+                         already created by the system. Retrieving a
+                         cached complex artifact is RETRIEVAL, not
+                         PLANNING, even when the original creation was
+                         expensive
+      summarization      condensing or extracting key points from
+                         supplied text
+      translation        converting text between human languages
+      conversation       chit-chat, greetings, clarification of the
+                         system's own state, small talk — no external
+                         knowledge or tool call
+      factual_lookup     simple factual questions with known short
+                         answers — no synthesis, no multi-source
+
+    Knowledge work:
+      code_generation    writing or modifying code
+      debugging          diagnosing an error or a failing test
+      analysis           examining supplied data, code, or a situation
+                         to reach a conclusion (synthesis on what is
+                         already in front of you)
+      research           multi-source investigation requiring tool-
+                         mediated gathering across web, repos, or docs
+      creative_writing   long-form or strategic drafting of prose,
+                         narrative, or expressive content
+      system_admin       file, config, shell, or environment operations
+                         that change system state (creating dotfiles,
+                         launchd plists, systemd units, cron entries,
+                         shell scripts that wire the OS — NOT
+                         application code)
+
+    Architect work:
+      planning           novel synthesis — multi-step strategy or
+                         system architecture that CREATES something new
 
   register_class — the communication register: technical, strategic,
     casual, or formal.
@@ -106,6 +168,28 @@ accuracy depends on them.
     complex, or novel.
 
   confidence — your confidence in the intent_class, a number 0.0 to 1.0.
+
+EXAMPLES — boundary cases the definitions alone can blur:
+
+  "Pull up the payment system architecture we designed yesterday"
+    → retrieval, simple        (fetch a cached artifact; NOT planning)
+  "Design a payment system architecture"
+    → planning, complex        (novel synthesis; CREATE the artifact)
+
+  "What's the capital of France"
+    → factual_lookup, simple   (short known answer; no source needed)
+  "Find the cellar entry about Postgres backups"
+    → retrieval, simple        (a known item from a specific source)
+
+  "How are you"
+    → conversation, simple     (small talk; no knowledge question)
+  "What is 2 + 2"
+    → factual_lookup, simple   (a short knowledge question)
+
+  "Compare React Server Components vs Solid signals"
+    → research, moderate       (multi-source investigation required)
+  "Review this PR for risks"
+    → analysis, moderate       (synthesis on what is in front of you)
 
 "learning_envelope" — drives the feed-first learning layer. Routing
 ignores these; this is interpretive signal for cross-session pattern
