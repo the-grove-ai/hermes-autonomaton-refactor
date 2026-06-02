@@ -4,7 +4,7 @@
 **Date:** 2026-06-01
 **Status:** COMPLETE — patient kept all its limbs
 
-The grove-autonomaton fork has shipped 25+ sprints of surgical refactoring against the upstream NousResearch/hermes-agent codebase. The governance layer (Dispatcher, Router, Kaizen Ledger, Flywheel, ToolExecutor) is locked in. Sprint 52 verified that the surgery preserved upstream capability — the autonomaton is a circuit breaker, not a replacement, and if governance reduced capability the architecture failed its own standard.
+The Hermes Autonomaton Refactor has shipped 25+ sprints of surgical refactoring against the upstream NousResearch/hermes-agent codebase. The governance layer (Dispatcher, Router, Kaizen Ledger, Flywheel, ToolExecutor) is locked in. Sprint 52 verified that the surgery preserved upstream capability — the autonomaton is a circuit breaker, not a replacement, and if governance reduced capability the architecture failed its own standard.
 
 The audit ran the full `tests/` tree for the first time since the fork. Headline result: **97.9% of the 24,531-test surface is verifiable, and 98.1% of THAT passes**. The fork is healthy.
 

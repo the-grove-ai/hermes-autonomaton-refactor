@@ -1,10 +1,11 @@
-grove-autonomaton
+hermes-autonomaton-refactor
 
 This product is a derivative work of Hermes Agent by Nous Research,
 licensed under the MIT License.
 
 Upstream:     https://github.com/NousResearch/hermes-agent
 Upstream tag: v2026.5.16 (Hermes Agent v0.14.0, "The Foundation Release")
+Repository:   https://github.com/the-grove-ai/hermes-autonomaton-refactor
 
 Modifications copyright (c) 2026 The Grove Foundation, licensed
 under the MIT License (see LICENSE).
@@ -32,8 +33,8 @@ MODIFICATIONS.md enumerates the divergence from the upstream fork
 point per MIT convention.
 
 
-The architectural patterns implemented in this fork are specified in
-The Grove Foundation's published open standards (GRV-001, GRV-002,
-GRV-003, GRV-004) at https://the-grove.ai under CC BY 4.0.
+The architecture this fork implements is specified in The Grove
+Foundation's Autonomaton Pattern (GRV-001), published at
+https://the-grove.ai/standards/001 under CC BY 4.0.
 
 AUTONOMATON is a trademark of The Grove Foundation (registration pending).

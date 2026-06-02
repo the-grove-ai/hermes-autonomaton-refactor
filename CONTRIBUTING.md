@@ -1,14 +1,12 @@
-# Contributing to grove-autonomaton
+# Contributing to The Hermes Autonomaton Refactor
 
 This is a Grove Foundation reference implementation. The architectural
 commitments are non-negotiable; the implementation is open to refinement.
 
 ## Before you contribute
 
-Read, in order:
-1. GRV-001: The Autonomaton Pattern — https://the-grove.ai/standards/001
-2. GRV-002: TCP/IP for the Cognitive Layer — https://the-grove.ai/standards/002
-3. GRV-004: The Autonomaton Protocol — https://the-grove.ai/standards/004
+Read GRV-001: The Autonomaton Pattern — https://the-grove.ai/standards/001
+The architectural commitments below derive from it.
 
 ## Vocabulary
 

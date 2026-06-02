@@ -1,8 +1,9 @@
 # Changelog
 
-All notable changes to grove-autonomaton. This fork derives from
-Hermes Agent v0.14.0 (upstream tag v2026.5.16); the entries below
-record the v0.1 retrofit to the Grove Autonomaton Pattern.
+All notable changes to The Hermes Autonomaton Refactor. This fork
+derives from Hermes Agent v0.14.0 (upstream tag v2026.5.16); the
+entries below record the v0.1 retrofit to the Autonomaton Pattern
+(GRV-001).
 
 ## v0.1 — Grove Autonomaton Pattern retrofit
 

@@ -1,9 +1,11 @@
 # Modifications
 
-grove-autonomaton is a derivative work of Hermes Agent
+The Hermes Autonomaton Refactor is a derivative work of Hermes Agent
 (https://github.com/NousResearch/hermes-agent), forked at tag
-v2026.5.16 (v0.14.0). This file enumerates the modifications The Grove
-Foundation has made since the fork point, per MIT-license convention.
+v2026.5.16 (v0.14.0).  Repository:
+https://github.com/the-grove-ai/hermes-autonomaton-refactor.  This
+file enumerates the modifications The Grove Foundation has made since
+the fork point, per MIT-license convention.
 
 Upstream code is licensed under the MIT License, Copyright (c) 2025
 Nous Research. Modifications are Copyright (c) 2026 The Grove
