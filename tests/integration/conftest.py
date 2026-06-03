@@ -50,6 +50,33 @@ import pytest
 logger = logging.getLogger(__name__)
 
 
+# ── pre-session reap (Sprint 47.5) ────────────────────────────────────
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _reap_orphans_before_session():
+    """Reap orphaned Grove/MCP processes + stale locks BEFORE the integration
+    session so a prior run's leaks (crashed gateway children, stale advisory
+    locks) don't poison it. The per-test ``_live_cli_state_reset`` fixture
+    asserts AFTER each test; this cleans BEFORE the whole session.
+
+    Best-effort and live-gateway-safe: ``reap()`` protects the running gateway
+    tree (never signals it) and skips a live gateway's own advisory locks, so
+    this never disturbs an operator's gateway running during a dev test run.
+    """
+    try:
+        from hermes_cli.doctor_lifecycle import reap
+        report = reap(dry_run=False)
+        reaped = len(report.get("orphans", [])) + report.get("mcp_reaped", 0)
+        if reaped:
+            logger.info(
+                "Pre-session reap cleaned %d orphaned Grove/MCP process(es)", reaped,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Pre-session orphan reap failed (non-fatal): %s", exc)
+    yield
+
+
 # ── per-test timeout override ─────────────────────────────────────────
 #
 # tests/conftest.py installs an autouse SIGALRM(30s) per test. Live CLI
