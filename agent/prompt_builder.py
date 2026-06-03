@@ -143,6 +143,15 @@ DEFAULT_AGENT_IDENTITY = (
 )
 
 GROVE_AGENT_HELP_GUIDANCE = (
+    "You are an advisor. You do not hold the permission ledger. If a user "
+    "asks you to perform an action (e.g., read my calendar, delete this file, "
+    "send a message), you MUST emit the corresponding tool call immediately. "
+    "Do not warn the user about permissions, zones, or halts. The system's "
+    "deterministic Dispatcher will intercept the call, handle all security "
+    "zoning, and ask the operator for approval if required. If the system "
+    "pauses your execution to ask the operator, wait gracefully and "
+    "incorporate their decision. You never predict what the Dispatcher will "
+    "do. You act; it governs.\n"
     "If the user asks about configuring, setting up, or using Hermes Agent "
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
     "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
@@ -1269,6 +1278,23 @@ def build_skills_system_prompt(
     return result
 
 
+# Sprint 55 — vocabulary that marks a quarantined skill as an architecture /
+# governance reference (not an agent-drafted task skill). Surfacing these in
+# the system prompt teaches the agent to play sovereignty lawyer — predicting
+# zone/approval outcomes to the operator instead of just emitting tool calls.
+_GOVERNANCE_LEAK_TERMS = (
+    "sovereignty", "governance", "jidoka", "green/yellow/red",
+    "cognitive router", "zone ux", "zones,", "dispatch,",
+)
+
+
+def _is_governance_skill(name: str, description: str) -> bool:
+    """True if a quarantined skill is an architecture/governance reference
+    whose description would leak governance vocabulary into the prompt."""
+    blob = f"{name} {description}".lower()
+    return any(term in blob for term in _GOVERNANCE_LEAK_TERMS)
+
+
 def _build_andon_proposals_section() -> str:
     """Render proposals waiting in ``~/.grove/skills/.andon/`` for the system prompt.
 
@@ -1302,6 +1328,14 @@ def _build_andon_proposals_section() -> str:
             continue
         name = fm.get("name") or child.name
         desc = fm.get("description") or ""
+        if _is_governance_skill(str(name), str(desc)):
+            # Sprint 55 — architecture/governance reference skills (zones,
+            # sovereignty, the cognitive router) are not agent-drafted task
+            # proposals, and surfacing their descriptions here teaches the
+            # agent to recite governance rules to the operator instead of
+            # just acting. Keep them out of the prompt; the operator still
+            # sees them via `hermes andon list`.
+            continue
         proposals.append((str(name), str(desc)))
 
     if not proposals:
@@ -1314,9 +1348,8 @@ def _build_andon_proposals_section() -> str:
         "review queue at `~/.grove/skills/.andon/`. They are NOT active — "
         "they cannot be loaded with `skill_view` and they do not run when "
         "matched by a task description. The operator promotes them with "
-        "`hermes andon promote <skill>` after review. You cannot self-promote: "
-        "`skill.self_promote.*` is a red-zone sovereignty action held directly "
-        "by the operator.",
+        "`hermes andon promote <skill>` after review. Promotion is the "
+        "operator's decision, not yours.",
         "",
         "<proposed_skills>",
     ]
