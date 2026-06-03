@@ -102,6 +102,29 @@ def _cacheable_type(intent_class: str) -> str:
     return "static" if intent_class in _STATIC_INTENTS else "executable"
 
 
+# Trailing characters that are pure formatting, not answer content. The static
+# variance gate compares responses AFTER stripping these so a model that
+# answers "4" on one turn and "4." on the next is recognized as STABLE, not
+# varying (Sprint 56 Fix #2). Genuine answer differences ("4" vs "5") still
+# diverge — only leading/trailing whitespace and sentence punctuation collapse.
+_RESPONSE_TRIM = " \t\n\r.!?"
+
+
+def _normalize_response(text: str) -> str:
+    """Collapse trailing/leading whitespace + sentence punctuation for the
+    static variance comparison. ``"4."`` and ``"4"`` → ``"4"``; ``"4"`` and
+    ``"5"`` stay distinct."""
+    return text.strip().strip(_RESPONSE_TRIM).strip()
+
+
+def _modal_response(responses: List[str]) -> str:
+    """The most common raw response among the evidence — cached verbatim so
+    the operator sees a natural answer. Ties resolve to first-seen (Counter
+    preserves insertion order in CPython 3.7+), keeping the choice
+    deterministic across runs."""
+    return collections.Counter(responses).most_common(1)[0][0]
+
+
 def scan_candidates(store: Any, config: Optional[Dict[str, Any]] = None) -> List[Candidate]:
     """Group the intent store by ``(intent_class, t0_key)`` and return the
     groups that meet the promotion thresholds.
@@ -194,9 +217,13 @@ def compile_candidate(
         ]
         if not responses:
             return None
-        if len(set(responses)) != 1:   # variance > 0 → not safely static
+        # Sprint 56 Fix #2 — compare on the normalized form (trailing
+        # punctuation/whitespace stripped) so trivial formatting differences
+        # don't read as variance; cache the modal RAW form so the operator
+        # sees a natural answer.
+        if len({_normalize_response(r) for r in responses}) != 1:
             return None
-        cached_response = responses[0]
+        cached_response = _modal_response(responses)
     else:  # executable
         invocations = [
             r.tool_invocation for r in evidence_records
