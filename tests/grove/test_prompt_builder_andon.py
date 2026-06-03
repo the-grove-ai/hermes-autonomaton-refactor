@@ -50,10 +50,13 @@ zone: yellow
     assert "</proposed_skills>" in section
     assert "weekly-team-sync" in section
     assert "Schedule a recurring weekly team sync" in section
-    # Discipline language
-    assert "skill.self_promote.*" in section
-    assert "red-zone" in section
+    # Discipline language (Sprint 55 — softened: no longer recites the
+    # "red-zone sovereignty action" governance vocabulary, which taught the
+    # agent to play sovereignty lawyer; the discipline stays).
+    assert "Promotion is the operator's decision, not yours." in section
     assert "hermes andon promote" in section
+    assert "red-zone" not in section
+    assert "self_promote" not in section
 
 
 def test_section_skips_malformed_proposal(fake_grove_home: Path) -> None:
