@@ -832,3 +832,48 @@ def test_T10_orphan_invariant_holds():
     # Should not raise. Result may be empty or contain external sessions.
     pids = _pgrep_pids("hermes chat")
     assert isinstance(pids, set)
+
+
+# ── T24 — multi-turn CLI stability (Sprint 55 Block A) ────────────────
+
+
+def test_T24_multi_turn_stability():
+    """Five sequential turns must each complete within 30s, the process must
+    stay responsive throughout, and it must exit cleanly.
+
+    Two queries ("list my skills", "what tools do you have") exercise the
+    tool-invocation boundary. This catches the multi-turn CLI hang class (the
+    P0 that single-turn tests miss) — fixed by disabling the per-keystroke
+    completer stampede (complete_while_typing=False). ``list my skills`` hits
+    the green-zoned skills_list tool, so no Kaizen prompt is expected.
+    """
+    queries = [
+        "what is 2 + 2",
+        "list my skills",          # tool boundary (skills_list, green)
+        "how are you",
+        "what tools do you have",   # tool / introspection boundary
+        "what is 4 + 4",
+    ]
+    footer = re.compile(TURN_COMPLETE_RE)
+
+    with LiveCliRunner(["chat"], mode="pty") as runner:
+        _pty_setup(runner)
+        for i, query in enumerate(queries, start=1):
+            before = len(footer.findall(runner.stdout() + runner.stderr()))
+            runner.send_input(query + "\r")
+            deadline = time.monotonic() + 30.0
+            completed = False
+            while time.monotonic() < deadline:
+                if len(footer.findall(runner.stdout() + runner.stderr())) > before:
+                    completed = True
+                    break
+                time.sleep(0.2)
+            assert completed, (
+                f"Turn {i} ({query!r}) did not complete within 30s — "
+                f"multi-turn CLI hang (the P0 this test guards)."
+            )
+
+        # Still responsive after five turns → a /exit must exit cleanly.
+        runner.send_input("/exit\r")
+        rc = runner.wait_for_exit(timeout=15.0)
+        assert rc == 0, f"Unclean exit after the multi-turn session: rc={rc}"
