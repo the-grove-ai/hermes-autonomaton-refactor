@@ -316,8 +316,11 @@ pattern_cache:
 
   # Intent classes excluded from T0 candidacy. system_admin is where OAuth
   # redirect-callback noise lands (it repeats but is not a real query pattern);
-  # unknown is classification failure.
-  exclude_intents: [unknown, system_admin]
+  # unknown is classification failure; conversation is small-talk with no
+  # tool and no stable answer (it phrases differently every turn) — it would
+  # only ever drop, so the compiler stays focused on data and action queries
+  # (Sprint 56 Fix #4).
+  exclude_intents: [unknown, system_admin, conversation]
 
   promotion:
     # Same normalized pattern seen at least this many times.

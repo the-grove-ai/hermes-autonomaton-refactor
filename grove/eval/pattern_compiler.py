@@ -31,7 +31,9 @@ _DEFAULTS: Dict[str, Any] = {
     "within_days": 14,
     "max_rejections": 0,
     "max_response_variance": 0,
-    "exclude_intents": ["unknown", "system_admin"],
+    # conversation is small-talk: no tool, no stable answer — excluded so it
+    # doesn't drop every scan (Sprint 56 Fix #4).
+    "exclude_intents": ["unknown", "system_admin", "conversation"],
 }
 
 # Intent classes whose answers are stable artifacts → cache the response
