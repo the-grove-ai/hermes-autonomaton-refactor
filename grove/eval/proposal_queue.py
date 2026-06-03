@@ -40,6 +40,7 @@ __all__ = [
     "PROPOSAL_TYPE_ZONE_PROMOTION",
     "PROPOSAL_TYPE_SKILL_PROMOTION",
     "PROPOSAL_TYPE_PATTERN_PROMOTION",
+    "PROPOSAL_TYPE_PATTERN_DEMOTION",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -76,6 +77,16 @@ PROPOSAL_TYPE_SKILL_PROMOTION = "skill_promotion"
 # The compiled entry already lives (status=suspended) in pattern_cache.db;
 # approve flips it to active (see grove/flywheel_cli.py).
 PROPOSAL_TYPE_PATTERN_PROMOTION = "pattern_promotion"
+# Sprint 49 — an active T0 pattern drifted: it was served from cache and the
+# operator corrected the very next turn. The Dispatcher auto-suspends it on
+# the spot (suspended patterns stop serving) and queues this proposal so the
+# operator confirms the demotion or reverses it (re-activates). Payload shape:
+#   {"pattern_id", "intent_class", "cacheable_type",
+#    "suggested_action": "demote", "trigger": "correction_drift",
+#    "correction_turn_id": str}
+# CLI approve sets the pattern to demoted; reject re-activates it (see
+# grove/flywheel_cli.py).
+PROPOSAL_TYPE_PATTERN_DEMOTION = "pattern_demotion"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 

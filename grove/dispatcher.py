@@ -1168,6 +1168,10 @@ class Dispatcher:
         # record (if any) as success. The first turn for this Dispatcher
         # has no previous (``_current_turn_id`` is None) — skip then.
         previous_turn_id = self._current_turn_id
+        # Sprint 49 Phase 2 — capture whether the PREVIOUS turn resolved via
+        # T0 before the reset below clears the flag. The correction-driven
+        # auto-demotion check consumes it after this turn classifies.
+        previous_turn_t0_pattern_id = self._current_turn_t0_pattern_id
         # Sprint 28 Phase 3 — reset per-turn state and assign this turn's
         # id BEFORE driving the generator, so terminal write sites
         # (FinalResponse / Drop / exception) have a stable identity to
@@ -1232,6 +1236,14 @@ class Dispatcher:
             self._current_turn_classification = _current_classification()
         if previous_turn_id is not None:
             self._finalize_previous_turn_pending(previous_turn_id)
+            # Sprint 49 Phase 2 — correction-driven auto-demotion. If the
+            # previous turn was served from T0 and this turn's classifier
+            # flagged a correction, suspend the served pattern. Runs AFTER
+            # finalize so ``_current_turn_classification`` is in place; only
+            # the normal (non-T0) flow reaches here, which is where a real
+            # correction lands — its text misses the cache, so the classifier
+            # ran and ``is_correction`` is readable.
+            self._maybe_demote_on_correction(previous_turn_t0_pattern_id)
         gen = agent._run_turn_generator(user_message=user_message, **kwargs)
         try:
             return self._drive_generator(agent, gen, ledger)
@@ -2439,6 +2451,91 @@ class Dispatcher:
             "cost_status": "t0_cache_hit",
             "cost_source": "pattern_cache",
         }
+
+    def _maybe_demote_on_correction(self, pattern_id: Optional[str]) -> None:
+        """Auto-suspend a T0 pattern the operator just corrected (Phase 2).
+
+        Called after ``_finalize_previous_turn_pending`` when the previous
+        turn resolved via T0. If this turn's classifier flagged a correction
+        (``is_correction`` true), the served pattern was wrong often enough to
+        warrant pulling it from the cache: suspend it (suspended patterns stop
+        serving immediately — operator protection), log ``pattern_drift_detected``,
+        and queue a demotion proposal so the operator confirms or reverses.
+
+        No-op when ``pattern_id`` is None (previous turn was not T0) or the
+        current turn is not a correction. Reuses the Sprint 38 correction
+        signal — no parallel detection path."""
+        if not pattern_id:
+            return
+        classification = self._current_turn_classification
+        if not bool(getattr(classification, "is_correction", False)):
+            return
+        from grove.pattern_cache import STATUS_SUSPENDED
+        from grove.telemetry import log_pattern_cache_event
+
+        store = self._t0_store()
+        pattern = store.get(pattern_id)
+        if pattern is None or pattern.status != "active":
+            # Already demoted / suspended / gone — nothing to pull.
+            return
+        store.set_status(pattern_id, STATUS_SUSPENDED)
+        log_pattern_cache_event(
+            event_type="pattern_drift_detected",
+            pattern_id=pattern_id,
+            intent_class=pattern.intent_class,
+            correction_turn_id=self._current_turn_id,
+        )
+        logger.info(
+            "[grove.dispatcher] T0 pattern %s auto-suspended — correction on "
+            "turn %s (intent_class=%s). Demotion proposal queued for operator "
+            "review.",
+            pattern_id, self._current_turn_id, pattern.intent_class,
+        )
+        self._queue_pattern_demotion_proposal(pattern)
+
+    def _queue_pattern_demotion_proposal(self, pattern: Any) -> None:
+        """Queue a pattern_demotion proposal for operator confirm/reverse.
+
+        Best-effort: the pattern is already suspended (operator-protected),
+        so a queue write failure is logged loud but does not crash the turn."""
+        try:
+            from grove.eval.proposal_queue import (
+                RoutingProposal,
+                PROPOSAL_TYPE_PATTERN_DEMOTION,
+                compute_proposal_id,
+                append as _queue_append,
+            )
+            payload = {
+                "pattern_id": pattern.pattern_id,
+                "intent_class": pattern.intent_class,
+                "cacheable_type": pattern.cacheable_type,
+                "suggested_action": "demote",
+                "trigger": "correction_drift",
+                "correction_turn_id": self._current_turn_id or "",
+            }
+            evidence = (self._current_turn_id or "",)
+            eval_hash = "sha256:" + hashlib.sha256(
+                f"pattern_demotion:{pattern.pattern_id}".encode("utf-8")
+            ).hexdigest()
+            proposal = RoutingProposal(
+                proposal_id=compute_proposal_id(
+                    type=PROPOSAL_TYPE_PATTERN_DEMOTION,
+                    payload=payload,
+                    evidence=evidence,
+                ),
+                type=PROPOSAL_TYPE_PATTERN_DEMOTION,
+                payload=payload,
+                evidence=evidence,
+                eval_hash=eval_hash,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            _queue_append(proposal)
+        except Exception as exc:
+            logger.warning(
+                "[grove.dispatcher] failed to queue pattern_demotion proposal "
+                "for %s: %r (pattern is already suspended)",
+                getattr(pattern, "pattern_id", "?"), exc,
+            )
 
     @staticmethod
     def _bind_agent_to_tier(
