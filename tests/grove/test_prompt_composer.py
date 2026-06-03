@@ -71,7 +71,12 @@ class TestLoadPromotedSkills:
             "name: google-workspace\ndescription: Gmail, Calendar, Drive, Docs.",
         )
         results = _load_promoted_skills(skills_root=str(tmp_path))
-        assert results == [("google-workspace", "Gmail, Calendar, Drive, Docs.")]
+        # (name, description, invocations) — these fixture skills have no
+        # Usage section, so invocations is empty.
+        assert [(r[0], r[1]) for r in results] == [
+            ("google-workspace", "Gmail, Calendar, Drive, Docs.")
+        ]
+        assert results[0][2] == []
 
     def test_excludes_andon_directory(self, tmp_path):
         _make_skill(
@@ -142,7 +147,7 @@ class TestLoadPromotedSkills:
             'name: quoted\ndescription: "Quoted description value."',
         )
         results = _load_promoted_skills(skills_root=str(tmp_path))
-        assert results == [("quoted", "Quoted description value.")]
+        assert [(r[0], r[1]) for r in results] == [("quoted", "Quoted description value.")]
 
     def test_strips_single_quotes(self, tmp_path):
         _make_skill(
@@ -150,7 +155,7 @@ class TestLoadPromotedSkills:
             "name: single-quoted\ndescription: 'Single quoted.'",
         )
         results = _load_promoted_skills(skills_root=str(tmp_path))
-        assert results == [("single-quoted", "Single quoted.")]
+        assert [(r[0], r[1]) for r in results] == [("single-quoted", "Single quoted.")]
 
     def test_ignores_directories_without_skill_md(self, tmp_path):
         # directory with other files but no SKILL.md

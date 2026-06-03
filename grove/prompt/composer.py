@@ -214,10 +214,84 @@ def _grove_agent_help_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     return SectionResult(label="grove_agent_help", text=GROVE_AGENT_HELP_GUIDANCE)
 
 
+def _extract_skill_invocations(
+    body: str, skill_dir: str, *, max_commands: int = 5,
+) -> List[Tuple[str, str]]:
+    """Best-effort: pull representative invocation commands out of a SKILL.md
+    ``## Usage`` section, returning ``[(label, command), ...]`` (empty when no
+    usable pattern is found — the caller then falls back to skill_view).
+
+    The agent needs the EXACT command, so the script path is reconstructed
+    from ``skill_dir`` (the skill's real on-disk directory) rather than
+    trusting the SKILL.md's own ``${HERMES_HOME:-$HOME/.hermes}`` shorthand,
+    whose fallback can be wrong for this install. Each ``$SHORTHAND`` usage is
+    expanded to ``<interpreter> <skill_dir>/<scripts-or-bin path>`` and
+    normalized via :func:`normalize_command` (``$HOME`` / ``~`` → home).
+    Labels come from the ``###`` service subheadings; one command per heading.
+    """
+    import os
+    import re as _re
+    from grove.sovereign_prompt_handlers import normalize_command
+
+    # Only mine the Usage section — setup steps (which use a different
+    # shorthand and aren't how you USE the skill) must not leak in.
+    um = _re.search(r"^##\s+usage\b", body, _re.IGNORECASE | _re.MULTILINE)
+    if not um:
+        return []
+    usage = body[um.end():]
+    end = _re.search(r"\n##\s", usage)  # next h2 ends the Usage section (h3 ### is kept)
+    if end:
+        usage = usage[: end.start()]
+
+    # Shorthand defs: VAR="<interpreter> .../scripts|bin/<file>". Reconstruct
+    # the real prefix from skill_dir, ignoring the SKILL.md's own path.
+    shorthands: Dict[str, str] = {}
+    for sm in _re.finditer(
+        r'^\s*([A-Za-z_]\w*)=["\']([^"\'\n]+)["\']', usage, _re.MULTILINE,
+    ):
+        var, val = sm.group(1), sm.group(2)
+        rel = _re.search(r'((?:scripts|bin)/[\w./-]+\.\w+)', val)
+        if not rel:
+            continue
+        interp = val.strip().split()[0]
+        shorthands[var] = f"{interp} {os.path.join(skill_dir, rel.group(1))}"
+    if not shorthands:
+        return []
+
+    invs: List[Tuple[str, str]] = []
+    seen: set = set()
+    label: Optional[str] = None
+    for raw in usage.splitlines():
+        line = raw.strip()
+        hm = _re.match(r'^#{2,4}\s+(.+)$', line)
+        if hm:
+            label = hm.group(1).strip()
+            continue
+        if not line or line.startswith("#"):
+            continue
+        vm = _re.search(r'\$\{?([A-Za-z_]\w*)\}?', line)
+        if not vm or vm.group(1) not in shorthands:
+            continue
+        if not label or label in seen:
+            continue
+        var = vm.group(1)
+        prefix = shorthands[var]
+        cmd = _re.sub(r'\$\{' + var + r'\}|\$' + var + r'\b',
+                      lambda _m: prefix, line)
+        invs.append((label, normalize_command(cmd)))
+        seen.add(label)
+        if len(invs) >= max_commands:
+            break
+    return invs
+
+
 def _load_promoted_skills(
     skills_root: Optional[str] = None,
-) -> List[Tuple[str, str]]:
-    """Return ``[(name, description), ...]`` for all promoted skills.
+) -> List[Tuple[str, str, List[Tuple[str, str]]]]:
+    """Return ``[(name, description, invocations), ...]`` for promoted skills,
+    where ``invocations`` is ``[(label, command), ...]`` extracted from the
+    SKILL.md ``## Usage`` section (empty when none — the caller then renders a
+    skill_view fallback).
 
     Walks ``skills_root`` (default: ``~/.grove/skills/`` or the value of
     ``HERMES_HOME``/skills if the env var is set), skipping the
@@ -247,7 +321,7 @@ def _load_promoted_skills(
             skill_path = os.path.join(dirpath, "SKILL.md")
             try:
                 with open(skill_path, encoding="utf-8") as fh:
-                    content = fh.read(4096)  # frontmatter never exceeds a few KB
+                    content = fh.read()  # full file — the body carries the Usage commands
             except OSError:
                 continue
             # Extract YAML frontmatter between the first pair of ``---`` fences.
@@ -264,7 +338,12 @@ def _load_promoted_skills(
             skill_name = name_m.group(1).strip()
             description = desc_m.group(1).strip()
             if skill_name and description:
-                results.append((skill_name, description))
+                body = content[fm_match.end():]
+                try:
+                    invocations = _extract_skill_invocations(body, dirpath)
+                except Exception:
+                    invocations = []  # extraction must never crash the turn
+                results.append((skill_name, description, invocations))
     except Exception:
         return []
 
@@ -321,15 +400,19 @@ def _tool_affordances_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     promoted = _load_promoted_skills(skills_root=skills_root)
     skills_line = ""
     if promoted:
-        # One line per skill, each ending with the skill_view-first reminder so
-        # the directive rides alongside the affordance itself — the agent can't
-        # see the skill exists without also seeing that it must read the docs
-        # before invoking it (Sprint 56 hotfix — strengthen skill_view-first).
-        skill_summaries = "\n".join(
-            f"- {sname} ({sdesc}) — call skill_view first"
-            for sname, sdesc in promoted
-        )
-        skills_line = f"\nAvailable skills:\n{skill_summaries}"
+        # Embed the ACTUAL invocation command(s) extracted from each skill's
+        # SKILL.md, so the agent sees the exact command and uses it — no
+        # intermediate skill_view step to skip. When a skill has no extractable
+        # invocation pattern, fall back to the skill_view-first reminder.
+        blocks: List[str] = []
+        for sname, sdesc, invs in promoted:
+            if invs:
+                lines = [f"- {sname} ({sdesc})"]
+                lines += [f"    {label}: {cmd}" for label, cmd in invs]
+                blocks.append("\n".join(lines))
+            else:
+                blocks.append(f"- {sname} ({sdesc}) — call skill_view first")
+        skills_line = "\nAvailable skills:\n" + "\n".join(blocks)
 
     text = (
         "## Available tools (turn-0 affordances)\n"
