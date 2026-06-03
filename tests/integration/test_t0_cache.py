@@ -114,6 +114,47 @@ def _repo_root() -> str:
     return str(Path(__file__).resolve().parents[2])
 
 
+def _seed_intent_records(
+    grove_home: Path, message: str, intent: str, n: int, responses: list,
+) -> None:
+    """Append ``n`` finalized intent records for ``message`` at the same path
+    the binary's get_store() reads (GROVE_HOME/intent_records.jsonl).
+
+    In-process via an explicit path — the autouse hermetic fixture points the
+    default store at a DIFFERENT tmp, so we must name grove_home explicitly.
+    ``responses`` cycles per record so a mix like ["4", "4."] exercises the
+    Fix #2 variance normalization through the real pipeline."""
+    from datetime import datetime, timezone, timedelta
+    from grove.intent_store import IntentStore, IntentRecord, normalize_message_stem
+
+    store = IntentStore(grove_home / "intent_records.jsonl")
+    now = datetime.now(timezone.utc)
+    for i in range(n):
+        store.append(IntentRecord(
+            timestamp=(now - timedelta(minutes=i)).isoformat(),
+            session_id="s", turn_id=f"s#{i}",
+            user_message_stem=normalize_message_stem(message),
+            pattern_hash="ph", intent_class=intent,
+            register_class="technical", complexity_signal="simple",
+            confidence=0.9, outcome="success",
+            response_content=responses[i % len(responses)],
+        ))
+
+
+def _read_first_proposal_id(grove_home: Path) -> str:
+    import grove.eval.proposal_queue as pq
+    props = pq.read_all(path=grove_home / "proposals.jsonl")
+    assert props, "no proposal in the queue"
+    return props[0].proposal_id
+
+
+def _active_pattern(grove_home: Path, message: str):
+    """The active pattern the intercept would serve for ``message`` (or None),
+    read from grove_home's pattern_cache.db via the real intercept path."""
+    from grove.pattern_cache import PatternCacheStore
+    return PatternCacheStore(grove_home / "pattern_cache.db").get_active_for_message(message)
+
+
 def _oneshot(grove_home: Path, prompt: str, timeout: float = 120.0):
     return subprocess.run(
         [_binary(), "--oneshot", prompt],
@@ -140,20 +181,68 @@ def grove_home(tmp_path: Path) -> Path:
     return home
 
 
-# ── T21: a T0 hit serves the canary with no classifier ────────────────
+# ── T21_v2: the FULL promotion lifecycle through the real binary ──────
+#
+# No seeded pattern_cache.db, no mocked internals. Seed only the intent
+# evidence, then drive scan → propose → list → approve → serve through the
+# real `hermes` CLI, exercising every production code path the operator does.
 
 
-def test_T21_t0_hit_serves_cached_response(grove_home: Path):
-    _seed_canary(grove_home)
-    result = _oneshot(grove_home, CANARY_QUERY)
+def test_T21_v2_full_lifecycle(grove_home: Path):
+    LIFE_MSG = "what is 2+2"
+    LIFE_INTENT = "factual_lookup"
 
-    assert result.returncode == 0, f"oneshot failed: {result.stderr}"
-    # Served from cache: stdout IS the canary (no model emits this string).
-    assert CANARY in result.stdout, (
-        f"expected the canary in stdout, got: {result.stdout!r}"
+    # 1. Seed 10 finalized factual_lookup records, responses mixed "4"/"4."
+    #    so the run also proves the Fix #2 variance normalization end-to-end.
+    _seed_intent_records(grove_home, LIFE_MSG, LIFE_INTENT, 10, ["4", "4."])
+
+    # 2. scan → the candidate is found.
+    scan = _flywheel(grove_home, "scan")
+    assert scan.returncode == 0, f"scan failed: {scan.stderr}\n{scan.stdout}"
+    assert LIFE_INTENT in scan.stdout, f"candidate not found:\n{scan.stdout}"
+
+    # 3. scan --propose → a proposal is written (was the broken step).
+    prop = _flywheel(grove_home, "scan", "--propose")
+    assert prop.returncode == 0, f"propose failed: {prop.stderr}\n{prop.stdout}"
+    assert "Proposed 1" in prop.stdout, (
+        f"expected a proposal, got:\n{prop.stdout}"
     )
-    # Classifier was bypassed: no tier/cost footer on stderr (a real turn
-    # would print '↳ T1 …'). This is the "no classifier telemetry" assertion.
+    pid = _read_first_proposal_id(grove_home)
+
+    # 4. flywheel list → the proposal is visible WITH its sample query.
+    listing = _flywheel(grove_home, "list")
+    assert listing.returncode == 0
+    assert "pattern_promotion" in listing.stdout
+    assert LIFE_MSG in listing.stdout, (
+        f"sample query missing from the proposal list:\n{listing.stdout}"
+    )
+
+    # 5. approve → the pattern is active in the db, with operator feedback.
+    approve = _flywheel(grove_home, "approve", pid.split(":")[-1][:12])
+    assert approve.returncode == 0, f"approve failed: {approve.stderr}\n{approve.stdout}"
+    assert "Next matching query resolves from T0" in approve.stdout
+
+    pattern = _active_pattern(grove_home, LIFE_MSG)
+    assert pattern is not None, "no active pattern after approve"
+    assert pattern.status == "active"
+    cached = pattern.cached_response
+    assert cached in ("4", "4."), f"unexpected cached response: {cached!r}"
+
+    # 6. The active pattern's id IS what the intercept computes for the query
+    #    (get_active_for_message returning it already proves the key match;
+    #    assert the equality explicitly for clarity).
+    from grove.pattern_cache import t0_key
+    from grove.intent_store import normalize_message_stem
+    assert pattern.pattern_id == t0_key(LIFE_INTENT, normalize_message_stem(LIFE_MSG))
+
+    # 7. The real oneshot resolves the query from T0 — cached answer on
+    #    stdout, and NO tier footer on stderr (the classifier was skipped,
+    #    proving T0 served it rather than a model call).
+    result = _oneshot(grove_home, LIFE_MSG)
+    assert result.returncode == 0, f"oneshot failed: {result.stderr}"
+    assert cached in result.stdout, (
+        f"expected the cached answer {cached!r} in stdout, got: {result.stdout!r}"
+    )
     assert TIER_FOOTER not in result.stderr, (
         f"expected no tier footer on a T0 hit, stderr: {result.stderr!r}"
     )
