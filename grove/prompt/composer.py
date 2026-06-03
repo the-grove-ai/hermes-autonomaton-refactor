@@ -214,6 +214,31 @@ def _grove_agent_help_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     return SectionResult(label="grove_agent_help", text=GROVE_AGENT_HELP_GUIDANCE)
 
 
+def _resolve_interpreter(interp: str, body: str) -> str:
+    """Resolve a bare ``python`` / ``python3`` to a concrete interpreter.
+
+    Bare ``python3`` resolves to whatever is first on PATH, which may be a
+    version that lacks the skill's dependencies (this machine's ``python3`` is
+    Homebrew 3.14, with no google-api-python-client, so the embedded command
+    tracebacks). Prefer:
+      (a) an explicit versioned interpreter the SKILL.md names — e.g.
+          ``/opt/homebrew/bin/python3.13`` from "use python3.13 explicitly on
+          macOS" — else
+      (b) the running hermes interpreter (``sys.executable``, the venv python
+          the skills were installed under).
+    An already-explicit interpreter (a path, or a versioned name like
+    ``python3.13``) is kept unchanged."""
+    import sys
+    import re as _re
+
+    if interp not in ("python", "python3"):
+        return interp
+    hint = _re.search(r'(/\S+/python3\.\d+|\bpython3\.\d+\b)', body)
+    if hint:
+        return hint.group(1)
+    return sys.executable
+
+
 def _extract_skill_invocations(
     body: str, skill_dir: str, *, max_commands: int = 5,
 ) -> List[Tuple[str, str]]:
@@ -253,7 +278,7 @@ def _extract_skill_invocations(
         rel = _re.search(r'((?:scripts|bin)/[\w./-]+\.\w+)', val)
         if not rel:
             continue
-        interp = val.strip().split()[0]
+        interp = _resolve_interpreter(val.strip().split()[0], body)
         shorthands[var] = f"{interp} {os.path.join(skill_dir, rel.group(1))}"
     if not shorthands:
         return []

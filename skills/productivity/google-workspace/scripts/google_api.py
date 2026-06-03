@@ -197,7 +197,26 @@ def get_credentials():
 
 
 def build_service(api, version):
-    from googleapiclient.discovery import build
+    try:
+        from googleapiclient.discovery import build
+    except ImportError:
+        # Defense-in-depth: a missing client library returns a clean JSON
+        # error (honoring the skill's JSON output contract) instead of a raw
+        # traceback. The usual cause is running under a python without the
+        # deps installed — this machine's bare `python3` is Homebrew 3.14,
+        # which lacks them, while python3.13 has them.
+        print(json.dumps({
+            "error": "missing_dependency",
+            "missing_module": "googleapiclient",
+            "detail": (
+                "google-api-python-client is not installed for this Python "
+                f"interpreter ({sys.executable}). Install the client libraries "
+                "(pip install google-api-python-client google-auth-httplib2 "
+                "google-auth-oauthlib) for this interpreter, or run the skill "
+                "under one that has them (e.g. python3.13 on macOS)."
+            ),
+        }, indent=2))
+        sys.exit(1)
 
     return build(api, version, credentials=get_credentials())
 
