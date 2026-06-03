@@ -36,6 +36,10 @@ def test_module_exports_v1_enumeration():
     session-authority extraction's declarative writes — the Agent yields
     these and the Dispatcher executes against ``self.session``, mirroring
     the Sprint 26 ``ToolIntent`` mediation pattern.
+
+    Sprint 53.2 added ``PostExecutionKaizenYield`` — a Dispatcher-
+    synthesized carrier for the post-execution skill-promotion prompt
+    (NOT yielded by the Agent), exported for symmetry with the others.
     """
     import grove.intents as intents
     assert set(intents.__all__) == {
@@ -50,6 +54,7 @@ def test_module_exports_v1_enumeration():
         "MemoryWriteIntent",
         "MemoryWriteResult",
         "MemoryLifecycleIntent",
+        "PostExecutionKaizenYield",
     }
 
 

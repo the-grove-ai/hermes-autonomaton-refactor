@@ -131,12 +131,20 @@ def test_non_tty_auto_logs_pending_promotion(monkeypatch, queue_file: Path) -> N
     assert p.eval_hash.startswith("sha256:")
 
 
-def test_promote_choice_queues_in_phase2(monkeypatch, queue_file: Path) -> None:
+def test_promote_choice_invokes_promotion(monkeypatch, queue_file: Path) -> None:
+    """In normal mode, Promote routes to the immediate promotion flow
+    (Phase 3) — it calls grove.sovereignty.promote, it does not queue."""
+    promote_mock = MagicMock()
+    monkeypatch.setattr("grove.sovereignty.promote", promote_mock)
+    monkeypatch.setattr("grove.zone_rules.save_zone_rule", MagicMock())
+    monkeypatch.setattr(
+        "agent.prompt_builder.clear_skills_system_prompt_cache", MagicMock(),
+    )
     d = _dispatcher(monkeypatch, post_execution_prompt_handler=lambda p: "promote")
+    monkeypatch.setattr(d, "_skill_promotion_is_strict", lambda: False)
     d._emit_post_execution_kaizen(_flag(), ledger=MagicMock())
-    proposals = read_all(path=queue_file)
-    assert len(proposals) == 1
-    assert proposals[0].type == PROPOSAL_TYPE_SKILL_PROMOTION
+    promote_mock.assert_called_once_with("my-skill")
+    assert read_all(path=queue_file) == []
 
 
 def test_not_yet_is_noop(monkeypatch, queue_file: Path) -> None:

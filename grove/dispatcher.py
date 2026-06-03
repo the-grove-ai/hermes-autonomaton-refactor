@@ -3406,12 +3406,7 @@ class Dispatcher:
                 )
 
         if choice == "promote":
-            # Phase 2 routes Promote to the queue (a pending promotion the
-            # operator approves). Phase 3 makes normal-mode promotion
-            # immediate via grove.sovereignty.promote().
-            self._autolog_pending_promotion(
-                payload, ledger, reason="promote_requested",
-            )
+            self._promote_quarantined_skill(payload, ledger)
         elif choice in ("never", "never_purge"):
             self._deny_quarantined_skill(
                 flag, payload, purge=(choice == "never_purge"), ledger=ledger,
@@ -3481,6 +3476,112 @@ class Dispatcher:
             logger.warning(
                 "[grove.dispatcher] pending skill_promotion queue write "
                 "failed (non-fatal): %r", exc,
+            )
+
+    def _skill_promotion_is_strict(self) -> bool:
+        """True when ``skills.skill_promotion: strict`` in config (default normal)."""
+        mode = self.runtime_ctx.config_get(
+            "skills", "skill_promotion", default="normal",
+        )
+        return str(mode).strip().lower() == "strict"
+
+    def _promote_quarantined_skill(self, payload: Any, ledger: Optional[Any]) -> None:
+        """Promote a quarantined skill to the trusted set (Sprint 53.2 Phase 3).
+
+        Normal mode: move ``.andon/<name>`` → active via
+        ``grove.sovereignty.promote`` (Phase 3a — NOT re-implemented),
+        write a green zone rule for the promoted path (3b/3c), and
+        invalidate the skills prompt cache (3e) — all within this turn.
+        Strict mode: queue a pending ``skill_promotion`` proposal only
+        (3d); the operator applies it later via ``flywheel approve
+        --strict``.
+        """
+        if self._skill_promotion_is_strict():
+            self._autolog_pending_promotion(payload, ledger, reason="strict_mode")
+            logger.info(
+                "[grove.dispatcher] Skill %r queued for promotion (strict "
+                "mode). Run: autonomaton flywheel approve --strict <id>",
+                payload.skill_name,
+            )
+            return
+
+        try:
+            from grove.sovereignty import promote as _promote
+            _promote(payload.skill_name)
+        except FileNotFoundError as exc:
+            logger.warning(
+                "[grove.dispatcher] Promote: no quarantined skill %r to "
+                "promote (%r).", payload.skill_name, exc,
+            )
+            return
+        except FileExistsError as exc:
+            logger.warning(
+                "[grove.dispatcher] Promote: an active skill %r already "
+                "exists; not overwriting (%r). Resolve manually with "
+                "`hermes andon promote --replace`.", payload.skill_name, exc,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[grove.dispatcher] Promote of %r failed (non-fatal): %r",
+                payload.skill_name, exc,
+            )
+            return
+
+        self._write_promoted_skill_zone_rule(payload.skill_name)
+        self._invalidate_skills_cache()
+        logger.info(
+            "[grove.dispatcher] Skill %r promoted from quarantine and "
+            "greenlit.", payload.skill_name,
+        )
+        if ledger is not None:
+            try:
+                ledger.record(
+                    "skill_promoted", skill_name=payload.skill_name, mode="normal",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[grove.dispatcher] skill_promoted ledger write failed "
+                    "(non-fatal): %r", exc,
+                )
+
+    def _write_promoted_skill_zone_rule(self, skill_name: str) -> None:
+        """Auto-approve a green zone rule for the promoted skill path (3b/3c).
+
+        Pattern ``.*\\.grove/skills/<name>/.* → green``. Redundant with the
+        broad promoted-skills green rule, but makes each promotion an
+        explicit, auditable zone act that survives if the broad rule is
+        ever narrowed. ``save_zone_rule`` reloads zones synchronously so
+        the rule is live within this turn.
+        """
+        try:
+            from grove.zone_rules import save_zone_rule
+            pattern = r".*\.grove/skills/" + re.escape(skill_name) + r"/.*"
+            save_zone_rule(
+                tool_id="terminal",
+                pattern=pattern,
+                zone="green",
+                reason=(
+                    f"Skill '{skill_name}' promoted from quarantine "
+                    f"(Sprint 53.2)."
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[grove.dispatcher] Promoted-skill zone rule write for %r "
+                "failed (non-fatal; broad skills green rule still applies): "
+                "%r", skill_name, exc,
+            )
+
+    def _invalidate_skills_cache(self) -> None:
+        """Drop the skills prompt cache so a promoted skill appears active (3e)."""
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[grove.dispatcher] skills prompt cache invalidation failed "
+                "(non-fatal): %r", exc,
             )
 
     def _deny_quarantined_skill(

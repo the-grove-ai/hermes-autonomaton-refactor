@@ -92,9 +92,25 @@ def _proposal_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     from grove.eval.proposal_queue import (
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         PROPOSAL_TYPE_ZONE_PROMOTION,
+        PROPOSAL_TYPE_SKILL_PROMOTION,
     )
     if proposal.type in (PROPOSAL_TYPE_ROUTING_ADJUSTMENT, "routing_update"):
         return _routing_adjustment_to_diff(proposal)
+    if proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
+        # Sprint 53.2 — the "diff" the operator reviews is the promotion
+        # act: move the skill out of quarantine and greenlight its path.
+        name = proposal.payload.get("skill_name", "?")
+        return {
+            "skill_promotion": {
+                "skill_name": name,
+                "from": f"~/.grove/skills/.andon/{name}/",
+                "to": f"~/.grove/skills/{name}/",
+                "zone_rule": {
+                    "match_pattern": rf".*\.grove/skills/{name}/.*",
+                    "zone": "green",
+                },
+            },
+        }
     if proposal.type == PROPOSAL_TYPE_ZONE_PROMOTION:
         # Zone promotions don't translate to a routing-config diff —
         # they write directly to zones.schema.yaml via save_zone_rule.
@@ -129,6 +145,7 @@ def _format_summary(proposal: RoutingProposal) -> str:
     from grove.eval.proposal_queue import (
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         PROPOSAL_TYPE_ZONE_PROMOTION,
+        PROPOSAL_TYPE_SKILL_PROMOTION,
     )
     short_id = proposal.proposal_id.split(":")[-1][:12]
     n_evidence = len(proposal.evidence)
@@ -136,6 +153,9 @@ def _format_summary(proposal: RoutingProposal) -> str:
         rule = proposal.payload.get("rule", "?")
         intents = ", ".join(proposal.payload.get("add_intents", []))
         body = f"add {intents} to routing.{rule}"
+    elif proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
+        name = proposal.payload.get("skill_name", "?")
+        body = f"promote quarantined skill {name!r} → trusted"
     elif proposal.type == PROPOSAL_TYPE_ZONE_PROMOTION:
         tool = proposal.payload.get("tool", "?")
         pattern = proposal.payload.get("pattern", "?")
@@ -300,6 +320,50 @@ def _approve_zone_promotion(
     return f"tool_zones.{tool}.rules", applied
 
 
+def _approve_skill_promotion(
+    proposal: RoutingProposal,
+) -> Tuple[str, Dict[str, Any]]:
+    """Apply a skill_promotion proposal (Sprint 53.2).
+
+    Moves the skill out of quarantine via :func:`grove.sovereignty.promote`
+    (NOT re-implemented) and writes a green zone rule for the promoted
+    path via :func:`grove.zone_rules.save_zone_rule`, then drops the
+    skills prompt cache so the promoted skill appears active. Returns the
+    (target-label, applied-dict) pair for the caller to print.
+    """
+    from grove.sovereignty import promote as _promote
+    from grove.zone_rules import save_zone_rule
+
+    name = proposal.payload.get("skill_name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(
+            f"skill_promotion payload missing 'skill_name': {proposal.payload!r}"
+        )
+
+    _promote(name)
+    pattern = rf".*\.grove/skills/{name}/.*"
+    save_zone_rule(
+        tool_id="terminal",
+        pattern=pattern,
+        zone="green",
+        reason=f"Skill '{name}' promoted from quarantine (Sprint 53.2).",
+    )
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[flywheel] skills prompt cache invalidation after promoting "
+            "%r failed (non-fatal): %r", name, exc,
+        )
+    applied = {
+        "skill_name": name,
+        "promoted_to": f"~/.grove/skills/{name}/",
+        "zone_rule": {"match_pattern": pattern, "zone": "green"},
+    }
+    return f"skill '{name}' (move + green rule)", applied
+
+
 def cli_approve(
     partial_id: str,
     *,
@@ -324,6 +388,7 @@ def cli_approve(
     from grove.eval.proposal_queue import (
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         PROPOSAL_TYPE_ZONE_PROMOTION,
+        PROPOSAL_TYPE_SKILL_PROMOTION,
     )
 
     proposal = _resolve_proposal(partial_id, queue_path=queue_path)
@@ -341,10 +406,13 @@ def cli_approve(
     elif proposal.type == PROPOSAL_TYPE_ZONE_PROMOTION:
         target_label, applied = _approve_zone_promotion(proposal)
         applied_label = f"Applied to: {target_label}"
+    elif proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
+        target_label, applied = _approve_skill_promotion(proposal)
+        applied_label = f"Promoted: {target_label}"
     else:
         print(
             f"Cannot approve proposal type {proposal.type!r}. "
-            f"Supported: routing_adjustment, zone_promotion.",
+            f"Supported: routing_adjustment, zone_promotion, skill_promotion.",
             file=sys.stderr,
         )
         return 1
