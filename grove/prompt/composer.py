@@ -214,6 +214,64 @@ def _grove_agent_help_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     return SectionResult(label="grove_agent_help", text=GROVE_AGENT_HELP_GUIDANCE)
 
 
+def _load_promoted_skills(
+    skills_root: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    """Return ``[(name, description), ...]`` for all promoted skills.
+
+    Walks ``skills_root`` (default: ``~/.grove/skills/`` or the value of
+    ``HERMES_HOME``/skills if the env var is set), skipping the
+    ``.andon/`` quarantine directory.  Only SKILL.md files whose YAML
+    frontmatter contains a non-empty ``description`` field are included.
+
+    Returns an empty list on any I/O or parse error — provider failure
+    must never crash the turn.
+    """
+    import os
+    import re as _re
+
+    if skills_root is None:
+        hermes_home = os.environ.get("HERMES_HOME")
+        if hermes_home:
+            skills_root = os.path.join(hermes_home, "skills")
+        else:
+            skills_root = os.path.join(os.path.expanduser("~"), ".grove", "skills")
+
+    results: List[Tuple[str, str]] = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(skills_root):
+            # Prune .andon/ (quarantine) in-place so os.walk skips it entirely.
+            dirnames[:] = [d for d in dirnames if d != ".andon"]
+            if "SKILL.md" not in filenames:
+                continue
+            skill_path = os.path.join(dirpath, "SKILL.md")
+            try:
+                with open(skill_path, encoding="utf-8") as fh:
+                    content = fh.read(4096)  # frontmatter never exceeds a few KB
+            except OSError:
+                continue
+            # Extract YAML frontmatter between the first pair of ``---`` fences.
+            fm_match = _re.match(r"^---\s*\n(.*?)\n---", content, _re.DOTALL)
+            if not fm_match:
+                continue
+            fm_text = fm_match.group(1)
+            # Pull name and description with simple regex — avoids a yaml
+            # import (and its failure modes) for two scalar fields.
+            name_m = _re.search(r"^name:\s*['\"]?(.+?)['\"]?\s*$", fm_text, _re.MULTILINE)
+            desc_m = _re.search(r"^description:\s*['\"]?(.+?)['\"]?\s*$", fm_text, _re.MULTILINE)
+            if not name_m or not desc_m:
+                continue
+            skill_name = name_m.group(1).strip()
+            description = desc_m.group(1).strip()
+            if skill_name and description:
+                results.append((skill_name, description))
+    except Exception:
+        return []
+
+    results.sort(key=lambda x: x[0])
+    return results
+
+
 def _tool_affordances_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     """Sprint 53 — turn-0 capability summary.
 
@@ -228,6 +286,11 @@ def _tool_affordances_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     JSON schemas flow separately through the API tool-list channel
     (``get_authorized_tools()``) — duplicating them here would balloon
     the system prompt without adding information.
+
+    Also appends an "Available skills" line listing promoted skills
+    (from ``~/.grove/skills/``, excluding the ``.andon/`` quarantine)
+    so the model knows which skills it can load via ``skill_view``
+    without confabulating skill names.
     """
     valid = ctx.get("valid_tool_names") or set()
     registry = ctx.get("registry")
@@ -252,6 +315,17 @@ def _tool_affordances_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         return None
 
     body = "\n".join(f"- {name}: {desc}" for _, name, desc in lines)
+
+    # Build the "Available skills" summary line from promoted skills.
+    skills_root = ctx.get("skills_root")  # test-injectable override
+    promoted = _load_promoted_skills(skills_root=skills_root)
+    skills_line = ""
+    if promoted:
+        skill_summaries = ", ".join(
+            f"{sname} ({sdesc})" for sname, sdesc in promoted
+        )
+        skills_line = f"\nAvailable skills: {skill_summaries}"
+
     text = (
         "## Available tools (turn-0 affordances)\n"
         "\n"
@@ -261,6 +335,7 @@ def _tool_affordances_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         "list rather than confabulating a tool call.\n"
         "\n"
         f"{body}"
+        f"{skills_line}"
     )
     return SectionResult(label="tool_affordances", text=text)
 
