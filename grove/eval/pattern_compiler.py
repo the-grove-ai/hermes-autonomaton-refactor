@@ -14,12 +14,14 @@ system never self-promotes. Thresholds live in ``routing.config.yaml`` under
 from __future__ import annotations
 
 import collections
+import hashlib
+import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from grove.pattern_cache import t0_key
+from grove.pattern_cache import CompiledPattern, STATUS_SUSPENDED, t0_key
 
 # Defaults — used when routing.config.yaml carries no pattern_cache section.
 # Mirror the GATE-A decision-4 values.
@@ -155,3 +157,88 @@ def scan_candidates(store: Any, config: Optional[Dict[str, Any]] = None) -> List
         ))
     out.sort(key=lambda c: -c.repetition_count)
     return out
+
+
+# ── compilation (Sprint 48 Phase 2) ───────────────────────────────────
+
+
+def _evidence_hash(turn_ids) -> str:
+    seed = ",".join(sorted(turn_ids))
+    return "sha256:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def compile_candidate(
+    candidate: Candidate,
+    evidence_records: List[Any],
+    *,
+    now_iso: Optional[str] = None,
+) -> Optional[CompiledPattern]:
+    """Compile a candidate into a ``CompiledPattern`` (status=suspended), or
+    ``None`` if the evidence cannot be safely compiled.
+
+    static: every captured ``response_content`` across the evidence must be
+            IDENTICAL (the variance gate — GATE-A decision 3/4). None if they
+            vary, or if no response was captured (legacy records).
+    executable: every captured ``tool_invocation`` must name the SAME tool;
+            stores the most-recent ``{tool, args}`` as the representative
+            invocation. None if the tool varies or none was captured.
+    """
+    now = now_iso or datetime.now(timezone.utc).isoformat()
+    cached_response: Optional[str] = None
+    compiled_invocation: Optional[str] = None
+
+    if candidate.cacheable_type == "static":
+        responses = [
+            r.response_content for r in evidence_records
+            if getattr(r, "response_content", None) is not None
+        ]
+        if not responses:
+            return None
+        if len(set(responses)) != 1:   # variance > 0 → not safely static
+            return None
+        cached_response = responses[0]
+    else:  # executable
+        invocations = [
+            r.tool_invocation for r in evidence_records
+            if getattr(r, "tool_invocation", None) is not None
+        ]
+        if not invocations:
+            return None
+        tools = set()
+        for inv in invocations:
+            try:
+                tools.add(json.loads(inv).get("tool"))
+            except Exception:
+                tools.add(None)
+        if len(tools) != 1 or None in tools:
+            return None   # tool varies / unparseable → not a clean executable
+        compiled_invocation = invocations[-1]
+
+    promotion_evidence = json.dumps({
+        "repetition_count": candidate.repetition_count,
+        "time_span_days": candidate.time_span_days,
+        "rejection_count": candidate.rejection_count,
+    }, sort_keys=True)
+
+    return CompiledPattern(
+        pattern_id=candidate.t0_key,
+        t0_key=candidate.t0_key,
+        intent_class=candidate.intent_class,
+        cacheable_type=candidate.cacheable_type,
+        cached_response=cached_response,
+        compiled_invocation=compiled_invocation,
+        evidence_hash=_evidence_hash(candidate.evidence_turn_ids),
+        status=STATUS_SUSPENDED,
+        created_at=now,
+        promotion_evidence=promotion_evidence,
+    )
+
+
+def compile_from_store(
+    candidate: Candidate, store: Any, *, now_iso: Optional[str] = None,
+) -> Optional[CompiledPattern]:
+    """Fetch the candidate's evidence records from ``store`` (by turn id) and
+    compile. Convenience wrapper over :func:`compile_candidate`."""
+    wanted = set(candidate.evidence_turn_ids)
+    evidence = [r for r in store.latest_by_turn() if r.turn_id in wanted]
+    return compile_candidate(candidate, evidence, now_iso=now_iso)
