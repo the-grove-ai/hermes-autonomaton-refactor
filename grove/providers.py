@@ -57,6 +57,7 @@ def route_for_agent(
     explicit_tier: Optional[str] = None,
     explicit_model: Optional[str] = None,
     tier_source: Optional[str] = None,
+    classify: bool = True,
 ) -> Optional[RoutingDecision]:
     """Consult the Cognitive Router for the tier an agent should run on.
 
@@ -72,15 +73,24 @@ def route_for_agent(
     ``tier_source="session"`` marks an ``explicit_tier`` that came from
     the in-session ``/tier`` override, so telemetry records it as
     ``operator_session_override`` rather than ``operator_override``.
-    """
+
+    ``classify=False`` (Sprint 49) skips the T-telemetry classifier call
+    entirely and routes to the default tier as if classification had
+    gracefully degraded. The T0 Pattern Cache uses this to resolve a model
+    for the agent SHELL on a cache hit — the model is never called (T0
+    serves deterministically), but oneshot needs a non-empty model to
+    construct the agent on router-only installs — WITHOUT paying for or
+    logging a classification the cache made unnecessary."""
     router = _ensure_router()
     if router is None:
         return None
     # T-telemetry: classify the request so route() can escalate on low
     # confidence. None on any failure — route() then falls back cleanly.
+    # classify=False short-circuits to the same graceful-degradation path
+    # (intent/confidence None → default tier) with no classifier call.
     from grove.classify import classify_for_routing  # local: avoid circular
 
-    classification = classify_for_routing(message)
+    classification = classify_for_routing(message) if classify else None
     decision = router.route(
         operator_tier=_resolve_operator_tier(explicit_tier),
         operator_model=_resolve_operator_model(explicit_model),

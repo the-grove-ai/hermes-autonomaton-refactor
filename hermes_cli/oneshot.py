@@ -372,11 +372,12 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    # Sprint 49 — T0 Pattern Cache pre-route skip. If the message resolves
-    # to an active compiled pattern, the classifier (route_for_agent, an LLM
-    # call) MUST NOT fire — that is the whole point of T0. The Dispatcher's
-    # dispatch_turn intercept serves the cached response model-free; routing
-    # is moot for a hit, so leave the legacy model resolution in place.
+    # Sprint 49 — T0 Pattern Cache short-circuit. If the message resolves to
+    # an active compiled pattern, the classifier (an LLM call) MUST NOT fire —
+    # that is the whole point of T0. dispatch_turn serves the cached response
+    # model-free. We still route with ``classify=False`` so the agent SHELL
+    # gets a non-empty default-tier model (router-only installs have no legacy
+    # default), WITHOUT paying for or logging a classification.
     from grove.pattern_cache import pattern_cache_enabled, PatternCacheStore
     _t0_hit = bool(
         pattern_cache_enabled()
@@ -386,7 +387,9 @@ def _run_agent(
     # Cognitive Router: --model feeds INTO the router, which resolves it
     # to a tier. The router runs whenever routing.config.yaml is present;
     # the legacy chain above is the vanilla-install fallback.
-    _routed = None if _t0_hit else route_for_agent(message=prompt, explicit_model=model)
+    _routed = route_for_agent(
+        message=prompt, explicit_model=model, classify=not _t0_hit,
+    )
     if _routed is not None:
         effective_model = _routed.tier_config.model
         effective_provider = _routed.tier_config.provider
@@ -460,7 +463,10 @@ def _run_agent(
     # variable) and constructed AIAgent with the routed runtime. Skip
     # run_conversation's self-route so T-telemetry fires exactly once.
     response = agent.chat(prompt, already_routed=True) or ""
-    return response, _tier_cost_summary(_routed, agent)
+    # On a T0 hit no inference happened — suppress the tier/cost footer so the
+    # stderr summary reflects reality (a cache hit, not a tier-N model turn).
+    summary = None if _t0_hit else _tier_cost_summary(_routed, agent)
+    return response, summary
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:
