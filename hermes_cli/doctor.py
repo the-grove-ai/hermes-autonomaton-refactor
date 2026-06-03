@@ -358,6 +358,26 @@ def run_doctor(args):
             sys.exit(1)
         return
 
+    # Sprint 47.5 — process-lifecycle crash-recovery. `--reap` / `--restart`
+    # are action verbs and short-circuit the normal diagnostics; plain
+    # `hermes doctor` appends a READ-ONLY lifecycle report to the diagnostics
+    # below. `--dry-run` makes `--reap` preview without acting.
+    reap_mode = getattr(args, 'reap', False)
+    if reap_mode:
+        from hermes_cli.doctor_lifecycle import reap as _reap, render_report
+        report = _reap(dry_run=getattr(args, 'dry_run', False))
+        render_report(report)
+        return
+
+    # Plain `hermes doctor` includes a READ-ONLY lifecycle report (live
+    # gateway tree, orphaned Grove processes, stale locks). Wrapped so a
+    # report failure never masks the core diagnostics below.
+    try:
+        from hermes_cli.doctor_lifecycle import reap as _reap, render_report
+        render_report(_reap(dry_run=True))
+    except Exception as _exc:
+        check_warn("Process lifecycle report unavailable", f"({_exc})")
+
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0

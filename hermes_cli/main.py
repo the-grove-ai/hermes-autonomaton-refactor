@@ -10766,6 +10766,21 @@ def main():
             "doctor` first to see active advisories and their IDs."
         ),
     )
+    # Sprint 47.5 — process-lifecycle crash-recovery.
+    doctor_parser.add_argument(
+        "--reap",
+        action="store_true",
+        help=(
+            "Reap orphaned Grove/MCP processes (reparented to PID 1 after a "
+            "crash) and clean stale advisory locks. Leaves the live gateway "
+            "untouched. Pair with --dry-run to preview."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --reap/--restart: report what would be killed/cleaned without acting.",
+    )
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # =========================================================================
