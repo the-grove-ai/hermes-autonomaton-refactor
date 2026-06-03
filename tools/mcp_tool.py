@@ -2089,9 +2089,14 @@ def _snapshot_child_pids() -> set:
         pass
 
     # Non-Linux: psutil is in core dependencies (pyproject.toml).
+    # Sprint 47.5 — recursive=True so an npm → node → real-server chain's
+    # grandchildren are tracked, not just the direct npm wrapper. Without
+    # this, a daemonized grandchild MCP server escapes orphan tracking on
+    # macOS (deferred in Sprint 53; shipped here). The Linux /proc fast
+    # path above is still direct-only — a follow-up for the prod target.
     try:
         import psutil
-        return {c.pid for c in psutil.Process(my_pid).children()}
+        return {c.pid for c in psutil.Process(my_pid).children(recursive=True)}
     except ImportError:
         logger.warning(
             "psutil not importable on platform=%s — MCP orphan tracking disabled. "
@@ -3387,6 +3392,11 @@ async def _discover_and_register_server(
     )
     with _lock:
         _servers[name] = server
+        # Sprint 47.5 — a fresh server registration is a new MCP lifecycle:
+        # re-arm the shutdown idempotency guard so this lifecycle can be
+        # shut down again after a prior shutdown completed.
+        global _mcp_shutdown_completed
+        _mcp_shutdown_completed = False
 
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
@@ -3699,19 +3709,42 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     return result
 
 
+# Sprint 47.5 — idempotency guard. shutdown_mcp_servers() is now called from
+# both the graceful gateway-exit path AND an atexit backstop (gateway/run.py).
+# This one-shot flag makes a second call a no-op so they never double-shutdown.
+# Re-armed to False whenever a fresh server is registered
+# (_discover_and_register_server), so a new MCP lifecycle can shut down again.
+_mcp_shutdown_completed = False
+
+
 def shutdown_mcp_servers():
     """Close all MCP server connections and stop the background loop.
 
     Each server Task is signalled to exit its ``async with`` block so that
     the anyio cancel-scope cleanup happens in the same Task that opened it.
     All servers are shut down in parallel via ``asyncio.gather``.
+
+    Idempotent (Sprint 47.5): a second call after a completed shutdown
+    returns immediately, so the graceful path and the atexit backstop never
+    collide.
     """
+    global _mcp_shutdown_completed
+
     with _lock:
         servers_snapshot = list(_servers.values())
+
+    # Idempotent (Sprint 47.5): skip ONLY when a prior shutdown completed AND
+    # no new servers have registered since. Servers present ⇒ real work to do,
+    # so the flag alone never suppresses a needed shutdown. This still keeps the
+    # graceful path + atexit backstop from double-running: after a graceful
+    # shutdown _servers is empty, so the backstop call no-ops here.
+    if _mcp_shutdown_completed and not servers_snapshot:
+        return
 
     # Fast path: nothing to shut down.
     if not servers_snapshot:
         _stop_mcp_loop()
+        _mcp_shutdown_completed = True
         return
 
     async def _shutdown():
@@ -3743,6 +3776,7 @@ def shutdown_mcp_servers():
                 logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()
+    _mcp_shutdown_completed = True
 
 
 def _kill_orphaned_mcp_children(include_active: bool = False) -> None:

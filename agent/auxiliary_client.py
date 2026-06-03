@@ -3772,6 +3772,40 @@ def _force_close_async_httpx(client: Any) -> None:
         pass
 
 
+def _best_effort_aclose(client: Any) -> bool:
+    """Gracefully ``aclose()`` an async client under a 5s timeout (Sprint 47.5).
+
+    Releases the client's httpx sockets NOW rather than deferring teardown to
+    process exit — the deferral is what accumulates CLOSE_WAIT sockets on a
+    long-lived gateway. Returns True if a clean close ran, False if the caller
+    must fall back to neutering ``__del__`` (``_force_close_async_httpx``).
+
+    Only drives a loop when NONE is running on this thread (the shutdown case);
+    if a loop is live we cannot block on it, so we bail to the neuter path and
+    preserve the prior behavior with no regression.
+    """
+    import asyncio
+    import inspect
+
+    close_fn = getattr(client, "aclose", None)
+    if close_fn is None or not inspect.iscoroutinefunction(close_fn):
+        close_fn = getattr(client, "close", None)
+    if close_fn is None or not inspect.iscoroutinefunction(close_fn):
+        return False  # not an async client — nothing to aclose
+
+    try:
+        asyncio.get_running_loop()
+        return False  # a loop is live on this thread; cannot block — neuter instead
+    except RuntimeError:
+        pass  # no running loop — safe to drive one
+
+    try:
+        asyncio.run(asyncio.wait_for(close_fn(), timeout=5))
+        return True
+    except Exception:
+        return False
+
+
 def shutdown_cached_clients() -> None:
     """Close all cached clients (sync and async) to prevent event-loop errors.
 
@@ -3785,11 +3819,14 @@ def shutdown_cached_clients() -> None:
             client = entry[0]
             if client is None:
                 continue
-            # Mark any async httpx transport as closed first (prevents __del__
-            # from scheduling aclose() on a dead event loop).
-            _force_close_async_httpx(client)
+            # Sprint 47.5 — async clients: try a graceful aclose() under a 5s
+            # timeout so sockets are released now instead of deferred to process
+            # exit (CLOSE_WAIT accumulation on long-lived gateways). If that
+            # isn't possible (a loop is running, or not an async client), fall
+            # back to neutering __del__ — the prior behavior, no regression.
+            if not _best_effort_aclose(client):
+                _force_close_async_httpx(client)
             # Sync clients: close the httpx connection pool cleanly.
-            # Async clients: skip — we already neutered __del__ above.
             try:
                 close_fn = getattr(client, "close", None)
                 if close_fn and not inspect.iscoroutinefunction(close_fn):

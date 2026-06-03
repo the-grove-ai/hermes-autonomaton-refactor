@@ -16994,6 +16994,27 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
+    # Sprint 47.5 — reap MCP stdio children on abnormal exit. The graceful
+    # path calls shutdown_mcp_servers() explicitly (below). This atexit is
+    # the backstop for paths that skip it: an unhandled exception, an OOM
+    # where atexit still runs, or SIGTERM-after-timeout. shutdown_mcp_servers()
+    # is idempotent (Sprint 47.5), so the two never double-shutdown. At atexit
+    # the event loop is already gone, so we also killpg the stdio children
+    # directly (loop-independent) — closing async contexts alone can't reap
+    # them once the loop is dead. (SIGKILL is uncatchable; those orphans are
+    # reaped by reap_dead_owner_children() at the next gateway startup.)
+    def _atexit_reap_mcp_children() -> None:
+        try:
+            from tools.mcp_tool import (
+                shutdown_mcp_servers,
+                _kill_orphaned_mcp_children,
+            )
+            shutdown_mcp_servers()
+            _kill_orphaned_mcp_children(include_active=True)
+        except Exception:
+            pass
+    atexit.register(_atexit_reap_mcp_children)
+
     # MCP tool discovery — run in an executor so the asyncio event loop
     # stays responsive even when a configured MCP server is slow or
     # unreachable.  discover_mcp_tools() uses a blocking 120s wait

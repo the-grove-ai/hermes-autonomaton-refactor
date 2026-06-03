@@ -1457,6 +1457,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Only stop the updater if it's running
                 if self._app.updater and self._app.updater.running:
                     await self._app.updater.stop()
+                    # Sprint 47.5 — explicitly drain the getUpdates pool on
+                    # disconnect. updater.stop() alone leaves the long-poll
+                    # socket in CLOSE_WAIT; the drain shuts the polling request
+                    # down (the subsequent app.shutdown() reaps the rest). This
+                    # mirrors the network-error path, which already drains.
+                    await self._drain_polling_connections()
                 if self._app.running:
                     await self._app.stop()
                 await self._app.shutdown()
