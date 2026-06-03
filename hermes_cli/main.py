@@ -5502,7 +5502,9 @@ def cmd_flywheel(args):
     elif action == "show":
         sys.exit(flywheel_cli.cli_show(args.proposal_id))
     elif action == "approve":
-        sys.exit(flywheel_cli.cli_approve(args.proposal_id))
+        sys.exit(flywheel_cli.cli_approve(
+            args.proposal_id, strict=getattr(args, "strict", False),
+        ))
     elif action == "reject":
         sys.exit(flywheel_cli.cli_reject(
             args.proposal_id, reason=getattr(args, "reason", None),
@@ -10413,6 +10415,13 @@ def main():
     flywheel_approve_p.add_argument(
         "proposal_id",
         help="Full sha256:... id, bare hash, or unique short prefix (>=8 chars)",
+    )
+    flywheel_approve_p.add_argument(
+        "--strict",
+        action="store_true",
+        help="Strict skill-promotion gating (Sprint 53.2): show the diff, "
+             "require a logged successful execution, and confirm before "
+             "promoting a quarantined skill.",
     )
 
     flywheel_reject_p = flywheel_subparsers.add_parser(

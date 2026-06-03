@@ -21,6 +21,7 @@ write to. ``routing.config.yaml`` is never opened in write mode.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -364,9 +365,83 @@ def _approve_skill_promotion(
     return f"skill '{name}' (move + green rule)", applied
 
 
+def _has_successful_quarantine_execution(skill_name: str) -> bool:
+    """True if a quarantine_skill_disposition('once') event for ``skill_name``
+    exists in any Kaizen ledger (Sprint 53.2 Phase 4 — strict gate).
+
+    Scans every session file under ``~/.grove/.kaizen_ledger/`` because the
+    "allow once" execution may have happened in any session before the
+    operator runs ``flywheel approve --strict``.
+    """
+    from hermes_constants import get_hermes_home
+    ledger_dir = Path(get_hermes_home()) / ".kaizen_ledger"
+    if not ledger_dir.is_dir():
+        return False
+    for path in sorted(ledger_dir.glob("*.jsonl")):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        event.get("event_type") == "quarantine_skill_disposition"
+                        and event.get("skill_name") == skill_name
+                        and event.get("disposition") == "once"
+                    ):
+                        return True
+        except OSError:
+            continue
+    return False
+
+
+def _enforce_strict_skill_promotion(proposal: RoutingProposal) -> bool:
+    """Gate a strict skill promotion. Returns True to proceed (Phase 4b).
+
+    Enforces: (a) a review diff of the promotion act, (b) at least one
+    logged successful "allow once" execution of the skill in the Kaizen
+    ledger, and (c) explicit y/N confirmation. Any failure returns False
+    and the caller aborts — the skill stays quarantined.
+    """
+    name = proposal.payload.get("skill_name", "?")
+
+    # (a) Review diff.
+    print(f"Strict promotion review — skill {name!r}:")
+    print(yaml.safe_dump(
+        _proposal_to_diff(proposal), sort_keys=False, default_flow_style=False,
+    ))
+
+    # (b) Require a logged successful execution.
+    if not _has_successful_quarantine_execution(name):
+        print(
+            f"Refusing: no successful 'allow once' execution of {name!r} is "
+            f"logged in the Kaizen ledger. Run the skill once (and allow it) "
+            f"before promoting under --strict.",
+            file=sys.stderr,
+        )
+        return False
+
+    # (c) Explicit confirmation.
+    try:
+        answer = input(
+            f"Promote skill {name!r} to the trusted set? [y/N]: "
+        ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+    if answer not in ("y", "yes"):
+        print(f"Aborted — skill {name!r} remains quarantined.")
+        return False
+    return True
+
+
 def cli_approve(
     partial_id: str,
     *,
+    strict: bool = False,
     queue_path: Optional[Path] = None,
     machine_path: Optional[Path] = None,
 ) -> int:
@@ -407,6 +482,11 @@ def cli_approve(
         target_label, applied = _approve_zone_promotion(proposal)
         applied_label = f"Applied to: {target_label}"
     elif proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
+        # Phase 4 — strict mode gates the promotion (diff + logged
+        # execution + confirmation) before applying. Normal approve is
+        # unchanged (Sprint 47 behavior); --strict only affects this type.
+        if strict and not _enforce_strict_skill_promotion(proposal):
+            return 1
         target_label, applied = _approve_skill_promotion(proposal)
         applied_label = f"Promoted: {target_label}"
     else:

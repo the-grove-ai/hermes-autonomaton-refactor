@@ -107,6 +107,17 @@ class KaizenLedger:
         # here so the operator can audit how often the Agent asked
         # for capacity and how often the policy said yes.
         "escalation_decision",
+        # Sprint 53.2 — skill quarantine pipeline. quarantine_skill_disposition
+        # is the additive, skill-scoped signal `flywheel approve --strict`
+        # reads to confirm a quarantined skill actually ran under "allow
+        # once" (GATE-A decision 2 — kept separate from andon_disposition,
+        # which is tool-scoped). The rest record the post-execution prompt
+        # outcome and the promotion/denial acts for the operator's audit.
+        "quarantine_skill_disposition",
+        "post_execution_kaizen",
+        "skill_promotion_queued",
+        "skill_promotion_denied",
+        "skill_promoted",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:
