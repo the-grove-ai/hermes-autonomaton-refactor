@@ -5883,6 +5883,16 @@ class HermesCLI:
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
 
+        # Sprint 55 — operator recovery guidance. A crashed chat can't fix
+        # itself from inside; these run from a separate terminal.
+        _cprint(f"\n  {_BOLD}── If a session hangs ──{_RST}")
+        _cprint(f"  {_DIM}A crashed chat can't recover from inside itself. From another terminal:{_RST}")
+        ChatConsole().print(f"    [bold {_accent_hex()}]{'hermes doctor':<24}[/] [dim]-[/] see what's running (gateway, chats, MCP) + stale locks")
+        ChatConsole().print(f"    [bold {_accent_hex()}]{'hermes doctor --reap':<24}[/] [dim]-[/] kill crashed/orphaned processes + clear stale locks")
+        ChatConsole().print(f"    [bold {_accent_hex()}]{'hermes doctor --restart':<24}[/] [dim]-[/] reap, then cycle the gateway")
+        _cprint(f"  {_DIM}A chat still attached to a terminal isn't an \"orphan\" — find its PID with{_RST}")
+        _cprint(f"  {_DIM}`hermes doctor` (or `pgrep -f \"hermes chat\"`) and `kill -9 <pid>`.{_RST}")
+
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Autonomaton!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
