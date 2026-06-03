@@ -247,6 +247,9 @@ def compile_candidate(
         "repetition_count": candidate.repetition_count,
         "time_span_days": candidate.time_span_days,
         "rejection_count": candidate.rejection_count,
+        # Sprint 56 — carry the sample queries so `flywheel patterns list`
+        # can show the operator WHAT each pattern matches, not just a hash.
+        "sample_queries": list(candidate.sample_queries),
     }, sort_keys=True)
 
     return CompiledPattern(

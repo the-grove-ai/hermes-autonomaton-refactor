@@ -187,7 +187,9 @@ def _format_summary(proposal: RoutingProposal) -> str:
     elif proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
         ic = proposal.payload.get("intent_class", "?")
         ct = proposal.payload.get("cacheable_type", "?")
-        body = f"retire {ic} [{ct}] pattern to T0 cache"
+        samples = proposal.payload.get("sample_queries") or []
+        sample = f" “{samples[0][:40]}”" if samples else ""
+        body = f"retire {ic} [{ct}] pattern{sample} to T0 cache"
     elif proposal.type == PROPOSAL_TYPE_PATTERN_DEMOTION:
         ic = proposal.payload.get("intent_class", "?")
         body = f"demote {ic} pattern (drift: corrected after a T0 hit)"
@@ -809,6 +811,12 @@ def _approve_pattern_promotion(
         )
     intent_class = proposal.payload.get("intent_class", "?")
     cacheable_type = proposal.payload.get("cacheable_type", "?")
+    samples = proposal.payload.get("sample_queries") or []
+    sample = samples[0] if samples else "?"
+    # Read what the pattern will actually serve so the operator sees it.
+    activated = store.get(pattern_id)
+    cached = activated.cached_response if activated else None
+    invocation = activated.compiled_invocation if activated else None
     logger.info(
         "[flywheel] pattern_promoted: pattern_id=%s intent_class=%s "
         "cacheable_type=%s — now active at T0",
@@ -816,12 +824,28 @@ def _approve_pattern_promotion(
     )
     applied = {
         "pattern_id": pattern_id,
+        "sample_query": sample,
         "intent_class": intent_class,
         "cacheable_type": cacheable_type,
+        "cached_response": cached,
+        "compiled_invocation": invocation,
         "status": STATUS_ACTIVE,
         "tier": "T0",
+        "effect": "the next matching query resolves from T0 — no model call",
     }
-    return f"{intent_class} [{cacheable_type}] pattern", applied
+    if cacheable_type == "static":
+        label = (
+            f"pattern for “{sample}” ({intent_class}, static). "
+            f"Cached response: {cached!r}. "
+            f"Next matching query resolves from T0 — no model call."
+        )
+    else:
+        label = (
+            f"pattern for “{sample}” ({intent_class}, executable). "
+            f"Compiled invocation: {invocation}. "
+            f"Next matching query executes the tool model-free."
+        )
+    return label, applied
 
 
 def _approve_pattern_demotion(
