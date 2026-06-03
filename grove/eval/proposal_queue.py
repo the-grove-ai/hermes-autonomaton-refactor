@@ -39,6 +39,7 @@ __all__ = [
     "PROPOSAL_TYPE_ROUTING_ADJUSTMENT",
     "PROPOSAL_TYPE_ZONE_PROMOTION",
     "PROPOSAL_TYPE_SKILL_PROMOTION",
+    "PROPOSAL_TYPE_PATTERN_PROMOTION",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -68,6 +69,13 @@ PROPOSAL_TYPE_ZONE_PROMOTION = "zone_promotion"
 # CLI approve routes this to grove.sovereignty.promote() + a green zone
 # rule for the promoted path (see grove/flywheel_cli.py).
 PROPOSAL_TYPE_SKILL_PROMOTION = "skill_promotion"
+# Sprint 48 — a stable T1 pattern the compiler proposes retiring to the
+# deterministic T0 cache. Payload shape:
+#   {"pattern_id", "t0_key", "intent_class", "cacheable_type",
+#    "evidence_hash", "promotion_evidence": {...}, "sample_queries": [...]}
+# The compiled entry already lives (status=suspended) in pattern_cache.db;
+# approve flips it to active (see grove/flywheel_cli.py).
+PROPOSAL_TYPE_PATTERN_PROMOTION = "pattern_promotion"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 

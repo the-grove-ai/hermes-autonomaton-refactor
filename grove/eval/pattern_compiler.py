@@ -242,3 +242,77 @@ def compile_from_store(
     wanted = set(candidate.evidence_turn_ids)
     evidence = [r for r in store.latest_by_turn() if r.turn_id in wanted]
     return compile_candidate(candidate, evidence, now_iso=now_iso)
+
+
+# ── promotion proposals (Sprint 48 Phase 3) ───────────────────────────
+
+
+def _synth_pattern_eval_hash(pattern_id: str) -> str:
+    return "sha256:" + hashlib.sha256(
+        f"pattern_promotion|{pattern_id}".encode("utf-8")
+    ).hexdigest()
+
+
+def propose_pattern_promotions(
+    store: Any,
+    pattern_store: Any,
+    *,
+    queue_path: Optional[Path] = None,
+    now_iso: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Scan → compile → queue. For each candidate not already in the pattern
+    store (never re-propose a known/rejected pattern), compile it; if it
+    compiles safely, write the suspended entry to ``pattern_store`` and queue a
+    ``pattern_promotion`` proposal. Returns the queued proposal ids.
+
+    The system PROPOSES; the operator approves (GATE-A). This never activates
+    a pattern."""
+    from grove.eval.proposal_queue import (
+        RoutingProposal,
+        PROPOSAL_TYPE_PATTERN_PROMOTION,
+        compute_proposal_id,
+        append as _queue_append,
+    )
+
+    cfg = config or load_pattern_cache_config()
+    candidates = scan_candidates(store, cfg)
+    known = {p.pattern_id for p in pattern_store.all()}  # compiled / active / rejected
+    now = now_iso or datetime.now(timezone.utc).isoformat()
+    queued: List[str] = []
+
+    for cand in candidates:
+        if cand.t0_key in known:
+            continue  # never re-propose a known pattern (incl. rejected)
+        compiled = compile_from_store(cand, store, now_iso=now)
+        if compiled is None:
+            continue  # not safely compilable (variance / legacy / tool drift)
+        pattern_store.upsert(compiled)  # status=suspended until approved
+
+        payload = {
+            "pattern_id": cand.t0_key,
+            "t0_key": cand.t0_key,
+            "intent_class": cand.intent_class,
+            "cacheable_type": cand.cacheable_type,
+            "evidence_hash": compiled.evidence_hash,
+            "promotion_evidence": {
+                "repetition_count": cand.repetition_count,
+                "time_span_days": cand.time_span_days,
+                "rejection_count": cand.rejection_count,
+            },
+            "sample_queries": list(cand.sample_queries),
+        }
+        evidence = tuple(cand.evidence_turn_ids)
+        proposal = RoutingProposal(
+            proposal_id=compute_proposal_id(
+                type=PROPOSAL_TYPE_PATTERN_PROMOTION, payload=payload, evidence=evidence,
+            ),
+            type=PROPOSAL_TYPE_PATTERN_PROMOTION,
+            payload=payload,
+            evidence=evidence,
+            eval_hash=_synth_pattern_eval_hash(cand.t0_key),
+            created_at=now,
+        )
+        if _queue_append(proposal, path=queue_path):
+            queued.append(proposal.proposal_id)
+    return queued

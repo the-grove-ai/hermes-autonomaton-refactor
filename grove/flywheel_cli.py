@@ -94,9 +94,24 @@ def _proposal_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,
+        PROPOSAL_TYPE_PATTERN_PROMOTION,
     )
     if proposal.type in (PROPOSAL_TYPE_ROUTING_ADJUSTMENT, "routing_update"):
         return _routing_adjustment_to_diff(proposal)
+    if proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
+        # Sprint 48 — the "diff" is retiring a stable pattern to the
+        # deterministic T0 cache (the compiled entry already exists,
+        # suspended, in pattern_cache.db; approve flips it to active).
+        ev = proposal.payload.get("promotion_evidence", {})
+        return {
+            "pattern_promotion": {
+                "intent_class": proposal.payload.get("intent_class", "?"),
+                "cacheable_type": proposal.payload.get("cacheable_type", "?"),
+                "tier": "T1 → T0 (deterministic; no model call)",
+                "evidence": ev,
+                "sample_queries": proposal.payload.get("sample_queries", []),
+            },
+        }
     if proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
         # Sprint 53.2 — the "diff" the operator reviews is the promotion
         # act: move the skill out of quarantine and greenlight its path.
@@ -147,6 +162,7 @@ def _format_summary(proposal: RoutingProposal) -> str:
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,
+        PROPOSAL_TYPE_PATTERN_PROMOTION,
     )
     short_id = proposal.proposal_id.split(":")[-1][:12]
     n_evidence = len(proposal.evidence)
@@ -154,6 +170,10 @@ def _format_summary(proposal: RoutingProposal) -> str:
         rule = proposal.payload.get("rule", "?")
         intents = ", ".join(proposal.payload.get("add_intents", []))
         body = f"add {intents} to routing.{rule}"
+    elif proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
+        ic = proposal.payload.get("intent_class", "?")
+        ct = proposal.payload.get("cacheable_type", "?")
+        body = f"retire {ic} [{ct}] pattern to T0 cache"
     elif proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
         name = proposal.payload.get("skill_name", "?")
         body = f"promote quarantined skill {name!r} → trusted"
@@ -203,12 +223,19 @@ def cli_list(*, queue_path: Optional[Path] = None) -> int:
 # ── scan (T0 pattern cache — Sprint 48) ──────────────────────────────
 
 
-def cli_scan(*, store: Optional[Any] = None) -> int:
+def cli_scan(
+    *,
+    store: Optional[Any] = None,
+    propose: bool = False,
+    queue_path: Optional[Path] = None,
+) -> int:
     """Scan the intent store for T0 pattern-cache candidates.
 
-    Read-only: groups Flywheel evidence by a conservative normalized key and
-    prints the patterns that meet the configured thresholds. Does NOT queue
-    proposals (Phase 3 wires ``--propose``)."""
+    Read-only by default: groups Flywheel evidence by a conservative
+    normalized key and prints the patterns that meet the configured
+    thresholds. With ``propose=True`` it also compiles each safely-compilable
+    candidate and queues a ``pattern_promotion`` proposal for operator
+    approval (skipping patterns already known/rejected)."""
     from grove.eval.pattern_compiler import (
         scan_candidates, load_pattern_cache_config,
     )
@@ -242,8 +269,23 @@ def cli_scan(*, store: Optional[Any] = None) -> int:
         for q in c.sample_queries:
             print(f"      • {q[:80]}")
         print()
-    print("These are candidates only — promotion proposals are queued "
-          "separately for operator approval.")
+
+    if not propose:
+        print("These are candidates only. Re-run with --propose to queue "
+              "promotion proposals for approval.")
+        return 0
+
+    from grove.eval.pattern_compiler import propose_pattern_promotions
+    from grove.pattern_cache import PatternCacheStore
+    queued = propose_pattern_promotions(
+        store, PatternCacheStore(), queue_path=queue_path, config=cfg,
+    )
+    if queued:
+        print(f"Queued {len(queued)} pattern-promotion proposal(s). "
+              f"Review: autonomaton flywheel list / approve <id>.")
+    else:
+        print("No new compilable candidates to propose (already known, or "
+              "evidence not safely compilable — variance / legacy records).")
     return 0
 
 
@@ -485,6 +527,47 @@ def _enforce_strict_skill_promotion(proposal: RoutingProposal) -> bool:
     return True
 
 
+def _approve_pattern_promotion(
+    proposal: RoutingProposal,
+) -> Tuple[str, Dict[str, Any]]:
+    """Activate a compiled T0 pattern (Sprint 48 Phase 3).
+
+    The compiled entry already lives (status=suspended) in
+    ``pattern_cache.db``; approval flips it to ``active`` so Sprint 49's T0
+    path will serve it, and logs a ``pattern_promoted`` telemetry event. The
+    system never self-activates — this only runs on operator approval."""
+    from datetime import datetime, timezone
+    from grove.pattern_cache import PatternCacheStore, STATUS_ACTIVE
+
+    pattern_id = proposal.payload.get("pattern_id")
+    if not isinstance(pattern_id, str) or not pattern_id.strip():
+        raise ValueError(
+            f"pattern_promotion payload missing 'pattern_id': {proposal.payload!r}"
+        )
+    store = PatternCacheStore()
+    now = datetime.now(timezone.utc).isoformat()
+    if not store.set_status(pattern_id, STATUS_ACTIVE, promoted_at=now):
+        raise ValueError(
+            f"compiled pattern {pattern_id!r} not found in pattern_cache.db — "
+            f"cannot activate (was it compiled?)."
+        )
+    intent_class = proposal.payload.get("intent_class", "?")
+    cacheable_type = proposal.payload.get("cacheable_type", "?")
+    logger.info(
+        "[flywheel] pattern_promoted: pattern_id=%s intent_class=%s "
+        "cacheable_type=%s — now active at T0",
+        pattern_id, intent_class, cacheable_type,
+    )
+    applied = {
+        "pattern_id": pattern_id,
+        "intent_class": intent_class,
+        "cacheable_type": cacheable_type,
+        "status": STATUS_ACTIVE,
+        "tier": "T0",
+    }
+    return f"{intent_class} [{cacheable_type}] pattern", applied
+
+
 def cli_approve(
     partial_id: str,
     *,
@@ -511,6 +594,7 @@ def cli_approve(
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,
+        PROPOSAL_TYPE_PATTERN_PROMOTION,
     )
 
     proposal = _resolve_proposal(partial_id, queue_path=queue_path)
@@ -528,6 +612,9 @@ def cli_approve(
     elif proposal.type == PROPOSAL_TYPE_ZONE_PROMOTION:
         target_label, applied = _approve_zone_promotion(proposal)
         applied_label = f"Applied to: {target_label}"
+    elif proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
+        target_label, applied = _approve_pattern_promotion(proposal)
+        applied_label = f"Promoted to T0: {target_label}"
     elif proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
         # Phase 4 — strict mode gates the promotion (diff + logged
         # execution + confirmation) before applying. Normal approve is
@@ -538,8 +625,9 @@ def cli_approve(
         applied_label = f"Promoted: {target_label}"
     else:
         print(
-            f"Cannot approve proposal type {proposal.type!r}. "
-            f"Supported: routing_adjustment, zone_promotion, skill_promotion.",
+            f"Cannot approve proposal type {proposal.type!r}. Supported: "
+            f"routing_adjustment, zone_promotion, skill_promotion, "
+            f"pattern_promotion.",
             file=sys.stderr,
         )
         return 1
@@ -584,6 +672,23 @@ def cli_reject(
             f"No proposal matches {partial_id!r}.", file=sys.stderr,
         )
         return 1
+
+    # Sprint 48 — a rejected pattern is marked rejected in pattern_cache.db so
+    # the scanner NEVER re-proposes the same pattern (3e). The compiled entry
+    # stays as a tombstone; the proposer skips any pattern already in the store.
+    from grove.eval.proposal_queue import PROPOSAL_TYPE_PATTERN_PROMOTION
+    if proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
+        pattern_id = proposal.payload.get("pattern_id")
+        if isinstance(pattern_id, str) and pattern_id:
+            try:
+                from grove.pattern_cache import PatternCacheStore, STATUS_REJECTED
+                PatternCacheStore().set_status(pattern_id, STATUS_REJECTED)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[flywheel] could not mark pattern %s rejected: %r",
+                    pattern_id, exc,
+                )
+
     target = queue_path or default_queue_path()
     removed = remove(proposal.proposal_id, path=target)
     if not removed:

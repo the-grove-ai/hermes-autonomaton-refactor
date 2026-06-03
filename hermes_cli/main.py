@@ -5500,7 +5500,7 @@ def cmd_flywheel(args):
     if action == "list":
         sys.exit(flywheel_cli.cli_list())
     elif action == "scan":
-        sys.exit(flywheel_cli.cli_scan())
+        sys.exit(flywheel_cli.cli_scan(propose=getattr(args, "propose", False)))
     elif action == "show":
         sys.exit(flywheel_cli.cli_show(args.proposal_id))
     elif action == "approve":
@@ -10401,9 +10401,14 @@ def main():
         "list", help="Show all pending routing proposals"
     )
 
-    flywheel_subparsers.add_parser(
+    flywheel_scan_p = flywheel_subparsers.add_parser(
         "scan",
-        help="Scan the intent store for T0 pattern-cache candidates (read-only)",
+        help="Scan the intent store for T0 pattern-cache candidates",
+    )
+    flywheel_scan_p.add_argument(
+        "--propose",
+        action="store_true",
+        help="Also compile candidates and queue pattern_promotion proposals for approval.",
     )
 
     flywheel_show_p = flywheel_subparsers.add_parser(

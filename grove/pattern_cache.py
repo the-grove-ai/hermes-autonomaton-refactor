@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 STATUS_ACTIVE = "active"
 STATUS_SUSPENDED = "suspended"   # compiled, not yet operator-approved
 STATUS_DEMOTED = "demoted"       # was active, demoted back to T1
+STATUS_REJECTED = "rejected"     # operator rejected — never re-propose
 
 # Small, unambiguous contraction expansions. Each preserves meaning exactly —
 # no abbreviation guessing ("fav" → "favorite" is intentionally NOT here).
