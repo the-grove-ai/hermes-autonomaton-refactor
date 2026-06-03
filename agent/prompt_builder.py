@@ -24,6 +24,7 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_platform,
 )
+from grove.skills import ANDON_DIRNAME
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -864,11 +865,34 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
             logger.debug("Could not remove skills prompt snapshot: %s", e)
 
 
+def _is_quarantined_path(path: Path) -> bool:
+    """True if *path* lives under the ``.andon/`` quarantine (Sprint 53.2).
+
+    Quarantined skills are excluded from the ACTIVE skills system-prompt
+    section and the cache manifest below — they surface only via the
+    dedicated :func:`_build_andon_proposals_section` ("awaiting promotion").
+    They remain loadable via ``skill_view`` and visible (tagged
+    ``[QUARANTINED]``) in ``skills list`` per the Sprint 53.2 GATE-A
+    "flag, don't hide" decision, which formally supersedes the Sprint 06a
+    assertion that quarantined skills "cannot be loaded with skill_view."
+    """
+    return ANDON_DIRNAME in path.parts
+
+
 def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files."""
+    """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files.
+
+    Quarantined (``.andon/``) skills are excluded: the manifest describes
+    the ACTIVE skill set, so a snapshot stays valid across quarantine
+    churn. Editing a quarantined skill invalidates its prompt cache via
+    the explicit ``clear_skills_system_prompt_cache`` call in
+    ``skill_manager``, not through this manifest.
+    """
     manifest: dict[str, list[int]] = {}
     for filename in ("SKILL.md", "DESCRIPTION.md"):
         for path in iter_skill_index_files(skills_dir, filename):
+            if _is_quarantined_path(path):
+                continue
             try:
                 st = path.stat()
             except OSError:
@@ -1082,6 +1106,8 @@ def build_skills_system_prompt(
         # Cold path: full filesystem scan + write snapshot for next time
         skill_entries: list[dict] = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
+            if _is_quarantined_path(skill_file):
+                continue  # Sprint 53.2 — quarantined skills are not active
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
             skill_entries.append(entry)
@@ -1102,6 +1128,8 @@ def build_skills_system_prompt(
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
+            if _is_quarantined_path(desc_file):
+                continue  # Sprint 53.2 — quarantined skills are not active
             try:
                 content = desc_file.read_text(encoding="utf-8")
                 fm, _ = parse_frontmatter(content)

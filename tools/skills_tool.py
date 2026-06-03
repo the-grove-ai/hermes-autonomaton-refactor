@@ -78,6 +78,7 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
+from grove.skills import ANDON_DIRNAME
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
@@ -547,6 +548,26 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
+def _iter_quarantined_skill_files(scan_dir: Path):
+    """Yield ``SKILL.md`` paths under ``scan_dir/.andon/`` (Sprint 53.2).
+
+    ``iter_skill_index_files`` hard-excludes ``.andon`` so quarantined
+    skills stay OUT of the active prompt set. Per GATE-A decision 1
+    (flag, don't hide — superseding Sprint 06a's "cannot be loaded with
+    skill_view"), ``skills_list`` and ``skill_view`` DO surface them,
+    loadable but tagged ``[QUARANTINED]``, so the operator can try a
+    freshly authored skill before promoting it. Only the local skills
+    directory carries a ``.andon/``; external dirs yield nothing.
+    """
+    andon_root = scan_dir / ANDON_DIRNAME
+    if not andon_root.is_dir():
+        return
+    for child in sorted(andon_root.iterdir()):
+        skill_md = child / "SKILL.md"
+        if child.is_dir() and skill_md.exists():
+            yield skill_md
+
+
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.grove/skills/ and external dirs.
 
@@ -573,11 +594,19 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
-        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+        # iter_skill_index_files hard-excludes .andon, keeping quarantined
+        # skills out of the ACTIVE set. Per GATE-A decision 1 (flag, don't
+        # hide), append them explicitly AFTER active skills so active wins
+        # the ``seen_names`` dedup; quarantined survivors are tagged
+        # [QUARANTINED] below.
+        active_files = list(iter_skill_index_files(scan_dir, "SKILL.md"))
+        quarantined_files = list(_iter_quarantined_skill_files(scan_dir))
+        for skill_md in (*active_files, *quarantined_files):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
             skill_dir = skill_md.parent
+            quarantined = ANDON_DIRNAME in skill_md.parts
 
             try:
                 content = skill_md.read_text(encoding="utf-8")[:4000]
@@ -606,11 +635,19 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 category = _get_category_from_path(skill_md)
 
                 seen_names.add(name)
-                skills.append({
+                entry = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                }
+                if quarantined:
+                    # Loadable via skill_view, but NOT operator-approved.
+                    # Surface the status unmistakably so the agent never
+                    # confuses a quarantined draft with a promoted skill.
+                    entry["quarantined"] = True
+                    entry["status"] = "[QUARANTINED]"
+                    entry["description"] = f"[QUARANTINED] {description}".rstrip()
+                skills.append(entry)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
@@ -996,6 +1033,14 @@ def skill_view(
                     _record(categorized_path, categorized_path / "SKILL.md")
                 elif categorized_path.with_suffix(".md").exists():
                     _record(None, categorized_path.with_suffix(".md"))
+
+            # Strategy 1c: quarantined skills (Sprint 53.2). iter_skill_index_files
+            # excludes .andon, so resolve a quarantined draft explicitly by name
+            # — the operator can load and try it before promotion (flag, don't
+            # hide; GATE-A decision 1 supersedes Sprint 06a's non-loadable rule).
+            andon_path = search_dir / ANDON_DIRNAME / name
+            if andon_path.is_dir() and (andon_path / "SKILL.md").exists():
+                _record(andon_path, andon_path / "SKILL.md")
 
             # Strategy 2: recursive by directory name (catches nested skills
             # like "foundations/runtime/explore-codebase" called by bare name).
@@ -1403,6 +1448,14 @@ def skill_view(
             if setup_needed
             else SkillReadinessStatus.AVAILABLE.value,
         }
+
+        # Sprint 53.2 — surface quarantine status so the agent knows a
+        # loaded skill is NOT yet operator-approved. Executing its scripts
+        # hits the .andon yellow zone rule (four-choice Kaizen) and, on
+        # success, the post-execution promotion prompt.
+        if ANDON_DIRNAME in skill_md.parts:
+            result["quarantined"] = True
+            result["status"] = "[QUARANTINED]"
 
         setup_help = next((e["help"] for e in required_env_vars if e.get("help")), None)
         if setup_help:

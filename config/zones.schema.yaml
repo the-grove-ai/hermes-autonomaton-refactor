@@ -267,6 +267,17 @@ tool_zones:
       - match_pattern: '.*\.grove/skills/productivity/google-workspace/.*'
         zone: green
         reason: "Google Workspace skill wrapper — known-safe script path."
+      # ── Quarantined skills: path-prefix YELLOW (Sprint 53.2) ───────
+      # Skills the Autonomaton authored land in ~/.grove/skills/.andon/
+      # (the quarantine) and are NOT yet operator-approved. Executing one
+      # must halt for a four-choice Kaizen disposition ("allow once" to
+      # try it) — the "try before you buy" gate that precedes promotion.
+      # This rule MUST precede the broad `.grove/skills/.*` green rule
+      # below: first-match-wins means quarantined paths halt while
+      # promoted paths (already moved OUT of .andon/) pass green.
+      - match_pattern: '.*\.grove/skills/\.andon/.*'
+        zone: yellow
+        reason: "Quarantined skill — not yet promoted. Execution requires operator disposition (Sprint 53.2 quarantine pipeline)."
       # ── Promoted skills: path-prefix GREEN ─────────────────────────
       # Any terminal command whose argument references a path under
       # ~/.grove/skills/ executes a skill the operator already approved
