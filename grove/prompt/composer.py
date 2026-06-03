@@ -321,10 +321,15 @@ def _tool_affordances_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     promoted = _load_promoted_skills(skills_root=skills_root)
     skills_line = ""
     if promoted:
-        skill_summaries = ", ".join(
-            f"{sname} ({sdesc})" for sname, sdesc in promoted
+        # One line per skill, each ending with the skill_view-first reminder so
+        # the directive rides alongside the affordance itself — the agent can't
+        # see the skill exists without also seeing that it must read the docs
+        # before invoking it (Sprint 56 hotfix — strengthen skill_view-first).
+        skill_summaries = "\n".join(
+            f"- {sname} ({sdesc}) — call skill_view first"
+            for sname, sdesc in promoted
         )
-        skills_line = f"\nAvailable skills: {skill_summaries}"
+        skills_line = f"\nAvailable skills:\n{skill_summaries}"
 
     text = (
         "## Available tools (turn-0 affordances)\n"

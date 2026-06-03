@@ -155,9 +155,12 @@ GROVE_AGENT_HELP_GUIDANCE = (
     "If the user asks about configuring, setting up, or using Hermes Agent "
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
     "before answering. Docs: https://hermes-agent.nousresearch.com/docs\n"
-    "When using a skill listed in Available Skills, ALWAYS call skill_view "
-    "first to read its documentation and learn the correct invocation "
-    "command. Do not guess at command names or paths."
+    "CRITICAL: You MUST call skill_view to read a skill's documentation "
+    "BEFORE executing any terminal command for that skill. If you have not "
+    "called skill_view in this turn, you do not have the invocation command. "
+    "Do not guess. Do not use bare command names from your training data. "
+    "Call skill_view first, read the exact command from the SKILL.md, then "
+    "execute it."
 )
 
 MEMORY_GUIDANCE = (

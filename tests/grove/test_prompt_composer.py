@@ -186,14 +186,17 @@ class TestToolAffordancesProvider:
         assert "Send iMessages." in result.text
 
     def test_skills_line_format(self, tmp_path):
-        """Skills line must be: Available skills: name (desc), name2 (desc2), ..."""
+        """Skills section: a header plus one bulleted line per skill, each
+        ending with the skill_view-first reminder (Sprint 56 hotfix)."""
         _make_skill(tmp_path, "cat/alpha", "name: alpha\ndescription: Alpha skill.")
         _make_skill(tmp_path, "cat/beta", "name: beta\ndescription: Beta skill.")
         ctx = _base_ctx(tmp_path)
         result = _tool_affordances_provider(ctx)
         assert result is not None
         # Check the exact format
-        assert "Available skills: alpha (Alpha skill.), beta (Beta skill.)" in result.text
+        assert "Available skills:\n" in result.text
+        assert "- alpha (Alpha skill.) — call skill_view first" in result.text
+        assert "- beta (Beta skill.) — call skill_view first" in result.text
 
     def test_skills_sorted_alphabetically_in_output(self, tmp_path):
         for name in ("zebra", "aardvark", "mango"):
