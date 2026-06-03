@@ -143,3 +143,44 @@ def log_retrieval(
     }
     logger.info("retrieval %s", json.dumps(event, sort_keys=True))
     return event
+
+
+def log_pattern_cache_event(
+    *,
+    event_type: str,
+    pattern_id: Optional[str] = None,
+    t0_key: Optional[str] = None,
+    intent_class: Optional[str] = None,
+    cacheable_type: Optional[str] = None,
+    response_time_ms: Optional[float] = None,
+    correction_turn_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Emit a T0 pattern-cache event and return the event dict (Sprint 49 D5).
+
+    ``event_type`` is one of:
+
+    * ``t0_cache_hit`` — a query resolved from the compiled cache with no
+      model call. Carries ``pattern_id`` / ``t0_key`` / ``intent_class`` /
+      ``cacheable_type`` / ``response_time_ms``.
+    * ``t0_cache_miss`` — a query did not match any active pattern; logged
+      with ``t0_key`` only so future pattern identification can mine the
+      misses without storing the message.
+    * ``pattern_drift_detected`` — a served pattern was corrected on the next
+      turn; carries ``pattern_id`` and the ``correction_turn_id``.
+
+    Fields not relevant to the given event type are left ``None``. Cumulative
+    savings is NOT computed here — the ``flywheel patterns stats`` command
+    derives it from the served hit_count so the hot path logs only the raw
+    signal (the Ratchet pattern: surface the event, derive downstream)."""
+    event: dict[str, Any] = {
+        "event_type": event_type,
+        "pattern_id": pattern_id,
+        "t0_key": t0_key,
+        "intent_class": intent_class,
+        "cacheable_type": cacheable_type,
+        "response_time_ms": response_time_ms,
+        "correction_turn_id": correction_turn_id,
+        "timestamp": utc_now_iso(),
+    }
+    logger.info("%s %s", event_type, json.dumps(event, sort_keys=True))
+    return event

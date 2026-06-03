@@ -118,6 +118,17 @@ def default_pattern_cache_path() -> Path:
     return Path(get_hermes_home()) / "pattern_cache.db"
 
 
+def pattern_cache_enabled() -> bool:
+    """The T0 kill switch (GATE-A D6). True unless ``pattern_cache.enabled``
+    is explicitly false in routing.config.yaml.
+
+    Reuses the compiler's config loader so the operator copy / repo default
+    precedence stays in one place. Lazy-imported to avoid the import cycle
+    (``pattern_compiler`` imports this module)."""
+    from grove.eval.pattern_compiler import load_pattern_cache_config
+    return bool(load_pattern_cache_config().get("enabled", True))
+
+
 _COLUMNS = (
     "pattern_id", "t0_key", "intent_class", "cacheable_type",
     "cached_response", "compiled_invocation", "evidence_hash", "status",
@@ -200,6 +211,52 @@ class PatternCacheStore:
                 (t0_key, STATUS_ACTIVE),
             ).fetchone()
         return self._row_to_pattern(row) if row else None
+
+    def get_active_for_message(self, message: str) -> Optional[CompiledPattern]:
+        """Active pattern for a raw message, intent-class-agnostic (Sprint 49).
+
+        The dispatch-time lookup does NOT know the intent_class — that comes
+        only from the classifier, the very LLM call T0 exists to avoid. So the
+        key (which embeds intent_class) cannot be computed directly. Instead
+        compute all candidate ``t0_key``s — one per intent class — and resolve
+        them in a single indexed ``IN`` query. Deterministic, no model call.
+
+        Cross-intent collision (the same normalized text promoted under two
+        different intents) resolves to the match whose intent_class is earliest
+        in ``INTENT_CLASSES`` order, so the result is stable across calls. Such
+        a double-promotion is vanishingly rare — the compiler's variance gate
+        keeps each pattern internally consistent — but the ordering makes the
+        tie-break a fixed rule rather than SQLite row order.
+        """
+        from grove.classify import INTENT_CLASSES
+
+        key_rank = {t0_key(ic, message): i for i, ic in enumerate(INTENT_CLASSES)}
+        keys = list(key_rank)
+        placeholders = ", ".join("?" * len(keys))
+        with self._connect() as con:
+            rows = con.execute(
+                f"SELECT * FROM t0_patterns WHERE t0_key IN ({placeholders}) "
+                f"AND status = ?",
+                (*keys, STATUS_ACTIVE),
+            ).fetchall()
+        if not rows:
+            return None
+        rows = sorted(rows, key=lambda r: key_rank.get(r["t0_key"], len(key_rank)))
+        return self._row_to_pattern(rows[0])
+
+    def record_hit(self, pattern_id: str) -> bool:
+        """Bump ``hit_count`` and stamp ``last_hit_at`` for a served pattern.
+
+        Atomic increment so concurrent sessions serving the same pattern do
+        not lose hits. Returns False if the pattern_id is unknown."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as con:
+            cur = con.execute(
+                "UPDATE t0_patterns SET hit_count = hit_count + 1, last_hit_at = ? "
+                "WHERE pattern_id = ?",
+                (now, pattern_id),
+            )
+        return cur.rowcount > 0
 
     def all(self) -> List[CompiledPattern]:
         with self._connect() as con:

@@ -4428,12 +4428,34 @@ class HermesCLI:
             resolve_tier_to_runtime,
         )
 
+        # Sprint 49 — T0 Pattern Cache pre-route skip. If the message resolves
+        # to an active compiled pattern, the classifier (route_for_agent, an
+        # LLM call) MUST NOT fire. The Dispatcher's dispatch_turn intercept
+        # serves the cached response model-free; routing is moot for a hit.
+        # An explicit operator tier/model override takes precedence — the
+        # operator forcing a tier wants the model, not the cache.
+        _tier_override = self._tier_override
+        _t0_hit = False
+        if not _tier_override and not self._operator_model_arg:
+            try:
+                from grove.pattern_cache import (
+                    pattern_cache_enabled,
+                    PatternCacheStore,
+                )
+                _t0_hit = bool(
+                    pattern_cache_enabled()
+                    and PatternCacheStore().get_active_for_message(user_message)
+                    is not None
+                )
+            except Exception as exc:
+                logger.debug("[cli] T0 pre-route check failed: %r", exc)
+
         # Cognitive Router: classify this turn and select a tier. One
         # route_for_agent() call — one classification, one routing
         # decision per turn. None only on a vanilla install with no
-        # routing config, which leaves the session's model unchanged.
-        _tier_override = self._tier_override
-        _routed = route_for_agent(
+        # routing config (or a T0 hit above), which leaves the session's
+        # model unchanged.
+        _routed = None if _t0_hit else route_for_agent(
             message=user_message,
             explicit_model=self._operator_model_arg,
             explicit_tier=_tier_override,

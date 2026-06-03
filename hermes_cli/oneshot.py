@@ -372,10 +372,21 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
+    # Sprint 49 — T0 Pattern Cache pre-route skip. If the message resolves
+    # to an active compiled pattern, the classifier (route_for_agent, an LLM
+    # call) MUST NOT fire — that is the whole point of T0. The Dispatcher's
+    # dispatch_turn intercept serves the cached response model-free; routing
+    # is moot for a hit, so leave the legacy model resolution in place.
+    from grove.pattern_cache import pattern_cache_enabled, PatternCacheStore
+    _t0_hit = bool(
+        pattern_cache_enabled()
+        and PatternCacheStore().get_active_for_message(prompt) is not None
+    )
+
     # Cognitive Router: --model feeds INTO the router, which resolves it
     # to a tier. The router runs whenever routing.config.yaml is present;
     # the legacy chain above is the vanilla-install fallback.
-    _routed = route_for_agent(message=prompt, explicit_model=model)
+    _routed = None if _t0_hit else route_for_agent(message=prompt, explicit_model=model)
     if _routed is not None:
         effective_model = _routed.tier_config.model
         effective_provider = _routed.tier_config.provider

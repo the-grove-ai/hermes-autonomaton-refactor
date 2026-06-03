@@ -48,6 +48,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
+from grove.pattern_cache import pattern_cache_enabled
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -531,6 +533,15 @@ class Dispatcher:
         # Read via back-reference by ``AIAgent.run_conversation``'s tail
         # to surface ``result["routing_decision"]`` for webui consumers.
         self._current_turn_routing_decision: Optional[Any] = None
+        # Sprint 49 — set to a served pattern's pattern_id when THIS turn
+        # resolved via a T0 cache hit (else None). Captured into a local at
+        # the next ``dispatch_turn`` entry so the correction-driven
+        # auto-demotion check (Phase 2) can ask "was the previous turn a T0
+        # hit?" before this turn's reset clears it.
+        self._current_turn_t0_pattern_id: Optional[str] = None
+        # Sprint 49 — lazily-constructed PatternCacheStore, reused across
+        # turns so the hot path doesn't reopen the DB handle each lookup.
+        self._pattern_store: Optional[Any] = None
         self._current_turn_start: Optional[float] = None
         self._current_turn_tools_yielded: List[str] = []
         # Sprint 48 — per-turn tool invocations (name + args) for the T0
@@ -1166,6 +1177,7 @@ class Dispatcher:
         self._current_turn_id = f"{session_id or 'unknown'}#{self._turn_counter}"
         self._current_turn_classification = None
         self._current_turn_routing_decision = None
+        self._current_turn_t0_pattern_id = None
         self._current_turn_api_call_count = 0
         self._current_turn_start = _time.monotonic()
         self._current_turn_tools_yielded = []
@@ -1199,6 +1211,20 @@ class Dispatcher:
         # is the signal that branches the previous turn's outcome
         # between success and correction. Reordering: classify → then
         # finalize → then drive the generator.
+        # Sprint 49 — T0 Pattern Cache short-circuit. BEFORE classification,
+        # BEFORE the reasoning generator. If the raw message resolves to an
+        # active compiled pattern, serve it deterministically (no model call,
+        # no classifier, no agent reasoning) and return the legacy result
+        # dict directly. This is the cost-curve endpoint: T0 remembers.
+        # ``_t0_intercept`` finalizes the previous turn, records the hit,
+        # writes telemetry + the intent record, and returns the result dict;
+        # a miss returns None and falls through to the normal flow unchanged.
+        if isinstance(user_message, str) and pattern_cache_enabled():
+            _t0_result = self._t0_intercept(
+                agent, user_message, previous_turn_id, kwargs,
+            )
+            if _t0_result is not None:
+                return _t0_result
         if not already_routed and isinstance(user_message, str):
             self._classify_and_bind_turn(agent, user_message, ledger)
         else:
@@ -1928,6 +1954,8 @@ class Dispatcher:
         outcome: str,
         final_response_chars: Optional[int] = None,
         response_content: Optional[str] = None,
+        intent_class_override: Optional[str] = None,
+        tier_override: Optional[str] = None,
     ) -> None:
         """Write an IntentRecord for the current turn if the store is wired.
 
@@ -1969,11 +1997,19 @@ class Dispatcher:
                 # degradation) or never fired. Sentinel-fill so the
                 # record schema validates; downstream consumers filter
                 # by intent_class=="unknown" to identify these.
-                pattern_hash = "unclassified"
-                intent_class = "unknown"
+                #
+                # Sprint 49 — a T0 cache hit also reaches here with no
+                # classifier output (by design: T0 never classifies). The
+                # caller passes ``intent_class_override`` from the served
+                # pattern's stored intent_class so the record is attributed
+                # correctly (A4: downstream reads intent_class off the
+                # record; the pattern fills it identically to a classified
+                # turn). A T0 hit is deterministic, so confidence is 1.0.
+                pattern_hash = "t0_cache_hit" if intent_class_override else "unclassified"
+                intent_class = intent_class_override or "unknown"
                 register_class = "unknown"
                 complexity_signal = "unknown"
-                confidence = 0.0
+                confidence = 1.0 if intent_class_override else 0.0
                 goal_alignment = None
             else:
                 pattern_hash = classification.pattern_hash
@@ -2027,7 +2063,7 @@ class Dispatcher:
                 confidence=confidence,
                 outcome=outcome,
                 goal_alignment=goal_alignment,
-                tier_selected=_current_tier(),
+                tier_selected=(tier_override or _current_tier()),
                 model_used=model_used,
                 tools_yielded=tuple(self._current_turn_tools_yielded),
                 api_calls=api_calls,
@@ -2207,6 +2243,202 @@ class Dispatcher:
         # base_url / api_mode change. The selection rule mirrors the
         # pre-Sprint-35 ``_maybe_route_for_turn`` logic byte-for-byte.
         self._bind_agent_to_tier(agent, decision, resolve_tier_to_runtime)
+
+    # ── Sprint 49 — T0 Pattern Cache dispatch path ──────────────────────
+
+    def _t0_store(self) -> Any:
+        """Lazily-constructed, turn-reused PatternCacheStore handle."""
+        if self._pattern_store is None:
+            from grove.pattern_cache import PatternCacheStore
+            self._pattern_store = PatternCacheStore()
+        return self._pattern_store
+
+    def _t0_intercept(
+        self,
+        agent: Any,
+        user_message: str,
+        previous_turn_id: Optional[str],
+        kwargs: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Serve an active compiled pattern, or return None on a miss.
+
+        The deterministic short-circuit (GATE-A D1/D2). On a hit: finalize
+        the previous turn, compute the response (static cached_response, or
+        an executable tool invocation fired model-free), record the hit,
+        emit telemetry, write the intent record (attributed to the pattern's
+        stored intent_class), persist the exchange to the transcript, and
+        return the legacy result dict. On a miss: log ``t0_cache_miss`` and
+        return None so ``dispatch_turn`` proceeds to normal classification.
+
+        No classifier call. No agent reasoning. The reasoning generator is
+        never driven for a hit — the LLM never boots."""
+        import time as _time
+        from grove.telemetry import (
+            log_pattern_cache_event,
+            log_routing_decision,
+        )
+
+        store = self._t0_store()
+        pattern = store.get_active_for_message(user_message)
+        if pattern is None:
+            # Miss — log a normalized-text handle only (never the message) so
+            # future pattern identification can mine misses (D5). intent_class
+            # is unknown on a miss, so the key is seeded with an empty intent.
+            try:
+                from grove.pattern_cache import t0_key
+                log_pattern_cache_event(
+                    event_type="t0_cache_miss",
+                    t0_key=t0_key("", user_message),
+                )
+            except Exception as exc:
+                logger.debug("[grove.dispatcher] t0_cache_miss log failed: %r", exc)
+            return None
+
+        # ── Hit ──────────────────────────────────────────────────────────
+        # Finalize the previous turn first. A T0 hit never classifies, so
+        # ``_current_turn_classification`` is None → is_correction unread →
+        # the previous turn finalizes as success (a cached answer is not a
+        # correction; corrections miss the cache and take the normal path).
+        if previous_turn_id is not None:
+            self._finalize_previous_turn_pending(previous_turn_id)
+
+        store.record_hit(pattern.pattern_id)
+
+        if pattern.cacheable_type == "static":
+            response_text = pattern.cached_response or ""
+        else:
+            response_text = self._execute_t0_invocation(agent, pattern)
+
+        elapsed_ms = 0.0
+        if self._current_turn_start is not None:
+            elapsed_ms = (_time.monotonic() - self._current_turn_start) * 1000.0
+
+        # Telemetry (D5): the rich pattern-cache event + a routing_decision
+        # carrying the existing pattern_cache_hit flag so tier dashboards and
+        # the routing feed both register the T0 resolution.
+        log_pattern_cache_event(
+            event_type="t0_cache_hit",
+            pattern_id=pattern.pattern_id,
+            t0_key=pattern.t0_key,
+            intent_class=pattern.intent_class,
+            cacheable_type=pattern.cacheable_type,
+            response_time_ms=round(elapsed_ms, 2),
+        )
+        log_routing_decision(
+            tier="T0",
+            reason="pattern_cache hit — deterministic, no model call",
+            model="pattern_cache",
+            pattern_cache_hit=True,
+            intent_class=pattern.intent_class,
+        )
+
+        # Intent record (A4): no classifier ran, so attribute the record to
+        # the pattern's stored intent_class. Pending now; the NEXT turn's
+        # finalize closes it (success, or correction → Phase 2 demotion).
+        self._write_intent_record(
+            agent,
+            outcome="pending",
+            final_response_chars=len(response_text),
+            intent_class_override=pattern.intent_class,
+            tier_override="T0",
+        )
+
+        # Mark this turn as a T0 hit so the next turn's correction check
+        # (Phase 2) can find the served pattern.
+        self._current_turn_t0_pattern_id = pattern.pattern_id
+
+        # Persist the exchange so multi-turn continuity holds (the reasoning
+        # generator — which normally persists — was skipped).
+        self._persist_t0_turn(user_message, response_text)
+
+        return self._t0_result_dict(agent, response_text)
+
+    def _execute_t0_invocation(self, agent: Any, pattern: Any) -> str:
+        """Fire an EXECUTABLE pattern's compiled tool invocation, model-free.
+
+        Parses the stored ``{"tool", "args"}`` and dispatches through the
+        agent's own ``_invoke_tool`` primitive — the same call the Dispatcher's
+        ToolExecutor routes to via ``SideEffectCallbacks.invoke_tool``. No
+        reasoning generator, no LLM. The agent object hosts the tool registry;
+        its cognition never fires.
+
+        Scoping note (Andon-loud, not silent): this path does NOT re-run the
+        tool-zone classifier that the normal intent-yield flow applies. An
+        executable pattern is only promoted from evidence where the tool
+        already ran successfully under the operator's gates; re-gating each
+        cached invocation is a follow-up hardening, flagged in the HANDOFF."""
+        inv: Dict[str, Any] = {}
+        try:
+            inv = _json_mod.loads(pattern.compiled_invocation or "{}")
+        except (ValueError, TypeError) as exc:
+            # Fail loud: a promoted executable pattern with unparseable
+            # invocation is a compile-time defect, not a runtime to swallow.
+            logger.error(
+                "[grove.dispatcher] T0 executable pattern %s has unparseable "
+                "compiled_invocation %r: %r",
+                pattern.pattern_id, pattern.compiled_invocation, exc,
+            )
+            raise
+        tool_name = inv.get("tool")
+        tool_args = inv.get("args") or {}
+        if not isinstance(tool_name, str) or not tool_name:
+            raise ValueError(
+                f"T0 executable pattern {pattern.pattern_id} names no tool: {inv!r}"
+            )
+        result = agent._invoke_tool(
+            tool_name, tool_args, self._current_turn_id or "",
+        )
+        return result if isinstance(result, str) else str(result)
+
+    def _persist_t0_turn(self, user_message: str, response_text: str) -> None:
+        """Append the user + assistant messages for the served turn.
+
+        Best-effort (``append_messages`` logs and continues on failure). The
+        normal path persists inside the reasoning generator; a T0 hit skips
+        the generator, so the Dispatcher writes the transcript itself to keep
+        session history coherent for the next turn."""
+        try:
+            self.append_messages([
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": response_text},
+            ])
+        except Exception as exc:
+            logger.warning(
+                "[grove.dispatcher] T0 transcript persist failed: %r", exc,
+            )
+
+    def _t0_result_dict(self, agent: Any, response_text: str) -> Dict[str, Any]:
+        """Build the legacy turn-result dict for a T0 hit.
+
+        Mirrors the shape ``_run_turn_generator`` returns via
+        ``StopIteration.value`` (run_agent.py), zeroed for the no-inference
+        path: no tokens, no cost, no API calls. ``final_response`` is the key
+        every caller reads (``chat()`` returns ``result["final_response"]``)."""
+        return {
+            "final_response": response_text,
+            "last_reasoning": None,
+            "messages": [],
+            "api_calls": 0,
+            "completed": True,
+            "turn_exit_reason": "t0_cache_hit",
+            "partial": False,
+            "interrupted": False,
+            "response_previewed": False,
+            "model": "pattern_cache",
+            "provider": getattr(agent, "provider", None),
+            "base_url": getattr(agent, "base_url", None),
+            "tier": "T0",
+            "pattern_cache_hit": True,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "total_tokens": 0,
+            "estimated_cost_usd": 0.0,
+            "cost_status": "t0_cache_hit",
+            "cost_source": "pattern_cache",
+        }
 
     @staticmethod
     def _bind_agent_to_tier(
