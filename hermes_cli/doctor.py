@@ -363,10 +363,15 @@ def run_doctor(args):
     # `hermes doctor` appends a READ-ONLY lifecycle report to the diagnostics
     # below. `--dry-run` makes `--reap` preview without acting.
     reap_mode = getattr(args, 'reap', False)
-    if reap_mode:
-        from hermes_cli.doctor_lifecycle import reap as _reap, render_report
-        report = _reap(dry_run=getattr(args, 'dry_run', False))
-        render_report(report)
+    restart_mode = getattr(args, 'restart', False)
+    if reap_mode or restart_mode:
+        from hermes_cli.doctor_lifecycle import (
+            reap as _reap, render_report, restart_gateway,
+        )
+        _dry = getattr(args, 'dry_run', False)
+        render_report(_reap(dry_run=_dry))
+        if restart_mode:
+            restart_gateway(dry_run=_dry, force=getattr(args, 'force', False))
         return
 
     # Plain `hermes doctor` includes a READ-ONLY lifecycle report (live

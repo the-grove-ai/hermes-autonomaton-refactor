@@ -10781,6 +10781,20 @@ def main():
         action="store_true",
         help="With --reap/--restart: report what would be killed/cleaned without acting.",
     )
+    doctor_parser.add_argument(
+        "--restart",
+        action="store_true",
+        help=(
+            "Reap orphans, then cycle the gateway via the managed service "
+            "(stop + start). Refuses to cycle a gateway with a live Telegram/API "
+            "socket unless --force is also passed."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --restart: cycle the gateway even if it holds a live socket.",
+    )
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # =========================================================================

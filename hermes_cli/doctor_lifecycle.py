@@ -398,3 +398,62 @@ def render_report(report: Dict[str, Any]) -> None:
         for d in dbs:
             print(f"      {Path(d['db']).name}: {d['action']}")
     print()
+
+
+def restart_gateway(*, dry_run: bool = True, force: bool = False) -> Dict[str, Any]:
+    """Cycle the gateway via the managed service (Sprint 47.5 Phase 2).
+
+    Stops then starts the gateway through ``hermes gateway stop`` /
+    ``hermes gateway start`` (the launchd/systemd service model is left
+    intact). REFUSES to stop a gateway holding a live ESTABLISHED socket
+    (Telegram / API long-poll) unless ``force`` is set — cycling the live
+    bot is disruptive and must be an explicit opt-in (Andon A3). ``dry_run``
+    reports without acting.
+    """
+    from hermes_cli.colors import Colors, color
+
+    gw = find_live_gateway_pid()
+    result: Dict[str, Any] = {"gateway_pid": gw, "action": None}
+
+    print(color("◆ Gateway restart", Colors.CYAN, Colors.BOLD))
+    if not gw:
+        result["action"] = "no live gateway — starting fresh" if not dry_run else "would start (none running)"
+        print(f"  {color('→', Colors.CYAN)} No live gateway running")
+        if dry_run:
+            print(f"  {color('→', Colors.CYAN)} would start the gateway service")
+            print()
+            return result
+
+    if gw and gateway_has_live_socket(gw) and not force:
+        result["action"] = "refused (live socket; pass --force)"
+        print(f"  {color('✗', Colors.RED)} Gateway PID {gw} holds a live "
+              f"connection (Telegram/API). Refusing to cycle it.")
+        print(f"  {color('→', Colors.CYAN)} Re-run with {color('--force', Colors.BOLD)} "
+              f"to cycle the live gateway.")
+        print()
+        return result
+
+    if dry_run:
+        result["action"] = f"would restart gateway PID {gw} (stop + start)"
+        print(f"  {color('→', Colors.CYAN)} would stop gateway PID {gw}, then start it")
+        print()
+        return result
+
+    import sys
+    base = [sys.executable, "-m", "hermes_cli.main", "gateway"]
+    try:
+        stop = subprocess.run(base + ["stop"], capture_output=True, text=True, timeout=60)
+        result["stop_rc"] = stop.returncode
+        print(f"  {color('✓', Colors.GREEN)} gateway stop "
+              f"{color(f'(rc={stop.returncode})', Colors.DIM)}")
+        time.sleep(2)
+        start = subprocess.run(base + ["start"], capture_output=True, text=True, timeout=60)
+        result["start_rc"] = start.returncode
+        print(f"  {color('✓', Colors.GREEN)} gateway start "
+              f"{color(f'(rc={start.returncode})', Colors.DIM)}")
+        result["action"] = "restarted (stop+start)"
+    except Exception as exc:
+        result["action"] = f"error: {exc}"
+        print(f"  {color('✗', Colors.RED)} restart failed: {exc}")
+    print()
+    return result
