@@ -256,12 +256,14 @@ tool_zones:
       # every session. The path-prefix match below is sufficient: the
       # operator's grant of the skill via Andon promotion IS the trust act.
       #
-      # The `gws` CLI itself (when the skill's bin/ is on PATH and the
-      # operator invokes it bare, with no path on the command line) needs
+      # The `gws` CLI itself (when the skill's bin/ is on PATH and it is
+      # invoked by name, including inside a `bash -c "..."` wrapper) needs
       # its own rule — the path-based pattern below won't catch it. The
-      # `gws` binary is bundled inside the promoted skill directory; the
+      # `\bgws\b` word-boundary match catches `gws` anywhere on the command
+      # line, not just at the start, so wrapped invocations classify green.
+      # The `gws` binary is bundled inside the promoted skill directory; the
       # promotion act covers it.
-      - match_pattern: '^gws(\s|$).*'
+      - match_pattern: '.*\bgws\b.*'
         zone: green
         reason: "Google Workspace skill wrapper (gws CLI) — known-safe entrypoint."
       - match_pattern: '.*\.grove/skills/productivity/google-workspace/.*'

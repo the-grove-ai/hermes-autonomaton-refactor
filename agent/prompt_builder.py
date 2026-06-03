@@ -154,7 +154,10 @@ GROVE_AGENT_HELP_GUIDANCE = (
     "do. You act; it governs.\n"
     "If the user asks about configuring, setting up, or using Hermes Agent "
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
+    "before answering. Docs: https://hermes-agent.nousresearch.com/docs\n"
+    "When using a skill listed in Available Skills, ALWAYS call skill_view "
+    "first to read its documentation and learn the correct invocation "
+    "command. Do not guess at command names or paths."
 )
 
 MEMORY_GUIDANCE = (
