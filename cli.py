@@ -13486,7 +13486,15 @@ class HermesCLI:
             read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
             completer=_completer,
-            complete_while_typing=True,
+            # Sprint 55 — Tab-to-complete, NOT per-keystroke. complete_while_typing
+            # spawned a SlashCommandCompleter coroutine on the prompt_toolkit event
+            # loop on EVERY keystroke (one per input character); a slow completer
+            # (registry / filesystem lookups) running synchronously on the UI loop
+            # could stall it and hang the CLI mid-session. Completion now fires only
+            # on explicit Tab, so the synchronous completer is acceptable. The
+            # auto_suggest path stays — it only calls the cheap _command_allowed
+            # check, never get_completions.
+            complete_while_typing=False,
             auto_suggest=SlashCommandAutoSuggest(
                 history_suggest=AutoSuggestFromHistory(),
                 completer=_completer,
