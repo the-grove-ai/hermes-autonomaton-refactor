@@ -227,10 +227,20 @@ class PatternCacheStore:
         a double-promotion is vanishingly rare — the compiler's variance gate
         keeps each pattern internally consistent — but the ordering makes the
         tie-break a fixed rule rather than SQLite row order.
+
+        Sprint 56 Fix #3 — key on the SAME stem the scanner persisted. The
+        compiler computes ``t0_key(ic, user_message_stem)`` where the stem is
+        ``normalize_message_stem(msg)`` (truncated to 100 chars); keying here
+        on the full raw message diverged for messages >100 chars, so a
+        promoted long-query pattern would never be hit. Truncating to the stem
+        makes the scanner and the intercept agree byte-for-byte at every
+        length (short messages are unaffected — the stem IS the message).
         """
         from grove.classify import INTENT_CLASSES
+        from grove.intent_store import normalize_message_stem
 
-        key_rank = {t0_key(ic, message): i for i, ic in enumerate(INTENT_CLASSES)}
+        stem = normalize_message_stem(message)
+        key_rank = {t0_key(ic, stem): i for i, ic in enumerate(INTENT_CLASSES)}
         keys = list(key_rank)
         placeholders = ", ".join("?" * len(keys))
         with self._connect() as con:
