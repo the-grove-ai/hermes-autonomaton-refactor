@@ -292,17 +292,39 @@ def cli_scan(
               "promotion proposals for approval.")
         return 0
 
-    from grove.eval.pattern_compiler import propose_pattern_promotions
+    from grove.eval.pattern_compiler import (
+        propose_pattern_promotions, DISPOSITION_PROPOSED, DISPOSITION_SKIPPED_KNOWN,
+    )
     from grove.pattern_cache import PatternCacheStore
-    queued = propose_pattern_promotions(
+    result = propose_pattern_promotions(
         store, PatternCacheStore(), queue_path=queue_path, config=cfg,
     )
-    if queued:
-        print(f"Queued {len(queued)} pattern-promotion proposal(s). "
-              f"Review: autonomaton flywheel list / approve <id>.")
-    else:
-        print("No new compilable candidates to propose (already known, or "
-              "evidence not safely compilable — variance / legacy records).")
+    proposed = [d for d in result.dispositions if d.status == DISPOSITION_PROPOSED]
+    known = [d for d in result.dispositions if d.status == DISPOSITION_SKIPPED_KNOWN]
+    dropped = [
+        d for d in result.dispositions
+        if d.status not in (DISPOSITION_PROPOSED, DISPOSITION_SKIPPED_KNOWN)
+    ]
+
+    # Loud feedback (Sprint 56 Fix #1): every candidate is accounted for —
+    # nothing is dropped silently.
+    print(
+        f"\nProposed {len(proposed)} of {len(result.dispositions)} candidate(s)"
+        + (f" ({len(known)} already in cache)" if known else "")
+        + (f" ({len(dropped)} dropped)" if dropped else "")
+        + ":"
+    )
+    for d in proposed:
+        print(f"  ✓ proposed  [{d.cacheable_type}] {d.intent_class}  "
+              f"“{d.sample_query[:48]}”  → {d.proposal_id.split(':')[-1][:12]}")
+    for d in known:
+        print(f"  • skipped   [{d.cacheable_type}] {d.intent_class}  "
+              f"“{d.sample_query[:48]}”  — {d.detail}")
+    for d in dropped:
+        print(f"  ✗ dropped   [{d.cacheable_type}] {d.intent_class}  "
+              f"“{d.sample_query[:48]}”  — {d.detail}")
+    if proposed:
+        print("\nReview: autonomaton flywheel list / approve <id>.")
     return 0
 
 

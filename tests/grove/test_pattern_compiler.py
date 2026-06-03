@@ -164,8 +164,8 @@ def test_T20_full_lifecycle(tmp_path, monkeypatch):
     # scan finds the candidate
     assert len(scan_candidates(s, _CFG)) == 1
 
-    # propose
-    queued = propose_pattern_promotions(s, pstore, queue_path=qpath, config=_CFG)
+    # propose (Sprint 56: returns a PromotionResult; .proposed is the id list)
+    queued = propose_pattern_promotions(s, pstore, queue_path=qpath, config=_CFG).proposed
     assert len(queued) == 1
     props = read_all(path=qpath)
     assert props[0].type == PROPOSAL_TYPE_PATTERN_PROMOTION
@@ -182,7 +182,7 @@ def test_T20_full_lifecycle(tmp_path, monkeypatch):
     assert read_all(path=qpath) == []
 
     # re-propose skips the now-active pattern
-    assert propose_pattern_promotions(s, pstore, queue_path=qpath, config=_CFG) == []
+    assert propose_pattern_promotions(s, pstore, queue_path=qpath, config=_CFG).proposed == []
 
 
 def test_rejected_pattern_never_reproposed(tmp_path, monkeypatch):
@@ -202,5 +202,5 @@ def test_rejected_pattern_never_reproposed(tmp_path, monkeypatch):
     fc.cli_reject(p.proposal_id.split(":")[-1][:12], reason="not stable", queue_path=qpath)
     assert pstore.get(pid).status == STATUS_REJECTED
     # never re-proposed
-    assert propose_pattern_promotions(s, pstore, queue_path=qpath, config=_CFG) == []
+    assert propose_pattern_promotions(s, pstore, queue_path=qpath, config=_CFG).proposed == []
     assert read_all(path=qpath) == []

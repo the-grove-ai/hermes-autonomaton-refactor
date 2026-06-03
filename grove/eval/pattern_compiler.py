@@ -280,6 +280,80 @@ def _synth_pattern_eval_hash(pattern_id: str) -> str:
     ).hexdigest()
 
 
+# Disposition status values (Sprint 56 Fix #1 — no silent drops). Every
+# candidate the scanner finds gets one, surfaced to the operator.
+DISPOSITION_PROPOSED = "proposed"
+DISPOSITION_SKIPPED_KNOWN = "skipped_known"
+DISPOSITION_DROPPED_VARIANCE = "dropped_variance"
+DISPOSITION_DROPPED_NO_CONTENT = "dropped_no_content"
+DISPOSITION_DROPPED_NO_TOOL = "dropped_no_tool"
+DISPOSITION_DROPPED_TOOL_DRIFT = "dropped_tool_drift"
+
+
+@dataclass(frozen=True)
+class CandidateDisposition:
+    """What happened to one scanned candidate in ``propose_pattern_promotions``.
+
+    The operator sees one of these per candidate — no candidate is ever
+    dropped silently (Sprint 56 Fix #1 / FAIL LOUD)."""
+    t0_key: str
+    intent_class: str
+    cacheable_type: str
+    sample_query: str
+    repetition_count: int
+    status: str
+    detail: str
+    proposal_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PromotionResult:
+    """The outcome of a ``--propose`` run: one disposition per candidate."""
+    dispositions: tuple
+
+    @property
+    def proposed(self) -> List[str]:
+        """The queued proposal ids (back-compat with the prior list return)."""
+        return [
+            d.proposal_id for d in self.dispositions
+            if d.status == DISPOSITION_PROPOSED and d.proposal_id
+        ]
+
+
+def drop_reason(candidate: Candidate, evidence: List[Any]) -> Optional[str]:
+    """Why :func:`compile_candidate` would drop this candidate — or ``None``
+    if it compiles cleanly.
+
+    Mirrors the compile gates and SHARES :func:`_normalize_response` with the
+    static branch, so the disposition the operator sees can never disagree
+    with what the compiler actually did (Sprint 56 Fix #1)."""
+    if candidate.cacheable_type == "static":
+        responses = [
+            r.response_content for r in evidence
+            if getattr(r, "response_content", None) is not None
+        ]
+        if not responses:
+            return DISPOSITION_DROPPED_NO_CONTENT
+        if len({_normalize_response(r) for r in responses}) != 1:
+            return DISPOSITION_DROPPED_VARIANCE
+        return None
+    invocations = [
+        r.tool_invocation for r in evidence
+        if getattr(r, "tool_invocation", None) is not None
+    ]
+    if not invocations:
+        return DISPOSITION_DROPPED_NO_TOOL
+    tools = set()
+    for inv in invocations:
+        try:
+            tools.add(json.loads(inv).get("tool"))
+        except Exception:
+            tools.add(None)
+    if len(tools) != 1 or None in tools:
+        return DISPOSITION_DROPPED_TOOL_DRIFT
+    return None
+
+
 def propose_pattern_promotions(
     store: Any,
     pattern_store: Any,
@@ -287,11 +361,15 @@ def propose_pattern_promotions(
     queue_path: Optional[Path] = None,
     now_iso: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
-) -> List[str]:
-    """Scan → compile → queue. For each candidate not already in the pattern
-    store (never re-propose a known/rejected pattern), compile it; if it
-    compiles safely, write the suspended entry to ``pattern_store`` and queue a
-    ``pattern_promotion`` proposal. Returns the queued proposal ids.
+) -> "PromotionResult":
+    """Scan → compile → queue, returning a :class:`PromotionResult` with one
+    :class:`CandidateDisposition` per scanned candidate.
+
+    Every candidate is accounted for — proposed, skipped because it is already
+    in the cache, or dropped with a specific reason (no captured content,
+    response variance, no tool, tool drift). NOTHING is dropped silently
+    (Sprint 56 Fix #1 / FAIL LOUD). Read ``result.proposed`` for the queued
+    ids (back-compat with the prior list return).
 
     The system PROPOSES; the operator approves (GATE-A). This never activates
     a pattern."""
@@ -306,14 +384,56 @@ def propose_pattern_promotions(
     candidates = scan_candidates(store, cfg)
     known = {p.pattern_id for p in pattern_store.all()}  # compiled / active / rejected
     now = now_iso or datetime.now(timezone.utc).isoformat()
-    queued: List[str] = []
+    # Fetch the evidence once and index by turn id so the per-candidate
+    # disposition and the compile read the SAME records.
+    by_turn = {r.turn_id: r for r in store.latest_by_turn()}
+    dispositions: List[CandidateDisposition] = []
+
+    def _disp(cand: Candidate, status: str, detail: str,
+              proposal_id: Optional[str] = None) -> CandidateDisposition:
+        return CandidateDisposition(
+            t0_key=cand.t0_key,
+            intent_class=cand.intent_class,
+            cacheable_type=cand.cacheable_type,
+            sample_query=cand.sample_queries[0] if cand.sample_queries else "",
+            repetition_count=cand.repetition_count,
+            status=status,
+            detail=detail,
+            proposal_id=proposal_id,
+        )
 
     for cand in candidates:
         if cand.t0_key in known:
-            continue  # never re-propose a known pattern (incl. rejected)
-        compiled = compile_from_store(cand, store, now_iso=now)
+            dispositions.append(_disp(
+                cand, DISPOSITION_SKIPPED_KNOWN,
+                "already compiled/active/rejected in the pattern cache",
+            ))
+            continue
+
+        evidence = [by_turn[t] for t in cand.evidence_turn_ids if t in by_turn]
+        reason = drop_reason(cand, evidence)
+        if reason is not None:
+            _DETAIL = {
+                DISPOSITION_DROPPED_NO_CONTENT:
+                    "no response_content captured in the evidence (legacy records)",
+                DISPOSITION_DROPPED_VARIANCE:
+                    "the captured responses differ — not safely static-cacheable",
+                DISPOSITION_DROPPED_NO_TOOL:
+                    "no tool invocation captured — not an executable pattern",
+                DISPOSITION_DROPPED_TOOL_DRIFT:
+                    "the captured tool invocations name different tools",
+            }
+            dispositions.append(_disp(cand, reason, _DETAIL[reason]))
+            continue
+
+        compiled = compile_candidate(cand, evidence, now_iso=now)
         if compiled is None:
-            continue  # not safely compilable (variance / legacy / tool drift)
+            # drop_reason said this compiles, but compile disagreed — a real
+            # inconsistency, not something to swallow. FAIL LOUD.
+            raise RuntimeError(
+                f"compile/drop_reason disagree for {cand.t0_key}: "
+                f"drop_reason=ok but compile_candidate returned None"
+            )
         pattern_store.upsert(compiled)  # status=suspended until approved
 
         payload = {
@@ -329,17 +449,30 @@ def propose_pattern_promotions(
             },
             "sample_queries": list(cand.sample_queries),
         }
-        evidence = tuple(cand.evidence_turn_ids)
+        evidence_ids = tuple(cand.evidence_turn_ids)
         proposal = RoutingProposal(
             proposal_id=compute_proposal_id(
-                type=PROPOSAL_TYPE_PATTERN_PROMOTION, payload=payload, evidence=evidence,
+                type=PROPOSAL_TYPE_PATTERN_PROMOTION, payload=payload,
+                evidence=evidence_ids,
             ),
             type=PROPOSAL_TYPE_PATTERN_PROMOTION,
             payload=payload,
-            evidence=evidence,
+            evidence=evidence_ids,
             eval_hash=_synth_pattern_eval_hash(cand.t0_key),
             created_at=now,
         )
         if _queue_append(proposal, path=queue_path):
-            queued.append(proposal.proposal_id)
-    return queued
+            dispositions.append(_disp(
+                cand, DISPOSITION_PROPOSED, "queued for operator approval",
+                proposal_id=proposal.proposal_id,
+            ))
+        else:
+            # Idempotent queue: an identical proposal is already pending. Not a
+            # drop — surface it as already-known so the count is honest.
+            dispositions.append(_disp(
+                cand, DISPOSITION_SKIPPED_KNOWN,
+                "an identical proposal is already in the queue",
+                proposal_id=proposal.proposal_id,
+            ))
+
+    return PromotionResult(dispositions=tuple(dispositions))
