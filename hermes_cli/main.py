@@ -5511,9 +5511,27 @@ def cmd_flywheel(args):
         sys.exit(flywheel_cli.cli_reject(
             args.proposal_id, reason=getattr(args, "reason", None),
         ))
+    elif action == "patterns":
+        # Sprint 49 — T0 cache operator controls.
+        patterns_action = getattr(args, "patterns_action", None)
+        if patterns_action == "list":
+            sys.exit(flywheel_cli.cli_patterns_list())
+        elif patterns_action == "demote":
+            sys.exit(flywheel_cli.cli_patterns_demote(
+                args.pattern_id, assume_yes=getattr(args, "yes", False),
+            ))
+        elif patterns_action == "stats":
+            sys.exit(flywheel_cli.cli_patterns_stats())
+        else:
+            print(
+                "Usage: autonomaton flywheel patterns {list,demote,stats}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     else:
         print(
-            "Usage: autonomaton flywheel {list,scan,show,approve,reject} [--help]",
+            "Usage: autonomaton flywheel "
+            "{list,scan,show,approve,reject,patterns} [--help]",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -10447,6 +10465,35 @@ def main():
     flywheel_reject_p.add_argument(
         "--reason",
         help="Optional rejection reason (recorded at INFO log level)",
+    )
+
+    # Sprint 49 — T0 Pattern Cache operator controls: flywheel patterns
+    # {list,demote,stats}. The compiled-pattern lifecycle surface, distinct
+    # from the proposal queue (list/show/approve/reject above).
+    flywheel_patterns_p = flywheel_subparsers.add_parser(
+        "patterns",
+        help="Inspect and manage compiled T0 cache patterns",
+    )
+    flywheel_patterns_sub = flywheel_patterns_p.add_subparsers(
+        dest="patterns_action",
+    )
+    flywheel_patterns_sub.add_parser(
+        "list", help="List compiled T0 patterns with hit telemetry",
+    )
+    flywheel_patterns_demote_p = flywheel_patterns_sub.add_parser(
+        "demote", help="Demote an active T0 pattern back to T1 inference",
+    )
+    flywheel_patterns_demote_p.add_argument(
+        "pattern_id",
+        help="Full sha256:... id, bare hash, or unique short prefix (>=8 chars)",
+    )
+    flywheel_patterns_demote_p.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip the confirmation prompt",
+    )
+    flywheel_patterns_sub.add_parser(
+        "stats",
+        help="T0 hit rate + estimated inference savings",
     )
 
     flywheel_parser.set_defaults(func=cmd_flywheel)

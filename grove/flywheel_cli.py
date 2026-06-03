@@ -95,9 +95,22 @@ def _proposal_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
         PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,
         PROPOSAL_TYPE_PATTERN_PROMOTION,
+        PROPOSAL_TYPE_PATTERN_DEMOTION,
     )
     if proposal.type in (PROPOSAL_TYPE_ROUTING_ADJUSTMENT, "routing_update"):
         return _routing_adjustment_to_diff(proposal)
+    if proposal.type == PROPOSAL_TYPE_PATTERN_DEMOTION:
+        # Sprint 49 — the pattern is already suspended (auto, on correction).
+        # The "diff" the operator confirms is pulling it from T0 to T1.
+        return {
+            "pattern_demotion": {
+                "intent_class": proposal.payload.get("intent_class", "?"),
+                "tier": "T0 → T1 (drift: corrected after a cache hit)",
+                "trigger": proposal.payload.get("trigger", "correction_drift"),
+                "correction_turn_id": proposal.payload.get("correction_turn_id", "?"),
+                "reverse_with": "autonomaton flywheel reject <id>",
+            },
+        }
     if proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
         # Sprint 48 — the "diff" is retiring a stable pattern to the
         # deterministic T0 cache (the compiled entry already exists,
@@ -163,6 +176,7 @@ def _format_summary(proposal: RoutingProposal) -> str:
         PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,
         PROPOSAL_TYPE_PATTERN_PROMOTION,
+        PROPOSAL_TYPE_PATTERN_DEMOTION,
     )
     short_id = proposal.proposal_id.split(":")[-1][:12]
     n_evidence = len(proposal.evidence)
@@ -174,6 +188,9 @@ def _format_summary(proposal: RoutingProposal) -> str:
         ic = proposal.payload.get("intent_class", "?")
         ct = proposal.payload.get("cacheable_type", "?")
         body = f"retire {ic} [{ct}] pattern to T0 cache"
+    elif proposal.type == PROPOSAL_TYPE_PATTERN_DEMOTION:
+        ic = proposal.payload.get("intent_class", "?")
+        body = f"demote {ic} pattern (drift: corrected after a T0 hit)"
     elif proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
         name = proposal.payload.get("skill_name", "?")
         body = f"promote quarantined skill {name!r} → trusted"
@@ -287,6 +304,223 @@ def cli_scan(
         print("No new compilable candidates to propose (already known, or "
               "evidence not safely compilable — variance / legacy records).")
     return 0
+
+
+# ── patterns (T0 cache operator controls — Sprint 49) ────────────────
+
+# Estimated average T1 interaction size, used by ``patterns stats`` to turn a
+# per-million-token price into a per-interaction savings estimate. These are
+# deliberately conservative rough averages, NOT measured — the stats output
+# labels the savings as an estimate so the operator reads it as such.
+_T1_AVG_INPUT_TOKENS = 1800
+_T1_AVG_OUTPUT_TOKENS = 400
+
+
+def _t1_interaction_cost_usd() -> Optional[float]:
+    """Estimated USD cost of one averted T1 interaction.
+
+    Reads ``tier_preferences.T1.cost_per_mtok_input/output`` from
+    routing.config.yaml (operator copy wins over the repo default, same
+    precedence as the pattern_cache config) and multiplies by the assumed
+    average interaction size. Returns None when the T1 tier declares no
+    cost — the caller then reports savings as unavailable rather than $0."""
+    candidates = [
+        Path.home() / ".grove" / "routing.config.yaml",
+        Path(__file__).resolve().parents[1] / "config" / "routing.config.yaml",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        t1 = (
+            ((data.get("routing") or {}).get("tier_preferences") or {}).get("T1")
+            or {}
+        )
+        cost_in = t1.get("cost_per_mtok_input")
+        cost_out = t1.get("cost_per_mtok_output")
+        if cost_in is None or cost_out is None:
+            return None
+        return (
+            _T1_AVG_INPUT_TOKENS / 1_000_000 * float(cost_in)
+            + _T1_AVG_OUTPUT_TOKENS / 1_000_000 * float(cost_out)
+        )
+    return None
+
+
+def cli_patterns_list(*, store: Optional[Any] = None) -> int:
+    """Show every compiled T0 pattern with its lifecycle + hit telemetry."""
+    if store is None:
+        from grove.pattern_cache import PatternCacheStore
+        store = PatternCacheStore()
+    patterns = store.all()
+    if not patterns:
+        print(
+            "No compiled T0 patterns. The compiler proposes them once a "
+            "query repeats with a stable result — see "
+            "`autonomaton flywheel scan`."
+        )
+        return 0
+    active = sum(1 for p in patterns if p.status == "active")
+    print(f"{len(patterns)} compiled T0 pattern(s) ({active} active):")
+    print()
+    print(
+        f"  {'pattern':<14}{'intent_class':<18}{'type':<11}"
+        f"{'status':<11}{'hits':>5}  {'last_hit':<20}sample"
+    )
+    for p in patterns:
+        # promotion_evidence is JSON; show a short sample query if present.
+        sample_q = ""
+        try:
+            ev = json.loads(p.promotion_evidence) if p.promotion_evidence else {}
+            sqs = ev.get("sample_queries") if isinstance(ev, dict) else None
+            if isinstance(sqs, list) and sqs:
+                sample_q = str(sqs[0])[:40]
+        except (ValueError, TypeError):
+            sample_q = ""
+        last_hit = (p.last_hit_at or "—")[:19]
+        print(
+            f"  {p.pattern_id.split(':')[-1][:12]:<14}"
+            f"{p.intent_class:<18}{p.cacheable_type:<11}"
+            f"{p.status:<11}{p.hit_count:>5}  {last_hit:<20}{sample_q}"
+        )
+    print()
+    print(
+        "Demote: autonomaton flywheel patterns demote <pattern>\n"
+        "Stats:  autonomaton flywheel patterns stats"
+    )
+    return 0
+
+
+def cli_patterns_demote(
+    partial_id: str,
+    *,
+    store: Optional[Any] = None,
+    assume_yes: bool = False,
+) -> int:
+    """Manually demote an active T0 pattern back to T1 (GATE-A D4 / 3b).
+
+    Resolves ``partial_id`` against compiled pattern ids (full ``sha256:``,
+    bare hash, or a ≥8-char prefix), confirms with the operator (unless
+    ``assume_yes`` or stdin is not a TTY in an already-confirmed flow), sets
+    the status to demoted, and logs a ``pattern_demoted`` event."""
+    from grove.pattern_cache import PatternCacheStore, STATUS_DEMOTED
+    from grove.telemetry import log_pattern_cache_event
+
+    if store is None:
+        store = PatternCacheStore()
+    pattern = _resolve_pattern(partial_id, store)
+    if pattern is None:
+        print(
+            f"No compiled pattern matches {partial_id!r}.", file=sys.stderr,
+        )
+        return 1
+    if pattern.status == STATUS_DEMOTED:
+        print(f"Pattern {pattern.pattern_id.split(':')[-1][:12]} is already demoted.")
+        return 0
+
+    short = pattern.pattern_id.split(":")[-1][:12]
+    if not assume_yes:
+        prompt = (
+            f"Demote {pattern.intent_class} [{pattern.cacheable_type}] "
+            f"pattern {short} (served {pattern.hit_count}x)? It falls back to "
+            f"T1 inference. [y/N]: "
+        )
+        try:
+            answer = input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n(no input — leaving the pattern active)")
+            return 1
+        if answer not in ("y", "yes"):
+            print("Cancelled — pattern left active.")
+            return 1
+
+    store.set_status(pattern.pattern_id, STATUS_DEMOTED)
+    log_pattern_cache_event(
+        event_type="pattern_demoted",
+        pattern_id=pattern.pattern_id,
+        intent_class=pattern.intent_class,
+        cacheable_type=pattern.cacheable_type,
+    )
+    print(
+        f"Demoted {pattern.intent_class} pattern {short} → T1. "
+        f"It no longer serves from cache."
+    )
+    return 0
+
+
+def cli_patterns_stats(*, store: Optional[Any] = None) -> int:
+    """Show T0 hit volume, hit rate, and estimated inference savings (3c)."""
+    if store is None:
+        from grove.pattern_cache import PatternCacheStore
+        store = PatternCacheStore()
+    patterns = store.all()
+    active = [p for p in patterns if p.status == "active"]
+    total_hits = sum(p.hit_count for p in active)
+
+    print("T0 Pattern Cache — stats")
+    print()
+    print(f"  Active patterns:      {len(active)}")
+    print(f"  Total patterns:       {len(patterns)}")
+    print(f"  Total hits (active):  {total_hits}")
+
+    # Hit rate is derived from the intent store (T0 hits write tier_selected
+    # == "T0"); telemetry itself is log-only, not a queryable store.
+    try:
+        from grove.intent_store import get_store as _get_intent_store
+        records = list(_get_intent_store().records())
+        total_turns = len(records)
+        t0_turns = sum(1 for r in records if (r.tier_selected or "") == "T0")
+        if total_turns:
+            rate = t0_turns / total_turns * 100.0
+            print(
+                f"  T0 hit rate:          {rate:.1f}%  "
+                f"({t0_turns}/{total_turns} recorded turns)"
+            )
+        else:
+            print("  T0 hit rate:          n/a (no recorded turns yet)")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[flywheel] hit-rate read failed: %r", exc)
+        print("  T0 hit rate:          n/a (intent store unavailable)")
+
+    per_interaction = _t1_interaction_cost_usd()
+    if per_interaction is None:
+        print(
+            "  Estimated savings:    n/a (T1 tier declares no cost_per_mtok "
+            "in routing.config.yaml)"
+        )
+    else:
+        savings = total_hits * per_interaction
+        print(
+            f"  Estimated savings:    ~${savings:.4f}  "
+            f"(={total_hits} hits × ~${per_interaction:.5f}/interaction, "
+            f"assuming ~{_T1_AVG_INPUT_TOKENS}in/{_T1_AVG_OUTPUT_TOKENS}out "
+            f"T1 tokens — rough estimate)"
+        )
+    return 0
+
+
+def _resolve_pattern(partial_id: str, store: Any) -> Optional[Any]:
+    """Resolve a compiled pattern by full id, bare hash, or ≥8-char prefix."""
+    # Exact id (with or without the sha256: prefix).
+    direct = store.get(partial_id)
+    if direct is not None:
+        return direct
+    if not partial_id.startswith("sha256:"):
+        direct = store.get(f"sha256:{partial_id}")
+        if direct is not None:
+            return direct
+    bare = partial_id.split(":")[-1]
+    if len(bare) < 8:
+        return None
+    matches = [
+        p for p in store.all()
+        if p.pattern_id.split(":")[-1].startswith(bare)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 # ── show ─────────────────────────────────────────────────────────────
@@ -568,6 +802,47 @@ def _approve_pattern_promotion(
     return f"{intent_class} [{cacheable_type}] pattern", applied
 
 
+def _approve_pattern_demotion(
+    proposal: RoutingProposal,
+) -> Tuple[str, Dict[str, Any]]:
+    """Confirm a drift-triggered demotion (Sprint 49 Phase 2).
+
+    The Dispatcher already auto-SUSPENDED the pattern when the operator
+    corrected a T0 hit. Approving the proposal confirms the disposition:
+    flip suspended → demoted (the pattern falls back to T1 inference and
+    stays out of the cache). Rejecting the proposal reverses it (see
+    ``cli_reject``), re-activating the pattern."""
+    from grove.pattern_cache import PatternCacheStore, STATUS_DEMOTED
+    from grove.telemetry import log_pattern_cache_event
+
+    pattern_id = proposal.payload.get("pattern_id")
+    if not isinstance(pattern_id, str) or not pattern_id.strip():
+        raise ValueError(
+            f"pattern_demotion payload missing 'pattern_id': {proposal.payload!r}"
+        )
+    store = PatternCacheStore()
+    if not store.set_status(pattern_id, STATUS_DEMOTED):
+        raise ValueError(
+            f"compiled pattern {pattern_id!r} not found in pattern_cache.db — "
+            f"cannot demote."
+        )
+    intent_class = proposal.payload.get("intent_class", "?")
+    log_pattern_cache_event(
+        event_type="pattern_demoted",
+        pattern_id=pattern_id,
+        intent_class=intent_class,
+        correction_turn_id=proposal.payload.get("correction_turn_id"),
+    )
+    applied = {
+        "pattern_id": pattern_id,
+        "intent_class": intent_class,
+        "status": STATUS_DEMOTED,
+        "tier": "T0 → T1 (falls back to inference)",
+        "trigger": proposal.payload.get("trigger", "correction_drift"),
+    }
+    return f"{intent_class} pattern", applied
+
+
 def cli_approve(
     partial_id: str,
     *,
@@ -595,6 +870,7 @@ def cli_approve(
         PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,
         PROPOSAL_TYPE_PATTERN_PROMOTION,
+        PROPOSAL_TYPE_PATTERN_DEMOTION,
     )
 
     proposal = _resolve_proposal(partial_id, queue_path=queue_path)
@@ -615,6 +891,9 @@ def cli_approve(
     elif proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
         target_label, applied = _approve_pattern_promotion(proposal)
         applied_label = f"Promoted to T0: {target_label}"
+    elif proposal.type == PROPOSAL_TYPE_PATTERN_DEMOTION:
+        target_label, applied = _approve_pattern_demotion(proposal)
+        applied_label = f"Demoted from T0: {target_label}"
     elif proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
         # Phase 4 — strict mode gates the promotion (diff + logged
         # execution + confirmation) before applying. Normal approve is
@@ -627,7 +906,7 @@ def cli_approve(
         print(
             f"Cannot approve proposal type {proposal.type!r}. Supported: "
             f"routing_adjustment, zone_promotion, skill_promotion, "
-            f"pattern_promotion.",
+            f"pattern_promotion, pattern_demotion.",
             file=sys.stderr,
         )
         return 1
@@ -676,7 +955,10 @@ def cli_reject(
     # Sprint 48 — a rejected pattern is marked rejected in pattern_cache.db so
     # the scanner NEVER re-proposes the same pattern (3e). The compiled entry
     # stays as a tombstone; the proposer skips any pattern already in the store.
-    from grove.eval.proposal_queue import PROPOSAL_TYPE_PATTERN_PROMOTION
+    from grove.eval.proposal_queue import (
+        PROPOSAL_TYPE_PATTERN_PROMOTION,
+        PROPOSAL_TYPE_PATTERN_DEMOTION,
+    )
     if proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
         pattern_id = proposal.payload.get("pattern_id")
         if isinstance(pattern_id, str) and pattern_id:
@@ -686,6 +968,29 @@ def cli_reject(
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[flywheel] could not mark pattern %s rejected: %r",
+                    pattern_id, exc,
+                )
+    # Sprint 49 — rejecting a drift-triggered demotion REVERSES it: the
+    # pattern was auto-suspended when the operator corrected a T0 hit, and
+    # rejecting the demotion proposal means "keep it active" — re-activate so
+    # it serves again. The operator overrules the drift signal.
+    elif proposal.type == PROPOSAL_TYPE_PATTERN_DEMOTION:
+        pattern_id = proposal.payload.get("pattern_id")
+        if isinstance(pattern_id, str) and pattern_id:
+            try:
+                from grove.pattern_cache import PatternCacheStore, STATUS_ACTIVE
+                from datetime import datetime, timezone
+                PatternCacheStore().set_status(
+                    pattern_id, STATUS_ACTIVE,
+                    promoted_at=datetime.now(timezone.utc).isoformat(),
+                )
+                print(
+                    f"Reversed: pattern {pattern_id.split(':')[-1][:12]} "
+                    f"re-activated (drift signal overruled).",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[flywheel] could not re-activate pattern %s: %r",
                     pattern_id, exc,
                 )
 
