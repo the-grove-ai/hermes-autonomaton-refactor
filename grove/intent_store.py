@@ -144,6 +144,19 @@ class IntentRecord:
     # X escalates 40% of the time → consider raising default tier for X").
     escalation_count: int = 0
 
+    # Sprint 48 — T0 pattern-compiler evidence (GATE-A decision 3). Captured
+    # on the FinalResponse write going forward; the compiler mines these from
+    # history (no live re-execution). Auto-purged after the pattern_cache
+    # ``within_days`` window via :meth:`IntentStore.purge_expired_content`;
+    # legacy records carry None and are ignored by the compiler.
+    #   response_content — the actual response text (for STATIC patterns),
+    #     capped to keep the append-only store sane.
+    #   tool_invocation  — JSON string ``{"tool": str, "args": {...}}`` for a
+    #     single-tool turn (for EXECUTABLE patterns). Stored as a string, not a
+    #     dict, so the record stays frozen-hashable.
+    response_content: Optional[str] = None
+    tool_invocation: Optional[str] = None
+
 
 class IntentStore:
     """Append-only JSON Lines store for IntentRecords.
@@ -195,6 +208,61 @@ class IntentStore:
             with open(self._path, "a", encoding="utf-8") as fh:
                 fh.write(line)
         return data
+
+    def purge_expired_content(self, within_days: int) -> int:
+        """Null ``response_content`` + ``tool_invocation`` on records older
+        than ``within_days`` (Sprint 48 / GATE-A decision 3 retention policy).
+
+        The compiler only needs this evidence inside the promotion window;
+        beyond it the captured response text and tool args are purged for
+        privacy/retention. Rewrites the JSONL in place only when something is
+        actually purged. Returns the count of records cleared. Best-effort: a
+        missing store is a no-op; a write failure logs and leaves the file
+        untouched.
+        """
+        if within_days < 0 or not self._path.exists():
+            return 0
+        from datetime import timedelta
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=within_days)
+        ).isoformat()
+        purged = 0
+        with self._lock:
+            try:
+                raw_lines = self._path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                return 0
+            out: List[str] = []
+            for raw in raw_lines:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    out.append(raw)
+                    continue
+                expired = data.get("timestamp", "") < cutoff
+                has_content = (
+                    data.get("response_content") is not None
+                    or data.get("tool_invocation") is not None
+                )
+                if expired and has_content:
+                    data["response_content"] = None
+                    data["tool_invocation"] = None
+                    purged += 1
+                out.append(json.dumps(data, sort_keys=True, default=str))
+            if purged:
+                tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+                try:
+                    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+                    tmp.replace(self._path)
+                except OSError as exc:
+                    logger.warning(
+                        "[grove.intent_store] content purge write failed: %r", exc,
+                    )
+                    return 0
+        return purged
 
     def records(self) -> Iterator[IntentRecord]:
         """Stream every record in append order.

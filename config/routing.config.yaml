@@ -299,3 +299,35 @@ routing:
       confidence_threshold: 0.6
       # Key into escalation_policy.mapping above.
       target_depth: deep
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# pattern_cache — T0 Pattern Compiler (Sprint 48)
+# ─────────────────────────────────────────────────────────────────────────
+# T0 is the deterministic Pattern Cache: a query asked enough times, with a
+# stable enough result, retires from inference to a compiled cache entry that
+# returns with NO model call. The compiler scans the Flywheel evidence
+# (~/.grove/intent_records.jsonl), groups by a conservative normalized key,
+# and PROPOSES promotions the operator approves. The system never self-promotes.
+#
+# These thresholds gate candidacy. Precision-first: tight bars, broaden later.
+pattern_cache:
+  enabled: true
+
+  # Intent classes excluded from T0 candidacy. system_admin is where OAuth
+  # redirect-callback noise lands (it repeats but is not a real query pattern);
+  # unknown is classification failure.
+  exclude_intents: [unknown, system_admin]
+
+  promotion:
+    # Same normalized pattern seen at least this many times.
+    min_repetitions: 5
+    # All repetitions clustered within this many days (recency + density).
+    within_days: 14
+    # Maximum correction signals on the pattern. Zero: any correction
+    # disqualifies it (a corrected pattern is not stable).
+    max_rejections: 0
+    # Static patterns only: the captured responses must be identical across
+    # the evidence. Zero variance — if responses differ, the pattern is not
+    # safely static-cacheable and is not promoted.
+    max_response_variance: 0

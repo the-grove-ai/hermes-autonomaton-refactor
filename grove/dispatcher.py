@@ -317,6 +317,12 @@ class AndonHalt(RuntimeError):
 # ── Dispatcher ────────────────────────────────────────────────────────────
 
 
+# Sprint 48 — cap on captured response_content in the intent record (T0
+# static-pattern evidence). Factual answers are short; the cap keeps the
+# append-only store from bloating on a pathologically long response.
+_T0_RESPONSE_CONTENT_CAP = 4000
+
+
 # Sprint 53.2 — extract a quarantined skill's name + directory from a
 # terminal command that references ``~/.grove/skills/.andon/<name>/``.
 # ``path`` captures the quarantine directory; ``name`` the skill folder.
@@ -527,6 +533,11 @@ class Dispatcher:
         self._current_turn_routing_decision: Optional[Any] = None
         self._current_turn_start: Optional[float] = None
         self._current_turn_tools_yielded: List[str] = []
+        # Sprint 48 — per-turn tool invocations (name + args) for the T0
+        # pattern compiler's EXECUTABLE evidence. Captured alongside the
+        # names; only single-invocation turns yield a clean executable
+        # pattern (set on the intent record below).
+        self._current_turn_tool_invocations: List[Dict[str, Any]] = []
         self._current_turn_user_message: Optional[str] = None
         self._current_turn_outcome_written: bool = False
         # Sprint 31 Phase 2 — api_call_count rides the ToolBatchYield
@@ -1158,6 +1169,7 @@ class Dispatcher:
         self._current_turn_api_call_count = 0
         self._current_turn_start = _time.monotonic()
         self._current_turn_tools_yielded = []
+        self._current_turn_tool_invocations = []
         self._current_turn_user_message = user_message
         self._current_turn_outcome_written = False
         # Sprint 30 — reset per-turn escalation counter + events list.
@@ -1294,6 +1306,12 @@ class Dispatcher:
                         _name = getattr(_intent, "tool_name", None)
                         if isinstance(_name, str) and _name:
                             self._current_turn_tools_yielded.append(_name)
+                            # Sprint 48 — capture name + args for the T0
+                            # compiler's executable evidence.
+                            self._current_turn_tool_invocations.append({
+                                "tool": _name,
+                                "args": getattr(_intent, "arguments", None),
+                            })
                     # Phase 4 — classify the batch at intent-yield
                     try:
                         self._classify_intents_batch_and_halt_or_raise(_batch)
@@ -1541,6 +1559,7 @@ class Dispatcher:
                         agent,
                         outcome="pending",
                         final_response_chars=len(yielded.content or ""),
+                        response_content=yielded.content or "",
                     )
                     # Sprint 53.2 — the operator has now seen the skill's
                     # output (FinalResponse is recorded). If a quarantined
@@ -1908,6 +1927,7 @@ class Dispatcher:
         *,
         outcome: str,
         final_response_chars: Optional[int] = None,
+        response_content: Optional[str] = None,
     ) -> None:
         """Write an IntentRecord for the current turn if the store is wired.
 
@@ -1975,6 +1995,24 @@ class Dispatcher:
             )
             model_used = getattr(agent, "model", None) or None
 
+            # Sprint 48 — T0 pattern-compiler evidence (GATE-A decision 3).
+            # response_content (capped) feeds STATIC compilation; a SINGLE
+            # tool invocation (name + args, JSON-encoded) feeds EXECUTABLE
+            # compilation. Multi-tool turns leave tool_invocation None — they
+            # are not clean executable patterns.
+            _resp_content: Optional[str] = None
+            if response_content:
+                _resp_content = response_content[:_T0_RESPONSE_CONTENT_CAP]
+            _tool_invocation: Optional[str] = None
+            if len(self._current_turn_tool_invocations) == 1:
+                try:
+                    _tool_invocation = _json_mod.dumps(
+                        self._current_turn_tool_invocations[0],
+                        sort_keys=True, default=str,
+                    )
+                except Exception:
+                    _tool_invocation = None
+
             record = IntentRecord(
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 session_id=session_id,
@@ -1996,6 +2034,8 @@ class Dispatcher:
                 duration_ms=round(duration_ms, 2),
                 final_response_chars=final_response_chars,
                 escalation_count=self._current_turn_escalations,
+                response_content=_resp_content,
+                tool_invocation=_tool_invocation,
             )
             self._intent_store.append(record)
             self._current_turn_outcome_written = True

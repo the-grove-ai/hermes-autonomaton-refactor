@@ -5499,6 +5499,8 @@ def cmd_flywheel(args):
     action = getattr(args, "flywheel_action", None)
     if action == "list":
         sys.exit(flywheel_cli.cli_list())
+    elif action == "scan":
+        sys.exit(flywheel_cli.cli_scan())
     elif action == "show":
         sys.exit(flywheel_cli.cli_show(args.proposal_id))
     elif action == "approve":
@@ -5511,7 +5513,7 @@ def cmd_flywheel(args):
         ))
     else:
         print(
-            "Usage: autonomaton flywheel {list,show,approve,reject} [--help]",
+            "Usage: autonomaton flywheel {list,scan,show,approve,reject} [--help]",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -10397,6 +10399,11 @@ def main():
 
     flywheel_subparsers.add_parser(
         "list", help="Show all pending routing proposals"
+    )
+
+    flywheel_subparsers.add_parser(
+        "scan",
+        help="Scan the intent store for T0 pattern-cache candidates (read-only)",
     )
 
     flywheel_show_p = flywheel_subparsers.add_parser(

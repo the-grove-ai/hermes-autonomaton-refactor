@@ -200,6 +200,53 @@ def cli_list(*, queue_path: Optional[Path] = None) -> int:
     return 0
 
 
+# ── scan (T0 pattern cache — Sprint 48) ──────────────────────────────
+
+
+def cli_scan(*, store: Optional[Any] = None) -> int:
+    """Scan the intent store for T0 pattern-cache candidates.
+
+    Read-only: groups Flywheel evidence by a conservative normalized key and
+    prints the patterns that meet the configured thresholds. Does NOT queue
+    proposals (Phase 3 wires ``--propose``)."""
+    from grove.eval.pattern_compiler import (
+        scan_candidates, load_pattern_cache_config,
+    )
+    cfg = load_pattern_cache_config()
+    if not cfg.get("enabled", True):
+        print("Pattern cache disabled (pattern_cache.enabled: false).")
+        return 0
+    if store is None:
+        from grove.intent_store import get_store
+        store = get_store()
+
+    candidates = scan_candidates(store, cfg)
+    if not candidates:
+        print("No T0 pattern-cache candidates.")
+        print(
+            f"  Thresholds: >={cfg['min_repetitions']} reps within "
+            f"{cfg['within_days']}d, <={cfg['max_rejections']} corrections; "
+            f"excluding {cfg['exclude_intents']}."
+        )
+        return 0
+
+    print(f"{len(candidates)} T0 pattern-cache candidate(s):")
+    print()
+    for c in candidates:
+        print(
+            f"  [{c.cacheable_type}] {c.intent_class}  "
+            f"{c.repetition_count}x over {c.time_span_days}d  "
+            f"corrections={c.rejection_count}  "
+            f"key={c.t0_key.split(':')[-1][:12]}"
+        )
+        for q in c.sample_queries:
+            print(f"      • {q[:80]}")
+        print()
+    print("These are candidates only — promotion proposals are queued "
+          "separately for operator approval.")
+    return 0
+
+
 # ── show ─────────────────────────────────────────────────────────────
 
 
