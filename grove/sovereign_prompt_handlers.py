@@ -55,7 +55,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 if TYPE_CHECKING:
     from grove.dispatcher import AndonHalt
@@ -399,6 +399,66 @@ def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
             f"Unknown choice {choice!r}; pick 1, 2, 3, or 4.",
             file=out,
         )
+
+
+def tty_post_execution_prompt(payload: Any, *, out=None) -> str:
+    """Sprint 53.2 — the post-execution skill-promotion prompt.
+
+    Fires AFTER a quarantined (.andon) skill ran successfully under an
+    "allow once" disposition and the operator has seen its output:
+
+        That skill (<name>) ran successfully.
+        Want to always allow it?
+
+          [1] Promote — always allow this skill
+          [2] Not yet — keep it in quarantine
+          [3] Never — deny this skill
+
+    Returns ``"promote"``, ``"not_yet"``, ``"never"``, or ``"never_purge"``.
+    Picking Never asks a follow-up — "Remove the skill from quarantine?
+    [y/N]" — returning ``"never_purge"`` on yes (delete the .andon dir)
+    and ``"never"`` on no (deny only). Defaults to ``"not_yet"`` on EOF /
+    KeyboardInterrupt (fail-safe: the skill stays quarantined and
+    re-prompts on its next run).
+
+    Distinct vocabulary from the Sprint 32 four-choice Sovereign Prompt
+    (Allow once / session / always / deny) — different handler, different
+    return space, no collision. ``out`` mirrors ``tty_sovereign_prompt``:
+    defaults to ``sys.stderr``; the CLI bridge overrides with
+    ``sys.__stderr__`` to bypass prompt_toolkit buffering.
+    """
+    if out is None:
+        out = sys.stderr
+    skill_name = getattr(payload, "skill_name", "this skill")
+
+    print(file=out)
+    print(f"That skill ({skill_name}) ran successfully.", file=out)
+    print("Want to always allow it?", file=out)
+    print(file=out)
+    print("  [1] Promote — always allow this skill", file=out)
+    print("  [2] Not yet — keep it in quarantine", file=out)
+    print("  [3] Never — deny this skill", file=out)
+    print(file=out)
+
+    while True:
+        try:
+            choice = input("Choose [1-3]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("(no input — keeping the skill in quarantine)", file=out)
+            return "not_yet"
+        if choice in ("1", "promote", "yes", "y"):
+            return "promote"
+        if choice in ("2", "not yet", "not_yet", "later"):
+            return "not_yet"
+        if choice in ("3", "never", "no", "n", "deny"):
+            try:
+                purge = input(
+                    "Remove the skill from quarantine? [y/N]: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                purge = "n"
+            return "never_purge" if purge in ("y", "yes") else "never"
+        print(f"Unknown choice {choice!r}; pick 1, 2, or 3.", file=out)
 
 
 # ── Non-interactive handlers ─────────────────────────────────────────

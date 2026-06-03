@@ -38,8 +38,10 @@ removes the fallback once every caller routes through the Dispatcher.
 from __future__ import annotations
 
 import json as _json_mod
+import hashlib
 import logging
 import os
+import re
 import sys as _sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -315,6 +317,27 @@ class AndonHalt(RuntimeError):
 # ── Dispatcher ────────────────────────────────────────────────────────────
 
 
+# Sprint 53.2 — extract a quarantined skill's name + directory from a
+# terminal command that references ``~/.grove/skills/.andon/<name>/``.
+# ``path`` captures the quarantine directory; ``name`` the skill folder.
+_ANDON_SKILL_RE = re.compile(
+    r"(?P<path>[^\s'\"]*\.grove/skills/\.andon/(?P<name>[^/\s'\"]+))"
+)
+
+
+def _synth_skill_eval_hash(skill_name: str, skill_path: str) -> str:
+    """Synthesize the proposal's ``eval_hash`` for a skill promotion.
+
+    ``RoutingProposal.eval_hash`` is mandatory and normally projects an
+    ``EvalReport`` — a skill promotion has none. Per the GATE-A minor
+    call, derive a defined, content-addressable value so the queue's
+    ``_read_records`` round-trips cleanly instead of carrying an empty
+    sentinel.
+    """
+    seed = f"skill_promotion|{skill_name}|{skill_path}"
+    return "sha256:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
 class Dispatcher:
     """Grove Autonomaton runtime entry point per GRV-005 § II.
 
@@ -348,6 +371,7 @@ class Dispatcher:
         *,
         runtime_ctx: Optional[RuntimeContext] = None,
         sovereign_prompt_handler: Optional[Callable[["AndonHalt"], str]] = None,
+        post_execution_prompt_handler: Optional[Callable[[Any], str]] = None,
         kaizen_ledger_dir: Optional[Path] = None,
         intent_store: Optional[Any] = None,
         agent_kwargs: Optional[Dict[str, Any]] = None,
@@ -435,6 +459,16 @@ class Dispatcher:
         self._sovereign_prompt_handler: Callable[["AndonHalt"], str] = (
             sovereign_prompt_handler or _default_sovereign_prompt
         )
+        # Sprint 53.2 — post-execution Kaizen promotion prompt handler.
+        # Distinct from the four-choice Sovereign Prompt above (different
+        # vocabulary: Promote / Not yet / Never). TTY callers (cli.py)
+        # inject a handler that renders the three-choice prompt; headless
+        # surfaces (gateway, batch, run_agent, tests) leave it None, in
+        # which case the Dispatcher auto-logs a pending skill_promotion
+        # proposal to the Flywheel queue — never silently discarded.
+        self._post_execution_prompt_handler: Optional[Callable[[Any], str]] = (
+            post_execution_prompt_handler
+        )
         # ── Sprint 26 Phase 6 — Kaizen Ledger (foreground/background split) ──
         # Per GRV-005 § IX(4): operational telemetry routes out-of-band
         # to an isolated ledger; conversational payload stays on the
@@ -478,6 +512,15 @@ class Dispatcher:
         # instance-attribute carrier is race-free in practice.
         self._current_turn_id: Optional[str] = None
         self._current_turn_classification: Optional[Any] = None
+        # Sprint 53.2 — turn-scoped quarantine-execution flag. Set in
+        # ``_handle_andon_halt`` when an "allow once" disposition lets a
+        # ``.andon/`` skill run; checked at the ``FinalResponse`` site to
+        # fire the post-execution promotion prompt; RESET at the top of
+        # every ``_drive_generator`` (turn boundary) so it never bleeds
+        # across turns or survives a tool-call retry loop within a turn.
+        # Holds a dict (skill_name, skill_path, execution_turn_id,
+        # cache_key) or None.
+        self._quarantine_skill_executed_this_turn: Optional[Dict[str, Any]] = None
         # Sprint 35 — RoutingDecision the per-turn classify call produced.
         # Read via back-reference by ``AIAgent.run_conversation``'s tail
         # to surface ``result["routing_decision"]`` for webui consumers.
@@ -1198,6 +1241,14 @@ class Dispatcher:
         )
         import time as _time
 
+        # Sprint 53.2 — reset the quarantine-execution flag at the turn
+        # boundary. ``_drive_generator`` is invoked exactly once per
+        # ``dispatch_turn`` (after ``_current_turn_id`` is set), so this is
+        # turn-scoped: a dirty flag from a prior turn cannot leak forward,
+        # and the flag persists across THIS turn's tool-call loop until the
+        # FinalResponse site reads it.
+        self._quarantine_skill_executed_this_turn = None
+
         try:
             yielded = gen.send(None)  # advance to first yield
             # Sprint 35 — classification + pre-route ledger event already
@@ -1491,6 +1542,16 @@ class Dispatcher:
                         outcome="pending",
                         final_response_chars=len(yielded.content or ""),
                     )
+                    # Sprint 53.2 — the operator has now seen the skill's
+                    # output (FinalResponse is recorded). If a quarantined
+                    # skill ran this turn under "allow once", fire the
+                    # post-execution promotion prompt BEFORE resuming the
+                    # generator. One-shot per turn: clear so a retry /
+                    # second FinalResponse does not re-prompt.
+                    if self._quarantine_skill_executed_this_turn is not None:
+                        flag = self._quarantine_skill_executed_this_turn
+                        self._quarantine_skill_executed_this_turn = None
+                        self._emit_post_execution_kaizen(flag, ledger=ledger)
                     yielded = gen.send(None)
                 else:
                     yielded = gen.send(None)
@@ -3173,6 +3234,15 @@ class Dispatcher:
         if disposition == "always":
             self._queue_zone_promotion_proposal(triggering_intent)
 
+        # Sprint 53.2 — if an "allow once" disposition just let a
+        # quarantined (.andon) skill run, flag it so the post-execution
+        # promotion prompt fires after FinalResponse. Reached only on the
+        # active-disposition path (cache hits early-return above), so
+        # silently-cached sessions do not nag the operator each turn.
+        self._maybe_flag_quarantine_execution(
+            triggering_intent, halt, disposition, cache_key, ledger,
+        )
+
         return disposition
 
     def _queue_zone_promotion_proposal(self, intent: Any) -> None:
@@ -3225,6 +3295,242 @@ class Dispatcher:
                 "failed (non-fatal; session_allow cache still applies): "
                 "%r", exc,
             )
+
+    # ── Sprint 53.2 — post-execution skill promotion ────────────────────
+
+    def _maybe_flag_quarantine_execution(
+        self,
+        intent: Any,
+        halt: "AndonHalt",
+        disposition: str,
+        cache_key: Any,
+        ledger: Optional[Any],
+    ) -> None:
+        """Flag a successful "allow once" execution of a quarantined skill.
+
+        Sets the turn-scoped ``_quarantine_skill_executed_this_turn`` carrier
+        when ALL hold: disposition is ``"once"``, the triggering tool is the
+        terminal, the matched zone rule is the ``.andon`` quarantine rule,
+        and the command references a ``~/.grove/skills/.andon/<name>/`` path.
+        Also records the additive ``quarantine_skill_disposition`` ledger
+        event (GATE-A decision 2) that ``--strict`` promotion reads — kept
+        separate from Sprint 32's ``andon_disposition`` so that schema is
+        untouched.
+        """
+        if disposition != "once":
+            return
+        if getattr(intent, "tool_name", None) != "terminal":
+            return
+        if ".andon" not in (getattr(halt, "matched_rule", "") or ""):
+            return
+        arguments = getattr(intent, "arguments", None)
+        command = (
+            arguments.get("command") if isinstance(arguments, dict) else None
+        )
+        if not command:
+            return
+        match = _ANDON_SKILL_RE.search(command)
+        if match is None:
+            return
+        skill_name = match.group("name")
+        skill_path = match.group("path")
+        self._quarantine_skill_executed_this_turn = {
+            "skill_name": skill_name,
+            "skill_path": skill_path,
+            "execution_turn_id": self._current_turn_id or "",
+            "cache_key": cache_key,
+        }
+        if ledger is not None:
+            try:
+                ledger.record(
+                    "quarantine_skill_disposition",
+                    skill_name=skill_name,
+                    skill_path=skill_path,
+                    disposition="once",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[grove.dispatcher] quarantine_skill_disposition ledger "
+                    "write failed (non-fatal): %r", exc,
+                )
+
+    def _emit_post_execution_kaizen(
+        self, flag: Dict[str, Any], *, ledger: Optional[Any],
+    ) -> None:
+        """Surface the Promote / Not yet / Never prompt after a skill ran.
+
+        TTY callers inject ``post_execution_prompt_handler``; headless
+        surfaces (handler is None) auto-log a pending ``skill_promotion``
+        proposal so the operator can approve later — never silently
+        discarded (locked decision 4). A handler that raises degrades to
+        the same auto-log path.
+        """
+        from grove.intents import PostExecutionKaizenYield
+
+        payload = PostExecutionKaizenYield(
+            skill_name=flag["skill_name"],
+            skill_path=flag["skill_path"],
+            exit_status="success",
+            execution_turn_id=flag.get("execution_turn_id") or "",
+            suggested_action="promote",
+        )
+
+        handler = self._post_execution_prompt_handler
+        if handler is None:
+            self._autolog_pending_promotion(payload, ledger, reason="non_tty")
+            return
+        try:
+            choice = handler(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[grove.dispatcher] post-execution prompt handler failed "
+                "(%r); auto-logging pending promotion instead.", exc,
+            )
+            self._autolog_pending_promotion(
+                payload, ledger, reason="handler_error",
+            )
+            return
+
+        choice = (choice or "not_yet").strip().lower()
+        if ledger is not None:
+            try:
+                ledger.record(
+                    "post_execution_kaizen",
+                    skill_name=payload.skill_name,
+                    choice=choice,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[grove.dispatcher] post_execution_kaizen ledger write "
+                    "failed (non-fatal): %r", exc,
+                )
+
+        if choice == "promote":
+            # Phase 2 routes Promote to the queue (a pending promotion the
+            # operator approves). Phase 3 makes normal-mode promotion
+            # immediate via grove.sovereignty.promote().
+            self._autolog_pending_promotion(
+                payload, ledger, reason="promote_requested",
+            )
+        elif choice in ("never", "never_purge"):
+            self._deny_quarantined_skill(
+                flag, payload, purge=(choice == "never_purge"), ledger=ledger,
+            )
+        # "not_yet" / unknown → no-op: the skill stays quarantined and the
+        # four-choice Kaizen re-prompts on its next execution.
+
+    def _autolog_pending_promotion(
+        self, payload: Any, ledger: Optional[Any], *, reason: str,
+    ) -> None:
+        """Append a pending ``skill_promotion`` proposal to the Flywheel queue."""
+        try:
+            from grove.eval.proposal_queue import (
+                RoutingProposal,
+                PROPOSAL_TYPE_SKILL_PROMOTION,
+                compute_proposal_id,
+                append as _queue_append,
+            )
+
+            payload_dict = {
+                "skill_name": payload.skill_name,
+                "skill_path": payload.skill_path,
+                "execution_turn_id": payload.execution_turn_id,
+                "suggested_action": "promote",
+            }
+            evidence = (payload.execution_turn_id,) if payload.execution_turn_id else ()
+            proposal = RoutingProposal(
+                proposal_id=compute_proposal_id(
+                    type=PROPOSAL_TYPE_SKILL_PROMOTION,
+                    payload=payload_dict,
+                    evidence=evidence,
+                ),
+                type=PROPOSAL_TYPE_SKILL_PROMOTION,
+                payload=payload_dict,
+                evidence=evidence,
+                eval_hash=_synth_skill_eval_hash(
+                    payload.skill_name, payload.skill_path,
+                ),
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            appended = _queue_append(proposal)
+            short_id = proposal.proposal_id.split(":")[-1][:12]
+            if appended:
+                logger.info(
+                    "[grove.dispatcher] Skill %r queued for promotion "
+                    "(reason=%s). Run: autonomaton flywheel approve %s",
+                    payload.skill_name, reason, short_id,
+                )
+            else:
+                logger.info(
+                    "[grove.dispatcher] Skill %r promotion already queued — "
+                    "idempotent skip (reason=%s)", payload.skill_name, reason,
+                )
+            if ledger is not None:
+                try:
+                    ledger.record(
+                        "skill_promotion_queued",
+                        skill_name=payload.skill_name,
+                        reason=reason,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "[grove.dispatcher] skill_promotion_queued ledger "
+                        "write failed (non-fatal): %r", exc,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[grove.dispatcher] pending skill_promotion queue write "
+                "failed (non-fatal): %r", exc,
+            )
+
+    def _deny_quarantined_skill(
+        self, flag: Dict[str, Any], payload: Any, *, purge: bool,
+        ledger: Optional[Any],
+    ) -> None:
+        """Handle the "Never" choice: deny + optionally purge the quarantine.
+
+        Adds the exact command's cache key to the session deny cache so an
+        immediate re-attempt of the same invocation auto-denies. When
+        ``purge`` is set (operator confirmed removal), the quarantine
+        directory is deleted via ``grove.sovereignty.reject`` — the
+        decisive skill-scoped deny.
+        """
+        cache_key = flag.get("cache_key")
+        if cache_key is not None:
+            self._session_deny_cache.add(cache_key)
+        if purge:
+            try:
+                from grove.sovereignty import reject as _reject
+                _reject(
+                    payload.skill_name,
+                    reason="operator chose Never at the post-execution prompt",
+                )
+                logger.info(
+                    "[grove.dispatcher] Quarantined skill %r purged on Never.",
+                    payload.skill_name,
+                )
+            except FileNotFoundError:
+                logger.info(
+                    "[grove.dispatcher] Never: no quarantine dir for %r to "
+                    "purge (already gone).", payload.skill_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[grove.dispatcher] Never: failed to purge quarantine "
+                    "dir for %r (non-fatal): %r", payload.skill_name, exc,
+                )
+        if ledger is not None:
+            try:
+                ledger.record(
+                    "skill_promotion_denied",
+                    skill_name=payload.skill_name,
+                    purged=purge,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[grove.dispatcher] skill_promotion_denied ledger write "
+                    "failed (non-fatal): %r", exc,
+                )
 
     def _log_session_cache_hit(
         self,

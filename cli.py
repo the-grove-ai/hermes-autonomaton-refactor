@@ -4812,6 +4812,7 @@ class HermesCLI:
             self.agent = Dispatcher(
                 session_db=self._session_db,
                 sovereign_prompt_handler=self._sovereign_prompt_callback,
+                post_execution_prompt_handler=self._post_execution_kaizen_callback,
                 intent_store=_get_intent_store(),
                 agent_kwargs=dict(
                 model=effective_model,
@@ -10952,6 +10953,103 @@ class HermesCLI:
                 "sovereign prompt timed out after 300s — denying action",
             )
             return "deny"
+
+    def _run_terminal_prompt_bridge(
+        self, *, in_terminal, direct, timeout, fallback, label,
+    ) -> str:
+        """Generic prompt_toolkit cross-thread bridge (Sprint 53.2).
+
+        Factored from ``_sovereign_prompt_callback``'s mechanics so the
+        post-execution promotion prompt reuses the same path without
+        touching the working Sovereign Prompt bridge. ``in_terminal(out)``
+        runs inside ``run_in_terminal`` with cooked stdio (``out`` is the
+        unpatched stream); ``direct()`` is the no-application fallback
+        (oneshot / -q / unit tests / main-thread). Returns ``fallback`` on
+        timeout, schedule failure, or any in-terminal exception — never
+        raises back into the Dispatcher.
+        """
+        import threading
+
+        loop = self._app_loop
+        if (
+            self._app is None
+            or loop is None
+            or not loop.is_running()
+            or threading.current_thread() is threading.main_thread()
+        ):
+            return direct()
+
+        response_queue: queue.Queue = queue.Queue(maxsize=1)
+
+        def _kick_in_terminal() -> None:
+            try:
+                from prompt_toolkit.application import run_in_terminal
+                was_visible = self._status_bar_visible
+                self._status_bar_visible = False
+                try:
+                    self._app.invalidate()
+                except Exception:
+                    pass
+
+                def _prompt_and_post() -> None:
+                    try:
+                        import sys as _sp_sys
+                        _out = getattr(_sp_sys, "__stderr__", None) or _sp_sys.stderr
+                        choice = in_terminal(_out)
+                    except Exception as exc:
+                        logger.warning(
+                            "%s failed inside run_in_terminal: %s", label, exc,
+                        )
+                        choice = fallback
+                    response_queue.put(choice or fallback)
+                    self._status_bar_visible = was_visible
+                    try:
+                        self._app.invalidate()
+                    except Exception:
+                        pass
+
+                run_in_terminal(_prompt_and_post)
+            except Exception as exc:
+                logger.warning(
+                    "%s schedule onto loop failed: %s", label, exc,
+                )
+                response_queue.put(fallback)
+
+        try:
+            loop.call_soon_threadsafe(_kick_in_terminal)
+        except Exception as exc:
+            logger.warning(
+                "%s call_soon_threadsafe failed: %s — falling back to direct",
+                label, exc,
+            )
+            return direct()
+
+        try:
+            return response_queue.get(timeout=timeout)
+        except queue.Empty:
+            logger.warning(
+                "%s timed out after %ss — returning %r", label, timeout, fallback,
+            )
+            return fallback
+
+    def _post_execution_kaizen_callback(self, payload) -> str:
+        """Sprint 53.2 — TTY bridge for the post-execution promotion prompt.
+
+        Called by the Dispatcher (agent thread) after a quarantined skill
+        ran successfully. Renders Promote / Not yet / Never via the same
+        cross-thread bridge as the Sovereign Prompt. Fail-safe default is
+        ``"not_yet"`` — the skill stays quarantined rather than being
+        promoted or denied on a bridge failure.
+        """
+        from grove.sovereign_prompt_handlers import tty_post_execution_prompt
+
+        return self._run_terminal_prompt_bridge(
+            in_terminal=lambda out: tty_post_execution_prompt(payload, out=out),
+            direct=lambda: tty_post_execution_prompt(payload),
+            timeout=300,
+            fallback="not_yet",
+            label="post-execution prompt",
+        )
 
     def _clarify_callback(self, question, choices):
         """

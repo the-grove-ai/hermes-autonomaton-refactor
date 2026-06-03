@@ -38,6 +38,7 @@ __all__ = [
     "RoutingProposal",
     "PROPOSAL_TYPE_ROUTING_ADJUSTMENT",
     "PROPOSAL_TYPE_ZONE_PROMOTION",
+    "PROPOSAL_TYPE_SKILL_PROMOTION",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -59,6 +60,14 @@ __all__ = [
 # live queue entries an operator might have already accumulated.
 PROPOSAL_TYPE_ROUTING_ADJUSTMENT = "routing_adjustment"
 PROPOSAL_TYPE_ZONE_PROMOTION = "zone_promotion"
+# Sprint 53.2 — a quarantined (.andon) skill ran successfully under an
+# "allow once" disposition and the operator (or a headless surface) wants
+# it promoted to the trusted set. Payload shape:
+#   {"skill_name": str, "skill_path": str, "execution_turn_id": str,
+#    "suggested_action": "promote"}
+# CLI approve routes this to grove.sovereignty.promote() + a green zone
+# rule for the promoted path (see grove/flywheel_cli.py).
+PROPOSAL_TYPE_SKILL_PROMOTION = "skill_promotion"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 

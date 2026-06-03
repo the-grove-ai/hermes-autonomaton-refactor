@@ -50,6 +50,7 @@ __all__ = [
     "MemoryWriteIntent",
     "MemoryWriteResult",
     "MemoryLifecycleIntent",
+    "PostExecutionKaizenYield",
 ]
 
 
@@ -183,6 +184,36 @@ class FinalResponse:
 
     content: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PostExecutionKaizenYield:
+    """Sprint 53.2 — a quarantined skill ran successfully; offer promotion.
+
+    NOT yielded by the Agent's generator. The Dispatcher synthesizes this
+    carrier at the ``FinalResponse`` site (after the operator has seen the
+    skill's output) when a ``.andon/`` skill executed under an "allow once"
+    disposition this turn. The Dispatcher hands it to its
+    ``post_execution_prompt_handler`` (TTY: a Promote / Not yet / Never
+    prompt) or, on headless surfaces with no handler, auto-logs a pending
+    ``skill_promotion`` proposal to the Flywheel queue. Distinct from
+    Sprint 32's four-choice Sovereign Prompt (Allow once / Allow for
+    session / Always allow / Don't allow): different vocabulary, different
+    handler, different return-value space — no collision.
+
+    Fields:
+        skill_name: the quarantined skill's directory name under .andon/.
+        skill_path: absolute path of the quarantined skill directory.
+        exit_status: outcome of the gated execution ("success").
+        execution_turn_id: the Dispatcher turn id that ran the skill.
+        suggested_action: the promotion the system proposes ("promote").
+    """
+
+    skill_name: str
+    skill_path: str
+    exit_status: str
+    execution_turn_id: str
+    suggested_action: str
 
 
 @dataclass(frozen=True)
