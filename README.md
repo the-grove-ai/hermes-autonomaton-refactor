@@ -10,7 +10,7 @@ The result is a governed agent that satisfies the structural requirements emergi
 
 > [!WARNING]
 > **Pre-Alpha / Active Research Implementation**
-> This fork is heavily under active development. The core agent "god object" has been successfully replaced with a deterministic dispatcher, backed by a green suite of 24,000+ tests. However, this is a **pre-alpha** reference implementation. Expect bugs, breaking changes, and shifting APIs as we build out the self-authoring and pattern compilation pipelines. This is a proof-of-concept for the Autonomaton Pattern, not yet a production-ready framework.
+> This fork is heavily under active development. The core agent "god object" has been successfully replaced with a deterministic dispatcher, backed by a green suite of 24,000+ tests. However, this is a **pre-alpha** reference implementation. Expect bugs, breaking changes, and shifting APIs as the architecture matures toward production. This is a proof-of-concept for the Autonomaton Pattern, not yet a production-ready framework.
 
 ---
 
@@ -32,18 +32,22 @@ This is a working, exploratory fork under active development. The core governanc
 |---|---|---|
 | Dispatcher pipeline | ✅ Shipped | Five-stage pipeline. Generator-shaped agent loop. Bidirectional Intent Protocol. |
 | Cognitive Router | ✅ Shipped | T0–T3 tier routing. 15-intent taxonomy. T1 default floor. |
+| T0 Pattern Cache | ✅ Shipped | Scanner, compiler, promotion, deterministic execution path. Correction-driven auto-demotion. A confirmed pattern resolves with no model call. |
 | Zone-based sovereignty | ✅ Shipped | Green/Yellow/Red zones. Hierarchical rules. Regex fail-hard. |
 | Kaizen four-choice UX | ✅ Shipped | Plain-language operator prompts. Session caching. Zone promotion via proposal queue. |
+| Telegram governance | ✅ Shipped | Inline keyboard buttons for the Kaizen four-choice prompt and post-execution promotion. Tappable on mobile. |
 | Flywheel proposal queue | ✅ Shipped | CLI: `autonomaton flywheel list/show/approve/reject`. |
 | Declarative prompt composition | ✅ Shipped | 18 sections as declarative providers. Sub-50ms compose. |
 | Feed-first context loop | ✅ Shipped | Intent store queries. Contextual preamble. |
 | Agent purity | ✅ Shipped | Four axes substrate-free: construction, session, memory, classification. |
 | Model independence | ✅ Shipped | Anthropic, OpenAI, Ollama, oMLX (Gemma 4, etc.). Config swaps, not code changes. |
 | Tool registry | ✅ Shipped | Dispatcher-owned. Module-level singleton deleted. |
-| Skill authoring pipeline | 📋 Scaffolded | Quarantine → sandbox → promote. Try before you buy. |
-| `--strict` mode for enterprise | 📋 Planned | Promotion gated on review + test coverage. |
+| Skill authoring pipeline | ✅ Shipped | Quarantine → sandbox → promote via `.andon/`. Post-execution Kaizen prompt. Try before you buy. |
+| `--strict` mode for enterprise | ✅ Shipped | Promotion gated on the diff, a logged successful execution, and operator confirmation. |
+| Daily-driver tools | ✅ Shipped | `ddgs` web search (no API key). Turn-0 affordances preamble carrying real skill invocation commands. |
+| Process lifecycle | ✅ Shipped | `hermes doctor --reap`/`--restart`. atexit MCP cleanup. macOS process-tree hardening. |
 
-**Test surface:** 24,060 passing / 257 failing / 214 skipped across 24,531 tests. Governance suite: 1,153/1,153. Live CLI integration suite: 13/13.
+**Test surface:** Governance suite: 1,264/1,264. Live CLI integration: T1-T31. Telegram gateway: 510 tests.
 
 ---
 
@@ -134,6 +138,8 @@ No zone names. No regex patterns. No jargon. The operator decides; the system re
 
 "Always allow" queues a promotion proposal. The operator approves it via `autonomaton flywheel approve` when ready. The governance is structural. The UX is invisible.
 
+On Telegram, the same prompt renders as inline keyboard buttons — 🟢 Always allow / 🟡 Allow session / 🟠 Allow once / 🔴 Don't allow — and the post-execution promotion as 🟢 Promote / 🟡 Not yet / 🔴 Never. Same governance, same four dispositions, one tap on mobile. No typing, no jargon.
+
 ---
 
 ## Tier Routing and Model Independence
@@ -142,7 +148,7 @@ The Cognitive Router sends each request to the cheapest tier that can handle it:
 
 | Tier | Default Binding | Role |
 |---|---|---|
-| T0 — Pattern Cache | Deterministic | Confirmed patterns. No model call. |
+| T0 — Pattern Cache | Deterministic | Confirmed patterns. No model call. Scanner identifies stable T1 patterns; the operator approves via flywheel. Correction-driven auto-demotion. |
 | T1 — Cheap Cognition | Haiku-class | Routine, well-understood requests. The daily driver. |
 | T2 — Premium Cognition | Sonnet-class | Novel or moderately complex work. |
 | T3 — Apex Cognition | Opus-class | High-stakes, ambiguous, or creative. |
