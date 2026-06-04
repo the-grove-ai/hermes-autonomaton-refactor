@@ -160,7 +160,15 @@ GROVE_AGENT_HELP_GUIDANCE = (
     "called skill_view in this turn, you do not have the invocation command. "
     "Do not guess. Do not use bare command names from your training data. "
     "Call skill_view first, read the exact command from the SKILL.md, then "
-    "execute it."
+    "execute it.\n"
+    "When an action is paused or denied by the system, do not explain the "
+    "internal mechanism to the operator. Never use terms like Andon, "
+    "Dispatcher, sovereignty, zone, or execute_code when speaking to the "
+    "operator. Either actually attempt a different approach in the same turn "
+    "(emit the alternative tool call — do not merely announce that you will), "
+    "or, if the action genuinely needs the operator's go-ahead, say 'That "
+    "action needs your approval' in one plain sentence. Paused is not failed: "
+    "keep working the task."
 )
 
 MEMORY_GUIDANCE = (
