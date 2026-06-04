@@ -55,6 +55,7 @@ from agent.i18n import t
 from grove.dispatcher import Dispatcher
 from grove.sovereign_prompt_handlers import (
     batch_auto_allow_handler,
+    describe_action_kaizen,
     gateway_auto_allow_handler,
 )
 from hermes_cli.config import cfg_get
@@ -974,6 +975,97 @@ def _load_gateway_config() -> dict:
     except Exception:
         logger.debug("Could not load gateway config from %s", config_path)
     return {}
+
+
+def _gateway_kaizen_timeout_seconds() -> int:
+    """The operator-tappable Kaizen prompt's wait window (Sprint 58).
+
+    Reads ``gateway.kaizen_timeout_seconds`` from config.yaml; defaults to 600
+    (10 minutes). On timeout the prompt auto-denies. Clamped to a sane floor
+    so a misconfigured 0 can't make every halt deny instantly."""
+    try:
+        gw = (_load_gateway_config().get("gateway") or {})
+        val = int(gw.get("kaizen_timeout_seconds", 600))
+        return max(30, val)
+    except Exception:
+        return 600
+
+
+def _build_kaizen_prompt_handler(
+    *, adapter, chat_id, loop, metadata, session_key, timeout=None,
+):
+    """Build a sovereign-prompt handler that renders the Kaizen four-choice
+    prompt as an inline keyboard and blocks the Dispatcher thread until the
+    operator taps (or the timeout auto-denies). Sprint 58.
+
+    Reuses the dangerous-command approval bridge shape: schedule the async
+    keyboard send onto the event loop (``safe_schedule_threadsafe``), register
+    a ``threading.Event`` in the adapter's ``_kaizen_state``, block on
+    ``event.wait(timeout)``, and read the disposition the ``kz:`` callback
+    stamped. Returns one of Sprint 32's canon dispositions
+    (``once``/``session``/``always``/``deny``) — the Dispatcher's own
+    resolution logic is untouched; an ``always`` here queues a zone-promotion
+    proposal exactly as the TTY path does.
+
+    Any failure (no triggering intent, send scheduling unavailable, send
+    error) degrades to ``gateway_auto_allow_handler`` (silent auto-once) so a
+    halt never hard-blocks the turn on a transport problem.
+
+    ``timeout`` overrides the config-derived wait window (tests inject a small
+    value; production passes None → ``gateway.kaizen_timeout_seconds``)."""
+    if timeout is None:
+        timeout = _gateway_kaizen_timeout_seconds()
+
+    def _handler(halt) -> str:
+        try:
+            triggering = halt.intents[halt.triggering_index]
+            description = describe_action_kaizen(
+                triggering.tool_name, triggering.arguments or {},
+            )
+        except Exception:
+            return gateway_auto_allow_handler(halt)
+
+        kid, entry = adapter.register_kaizen_pending(session_key)
+        send_fut = safe_schedule_threadsafe(
+            adapter.send_kaizen_prompt(
+                chat_id=chat_id, kaizen_id=kid,
+                description=description, metadata=metadata,
+            ),
+            loop, logger=logger,
+            log_message="send_kaizen_prompt scheduling error",
+        )
+        if send_fut is None:
+            adapter.cancel_kaizen_pending(kid)
+            return gateway_auto_allow_handler(halt)
+        # Confirm the keyboard actually went out (mirrors the dangerous-command
+        # bridge's _approval_fut.result(timeout=15)); fall back fast if it
+        # didn't, rather than blocking the full Kaizen timeout on a dead send.
+        try:
+            send_res = send_fut.result(timeout=20)
+            if send_res is not None and not getattr(send_res, "success", True):
+                adapter.cancel_kaizen_pending(kid)
+                return gateway_auto_allow_handler(halt)
+        except Exception:
+            adapter.cancel_kaizen_pending(kid)
+            return gateway_auto_allow_handler(halt)
+
+        if entry["event"].wait(timeout=timeout):
+            return entry.get("disposition") or "deny"
+
+        # Timeout — auto-deny, edit the prompt in place, drop the buttons.
+        adapter.cancel_kaizen_pending(kid)
+        if entry.get("message_id") is not None:
+            safe_schedule_threadsafe(
+                adapter.edit_kaizen_resolved(
+                    entry["chat_id"], entry["message_id"],
+                    "⏱ Timed out — action denied",
+                ),
+                loop, logger=logger,
+                log_message="kaizen timeout edit scheduling error",
+            )
+        return "deny"
+
+    return _handler
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -15341,6 +15433,27 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+
+            # Sprint 58 — interactive Kaizen zone-halt prompt on platforms that
+            # render inline keyboards (Telegram). The agent is cached but the
+            # sovereign-prompt handler needs THIS turn's adapter / chat / loop,
+            # so it is rebound here per-turn (like the callbacks above). Adapters
+            # without send_kaizen_prompt keep the silent auto-once handler.
+            _disp_singleton = getattr(agent, "_dispatcher_singleton", None)
+            if _disp_singleton is not None:
+                if (
+                    _status_adapter is not None
+                    and getattr(type(_status_adapter), "send_kaizen_prompt", None) is not None
+                ):
+                    _disp_singleton._sovereign_prompt_handler = _build_kaizen_prompt_handler(
+                        adapter=_status_adapter,
+                        chat_id=_status_chat_id,
+                        loop=_loop_for_step,
+                        metadata=_status_thread_metadata,
+                        session_key=session_key or "",
+                    )
+                else:
+                    _disp_singleton._sovereign_prompt_handler = gateway_auto_allow_handler
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

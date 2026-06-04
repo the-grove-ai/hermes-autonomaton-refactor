@@ -8,10 +8,12 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import itertools
 import json
 import logging
 import os
 import tempfile
+import threading
 import html as _html
 import re
 from typing import Dict, List, Optional, Any
@@ -431,6 +433,15 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Sprint 58 — Kaizen zone-halt button state: kaizen_id → entry dict
+        # ({event, disposition, session_key, message_id, chat_id}). Parallel to
+        # _approval_state (the dangerous-command bridge); resolves the sovereign
+        # prompt handler's threading.Event, NOT resolve_gateway_approval.
+        self._kaizen_state: Dict[int, dict] = {}
+        # Post-execution promotion button state: promo_id → entry dict.
+        self._kaizen_promo_state: Dict[int, dict] = {}
+        # One lock guards both Kaizen registries + their id counters.
+        self._kaizen_lock = threading.Lock()
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -2182,6 +2193,125 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    # ── Sprint 58 — Kaizen zone-halt inline keyboard (kz:) ─────────────
+    #
+    # Mirrors the dangerous-command approval bridge (send_exec_approval /
+    # _approval_state / resolve_gateway_approval) but resolves the sovereign
+    # prompt handler's own threading.Event rather than the terminal-tool
+    # approval registry. The Dispatcher thread blocks on entry["event"];
+    # the kz: callback (or a timeout) sets it.
+
+    def register_kaizen_pending(self, session_key: str) -> "tuple[int, dict]":
+        """Allocate a kaizen_id + Event entry for a pending zone-halt prompt.
+
+        Called from the sovereign prompt handler ON THE DISPATCHER THREAD
+        before it schedules the keyboard send and blocks on the Event.
+        Returns ``(kaizen_id, entry)``; the caller keeps the entry reference
+        so it can read ``entry["disposition"]`` after the Event fires even
+        though the kz: callback pops the id out of the registry."""
+        if not hasattr(self, "_kaizen_counter"):
+            self._kaizen_counter = itertools.count(1)
+        with self._kaizen_lock:
+            kid = next(self._kaizen_counter)
+            entry = {
+                "event": threading.Event(),
+                "disposition": None,
+                "session_key": session_key,
+                "message_id": None,
+                "chat_id": None,
+            }
+            self._kaizen_state[kid] = entry
+        return kid, entry
+
+    def resolve_kaizen_pending(self, kaizen_id: int, disposition: str) -> bool:
+        """Resolve a pending Kaizen prompt — ghost-tap safe.
+
+        Pops the id (so a second tap finds nothing), stamps the disposition,
+        and fires the Event to unblock the Dispatcher thread. Returns False
+        if the id is unknown (already resolved, timed out, or from a stale
+        session) — the caller answers "Action expired"."""
+        with self._kaizen_lock:
+            entry = self._kaizen_state.pop(kaizen_id, None)
+        if entry is None:
+            return False
+        entry["disposition"] = disposition
+        entry["event"].set()
+        return True
+
+    def cancel_kaizen_pending(self, kaizen_id: int) -> Optional[dict]:
+        """Remove a pending entry (timeout / scheduling failure). Returns the
+        entry if it was still pending, else None."""
+        with self._kaizen_lock:
+            return self._kaizen_state.pop(kaizen_id, None)
+
+    async def send_kaizen_prompt(
+        self, chat_id: str, kaizen_id: int, description: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render the four-choice Kaizen prompt as an inline keyboard.
+
+        ``description`` is the Sprint-32.2 Kaizen-register template text
+        (``describe_action_kaizen``) — plain language, no governance jargon.
+        Callback data is ``kz:<disposition>:<kaizen_id>`` — a short int id (not
+        the session_key) so it stays under Telegram's 64-byte cap. Stores the
+        sent message_id/chat_id on the entry so a timeout can edit it."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            text = (
+                f"🔔 <b>Approval needed</b>\n\n"
+                f"{_html.escape(description)}"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🟢 Always allow", callback_data=f"kz:always:{kaizen_id}")],
+                [InlineKeyboardButton("🟡 Allow session", callback_data=f"kz:session:{kaizen_id}")],
+                [InlineKeyboardButton("🟠 Allow once", callback_data=f"kz:once:{kaizen_id}")],
+                [InlineKeyboardButton("🔴 Don't allow", callback_data=f"kz:deny:{kaizen_id}")],
+            ])
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id, thread_id, metadata, reply_to_message_id=reply_to_id,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            # Record where the prompt landed so a timeout can edit it. Guard
+            # the entry read: it may already be resolved by a very fast tap.
+            with self._kaizen_lock:
+                entry = self._kaizen_state.get(kaizen_id)
+                if entry is not None:
+                    entry["message_id"] = msg.message_id
+                    entry["chat_id"] = int(chat_id)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_kaizen_prompt failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def edit_kaizen_resolved(
+        self, chat_id: int, message_id: int, label: str,
+    ) -> None:
+        """Edit a Kaizen prompt in place to its resolved state, buttons gone.
+        Used by the timeout path; the kz: callback edits via the query."""
+        if not self._bot or message_id is None:
+            return
+        try:
+            await self._bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=self.format_message(label),
+                parse_mode=ParseMode.MARKDOWN_V2, reply_markup=None,
+            )
+        except Exception as exc:
+            logger.debug("[%s] edit_kaizen_resolved failed (non-fatal): %s", self.name, exc)
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -2698,6 +2828,61 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+            return
+
+        # --- Sprint 58: Kaizen zone-halt callbacks (kz:disposition:kaizen_id) ---
+        if data.startswith("kz:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                disposition = parts[1]  # once, session, always, deny
+                try:
+                    kaizen_id = int(parts[2])
+                except (ValueError, IndexError):
+                    await query.answer(text="Invalid approval data.")
+                    return
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to approve actions.")
+                    return
+
+                # Ghost-tap protection: pop returns False if this prompt was
+                # already resolved, timed out, or belongs to an old session.
+                if not self.resolve_kaizen_pending(kaizen_id, disposition):
+                    await query.answer(text="Action expired")
+                    try:
+                        await query.edit_message_reply_markup(reply_markup=None)
+                    except Exception:
+                        pass
+                    return
+
+                label_map = {
+                    "once": "✓ Allowed once",
+                    "session": "✓ Allowed for session",
+                    "always": "✓ Always allowed",
+                    "deny": "✗ Denied",
+                }
+                user_display = getattr(query.from_user, "first_name", "User")
+                label = label_map.get(disposition, "Resolved")
+                await query.answer(text=label)
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(f"{label} by {user_display}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass  # non-fatal if edit fails
+                logger.info(
+                    "Telegram Kaizen button: kaizen_id=%s disposition=%s user=%s",
+                    kaizen_id, disposition, user_display,
+                )
             return
 
         # --- Slash-confirm callbacks (sc:choice:confirm_id) ---
