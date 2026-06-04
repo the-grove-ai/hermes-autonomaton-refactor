@@ -1,0 +1,32 @@
+[Unit]
+Description=Hermes Autonomaton gateway (Telegram/API governance node)
+Documentation=https://github.com/the-grove-ai/hermes-autonomaton-refactor#readme
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+WorkingDirectory=/home/hermes/hermes-autonomaton-refactor
+# --replace: take over any stale gateway instance on (re)start (the flag is
+# documented as "useful for systemd"). The unit name MUST stay
+# "hermes-gateway" — it matches get_service_name() for the default ~/.grove,
+# so `hermes gateway start/stop/status` and `hermes doctor --restart` all
+# manage THIS unit.
+ExecStart=/home/hermes/hermes-autonomaton-refactor/.venv/bin/hermes gateway run --replace
+Restart=always
+RestartSec=10
+# State lives on the persistent disk via the ~/.grove -> /mnt/grove-data/.grove
+# symlink; get_hermes_home() reads GROVE_HOME, so this is the single source of
+# truth for where the gateway keeps config, secrets, and databases.
+Environment=GROVE_HOME=/home/hermes/.grove
+# Hardening: /usr, /boot, /etc read-only; private /tmp. /home and /mnt stay
+# writable, which is where the repo and the persistent state live.
+ProtectSystem=full
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermes-gateway
+
+[Install]
+WantedBy=multi-user.target
