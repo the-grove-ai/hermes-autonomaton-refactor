@@ -2312,6 +2312,92 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] edit_kaizen_resolved failed (non-fatal): %s", self.name, exc)
 
+    # ── Sprint 58 Phase 2 — post-execution promotion buttons (kp:) ─────
+    #
+    # NON-BLOCKING: the skill already ran and its output was delivered. The
+    # promotion proposal is queued immediately (never silently discarded), the
+    # buttons let the operator approve/reject that queued proposal from mobile,
+    # and the turn completes without waiting. No Event, no Dispatcher block.
+
+    def register_kaizen_promo(
+        self, session_key: str, skill_name: str, proposal_id: Optional[str],
+    ) -> "tuple[int, dict]":
+        """Allocate a promo_id mapping the buttons to the queued proposal."""
+        if not hasattr(self, "_kaizen_promo_counter"):
+            self._kaizen_promo_counter = itertools.count(1)
+        with self._kaizen_lock:
+            pid = next(self._kaizen_promo_counter)
+            entry = {
+                "skill_name": skill_name,
+                "proposal_id": proposal_id,
+                "session_key": session_key,
+            }
+            self._kaizen_promo_state[pid] = entry
+        return pid, entry
+
+    def resolve_kaizen_promo(self, promo_id: int) -> Optional[dict]:
+        """Pop a promo entry — ghost-tap safe (None if already resolved)."""
+        with self._kaizen_lock:
+            return self._kaizen_promo_state.pop(promo_id, None)
+
+    async def send_kaizen_promotion(
+        self, chat_id: str, promo_id: int, skill_name: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render the three-choice post-execution promotion prompt.
+
+        Callback data ``kp:<action>:<promo_id>`` (short int id, 64-byte safe)."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            text = (
+                f"✓ That skill (<b>{_html.escape(skill_name)}</b>) ran "
+                f"successfully.\nWant to always allow it?"
+            )
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🟢 Promote", callback_data=f"kp:promote:{promo_id}"),
+                InlineKeyboardButton("🟡 Not yet", callback_data=f"kp:not_yet:{promo_id}"),
+                InlineKeyboardButton("🔴 Never", callback_data=f"kp:never:{promo_id}"),
+            ]])
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id, thread_id, metadata, reply_to_message_id=reply_to_id,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_kaizen_promotion failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    def _apply_promo_decision(self, action: str, proposal_id: str) -> None:
+        """Approve / reject the queued skill_promotion proposal — reuses the
+        CLI Flywheel path (Sprint 53.2). Invoked via ``asyncio.to_thread`` so
+        the file I/O doesn't block Telegram polling."""
+        try:
+            from grove import flywheel_cli
+            if action == "promote":
+                flywheel_cli.cli_approve(proposal_id)
+            elif action == "never":
+                flywheel_cli.cli_reject(
+                    proposal_id, reason="operator tapped Never on Telegram",
+                )
+        except Exception as exc:
+            logger.warning(
+                "[%s] kp: %s failed for proposal %s: %s",
+                self.name, action, proposal_id, exc,
+            )
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -2882,6 +2968,67 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info(
                     "Telegram Kaizen button: kaizen_id=%s disposition=%s user=%s",
                     kaizen_id, disposition, user_display,
+                )
+            return
+
+        # --- Sprint 58: post-execution promotion callbacks (kp:action:promo_id) ---
+        if data.startswith("kp:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                action = parts[1]  # promote, not_yet, never
+                try:
+                    promo_id = int(parts[2])
+                except (ValueError, IndexError):
+                    await query.answer(text="Invalid promotion data.")
+                    return
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to manage skills.")
+                    return
+
+                entry = self.resolve_kaizen_promo(promo_id)
+                if entry is None:
+                    await query.answer(text="Action expired")
+                    try:
+                        await query.edit_message_reply_markup(reply_markup=None)
+                    except Exception:
+                        pass
+                    return
+
+                label_map = {
+                    "promote": "🟢 Promoted",
+                    "not_yet": "🟡 Not yet",
+                    "never": "🔴 Never",
+                }
+                label = label_map.get(action, "Resolved")
+                skill_name = entry.get("skill_name", "skill")
+                await query.answer(text=label)
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(f"{label} — {skill_name}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+                # Apply promote/never off the event loop (file I/O). "not_yet"
+                # leaves the proposal queued — the existing auto-log fallback.
+                proposal_id = entry.get("proposal_id")
+                if action in ("promote", "never") and proposal_id:
+                    await asyncio.to_thread(
+                        self._apply_promo_decision, action, proposal_id,
+                    )
+                logger.info(
+                    "Telegram promotion button: promo_id=%s action=%s skill=%s",
+                    promo_id, action, skill_name,
                 )
             return
 

@@ -1068,6 +1068,80 @@ def _build_kaizen_prompt_handler(
     return _handler
 
 
+def _queue_skill_promotion_proposal(payload) -> Optional[str]:
+    """Queue a pending ``skill_promotion`` proposal and return its id.
+
+    Mirrors the Dispatcher's non-TTY auto-log (``_autolog_pending_promotion``)
+    so the post-execution promotion is NEVER silently discarded: it is queued
+    immediately, then the kp: buttons approve/reject it. The proposal_id is
+    deterministic (``compute_proposal_id``), so the button callback and any
+    later ``flywheel approve`` agree on the same id. Returns None on failure
+    (logged) — the buttons then degrade to no-op, never a crash."""
+    try:
+        import datetime as _dt
+        from grove.eval.proposal_queue import (
+            RoutingProposal, PROPOSAL_TYPE_SKILL_PROMOTION,
+            compute_proposal_id, append as _queue_append,
+        )
+        from grove.dispatcher import _synth_skill_eval_hash
+
+        payload_dict = {
+            "skill_name": payload.skill_name,
+            "skill_path": payload.skill_path,
+            "execution_turn_id": payload.execution_turn_id,
+            "suggested_action": "promote",
+        }
+        evidence = (payload.execution_turn_id,) if payload.execution_turn_id else ()
+        proposal_id = compute_proposal_id(
+            type=PROPOSAL_TYPE_SKILL_PROMOTION, payload=payload_dict, evidence=evidence,
+        )
+        proposal = RoutingProposal(
+            proposal_id=proposal_id,
+            type=PROPOSAL_TYPE_SKILL_PROMOTION,
+            payload=payload_dict,
+            evidence=evidence,
+            eval_hash=_synth_skill_eval_hash(payload.skill_name, payload.skill_path),
+            created_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+        )
+        _queue_append(proposal)  # idempotent on duplicate id
+        return proposal_id
+    except Exception as exc:
+        logger.warning("kp: failed to queue skill promotion proposal: %s", exc)
+        return None
+
+
+def _build_post_execution_handler(
+    *, adapter, chat_id, loop, metadata, session_key,
+):
+    """Build a NON-BLOCKING post-execution promotion handler (Sprint 58 P2).
+
+    The skill already ran and its output was delivered, so this MUST NOT block
+    turn completion. It queues the promotion proposal (never-silent), sends the
+    three-choice kp: keyboard, and returns ``"not_yet"`` immediately — the turn
+    finishes, the operator taps whenever, and the kp: callback approves/rejects
+    the queued proposal out-of-band. No tap → the proposal stays queued, which
+    IS the existing auto-log fallback (decision 2d)."""
+    def _handler(payload) -> str:
+        proposal_id = _queue_skill_promotion_proposal(payload)
+        try:
+            promo_id, _entry = adapter.register_kaizen_promo(
+                session_key, payload.skill_name, proposal_id,
+            )
+            safe_schedule_threadsafe(
+                adapter.send_kaizen_promotion(
+                    chat_id=chat_id, promo_id=promo_id,
+                    skill_name=payload.skill_name, metadata=metadata,
+                ),
+                loop, logger=logger,
+                log_message="send_kaizen_promotion scheduling error",
+            )
+        except Exception as exc:
+            logger.warning("kp: post-execution prompt render failed: %s", exc)
+        return "not_yet"
+
+    return _handler
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -15452,8 +15526,20 @@ class GatewayRunner:
                         metadata=_status_thread_metadata,
                         session_key=session_key or "",
                     )
+                    # Sprint 58 Phase 2 — post-execution promotion buttons. Same
+                    # adapters; non-blocking (queues + sends, returns not_yet).
+                    _disp_singleton._post_execution_prompt_handler = _build_post_execution_handler(
+                        adapter=_status_adapter,
+                        chat_id=_status_chat_id,
+                        loop=_loop_for_step,
+                        metadata=_status_thread_metadata,
+                        session_key=session_key or "",
+                    )
                 else:
                     _disp_singleton._sovereign_prompt_handler = gateway_auto_allow_handler
+                    # No inline keyboards on this adapter → keep the Dispatcher's
+                    # own non-TTY auto-log path for post-execution promotion.
+                    _disp_singleton._post_execution_prompt_handler = None
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
