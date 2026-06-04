@@ -16,6 +16,10 @@ WorkingDirectory=/home/hermes/hermes-autonomaton-refactor
 ExecStart=/home/hermes/hermes-autonomaton-refactor/.venv/bin/hermes gateway run --replace
 Restart=always
 RestartSec=10
+# The gateway drains in-flight turns for up to ~180s on stop. Give systemd a
+# stop window longer than that (>=210s) so it never SIGKILLs mid-drain on a
+# `systemctl restart` (watchdog / deploy.sh) or shutdown.
+TimeoutStopSec=210
 # State lives on the persistent disk via the ~/.grove -> /mnt/grove-data/.grove
 # symlink; get_hermes_home() reads GROVE_HOME, so this is the single source of
 # truth for where the gateway keeps config, secrets, and databases.
