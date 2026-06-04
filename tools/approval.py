@@ -1155,7 +1155,7 @@ def check_all_command_guards(command: str, env_type: str,
             if _choice == "cancel":
                 return {
                     "approved": False,
-                    "message": "Cancelled. (Red-zone sovereignty held by operator.)",
+                    "message": "Cancelled. (Protected action — operator decision held.)",
                     "zone_classified": "red",
                     "matched_rule": _zone.matched_rule,
                     "zone_reason": _zone_reason,

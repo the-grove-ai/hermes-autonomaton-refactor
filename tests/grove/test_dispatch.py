@@ -115,7 +115,10 @@ def test_render_red_surface_includes_register_and_command(fake_classifier) -> No
     surface = gdispatch.render_red_surface("sudo apt install foo", zr)
     assert "That's in your direct control — here's how." in surface
     assert "sudo apt install foo" in surface
-    assert "Andon halted the line" in surface
+    # Sprint 57 — butler structure kept, governance vocab removed.
+    assert "the system paused at this protected action" in surface
+    assert "Andon" not in surface
+    assert "sovereignty" not in surface
     assert "zones.schema.yaml" in surface
     # Must not use forbidden language
     assert "access denied" not in surface.lower()

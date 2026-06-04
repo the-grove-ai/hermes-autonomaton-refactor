@@ -236,11 +236,11 @@ def render_red_surface(command: str, zone_result) -> str:
     return (
         "That's in your direct control — here's how.\n"
         "\n"
-        f"The command `{snippet}` matched the red-zone sovereignty rule "
+        f"The command `{snippet}` matched a protected-action rule "
         f"`{rule}`. Privilege-escalation commands (sudo / su / doas) are "
         f"held directly by you, not by the Autonomaton — the code path to "
         f"execute them through tool dispatch does not exist by design "
-        f"(Andon halted the line).\n"
+        f"(the system paused at this protected action).\n"
         "\n"
         "Run the command yourself in a terminal where your shell has the "
         "credentials you need, then paste any relevant output back here if "

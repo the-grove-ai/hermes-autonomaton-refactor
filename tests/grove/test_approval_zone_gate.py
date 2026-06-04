@@ -73,7 +73,9 @@ def test_red_zone_hard_blocks_non_interactive(fake_classifier) -> None:
     assert result["approved"] is False
     assert result.get("zone_classified") == "red"
     assert result.get("sovereign_red") is True
-    assert "Andon halted" in result["message"]
+    # Sprint 57 — operator-friendly butler surface, no governance vocab.
+    assert "the system paused at this protected action" in result["message"]
+    assert "Andon" not in result["message"]
 
 
 def test_red_zone_hard_blocks_in_strict_mode(

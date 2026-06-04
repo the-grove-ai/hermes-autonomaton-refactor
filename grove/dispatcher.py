@@ -4087,9 +4087,14 @@ class Dispatcher:
                     "is_hard_denial": True,
                 }
             else:
+                # Sprint 57 — operator-friendly wording in the agent's context.
+                # The agent reads this Observation value; it must NOT carry
+                # governance implementation terms (Andon / zone / sovereignty)
+                # it would then parrot to the operator.
                 denial = (
-                    f"⚠ Operator denied tool '{intent.tool_name}' at Andon halt. "
-                    f"This call did not execute; the operator declined to run it."
+                    f"This action was paused and the operator declined to run "
+                    f"it ('{intent.tool_name}'). It did not execute. Continue "
+                    f"with an alternative approach."
                 )
                 metadata = {
                     "disposition": "deny",
@@ -4254,9 +4259,7 @@ class Dispatcher:
         msgs = getattr(agent, "_current_messages", None) or []
         return {
             "final_response": (
-                f"⚠ Andon halt: tool '{triggering_intent.tool_name}' "
-                f"classified as {halt.zone} zone "
-                f"(rule={halt.matched_rule!r})."
+                f"⚠ Action paused for approval: '{triggering_intent.tool_name}'."
             ),
             "completed": False,
             "interrupted": False,

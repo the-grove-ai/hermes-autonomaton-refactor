@@ -181,7 +181,11 @@ class TestHardDenialObservation:
         )
         obs = observations[0]
         assert "HARD DENIAL" not in obs.value
-        assert "Operator denied" in obs.value
+        # Sprint 57 — operator-friendly wording (no governance vocab); the
+        # soft-deny still reads as a decline-to-run, disposition stays "deny".
+        assert "declined to run" in obs.value
+        assert "Andon" not in obs.value
+        assert obs.metadata.get("disposition") == "deny"
         assert obs.metadata.get("is_hard_denial", False) is False
 
 

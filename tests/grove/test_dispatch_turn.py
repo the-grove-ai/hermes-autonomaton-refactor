@@ -693,7 +693,9 @@ class TestPhase5SkipDisposition:
         assert len(observations) == 1
         assert observations[0].success is False
         assert observations[0].intent_id == "c1"
-        assert "denied" in observations[0].value.lower()
+        # Sprint 57 — operator-friendly wording, no governance vocab.
+        assert "declined" in observations[0].value.lower()
+        assert "andon" not in observations[0].value.lower()
         assert observations[0].metadata.get("disposition") == "deny"
         # Generator resumed and completed
         assert result["final_response"] == "after_skip"
@@ -730,8 +732,8 @@ class TestPhase5SkipDisposition:
         tool_msgs = [m for m in msgs if m.get("role") == "tool"]
         assert len(tool_msgs) == 2
         assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
-        # All denial messages mention "denied"
-        assert all("denied" in m["content"].lower() for m in tool_msgs)
+        # All denial messages read as a decline-to-run (Sprint 57 wording).
+        assert all("declined" in m["content"].lower() for m in tool_msgs)
 
 
 class TestPhase5PendingAndonMarker:
