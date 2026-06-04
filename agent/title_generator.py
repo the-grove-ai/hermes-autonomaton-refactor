@@ -72,6 +72,18 @@ def generate_title(
             title = title[:77] + "..."
         return title if title else None
     except Exception as e:
+        # Sprint 57 — the "no auxiliary provider configured" case is noise to
+        # the operator: title generation is best-effort background work, and a
+        # vanilla install has no aux provider so it would warn every session.
+        # Suppress it (log only, never fire the user-visible failure callback).
+        # Genuine API failures (402 / timeout / a configured provider erroring)
+        # still surface so a real degradation stays visible.
+        if "No LLM provider configured" in str(e):
+            logger.info(
+                "Title generation skipped — no auxiliary LLM provider "
+                "configured (suppressed from operator UI)."
+            )
+            return None
         # Log at WARNING so this shows up in agent.log without debug mode.
         # Full detail at debug level for operators who need the stack.
         logger.warning("Title generation failed: %s", e)

@@ -285,18 +285,27 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
 
 
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
-def test_warns_when_no_auxiliary_provider(mock_get_client):
-    """Warning emitted when no auxiliary provider is configured."""
+def test_no_auxiliary_provider_logged_not_surfaced(mock_get_client, caplog):
+    """Sprint 57 — the default 'no auxiliary provider configured' case is
+    suppressed from the operator UI: it is LOGGED (info) but never emitted to
+    any channel. Internal state (_compression_warning) is still set."""
+    import logging
     agent = _make_agent()
     mock_get_client.return_value = (None, None)
 
     messages = []
     agent._emit_status = lambda msg: messages.append(msg)
 
-    agent._check_compression_model_feasibility()
+    with caplog.at_level(logging.INFO):
+        agent._check_compression_model_feasibility()
 
-    assert len(messages) == 1
-    assert "No auxiliary LLM provider" in messages[0]
+    # Not surfaced to the operator on any channel.
+    assert messages == []
+    # But logged for debugging, and the internal warning state is preserved.
+    assert any(
+        "No auxiliary LLM provider for compression" in r.message
+        for r in caplog.records
+    )
     assert agent._compression_warning is not None
 
 

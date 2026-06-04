@@ -3596,11 +3596,27 @@ class AIAgent:
                             "Run `hermes setup` or set OPENROUTER_API_KEY."
                         )
                     self._compression_warning = msg
-                    self._emit_status(msg)
-                    logger.warning(
-                        "No auxiliary LLM provider for compression — "
-                        "summaries will be unavailable."
-                    )
+                    _configured = bool(_aux_cfg_provider and _aux_cfg_provider != "auto")
+                    if _configured:
+                        # The operator deliberately configured a provider that
+                        # is now unavailable — a genuine misconfig they should
+                        # see. Surface it once (this fires once per session at
+                        # the startup probe).
+                        self._emit_status(msg)
+                        logger.warning(
+                            "Configured auxiliary compression provider %r is "
+                            "unavailable — summaries will be unavailable.",
+                            _aux_cfg_provider,
+                        )
+                    else:
+                        # Sprint 57 — the default "no provider configured" case
+                        # is noise to the operator (it fires every session on a
+                        # vanilla install). Log only; NEVER surface to any
+                        # channel (CLI / Telegram / gateway).
+                        logger.info(
+                            "No auxiliary LLM provider for compression — "
+                            "summaries unavailable (suppressed from operator UI)."
+                        )
                     return
             else:
                 client, aux_model = get_text_auxiliary_client(
@@ -3631,11 +3647,27 @@ class AIAgent:
                             "Run `hermes setup` or set OPENROUTER_API_KEY."
                         )
                     self._compression_warning = msg
-                    self._emit_status(msg)
-                    logger.warning(
-                        "No auxiliary LLM provider for compression — "
-                        "summaries will be unavailable."
-                    )
+                    _configured = bool(_aux_cfg_provider and _aux_cfg_provider != "auto")
+                    if _configured:
+                        # The operator deliberately configured a provider that
+                        # is now unavailable — a genuine misconfig they should
+                        # see. Surface it once (this fires once per session at
+                        # the startup probe).
+                        self._emit_status(msg)
+                        logger.warning(
+                            "Configured auxiliary compression provider %r is "
+                            "unavailable — summaries will be unavailable.",
+                            _aux_cfg_provider,
+                        )
+                    else:
+                        # Sprint 57 — the default "no provider configured" case
+                        # is noise to the operator (it fires every session on a
+                        # vanilla install). Log only; NEVER surface to any
+                        # channel (CLI / Telegram / gateway).
+                        logger.info(
+                            "No auxiliary LLM provider for compression — "
+                            "summaries unavailable (suppressed from operator UI)."
+                        )
                     return
 
                 aux_base_url = str(getattr(client, "base_url", ""))
