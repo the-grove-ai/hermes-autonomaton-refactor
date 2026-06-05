@@ -11350,14 +11350,17 @@ class HermesCLI:
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
 
-        title = "⚠️  Dangerous Command"
+        # Sprint 60 follow-up — concierge register, aligned to the stdin
+        # Sovereign Prompt (S1). The ⚠️ glyph still signals caution; the
+        # panel only fires on flagged commands, so context is intact.
+        title = "⚠️  Your call before I run this"
         cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
         choice_labels = {
-            "once": "Allow once",
-            "session": "Allow for this session",
-            "always": "Add to permanent allowlist",
-            "deny": "Deny",
-            "view": "Show full command",
+            "once": "Just this once",
+            "session": "For the rest of this session",
+            "always": "Always — I'll remember it",
+            "deny": "Not this time",
+            "view": "See the full command",
         }
 
         preview_lines = _wrap_panel_text(description, 60)

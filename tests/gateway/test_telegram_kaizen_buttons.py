@@ -131,7 +131,7 @@ class TestT28KeyboardConstruction:
         assert result.success is True
         markup = adapter._bot.send_message.call_args[1]["reply_markup"]
         buttons = _flatten(markup)
-        assert [b.text for b in buttons] == ["🟢 Promote", "🟡 Not yet", "🔴 Never"]
+        assert [b.text for b in buttons] == ["🟢 Promote it", "🟡 Not yet", "🔴 Never"]
         assert {b.callback_data for b in buttons} == {
             f"kp:promote:{pid}", f"kp:not_yet:{pid}", f"kp:never:{pid}",
         }

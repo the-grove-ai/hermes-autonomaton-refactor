@@ -152,9 +152,9 @@ class TestCliApprovalUi:
         lines = rendered.splitlines()
 
         assert lines[0].startswith("╭")
-        assert "Dangerous Command" not in lines[0]
-        assert any("Dangerous Command" in line for line in lines[1:3])
-        assert "Show full command" in rendered
+        assert "Your call before I run this" not in lines[0]
+        assert any("Your call before I run this" in line for line in lines[1:3])
+        assert "See the full command" in rendered
         assert "githubcli-archive-keyring.gpg" not in rendered
 
     def test_approval_display_shows_full_command_after_view(self):
@@ -216,10 +216,10 @@ class TestCliApprovalUi:
 
         # Every choice must render — this is the core bug: approve/deny were
         # getting clipped off the bottom of the panel.
-        assert "Allow once" in rendered
-        assert "Allow for this session" in rendered
-        assert "Add to permanent allowlist" in rendered
-        assert "Deny" in rendered
+        assert "Just this once" in rendered
+        assert "For the rest of this session" in rendered
+        assert "Always — I'll remember it" in rendered
+        assert "Not this time" in rendered
 
         # The bottom border must render (i.e. the panel is self-contained).
         assert rendered.rstrip().endswith("╯")
@@ -253,8 +253,8 @@ class TestCliApprovalUi:
         # Command visible.
         assert "rm -rf /var/log/apache2/*.log" in rendered
         # All four choices visible.
-        for label in ("Allow once", "Allow for this session",
-                      "Add to permanent allowlist", "Deny"):
+        for label in ("Just this once", "For the rest of this session",
+                      "Always — I'll remember it", "Not this time"):
             assert label in rendered, f"choice {label!r} missing"
 
     def test_approval_display_truncates_giant_command_in_view_mode(self):
@@ -284,8 +284,8 @@ class TestCliApprovalUi:
         rendered = "".join(text for _style, text in fragments)
 
         # All four choices visible even with a huge command.
-        for label in ("Allow once", "Allow for this session",
-                      "Add to permanent allowlist", "Deny"):
+        for label in ("Just this once", "For the rest of this session",
+                      "Always — I'll remember it", "Not this time"):
             assert label in rendered, f"choice {label!r} missing"
 
         # Command got truncated with a marker.

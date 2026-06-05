@@ -2354,12 +2354,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:
-            text = (
-                f"✓ That skill (<b>{_html.escape(skill_name)}</b>) ran "
-                f"successfully.\nWant to always allow it?"
+            # Sprint 60 follow-up — consequence-framed promotion copy,
+            # parallel to the CLI tty_post_execution_prompt (S2). Run-count
+            # is omitted (the quarantine pipeline doesn't persist it). Cap
+            # the whole surface at 280 chars (skill_name is operator-set).
+            body = (
+                f"✓ The <b>{_html.escape(skill_name)}</b> skill ran cleanly. "
+                f"I can add it to your active library so it won't need "
+                f"approval next time."
             )
+            text = body if len(body) <= 280 else body[:279] + "…"
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🟢 Promote", callback_data=f"kp:promote:{promo_id}"),
+                InlineKeyboardButton("🟢 Promote it", callback_data=f"kp:promote:{promo_id}"),
                 InlineKeyboardButton("🟡 Not yet", callback_data=f"kp:not_yet:{promo_id}"),
                 InlineKeyboardButton("🔴 Never", callback_data=f"kp:never:{promo_id}"),
             ]])
