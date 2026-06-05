@@ -96,10 +96,14 @@ else
   as_hermes "git clone '${REPO_URL}' '${REPO_DIR}'"
 fi
 
-# ── 7. Python venv + editable install ──────────────────────────────────
-say "Creating venv and installing the package (editable)"
+# ── 7. Python venv + editable install (with the `web` extra) ────────────
+# The `web` extra (fastapi + uvicorn[standard]) is required by the `hermes
+# dashboard` HTTP server — a declared package extra in pyproject, NOT a separate
+# skill dep, so it installs here with the package. (Sprint 61 deployment
+# finding: the dashboard crash-loops on a missing fastapi import without it.)
+say "Creating venv and installing the package (editable, with the web extra)"
 as_hermes "cd '${REPO_DIR}' && [[ -d .venv ]] || python3.13 -m venv .venv"
-as_hermes "cd '${REPO_DIR}' && .venv/bin/pip install --upgrade pip >/dev/null && .venv/bin/pip install -e ."
+as_hermes "cd '${REPO_DIR}' && .venv/bin/pip install --upgrade pip >/dev/null && .venv/bin/pip install -e '.[web]'"
 
 # NOTE (GATE-A decision B): no local `npm install` — MCP servers are
 # npx-fetched (see step 4). Node/npx presence is all the gateway needs.

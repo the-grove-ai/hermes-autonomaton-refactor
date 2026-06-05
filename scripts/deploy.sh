@@ -74,7 +74,7 @@ echo "  dashboard UI shipped"
 # deploy — its first real end-to-end run.)
 REMOTE_CMD="$(cat <<REMOTE
 set -euo pipefail
-sudo -u hermes -H bash -c 'set -euo pipefail; cd "${REPO_DIR}"; git fetch origin main; git reset --hard origin/main; .venv/bin/pip install -e . --quiet'
+sudo -u hermes -H bash -c 'set -euo pipefail; cd "${REPO_DIR}"; git fetch origin main; git reset --hard origin/main; .venv/bin/pip install -e ".[web]" --quiet'
 sudo systemctl restart hermes-gateway
 # Restart the dashboard only if its unit exists AND is already running, so a
 # deploy refreshes a live dashboard with the new dist but never auto-starts one
