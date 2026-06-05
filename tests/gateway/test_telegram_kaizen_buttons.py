@@ -101,7 +101,7 @@ class TestT28KeyboardConstruction:
         buttons = _flatten(markup)
         labels = [b.text for b in buttons]
         assert labels == [
-            "🟢 Always allow", "🟡 Allow session", "🟠 Allow once", "🔴 Don't allow",
+            "🟢 Always", "🟡 This session", "🟠 Just once", "🔴 Not now",
         ]
         data = {b.callback_data for b in buttons}
         assert data == {

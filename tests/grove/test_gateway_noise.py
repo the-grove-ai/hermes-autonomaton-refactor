@@ -94,9 +94,9 @@ def test_T27_render_red_surface_is_clean():
     zr = SimpleNamespace(matched_rule="command.execute.sudo")
     surface = render_red_surface("sudo apt install foo", zr)
     _assert_no_governance_vocab(surface, where="render_red_surface")
-    # Butler structure preserved.
+    # Butler structure preserved (Sprint 60 wording).
     assert "That's in your direct control — here's how." in surface
-    assert "the system paused at this protected action" in surface
+    assert "sudo / su / doas stay with you" in surface
     # The config-file reference is allowed and still present.
     assert "zones.schema.yaml" in surface
 

@@ -231,23 +231,21 @@ def render_red_surface(command: str, zone_result) -> str:
     the dispatch return dict alongside ``approved: False``.
     """
     snippet = command if len(command) <= 120 else command[:117] + "…"
-    rule = getattr(zone_result, "matched_rule", "<unknown>")
 
+    # Sprint 60 — butler register, tightened to <=6 lines, implementation
+    # jargon ("tool dispatch") stripped, and the raw rule id kept OUT of
+    # operator text (it lives in the Kaizen Ledger, not here). What stays:
+    # name the command, name the file to edit, name the reload.
     return (
         "That's in your direct control — here's how.\n"
         "\n"
-        f"The command `{snippet}` matched a protected-action rule "
-        f"`{rule}`. Privilege-escalation commands (sudo / su / doas) are "
-        f"held directly by you, not by the Autonomaton — the code path to "
-        f"execute them through tool dispatch does not exist by design "
-        f"(the system paused at this protected action).\n"
+        f"The command `{snippet}` needs privileges I deliberately don't "
+        f"hold — sudo / su / doas stay with you, never with me. Run it "
+        f"yourself in a terminal that has your credentials, then paste back "
+        f"anything I need to keep going.\n"
         "\n"
-        "Run the command yourself in a terminal where your shell has the "
-        "credentials you need, then paste any relevant output back here if "
-        "the Autonomaton needs it to continue.\n"
-        "\n"
-        "To change this boundary, edit `~/.grove/zones.schema.yaml` "
-        "(`zones.red.sovereign` list) and restart the Autonomaton."
+        "To move this line, edit `~/.grove/zones.schema.yaml` (the "
+        "`red.sovereign` list) and restart me."
     )
 
 
@@ -274,11 +272,11 @@ def kaizen_sovereign_prompt(
     interact with the prompt.
     """
     options: list[tuple[str, str, str]] = [
-        ("1", "cancel", "Cancel — do nothing"),
+        ("1", "cancel", "Stand down — I'll drop it"),
         (
             "2",
             "operator_handles",
-            "I'll handle it — surface the command for me to run manually",
+            "Hand it to me to run — I'll surface the exact command for you",
         ),
     ]
     if descoped is not None:
@@ -286,7 +284,7 @@ def kaizen_sovereign_prompt(
             (
                 "3",
                 "alternative",
-                f"Try Kaizen's de-scoped alternative: `{descoped[:100]}`",
+                f"Try a safer version I can run myself: `{descoped[:100]}`",
             )
         )
 
@@ -296,7 +294,7 @@ def kaizen_sovereign_prompt(
     print("─── Sovereign zone — Andon halted ─────────────────────────")
     print(render_red_surface(command, zone_result))
     print()
-    print("Kaizen proposes:")
+    print("Here's how I'd move forward:")
     for key, _, label in options:
         print(f"  {key}) {label}")
     print()

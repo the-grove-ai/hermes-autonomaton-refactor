@@ -115,10 +115,12 @@ def test_render_red_surface_includes_register_and_command(fake_classifier) -> No
     surface = gdispatch.render_red_surface("sudo apt install foo", zr)
     assert "That's in your direct control — here's how." in surface
     assert "sudo apt install foo" in surface
-    # Sprint 57 — butler structure kept, governance vocab removed.
-    assert "the system paused at this protected action" in surface
+    # Sprint 60 — butler structure kept, impl jargon ("tool dispatch") and
+    # the raw rule id removed; the consequence + the fix path remain.
+    assert "sudo / su / doas stay with you" in surface
     assert "Andon" not in surface
     assert "sovereignty" not in surface
+    assert "tool dispatch" not in surface
     assert "zones.schema.yaml" in surface
     # Must not use forbidden language
     assert "access denied" not in surface.lower()
@@ -144,7 +146,7 @@ def test_kaizen_prompt_cancel(monkeypatch: pytest.MonkeyPatch, capsys, fake_clas
     assert choice == "cancel"
     out = capsys.readouterr().out
     assert "Sovereign zone — Andon halted" in out
-    assert "Kaizen proposes:" in out
+    assert "Here's how I'd move forward:" in out
 
 
 def test_kaizen_prompt_operator_handles(

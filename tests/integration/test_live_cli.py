@@ -46,9 +46,9 @@ WELCOME_RE = r"Welcome to grove-autonomaton|Kaizen-Om-Aton online"
 # Kaizen four-choice menu sentinel from
 # grove/sovereign_prompt_handlers.py:tty_sovereign_prompt. We match the
 # first menu line specifically rather than ``Choose [1-4]`` so we can
-# count occurrences with ``stdout.count("[1] Allow this once")`` to
+# count occurrences with ``stdout.count("[1] Just this once")`` to
 # detect cache hits/misses on retry turns.
-KAIZEN_FIRST_OPTION = "[1] Allow this once"
+KAIZEN_FIRST_OPTION = "[1] Just this once"
 KAIZEN_MENU_RE = re.escape(KAIZEN_FIRST_OPTION)
 
 # Per-turn tier/cost footer from run_agent's turn-end render path. Used
@@ -297,10 +297,10 @@ def test_T3_kaizen_prompt_renders():
         # released stdin to the operator before painting completed.
         stdout = runner.stdout()
         for opt in (
-            "[1] Allow this once",
-            "[2] Allow for this session",
-            "[3] Always allow this",
-            "[4] Don't allow this",
+            "[1] Just this once",
+            "[2] For the rest of this session",
+            "[3] Always — I'll remember it",
+            "[4] Not this time",
         ):
             assert opt in stdout, (
                 f"Kaizen prompt missing option {opt!r}. The bridge "
@@ -326,7 +326,7 @@ def test_T3_kaizen_prompt_renders():
 
 
 def test_T4_kaizen_allow_once():
-    """Trigger Kaizen, send ``1`` (Allow this once), verify the tool
+    """Trigger Kaizen, send ``1`` (Just this once), verify the tool
     actually runs and the turn completes. Exercises the
     ``disposition="once"`` branch in the Dispatcher's halt handler."""
     command, query = _make_kaizen_trigger_command()
@@ -359,7 +359,7 @@ def test_T4_kaizen_allow_once():
     )
 
 
-# ── T5 — Session cache (``Allow for this session``) ──────────────────
+# ── T5 — Session cache (``For the rest of this session``) ────────────
 
 
 def test_T5_kaizen_session_cache_suppresses_second_prompt():
@@ -369,7 +369,7 @@ def test_T5_kaizen_session_cache_suppresses_second_prompt():
 
     Assertion mechanism: snapshot ``stdout_len`` after the first
     turn's footer arrives, then assert the post-snapshot slice does
-    NOT contain the ``[1] Allow this once`` sentinel. Stays sound
+    NOT contain the ``[1] Just this once`` sentinel. Stays sound
     even if the model's response text happens to contain the digits
     1-4 in some unrelated context."""
     # Session cache is keyed by (tool_name, args). Both turns must
@@ -394,7 +394,7 @@ def test_T5_kaizen_session_cache_suppresses_second_prompt():
     second_turn_output = runner.stdout_since(mark)
     assert KAIZEN_FIRST_OPTION not in second_turn_output, (
         f"Session cache failed: Kaizen prompt fired AGAIN on retry "
-        f"after operator selected 'Allow for this session'. The "
+        f"after operator selected 'For the rest of this session'. The "
         f"dispatcher's session-scoped allow cache is not catching "
         f"the second invocation.\n"
         f"second-turn output:\n{second_turn_output[:2000]}"

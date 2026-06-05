@@ -71,8 +71,11 @@ class TestCliShow:
         out = capsys.readouterr().out
         assert rc == 0
         assert p.proposal_id in out
-        assert "Payload:" in out
-        assert "Diff" in out
+        # Sprint 60 — concierge recommendation register.
+        assert "Here's a routing change I'd recommend" in out
+        assert "Here's what I'd put in place:" in out
+        assert "What changes if you approve" in out
+        # The substantive payload/diff content is preserved verbatim.
         assert "downward" in out
         assert "conversation" in out
 

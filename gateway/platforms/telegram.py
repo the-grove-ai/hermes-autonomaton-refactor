@@ -2258,15 +2258,19 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:
-            text = (
-                f"🔔 <b>Approval needed</b>\n\n"
-                f"{_html.escape(description)}"
-            )
+            # Sprint 60 — the line carries the ask itself, no static
+            # "Approval needed" header. ``description`` is already
+            # Peek-bounded upstream; cap the whole surface at 280 chars so
+            # it stays glanceable on mobile.
+            body = f"I'd like to {description} — your call before I continue."
+            if len(body) > 280:
+                body = body[:279] + "…"
+            text = f"🔔 {_html.escape(body)}"
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🟢 Always allow", callback_data=f"kz:always:{kaizen_id}")],
-                [InlineKeyboardButton("🟡 Allow session", callback_data=f"kz:session:{kaizen_id}")],
-                [InlineKeyboardButton("🟠 Allow once", callback_data=f"kz:once:{kaizen_id}")],
-                [InlineKeyboardButton("🔴 Don't allow", callback_data=f"kz:deny:{kaizen_id}")],
+                [InlineKeyboardButton("🟢 Always", callback_data=f"kz:always:{kaizen_id}")],
+                [InlineKeyboardButton("🟡 This session", callback_data=f"kz:session:{kaizen_id}")],
+                [InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")],
+                [InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")],
             ])
             thread_id = self._metadata_thread_id(metadata)
             kwargs: Dict[str, Any] = {

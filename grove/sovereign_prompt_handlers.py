@@ -69,6 +69,8 @@ __all__ = [
     "silent_promote_handler",
     # Public for the Dispatcher's Kaizen-register prompt rendering:
     "describe_action_kaizen",
+    # Sprint 60 — display-string truncation shared by the Kaizen surfaces.
+    "peek",
     # Sprint 32.2 — shared shell-variable normalization, reused by the
     # zone-promotion proposal generator so the template matcher and
     # the promotion regex see the same expanded path string.
@@ -110,22 +112,23 @@ _KAIZEN_PROMPT_TEMPLATES: Tuple[Tuple[Optional[str], Optional[str], str], ...] =
     # these strings only describe WHAT halted, in plain language the
     # operator can decide on without reading regex.
 
-    # Skill execution — the bug this sprint fixes.
-    ("terminal",     ".grove/skills/",   "run a skill ({skill_name})"),
+    # Skill execution — the highest-specificity row.
+    ("terminal",     ".grove/skills/",   "run the {skill_name} skill"),
 
     # Package installation — extract the package being touched.
-    ("terminal",     "brew install",     "install software on your machine ({package})"),
-    ("terminal",     "brew uninstall",   "uninstall software from your machine ({package})"),
-    ("terminal",     "apt install",      "install software on your machine ({package})"),
-    ("terminal",     "apt remove",       "remove software from your machine ({package})"),
-    ("terminal",     "pip install",      "install a Python package ({package})"),
-    ("terminal",     "npm install",      "install a Node.js package ({package})"),
+    ("terminal",     "brew install",     "install the software {package}"),
+    ("terminal",     "brew uninstall",   "uninstall the software {package}"),
+    ("terminal",     "apt install",      "install the software {package}"),
+    ("terminal",     "apt remove",       "remove the software {package}"),
+    ("terminal",     "pip install",      "install the Python package {package}"),
+    ("terminal",     "npm install",      "install the Node.js package {package}"),
 
     # Destructive operations — rm -rf is more specific than rm so it
     # must precede it. The trailing space on the bare "rm " prevents
-    # matching "rmdir" or "rmlink".
-    ("terminal",     "rm -rf",           "permanently delete files on your machine"),
-    ("terminal",     "rm ",              "delete files on your machine"),
+    # matching "rmdir" or "rmlink". Both show the actual command so the
+    # operator sees WHAT would be deleted (Peek-truncated, Sprint 60).
+    ("terminal",     "rm -rf",           "permanently delete files ({peek_cmd})"),
+    ("terminal",     "rm ",              "delete files ({peek_cmd})"),
 
     # Network operations — trailing space avoids matching "curls" /
     # "wgetfile" / "sshd".
@@ -138,11 +141,15 @@ _KAIZEN_PROMPT_TEMPLATES: Tuple[Tuple[Optional[str], Optional[str], str], ...] =
     ("terminal",     "git push",         "push code to a remote repository"),
     ("terminal",     "git reset",        "reset your git history"),
 
-    # Generic fallback rows (existing, unchanged).
-    ("terminal",     None,               "run a command on your machine"),
-    ("execute_code", None,               "execute code"),
+    # Generic fallback rows. The terminal row now shows the command
+    # itself (Peek-truncated); write_file names the file. Both degrade
+    # to a bare phrase when the argument is absent (see the renderer's
+    # Sprint 60 graceful-degradation branch).
+    ("terminal",     None,               "run this command: {peek_cmd}"),
+    ("write_file",   None,               "write the file {peek_path}"),
+    ("execute_code", None,               "run this code snippet"),
     # Fallback row — matches every tool not above.
-    (None,           None,               "perform an action ({tool_name})"),
+    (None,           None,               "use {tool_name}"),
 )
 
 
@@ -175,6 +182,36 @@ def normalize_command(command_string: str) -> str:
     if out.startswith("~/"):
         out = home + out[1:]
     return out
+
+
+def peek(value: object, *, limit: int = 100) -> str:
+    """Center-truncate a value for display inside a Kaizen prompt.
+
+    Sprint 60 — the Kaizen surfaces interpolate operator-supplied
+    strings (a command, a file path) straight into the prompt. A
+    multi-kilobyte command or a 4 KB ``write_file`` body would swamp the
+    CLI and blow past Telegram's terse surface, so every interpolated
+    value passes through here first.
+
+    Strings at or under ``limit`` characters return unchanged. Longer
+    strings are center-truncated to ``head…tail`` so BOTH ends stay
+    visible — a path keeps its directory AND its filename, a command
+    keeps its verb AND its target. The result never exceeds ``limit``
+    characters. ``None`` and empty values render as ``""`` so a missing
+    fragment degrades to nothing rather than the literal word "None"
+    (Sprint 60 graceful-degradation contract).
+
+    Pure: no I/O, no subprocess. Safe on arbitrary operator input.
+    """
+    if value is None:
+        return ""
+    s = str(value)
+    if len(s) <= limit:
+        return s
+    keep = max(limit - 1, 1)  # reserve one column for the ellipsis
+    head = keep // 2
+    tail = keep - head
+    return s[:head] + "…" + s[-tail:]
 
 
 _SKILL_PAYLOAD_MARKERS = frozenset({
@@ -293,18 +330,35 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
     """
     raw_args_str = str(dict(arguments)) if arguments else ""
     args_str = normalize_command(raw_args_str)
+    # Per-argument detail for the Peek-bearing rows (Sprint 60).
+    # ``command`` is the terminal tool's argument; ``path`` is
+    # write_file's. Each is normalized then center-truncated so the
+    # prompt shows the real thing without swamping the surface.
+    args_dict = dict(arguments) if isinstance(arguments, dict) else {}
+    peek_cmd = peek(normalize_command(str(args_dict.get("command", ""))))
+    peek_path = peek(str(args_dict.get("path", "")))
     for tmpl_tool, tmpl_substring, tmpl_text in _KAIZEN_PROMPT_TEMPLATES:
         if tmpl_tool is not None and tmpl_tool != tool_name:
             continue
         if tmpl_substring is not None and tmpl_substring not in args_str:
             continue
-        # Per-template interpolation: rows with ``{package}`` pull the
-        # first non-flag argument out of the matched verb; ``{skill_name}``
-        # rows pull the directory name under .grove/skills/; ``{tool_name}``
-        # rows interpolate the dispatching tool.  Templates without
-        # placeholders pass through unchanged via str.format's keyword
-        # args.
-        return tmpl_text.format(
+        # Graceful degradation (Sprint 60): a Peek row with no argument
+        # to show falls back to a bare phrase rather than rendering an
+        # empty "()" or a dangling "command: ". The core action verb
+        # still reaches the operator; only the supplementary detail is
+        # omitted.
+        text = tmpl_text
+        if "{peek_cmd}" in text and not peek_cmd:
+            text = "run a command on your machine"
+        elif "{peek_path}" in text and not peek_path:
+            text = "write a file"
+        # Per-template interpolation: ``{skill_name}`` pulls the directory
+        # under .grove/skills/; ``{package}`` pulls the first non-flag
+        # token after the install verb; ``{peek_cmd}`` / ``{peek_path}``
+        # carry the truncated argument; ``{tool_name}`` names the
+        # dispatching tool. Placeholder-free templates pass through
+        # unchanged via str.format's keyword args.
+        return text.format(
             tool_name=tool_name,
             skill_name=_extract_skill_name(args_str),
             package=(
@@ -312,28 +366,31 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
                 if "{package}" in tmpl_text and tmpl_substring
                 else ""
             ),
+            peek_cmd=peek_cmd,
+            peek_path=peek_path,
         )
     # Unreachable: the fallback row matches every tool. Keep an
     # explicit return for type-checker happiness.
-    return f"perform an action ({tool_name})"
+    return f"use {tool_name}"
 
 
 # ── TTY (operator-facing) prompt ─────────────────────────────────────
 
 
 def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
-    """The Kaizen-register Sovereign Prompt (Sprint 32 v1.1).
+    """The Kaizen-register Sovereign Prompt (Sprint 32 v1.1; copy
+    refreshed to the concierge register in Sprint 60).
 
-    Renders a plain-language two-sentence description of the action
+    Renders a plain-language, first-person description of the action
     the Agent wants to perform, followed by four operator choices:
 
-        The agent wants to <kaizen description>.
-        This requires <one-line context>.
+        I'd like to <kaizen description>. This one's your call before
+        I go ahead.
 
-          [1] Allow this once
-          [2] Allow for this session
-          [3] Always allow this — I'll save the preference
-          [4] Don't allow this
+          [1] Just this once
+          [2] For the rest of this session
+          [3] Always — I'll remember it
+          [4] Not this time
 
     Returns one of ``"once"``, ``"session"``, ``"always"``, ``"deny"``.
     Defaults to ``"deny"`` on EOF / KeyboardInterrupt (fail-safe).
@@ -364,21 +421,14 @@ def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
 
     print(file=out)
     print(
-        f"The agent wants to {description}.",
-        file=out,
-    )
-    print(
-        "This requires a decision before it can continue.",
+        f"I'd like to {description}. This one's your call before I go ahead.",
         file=out,
     )
     print(file=out)
-    print("  [1] Allow this once", file=out)
-    print("  [2] Allow for this session", file=out)
-    print(
-        "  [3] Always allow this — I'll save the preference",
-        file=out,
-    )
-    print("  [4] Don't allow this", file=out)
+    print("  [1] Just this once", file=out)
+    print("  [2] For the rest of this session", file=out)
+    print("  [3] Always — I'll remember it", file=out)
+    print("  [4] Not this time", file=out)
     print(file=out)
 
     while True:
@@ -405,19 +455,21 @@ def tty_post_execution_prompt(payload: Any, *, out=None) -> str:
     """Sprint 53.2 — the post-execution skill-promotion prompt.
 
     Fires AFTER a quarantined (.andon) skill ran successfully under an
-    "allow once" disposition and the operator has seen its output:
+    "allow once" disposition and the operator has seen its output
+    (copy refreshed to the concierge register in Sprint 60):
 
-        That skill (<name>) ran successfully.
-        Want to always allow it?
+        The <name> skill ran cleanly. I can add it to your active
+        library so it won't need approval next time.
 
-          [1] Promote — always allow this skill
-          [2] Not yet — keep it in quarantine
-          [3] Never — deny this skill
+          [1] Promote it — no more prompts for this skill
+          [2] Not yet — keep asking me each time
+          [3] Never — don't run this skill again
 
     Returns ``"promote"``, ``"not_yet"``, ``"never"``, or ``"never_purge"``.
-    Picking Never asks a follow-up — "Remove the skill from quarantine?
-    [y/N]" — returning ``"never_purge"`` on yes (delete the .andon dir)
-    and ``"never"`` on no (deny only). Defaults to ``"not_yet"`` on EOF /
+    Picking Never asks a follow-up — "Should I also clear it out so it
+    stops appearing? [y/N]" — returning ``"never_purge"`` on yes (delete
+    the .andon dir) and ``"never"`` on no (deny only). Defaults to
+    ``"not_yet"`` on EOF /
     KeyboardInterrupt (fail-safe: the skill stays quarantined and
     re-prompts on its next run).
 
@@ -432,12 +484,15 @@ def tty_post_execution_prompt(payload: Any, *, out=None) -> str:
     skill_name = getattr(payload, "skill_name", "this skill")
 
     print(file=out)
-    print(f"That skill ({skill_name}) ran successfully.", file=out)
-    print("Want to always allow it?", file=out)
+    print(
+        f"The {skill_name} skill ran cleanly. I can add it to your active "
+        f"library so it won't need approval next time.",
+        file=out,
+    )
     print(file=out)
-    print("  [1] Promote — always allow this skill", file=out)
-    print("  [2] Not yet — keep it in quarantine", file=out)
-    print("  [3] Never — deny this skill", file=out)
+    print("  [1] Promote it — no more prompts for this skill", file=out)
+    print("  [2] Not yet — keep asking me each time", file=out)
+    print("  [3] Never — don't run this skill again", file=out)
     print(file=out)
 
     while True:
@@ -453,7 +508,7 @@ def tty_post_execution_prompt(payload: Any, *, out=None) -> str:
         if choice in ("3", "never", "no", "n", "deny"):
             try:
                 purge = input(
-                    "Remove the skill from quarantine? [y/N]: "
+                    "Should I also clear it out so it stops appearing? [y/N]: "
                 ).strip().lower()
             except (EOFError, KeyboardInterrupt):
                 purge = "n"

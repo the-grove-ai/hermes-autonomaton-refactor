@@ -594,20 +594,33 @@ def cli_show(
         )
         return 1
 
-    print(f"Proposal ID:    {proposal.proposal_id}")
-    print(f"Type:           {proposal.type}")
-    print(f"Created:        {proposal.created_at}")
-    print(f"Eval hash:      {proposal.eval_hash or '(unset — pre-gate)'}")
-    print(f"Evidence:       {len(proposal.evidence)} turn(s)")
-    for tid in proposal.evidence:
-        print(f"                  - {tid}")
+    # Sprint 60 — concierge recommendation register. Lead with a plain
+    # sentence keyed to the proposal type, keep the verbatim payload and
+    # diff (the operator approves the REAL change, never a paraphrase),
+    # and demote the id / hash / evidence to a reference footer.
+    _LEAD = {
+        "skill_promotion": "Here's a skill I'd like to promote",
+        "zone_promotion": "Here's a zone rule I'd like to add",
+        "routing_adjustment": "Here's a routing change I'd recommend",
+        "routing_update": "Here's a routing change I'd recommend",
+    }
+    lead = _LEAD.get(proposal.type, "Here's a change I'd recommend")
+    short_id = proposal.proposal_id.split(":")[-1][:12]
+
+    print(f"{lead} — your review before anything changes.")
     print()
-    print("Payload:")
+    print("Here's what I'd put in place:")
     print(yaml.safe_dump(proposal.payload, sort_keys=False, default_flow_style=False))
 
     diff = _proposal_to_diff(proposal)
-    print("Diff (would apply to routing.autonomaton.yaml):")
+    print(f"What changes if you approve (run `flywheel approve {short_id}`):")
     print(yaml.safe_dump(diff, sort_keys=False, default_flow_style=False))
+
+    print(
+        f"Reference · ID {proposal.proposal_id} · type {proposal.type} · "
+        f"eval hash {proposal.eval_hash or '(unset — pre-gate)'} · "
+        f"{len(proposal.evidence)} turn(s)"
+    )
     return 0
 
 

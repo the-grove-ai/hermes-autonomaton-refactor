@@ -29,6 +29,7 @@ from grove.sovereign_prompt_handlers import (
     describe_action_kaizen,
     gateway_auto_allow_handler,
     normalize_command,
+    peek,
     silent_allow_handler,
     silent_deny_handler,
     silent_promote_handler,
@@ -60,30 +61,41 @@ class TestKaizenTemplate:
             "terminal",
             {"command": "python3 /Users/x/.grove/skills/google-workspace/cal.py today"},
         )
-        assert desc == "run a skill (google-workspace)"
+        assert desc == "run the google-workspace skill"
 
-    def test_terminal_without_skill_path_renders_generic(self):
+    def test_terminal_without_skill_path_shows_command(self):
+        # Sprint 60 — the generic terminal row now Peek-shows the command.
         desc = describe_action_kaizen("terminal", {"command": "ls -la /tmp"})
-        assert desc == "run a command on your machine"
+        assert desc == "run this command: ls -la /tmp"
 
     def test_execute_code_renders_specific(self):
         desc = describe_action_kaizen("execute_code", {"code": "print(1)"})
-        assert desc == "execute code"
+        assert desc == "run this code snippet"
 
-    def test_unknown_tool_falls_through_to_default(self):
+    def test_write_file_names_the_file(self):
+        # Sprint 60 — write_file gets its own row; the path is Peek-shown.
         desc = describe_action_kaizen("write_file", {"path": "/tmp/x"})
-        assert desc == "perform an action (write_file)"
+        assert desc == "write the file /tmp/x"
 
     def test_empty_arguments_handled(self):
+        # No command to show → graceful degradation to the bare phrase.
         desc = describe_action_kaizen("terminal", {})
         assert desc == "run a command on your machine"
+
+    def test_write_file_without_path_degrades(self):
+        desc = describe_action_kaizen("write_file", {})
+        assert desc == "write a file"
+
+    def test_unknown_tool_falls_through_to_default(self):
+        desc = describe_action_kaizen("mcp_notion_post", {"page": "x"})
+        assert desc == "use mcp_notion_post"
 
     def test_skill_path_with_trailing_slash(self):
         desc = describe_action_kaizen(
             "terminal",
             {"command": "bash /Users/x/.grove/skills/foo/run.sh"},
         )
-        assert desc == "run a skill (foo)"
+        assert desc == "run the foo skill"
 
 
 # ── Sprint 32.2 — normalize_command + category templates ─────────────
@@ -148,7 +160,7 @@ class TestKaizenTemplateSprint322:
                 'scripts/google_api.py" calendar today'
             )},
         )
-        assert desc == "run a skill (google-workspace)"
+        assert desc == "run the google-workspace skill"
 
     def test_bare_dollar_home_skill_path(self):
         desc = describe_action_kaizen(
@@ -158,7 +170,7 @@ class TestKaizenTemplateSprint322:
                 "google-workspace/scripts/google_api.py"
             )},
         )
-        assert desc == "run a skill (google-workspace)"
+        assert desc == "run the google-workspace skill"
 
     def test_literal_home_skill_path_with_category(self):
         # No shell variables, but the path goes through a category
@@ -173,7 +185,7 @@ class TestKaizenTemplateSprint322:
                 f"google-workspace/scripts/google_api.py"
             )},
         )
-        assert desc == "run a skill (google-workspace)"
+        assert desc == "run the google-workspace skill"
 
     # ── package-installation templates (Part 2) ──────────────────
 
@@ -181,48 +193,49 @@ class TestKaizenTemplateSprint322:
         desc = describe_action_kaizen(
             "terminal", {"command": "brew install ripgrep"},
         )
-        assert desc == "install software on your machine (ripgrep)"
+        assert desc == "install the software ripgrep"
 
     def test_brew_uninstall_extracts_package(self):
         desc = describe_action_kaizen(
             "terminal", {"command": "brew uninstall ripgrep"},
         )
-        assert desc == "uninstall software from your machine (ripgrep)"
+        assert desc == "uninstall the software ripgrep"
 
     def test_pip_install_extracts_package(self):
         desc = describe_action_kaizen(
             "terminal", {"command": "pip install pydantic"},
         )
-        assert desc == "install a Python package (pydantic)"
+        assert desc == "install the Python package pydantic"
 
     def test_npm_install_extracts_package(self):
         desc = describe_action_kaizen(
             "terminal", {"command": "npm install react"},
         )
-        assert desc == "install a Node.js package (react)"
+        assert desc == "install the Node.js package react"
 
     def test_install_skips_leading_flags(self):
         # ``brew install -v ripgrep`` should pick ``ripgrep``, not ``-v``.
         desc = describe_action_kaizen(
             "terminal", {"command": "brew install -v ripgrep"},
         )
-        assert desc == "install software on your machine (ripgrep)"
+        assert desc == "install the software ripgrep"
 
     # ── destructive-operation templates ──────────────────────────
 
     def test_rm_rf_more_specific_than_plain_rm(self):
         # Row order matters: rm -rf MUST precede rm so the
         # "permanently delete" message wins on -rf invocations.
+        # Sprint 60 — the command itself is Peek-shown.
         desc = describe_action_kaizen(
             "terminal", {"command": "rm -rf /tmp/stuff"},
         )
-        assert desc == "permanently delete files on your machine"
+        assert desc == "permanently delete files (rm -rf /tmp/stuff)"
 
     def test_plain_rm(self):
         desc = describe_action_kaizen(
             "terminal", {"command": "rm /tmp/file.txt"},
         )
-        assert desc == "delete files on your machine"
+        assert desc == "delete files (rm /tmp/file.txt)"
 
     # ── network-operation templates ──────────────────────────────
 
@@ -260,11 +273,11 @@ class TestKaizenTemplateSprint322:
 
     def test_git_status_falls_through_to_generic(self):
         # Read-only git commands aren't in the table — should
-        # land on the generic "run a command" row.
+        # land on the generic terminal row, which Peek-shows the command.
         desc = describe_action_kaizen(
             "terminal", {"command": "git status"},
         )
-        assert desc == "run a command on your machine"
+        assert desc == "run this command: git status"
 
 
 # ── tty_sovereign_prompt (Sprint 32 v1.1 four-choice) ────────────────
@@ -324,11 +337,11 @@ class TestTtySovereignPromptV11:
             arguments={"command": "python3 /Users/x/.grove/skills/cal/run.py"},
         ))
         captured = capsys.readouterr().err
-        assert "The agent wants to run a skill (cal)" in captured
-        assert "Allow this once" in captured
-        assert "Allow for this session" in captured
-        assert "Always allow this" in captured
-        assert "Don't allow this" in captured
+        assert "I'd like to run the cal skill" in captured
+        assert "Just this once" in captured
+        assert "For the rest of this session" in captured
+        assert "Always — I'll remember it" in captured
+        assert "Not this time" in captured
         # Forbidden tokens — operator MUST NOT see these.
         assert "zone" not in captured.lower()
         assert "andon halt" not in captured.lower()
@@ -355,7 +368,7 @@ class TestBatchAutoAllowHandler:
         messages = [r.getMessage() for r in caplog.records]
         assert any("Kaizen auto-allow (batch)" in m for m in messages)
         assert any("tool=terminal" in m for m in messages)
-        assert any("run a skill (cal)" in m for m in messages)
+        assert any("run the cal skill" in m for m in messages)
 
 
 class TestGatewayAutoAllowHandler:
@@ -404,5 +417,41 @@ class TestSilentPromoteHandler:
         with caplog.at_level(logging.DEBUG, logger="grove.sovereign_prompt_handlers"):
             silent_promote_handler(_build_halt())
         assert caplog.records == []
+
+
+# ── Sprint 60 — peek() display truncation ────────────────────────────
+
+
+class TestPeek:
+    def test_short_string_passes_through(self):
+        assert peek("git status") == "git status"
+
+    def test_none_renders_empty(self):
+        assert peek(None) == ""
+
+    def test_empty_renders_empty(self):
+        assert peek("") == ""
+
+    def test_long_string_center_truncated_within_limit(self):
+        s = "a" * 50 + "b" * 50 + "c" * 50  # 150 chars
+        out = peek(s)
+        assert len(out) <= 100
+        assert "…" in out
+        # Both ends survive — head keeps the 'a's, tail keeps the 'c's.
+        assert out.startswith("a")
+        assert out.endswith("c")
+
+    def test_exact_limit_not_truncated(self):
+        s = "x" * 100
+        assert peek(s) == s
+
+    def test_describe_peeks_a_giant_command(self):
+        # A multi-kilobyte command must not swamp the prompt surface.
+        giant = "echo " + "z" * 5000
+        desc = describe_action_kaizen("terminal", {"command": giant})
+        assert desc.startswith("run this command: ")
+        # The interpolated command is bounded by peek()'s 100-char limit.
+        assert len(desc) < 160
+        assert "…" in desc
 
 
