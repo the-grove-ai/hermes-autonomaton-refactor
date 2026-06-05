@@ -176,10 +176,15 @@ class TestLoadPromotedSkills:
         names = [r[0] for r in results]
         assert "env-skill" in names
 
-    def test_invocation_uses_real_path_and_skill_md_interpreter(self, tmp_path):
+    def test_invocation_uses_real_path_and_skill_md_interpreter(self, tmp_path, monkeypatch):
         """Usage commands embed the reconstructed on-disk script path and the
         SKILL.md's explicit interpreter (python3.13), not bare python3 — which
-        on this machine resolves to a python without the deps (Sprint 56)."""
+        on this machine resolves to a python without the deps (Sprint 56).
+
+        The SKILL.md names ``/opt/homebrew/bin/python3.13``; pin it as present
+        so this asserts the keep-the-named-path branch deterministically on
+        any host (the absent-path fallback is covered separately below)."""
+        monkeypatch.setattr("os.path.exists", lambda p: True)
         body = (
             "## Usage\n\n"
             "Use `/opt/homebrew/bin/python3.13` explicitly on macOS.\n\n"
@@ -203,6 +208,27 @@ class TestLoadPromotedSkills:
         # wrong ${HOME}/.hermes shorthand.
         assert cmd.endswith("/cat/gw/scripts/google_api.py calendar list")
         assert ".hermes" not in cmd
+
+    def test_absent_skill_md_interpreter_falls_back_to_venv(self, tmp_path, monkeypatch):
+        """A SKILL.md absolute interpreter path that does NOT exist on this
+        host (the macOS-path-on-Linux case) falls back to sys.executable, so
+        the command stays runnable. Sprint 59."""
+        import sys
+        monkeypatch.setattr("os.path.exists", lambda p: False)
+        body = (
+            "## Usage\n\n"
+            "Use `/opt/homebrew/bin/python3.13` explicitly on macOS.\n\n"
+            "### Calendar\n\n"
+            "```bash\n"
+            'GAPI="python3 ${HOME}/.hermes/skills/cat/gw/scripts/google_api.py"\n'
+            "$GAPI calendar list\n"
+            "```\n"
+        )
+        _make_skill(tmp_path, "cat/gw", "name: gw\ndescription: Google.", body=body)
+        results = _load_promoted_skills(skills_root=str(tmp_path))
+        cmd = dict(results[0][2])["Calendar"]
+        assert cmd.startswith(sys.executable + " ")
+        assert "/opt/homebrew" not in cmd
 
 
 # ── _tool_affordances_provider ────────────────────────────────────────

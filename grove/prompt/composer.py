@@ -227,7 +227,11 @@ def _resolve_interpreter(interp: str, body: str) -> str:
       (b) the running hermes interpreter (``sys.executable``, the venv python
           the skills were installed under).
     An already-explicit interpreter (a path, or a versioned name like
-    ``python3.13``) is kept unchanged."""
+    ``python3.13``) is kept unchanged — EXCEPT an absolute path that does not
+    exist on this machine (e.g. a macOS ``/opt/homebrew/...`` path baked into
+    the SKILL.md, running on a Linux host), which falls back to
+    ``sys.executable`` so the command stays runnable cross-platform."""
+    import os
     import sys
     import re as _re
 
@@ -235,7 +239,14 @@ def _resolve_interpreter(interp: str, body: str) -> str:
         return interp
     hint = _re.search(r'(/\S+/python3\.\d+|\bpython3\.\d+\b)', body)
     if hint:
-        return hint.group(1)
+        cand = hint.group(1)
+        # A SKILL.md absolute path that isn't present here is useless (the
+        # macOS-path-on-Linux case). Fall back to the running interpreter,
+        # which is the venv python the skill's deps are installed under. A
+        # bare versioned name (python3.13) resolves via PATH, so keep it.
+        if cand.startswith("/") and not os.path.exists(cand):
+            return sys.executable
+        return cand
     return sys.executable
 
 
