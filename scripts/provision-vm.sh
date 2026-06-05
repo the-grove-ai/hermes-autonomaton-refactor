@@ -75,11 +75,29 @@ else
   ok "Firewall rule created"
 fi
 
+# ── Harden the default network: SSH/RDP only via IAP ──────────────────
+# The default VPC ships default-allow-ssh / default-allow-rdp open to
+# 0.0.0.0/0. Once the VM gets an external IP (for egress, below) those would
+# expose 22/3389 to the internet, so disable them — inbound SSH stays
+# IAP-only via allow-iap-ssh. Idempotent: skipped if the rules are absent
+# (e.g. a custom network).
+for rule in default-allow-ssh default-allow-rdp; do
+  if gcloud compute firewall-rules describe "${rule}" >/dev/null 2>&1; then
+    gcloud compute firewall-rules update "${rule}" --disabled
+    ok "Disabled broad rule ${rule}"
+  fi
+done
+
 # ── VM instance ───────────────────────────────────────────────────────
 if gcloud compute instances describe "${INSTANCE}" --zone="${ZONE}" >/dev/null 2>&1; then
   ok "Instance ${INSTANCE} already exists"
 else
-  say "Creating VM ${INSTANCE} (${MACHINE_TYPE}, Ubuntu 24.04, no public IP)"
+  say "Creating VM ${INSTANCE} (${MACHINE_TYPE}, Ubuntu 24.04)"
+  # No Cloud NAT in this minimal setup, so the VM needs an ephemeral external
+  # IP for OUTBOUND access (git/pip/npx at setup; npx-fetched MCP servers at
+  # runtime). Inbound SSH stays IAP-only via the hardened firewall above, so
+  # the external IP is egress-only in practice. The VM is still blind to GCP
+  # (--no-service-account --no-scopes).
   gcloud compute instances create "${INSTANCE}" \
     --zone="${ZONE}" \
     --machine-type="${MACHINE_TYPE}" \
@@ -88,7 +106,6 @@ else
     --boot-disk-size="${BOOT_DISK_SIZE}" \
     --boot-disk-type=pd-ssd \
     --disk="name=${DISK_NAME},device-name=grove-data,mode=rw,boot=no" \
-    --no-address \
     --no-service-account \
     --no-scopes \
     --metadata=enable-oslogin=TRUE
@@ -99,21 +116,17 @@ fi
 echo
 ok "Provisioning complete."
 echo
-echo "Connect over the IAP tunnel (no public IP):"
+echo "The VM has an external IP for EGRESS only — inbound SSH is IAP-only"
+echo "(default-allow-ssh/-rdp disabled). Always connect with --tunnel-through-iap:"
 echo
-echo "    gcloud compute ssh hermes@${INSTANCE} --zone=${ZONE} --tunnel-through-iap"
+echo "    gcloud compute ssh ${INSTANCE} --zone=${ZONE} --tunnel-through-iap"
+echo
+warn "OS Login note: SSH needs an explicit role — Project Owner alone does NOT"
+warn "grant it. Run once for your account:"
+echo
+echo "    gcloud projects add-iam-policy-binding ${PROJECT} \\"
+echo "      --member=\"user:\$(gcloud config get-value account)\" \\"
+echo "      --role=roles/compute.osAdminLogin"
 echo
 echo "Then run scripts/setup-vm.sh on the VM. See docs/hosting.md."
-echo
-warn "If the IAP tunnel will not connect (org policy blocks IAP, or you need"
-warn "faster iteration), the documented fallback is an ephemeral public IP"
-warn "restricted to YOUR IP. This is NOT applied automatically — run it"
-warn "yourself only if IAP is unavailable:"
-echo
-echo "    MY_IP=\$(curl -fsS ifconfig.me)"
-echo "    gcloud compute instances add-access-config ${INSTANCE} --zone=${ZONE}"
-echo "    gcloud compute firewall-rules create allow-operator-ssh \\"
-echo "      --direction=INGRESS --action=ALLOW --rules=tcp:22 \\"
-echo "      --source-ranges=\"\${MY_IP}/32\""
-echo "    # then: gcloud compute ssh hermes@${INSTANCE} --zone=${ZONE}"
 echo

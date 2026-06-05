@@ -41,8 +41,18 @@ Autonomaton's governance state.
 - A **billing-enabled** GCP project named `grove-hermes-autonomaton`
   (`gcloud projects create grove-hermes-autonomaton` if it does not exist,
   then link billing in the console).
+- An **OS Login role** for your account — Project Owner alone does **not**
+  grant SSH to a VM with `enable-oslogin=TRUE`, so you'll get
+  `Permission denied (publickey)` without it. Run once:
+  ```bash
+  gcloud projects add-iam-policy-binding grove-hermes-autonomaton \
+    --member="user:$(gcloud config get-value account)" \
+    --role=roles/compute.osAdminLogin
+  ```
+  (`osAdminLogin` also gives passwordless `sudo` on the VM, which `setup-vm.sh`
+  needs. Propagation takes up to ~2 min.)
 - Your local Mac gateway working, with `~/.grove/` populated (config, secrets,
-  skills, memory). You will copy this to the VM.
+  skills, memory). You will copy the **essential** subset to the VM (Step 3).
 
 ---
 
@@ -53,13 +63,16 @@ scripts/provision-vm.sh
 ```
 
 This enables the Compute + IAP APIs, creates the `grove-data-disk` persistent
-disk, the IAP-SSH firewall rule, and the `hermes-gateway` VM (no public IP,
-no service account). It is idempotent — re-run it freely. On success it prints
-the SSH command.
+disk, the IAP-SSH firewall rule, **disables the default network's broad
+`default-allow-ssh`/`-rdp` rules**, and creates the `hermes-gateway` VM (no
+service account). It is idempotent — re-run it freely. On success it prints
+the SSH command + the OS Login role reminder.
 
-If your org policy blocks IAP, the script prints a **fallback** (ephemeral
-public IP restricted to your current IP). It does not apply the fallback
-automatically — run those commands yourself only if IAP is unavailable.
+> **Networking:** the VM gets an **ephemeral external IP for egress only**
+> (git/pip/npx at setup; the npx-fetched MCP servers at runtime — there is no
+> Cloud NAT in this minimal setup). Inbound SSH stays **IAP-only** because the
+> broad `0.0.0.0/0` SSH/RDP rules are disabled, so always connect with
+> `--tunnel-through-iap` (a direct connection to the public IP is blocked).
 
 ---
 
@@ -68,7 +81,7 @@ automatically — run those commands yourself only if IAP is unavailable.
 SSH in over the IAP tunnel:
 
 ```bash
-gcloud compute ssh hermes@hermes-gateway --zone=europe-west1-b --tunnel-through-iap
+gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap
 ```
 
 Then run the setup script with sudo:
@@ -85,9 +98,12 @@ sudo bash /home/hermes/hermes-autonomaton-refactor/scripts/setup-vm.sh
 
 `setup-vm.sh` formats and mounts the data disk (adding it to `/etc/fstab`),
 creates the `hermes` user, installs Python 3.13 and Node.js 20, clones the
-repo, builds the venv, wires `~/.grove → /mnt/grove-data/.grove`, installs and
-**enables** the systemd unit (without starting it — secrets are not present
-yet), and installs the watchdog cron. It is idempotent.
+repo, builds the venv, `pip install -e .`, **installs the google-workspace
+skill's Google client libraries into the venv** (they're a skill dep, not a
+package dep, so the editable install doesn't pull them), wires
+`~/.grove → /mnt/grove-data/.grove`, installs and **enables** the systemd unit
+(without starting it — secrets are not present yet), and installs the watchdog
+cron. It is idempotent.
 
 > **No `npm install`.** The MCP servers (e.g. notion) are fetched on demand by
 > `npx`; Node.js is installed only so `npx` works. There are no local Node
@@ -97,35 +113,63 @@ yet), and installs the watchdog cron. It is idempotent.
 
 ## Step 3 — Migrate state (from your Mac)
 
-Copy your local `~/.grove/` to the VM. This is what makes the cloud node *your*
-node — its config, secrets, skills, and memory.
+**Do NOT rsync all of `~/.grove`.** It's ~200 MB, most of it non-portable: a
+macOS binary (`bin/tirith` is Mach-O — broken on Linux), session transcripts,
+LSP caches, and a large `telemetry.db` that regenerates. Copy only the
+**essential, portable** state (~2 MB). Stop the Mac gateway first
+(`hermes gateway stop`) so the SQLite DBs are quiesced.
+
+**Build a curated tarball on your Mac:**
 
 ```bash
-# Optional: define an SSH alias so rsync can reach the VM through IAP.
-# In ~/.ssh/config the gcloud tunnel can be wrapped, or rsync directly:
-rsync -avz -e "gcloud compute ssh hermes@hermes-gateway --zone=europe-west1-b --tunnel-through-iap --" \
-  ~/.grove/ :/mnt/grove-data/.grove/
+cd ~/.grove
+tar czf /tmp/grove-state.tgz \
+  .env config.yaml $(ls routing.config*.yaml 2>/dev/null) \
+  zones.schema.yaml tool_groups.yaml context_length_cache.yaml \
+  goals.md soul.md constitution.md operator.md affordances.md \
+  google_token.json google_client_secret.json \
+  pattern_cache.db intent_records.jsonl \
+  skills memories
 ```
 
-What travels (everything under `~/.grove/`):
+What travels (the essentials): `.env` (Telegram/Notion tokens), `config.yaml`,
+the `routing.config*.yaml` set, `zones.schema.yaml`, the identity files
+(`goals/soul/constitution/operator/affordances.md`), the Google OAuth files
+(`google_token.json` / `google_client_secret.json` — file-based, no env var),
+`pattern_cache.db` (T0 patterns), `intent_records.jsonl` (Flywheel evidence),
+`skills/`, and `memories/`. Excluded: `bin/`, `sessions/`, `lsp/`, `logs/`,
+`telemetry.db*`, caches, `kanban.db`, and the volatile `*.lock`/`*-wal`/`*-shm`.
 
-- `.env` — provider API keys, bot tokens (the secrets)
-- `config.yaml` — gateway + platform configuration (Telegram token wiring, MCP
-  server definitions)
-- `routing.config.yaml` — tier bindings (operator copy)
-- `routing.autonomaton.yaml` — Flywheel-approved routing changes
-- `zones.schema.yaml` — sovereignty rules
-- `goals.md` — operator goals for the classifier
-- `skills/` — promoted skills (incl. `productivity/google-workspace/` and its
-  `google_token.json` / `google_client_secret.json` credentials)
-- `memories/` — persistent memory store
-- `pattern_cache.db` — compiled T0 patterns
-- `intent_records.jsonl` — the Flywheel evidence the T0 compiler mines
-- `proposals.jsonl` — pending Flywheel proposals
-- `telemetry.db` — telemetry (optional; large, can be skipped)
+**Ship + extract it** (pipes over IAP; extracts as `hermes`):
 
-> **Do not copy** `*.lock`, `*.db-wal`, `*.db-shm`, or the `.kaizen_ledger`
-> live files while the Mac gateway is running — stop it first (Step 4 note).
+```bash
+gcloud compute scp --tunnel-through-iap --zone=europe-west1-b \
+  /tmp/grove-state.tgz hermes-gateway:/tmp/grove-state.tgz
+gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap --command='
+  sudo tar xzf /tmp/grove-state.tgz -C /mnt/grove-data/.grove/
+  sudo chown -R hermes:hermes /mnt/grove-data/.grove
+  rm -f /tmp/grove-state.tgz'
+rm -f /tmp/grove-state.tgz   # the tarball holds secrets — delete the local copy
+```
+
+### The Anthropic key is NOT in `~/.grove`
+
+On the Mac, `ANTHROPIC_API_KEY` is injected from the **macOS Keychain** via
+`.zshrc` — it lives in neither `.env` nor the launchd plist, so it does **not**
+travel with the tarball. The VM (blind to your Keychain) needs it written into
+its `.env`. This reads the key from Keychain and pipes it over SSH **stdin**
+(the value never prints to your terminal or the VM's process args):
+
+```bash
+KEY=$(security find-generic-password -s grove-anthropic-api-key -w) && \
+printf 'ANTHROPIC_API_KEY=%s\n' "$KEY" | \
+gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+  --command='sudo -u hermes tee -a /home/hermes/.grove/.env >/dev/null'
+```
+
+> Any other credential injected from the Keychain/shell on the Mac (rather than
+> stored in `.grove`) follows the same pattern: pull on the Mac, append to the
+> VM's `.env`. The Google OAuth token is file-based, so it rides the tarball.
 
 ---
 
@@ -176,10 +220,16 @@ scripts/deploy.sh --zone us-central1-a --instance hermes-gateway
 Forces the VM's checkout to mirror `origin/main`, reinstalls the package,
 restarts the service, and prints the deployed commit.
 
+> `deploy.sh` syncs **code only**. It does **not** re-copy the systemd unit or
+> reinstall skill runtime deps. If a deploy changes `hermes-gateway.service`,
+> re-install it manually:
+> `sudo install -m644 <repo>/scripts/hermes-gateway.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart hermes-gateway`.
+> If a deploy adds a skill dependency, install it into the venv as in Step 2.
+
 **SSH in:**
 
 ```bash
-gcloud compute ssh hermes@hermes-gateway --zone=europe-west1-b --tunnel-through-iap
+gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap
 ```
 
 **Tail logs (journald — the gateway and the watchdog both log here):**
@@ -193,7 +243,7 @@ journalctl -u hermes-gateway --since "1 hour ago"
 **Back up state (from your Mac):**
 
 ```bash
-rsync -avz -e "gcloud compute ssh hermes@hermes-gateway --zone=europe-west1-b --tunnel-through-iap --" \
+rsync -avz -e "gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap --" \
   :/mnt/grove-data/.grove/ ~/grove-vm-backup/
 ```
 
@@ -207,9 +257,11 @@ rsync -avz -e "gcloud compute ssh hermes@hermes-gateway --zone=europe-west1-b --
 | Service won't start, `status` shows `(code=exited)` | Secrets missing — confirm `~/.grove/.env` migrated and has a provider key + bot token. `journalctl -u hermes-gateway -n 50`. |
 | `/mnt/grove-data` empty after reboot | fstab line missing or disk detached. `mount \| grep grove-data`; re-run `setup-vm.sh` (idempotent) to re-add the fstab entry. |
 | `~/.grove` is a real dir, not a symlink | Something wrote to it before the symlink existed. Move it aside (`mv ~/.grove ~/.grove.bak`) and re-run `setup-vm.sh`. |
-| IAP tunnel refused | IAP API not enabled, or org policy blocks IAP. Re-run `provision-vm.sh`; if still blocked, use the printed public-IP fallback. |
+| IAP tunnel refused | IAP API not enabled, or org policy blocks IAP. Re-run `provision-vm.sh`; if still blocked, the VM has an external IP — temporarily add your own IP to a `tcp:22` firewall rule and SSH directly. |
+| `Permission denied (publickey)` on SSH | OS Login role missing — grant `roles/compute.osAdminLogin` (see Prerequisites; Owner alone is not enough), wait ~2 min for propagation. If the role is present and it still fails, your `~/.ssh/google_compute_engine` key is **passphrase-protected** — that only works from an interactive terminal (a non-interactive script can't supply the passphrase). |
 | Service stuck `failed`, won't restart | systemd start-limit hit. `sudo systemctl reset-failed hermes-gateway && sudo systemctl start hermes-gateway`. The watchdog also recovers this within 5 minutes via `hermes doctor --restart --force`. |
-| Calendar / Gmail skill errors | The `google_token.json` did not migrate, or expired. Re-copy `~/.grove/skills/productivity/google-workspace/` and re-run the skill's setup if needed. |
+| `status` shows `Failed (code=exited, status=1)` after a restart | **Cosmetic.** The gateway returns non-zero on `SIGTERM` rather than 0, so systemd logs the stop as "failed." `Restart=always` brings it straight back up — confirm `Active: active (running)` and recent logs. |
+| Calendar / Gmail skill errors | Either the Google client libs aren't in the venv (`setup-vm.sh` installs them; if you rebuilt the venv, re-run `.venv/bin/pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib` from the repo dir) or `google_token.json` didn't migrate / expired (re-copy it into `~/.grove/`). |
 
 ---
 

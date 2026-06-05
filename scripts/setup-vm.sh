@@ -96,6 +96,16 @@ as_hermes "cd '${REPO_DIR}' && .venv/bin/pip install --upgrade pip >/dev/null &&
 # NOTE (GATE-A decision B): no local `npm install` — MCP servers are
 # npx-fetched (see step 4). Node/npx presence is all the gateway needs.
 
+# ── 7b. Skill runtime deps (NOT in the hermes package) ─────────────────
+# The google-workspace skill shells out to scripts/google_api.py, which
+# imports the Google client libraries. `pip install -e .` does not pull them
+# (they're a skill dep, not a package dep), so install them into the venv
+# here (Sprint 59 deployment finding). Run from the repo dir so pip's cwd is
+# readable by the hermes user.
+say "Installing google-workspace skill deps into the venv"
+as_hermes "cd '${REPO_DIR}' && .venv/bin/pip install \
+  google-api-python-client google-auth-httplib2 google-auth-oauthlib"
+
 # ── 8. State directory on the persistent disk + symlink ────────────────
 say "Wiring ~/.grove -> ${GROVE_TARGET} (state lives on the persistent disk)"
 mkdir -p "${GROVE_TARGET}"
