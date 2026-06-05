@@ -1,0 +1,29 @@
+[Unit]
+Description=Hermes Autonomaton dashboard (web UI — config / keys / sessions)
+Documentation=https://github.com/the-grove-ai/hermes-autonomaton-refactor#readme
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+WorkingDirectory=/home/hermes/hermes-autonomaton-refactor
+# Binds 0.0.0.0:9119 with --insecure so the tailnet can reach it. Safe ONLY
+# because the GCP firewall exposes no inbound ports publicly (SSH is IAP-only,
+# 9119 is unreachable from the internet) and the path in is Tailscale's private
+# WireGuard mesh. The dashboard manages config + API keys — anyone on the
+# tailnet can read them; keep the tailnet small. --skip-build serves the
+# pre-built UI at hermes_cli/web_dist (shipped by deploy.sh; the e2-small can't
+# build it). --no-open: no browser on a headless VM.
+ExecStart=/home/hermes/hermes-autonomaton-refactor/.venv/bin/hermes dashboard --port 9119 --host 0.0.0.0 --insecure --no-open --skip-build
+Restart=always
+RestartSec=10
+Environment=GROVE_HOME=/home/hermes/.grove
+ProtectSystem=full
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermes-dashboard
+
+[Install]
+WantedBy=multi-user.target

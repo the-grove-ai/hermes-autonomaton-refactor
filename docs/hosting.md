@@ -249,6 +249,63 @@ rsync -avz -e "gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-
 
 ---
 
+## Dashboard Access via Tailscale
+
+The web dashboard (config, API keys, session management) runs as its own
+service, reached over your private Tailscale mesh — never the public internet.
+
+**Prerequisites**
+- A Tailscale account (free tier is sufficient): https://tailscale.com
+- Tailscale on your Mac: `brew install tailscale` (or the macOS app), then `tailscale up`.
+
+**One-time VM setup**
+1. Generate an auth key at https://login.tailscale.com/admin/settings/keys
+2. Join the tailnet from the VM:
+   ```
+   gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+     --command='sudo tailscale up --authkey=tskey-auth-XXXX'
+   ```
+   Note the tailnet hostname it reports (e.g. `hermes-gateway`).
+
+**Build, ship, and start the dashboard**
+1. From your Mac, run `scripts/deploy.sh` — it builds the UI locally and ships
+   the compiled dist to the VM (the e2-small can't build it itself).
+2. Start the service:
+   ```
+   gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+     --command='sudo systemctl start hermes-dashboard'
+   ```
+
+**Access and verify**
+- Open `http://<tailnet-hostname>:9119` from any device on your tailnet.
+- From the Mac: `curl http://<tailnet-hostname>:9119` (expect HTML).
+- Logs:
+  ```
+  gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+    --command='journalctl -u hermes-dashboard -f'
+  ```
+
+The dashboard binds `0.0.0.0:9119` with `--insecure`. That is safe here because
+the GCP firewall exposes no inbound ports to the internet (SSH is IAP-only,
+9119 is unreachable publicly); the only path in is the Tailscale mesh. Anyone
+on your tailnet can read and manage the keys it surfaces — keep the tailnet small.
+
+## Tailscale Mesh
+
+Tailscale is a private WireGuard VPN that connects your own devices directly,
+with no public exposure.
+
+- **Why not a public URL.** Sovereignty: no ports open to the internet, no TLS
+  certificates to manage, no auth layer to build or rotate. The mesh *is* the
+  boundary.
+- **Adding a device.** Install Tailscale on it and run `tailscale up` under the
+  same account; it joins the tailnet and reaches the VM by its tailnet name.
+- **If Tailscale is down.** The IAP tunnel remains the fallback for
+  administration: `gcloud compute ssh hermes-gateway --zone=europe-west1-b
+  --tunnel-through-iap`. The dashboard itself is mesh-only by design.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |

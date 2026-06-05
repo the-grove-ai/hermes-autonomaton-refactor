@@ -75,6 +75,14 @@ say "Installing Node.js 20 LTS (for npx-fetched MCP servers)"
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
 
+# ── 4b. Tailscale (private mesh for dashboard access) ──────────────────
+# Installs the Tailscale client non-interactively. Does NOT join the tailnet —
+# that needs the operator's auth key (run `sudo tailscale up --authkey=...`
+# manually; see docs/hosting.md). No public ports are opened by this.
+say "Installing Tailscale (mesh client; joining the tailnet is a manual step)"
+curl -fsSL https://tailscale.com/install.sh | sh
+ok "Tailscale installed — run 'sudo tailscale up --authkey=<YOUR_KEY>' to join your tailnet"
+
 # ── 5. System dependencies ─────────────────────────────────────────────
 say "Installing system dependencies (git, jq)"
 apt-get install -y git jq
@@ -126,6 +134,15 @@ install -m 0644 "${REPO_DIR}/scripts/hermes-gateway.service" /etc/systemd/system
 systemctl daemon-reload
 systemctl enable hermes-gateway
 ok "Service enabled (start it after copying secrets)"
+
+# ── 9b. Dashboard systemd unit (enabled, NOT started) ──────────────────
+# Same pattern as the gateway: enable so it survives reboot, but don't start —
+# the dashboard needs its UI dist shipped first (scripts/deploy.sh).
+say "Installing the dashboard systemd unit"
+install -m 0644 "${REPO_DIR}/scripts/hermes-dashboard.service" /etc/systemd/system/hermes-dashboard.service
+systemctl daemon-reload
+systemctl enable hermes-dashboard
+ok "Dashboard service enabled (start it after deploy.sh ships the UI)"
 
 # ── 10. Watchdog cron for the hermes user ──────────────────────────────
 say "Installing the 5-minute watchdog cron"
