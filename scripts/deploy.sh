@@ -38,14 +38,21 @@ echo "▸ Deploying origin/main to ${INSTANCE} (${ZONE})"
 # The remote block is forced-sync + reinstall + restart, then echo the hash.
 # `set -e` inside the remote shell makes any step's failure fail the whole
 # command, and gcloud propagates that non-zero exit back to us.
+#
+# OS Login logs us in as the operator's own account, NOT 'hermes' (the
+# `hermes@` in the ssh target is overridden — gcloud prints a notice). That
+# account can't even enter /home/hermes (mode 0750 on Ubuntu 24.04), and the
+# repo + venv are owned by hermes anyway, so the checkout + reinstall run AS
+# hermes via `sudo -u hermes`. The service restart needs root. Operator
+# accounts with roles/compute.osAdminLogin get passwordless sudo from the OS
+# Login guest agent, so neither sudo call prompts. (Sprint 59 deploy.sh
+# assumed the remote ran as hermes; corrected inline during the Sprint 60
+# deploy — its first real end-to-end run.)
 REMOTE_CMD="$(cat <<REMOTE
 set -euo pipefail
-cd '${REPO_DIR}'
-git fetch origin main
-git reset --hard origin/main
-.venv/bin/pip install -e . --quiet
+sudo -u hermes -H bash -c 'set -euo pipefail; cd "${REPO_DIR}"; git fetch origin main; git reset --hard origin/main; .venv/bin/pip install -e . --quiet'
 sudo systemctl restart hermes-gateway
-echo "DEPLOYED_COMMIT=\$(git rev-parse --short HEAD)"
+echo "DEPLOYED_COMMIT=\$(sudo -u hermes git -C '${REPO_DIR}' rev-parse --short HEAD)"
 REMOTE
 )"
 
