@@ -11350,10 +11350,18 @@ class HermesCLI:
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
 
-        # Sprint 60 follow-up — concierge register, aligned to the stdin
-        # Sovereign Prompt (S1). The ⚠️ glyph still signals caution; the
-        # panel only fires on flagged commands, so context is intact.
-        title = "⚠️  Your call before I run this"
+        # Sprint 60 follow-up — the title names the flagged concern itself.
+        # This panel's `description` is the danger-warning noun phrase
+        # ("recursive delete"), not a verb phrase, so a frame like "I'd like
+        # to {description}" would read broken; the butler names the concern
+        # directly instead. Capped at 56 chars so a multi-finding combined
+        # description (joined by "; ") can't overflow the box border — the
+        # title line pads but never truncates.
+        _title_desc = (description or "").strip() or "this action"
+        if len(_title_desc) > 56:
+            _title_desc = _title_desc[:55] + "…"
+        _title_desc = _title_desc[:1].upper() + _title_desc[1:]
+        title = f"⚠️  {_title_desc} — your call"
         cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
         choice_labels = {
             "once": "Just this once",

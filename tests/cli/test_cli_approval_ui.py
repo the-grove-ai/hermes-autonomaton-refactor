@@ -152,8 +152,10 @@ class TestCliApprovalUi:
         lines = rendered.splitlines()
 
         assert lines[0].startswith("╭")
-        assert "Your call before I run this" not in lines[0]
-        assert any("Your call before I run this" in line for line in lines[1:3])
+        # Title now names the flagged concern (description) + "— your call",
+        # capitalized. It renders inside the box, not on the border.
+        assert "Disk copy — your call" not in lines[0]
+        assert any("Disk copy — your call" in line for line in lines[1:3])
         assert "See the full command" in rendered
         assert "githubcli-archive-keyring.gpg" not in rendered
 
