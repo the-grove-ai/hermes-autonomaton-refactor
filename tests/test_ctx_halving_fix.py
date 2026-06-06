@@ -165,6 +165,7 @@ class TestEphemeralMaxOutputTokens:
         agent.api_mode = "anthropic_messages"
         agent.model = "claude-opus-4-6"
         agent.tools = []
+        agent._tools_for_turn = None  # Sprint 29 per-turn tool override read by _tools_for_api
         agent.max_tokens = None
         agent.reasoning_config = None
         agent._is_anthropic_oauth = False
@@ -236,6 +237,7 @@ class TestContextNotHalvedOnOutputCapError:
         agent.model = "claude-opus-4-6"
         agent.base_url = "https://api.anthropic.com"
         agent.tools = []
+        agent._tools_for_turn = None  # Sprint 29 per-turn tool override read by _tools_for_api
         agent.max_tokens = None
         agent.reasoning_config = None
         agent._is_anthropic_oauth = False
