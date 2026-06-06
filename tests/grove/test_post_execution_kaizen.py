@@ -101,10 +101,72 @@ def test_session_disposition_does_not_flag(monkeypatch) -> None:
 
 
 def test_non_terminal_tool_does_not_flag(monkeypatch) -> None:
+    # A tool that is neither terminal nor skill_view never flags, even under a
+    # .andon matched_rule.
     d = _dispatcher(monkeypatch, sovereign_prompt_handler=lambda h: "once")
-    halt = _halt(tool="skill_view")
+    halt = _halt(tool="write_file")
     d._handle_andon_halt(agent=MagicMock(), halt=halt, ledger=MagicMock())
     assert d._quarantine_skill_executed_this_turn is None
+
+
+# ── Sprint 62 — procedural skill try-it via skill_view ────────────────
+
+
+def _skill_view_halt(
+    *, name="my-skill",
+    matched_rule="skill.quarantine.andon (.grove/skills/.andon/my-skill)",
+) -> AndonHalt:
+    intents = [ToolIntent(tool_name="skill_view", arguments={"name": name}, call_id="c1")]
+    zr = [ZoneResult(zone="yellow", matched_rule=matched_rule, source="skill_view_quarantine")]
+    return AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
+
+
+def test_skill_view_quarantine_flags(monkeypatch) -> None:
+    # Loading a quarantined procedural skill (no script) via skill_view sets the
+    # post-execution flag, same as a terminal .andon script run.
+    d = _dispatcher(monkeypatch, sovereign_prompt_handler=lambda h: "once")
+    result = d._handle_andon_halt(
+        agent=MagicMock(), halt=_skill_view_halt(name="my-skill"), ledger=MagicMock(),
+    )
+    assert result == "once"
+    flag = d._quarantine_skill_executed_this_turn
+    assert flag is not None
+    assert flag["skill_name"] == "my-skill"
+    assert flag["skill_path"].endswith(".andon/my-skill")
+
+
+def test_skill_view_without_name_does_not_flag(monkeypatch) -> None:
+    # skill_view carrying no usable name (a command-shaped arg) never flags.
+    d = _dispatcher(monkeypatch, sovereign_prompt_handler=lambda h: "once")
+    d._handle_andon_halt(agent=MagicMock(), halt=_halt(tool="skill_view"), ledger=MagicMock())
+    assert d._quarantine_skill_executed_this_turn is None
+
+
+def test_skill_view_quarantine_classifies_yellow(monkeypatch, tmp_path) -> None:
+    # A quarantined skill loaded via skill_view classifies yellow so the existing
+    # Andon halt fires — the procedural "try it" gate.
+    import grove.skills as gs
+    (tmp_path / ".andon" / "my-skill").mkdir(parents=True)
+    monkeypatch.setattr(gs, "proposal_path", lambda n: tmp_path / ".andon" / n)
+    intent = ToolIntent(tool_name="skill_view", arguments={"name": "my-skill"}, call_id="c1")
+    zr = Dispatcher._classify_one_intent(intent, None)
+    assert zr.zone == "yellow"
+    assert ".andon" in zr.matched_rule
+
+
+def test_skill_view_not_quarantined_not_yellow_rule(monkeypatch, tmp_path) -> None:
+    # A skill NOT in quarantine falls through to the generic classifier (NOT the
+    # quarantine-yellow branch). Stub the classifier so the test doesn't depend
+    # on the grove.zones singleton being initialized.
+    import grove.skills as gs
+    import grove.zones as gz
+    monkeypatch.setattr(gs, "proposal_path", lambda n: tmp_path / ".andon" / n)  # never exists
+    sentinel = ZoneResult(zone="green", matched_rule="generic", source="stub")
+    monkeypatch.setattr(gz, "classify", lambda action: sentinel)
+    intent = ToolIntent(tool_name="skill_view", arguments={"name": "promoted"}, call_id="c1")
+    zr = Dispatcher._classify_one_intent(intent, None)
+    assert zr is sentinel
+    assert "skill.quarantine.andon" not in (getattr(zr, "matched_rule", "") or "")
 
 
 # ── emission dispatch: _emit_post_execution_kaizen ────────────────────

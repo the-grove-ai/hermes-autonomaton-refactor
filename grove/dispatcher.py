@@ -3444,6 +3444,26 @@ class Dispatcher:
                 return _grove_dispatch.classify_command(
                     command, tool_id=tool_name,
                 )
+        # Sprint 62 — procedural skill "try it" gate. Loading a quarantined
+        # (.andon) skill via skill_view is the operator's try-before-promote
+        # moment, so classify it yellow → the existing Andon halt + S1/S4
+        # prompt fire. Script skills already route through the terminal-.andon
+        # rule; this is the no-script (procedural) equivalent. In-code (not a
+        # zones rule) because a bare skill name can't be path-matched.
+        if tool_name == "skill_view" and isinstance(args, dict):
+            view_name = args.get("name")
+            if isinstance(view_name, str) and view_name.strip():
+                from grove.skills import proposal_path
+                if proposal_path(view_name.strip()).exists():
+                    from grove.zones import ZoneResult
+                    return ZoneResult(
+                        zone="yellow",
+                        matched_rule=(
+                            "skill.quarantine.andon "
+                            f"(.grove/skills/.andon/{view_name.strip()})"
+                        ),
+                        source="skill_view_quarantine",
+                    )
         # Generic path: the action string IS the bare tool_name, matching
         # the convention in zones.schema.yaml::tool_zones (entries like
         # ``terminal``, ``calendar.read``, ``notion_search``). The earlier
@@ -3678,9 +3698,10 @@ class Dispatcher:
         """Flag a successful "allow once" execution of a quarantined skill.
 
         Sets the turn-scoped ``_quarantine_skill_executed_this_turn`` carrier
-        when ALL hold: disposition is ``"once"``, the triggering tool is the
-        terminal, the matched zone rule is the ``.andon`` quarantine rule,
-        and the command references a ``~/.grove/skills/.andon/<name>/`` path.
+        when ALL hold: disposition is ``"once"``, the matched zone rule is the
+        ``.andon`` quarantine rule, and the triggering tool is either the
+        terminal running a ``~/.grove/skills/.andon/<name>/`` script OR (Sprint
+        62) skill_view loading a quarantined procedural skill by ``name``.
         Also records the additive ``quarantine_skill_disposition`` ledger
         event (GATE-A decision 2) that ``--strict`` promotion reads — kept
         separate from Sprint 32's ``andon_disposition`` so that schema is
@@ -3688,21 +3709,32 @@ class Dispatcher:
         """
         if disposition != "once":
             return
-        if getattr(intent, "tool_name", None) != "terminal":
-            return
         if ".andon" not in (getattr(halt, "matched_rule", "") or ""):
             return
+        tool_name = getattr(intent, "tool_name", None)
         arguments = getattr(intent, "arguments", None)
-        command = (
-            arguments.get("command") if isinstance(arguments, dict) else None
-        )
-        if not command:
+        arguments = arguments if isinstance(arguments, dict) else {}
+        if tool_name == "terminal":
+            command = arguments.get("command")
+            if not command:
+                return
+            match = _ANDON_SKILL_RE.search(command)
+            if match is None:
+                return
+            skill_name = match.group("name")
+            skill_path = match.group("path")
+        elif tool_name == "skill_view":
+            # Sprint 62 — procedural skills have no script; the operator's
+            # try-it gate is loading the quarantined skill via skill_view.
+            # ``name`` carries the skill; the path is its quarantine dir.
+            name = arguments.get("name")
+            if not isinstance(name, str) or not name.strip():
+                return
+            from grove.skills import proposal_path
+            skill_name = name.strip()
+            skill_path = str(proposal_path(skill_name))
+        else:
             return
-        match = _ANDON_SKILL_RE.search(command)
-        if match is None:
-            return
-        skill_name = match.group("name")
-        skill_path = match.group("path")
         self._quarantine_skill_executed_this_turn = {
             "skill_name": skill_name,
             "skill_path": skill_path,

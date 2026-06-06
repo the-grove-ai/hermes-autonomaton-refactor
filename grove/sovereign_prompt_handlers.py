@@ -147,6 +147,9 @@ _KAIZEN_PROMPT_TEMPLATES: Tuple[Tuple[Optional[str], Optional[str], str], ...] =
     # Sprint 60 graceful-degradation branch).
     ("terminal",     None,               "run this command: {peek_cmd}"),
     ("write_file",   None,               "write the file {peek_path}"),
+    # Sprint 62 — loading a quarantined skill via skill_view is the operator's
+    # "try it" moment; render it as a skill run, not a generic tool use.
+    ("skill_view",   None,               "run the {skill_name} skill"),
     ("execute_code", None,               "run this code snippet"),
     # Fallback row — matches every tool not above.
     (None,           None,               "use {tool_name}"),
@@ -337,6 +340,12 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
     args_dict = dict(arguments) if isinstance(arguments, dict) else {}
     peek_cmd = peek(normalize_command(str(args_dict.get("command", ""))))
     peek_path = peek(str(args_dict.get("path", "")))
+    # Sprint 62 — skill_view of a quarantined skill carries the skill in the
+    # ``name`` arg (no .grove/skills path to extract), so resolve it directly.
+    if tool_name == "skill_view":
+        view_skill = str(args_dict.get("name", "")).strip() or "unknown"
+    else:
+        view_skill = _extract_skill_name(args_str)
     for tmpl_tool, tmpl_substring, tmpl_text in _KAIZEN_PROMPT_TEMPLATES:
         if tmpl_tool is not None and tmpl_tool != tool_name:
             continue
@@ -360,7 +369,7 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
         # unchanged via str.format's keyword args.
         return text.format(
             tool_name=tool_name,
-            skill_name=_extract_skill_name(args_str),
+            skill_name=view_skill,
             package=(
                 _extract_install_package(args_str, tmpl_substring)
                 if "{package}" in tmpl_text and tmpl_substring

@@ -90,6 +90,12 @@ class TestKaizenTemplate:
         desc = describe_action_kaizen("mcp_notion_post", {"page": "x"})
         assert desc == "use mcp_notion_post"
 
+    def test_skill_view_quarantine_renders_as_skill_run(self):
+        # Sprint 62 — loading a quarantined skill via skill_view is the "try it"
+        # moment; it reads as a skill run, not the generic "use skill_view".
+        desc = describe_action_kaizen("skill_view", {"name": "influencer-research"})
+        assert desc == "run the influencer-research skill"
+
     def test_skill_path_with_trailing_slash(self):
         desc = describe_action_kaizen(
             "terminal",
