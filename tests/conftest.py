@@ -40,6 +40,28 @@ collect_ignore_glob: list = []
 if _importlib_util.find_spec("acp") is None:
     collect_ignore_glob += ["acp/*", "acp_adapter/*"]
 
+
+def pytest_collection_modifyitems(config, items):
+    """Apply the Sprint 52.1 declarative skip ledger.
+
+    Category C (environment-coupled) and Category D (upstream divergence
+    the fork intentionally replaced) skip decisions live in
+    ``tests/_audit_skip_ledger.py`` — one reviewable table rather than
+    skip decorators scattered across ~16 files. Matching is on the exact
+    parametrize-stripped node ID, so the ledger can never over-skip a
+    differently-named test; a renamed test simply re-surfaces (fail-loud).
+    """
+    import pytest as _pytest
+    try:
+        from tests._audit_skip_ledger import ENVIRONMENT_SKIPS, DIVERGENCE_SKIPS
+    except Exception:
+        return
+    for item in items:
+        base = item.nodeid.split("[", 1)[0]
+        reason = ENVIRONMENT_SKIPS.get(base) or DIVERGENCE_SKIPS.get(base)
+        if reason:
+            item.add_marker(_pytest.mark.skip(reason=reason))
+
 import pytest
 
 # Ensure project root is importable
