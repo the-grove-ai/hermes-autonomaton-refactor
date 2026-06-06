@@ -139,14 +139,44 @@ systemctl daemon-reload
 systemctl enable hermes-gateway
 ok "Service enabled (start it after copying secrets)"
 
-# ── 9b. Dashboard systemd unit (enabled, NOT started) ──────────────────
-# Same pattern as the gateway: enable so it survives reboot, but don't start —
-# the dashboard needs its UI dist shipped first (scripts/deploy.sh).
-say "Installing the dashboard systemd unit"
+# ── 9b. Upstream dashboard: disabled — Open WebUI replaces it (Sprint 64) ──
+# Keep the unit file on disk (so it can be re-enabled if ever needed) but stop
+# and disable it: Open WebUI is now the operator's web surface, and the e2-small
+# needs the RAM the dashboard would otherwise hold.
+say "Disabling the upstream dashboard (Open WebUI replaces it)"
 install -m 0644 "${REPO_DIR}/scripts/hermes-dashboard.service" /etc/systemd/system/hermes-dashboard.service
 systemctl daemon-reload
-systemctl enable hermes-dashboard
-ok "Dashboard service enabled (start it after deploy.sh ships the UI)"
+systemctl disable --now hermes-dashboard 2>/dev/null || true
+ok "Dashboard stopped and disabled (unit file retained, not deleted)"
+
+# ── 9c. Swapfile (e2-small has no swap; Open WebUI install/runtime needs it) ──
+# 2G swapfile on the persistent disk. The e2-small has 2G RAM and no swap;
+# `pip install open-webui` and Open WebUI's runtime both spike memory and would
+# risk an OOM kill without headroom. nofail so a missing disk never blocks boot.
+if ! swapon --show 2>/dev/null | grep -q "${DATA_MOUNT}/swapfile"; then
+  say "Creating a 2G swapfile on the persistent disk"
+  fallocate -l 2G "${DATA_MOUNT}/swapfile" || dd if=/dev/zero of="${DATA_MOUNT}/swapfile" bs=1M count=2048
+  chmod 600 "${DATA_MOUNT}/swapfile"
+  mkswap "${DATA_MOUNT}/swapfile"
+  swapon "${DATA_MOUNT}/swapfile"
+  if ! grep -q "${DATA_MOUNT}/swapfile" /etc/fstab; then
+    echo "${DATA_MOUNT}/swapfile none swap sw,nofail 0 0" >> /etc/fstab
+  fi
+  ok "2G swap active and persisted in fstab"
+else
+  ok "Swapfile already active"
+fi
+
+# ── 9d. Open WebUI systemd unit (enabled, NOT started) ─────────────────
+# Same enable-but-don't-start pattern as the gateway: it survives reboot, but
+# its launcher (and the API key it reads) only exist after the operator runs
+# scripts/setup_open_webui.sh post-secrets. That script prints the `enable
+# --now` command once the launcher is in place.
+say "Installing the Open WebUI systemd unit"
+install -m 0644 "${REPO_DIR}/scripts/open-webui.service" /etc/systemd/system/open-webui.service
+systemctl daemon-reload
+systemctl enable open-webui
+ok "Open WebUI unit enabled (configure + start with setup_open_webui.sh after secrets land)"
 
 # ── 10. Watchdog cron for the hermes user ──────────────────────────────
 say "Installing the 5-minute watchdog cron"

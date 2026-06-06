@@ -1,0 +1,36 @@
+[Unit]
+Description=Open WebUI for the Hermes Autonomaton (chat surface; replaces the dashboard)
+Documentation=https://github.com/the-grove-ai/hermes-autonomaton-refactor#readme
+After=network-online.target hermes-gateway.service
+Wants=network-online.target
+# Start AFTER the gateway, but not a hard Requires=: the OpenAI API server lives
+# INSIDE the gateway process, so if the gateway is briefly down Open WebUI should
+# still come up and show a clean connection error rather than refuse to start.
+
+[Service]
+Type=simple
+User=hermes
+WorkingDirectory=/home/hermes
+# The launcher is written by scripts/setup_open_webui.sh. It reads API_SERVER_KEY
+# from ~/.grove/.env, exports OPENAI_API_BASE_URL=http://127.0.0.1:8642/v1 +
+# OPENAI_API_KEY, sets HOST=0.0.0.0 PORT=8080, then execs `open-webui serve`.
+# Binds 0.0.0.0:8080 so any device on the tailnet can reach it — safe ONLY
+# because the GCP firewall exposes no inbound ports publicly (SSH is IAP-only,
+# 8080 is unreachable from the internet); the only path in is the Tailscale
+# WireGuard mesh. The API server it talks to stays bound to 127.0.0.1. Keep the
+# tailnet small — anyone on it can use the chat.
+ExecStart=/home/hermes/.local/bin/start-open-webui-hermes.sh
+Restart=always
+RestartSec=10
+# State (sqlite, chat history) lives under ~/.grove -> /mnt/grove-data via the
+# launcher's DATA_DIR, so it survives instance recreation alongside gateway state.
+Environment=GROVE_HOME=/home/hermes/.grove
+# Hardening mirrors hermes-gateway.service: /usr,/boot,/etc read-only; private /tmp.
+ProtectSystem=full
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=open-webui
+
+[Install]
+WantedBy=multi-user.target

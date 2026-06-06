@@ -8,6 +8,9 @@ set -euo pipefail
 # - installs Open WebUI into ~/.local/open-webui-venv
 # - writes a reusable launcher at ~/.local/bin/start-open-webui-hermes.sh
 # - optionally installs a user service (launchd on macOS, systemd --user on Linux)
+# - on the systemd-managed VM (a root-owned hermes-gateway unit is present) it
+#   configures env + installs Open WebUI as the hermes user, then prints the two
+#   root commands the operator runs (it never escalates privilege itself)
 #
 # Usage:
 #   bash scripts/setup_open_webui.sh
@@ -19,7 +22,7 @@ set -euo pipefail
 #   OPEN_WEBUI_ENABLE_SIGNUP=true
 #   OPEN_WEBUI_ENABLE_SERVICE=auto   # auto|true|false
 #   OPEN_WEBUI_VENV=~/.local/open-webui-venv
-#   OPEN_WEBUI_DATA_DIR=~/.local/share/open-webui/data
+#   OPEN_WEBUI_DATA_DIR=~/.grove/open-webui/data   # persisted on the VM data disk
 #   GROVE_API_PORT=8642
 #   GROVE_API_HOST=127.0.0.1
 #   GROVE_API_MODEL_NAME='Hermes Agent'
@@ -30,7 +33,7 @@ OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-Hermes Agent WebUI}"
 OPEN_WEBUI_ENABLE_SIGNUP="${OPEN_WEBUI_ENABLE_SIGNUP:-true}"
 OPEN_WEBUI_ENABLE_SERVICE="${OPEN_WEBUI_ENABLE_SERVICE:-auto}"
 OPEN_WEBUI_VENV="${OPEN_WEBUI_VENV:-$HOME/.local/open-webui-venv}"
-OPEN_WEBUI_DATA_DIR="${OPEN_WEBUI_DATA_DIR:-$HOME/.local/share/open-webui/data}"
+OPEN_WEBUI_DATA_DIR="${OPEN_WEBUI_DATA_DIR:-${GROVE_HOME:-$HOME/.grove}/open-webui/data}"
 GROVE_ENV_FILE="${GROVE_ENV_FILE:-$HOME/.grove/.env}"
 GROVE_API_PORT="${GROVE_API_PORT:-8642}"
 GROVE_API_HOST="${GROVE_API_HOST:-127.0.0.1}"
@@ -147,6 +150,18 @@ can_use_systemd_user() {
   systemctl --user show-environment >/dev/null 2>&1
 }
 
+is_system_vm() {
+  # True on the managed VM: a root-owned `hermes-gateway` systemd unit exists.
+  # On the VM systemd is root-owned and this script runs as the unprivileged
+  # `hermes` user, so it must configure user-owned artifacts only and hand the
+  # two root steps (gateway restart, unit start) back to the operator. On the
+  # Mac there is no such system unit, so this returns false and the existing
+  # launchd / systemd --user path runs.
+  [[ "$(uname -s)" == "Linux" ]] || return 1
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl cat hermes-gateway >/dev/null 2>&1
+}
+
 install_macos_dependencies() {
   if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
     if ! command -v pandoc >/dev/null 2>&1; then
@@ -251,8 +266,8 @@ install_launchd_service() {
 EOF
   launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$(id -u)" "$plist"
-  launchctl enable "gui/$(id -u)/ai.openwebui.grove"
-  launchctl kickstart -k "gui/$(id -u)/ai.openwebui.grove"
+  launchctl enable "gui/$(id -u)/ai.openwebui.hermes"
+  launchctl kickstart -k "gui/$(id -u)/ai.openwebui.hermes"
 }
 
 install_systemd_user_service() {
@@ -287,13 +302,12 @@ start_foreground_hint() {
 }
 
 main() {
-  require_cmd hermes
   require_cmd curl
   require_cmd python3
 
   install_macos_dependencies
 
-  local api_key
+  local api_key system_vm
   api_key="$(get_env_value API_SERVER_KEY "$GROVE_ENV_FILE")"
   if [[ -z "$api_key" ]]; then
     api_key="$(generate_secret)"
@@ -307,41 +321,64 @@ main() {
   upsert_env API_SERVER_KEY "$api_key" "$GROVE_ENV_FILE"
   ensure_env_permissions
 
-  log 'Restarting Hermes gateway so API server settings take effect...'
-  hermes gateway restart >/dev/null 2>&1 || true
-  sleep 4
-  if ! curl -fsS "http://${GROVE_API_CONNECT_HOST}:${GROVE_API_PORT}/health" >/dev/null; then
-    log 'Hermes API server did not answer on the first check. Trying to start gateway in the background...'
-    nohup hermes gateway run >/dev/null 2>&1 &
-    sleep 6
+  if is_system_vm; then
+    system_vm=1
+    log 'Managed VM detected (root-owned hermes-gateway systemd unit).'
+    log 'API server settings written to ~/.grove/.env; they bind on the next gateway restart.'
+  else
+    system_vm=0
+    require_cmd hermes
+    log 'Restarting Hermes gateway so API server settings take effect...'
+    hermes gateway restart >/dev/null 2>&1 || true
+    sleep 4
+    if ! curl -fsS "http://${GROVE_API_CONNECT_HOST}:${GROVE_API_PORT}/health" >/dev/null; then
+      log 'Hermes API server did not answer on the first check. Trying to start gateway in the background...'
+      nohup hermes gateway run >/dev/null 2>&1 &
+      sleep 6
+    fi
+    curl -fsS "http://${GROVE_API_CONNECT_HOST}:${GROVE_API_PORT}/health" >/dev/null
   fi
-  curl -fsS "http://${GROVE_API_CONNECT_HOST}:${GROVE_API_PORT}/health" >/dev/null
 
   log 'Installing Open WebUI into a dedicated virtualenv...'
   install_open_webui
   write_launcher
 
-  case "$OPEN_WEBUI_ENABLE_SERVICE" in
-    true|auto)
-      if [[ "$(uname -s)" == "Darwin" ]]; then
-        install_launchd_service
-      elif can_use_systemd_user; then
-        install_systemd_user_service
-      else
-        log 'No usable user service manager detected; falling back to the launcher script.'
+  if [[ "$system_vm" == "1" ]]; then
+    # The VM's systemd is root-owned; this script runs as the unprivileged
+    # `hermes` user and MUST NOT escalate. Everything the hermes user owns
+    # (env, venv, launcher) is now in place. Surface the two root commands the
+    # operator runs to bind the API server and start Open WebUI. Fail loud —
+    # never nohup a second gateway outside systemd (it would race the managed
+    # one and flap the Telegram poller).
+    log ''
+    log 'Open WebUI configured. Two root steps remain (run as the operator):'
+    log "  sudo systemctl restart hermes-gateway     # bind API server on 127.0.0.1:${GROVE_API_PORT}"
+    log '  sudo systemctl enable --now open-webui    # start the Open WebUI unit'
+    log ''
+    log "Verify:  curl -fsS http://127.0.0.1:${GROVE_API_PORT}/health  &&  systemctl status open-webui"
+  else
+    case "$OPEN_WEBUI_ENABLE_SERVICE" in
+      true|auto)
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+          install_launchd_service
+        elif can_use_systemd_user; then
+          install_systemd_user_service
+        else
+          log 'No usable user service manager detected; falling back to the launcher script.'
+          start_foreground_hint
+        fi
+        ;;
+      false)
         start_foreground_hint
-      fi
-      ;;
-    false)
-      start_foreground_hint
-      ;;
-    *)
-      echo "OPEN_WEBUI_ENABLE_SERVICE must be one of: auto, true, false" >&2
-      exit 1
-      ;;
-  esac
+        ;;
+      *)
+        echo "OPEN_WEBUI_ENABLE_SERVICE must be one of: auto, true, false" >&2
+        exit 1
+        ;;
+    esac
+  fi
 
-  log "Done. Open WebUI should be available at: http://${OPEN_WEBUI_HOST}:${OPEN_WEBUI_PORT}"
+  log "Done. Open WebUI endpoint: http://${OPEN_WEBUI_HOST}:${OPEN_WEBUI_PORT}"
   log "Hermes API endpoint: ${GROVE_API_BASE_URL}"
   log 'Important: Open WebUI persists connection settings after first launch. If you later save a wrong API key in the Admin UI, update/delete that connection there or reset its database.'
 }

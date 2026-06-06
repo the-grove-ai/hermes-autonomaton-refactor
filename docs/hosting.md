@@ -249,10 +249,22 @@ rsync -avz -e "gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-
 
 ---
 
-## Dashboard Access via Tailscale
+## Chat Access via Tailscale (Open WebUI)
 
-The web dashboard (config, API keys, session management) runs as its own
-service, reached over your private Tailscale mesh — never the public internet.
+The operator's chat surface is **Open WebUI**, reached over your private
+Tailscale mesh — never the public internet. It talks to the Autonomaton through
+the gateway's OpenAI-compatible API server (`127.0.0.1:8642`), so **all
+governance runs server-side**: tier routing, zone classification, and
+Kaizen-ledger logging happen in the gateway exactly as they do for Telegram.
+Open WebUI is protocol-blind. It replaces the upstream dashboard (Sprint 64).
+
+**Governance note (known limitation).** Interactive Yellow-zone approval ("reply
+*go ahead*") is available on **Telegram and the CLI only**. On the web surface,
+Yellow-zone actions **auto-allow once and are logged to the Kaizen ledger** —
+there is no inline approval prompt. This is a deliberate MVP boundary, not a
+defect: the OpenAI chat-completions protocol has no channel for an out-of-band
+approval round-trip. Use Telegram or the CLI when you want to gate an action
+before it runs.
 
 **Prerequisites**
 - A Tailscale account (free tier is sufficient): https://tailscale.com
@@ -267,28 +279,42 @@ service, reached over your private Tailscale mesh — never the public internet.
    ```
    Note the tailnet hostname it reports (e.g. `hermes-gateway`).
 
-**Build, ship, and start the dashboard**
-1. From your Mac, run `scripts/deploy.sh` — it builds the UI locally and ships
-   the compiled dist to the VM (the e2-small can't build it itself).
-2. Start the service:
+**Install and start** (after secrets are on the VM and the gateway is running)
+1. Configure the API server + install Open WebUI as the `hermes` user. This
+   generates `API_SERVER_*` in `~/.grove/.env`, installs Open WebUI into a
+   dedicated venv, and writes the launcher:
    ```
    gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
-     --command='sudo systemctl start hermes-dashboard'
+     --command="sudo -u hermes -H bash -lc 'cd ~/hermes-autonomaton-refactor && bash scripts/setup_open_webui.sh'"
+   ```
+2. The script prints two root steps (it never escalates itself). Run them to
+   bind the API server and start Open WebUI:
+   ```
+   gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+     --command='sudo systemctl restart hermes-gateway && sudo systemctl enable --now open-webui'
    ```
 
 **Access and verify**
-- Open `http://<tailnet-hostname>:9119` from any device on your tailnet.
-- From the Mac: `curl http://<tailnet-hostname>:9119` (expect HTML).
+- Open `http://<tailnet-hostname>:8080` from any device on your tailnet; create
+  the admin account on first visit (then set `ENABLE_SIGNUP=false` if you want
+  to lock signups).
+- API server health (on the VM): `curl -fsS http://127.0.0.1:8642/health`.
 - Logs:
   ```
   gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
-    --command='journalctl -u hermes-dashboard -f'
+    --command='journalctl -u open-webui -f'
   ```
 
-The dashboard binds `0.0.0.0:9119` with `--insecure`. That is safe here because
-the GCP firewall exposes no inbound ports to the internet (SSH is IAP-only,
-9119 is unreachable publicly); the only path in is the Tailscale mesh. Anyone
-on your tailnet can read and manage the keys it surfaces — keep the tailnet small.
+**Memory on the e2-small.** Open WebUI is heavier than the dashboard it replaces.
+Setup adds a 2 GB swapfile on the persistent disk and disables the dashboard to
+free RAM. If the box still thrashes swap under load, upgrade to `e2-medium`
+(4 GB).
+
+Open WebUI binds `0.0.0.0:8080`. That is safe here because the GCP firewall
+exposes no inbound ports to the internet (SSH is IAP-only, 8080 is unreachable
+publicly); the only path in is the Tailscale mesh. The API server it talks to
+stays bound to `127.0.0.1:8642`. Anyone on your tailnet can use the chat — keep
+the tailnet small.
 
 ## Tailscale Mesh
 
@@ -302,7 +328,7 @@ with no public exposure.
   same account; it joins the tailnet and reaches the VM by its tailnet name.
 - **If Tailscale is down.** The IAP tunnel remains the fallback for
   administration: `gcloud compute ssh hermes-gateway --zone=europe-west1-b
-  --tunnel-through-iap`. The dashboard itself is mesh-only by design.
+  --tunnel-through-iap`. Open WebUI itself is mesh-only by design.
 
 ---
 
@@ -319,6 +345,10 @@ with no public exposure.
 | Service stuck `failed`, won't restart | systemd start-limit hit. `sudo systemctl reset-failed hermes-gateway && sudo systemctl start hermes-gateway`. The watchdog also recovers this within 5 minutes via `hermes doctor --restart --force`. |
 | `status` shows `Failed (code=exited, status=1)` after a restart | **Cosmetic.** The gateway returns non-zero on `SIGTERM` rather than 0, so systemd logs the stop as "failed." `Restart=always` brings it straight back up — confirm `Active: active (running)` and recent logs. |
 | Calendar / Gmail skill errors | Either the Google client libs aren't in the venv (`setup-vm.sh` installs them; if you rebuilt the venv, re-run `.venv/bin/pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib` from the repo dir) or `google_token.json` didn't migrate / expired (re-copy it into `~/.grove/`). |
+| Open WebUI loads but "model not found" / connection error | The API server isn't bound. Confirm `API_SERVER_ENABLED=true` in `~/.grove/.env`, `sudo systemctl restart hermes-gateway`, then `curl -fsS http://127.0.0.1:8642/health`. Open WebUI persists its connection settings — if you saved a wrong key/URL in the Admin UI, fix it there. |
+| `open-webui` unit won't start | The launcher only exists after `scripts/setup_open_webui.sh` runs as the `hermes` user. Re-run it, then `sudo systemctl enable --now open-webui`; check `journalctl -u open-webui -n 50`. |
+| Open WebUI install OOM-killed / VM thrashing | The 2 GB swapfile from `setup-vm.sh` is missing (`swapon --show`) — re-run `setup-vm.sh` (idempotent). If it persists under load, upgrade the instance to `e2-medium`. |
+| Yellow-zone action ran on the web without asking | Expected. The web surface auto-allows Yellow-zone actions (logged to the Kaizen ledger); interactive approval is Telegram/CLI only. See "Chat Access via Tailscale." |
 
 ---
 
