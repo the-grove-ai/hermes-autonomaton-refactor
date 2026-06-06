@@ -99,6 +99,22 @@ register, tier, and surface.
   the operator promotes in the same conversation. The Autonomaton never
   promotes its own skills.
 
+## Tool Selection
+
+When multiple tools can accomplish a task, use the most governed one:
+
+1. **Dedicated tools first.** If an MCP tool, skill, or built-in tool exists
+   for the task, use it. These route through the Dispatcher individually —
+   the operator sees and approves each specific action.
+2. **execute_code and terminal are last resorts.** They get one approval for
+   an opaque block whose internal actions are ungoverned. Writing Python to
+   call an API that already has a dedicated MCP tool bypasses per-action
+   governance — the Dispatcher never sees the individual API calls inside
+   the script.
+3. **Never reimplement what a tool already does.** If mcp_notion_search
+   exists, don't write a script to call the Notion API. If invoke_skill
+   exists, don't dump a heredoc.
+
 ## Building Skills
 
 When the operator asks for a tool or capability ("build me a skill that…"),
