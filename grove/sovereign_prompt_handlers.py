@@ -55,7 +55,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 if TYPE_CHECKING:
     from grove.dispatcher import AndonHalt
@@ -150,7 +150,7 @@ _KAIZEN_PROMPT_TEMPLATES: Tuple[Tuple[Optional[str], Optional[str], str], ...] =
     # Sprint 62 — loading a quarantined skill via skill_view is the operator's
     # "try it" moment; render it as a skill run, not a generic tool use.
     ("skill_view",   None,               "run the {skill_name} skill"),
-    ("execute_code", None,               "run this code snippet"),
+    ("execute_code", None,               "run a Python script ({peek_code})"),
     # Fallback row — matches every tool not above.
     (None,           None,               "use {tool_name}"),
 )
@@ -318,6 +318,45 @@ def _extract_install_package(arguments_str: str, install_verb: str) -> str:
     return "unknown"
 
 
+# S0 — MCP tools are registered as ``mcp_{server}_{tool}`` with single-underscore
+# separators (tools/mcp_tool.py). The Kaizen template table matches a tool name
+# EXACTLY or a substring of the arguments, so it cannot prefix-match the dynamic
+# ``mcp_*`` namespace — these are described by the helper below instead. Known
+# (server, action) pairs get a concierge-register phrase; everything else falls
+# back to a generic, still-specific "use the {server} tool ({action})".
+_MCP_KAIZEN_PHRASES: Dict[Tuple[str, str], str] = {
+    ("notion", "search"): "search your Notion workspace",
+    ("notion", "fetch"): "fetch a page from Notion",
+}
+
+
+def _describe_mcp_kaizen(tool_name: str) -> str:
+    """Plain-language Kaizen description for an MCP tool call (S0).
+
+    MCP tools arrive as ``mcp_{server}_{tool}`` (single-underscore
+    separators, components sanitized so hyphens become underscores).
+    Best-effort split: strip the ``mcp_`` prefix, then split on the FIRST
+    underscore into ``server`` and ``action``. This is exact for
+    single-word server names (e.g. ``notion`` — the only configured MCP
+    server today). A multi-word server name (``google_drive``) would
+    mis-split, leaving part of the server in ``action`` — the headline
+    still reaches the operator, and known servers are covered by the phrase
+    map. Config-lookup disambiguation was considered and deliberately
+    deferred to keep this a string-only renderer with no config I/O.
+    """
+    remainder = tool_name[len("mcp_"):]
+    server, sep, action = remainder.partition("_")
+    if not sep:
+        # No action segment (e.g. a bare ``mcp_notion``) — name what we have.
+        server, action = remainder, ""
+    phrase = _MCP_KAIZEN_PHRASES.get((server, action))
+    if phrase:
+        return phrase
+    if action:
+        return f"use the {server} tool ({action})"
+    return f"use the {server} tool"
+
+
 def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
     """Render a Kaizen-register plain-language description of the action.
 
@@ -330,7 +369,15 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
     invocation written as ``${HOME}/.grove/skills/<name>/...`` is
     matched against the skill template instead of falling through to
     the generic "run a command on your machine" row.
+
+    Sprint S0 — MCP tool calls (``mcp_{server}_{tool}``) are rendered by
+    :func:`_describe_mcp_kaizen` before the template walk, since the table
+    matches on exact tool name or arguments substring and cannot prefix-match
+    the dynamic ``mcp_*`` namespace.
     """
+    if tool_name.startswith("mcp_"):
+        return _describe_mcp_kaizen(tool_name)
+
     raw_args_str = str(dict(arguments)) if arguments else ""
     args_str = normalize_command(raw_args_str)
     # Hotfix 62.2 — substring template matching must not see heredoc/script
@@ -345,6 +392,10 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
     args_dict = dict(arguments) if isinstance(arguments, dict) else {}
     peek_cmd = peek(normalize_command(str(args_dict.get("command", ""))))
     peek_path = peek(str(args_dict.get("path", "")))
+    # S0 — execute_code carries its Python source in the ``code`` arg (no
+    # ``language`` param; the tool is Python-only). Peek-truncate it for the
+    # execute_code row, same graceful-degradation contract as command/path.
+    peek_code = peek(str(args_dict.get("code", "")))
     # Sprint 62 — skill_view of a quarantined skill carries the skill in the
     # ``name`` arg (no .grove/skills path to extract), so resolve it directly.
     if tool_name == "skill_view":
@@ -366,6 +417,8 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
             text = "run a command on your machine"
         elif "{peek_path}" in text and not peek_path:
             text = "write a file"
+        elif "{peek_code}" in text and not peek_code:
+            text = "run a Python script"
         # Per-template interpolation: ``{skill_name}`` pulls the directory
         # under .grove/skills/; ``{package}`` pulls the first non-flag
         # token after the install verb; ``{peek_cmd}`` / ``{peek_path}``
@@ -382,6 +435,7 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
             ),
             peek_cmd=peek_cmd,
             peek_path=peek_path,
+            peek_code=peek_code,
         )
     # Unreachable: the fallback row matches every tool. Keep an
     # explicit return for type-checker happiness.

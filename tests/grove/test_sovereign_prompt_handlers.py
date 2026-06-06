@@ -68,9 +68,16 @@ class TestKaizenTemplate:
         desc = describe_action_kaizen("terminal", {"command": "ls -la /tmp"})
         assert desc == "run this command: ls -la /tmp"
 
-    def test_execute_code_renders_specific(self):
+    def test_execute_code_names_python_and_peeks_code(self):
+        # S0 — execute_code is Python-only; the row names the language and
+        # Peek-shows the code body.
         desc = describe_action_kaizen("execute_code", {"code": "print(1)"})
-        assert desc == "run this code snippet"
+        assert desc == "run a Python script (print(1))"
+
+    def test_execute_code_without_code_degrades(self):
+        # S0 — graceful degradation when there is no code to show.
+        desc = describe_action_kaizen("execute_code", {})
+        assert desc == "run a Python script"
 
     def test_write_file_names_the_file(self):
         # Sprint 60 — write_file gets its own row; the path is Peek-shown.
@@ -86,9 +93,25 @@ class TestKaizenTemplate:
         desc = describe_action_kaizen("write_file", {})
         assert desc == "write a file"
 
-    def test_unknown_tool_falls_through_to_default(self):
+    def test_mcp_known_notion_search_renders_friendly_phrase(self):
+        # S0 — known (server, action) pairs get a concierge-register phrase.
+        desc = describe_action_kaizen("mcp_notion_search", {"query": "roadmap"})
+        assert desc == "search your Notion workspace"
+
+    def test_mcp_known_notion_fetch_renders_friendly_phrase(self):
+        desc = describe_action_kaizen("mcp_notion_fetch", {"id": "abc"})
+        assert desc == "fetch a page from Notion"
+
+    def test_mcp_unknown_tool_renders_server_and_action(self):
+        # S0 — unknown MCP tools fall back to a still-specific generic phrase
+        # naming the server and action (best-effort split on the first
+        # underscore), not the opaque "use mcp_notion_post".
         desc = describe_action_kaizen("mcp_notion_post", {"page": "x"})
-        assert desc == "use mcp_notion_post"
+        assert desc == "use the notion tool (post)"
+
+    def test_unknown_non_mcp_tool_falls_through_to_default(self):
+        desc = describe_action_kaizen("some_future_tool", {"x": 1})
+        assert desc == "use some_future_tool"
 
     def test_skill_view_quarantine_renders_as_skill_run(self):
         # Sprint 62 — loading a quarantined skill via skill_view is the "try it"
