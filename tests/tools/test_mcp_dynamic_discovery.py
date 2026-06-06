@@ -45,6 +45,49 @@ class TestRegisterServerTools:
         assert "mcp_my_srv_my_tool" in resolve_toolset("my_srv", mock_registry)
 
 
+class TestReRegisterCachedTools:
+    """register_mcp_servers must re-register an already-connected server's
+    cached tool SCHEMAS into a fresh (per-turn) ToolRegistry — not merely
+    return the names.
+
+    Regression: the ``if not new_servers: return _existing_tool_names()``
+    short-circuit returned tool names but left the caller's new registry
+    empty, so every gateway turn / API-server request after the first connect
+    got ZERO MCP tools (full_count stuck at the builtin count; Notion tools
+    absent at every tier).
+    """
+
+    def test_second_call_registers_schemas_into_fresh_registry(self):
+        import tools.mcp_tool as mcp
+        if not mcp._MCP_AVAILABLE:
+            pytest.skip("MCP SDK not available")
+
+        name = "reregsrv"
+        # Simulate an already-connected server: first connect populated
+        # _servers and bound the server to a now-discarded first-turn registry.
+        first_registry = ToolRegistry()
+        server = MCPServerTask(name, registry=first_registry)
+        server._tools = [_make_mcp_tool("ping", "ping tool")]
+        server.session = MagicMock()
+        server._config = {}
+        mcp._servers[name] = server
+        try:
+            # A new turn builds a FRESH registry and calls register_mcp_servers.
+            # The server is already in _servers, so this hits the not-new path.
+            fresh_registry = ToolRegistry()
+            returned = mcp.register_mcp_servers({name: {}}, registry=fresh_registry)
+
+            # Names are returned (pre-existing behavior) ...
+            assert "mcp_reregsrv_ping" in returned
+            # ... AND the schemas are actually present in the fresh per-turn
+            # registry (the fix — previously this was empty).
+            assert "mcp_reregsrv_ping" in fresh_registry.get_all_tool_names()
+            # The server is rebound to the live registry.
+            assert server._registry is fresh_registry
+        finally:
+            mcp._servers.pop(name, None)
+
+
 class TestRefreshTools:
     """Tests for MCPServerTask._refresh_tools nuke-and-repave cycle."""
 

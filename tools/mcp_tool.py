@@ -3458,6 +3458,37 @@ def register_mcp_servers(
                 _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
 
     if not new_servers:
+        # Every requested server is already connected (present in the
+        # module-level ``_servers`` cache). Its tool SCHEMAS, however, live
+        # only in the ToolRegistry bound at FIRST connect (``server._registry``,
+        # set by ``_connect_server``). Gateway turns (gateway/run.py builds a
+        # fresh Dispatcher per turn) and API-server requests each construct a
+        # NEW Dispatcher + ToolRegistry, so without this branch every turn
+        # after the first connect would get the tool NAMES back from
+        # ``_existing_tool_names()`` but ZERO schemas in its own registry — the
+        # agent would never see the MCP tools (observed: full_count stuck at the
+        # builtin count, Notion tools absent at every tier). Re-register the
+        # cached tools into the registry THIS caller owns, from the cached
+        # ``server._tools`` — no reconnect.
+        #
+        # Side effect: rebinding ``server._registry`` re-points the server's
+        # async ``list_changed`` refresh at the most recent caller's registry.
+        # Benign — refreshes are rare and every new turn re-registers here
+        # anyway, so a refresh landing in a since-discarded registry just gets
+        # rebuilt from the live ``_servers`` cache on the next turn. The
+        # rebind+register is held under ``_lock`` so concurrent turns can't
+        # interleave and land a server's tools in the wrong turn's registry.
+        for _name, _cfg in servers.items():
+            if not _parse_boolish(_cfg.get("enabled", True), default=True):
+                continue
+            with _lock:
+                _server = _servers.get(_name)
+                if _server is None:
+                    continue
+                _server._registry = registry
+                _server._registered_tool_names = _register_server_tools(
+                    _name, _server, _cfg
+                )
         return _existing_tool_names()
 
     # Start the background event loop for MCP connections
