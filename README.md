@@ -43,15 +43,15 @@ This is a working, exploratory fork under active development. The core governanc
 | Model independence | ✅ Shipped | Anthropic, OpenAI, Ollama, oMLX (Gemma 4, DeepSeek, etc.). Config swaps, not code changes. |
 | Tool registry | ✅ Shipped | Dispatcher-owned. Module-level singleton deleted. |
 | Skill authoring pipeline | ✅ Shipped | Operator-initiated ("build me a skill for X") and system-detected (pattern synthesis). Quarantine → try-once → promote, all in-conversation. `invoke_skill` governance hook. |
-| GCP hosting | ✅ Shipped | Compute Engine deployment scripts. Provision, setup, deploy, watchdog. IAP-only SSH. Tailscale mesh for dashboard access. |
-| Web dashboard | ✅ Shipped | Served via Tailscale private mesh. No public exposure. Config, keys, sessions, logs. |
+| GCP hosting | ✅ Shipped | Compute Engine deployment scripts. Provision, setup, deploy, watchdog. IAP-only SSH. Tailscale mesh for web access. |
+| Web chat (Open WebUI) | ✅ Shipped | Replaces the upstream dashboard. Polished chat on any device via Tailscale, routed through the governed API server (tier routing, zones, Kaizen logging all server-side). Known limitation: Yellow-zone actions auto-allow on the web surface — interactive approval stays on Telegram/CLI. |
 | Daily-driver tools | ✅ Shipped | `ddgs` (DuckDuckGo) web search — keyless default; Tavily / Firecrawl / SearXNG / Exa available via config. Turn-0 affordances preamble. Capability-aware butler (names latent tools and offers to enable them). |
 | Process lifecycle | ✅ Shipped | `hermes doctor --reap`/`--restart`. atexit MCP cleanup. macOS process-tree hardening. systemd on GCP. |
 | `--strict` mode | 🔲 Planned | Enterprise gate preserving the upstream Hermes PR-driven review model: skills queue silently as proposals, operator reviews the diff via `hermes andon diff`, approves explicitly via `hermes andon promote`. Full audit trail. The default daily-driver mode promotes in-conversation (the Autonomaton spec); `--strict` adds ceremony for environments that require it. CLI review surface exists; full enforcement gating is a future sprint. |
 
 **Test surface:** Governance suite: 1,284/1,284, green. Full upstream suite: ~24,700 collected, 24,290+ passing — the residual is documented environment-gated skips (discord.py 2.x mocks, macOS Keychain, Linux systemd, PTY) and upstream-divergence skips, plus a pre-existing behavioral backlog under continuing audit. Live CLI integration: T1–T31. Telegram gateway: 510 tests.
 
-**What's battle-tested vs. what's deployed.** The CLI and Telegram are the primary proof points — the governance surgery, Kaizen UX, skill authoring pipeline, and Flywheel have been tested end-to-end on both surfaces. The web dashboard is deployed and accessible (via Tailscale) but has known issues: the skills page reads an incorrect path, the models page is unaware of the Cognitive Router, and the UI still carries upstream branding. Other upstream gateway surfaces (Slack, Discord, WhatsApp, Matrix) exist in the codebase but have not been tested against the Grove governance layer. These surfaces are in line for exploration, testing, and bug fixes — contributions and bug reports are especially welcome here.
+**What's battle-tested vs. what's deployed.** The CLI and Telegram are the primary proof points — the governance surgery, Kaizen UX, skill authoring pipeline, and Flywheel have been tested end-to-end on both surfaces. The web surface is Open WebUI (replacing the upstream dashboard), connected through the governed API server; its known limitation is that Yellow-zone actions auto-allow on the web — interactive approval stays on Telegram/CLI. Other upstream gateway surfaces (Slack, Discord, WhatsApp, Matrix) exist in the codebase but have not been tested against the Grove governance layer. These surfaces are in line for exploration, testing, and bug fixes — contributions and bug reports are especially welcome here.
 
 ---
 
@@ -200,9 +200,12 @@ bash scripts/setup-vm.sh
 
 # Deploy code updates from your Mac
 bash scripts/deploy.sh
+
+# Install the web chat surface (run on the VM, after secrets land)
+bash scripts/setup_open_webui.sh
 ```
 
-The VM runs the Telegram gateway and web dashboard as systemd services with automatic restart, a watchdog cron, and persistent state on a dedicated disk. SSH is IAP-only — no public ports exposed. The dashboard is accessible via Tailscale private mesh.
+The VM runs the Telegram gateway and Open WebUI as systemd services with automatic restart, a watchdog cron, and persistent state on a dedicated disk. SSH is IAP-only — no public ports exposed. Open WebUI is the web chat surface (port 8080, reached via Tailscale); it replaces the upstream dashboard and routes through the governed API server, so governance runs server-side. Yellow-zone actions auto-allow on the web (interactive approval stays on Telegram/CLI).
 
 Swapping models on the VM is a config edit: change the tier binding in `~/.grove/routing.config.yaml`, restart the service. Gemma 4, DeepSeek, or any Ollama-served model slots in without code changes.
 
