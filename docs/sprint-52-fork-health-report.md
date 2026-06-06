@@ -151,3 +151,109 @@ Recommended ongoing discipline:
 4. **Treat the D-4 catalog (§ 4.2) as a backlog.** A future Sprint 5N can walk through it file-by-file, classifying each entry. Token budget: maybe a day of attention spread across 4-6 commits.
 
 The fork is healthy. The governance is intact. The visibility gap is closed. Sprint 52 is complete.
+
+---
+
+# Sprint 52.1 — Regression Re-Audit (post Sprints 53–63)
+
+**Sprint:** regression-reaudit-v1
+**Date:** 2026-06-06
+**Status:** COMPLETE — one new regression caught and fixed; failure surface cut ~65%
+
+Sprints 53–63 landed major architectural shifts (Dispatcher-resident plugin
+registration, Kaizen skill suggester, async T3 pattern synthesis, the web
+dashboard, codex transport work). This re-audit re-ran the full `tests/`
+tree, isolated what those sprints broke, fixed the regressions, and skipped
+the environment/divergence residue under explicit category discipline.
+
+## 1. Final Counts
+
+```
+Full pytest tests/ --timeout=120   (acp/acp_adapter auto-skipped: optional [acp] extra absent)
+
+                  Sprint 52      Sprint 52.1     Δ
+    PASSED          24,060         24,294        +234
+    FAILED             257             84        −173
+    SKIPPED            214            357        +143
+    XFAILED              —              2
+    ERRORS               0              0         (16 NEW video-gen errors fixed)
+
+    Grove governance suite:  1,153 → 1,284   (100% green, 0 collateral)
+    True NEW failures vs baseline: 0  (the 4 that differ pass in isolation —
+        pre-existing xdist order-flakes exposed by the shifted skip distribution)
+```
+
+**Wall clock:** 7m43s at xdist `-n auto`. **Andon:** no trigger fired — failures
+fell, governance stayed green, no fix weakened a guarantee.
+
+## 2. The One New Regression From Sprints 53–63
+
+`tests/tools/test_video_generation_tool_surface_matrix.py` — **16 setup
+errors**, single root cause. Sprint 53 made plugin discovery require a
+Dispatcher-owned `ToolRegistry`; the `matrix_env` fixture called bare
+`_ensure_plugins_discovered(force=True)` and hit a loud
+`RuntimeError` (good Jidoka). Fixed by supplying an ad-hoc registry to
+`discover_plugins(force=True, registry=…)` — the Sprint-53 signature. This
+was the **only** net-new break introduced by 53–63; everything else residual
+is Sprint-52 carryover.
+
+## 3. Disposition by Category
+
+| Cat | Disposition | Items | Mechanism |
+|---|---|---|---|
+| **A** | Fixed (tests/ only) | ~70 | video-gen fixture (16); codex realigned to the kept `#10473` explicit-api_mode refactor + terminal-tool lookup (17); web-provider Sprint-60 message refresh + ddgs-default handling (6); `model_tools` Sprint-53 registry API + unmasked 49 passing (3); `runtime_ctx_required` api_mode (4); `ctx_halving` partial-builder `_tools_for_turn` (4) |
+| **B** | None | 0 | No blanket/targeted upgrade warranted; discord.py 2.x → C, Py-3.13 → A/C |
+| **C** | Skipped — environment | 102 | discord.py 2.x mock-shape; macOS Keychain; Linux systemd/D-Bus; PTY websocket. Declarative ledger in `tests/_audit_skip_ledger.py` |
+| **D** | Skipped — upstream divergence | ~30 | `Platform.GOOGLE_CHAT` removed (6, ledger); codex `_execute_tool_calls` seam (Sprint 31 ToolExecutor extraction) + openrouter model-override (#10473) (7); `model_tools.registry.dispatch` seam (10) |
+| **E** | None found | 0 | No operator-cellar / `affordances.md` identity-file failures — the upstream suite mocks rather than asserting against live identity assets |
+
+**Mechanism note — declarative skip ledger.** Category C/D skip decisions live
+in `tests/_audit_skip_ledger.py` (one reviewable table, applied by a
+`pytest_collection_modifyitems` hook in `tests/conftest.py`, matched on exact
+parametrize-stripped node ID so it can never over-skip). Editing the table is
+the declarative way to change skip scope — no scattered decorators. This is the
+Grove declarative-governance principle applied to the test surface itself.
+
+**SPEC amendment.** `pytest-timeout 2.4.0` was installed (pure test
+infrastructure, zero runtime impact) to satisfy the SPEC's `--timeout=120`
+flag, which referenced a plugin absent from the dev env.
+
+## 4. SPEC framing corrections (logged at GATE-A)
+
+- The "24 `KeyError` failures in `test_run_agent_codex_responses.py`" were 24
+  failures of **13 AssertionError + 6 AttributeError + 3 KeyError** — and were
+  **Sprint 52 carryover** (§ 4.2 D-4), not discovered at the end of Sprint 63.
+- The 10 `acp`/`acp_adapter` collection errors are the optional `[acp]` extra
+  (`agent-client-protocol`) not installed — Sprint 52 excluded them via
+  `--ignore`. Now handled by a `find_spec`-guarded `collect_ignore` in
+  `tests/conftest.py` (no package installed).
+
+## 5. Remaining 84 Failures — Carried-Forward D-4 Behavioral Backlog
+
+**Every one of the 84 is a Sprint-52 carryover; none is a new 53–63
+regression.** They are the same "D-4 unaudited" behavioral backlog § 4.2
+flagged for "a future Sprint 5N" — tests asserting internal runtime behavior
+against Sprint 30–53-refactored seams (the `runtime_ctx` env/config indirection,
+the Sprint-39 session-DB lifecycle move to the Dispatcher, background-review
+restructuring, partial-`object.__new__` agent builders). They were **not**
+blanket-skipped: per the Andon / fail-loud discipline, hastily skipping ~80
+heterogeneous behavioral tests would risk masking a real regression. They
+remain visible, documented, and deferred.
+
+| Count | File | First-glance cause |
+|---|---|---|
+| 9 | `test_skill_improvements.py` | "skill not found" — skill-creation setup vs Sprint 60–62 skill governance |
+| 8 | `test_run_agent.py` | mixed: TestInit / system-prompt / memory-provider turn-start |
+| 6 | `test_file_mutation_verifier.py` | env-disable read through `runtime_ctx` snapshot, not `os.environ` |
+| 4 ea | `test_860_dedup` (removed `_ensure_db_session`), `test_openai_client_lifecycle`, `test_memory_sync_interrupted`, `test_commit_memory_session_context_engine`, `test_live_system_guard_self_test` | Sprint 39/30+ internal-seam moves |
+| 2–3 ea | `test_background_review*` (3+2+2), `test_tui_gateway_server` (3), `test_skill_size_limits` (3), `test_compression_boundary_hook` (2), `test_token_persistence_non_cli` (2), `test_dm_topics` (2, order-flake) | behavioral / runtime_ctx / order-dependent |
+| 1 ea | ~13 scattered (`test_prompt_builder`, `test_scheduler`, `test_kanban_cli`, `test_skin_engine`, `test_startup_plugin_gating`, `test_tools_config`, `test_tui_resume_flow`, `test_interrupt_propagation`, `test_memory_provider_init`, `test_compression_persistence`, `test_anthropic_error_handling`, `test_openclaw_migration`, `test_windows_native_support`, `test_termux_all_extra_compat`, `test_telegram_mention_boundaries`, `test_cli_approval_ui`) | one-offs, mixed |
+
+**Recommendation.** Spin a dedicated **Sprint 5N** (the deferred D-4 walk) to
+take this backlog file-by-file under the same tests/-only / skip-if-needs-
+production rule used here. Most are tractable Category-A construction/seam
+updates; a minority are Category-D internal-seam victims with coverage already
+in `tests/grove/`.
+
+The new regression is fixed, governance is intact, the failure surface is down
+65% (257 → 84), and the residual is honestly catalogued. Sprint 52.1 is complete.
