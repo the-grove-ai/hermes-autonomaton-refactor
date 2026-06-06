@@ -20,6 +20,7 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
+import importlib.util as _importlib_util
 import logging
 import os
 import re
@@ -28,6 +29,16 @@ import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+
+# ACP transport tests depend on the ``acp`` (agent-client-protocol) package,
+# an optional ``[acp]`` extra that is not installed in the default dev
+# environment. When it is absent, skip collection of the ACP test trees
+# rather than erroring on import — matches the Sprint 52 baseline scope
+# (``--ignore=tests/acp --ignore=tests/acp_adapter``). Install ``.[acp]`` to
+# bring these suites into coverage.
+collect_ignore_glob: list = []
+if _importlib_util.find_spec("acp") is None:
+    collect_ignore_glob += ["acp/*", "acp_adapter/*"]
 
 import pytest
 

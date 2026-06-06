@@ -290,6 +290,9 @@ class TestCheckWebApiKey:
         monkeypatch.delenv("SEARXNG_URL", raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        # ddgs is a keyless default backend (available when the ddgs package
+        # imports); disable it so "no credentials" truly means no backend.
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         assert web_tools.check_web_api_key() is False
 
 
@@ -317,7 +320,14 @@ class TestSearXNGOnlyExtractCrawlErrors:
         )
         result = json.loads(result_str)
         assert result["success"] is False
-        assert "search-only" in result["error"].lower() or "SearXNG" in result["error"]
+        # Sprint 60 generalized the message: searxng-as-active-backend now
+        # yields the generic "no available [crawl] backend" guidance.
+        _err = result["error"].lower()
+        assert (
+            "search-only" in _err
+            or "searxng" in _err
+            or "no available backend" in _err
+        )
 
     def test_web_extract_searxng_returns_clear_error(self, monkeypatch):
         import asyncio
@@ -334,4 +344,11 @@ class TestSearXNGOnlyExtractCrawlErrors:
         )
         result = json.loads(result_str)
         assert result["success"] is False
-        assert "search-only" in result["error"].lower() or "SearXNG" in result["error"]
+        # Sprint 60 generalized the message: searxng-as-active-backend now
+        # yields the generic "no [extract] provider configured" guidance.
+        _err = result["error"].lower()
+        assert (
+            "search-only" in _err
+            or "searxng" in _err
+            or "no web extract provider configured" in _err
+        )

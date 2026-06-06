@@ -305,9 +305,11 @@ class TestUnconfiguredErrorEnvelopeParity:
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
-        assert "Error searching web:" in result["error"]
-        assert "FIRECRAWL_API_KEY" in result["error"]
+        # Unconfigured search now returns a clean top-level error with
+        # actionable guidance (Sprint 60 message refresh) rather than an
+        # exception-wrapped "Error searching web:" prefix.
+        assert "No web search provider configured" in result["error"]
+        assert "hermes tools" in result["error"]
         # No per-result burying
         assert "results" not in result
 
@@ -329,6 +331,6 @@ class TestUnconfiguredErrorEnvelopeParity:
         result = json.loads(asyncio.run(web_tools.web_crawl_tool("https://example.com", use_llm_processing=False)))
         assert result.get("success") is False
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        assert "web_crawl requires Firecrawl" in result["error"]
+        assert "web_crawl has no available backend" in result["error"]
         # Crucially: no per-page burying
         assert "results" not in result
