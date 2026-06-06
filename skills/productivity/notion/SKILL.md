@@ -3,13 +3,13 @@ created_by: bundled
 zone: green
 tier: T0
 name: notion
-description: "Notion API + ntn CLI: pages, databases, markdown, Workers."
+description: "Notion via governed MCP tools (mcp_notion_API_*) — search, pages, databases, blocks, comments. Prefer these; ntn CLI/curl are a fallback for file uploads & Workers."
 version: 2.0.0
 author: community
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
-  env_vars: [NOTION_API_KEY]
+  env_vars: [NOTION_TOKEN]
 metadata:
   hermes:
     tags: [Notion, Productivity, Notes, Database, API, CLI, Workers]
@@ -18,10 +18,24 @@ metadata:
 
 # Notion
 
-Talk to Notion two ways. Same integration token works for both — pick by what's available.
+**Prefer the governed MCP tools.** Notion is wired into this Autonomaton as MCP
+tools named `mcp_notion_API_*`. Each one routes through the Dispatcher per action,
+so the operator sees and approves every individual call. Reach for these first —
+do **not** write a Python or curl script for anything they cover (that collapses
+per-action governance into one opaque approval, and is exactly what the Tool
+Selection rule in affordances forbids):
 
-◆ **`ntn` CLI** — Notion's official CLI. Shorter syntax, one-line file uploads, required for Workers. macOS + Linux only as of May 2026 (Windows support "coming soon"). **Default when installed.**
-◆ **HTTP + curl** — works everywhere including Windows. **Default fallback** when `ntn` isn't installed.
+- **Search the workspace** → `mcp_notion_API_post_search`
+- **Read a page** → `mcp_notion_API_retrieve_a_page` (metadata) · `mcp_notion_API_get_block_children` (content)
+- **Create / update a page** → `mcp_notion_API_post_page` · `mcp_notion_API_patch_page`
+- **Query a database** → `mcp_notion_API_query_data_source`
+- **Comments** → `mcp_notion_API_retrieve_a_comment` · `mcp_notion_API_create_a_comment`
+
+The token lives in `~/.grove/.env` as `NOTION_TOKEN` (the MCP server reads it).
+
+The `ntn` CLI and HTTP + curl paths below are a **fallback only**, for operations
+the MCP tools don't expose (large file uploads, Notion Workers). They read
+`$NOTION_API_KEY`; if you use them, first run `export NOTION_API_KEY="$NOTION_TOKEN"`.
 
 ## Setup
 
@@ -29,10 +43,12 @@ Talk to Notion two ways. Same integration token works for both — pick by what'
 
 1. Create an integration at https://notion.so/my-integrations
 2. Copy the API key (starts with `ntn_` or `secret_`)
-3. Store in `~/.hermes/.env`:
+3. Store it in `~/.grove/.env` as `NOTION_TOKEN` (the MCP server reads this var):
    ```
-   NOTION_API_KEY=ntn_your_key_here
+   NOTION_TOKEN=ntn_your_key_here
    ```
+   The fallback CLI/curl examples below reference `$NOTION_API_KEY`; if you use
+   them, run `export NOTION_API_KEY="$NOTION_TOKEN"` first.
 4. **Share target pages/databases with the integration** in Notion: page menu `...` → `Connect to` → your integration name. Without this, the API returns 404 for that page even though it exists.
 
 ### 2. Install `ntn` (preferred path on macOS / Linux)
@@ -432,6 +448,11 @@ Headings 5/6 collapse to H4. Multiple `>` lines render as separate quote blocks 
 
 ## Choosing the Right Path
 
+This table is for the **fallback** CLI/curl paths only. For anything the
+`mcp_notion_API_*` tools cover (search, pages, databases, blocks, comments),
+use the MCP tool — see the top of this skill. Drop to the rows below only for
+file uploads or Workers.
+
 | Task | mac / Linux | Windows |
 |---|---|---|
 | Read/write pages, search, query databases | `ntn api ...` | curl |
@@ -448,4 +469,4 @@ Headings 5/6 collapse to H4. Multiple `>` lines render as separate quote blocks 
 - Use `"is_inline": true` when creating data sources to embed them in a page.
 - Always pass `-s` to curl to suppress progress bars (cleaner agent output).
 - Pipe JSON through `jq` when reading: `... | jq '.results[0].properties'`.
-- Notion also ships an MCP server now (`Notion MCP`, ~91% more token-efficient on DB ops than the previous version) — wire it via Hermes' MCP support if you want streaming Notion access from inside a session, but the paths above are enough for most one-shot tasks.
+- The governed `mcp_notion_API_*` MCP tools are the PRIMARY path in this Autonomaton (see the top of this skill) — prefer them over the CLI/curl examples above. Those examples are a fallback for operations the MCP tools don't expose (large file uploads, Workers).
