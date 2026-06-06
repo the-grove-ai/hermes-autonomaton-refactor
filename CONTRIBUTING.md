@@ -8,6 +8,16 @@ commitments are non-negotiable; the implementation is open to refinement.
 Read GRV-001: The Autonomaton Pattern — https://the-grove.ai/standards/001
 The architectural commitments below derive from it.
 
+## The Foundation Loop
+
+This project develops through the Grove Foundation Loop: one sprint, one
+purpose, one set of writes, gated by discovery → design lock → execution.
+Sprint-structured PRs follow it. Read the full methodology — the three-
+artifact contract, the gate sequence, the Andon halt discipline, and
+copy-paste templates — before submitting:
+
+docs/contributing/FOUNDATION_LOOP.md
+
 ## Vocabulary
 
 The Grove canon governs operator-facing strings, documentation, and
