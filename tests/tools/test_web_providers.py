@@ -302,6 +302,9 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        # ddgs is a keyless default backend; disable it so the unconfigured
+        # path is exercised deterministically regardless of worker state.
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False, raising=False)
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
@@ -327,6 +330,9 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        # ddgs is a keyless default backend; disable it so the unconfigured
+        # path is exercised deterministically regardless of worker state.
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False, raising=False)
 
         result = json.loads(asyncio.run(web_tools.web_crawl_tool("https://example.com", use_llm_processing=False)))
         assert result.get("success") is False
