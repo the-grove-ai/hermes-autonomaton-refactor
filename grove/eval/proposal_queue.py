@@ -41,6 +41,7 @@ __all__ = [
     "PROPOSAL_TYPE_SKILL_PROMOTION",
     "PROPOSAL_TYPE_PATTERN_PROMOTION",
     "PROPOSAL_TYPE_PATTERN_DEMOTION",
+    "PROPOSAL_TYPE_SKILL_SYNTHESIS",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -87,6 +88,18 @@ PROPOSAL_TYPE_PATTERN_PROMOTION = "pattern_promotion"
 # CLI approve sets the pattern to demoted; reject re-activates it (see
 # grove/flywheel_cli.py).
 PROPOSAL_TYPE_PATTERN_DEMOTION = "pattern_demotion"
+# Sprint 63 — the Kaizen pattern synthesizer observed a recurring multi-tool
+# sequence across sessions and drafted a parametrized SKILL.md for it. Unlike
+# skill_promotion (an already-quarantined skill the operator ran), this stages
+# a Noff-disk draft for the operator to accept. Payload shape:
+#   {"skill_name": str, "skill_md": str (full SKILL.md text),
+#    "when_to_use": str, "goal": str (concierge one-liner for the quiet append),
+#    "tool_sequence": [str, ...]}
+# Acceptance: the quiet append surfaces it; on operator agreement the model
+# calls invoke_skill(skill_name); the Dispatcher materializes skill_md into
+# .andon/ (see Dispatcher._maybe_materialize_synthesized_skills) and the
+# normal quarantine gate + promotion prompt take over.
+PROPOSAL_TYPE_SKILL_SYNTHESIS = "skill_synthesis"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 

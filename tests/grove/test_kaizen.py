@@ -29,8 +29,10 @@ def test_package_exports_three_stub_classes() -> None:
     assert hasattr(kaizen, "IntentPatternDetector")
     assert hasattr(kaizen, "TierRatchet")
     assert hasattr(kaizen, "UsageRefiner")
+    # Sprint 63 added the synthesizer's PROPOSE-stage orchestrator.
     assert set(kaizen.__all__) == {
         "IntentPatternDetector", "TierRatchet", "UsageRefiner",
+        "run_synthesis_pass",
     }
 
 

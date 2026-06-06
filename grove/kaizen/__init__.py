@@ -30,9 +30,11 @@ https://the-grove.ai/standards/001 for the canonical contract.
 from grove.kaizen.detector import IntentPatternDetector
 from grove.kaizen.ratchet import TierRatchet
 from grove.kaizen.refiner import UsageRefiner
+from grove.kaizen.synthesizer import run_synthesis_pass
 
 __all__ = [
     "IntentPatternDetector",
     "TierRatchet",
     "UsageRefiner",
+    "run_synthesis_pass",
 ]

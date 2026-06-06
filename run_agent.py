@@ -4659,6 +4659,88 @@ class AIAgent:
                 actions.append(f"{label} updated")
         return actions
 
+    # Sprint 63 §3 — how often the off-turn skill-synthesis pass runs, in user
+    # turns. Bounds T3 spend; detection itself only synthesizes on a genuine
+    # recurring cross-session pattern, so most passes stage nothing.
+    _SKILL_SYNTHESIS_TURN_INTERVAL = 10
+
+    def _append_pending_skill_proposal(self, final_response: str) -> str:
+        """Append a one-line drafted-skill offer if one is pending and unseen.
+
+        Sprint 63 §3 quiet append. Reads the Flywheel queue for a
+        ``skill_synthesis`` proposal not yet surfaced this session and appends
+        a concierge-register offer to the response at this natural break. At
+        most one proposal per response, never repeated within a session.
+        Best-effort: a queue read failure leaves the response untouched.
+
+        Acceptance is conversational: if the operator agrees, the model calls
+        ``invoke_skill(name)``; the Dispatcher materializes the staged SKILL.md
+        into the quarantine and the normal Yellow gate + promotion prompt run.
+        """
+        if not final_response:
+            return final_response
+        try:
+            from grove.eval.proposal_queue import (
+                PROPOSAL_TYPE_SKILL_SYNTHESIS,
+                read_all,
+            )
+            surfaced = getattr(self, "_surfaced_synthesis_ids", None)
+            if surfaced is None:
+                surfaced = set()
+                self._surfaced_synthesis_ids = surfaced
+            pending = [
+                p for p in read_all()
+                if p.type == PROPOSAL_TYPE_SKILL_SYNTHESIS
+                and p.proposal_id not in surfaced
+            ]
+            if not pending:
+                return final_response
+            proposal = pending[0]
+            surfaced.add(proposal.proposal_id)
+            goal = (proposal.payload or {}).get("goal") or "do this"
+            offer = (
+                f"I noticed you regularly {goal}. I drafted a skill to speed "
+                f"this up — want to try it?"
+            )
+            return final_response.rstrip() + "\n\n" + offer
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[skill-synthesis] quiet append skipped: %r", exc)
+            return final_response
+
+    def _spawn_skill_synthesis_detection(self) -> None:
+        """Run the Kaizen skill-synthesis pass in a background daemon thread.
+
+        Sprint 63 §3 — detection + T3 synthesis + validation must never block
+        T0 routing or the conversation cycle, so it runs off-turn after the
+        response is delivered, mirroring ``_spawn_background_review``'s
+        isolation. Best-effort: any failure is contained to the worker thread.
+        """
+        import threading
+
+        _parent_disp = getattr(self, "_dispatcher_singleton", None)
+        session_db = _parent_disp.session if _parent_disp is not None else None
+
+        def _run():
+            import contextlib
+            try:
+                with open(os.devnull, "w", encoding="utf-8") as _devnull, \
+                     contextlib.redirect_stdout(_devnull), \
+                     contextlib.redirect_stderr(_devnull):
+                    from grove.kaizen.synthesizer import run_synthesis_pass
+                    staged = run_synthesis_pass(session_db=session_db)
+                    if staged:
+                        logger.info(
+                            "[skill-synthesis] staged %d proposal(s).", staged,
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "[skill-synthesis] detection pass failed: %r", exc,
+                )
+
+        threading.Thread(
+            target=_run, daemon=True, name="bg-skill-synthesis",
+        ).start()
+
     def _spawn_background_review(
         self,
         messages_snapshot: List[Dict],
@@ -16039,6 +16121,12 @@ class AIAgent:
             except Exception as exc:
                 logger.warning("transform_llm_output hook failed: %s", exc)
 
+        # Sprint 63 §3 — quiet append: surface a pending drafted-skill offer at
+        # this natural break. Placed after transform_llm_output so a plugin
+        # transform cannot clobber the offer, and before result assembly.
+        if final_response and not interrupted:
+            final_response = self._append_pending_skill_proposal(final_response)
+
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.
         # Plugins can use this to persist conversation data (e.g. sync
@@ -16148,6 +16236,17 @@ class AIAgent:
                 )
             except Exception:
                 pass  # Background review is best-effort
+
+        # Sprint 63 §3 — off-turn Kaizen skill-synthesis detection. Gated to an
+        # interval so it bounds T3 spend; daemonized so it never blocks T0.
+        if final_response and not interrupted:
+            try:
+                _interval = self._SKILL_SYNTHESIS_TURN_INTERVAL
+                _turns = getattr(self, "_user_turn_count", 0) or 0
+                if _interval > 0 and _turns > 0 and _turns % _interval == 0:
+                    self._spawn_skill_synthesis_detection()
+            except Exception:
+                pass  # Skill-synthesis detection is best-effort
 
         # Note: Memory provider on_session_end() + shutdown_all() are NOT
         # called here — run_conversation() is called once per user message in

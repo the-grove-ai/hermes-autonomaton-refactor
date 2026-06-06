@@ -3397,6 +3397,13 @@ class Dispatcher:
         from grove import dispatch as _grove_dispatch
         from grove.zones import ZoneResult
 
+        # Sprint 63 — acceptance flow: a freshly-accepted synthesized skill is
+        # not on disk yet, so an invoke_skill targeting it would classify Green
+        # and skip governance. Materialize any pending synthesized skill named
+        # by an invoke_skill intent into the quarantine BEFORE classifying, so
+        # the .andon Yellow gate fires. A synthesized skill never auto-executes.
+        self._maybe_materialize_synthesized_skills(intents)
+
         zone_results: List[ZoneResult] = []
         for intent in intents:
             zone_result = self._classify_one_intent(intent, _grove_dispatch)
@@ -3463,6 +3470,29 @@ class Dispatcher:
                             f"(.grove/skills/.andon/{view_name.strip()})"
                         ),
                         source="skill_view_quarantine",
+                    )
+        # Sprint 63 — invoke_skill is the dedicated skill-execution intent.
+        # An invoke_skill targeting a quarantined (.andon) skill gets the same
+        # Yellow gate as skill_view: the Sovereign Prompt fires before the
+        # handler loads the procedure, and PostExecutionKaizenYield fires after
+        # FinalResponse. Promoted skills are not under .andon, so they fall
+        # through to the generic path and classify Green. A freshly-accepted
+        # synthesized skill is materialized into .andon by
+        # ``_maybe_materialize_synthesized_skills`` BEFORE this runs, so
+        # ``proposal_path().exists()`` is authoritative here.
+        if tool_name == "invoke_skill" and isinstance(args, dict):
+            inv_name = args.get("name")
+            if isinstance(inv_name, str) and inv_name.strip():
+                from grove.skills import proposal_path
+                if proposal_path(inv_name.strip()).exists():
+                    from grove.zones import ZoneResult
+                    return ZoneResult(
+                        zone="yellow",
+                        matched_rule=(
+                            "skill.quarantine.andon "
+                            f"(.grove/skills/.andon/{inv_name.strip()})"
+                        ),
+                        source="invoke_skill_quarantine",
                     )
         # Generic path: the action string IS the bare tool_name, matching
         # the convention in zones.schema.yaml::tool_zones (entries like
@@ -3685,6 +3715,74 @@ class Dispatcher:
                 "%r", exc,
             )
 
+    # ── Sprint 63 — synthesized-skill acceptance materialization ─────────
+
+    def _maybe_materialize_synthesized_skills(self, intents: List[Any]) -> None:
+        """Drop accepted synthesized skills into the quarantine before classify.
+
+        Sprint 63 §3 acceptance flow: when the operator accepts a drafted-skill
+        proposal, the model calls ``invoke_skill(name)`` but the SKILL.md only
+        exists as a staged ``skill_synthesis`` proposal in ``proposals.jsonl``,
+        not on disk. Left alone, the Dispatcher would classify that call Green
+        (no ``.andon`` dir) and skip the Yellow gate. This writes the staged
+        SKILL.md into ``~/.grove/skills/.andon/<name>/`` so the existing
+        quarantine gate fires — the operator approves the run, then the
+        promotion prompt. Idempotent: a skill already on disk (active or
+        quarantined), or no matching pending proposal, is a no-op.
+
+        On failure the skill is simply NOT placed on disk; the ``invoke_skill``
+        handler then returns a loud "not found" rather than running anything
+        ungoverned. There is no silent Green-path execution of a synthesized
+        skill — the failure surfaces as a failed invocation.
+        """
+        for intent in intents or ():
+            if getattr(intent, "tool_name", None) != "invoke_skill":
+                continue
+            args = getattr(intent, "arguments", None)
+            if not isinstance(args, dict):
+                continue
+            name = args.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            skill_name = name.strip()
+            try:
+                from grove.skills import (
+                    active_path,
+                    proposal_path,
+                    write_proposal,
+                )
+                if (
+                    active_path(skill_name).exists()
+                    or proposal_path(skill_name).exists()
+                ):
+                    continue
+                from grove.eval.proposal_queue import (
+                    PROPOSAL_TYPE_SKILL_SYNTHESIS,
+                    read_all,
+                )
+                pending = [
+                    p for p in read_all()
+                    if p.type == PROPOSAL_TYPE_SKILL_SYNTHESIS
+                    and (p.payload or {}).get("skill_name") == skill_name
+                ]
+                if not pending:
+                    continue
+                skill_md = (pending[-1].payload or {}).get("skill_md")
+                if not isinstance(skill_md, str) or not skill_md.strip():
+                    continue
+                write_proposal(skill_name, skill_md)
+                logger.info(
+                    "[grove.dispatcher] Materialized accepted synthesized "
+                    "skill %r into quarantine for governed invoke_skill.",
+                    skill_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[grove.dispatcher] synthesized-skill materialization "
+                    "failed for %r (non-fatal; invoke_skill will report "
+                    "not-found): %r", skill_name, exc,
+                )
+
     # ── Sprint 53.2 — post-execution skill promotion ────────────────────
 
     def _maybe_flag_quarantine_execution(
@@ -3727,6 +3825,17 @@ class Dispatcher:
             # Sprint 62 — procedural skills have no script; the operator's
             # try-it gate is loading the quarantined skill via skill_view.
             # ``name`` carries the skill; the path is its quarantine dir.
+            name = arguments.get("name")
+            if not isinstance(name, str) or not name.strip():
+                return
+            from grove.skills import proposal_path
+            skill_name = name.strip()
+            skill_path = str(proposal_path(skill_name))
+        elif tool_name == "invoke_skill":
+            # Sprint 63 — invoke_skill is the governed execution entrypoint.
+            # Same quarantine resolution as skill_view: ``name`` → its .andon
+            # dir. This is what makes PostExecutionKaizenYield a mechanical
+            # guarantee for invoked quarantined skills, not a model habit.
             name = arguments.get("name")
             if not isinstance(name, str) or not name.strip():
                 return
