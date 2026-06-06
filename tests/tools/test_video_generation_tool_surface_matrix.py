@@ -81,9 +81,14 @@ def matrix_env(tmp_path, monkeypatch):
     from plugins.video_gen import fal as fal_plugin
     fal_plugin._fal_client = None
 
-    # Force discovery
-    from hermes_cli.plugins import _ensure_plugins_discovered
-    _ensure_plugins_discovered(force=True)
+    # Force discovery. Sprint 53 made plugin discovery require a
+    # Dispatcher-owned ToolRegistry; tool registration for the actual
+    # invocation happens per-call in _invoke_tool against its own
+    # registry, so here we only need the plugin modules discovered and
+    # supply an ad-hoc registry to satisfy the registry requirement.
+    from tools.registry import ToolRegistry
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins(force=True, registry=ToolRegistry())
 
     return tmp_path, fal_calls, xai_calls
 
