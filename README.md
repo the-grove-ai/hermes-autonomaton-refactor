@@ -6,11 +6,11 @@ A fork of [NousResearch's Hermes Agent](https://github.com/NousResearch/hermes-a
 
 The EU AI Act's high-risk obligations — human oversight, record-keeping, transparency, robustness — require architectural answers, not bolt-on compliance layers. This fork demonstrates that those answers can be applied to an existing, capable agent framework without replacing it. We took NousResearch's Hermes Agent, moved state, memory, and tool execution out of the agent, and handed them to a deterministic dispatcher. The language model still does what it does well — reasoning, judgment, creativity. It just no longer owns the run.
 
-The result is a governed agent that satisfies the structural requirements emerging from the EU AI Act and the broader regulatory landscape, while preserving the full capability of the upstream framework. We continue developing and testing this demo release to bring forth the full Autonomaton benefits — model independence (already supporting Gemma 4 via MLX, Ollama, and any OpenAI-compatible provider alongside Anthropic), self-improving routing, and operator-declared governance that domain experts can read and revise without touching code.
+The result is a governed agent that satisfies the structural requirements emerging from the EU AI Act and the broader regulatory landscape, while preserving the full capability of the upstream framework. The fork runs on GCP Compute Engine for 24/7 availability, supports model swaps via configuration (Anthropic, Gemma 4 via MLX/Ollama, DeepSeek, any OpenAI-compatible provider), and gets smarter with use — observing patterns, proposing skills, and ratcheting confirmed work to cheaper tiers, all under operator authority.
 
 > [!WARNING]
 > **Pre-Alpha / Active Research Implementation**
-> This fork is heavily under active development. The core agent "god object" has been successfully replaced with a deterministic dispatcher, backed by a green suite of 24,000+ tests. However, this is a **pre-alpha** reference implementation. Expect bugs, breaking changes, and shifting APIs as the architecture matures toward production. This is a proof-of-concept for the Autonomaton Pattern, not yet a production-ready framework.
+> This fork is heavily under active development. The core agent "god object" has been successfully replaced with a deterministic dispatcher, backed by a green suite of 24,000+ tests. However, this is a **pre-alpha** reference implementation. Expect bugs, breaking changes, and shifting APIs as the architecture matures toward production. This is a proof-of-concept for the Autonomaton Pattern, not yet a production-ready framework. Bug reports and suggestions are welcome — see Contributing below.
 
 ---
 
@@ -34,20 +34,24 @@ This is a working, exploratory fork under active development. The core governanc
 | Cognitive Router | ✅ Shipped | T0–T3 tier routing. 15-intent taxonomy. T1 default floor. |
 | T0 Pattern Cache | ✅ Shipped | Scanner, compiler, promotion, deterministic execution path. Correction-driven auto-demotion. A confirmed pattern resolves with no model call. |
 | Zone-based sovereignty | ✅ Shipped | Green/Yellow/Red zones. Hierarchical rules. Regex fail-hard. |
-| Kaizen four-choice UX | ✅ Shipped | Plain-language operator prompts. Session caching. Zone promotion via proposal queue. |
-| Telegram governance | ✅ Shipped | Inline keyboard buttons for the Kaizen four-choice prompt and post-execution promotion. Tappable on mobile. |
-| Flywheel proposal queue | ✅ Shipped | CLI: `autonomaton flywheel list/show/approve/reject`. |
+| Kaizen concierge UX | ✅ Shipped | First-person, active-voice governance prompts. "I'd like to run the weather skill — your call before I continue." Butler register, not security guard. |
+| Telegram governance | ✅ Shipped | Inline keyboard buttons for the four-choice prompt and post-execution promotion. Tappable on mobile. |
+| Flywheel proposal queue | ✅ Shipped | CLI: `autonomaton flywheel list/show/approve/reject`. Async pattern synthesis stages proposals for conversational surfacing. |
 | Declarative prompt composition | ✅ Shipped | 18 sections as declarative providers. Sub-50ms compose. |
 | Feed-first context loop | ✅ Shipped | Intent store queries. Contextual preamble. |
 | Agent purity | ✅ Shipped | Four axes substrate-free: construction, session, memory, classification. |
-| Model independence | ✅ Shipped | Anthropic, OpenAI, Ollama, oMLX (Gemma 4, etc.). Config swaps, not code changes. |
+| Model independence | ✅ Shipped | Anthropic, OpenAI, Ollama, oMLX (Gemma 4, DeepSeek, etc.). Config swaps, not code changes. |
 | Tool registry | ✅ Shipped | Dispatcher-owned. Module-level singleton deleted. |
-| Skill authoring pipeline | ✅ Shipped | Quarantine → sandbox → promote via `.andon/`. Post-execution Kaizen prompt. Try before you buy. |
-| `--strict` mode for enterprise | ✅ Shipped | Promotion gated on the diff, a logged successful execution, and operator confirmation. |
-| Daily-driver tools | ✅ Shipped | `ddgs` web search (no API key). Turn-0 affordances preamble carrying real skill invocation commands. |
-| Process lifecycle | ✅ Shipped | `hermes doctor --reap`/`--restart`. atexit MCP cleanup. macOS process-tree hardening. |
+| Skill authoring pipeline | ✅ Shipped | Operator-initiated ("build me a skill for X") and system-detected (pattern synthesis). Quarantine → try-once → promote, all in-conversation. `invoke_skill` governance hook. |
+| GCP hosting | ✅ Shipped | Compute Engine deployment scripts. Provision, setup, deploy, watchdog. IAP-only SSH. Tailscale mesh for dashboard access. |
+| Web dashboard | ✅ Shipped | Served via Tailscale private mesh. No public exposure. Config, keys, sessions, logs. |
+| Daily-driver tools | ✅ Shipped | `ddgs` (DuckDuckGo) web search — keyless default; Tavily / Firecrawl / SearXNG / Exa available via config. Turn-0 affordances preamble. Capability-aware butler (names latent tools and offers to enable them). |
+| Process lifecycle | ✅ Shipped | `hermes doctor --reap`/`--restart`. atexit MCP cleanup. macOS process-tree hardening. systemd on GCP. |
+| `--strict` mode | 🔲 Planned | Enterprise gate preserving the upstream Hermes PR-driven review model: skills queue silently as proposals, operator reviews the diff via `hermes andon diff`, approves explicitly via `hermes andon promote`. Full audit trail. The default daily-driver mode promotes in-conversation (the Autonomaton spec); `--strict` adds ceremony for environments that require it. CLI review surface exists; full enforcement gating is a future sprint. |
 
-**Test surface:** Governance suite: 1,264/1,264. Live CLI integration: T1-T31. Telegram gateway: 510 tests.
+**Test surface:** Governance suite: 1,284/1,284, green. Full upstream suite: ~24,700 collected, 24,290+ passing — the residual is documented environment-gated skips (discord.py 2.x mocks, macOS Keychain, Linux systemd, PTY) and upstream-divergence skips, plus a pre-existing behavioral backlog under continuing audit. Live CLI integration: T1–T31. Telegram gateway: 510 tests.
+
+**What's battle-tested vs. what's deployed.** The CLI and Telegram are the primary proof points — the governance surgery, Kaizen UX, skill authoring pipeline, and Flywheel have been tested end-to-end on both surfaces. The web dashboard is deployed and accessible (via Tailscale) but has known issues: the skills page reads an incorrect path, the models page is unaware of the Cognitive Router, and the UI still carries upstream branding. Other upstream gateway surfaces (Slack, Discord, WhatsApp, Matrix) exist in the codebase but have not been tested against the Grove governance layer. These surfaces are in line for exploration, testing, and bug fixes — contributions and bug reports are especially welcome here.
 
 ---
 
@@ -103,6 +107,20 @@ The agent yields intents. The dispatcher decides what happens. The operator hold
 
 ---
 
+## Self-Authoring Skills
+
+The Autonomaton builds its own tools — under operator authority. Two paths in, one pipeline out.
+
+**Operator-initiated:** Say "build me a skill that researches influencers and logs them to Notion." The system collaborates on the design, scaffolds the SKILL.md into quarantine, runs a governed trial, and offers in-conversation promotion. One click to try, one click to keep.
+
+**System-detected:** The Flywheel observes recurring tool sequences in the intent store. When a pattern appears consistently — same tools, same order, across multiple sessions — it synthesizes a SKILL.md proposal via T3 and surfaces it conversationally: "I noticed you regularly check GitHub repos before meetings. I drafted a skill to speed this up — want to try it?"
+
+Both paths end at the same gate: quarantine → governed trial run (Yellow zone) → post-execution promotion prompt (Promote / Not yet / Never). The system drafts. The operator commits. The architecture guarantees this — it is not a policy the model can ignore.
+
+Every skill the system compiles ratchets work downward: what started as a multi-tool frontier interaction becomes a reusable, governed, locally-executable capability. The cost curve bends with use.
+
+---
+
 ## EU AI Act Alignment
 
 The EU AI Act's high-risk obligations map directly onto the dispatcher architecture:
@@ -125,20 +143,28 @@ The high-risk obligations timeline was deferred to December 2027 (via the Digita
 When the agent wants to perform a protected action, the operator sees this:
 
 ```
-The agent wants to run a skill (google-workspace).
-This requires a decision before it can continue.
+I'd like to run the weather skill — your call before I go ahead.
 
-[1] Allow this once
-[2] Allow for this session
-[3] Always allow this — I'll save the preference
-[4] Don't allow this
+  [1] Just this once
+  [2] For the rest of this session
+  [3] Always — I'll remember it
+  [4] Not this time
 ```
 
-No zone names. No regex patterns. No jargon. The operator decides; the system remembers.
+First person, active voice. The butler names the action, explains why governance is intervening, and offers clear options. No zone names, no regex patterns, no jargon.
 
-"Always allow" queues a promotion proposal. The operator approves it via `autonomaton flywheel approve` when ready. The governance is structural. The UX is invisible.
+On Telegram, the same prompt renders as inline keyboard buttons — 🟢 Always / 🟡 This session / 🟠 Just once / 🔴 Not now — and the post-execution promotion as 🟢 Promote it / 🟡 Not yet / 🔴 Never. Same governance, same dispositions, one tap on mobile.
 
-On Telegram, the same prompt renders as inline keyboard buttons — 🟢 Always allow / 🟡 Allow session / 🟠 Allow once / 🔴 Don't allow — and the post-execution promotion as 🟢 Promote / 🟡 Not yet / 🔴 Never. Same governance, same four dispositions, one tap on mobile. No typing, no jargon.
+When the agent hits a hard boundary:
+
+```
+The command `sudo rm -rf /var/log` needs privileges I deliberately
+don't hold: sudo / su / doas stay with you, never me. Run it yourself
+in a terminal that has your credentials, then paste back anything I
+need to keep going.
+```
+
+Governance that recedes into competence. Invisible on normal turns, present when it matters, always offering options.
 
 ---
 
@@ -155,9 +181,32 @@ The Cognitive Router sends each request to the cheapest tier that can handle it:
 
 T1 is the default floor. Most daily-driver queries — memory, retrieval, conversation, factual lookup, translation, summarization — run here at ~$0.002 per interaction. T2 and T3 are escalation tiers for knowledge work and architectural reasoning.
 
-All bindings are config swaps in `routing.config.yaml`. Local models (Gemma 4 via MLX, Ollama, any OpenAI-compatible endpoint) work at any tier. Model independence is structural, not cosmetic — swap the binding, keep the governance.
+All bindings are config swaps in `routing.config.yaml`. Local models (Gemma 4 via MLX, Ollama, DeepSeek, any OpenAI-compatible endpoint) work at any tier. Model independence is structural, not cosmetic — swap the binding, keep the governance.
 
 As the system learns, confirmed patterns ratchet downward: from frontier API calls, to smaller local models, to deterministic rules that need no inference at all. Inference cost falls as the system learns. Autonomy compounds at the node.
+
+---
+
+## GCP Deployment
+
+The fork ships with production deployment scripts for Google Cloud Platform:
+
+```bash
+# Provision the VM (e2-small, Ubuntu 24.04, IAP-only SSH)
+bash scripts/provision-vm.sh
+
+# SSH in and set up the environment
+bash scripts/setup-vm.sh
+
+# Deploy code updates from your Mac
+bash scripts/deploy.sh
+```
+
+The VM runs the Telegram gateway and web dashboard as systemd services with automatic restart, a watchdog cron, and persistent state on a dedicated disk. SSH is IAP-only — no public ports exposed. The dashboard is accessible via Tailscale private mesh.
+
+Swapping models on the VM is a config edit: change the tier binding in `~/.grove/routing.config.yaml`, restart the service. Gemma 4, DeepSeek, or any Ollama-served model slots in without code changes.
+
+Cost: ~$15/month for the base VM. The Reverse Tax bends this further as patterns compile to T0.
 
 ---
 
@@ -184,13 +233,9 @@ cp .env.example .env
 hermes chat
 ```
 
-On first invocation, `~/.grove/` is seeded automatically with operator
-copies of `routing.config.yaml` (tier bindings) and `zones.schema.yaml`
-(sovereignty rules). Edit those files to retune routing or governance —
-no restart required for most changes.
+On first invocation, `~/.grove/` is seeded automatically with operator copies of `routing.config.yaml` (tier bindings) and `zones.schema.yaml` (sovereignty rules). Edit those files to retune routing or governance — no restart required for most changes.
 
-The CLI binary is `hermes` (upstream compat) with `autonomaton` as an
-alias. Both work.
+The CLI binary is `hermes` (upstream compat) with `autonomaton` as an alias. Both work.
 
 ---
 
@@ -204,8 +249,7 @@ This is a derivative work. [NousResearch](https://nousresearch.com) built the He
 
 This fork implements the [Autonomaton Pattern (GRV-001)](https://the-grove.ai/standards/001), published under CC BY 4.0 at [the-grove.ai](https://the-grove.ai). The standard describes the architecture in the abstract. This fork makes it executable.
 
-<!-- TODO: publish essay and verify URL -->
-For the full argument behind the design, read [The Hermes Autonomaton Refactor](https://the-grove.ai/hermes-autonomaton).
+For the full argument behind the design, read [The Autonomaton Pattern: A Brief for Technical Review](https://the-grove.ai/hermes-autonomaton).
 
 ---
 
@@ -219,6 +263,8 @@ For the full argument behind the design, read [The Hermes Autonomaton Refactor](
 ## Contributing
 
 This fork follows the Foundation Loop sprint methodology. One sprint, one purpose, one set of writes. Contributions that align with GRV-001 and the sprint discipline are welcome.
+
+Found a bug? Have a suggestion? Open an issue on GitHub or reach out directly. The architecture is under active development — feedback from engineers who've built similar systems is especially valuable.
 
 For questions, architecture discussion, or collaboration: questions@the-grove.ai
 
