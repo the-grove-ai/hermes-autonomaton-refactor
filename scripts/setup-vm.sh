@@ -96,14 +96,16 @@ else
   as_hermes "git clone '${REPO_URL}' '${REPO_DIR}'"
 fi
 
-# ── 7. Python venv + editable install (with the `web` extra) ────────────
-# The `web` extra (fastapi + uvicorn[standard]) is required by the `hermes
-# dashboard` HTTP server — a declared package extra in pyproject, NOT a separate
-# skill dep, so it installs here with the package. (Sprint 61 deployment
-# finding: the dashboard crash-loops on a missing fastapi import without it.)
+# ── 7. Python venv + editable install (with the `web` + `mcp` extras) ───
+# `web` (fastapi + uvicorn[standard]) backs the HTTP surfaces. `mcp`
+# (the MCP Python SDK) is REQUIRED for stdio MCP servers (Notion, etc.) to
+# connect — without it tools/mcp_tool.py catches the ImportError, sets
+# _MCP_AVAILABLE=False, and silently drops every MCP tool from the agent's
+# toolset (Sprint 64 finding: Notion configured but non-functional on the VM).
+# Both are declared package extras in pyproject, so they install with the package.
 say "Creating venv and installing the package (editable, with the web extra)"
 as_hermes "cd '${REPO_DIR}' && [[ -d .venv ]] || python3.13 -m venv .venv"
-as_hermes "cd '${REPO_DIR}' && .venv/bin/pip install --upgrade pip >/dev/null && .venv/bin/pip install -e '.[web]'"
+as_hermes "cd '${REPO_DIR}' && .venv/bin/pip install --upgrade pip >/dev/null && .venv/bin/pip install -e '.[web,mcp]'"
 
 # NOTE (GATE-A decision B): no local `npm install` — MCP servers are
 # npx-fetched (see step 4). Node/npx presence is all the gateway needs.
