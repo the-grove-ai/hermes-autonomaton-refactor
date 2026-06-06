@@ -53,17 +53,21 @@ class TestHermesApiServerToolset:
         for tool in ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"]:
             assert tool in tools, f"Missing HA tool: {tool}"
 
-    def test_toolset_excludes_clarify(self):
-        tools = resolve_toolset("hermes-api-server", _REGISTRY)
-        assert "clarify" not in tools
+    def test_toolset_parity_with_messaging_platforms(self):
+        """Sprint 64 correction: the API server default toolset is the same
+        core set as the messaging platforms — no platform-specific curation.
 
-    def test_toolset_excludes_send_message(self):
-        tools = resolve_toolset("hermes-api-server", _REGISTRY)
-        assert "send_message" not in tools
-
-    def test_toolset_excludes_text_to_speech(self):
-        tools = resolve_toolset("hermes-api-server", _REGISTRY)
-        assert "text_to_speech" not in tools
+        The prior curated subset excluded clarify / send_message /
+        text_to_speech; that was a wrong default that diverged the web
+        surface's capability set from every other platform. Surface-specific
+        tools self-gate at runtime via their check_fn instead of being
+        stripped from the default here.
+        """
+        api = resolve_toolset("hermes-api-server", _REGISTRY)
+        telegram = resolve_toolset("hermes-telegram", _REGISTRY)
+        assert api == telegram, "API server toolset must match messaging-platform parity"
+        for tool in ["clarify", "send_message", "text_to_speech"]:
+            assert tool in api, f"Parity tool missing from API server default: {tool}"
 
 
 class TestApiServerPlatformConfig:
@@ -132,4 +136,10 @@ class TestApiServerAdapterToolset:
             mock_agent_cls.assert_called_once()
             call_kwargs = mock_agent_cls.call_args
             toolsets = call_kwargs.kwargs.get("enabled_toolsets")
-            assert sorted(toolsets) == ["terminal", "web"]
+            # The explicit override is honored (web + terminal), plus the
+            # non-configurable platform-default toolsets that _get_platform_tools
+            # recovers in BOTH branches (escalate, kanban) so saving a partial
+            # list never silently drops them. This now matches Telegram exactly
+            # — the same override on any messaging platform yields the same set
+            # (Sprint 64 toolset parity correction).
+            assert sorted(toolsets) == ["escalate", "kanban", "terminal", "web"]
