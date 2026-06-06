@@ -17,7 +17,7 @@ set -euo pipefail
 #
 # Optional environment overrides:
 #   OPEN_WEBUI_PORT=8080
-#   OPEN_WEBUI_HOST=127.0.0.1
+#   OPEN_WEBUI_HOST=0.0.0.0   # default: 0.0.0.0 on the VM, 127.0.0.1 on the Mac
 #   OPEN_WEBUI_NAME='Johnny Hermes'
 #   OPEN_WEBUI_ENABLE_SIGNUP=true
 #   OPEN_WEBUI_ENABLE_SERVICE=auto   # auto|true|false
@@ -28,7 +28,10 @@ set -euo pipefail
 #   GROVE_API_MODEL_NAME='Hermes Agent'
 
 OPEN_WEBUI_PORT="${OPEN_WEBUI_PORT:-8080}"
-OPEN_WEBUI_HOST="${OPEN_WEBUI_HOST:-127.0.0.1}"
+# Bind host is resolved in main() once VM vs Mac is known: 0.0.0.0 on the
+# managed VM (tailnet-reachable) and 127.0.0.1 on the Mac/dev box. Left empty
+# here so an explicit operator override still wins.
+OPEN_WEBUI_HOST="${OPEN_WEBUI_HOST:-}"
 OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-Hermes Agent WebUI}"
 OPEN_WEBUI_ENABLE_SIGNUP="${OPEN_WEBUI_ENABLE_SIGNUP:-true}"
 OPEN_WEBUI_ENABLE_SERVICE="${OPEN_WEBUI_ENABLE_SERVICE:-auto}"
@@ -218,6 +221,16 @@ export ENABLE_OPENAI_API=True
 export ENABLE_OLLAMA_API=False
 export OFFLINE_MODE=True
 export BYPASS_EMBEDDING_AND_RETRIEVAL=True
+# open-webui (>=0.9.x) initializes an embedding function at STARTUP regardless of
+# BYPASS_EMBEDDING_AND_RETRIEVAL. With the default local engine + OFFLINE_MODE it
+# cannot download a SentenceTransformer model and crash-loops on
+# "No embedding model is loaded". Selecting the openai engine takes the lazy
+# branch (a callable that is only invoked when retrieval actually runs — which
+# BYPASS prevents), so no model loads and nothing calls out. Point it at our own
+# API server so any stray call stays on the loopback governance path.
+export RAG_EMBEDDING_ENGINE=openai
+export RAG_OPENAI_API_BASE_URL=${quoted_base_url}
+export RAG_OPENAI_API_KEY="\$API_KEY"
 export RAG_EMBEDDING_MODEL_AUTO_UPDATE=False
 export RAG_RERANKING_MODEL_AUTO_UPDATE=False
 export SCARF_NO_ANALYTICS=true
@@ -337,6 +350,13 @@ main() {
       sleep 6
     fi
     curl -fsS "http://${GROVE_API_CONNECT_HOST}:${GROVE_API_PORT}/health" >/dev/null
+  fi
+
+  # Resolve the bind host now that VM vs Mac is known (unless the operator set
+  # one explicitly): 0.0.0.0 on the VM so the tailnet can reach it, 127.0.0.1
+  # on the Mac/dev box.
+  if [[ -z "$OPEN_WEBUI_HOST" ]]; then
+    if [[ "$system_vm" == "1" ]]; then OPEN_WEBUI_HOST=0.0.0.0; else OPEN_WEBUI_HOST=127.0.0.1; fi
   fi
 
   log 'Installing Open WebUI into a dedicated virtualenv...'
