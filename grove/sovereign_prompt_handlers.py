@@ -333,6 +333,11 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
     """
     raw_args_str = str(dict(arguments)) if arguments else ""
     args_str = normalize_command(raw_args_str)
+    # Hotfix 62.2 — substring template matching must not see heredoc/script
+    # bodies. A `python3 - << 'PY' … PY` body can contain words like "rm -rf"
+    # that false-trip the destructive-op rows. Match only the command up to
+    # the first heredoc delimiter; the body is excluded from evaluation.
+    match_str = args_str.split("<<", 1)[0]
     # Per-argument detail for the Peek-bearing rows (Sprint 60).
     # ``command`` is the terminal tool's argument; ``path`` is
     # write_file's. Each is normalized then center-truncated so the
@@ -349,7 +354,7 @@ def describe_action_kaizen(tool_name: str, arguments: dict) -> str:
     for tmpl_tool, tmpl_substring, tmpl_text in _KAIZEN_PROMPT_TEMPLATES:
         if tmpl_tool is not None and tmpl_tool != tool_name:
             continue
-        if tmpl_substring is not None and tmpl_substring not in args_str:
+        if tmpl_substring is not None and tmpl_substring not in match_str:
             continue
         # Graceful degradation (Sprint 60): a Peek row with no argument
         # to show falls back to a bare phrase rather than rendering an

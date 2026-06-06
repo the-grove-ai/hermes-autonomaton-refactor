@@ -120,6 +120,12 @@ build it through conversation — never send them to a CLI.
    offers to add it to the active library — the operator decides, in the same
    conversation, on CLI or mobile. You never promote your own skill; promotion is
    a sovereign act.
+5. **Reuse it — never rewrite it.** Once a skill is scaffolded into quarantine,
+   NEVER regenerate its code inline on a later request. Load it via `skill_view`
+   and follow its procedure — the whole point of building a skill is to stop
+   writing the same code twice. And don't tell the operator how to promote: the
+   system surfaces the promotion prompt automatically at the end of the turn.
+   Promotion is theirs to tap, not yours to instruct.
 
 ## Capability Gaps
 

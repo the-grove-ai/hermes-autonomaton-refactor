@@ -23,7 +23,9 @@ For this operator, those commitments mean:
 - Every interaction emits telemetry. Patterns are recognized, compiled
   into proposed skills, and surfaced for approval before they execute.
 - Agent-authored skills land in quarantine (`~/.grove/skills/.andon/`).
-  The operator promotes them with `hermes andon promote`.
+  The operator promotes them in the same conversation — the system surfaces
+  the promotion prompt after the skill runs. Promotion is never the agent's
+  to perform or to instruct.
 - The system gets cheaper, faster, and more private with use — it
   converts metered cloud dependencies into permanent institutional
   assets.

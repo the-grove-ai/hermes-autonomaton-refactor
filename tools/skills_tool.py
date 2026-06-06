@@ -1048,9 +1048,22 @@ def skill_view(
                 if found_skill_md.parent.name == name:
                     _record(found_skill_md.parent, found_skill_md)
 
-            # Strategy 3: legacy flat <name>.md files anywhere under the dir.
+            # Strategy 3: legacy flat <name>.md skills. Hotfix 62.2 — a
+            # <name>.md that lives inside ANOTHER skill's directory
+            # (templates/, references/, …) is an asset, not a standalone
+            # skill, so it must not match the bare name. A real flat skill
+            # has no SKILL.md among its ancestors up to the search root.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
+                if found_md.name == "SKILL.md":
+                    continue
+                anc = found_md.parent
+                nested_in_skill = False
+                while anc != search_dir and anc != anc.parent:
+                    if (anc / "SKILL.md").exists():
+                        nested_in_skill = True
+                        break
+                    anc = anc.parent
+                if not nested_in_skill:
                     _record(None, found_md)
 
         if len(candidates) > 1:
