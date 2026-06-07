@@ -55,11 +55,15 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "Goal",
     "Dock",
+    "TurnGoalContext",
     "VECTOR_RANK",
     "ACTIVE_STATUSES",
     "load_dock",
     "active_goals",
     "build_classifier_goals_block",
+    "resolve_goal",
+    "load_goal_context",
+    "build_turn_goal_context",
 ]
 
 # Vector priority for conflict resolution (Component 5): higher wins.
@@ -280,6 +284,104 @@ def build_classifier_goals_block(dock: Dock) -> str:
     lines.append("")
     lines.append(_CLASSIFIER_DIRECTIVE)
     return "\n".join(lines)
+
+
+# ── Per-turn goal-context injection (Component 3, Path A′) ───────────
+#
+# The per-turn block is injected into the CURRENT TURN's user message at
+# the ephemeral seam in run_agent.py (the same mechanism memory-prefetch
+# uses) — never into the cached system prompt, and never persisted to
+# session history. It is rebuilt every turn from that turn's
+# classification, so a goal shift purges the previous context rather than
+# stacking it. Gate: only when goal_alignment == "direct" AND the keyword
+# matcher resolves a goal.
+
+# Terse Superposition Collapse framing carried inside the per-turn fence.
+# Concise on purpose — it rides every direct-aligned turn.
+_TURN_FRAMING = (
+    "You hold long-running context on the operator's goal below. Use it "
+    "silently to sharpen this answer — already know the constraints, do "
+    "not ask the operator to restate what they have told you, do not "
+    "announce that you are using goal context, do not recite it back. "
+    "Do NOT be overbearing; the operator should feel the precision, not "
+    "see the machinery."
+)
+
+
+@dataclass(frozen=True)
+class TurnGoalContext:
+    """The resolved per-turn goal-context injection.
+
+    ``goal_id`` feeds the rolling history window (Component 5); ``block``
+    is the fenced text appended to the user message at the seam.
+    """
+
+    goal_id: str
+    block: str
+
+
+def resolve_goal(
+    dock: Dock,
+    message: str,
+    history: Optional[List[str]] = None,
+) -> Optional[Goal]:
+    """Identify which active goal a prompt touches, by keyword match.
+
+    Component 3 ships the keyword-match + single-result path. Component 5
+    hardens the multi-match case (vector priority + rolling 3-intent
+    history). Until then a multi-match deterministically returns the
+    highest-vector candidate (and, among ties, the manifest order).
+    """
+    lowered = message.lower()
+    matches = [
+        g for g in active_goals(dock)
+        if any(kw.lower() in lowered for kw in g.keywords)
+    ]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    # Provisional multi-match pick — Component 5 adds the history tiebreak.
+    return max(matches, key=lambda g: g.rank)
+
+
+def load_goal_context(goal: Goal, char_budget: int) -> str:
+    """Load a goal's ``context_sources`` content for injection.
+
+    Component 3 reads the full content via the Obsidian-race-tolerant
+    reader. Component 4 wraps this in the incremental truncation pipeline
+    (full → frontmatter-only → ANDON) against ``char_budget``. The
+    parameter is threaded now so the seam is stable across that change.
+    """
+    parts = [_safe_read(p) for p in goal.resolved_sources()]
+    return "\n\n".join(parts).strip()
+
+
+def build_turn_goal_context(
+    dock: Dock,
+    *,
+    message: str,
+    history: Optional[List[str]] = None,
+) -> Optional[TurnGoalContext]:
+    """Resolve + load the per-turn goal-context block, or None.
+
+    Caller gates on ``goal_alignment == "direct"`` before calling this.
+    Returns None when no active goal matches the prompt — the turn then
+    injects nothing. Fail-loud: a missing promised context file or a
+    budget ANDON propagates (the turn path does NOT swallow).
+    """
+    goal = resolve_goal(dock, message, history)
+    if goal is None:
+        return None
+    context = load_goal_context(goal, dock.context_char_budget)
+    block = (
+        f"<grove-dock goal=\"{goal.id}\">\n"
+        f"{_TURN_FRAMING}\n\n"
+        f"GOAL: {goal.name}\n"
+        f"{context}\n"
+        f"</grove-dock>"
+    )
+    return TurnGoalContext(goal_id=goal.id, block=block)
 
 
 # ── Obsidian-race-tolerant file reader (Component 4 / 5 consume it) ───

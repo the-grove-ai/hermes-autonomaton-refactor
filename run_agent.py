@@ -12685,6 +12685,39 @@ class AIAgent:
             except Exception:
                 pass
 
+        # Sprint 68 (the-dock-v1) Component 3 — per-turn goal-context
+        # injection (Path A′). Gate on this turn's goal_alignment: only a
+        # "direct" alignment triggers the Dock read, so the cost lands on
+        # goal-advancing turns, not every turn. The resolved block is
+        # injected into the current user message at the ephemeral seam
+        # below (cache-safe, never persisted) and rebuilt each turn so a
+        # goal shift purges the prior context rather than stacking it.
+        #
+        # Fail-loud: a malformed dock.yaml, a missing promised context
+        # file, or a budget ANDON propagates — the turn path does NOT
+        # swallow Dock failures (the sanctioned-graceful path is the
+        # classifier's, not this one). Plumbing access (dispatcher /
+        # classification absent, e.g. a T0 cache-hit turn with no
+        # goal_alignment) simply skips injection — that is not a Dock
+        # defect.
+        _dock_user_context = ""
+        _disp_for_dock = getattr(self, "_dispatcher_singleton", None)
+        _cls_for_dock = getattr(_disp_for_dock, "_current_turn_classification", None) if _disp_for_dock else None
+        if getattr(_cls_for_dock, "goal_alignment", None) == "direct":
+            from grove.dock import build_turn_goal_context, load_dock
+            _dock = load_dock()
+            if _dock is not None:
+                _dock_query = original_user_message if isinstance(original_user_message, str) else ""
+                _dock_hist = list(getattr(self, "_dock_goal_history", ()))
+                _tgc = build_turn_goal_context(
+                    _dock, message=_dock_query, history=_dock_hist,
+                )
+                if _tgc is not None:
+                    _dock_user_context = _tgc.block
+                    # Rolling 3-intent history (most-recent last) for the
+                    # Component 5 conflict-resolution momentum tiebreak.
+                    self._dock_goal_history = (_dock_hist + [_tgc.goal_id])[-3:]
+
         # Optional opt-in runtime: if api_mode == codex_app_server, hand the
         # turn to the codex app-server subprocess (terminal/file ops/patching
         # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -12860,6 +12893,8 @@ class AIAgent:
                             _injections.append(_fenced)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
+                    if _dock_user_context:  # Sprint 68 Component 3 (Path A′)
+                        _injections.append(_dock_user_context)
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):

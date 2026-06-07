@@ -21,7 +21,10 @@ from grove.dock import (
     Goal,
     active_goals,
     build_classifier_goals_block,
+    build_turn_goal_context,
     load_dock,
+    load_goal_context,
+    resolve_goal,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -228,3 +231,89 @@ def test_safe_read_fails_loud_after_retries():
     with pytest.raises(OSError, match="could not read"):
         dock_mod._safe_read(flaky, sleep=sleeps.append)
     assert sleeps == [0.1, 0.2, 0.4]        # 3 retries, then fail-loud
+
+
+# ── Component 3: per-turn goal-context injection (Path A′) ───────────────
+
+
+def _dock_with_context(tmp_path: Path, goals: List[dict], files: dict) -> Dock:
+    """Write a dock.yaml plus its goals/*.md context files; load it."""
+    (tmp_path / "goals").mkdir(exist_ok=True)
+    for rel, body in files.items():
+        (tmp_path / rel).write_text(body, encoding="utf-8")
+    return load_dock(_write_dock(tmp_path, goals))
+
+
+def test_resolve_goal_single_keyword_match(tmp_path):
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="house", keywords=["epoxy", "carriage house"]),
+        _minimal_goal(id="other", keywords=["calendar"]),
+    ]))
+    g = resolve_goal(dock, "best options for epoxy flooring?")
+    assert g is not None and g.id == "house"
+
+
+def test_resolve_goal_no_match_returns_none(tmp_path):
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="house", keywords=["epoxy"]),
+    ]))
+    assert resolve_goal(dock, "what's the weather today") is None
+
+
+def test_resolve_goal_multimatch_picks_highest_vector(tmp_path):
+    """Provisional Component 3 behavior — Component 5 adds history tiebreak."""
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="apex", vector="apex_strategic", keywords=["doctorow"]),
+        _minimal_goal(id="strat", vector="strategic", keywords=["email"]),
+    ]))
+    g = resolve_goal(dock, "draft an email to doctorow")
+    assert g.id == "apex"                   # apex_strategic > strategic
+
+
+def test_load_goal_context_reads_sources(tmp_path):
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="house", context_sources=["goals/house.md"])],
+        {"goals/house.md": "---\nsummary: x\n---\nIndianapolis, unheated."},
+    )
+    house = dock.goals[0]
+    out = load_goal_context(house, dock.context_char_budget)
+    assert "Indianapolis, unheated." in out
+
+
+def test_build_turn_goal_context_single_match_emits_fenced_block(tmp_path):
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="carriage-house", name="Carriage House",
+                       keywords=["epoxy", "carriage house"],
+                       context_sources=["goals/ch.md"])],
+        {"goals/ch.md": "Unheated structure, freeze-thaw."},
+    )
+    tgc = build_turn_goal_context(dock, message="epoxy flooring options?")
+    assert tgc is not None
+    assert tgc.goal_id == "carriage-house"
+    assert tgc.block.startswith('<grove-dock goal="carriage-house">')
+    assert tgc.block.endswith("</grove-dock>")
+    assert "Do NOT be overbearing" in tgc.block       # Superposition framing
+    assert "Unheated structure, freeze-thaw." in tgc.block  # loaded context
+
+
+def test_build_turn_goal_context_no_match_returns_none(tmp_path):
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="house", keywords=["epoxy"],
+                       context_sources=["goals/h.md"])],
+        {"goals/h.md": "body"},
+    )
+    assert build_turn_goal_context(dock, message="schedule my dentist") is None
+
+
+def test_build_turn_goal_context_missing_file_fails_loud(tmp_path):
+    """A goal whose promised context file is absent → fail-loud in the
+    turn path (no graceful empty-string)."""
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="house", keywords=["epoxy"],
+                      context_sources=["goals/gone.md"]),
+    ]))
+    with pytest.raises(OSError, match="could not read"):
+        build_turn_goal_context(dock, message="epoxy?")
