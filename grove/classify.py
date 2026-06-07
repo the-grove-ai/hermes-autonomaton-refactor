@@ -317,13 +317,27 @@ def _goals_path() -> Path:
 
 
 def _read_goals_content() -> str:
-    """Read the operator's runtime goals.md; return "" if missing/empty.
+    """Read the operator's goals for the classifier OPERATOR GOALS slot.
 
-    Graceful-tier per the goals.md template comment: a missing file is
-    fine, the classifier composes without it (the prompt names the
-    empty case explicitly so the model returns ``no_goals_set``).
-    Any read error degrades the same way — log debug, return empty.
+    Sprint 68 (the-dock-v1) extends this: when the Dock is installed
+    (``~/.grove/dock/dock.yaml``), the classifier scores ``goal_alignment``
+    against the structured Dock goals (name / vector / definition_of_done /
+    keywords) instead of the flat ``goals.md`` prose. The classifier's
+    tool_use schema and the 15-intent taxonomy are untouched — only the
+    string feeding the existing slot changes.
+
+    Failure register: the Dock read is the sanctioned-graceful consumer.
+    A missing Dock returns the legacy ``goals.md`` text; a malformed or
+    unreadable Dock degrades the SAME way (log loud, fall back) — a
+    broken Dock must never crash classification (classify.py D4). The
+    Dock's fail-loud Andon lives in the per-turn injection path, not here.
+
+    Legacy fallback (Dock absent): a missing ``goals.md`` is fine — the
+    prompt names the empty case so the model returns ``no_goals_set``.
     """
+    dock_block = _read_dock_goals_block()
+    if dock_block:
+        return dock_block
     try:
         text = _goals_path().read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -332,6 +346,29 @@ def _read_goals_content() -> str:
         logger.debug("[classify] could not read goals.md: %r", exc)
         return ""
     return text
+
+
+def _read_dock_goals_block() -> str:
+    """Build the classifier OPERATOR GOALS block from the Dock, or "".
+
+    Sanctioned-graceful boundary: degrade to the legacy ``goals.md`` path
+    on ANY Dock failure (absent, malformed, parse error). This is the one
+    commanded graceful degradation (classify.py D4) — it logs loudly and
+    never raises into the classification path. Fail-loud Dock behavior is
+    reserved for the per-turn injection path (Sprint 68 Component 3).
+    """
+    try:
+        from grove.dock import build_classifier_goals_block, load_dock
+        dock = load_dock()
+        if dock is None:
+            return ""
+        return build_classifier_goals_block(dock)
+    except Exception as exc:  # noqa: BLE001 — sanctioned graceful boundary
+        logger.warning(
+            "[classify] Dock goals unavailable, falling back to goals.md: %r",
+            exc,
+        )
+        return ""
 
 
 _MAX_OUTPUT_TOKENS = 280  # Sprint 28 Phase 2: room for two envelopes
