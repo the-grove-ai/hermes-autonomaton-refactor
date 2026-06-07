@@ -67,11 +67,16 @@ logger = logging.getLogger(__name__)
 
 # (canonical name, legacy fallback, reference template or None, tier)
 # tier ∈ {"jidoka", "graceful", "silent"}
+#
+# ``goals`` is NOT a file here. Sprint 69 retired the stale ~/.grove/goals.md
+# in favor of the Dock (~/.grove/dock/dock.yaml) as the single source of
+# truth for operator goals. The goals layer is rendered from the Dock by
+# ``_render_dock_goals`` and assigned to ``composition.goals`` in
+# ``load_identity`` after this loop runs.
 _IDENTITY_FILES: list[tuple[str, Optional[str], Optional[str], str]] = [
     ("constitution.md", None,        "constitution.md", "jidoka"),
     ("soul.md",         "SOUL.md",   "soul.md",         "jidoka"),
     ("operator.md",     "USER.md",   "operator.md",     "graceful"),
-    ("goals.md",        None,        "goals.md",        "graceful"),
     ("memory.md",       "MEMORY.md", None,              "graceful"),
     ("agents.md",       "AGENTS.md", None,              "silent"),
 ]
@@ -213,6 +218,12 @@ def load_identity(
         content = _resolve_file(home, canonical, legacy, template, ref_dir, tier)
         setattr(composition, canonical.removesuffix(".md"), content)
 
+    # Goals come from the Dock, not a file (Sprint 69). Absent Dock →
+    # graceful (None, layer skipped); malformed dock.yaml → fail loud
+    # (load_dock raises ValueError, which propagates here by design — a
+    # broken goals manifest must surface, not silently drop goals).
+    composition.goals = _render_dock_goals()
+
     # Parse soul.md's optional YAML frontmatter (D5). Reuses
     # grove.skills.parse_frontmatter — same format as SKILL.md, no conflict
     # (Andon A5 does not fire). A soul.md without frontmatter is valid and
@@ -283,6 +294,48 @@ def load_identity(
 
 
 # ----- internals -------------------------------------------------------------
+
+def _render_dock_goals() -> Optional[str]:
+    """Render the operator's active Dock goals as the identity goals layer.
+
+    Sprint 69: the Dock (``~/.grove/dock/dock.yaml``) is the single source
+    of truth for goals; the stale ``goals.md`` is retired. Reuses
+    ``grove.dock`` so identity and the classifier read the same manifest.
+
+    Returns the rendered goals prose, or ``None`` when there is nothing to
+    compose (Dock not installed, or no active goals). A MALFORMED
+    ``dock.yaml`` is NOT swallowed here — ``load_dock`` raises ``ValueError``
+    and it propagates, per the Architectural Prime Directive (a broken
+    goals manifest must fail loud, not silently drop goals).
+    """
+    from grove.dock import active_goals, load_dock  # local: avoid import cycle
+
+    dock = load_dock()
+    if dock is None:
+        logger.warning(
+            "[identity] no Dock manifest; composing without goals (graceful)."
+        )
+        return None
+    goals = active_goals(dock)
+    if not goals:
+        logger.info("[identity] Dock has no active goals; goals layer omitted.")
+        return None
+
+    lines = [
+        "# Goals",
+        "",
+        "The operator's active goals, from the Dock "
+        "(~/.grove/dock/dock.yaml). Use them to understand what matters "
+        "right now; when asked about goals, answer from these.",
+        "",
+    ]
+    for g in goals:
+        lines.append(f"- **{g.name}** [{g.vector} · {g.status}]")
+        dod = " ".join(g.definition_of_done.split())
+        if dod:
+            lines.append(f"  Done when: {dod}")
+    return "\n".join(lines)
+
 
 def _strip_frontmatter(content: Optional[str]) -> Optional[str]:
     """Return *content* with any leading YAML frontmatter block removed.

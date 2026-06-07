@@ -54,16 +54,61 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 # ----- first-run seeding -----------------------------------------------------
 
-def test_first_run_seeds_all_four_templated_files(fake_home: Path) -> None:
-    """A fresh ~/.grove/ gets constitution / soul / operator / goals seeded
-    from the real config/identity/ reference templates."""
+def test_first_run_seeds_templated_files(fake_home: Path) -> None:
+    """A fresh ~/.grove/ gets constitution / soul / operator seeded from the
+    real config/identity/ reference templates. Goals are NOT a file anymore
+    (Sprint 69): they render from the Dock, so with no dock.yaml present
+    comp.goals is None and no goals.md is seeded."""
     comp = load_identity()
     assert comp.constitution is not None
     assert comp.soul is not None
     assert comp.operator is not None
-    assert comp.goals is not None
-    for name in ("constitution.md", "soul.md", "operator.md", "goals.md"):
+    assert comp.goals is None  # no Dock in the test home → goals layer omitted
+    for name in ("constitution.md", "soul.md", "operator.md"):
         assert (fake_home / name).exists(), f"{name} not seeded"
+    assert not (fake_home / "goals.md").exists()  # retired in Sprint 69
+
+
+def test_goals_layer_renders_from_dock(
+    fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sprint 69: the goals layer renders active goals from the Dock."""
+    import grove.dock as gdock
+    dock_yaml = tmp_path / "dock.yaml"
+    dock_yaml.write_text(
+        "version: 1\n"
+        "goals:\n"
+        "  - id: g1\n"
+        "    name: \"Test Goal\"\n"
+        "    vector: strategic\n"
+        "    status: cruising\n"
+        "    definition_of_done: \"it is done\"\n"
+        "    context_sources: []\n"
+        "    keywords: []\n"
+        "    unlocked_skills: []\n",
+        encoding="utf-8",
+    )
+    real = gdock.load_dock(path=dock_yaml)
+    monkeypatch.setattr(gdock, "load_dock", lambda path=None: real)
+    comp = load_identity()
+    assert comp.goals is not None
+    assert "Test Goal" in comp.goals
+    assert "it is done" in comp.goals
+
+
+def test_goals_layer_fails_loud_on_malformed_dock(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed dock.yaml is NOT swallowed — it fails loud through
+    identity composition (Architectural Prime Directive)."""
+    import grove.dock as gdock
+
+    def _boom(path=None):
+        raise ValueError("dock.yaml is malformed")
+
+    monkeypatch.setattr(gdock, "load_dock", _boom)
+    with pytest.raises(ValueError, match="malformed"):
+        load_identity()
 
 
 def test_first_run_does_not_seed_memory_or_agents(fake_home: Path) -> None:
