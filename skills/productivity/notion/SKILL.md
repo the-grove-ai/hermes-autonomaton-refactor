@@ -3,7 +3,7 @@ created_by: bundled
 zone: green
 tier: T0
 name: notion
-description: "Notion via governed MCP tools (mcp_notion_API_*) — search, pages, databases, blocks, comments. Prefer these; ntn CLI/curl are a fallback for file uploads & Workers."
+description: "Notion access. PRIMARY: the hosted Notion MCP tools (mcp_notion_*) — semantic search, fetch, pages, databases, views, comments. FALLBACK: the governed notion.py script (scripts/notion.py) for sovereign, no-OAuth CRUD when the MCP is unavailable. ntn CLI/curl for uploads & Workers."
 version: 2.0.0
 author: community
 license: MIT
@@ -18,32 +18,53 @@ metadata:
 
 # Notion
 
-**Prefer the governed MCP tools.** Notion is wired into this Autonomaton as MCP
-tools named `mcp_notion_API_*`. Each one routes through the Dispatcher per action,
-so the operator sees and approves every individual call. Reach for these first —
-do **not** write a Python or curl script for anything they cover (that collapses
-per-action governance into one opaque approval, and is exactly what the Tool
-Selection rule in affordances forbids):
+**Primary path: the hosted Notion MCP tools.** Notion is wired into this
+Autonomaton as MCP tools named `mcp_notion_*` (the hosted service at
+`mcp.notion.com`, authenticated via OAuth). Each one routes through the
+Dispatcher per action, so the operator sees and approves every individual
+call. Reach for these first — they cover semantic search, fetch,
+page/database create + update, views, templates, and comments:
 
-- **Search the workspace** → `mcp_notion_API_post_search`
-- **Read a page** → `mcp_notion_API_retrieve_a_page` (metadata) · `mcp_notion_API_get_block_children` (content)
-- **Create / update a page** → `mcp_notion_API_post_page` · `mcp_notion_API_patch_page`
-- **Query a database** → `mcp_notion_API_query_data_source`
-- **Comments** → `mcp_notion_API_retrieve_a_comment` · `mcp_notion_API_create_a_comment`
+- **Search the workspace** → `mcp_notion_notion_search`
+- **Read a page** → `mcp_notion_notion_fetch`
+- **Create / update pages** → `mcp_notion_notion_create_pages` · `mcp_notion_notion_update_page`
+- **Databases** → `mcp_notion_notion_create_database` · `mcp_notion_notion_query_database_view`
+- **Comments** → `mcp_notion_notion_get_comments` · `mcp_notion_notion_create_comment`
 
-The token lives in `~/.grove/.env` as `NOTION_TOKEN` (the MCP server reads it).
+**Sovereign fallback: `scripts/notion.py`.** When the hosted MCP is
+unavailable (network outage, OAuth lapse), this script gives governed,
+no-OAuth CRUD straight against the Notion REST API using `NOTION_TOKEN`
+from `~/.grove/.env`. The terminal zone classifier governs it by
+subcommand — reads (`search` / `get` / `query`) are Green, writes
+(`create-page` / `update-page`) are Yellow:
 
-The `ntn` CLI and HTTP + curl paths below are a **fallback only**, for operations
-the MCP tools don't expose (large file uploads, Notion Workers). They read
-`$NOTION_API_KEY`; if you use them, first run `export NOTION_API_KEY="$NOTION_TOKEN"`.
+```bash
+SKILL=~/.grove/skills/productivity/notion/scripts/notion.py
+python3 "$SKILL" search "Sprint 63"
+python3 "$SKILL" get <page-url>
+python3 "$SKILL" query <database-url> --filter "Status=Active"
+python3 "$SKILL" create-page <parent-url> "Title" --content "First paragraph"
+python3 "$SKILL" update-page <page-url> --title "New Title" --append "A note"
+```
+
+The script owns URL→ID parsing, the `properties.title` wrapper, and the
+API version header, so the agent never fumbles property schemas.
+
+The `ntn` CLI and HTTP + curl paths below remain available for operations
+neither the MCP nor the script expose (large file uploads, Notion Workers).
+They read `$NOTION_API_KEY`; if you use them, first run
+`export NOTION_API_KEY="$NOTION_TOKEN"`.
 
 ## Setup
 
-### 1. Get an integration token (required for both paths)
+### 1. Get an integration token (for the fallback script + CLI)
+
+The hosted MCP authenticates via OAuth and needs no token here. The token
+below is only for the sovereign `notion.py` fallback and the `ntn`/curl paths.
 
 1. Create an integration at https://notion.so/my-integrations
 2. Copy the API key (starts with `ntn_` or `secret_`)
-3. Store it in `~/.grove/.env` as `NOTION_TOKEN` (the MCP server reads this var):
+3. Store it in `~/.grove/.env` as `NOTION_TOKEN` (the `notion.py` script reads this var):
    ```
    NOTION_TOKEN=ntn_your_key_here
    ```
