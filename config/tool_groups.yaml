@@ -154,39 +154,10 @@ exploratory:
   - ha_get_state
   - ha_call_service
 
-# ── MCP Notion bridge — reads/writes/write-intent gating ───────────────────
-# Reads always load (per Sprint 29 GATE-A decision). Writes load only when
-# the classified intent_class is in write_intents. Sprint 30+ can replace
-# write_intents with goal_alignment="direct" gating.
-mcp_notion:
-  reads:
-    - mcp_notion_API_get_user
-    - mcp_notion_API_get_users
-    - mcp_notion_API_get_self
-    - mcp_notion_API_post_search
-    - mcp_notion_API_get_block_children
-    - mcp_notion_API_retrieve_a_block
-    - mcp_notion_API_retrieve_a_page
-    - mcp_notion_API_retrieve_a_page_property
-    - mcp_notion_API_retrieve_a_comment
-    - mcp_notion_API_query_data_source
-    - mcp_notion_API_retrieve_a_data_source
-    - mcp_notion_API_list_data_source_templates
-    - mcp_notion_API_retrieve_a_database
-  writes:
-    - mcp_notion_API_patch_block_children
-    - mcp_notion_API_update_a_block
-    - mcp_notion_API_delete_a_block
-    - mcp_notion_API_patch_page
-    - mcp_notion_API_post_page
-    - mcp_notion_API_create_a_comment
-    - mcp_notion_API_update_a_data_source
-    - mcp_notion_API_create_a_data_source
-    - mcp_notion_API_move_page
-  # Sprint 54 v2 taxonomy: planning + creative_writing keep their Notion
-  # write surface; memory_operation joins because storing a fact often
-  # wants to land in a Notion page (when memory targets Notion).
-  write_intents:
-    - planning
-    - creative_writing
-    - memory_operation
+# MCP tools are no longer enumerated here. Sprint 69 retired the
+# Notion-specific ``mcp_notion`` reads/writes/write_intents block in favor
+# of a generic passthrough: any tool named ``mcp_*`` clears the per-turn
+# budget filter unconditionally (grove/context_budget.filter_tools_by_name)
+# and is governed at execution time by the zone classifier. This keeps every
+# configured MCP server — the hosted Notion MCP today, future integrations
+# tomorrow — reachable without per-server taxonomy edits.

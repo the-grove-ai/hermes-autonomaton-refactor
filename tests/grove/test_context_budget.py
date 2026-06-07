@@ -37,11 +37,6 @@ def _minimal_taxonomy() -> dict:
             "conversation": [],
         },
         "exploratory": ["delegate_task", "browser_navigate"],
-        "mcp_notion": {
-            "reads": ["mcp_notion_API_post_search", "mcp_notion_API_retrieve_a_page"],
-            "writes": ["mcp_notion_API_patch_page", "mcp_notion_API_post_page"],
-            "write_intents": ["planning"],
-        },
     }
 
 
@@ -72,7 +67,9 @@ class TestLoadTaxonomyRepoTemplate:
         assert taxonomy["version"] == 1
         assert "clarify" in taxonomy["core"]
         assert "code_generation" in taxonomy["domain_chunks"]
-        assert "mcp_notion_API_post_search" in taxonomy["mcp_notion"]["reads"]
+        # Sprint 69 retired the mcp_notion taxonomy block — MCP tools now
+        # pass the per-turn filter generically, so the key is gone.
+        assert "mcp_notion" not in taxonomy
 
 
 # ── load_taxonomy — schema validation ─────────────────────────────────────
@@ -81,7 +78,7 @@ class TestLoadTaxonomyRepoTemplate:
 class TestSchemaValidation:
     def test_missing_top_level_key_raises(self, tmp_path: Path):
         bad = _minimal_taxonomy()
-        del bad["mcp_notion"]
+        del bad["exploratory"]
         p = _write_taxonomy(tmp_path, bad)
         with pytest.raises(ValueError, match="missing required keys"):
             load_taxonomy(path=p)
@@ -105,13 +102,6 @@ class TestSchemaValidation:
         bad["domain_chunks"]["analysis"] = "not a list"
         p = _write_taxonomy(tmp_path, bad)
         with pytest.raises(ValueError, match="domain_chunks"):
-            load_taxonomy(path=p)
-
-    def test_mcp_notion_missing_sub_keys_raises(self, tmp_path: Path):
-        bad = _minimal_taxonomy()
-        del bad["mcp_notion"]["write_intents"]
-        p = _write_taxonomy(tmp_path, bad)
-        with pytest.raises(ValueError, match="mcp_notion missing keys"):
             load_taxonomy(path=p)
 
     def test_non_mapping_root_raises(self, tmp_path: Path):
@@ -183,12 +173,15 @@ class TestResolveToolSet:
         )
         assert {"clarify", "read_file", "memory"}.issubset(result)
 
-    def test_mcp_notion_reads_always_loaded(self):
+    def test_mcp_tools_not_in_budget_set(self):
+        # Sprint 69 — resolve_tool_set no longer enumerates MCP tools.
+        # They reach the agent via the generic mcp_* passthrough in
+        # filter_tools_by_name, not the per-turn budget set. So the
+        # resolved set contains no mcp_ names.
         result = resolve_tool_set(
             "conversation", "simple", _minimal_taxonomy(),
         )
-        assert "mcp_notion_API_post_search" in result
-        assert "mcp_notion_API_retrieve_a_page" in result
+        assert not any(name.startswith("mcp_") for name in result)
 
     def test_domain_chunk_added_for_intent(self):
         result = resolve_tool_set(
@@ -237,18 +230,11 @@ class TestResolveToolSet:
         )
         assert "delegate_task" not in result
 
-    def test_write_intent_adds_writes(self):
-        # planning is in write_intents → writes included.
-        result = resolve_tool_set("planning", "simple", _minimal_taxonomy())
-        assert "mcp_notion_API_patch_page" in result
-        assert "mcp_notion_API_post_page" in result
-
-    def test_non_write_intent_omits_writes(self):
-        result = resolve_tool_set(
-            "code_generation", "simple", _minimal_taxonomy(),
-        )
-        assert "mcp_notion_API_patch_page" not in result
-        assert "mcp_notion_API_post_page" not in result
+    # Sprint 69 removed write-intent gating of MCP tools — the
+    # mcp_notion taxonomy block and its reads/writes/write_intents are
+    # gone (see test_mcp_tools_not_in_budget_set). MCP write tools are
+    # governed at execution time by the zone classifier, not hidden by
+    # the per-turn budget.
 
 
 # ── Co-location guard ────────────────────────────────────────────────────
@@ -362,7 +348,7 @@ class TestFilterToolsByName:
             _tool("clarify"),
             _tool("write_file"),
             _tool("delegate_task"),
-            _tool("mcp_notion_API_post_search"),
+            _tool("mcp_notion_notion_search"),
         ]
 
     def test_none_allowed_returns_input_unchanged(self, tools):
@@ -371,25 +357,32 @@ class TestFilterToolsByName:
         assert out is tools
 
     def test_set_filters_by_name(self, tools):
+        # Non-mcp tools filter by name; the mcp_ tool passes through
+        # unconditionally (Sprint 69 generic MCP passthrough).
         out = filter_tools_by_name(
             tools, allowed={"clarify", "delegate_task"},
         )
         names = [t["function"]["name"] for t in out]
-        assert names == ["clarify", "delegate_task"]
+        assert names == ["clarify", "delegate_task", "mcp_notion_notion_search"]
+        assert "write_file" not in names
 
-    def test_empty_allowed_filters_everything(self, tools):
+    def test_mcp_tools_always_pass_through(self, tools):
+        # Even an empty allow-set keeps mcp_ tools — they are governed at
+        # execution time by the zone classifier, not by tool budgeting.
         out = filter_tools_by_name(tools, allowed=set())
-        assert out == []
+        names = [t["function"]["name"] for t in out]
+        assert names == ["mcp_notion_notion_search"]
 
     def test_preserves_input_order(self, tools):
         # Filter against a set that matches multiple tools; the output
-        # preserves the input order, not the set's hash order.
+        # preserves the input order, not the set's hash order. The mcp_
+        # tool rides along via passthrough, still in input order.
         out = filter_tools_by_name(
             tools,
-            allowed={"mcp_notion_API_post_search", "clarify", "write_file"},
+            allowed={"clarify", "write_file"},
         )
         names = [t["function"]["name"] for t in out]
-        assert names == ["clarify", "write_file", "mcp_notion_API_post_search"]
+        assert names == ["clarify", "write_file", "mcp_notion_notion_search"]
 
     def test_skips_malformed_entries(self):
         bad = [

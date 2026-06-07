@@ -95,11 +95,15 @@ class TestKaizenTemplate:
 
     def test_mcp_known_notion_search_renders_friendly_phrase(self):
         # S0 — known (server, action) pairs get a concierge-register phrase.
-        desc = describe_action_kaizen("mcp_notion_search", {"query": "roadmap"})
+        # Hosted Notion MCP tools register as mcp_notion_notion_<op>
+        # (Sprint 69), so the action carries the leading notion_.
+        desc = describe_action_kaizen(
+            "mcp_notion_notion_search", {"query": "roadmap"},
+        )
         assert desc == "search your Notion workspace"
 
     def test_mcp_known_notion_fetch_renders_friendly_phrase(self):
-        desc = describe_action_kaizen("mcp_notion_fetch", {"id": "abc"})
+        desc = describe_action_kaizen("mcp_notion_notion_fetch", {"id": "abc"})
         assert desc == "fetch a page from Notion"
 
     def test_mcp_unknown_tool_renders_server_and_action(self):
