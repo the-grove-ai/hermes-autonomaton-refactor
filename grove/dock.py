@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -68,21 +68,38 @@ __all__ = [
 ]
 
 # Vector priority for conflict resolution (Component 5): higher wins.
+# Sprint 69.2 added ``operational`` and ``product`` between strategic and
+# personal, preserving the apex > strategic > personal ordering the
+# conflict-resolution tests rely on.
 VECTOR_RANK: Dict[str, int] = {
-    "apex_strategic": 3,
-    "strategic": 2,
+    "apex_strategic": 5,
+    "strategic": 4,
+    "operational": 3,
+    "product": 2,
     "personal": 1,
 }
 _VALID_VECTORS = frozenset(VECTOR_RANK)
 
 # Status taxonomy. Active goals are surfaced to the classifier and
-# eligible for context loading; the rest are dormant.
+# eligible for context loading; the rest are dormant. Sprint 69.2 admitted
+# ``staging`` / ``blocked`` / ``parked`` to the VALID set (the operator's
+# expanded Dock uses them) WITHOUT making them active — only accelerating
+# and cruising surface.
 ACTIVE_STATUSES = frozenset({"accelerating", "cruising"})
-_VALID_STATUSES = frozenset({"accelerating", "cruising", "paused", "complete"})
+_VALID_STATUSES = frozenset({
+    "accelerating", "cruising", "staging", "blocked", "parked",
+    "paused", "complete",
+})
 
-# Default per-turn goal-context char budget (GATE-B DECISION 4). Overridable
-# via the ``context_char_budget`` top-level key in dock.yaml.
-_DEFAULT_CONTEXT_CHAR_BUDGET = 4000
+# Accepted ``version`` values. The Sprint 68 seed used the int ``1``; the
+# operator's expanded dock.yaml declares the string ``"1.0"``. Both (and
+# the bare string ``"1"``) name schema version 1; anything else fails loud.
+_SUPPORTED_VERSIONS = frozenset({1, "1", "1.0"})
+
+# Default per-turn goal-context char budget (GATE-B DECISION 4; raised
+# 4000 → 5000 in Sprint 69.2 for the 9-goal Dock). Overridable via the
+# ``context_char_budget`` top-level key in dock.yaml.
+_DEFAULT_CONTEXT_CHAR_BUDGET = 5000
 
 _REQUIRED_GOAL_KEYS = frozenset({
     "id", "name", "vector", "status", "definition_of_done",
@@ -108,6 +125,11 @@ class Goal:
     keywords: Tuple[str, ...]
     unlocked_skills: Tuple[str, ...]
     root: Path
+    # Sprint 69.2: unknown per-goal keys (deadline, why_this_matters,
+    # milestones, targets, content_zones, tracking, ...) pass through here
+    # — accessible, not consumed. compare=False keeps the frozen dataclass
+    # hashable/eq-safe despite the dict.
+    extra: Dict[str, Any] = field(default_factory=dict, compare=False)
 
     @property
     def rank(self) -> int:
@@ -118,7 +140,18 @@ class Goal:
         return self.status in ACTIVE_STATUSES
 
     def resolved_sources(self) -> List[Path]:
-        return [self.root / src for src in self.context_sources]
+        """Resolve each ``context_sources`` entry to an absolute path.
+
+        Sprint 68 stored sources relative to the Dock root. Sprint 69.2's
+        operator dock.yaml declares absolute ``~/.grove/dock/goals/*.md``
+        paths, so expand ``~`` and honor already-absolute paths; relative
+        entries still resolve against the root (back-compatible).
+        """
+        out: List[Path] = []
+        for src in self.context_sources:
+            p = Path(src).expanduser()
+            out.append(p if p.is_absolute() else self.root / p)
+        return out
 
 
 @dataclass(frozen=True)
@@ -128,6 +161,11 @@ class Dock:
     goals: Tuple[Goal, ...]
     context_char_budget: int
     root: Path
+    # Sprint 69.2: the full top-level mapping (routing_hints,
+    # operator_preferences, notion_sources, design_system, ...) passes
+    # through here — accessible, not consumed. compare=False keeps the
+    # frozen dataclass hashable/eq-safe despite the dict.
+    raw: Dict[str, Any] = field(default_factory=dict, compare=False)
 
 
 def _resolve_dock_path() -> Path:
@@ -167,7 +205,7 @@ def load_dock(path: Optional[Path] = None) -> Optional[Dock]:
             f"dock.yaml at {target} is not a mapping (got "
             f"{type(raw).__name__})"
         )
-    if raw.get("version") != 1:
+    if raw.get("version") not in _SUPPORTED_VERSIONS:
         raise ValueError(
             f"dock.yaml at {target} unsupported version "
             f"{raw.get('version')!r} (expected 1)"
@@ -195,7 +233,12 @@ def load_dock(path: Optional[Path] = None) -> Optional[Dock]:
             )
         seen_ids.add(gid)
 
-    return Dock(goals=tuple(goals), context_char_budget=budget, root=root)
+    return Dock(
+        goals=tuple(goals),
+        context_char_budget=budget,
+        root=root,
+        raw=raw,
+    )
 
 
 def _parse_goal(g: Any, idx: int, target: Path, root: Path) -> Goal:
@@ -228,6 +271,7 @@ def _parse_goal(g: Any, idx: int, target: Path, root: Path) -> Goal:
                 f"dock.yaml at {target}: goals[{idx}] (id={g['id']!r}) "
                 f"{list_key} must be a list"
             )
+    extra = {k: v for k, v in g.items() if k not in _REQUIRED_GOAL_KEYS}
     return Goal(
         id=str(g["id"]),
         name=str(g["name"]),
@@ -238,6 +282,7 @@ def _parse_goal(g: Any, idx: int, target: Path, root: Path) -> Goal:
         keywords=tuple(str(k) for k in g["keywords"]),
         unlocked_skills=tuple(str(s) for s in g["unlocked_skills"]),
         root=root,
+        extra=extra,
     )
 
 
@@ -412,44 +457,67 @@ def _frontmatter_digest(meta: Dict[str, Any]) -> str:
 
 
 def load_goal_context(goal: Goal, char_budget: int) -> str:
-    """Load a goal's ``context_sources``, truncating to fit ``char_budget``.
+    """Load a goal's ``context_sources`` in order, fitting ``char_budget``.
 
-    Incremental pipeline (Component 4):
+    Sprint 69.2 made loading incremental ACROSS sources (the operator's
+    multi-source goals — e.g. hermes lists a 4 KB context file plus a 20 KB
+    README — must not Andon just because a *later* source is too large):
 
-      1. full content fits the budget    → inject full content
-      2. full content over budget        → fall back to the frontmatter
-                                            digest (summary + latest_update)
-      3. digest also over (or absent)    → :class:`DockBudgetAndon`
-
-    Step 2 is a designed, logged truncation — not an Andon. Step 3 is the
-    Andon: the floor itself will not fit.
+      * Sources load in declared order. Each is appended only while the
+        running total stays within budget; the first source that would
+        overflow is skipped (logged warning) and the rest are dropped. The
+        leading sources carry the critical context, so partial load is the
+        designed behavior, not a failure.
+      * The FIRST source is special — it must fit alone. The single-source
+        truncation pipeline (Component 4) is preserved for it:
+          1. fits the budget         → full content
+          2. over budget             → frontmatter digest (summary +
+                                        latest_update)
+          3. digest over (or absent) → :class:`DockBudgetAndon`
+      * A declared source that cannot be read fails loud (``_safe_read``)
+        — a missing promised file is never silently skipped.
     """
-    raw = [_safe_read(p) for p in goal.resolved_sources()]
-    full = "\n\n".join(r.strip() for r in raw).strip()
-    if len(full) <= char_budget:
-        return full
-
-    digests = []
-    for r in raw:
-        meta, _ = _parse_frontmatter(r)
-        d = _frontmatter_digest(meta)
-        if d:
-            digests.append(d)
-    digest = "\n\n".join(digests).strip()
-    if digest and len(digest) <= char_budget:
-        logger.warning(
-            "[dock] goal %r context (%d chars) over budget %d — truncated "
-            "to frontmatter digest (%d chars)",
-            goal.id, len(full), char_budget, len(digest),
-        )
-        return digest
-
-    raise DockBudgetAndon(
-        f"[dock] goal {goal.id!r} context cannot fit the {char_budget}-char "
-        f"budget: full={len(full)} chars, frontmatter digest={len(digest)} "
-        f"chars. Raise context_char_budget in dock.yaml or trim "
-        f"{', '.join(goal.context_sources)}."
-    )
+    parts: List[str] = []
+    total = 0
+    for i, path in enumerate(goal.resolved_sources()):
+        text = _safe_read(path).strip()
+        if i == 0:
+            if len(text) <= char_budget:
+                parts.append(text)
+                total = len(text)
+                continue
+            # First source alone over budget → frontmatter digest fallback.
+            meta, _ = _parse_frontmatter(text)
+            digest = _frontmatter_digest(meta)
+            if digest and len(digest) <= char_budget:
+                logger.warning(
+                    "[dock] goal %r first context source %s (%d chars) over "
+                    "budget %d — truncated to frontmatter digest (%d chars)",
+                    goal.id, path, len(text), char_budget, len(digest),
+                )
+                return digest
+            raise DockBudgetAndon(
+                f"[dock] goal {goal.id!r} first context source cannot fit the "
+                f"{char_budget}-char budget: source={len(text)} chars, "
+                f"frontmatter digest={len(digest)} chars. Raise "
+                f"context_char_budget in dock.yaml or trim "
+                f"{goal.context_sources[0]}."
+            )
+        # Subsequent sources: append only if the cumulative total still fits
+        # (account for the "\n\n" join separator); otherwise stop.
+        addition = len(text) + 2
+        if total + addition <= char_budget:
+            parts.append(text)
+            total += addition
+        else:
+            logger.warning(
+                "[dock] goal %r: context source %s skipped — %d-char budget "
+                "exhausted at %d chars (source adds %d). Remaining sources "
+                "skipped.",
+                goal.id, path, char_budget, total, len(text),
+            )
+            break
+    return "\n\n".join(parts).strip()
 
 
 def build_turn_goal_context(
