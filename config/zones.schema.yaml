@@ -227,28 +227,11 @@ zones:
 # nested quantifiers — and pass the same check.
 
 tool_zones:
-  # ── Notion MCP reads: GREEN (read-only, safe to run autonomously) ───────
-  # The notion MCP server's read tools (search / retrieve / get / query) are
-  # read-only. Without an explicit zone they default to yellow and halt for
-  # approval on every call — which stalled Telegram Notion searches while the
-  # api_server surface (auto-allow) ran fine. Reads are safe to run without a
-  # gate. The WRITE tools (post_page, patch_page, patch_block_children,
-  # delete_a_block, update_a_block, create_a_comment, create/update_a_data_source,
-  # move_page) are intentionally left UNLISTED so they stay at the yellow
-  # default and still require operator approval.
-  mcp_notion_API_post_search: green
-  mcp_notion_API_retrieve_a_page: green
-  mcp_notion_API_retrieve_a_page_property: green
-  mcp_notion_API_get_block_children: green
-  mcp_notion_API_retrieve_a_block: green
-  mcp_notion_API_query_data_source: green
-  mcp_notion_API_retrieve_a_data_source: green
-  mcp_notion_API_list_data_source_templates: green
-  mcp_notion_API_retrieve_a_database: green
-  mcp_notion_API_retrieve_a_comment: green
-  mcp_notion_API_get_self: green
-  mcp_notion_API_get_user: green
-  mcp_notion_API_get_users: green
+  # Notion MCP read / write / delete zones are defined in the
+  # consolidated "Notion MCP bridge" section further below. (A second,
+  # duplicate copy of the read entries that lived here triggered a
+  # ruamel DuplicateKeyError on reload — removed; the section below is
+  # the single source of truth.)
   terminal:
     default_zone: yellow
     rules:
