@@ -71,15 +71,62 @@ def test_no_path_resolves_runtime_and_is_absent_under_hermetic_home():
 
 
 def test_seed_template_parses():
-    """The committed config/dock/dock.yaml seed parses to three goals."""
+    """The committed config/dock/dock.yaml seed parses to nine goals.
+
+    Sprint 69.2 replaced the 3-goal seed with the operator's expanded
+    9-goal Dock (version "1.0", new vectors/statuses, no explicit budget).
+    """
     dock = load_dock(_SEED_MANIFEST)
     assert dock is not None
     ids = {g.id for g in dock.goals}
-    assert ids == {"grv-001-humanity-ai", "influencer-outreach", "carriage-house"}
-    assert dock.context_char_budget == 4000
+    assert ids == {
+        "humanity-ai-funding", "hermes-autonomaton", "grove-content-pipeline",
+        "influencer-outreach", "advisory-board", "grove-site", "lambda-watch",
+        "carriage-house-renovation", "personal-finance",
+    }
+    # No explicit context_char_budget in the seed → the 5000 default.
+    assert dock.context_char_budget == 5000
     by_id = {g.id: g for g in dock.goals}
-    assert by_id["grv-001-humanity-ai"].vector == "apex_strategic"
-    assert by_id["carriage-house"].vector == "personal"
+    assert by_id["humanity-ai-funding"].vector == "apex_strategic"
+    assert by_id["grove-site"].vector == "operational"
+    assert by_id["lambda-watch"].vector == "product"
+    assert by_id["carriage-house-renovation"].vector == "personal"
+    # Only accelerating + cruising are active; lambda-watch (staging) is not.
+    active = {g.id for g in active_goals(dock)}
+    assert len(active) == 8
+    assert "lambda-watch" not in active
+
+
+def test_seed_goal_files_within_budget():
+    """Every committed seed goal file fits the 5000-char budget on its own.
+
+    Guards the operator-authored context files against silently blowing the
+    per-turn budget — the leading source of every goal loads in full.
+    """
+    goals_dir = _REPO_ROOT / "config" / "dock" / "goals"
+    files = sorted(goals_dir.glob("*.md"))
+    assert files, "no seed goal files found"
+    for f in files:
+        assert len(f.read_text(encoding="utf-8")) <= 5000, f
+
+
+def test_seed_version_string_accepted():
+    """The seed declares version "1.0" (string) — loader coerces, not crashes."""
+    raw = yaml.safe_load(_SEED_MANIFEST.read_text(encoding="utf-8"))
+    assert raw["version"] == "1.0"
+    assert load_dock(_SEED_MANIFEST) is not None
+
+
+def test_seed_passes_unknown_keys_through():
+    """Expanded top-level + per-goal keys are reachable, not dropped."""
+    dock = load_dock(_SEED_MANIFEST)
+    assert "routing_hints" in dock.raw
+    assert "operator_preferences" in dock.raw
+    assert "design_system" in dock.raw
+    by_id = {g.id: g for g in dock.goals}
+    # apex goal carries milestones + why_this_matters in extra
+    assert "milestones" in by_id["humanity-ai-funding"].extra
+    assert "why_this_matters" in by_id["humanity-ai-funding"].extra
 
 
 # ── load_dock: fail-loud validation ─────────────────────────────────────
@@ -451,8 +498,111 @@ def test_resolve_history_window_is_last_three(tmp_path):
     assert g.id == "beta"
 
 
-def test_doctorow_example_against_seed():
-    """The SPEC worked example, against the committed seed manifest."""
+def test_apex_beats_strategic_against_seed():
+    """Worked example against the 9-goal seed: a prompt touching the apex
+    goal AND a strategic goal resolves to the apex (vector priority)."""
     dock = load_dock(_SEED_MANIFEST)
-    g = resolve_goal(dock, "Draft an email to Doctorow about the GRV-001 spec")
-    assert g.id == "grv-001-humanity-ai"    # apex_strategic > strategic
+    g = resolve_goal(
+        dock, "advance humanity ai funding through the hermes pipeline"
+    )
+    # "funding" → humanity-ai-funding (apex); "hermes"/"pipeline" →
+    # hermes-autonomaton (strategic). apex_strategic > strategic.
+    assert g.id == "humanity-ai-funding"
+
+
+# ── Sprint 69.2: expanded-schema permissiveness ──────────────────────────
+
+
+def test_version_string_and_int_accepted(tmp_path):
+    for v in (1, "1", "1.0"):
+        p = tmp_path / "dock.yaml"
+        p.write_text(yaml.safe_dump({"version": v, "goals": [_minimal_goal()]}),
+                     encoding="utf-8")
+        assert load_dock(p) is not None
+
+
+def test_new_vectors_accepted_and_ranked(tmp_path):
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="op", vector="operational"),
+        _minimal_goal(id="pr", vector="product"),
+    ]))
+    by_id = {g.id: g for g in dock.goals}
+    # apex > strategic > operational > product > personal
+    assert by_id["op"].rank > by_id["pr"].rank
+    assert by_id["op"].vector == "operational"
+    assert by_id["pr"].vector == "product"
+
+
+def test_new_statuses_accepted_but_not_active(tmp_path):
+    goals = [
+        _minimal_goal(id="acc", status="accelerating"),
+        _minimal_goal(id="stg", status="staging"),
+        _minimal_goal(id="blk", status="blocked"),
+        _minimal_goal(id="prk", status="parked"),
+    ]
+    dock = load_dock(_write_dock(tmp_path, goals))
+    assert len(dock.goals) == 4                       # all parse, none crash
+    assert {g.id for g in active_goals(dock)} == {"acc"}   # only accelerating
+
+
+def test_default_budget_is_5000(tmp_path):
+    dock = load_dock(_write_dock(tmp_path, [_minimal_goal()]))
+    assert dock.context_char_budget == 5000
+
+
+def test_unknown_keys_pass_through(tmp_path):
+    goal = _minimal_goal(deadline="2026-08-31",
+                         milestones=[{"name": "m1", "status": "pending"}])
+    dock = load_dock(_write_dock(tmp_path, [goal],
+                                 routing_hints={"patterns": []},
+                                 operator_preferences={"voice": "terse"}))
+    assert dock.raw["routing_hints"] == {"patterns": []}
+    assert dock.raw["operator_preferences"] == {"voice": "terse"}
+    g = dock.goals[0]
+    assert g.extra["deadline"] == "2026-08-31"
+    assert g.extra["milestones"] == [{"name": "m1", "status": "pending"}]
+    # required keys are NOT duplicated into extra
+    assert "id" not in g.extra and "keywords" not in g.extra
+
+
+def test_resolved_sources_expands_tilde_and_absolute(tmp_path):
+    goal = _minimal_goal(context_sources=[
+        "goals/rel.md",                 # relative → root/goals/rel.md
+        "~/abs-home.md",                # ~ → expanded home
+        "/etc/abs-root.md",             # absolute → as-is
+    ])
+    dock = load_dock(_write_dock(tmp_path, [goal]))
+    resolved = dock.goals[0].resolved_sources()
+    assert resolved[0] == tmp_path / "goals" / "rel.md"
+    assert resolved[1] == Path("~/abs-home.md").expanduser()
+    assert resolved[1].is_absolute()
+    assert resolved[2] == Path("/etc/abs-root.md")
+
+
+# ── Sprint 69.2: multi-source budget loading ─────────────────────────────
+
+
+def test_load_goal_context_multi_source_all_fit(tmp_path):
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="g", context_sources=["goals/a.md", "goals/b.md"])],
+        {"goals/a.md": "Alpha body.", "goals/b.md": "Beta body."},
+    )
+    out = load_goal_context(dock.goals[0], char_budget=5000)
+    assert "Alpha body." in out and "Beta body." in out
+
+
+def test_load_goal_context_multi_source_skips_when_budget_exhausted(tmp_path):
+    """First source fits and loads; the over-budget second source (and any
+    after it) are skipped — NOT an Andon (the hermes-goal shape)."""
+    first = "F" * 100
+    second = "S" * 5000
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="g", context_sources=["goals/a.md", "goals/b.md",
+                                                 "goals/c.md"])],
+        {"goals/a.md": first, "goals/b.md": second, "goals/c.md": "tail"},
+    )
+    out = load_goal_context(dock.goals[0], char_budget=200)
+    assert out == first                # only the first source survived
+    assert "S" not in out and "tail" not in out
