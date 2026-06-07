@@ -19,6 +19,7 @@ without burning Haiku calls.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -82,6 +83,11 @@ def _finalize(dispatcher_stub, previous_turn_id: str) -> None:
 
 
 class TestIsCorrectionParse:
+    # Sprint 65 (classifier-tool-use-refactor-v1): _parse_classification
+    # now receives the classify_intent tool's structured ``input`` dict,
+    # not a JSON string. The ``raw`` fixtures below stay as JSON strings
+    # for readability and are decoded with json.loads at the call site —
+    # the same dict the live API delivers under tool_choice.
     def test_parses_true_bool(self) -> None:
         raw = (
             '{"routing_envelope": {'
@@ -89,7 +95,7 @@ class TestIsCorrectionParse:
             '"complexity_signal": "simple", "confidence": 0.8},'
             '"learning_envelope": {"is_correction": true}}'
         )
-        fields = _parse_classification(raw)
+        fields = _parse_classification(json.loads(raw))
         assert fields["is_correction"] is True
 
     def test_parses_false_bool(self) -> None:
@@ -99,7 +105,7 @@ class TestIsCorrectionParse:
             '"complexity_signal": "simple", "confidence": 0.8},'
             '"learning_envelope": {"is_correction": false}}'
         )
-        fields = _parse_classification(raw)
+        fields = _parse_classification(json.loads(raw))
         assert fields["is_correction"] is False
 
     def test_lenient_string_true(self) -> None:
@@ -109,7 +115,7 @@ class TestIsCorrectionParse:
             '"complexity_signal": "simple", "confidence": 0.8},'
             '"learning_envelope": {"is_correction": "TRUE"}}'
         )
-        fields = _parse_classification(raw)
+        fields = _parse_classification(json.loads(raw))
         assert fields["is_correction"] is True
 
     def test_missing_field_defaults_to_none(self) -> None:
@@ -119,7 +125,7 @@ class TestIsCorrectionParse:
             '"complexity_signal": "simple", "confidence": 0.8},'
             '"learning_envelope": {}}'
         )
-        fields = _parse_classification(raw)
+        fields = _parse_classification(json.loads(raw))
         assert fields["is_correction"] is None
 
     def test_malformed_value_drops_to_none(self) -> None:
@@ -129,7 +135,7 @@ class TestIsCorrectionParse:
             '"complexity_signal": "simple", "confidence": 0.8},'
             '"learning_envelope": {"is_correction": "yeah_probably"}}'
         )
-        fields = _parse_classification(raw)
+        fields = _parse_classification(json.loads(raw))
         assert fields["is_correction"] is None
 
     def test_legacy_flat_response_has_none(self) -> None:
@@ -138,7 +144,7 @@ class TestIsCorrectionParse:
             '{"intent_class": "planning", "register_class": "casual",'
             '"complexity_signal": "simple", "confidence": 0.8}'
         )
-        fields = _parse_classification(raw)
+        fields = _parse_classification(json.loads(raw))
         assert fields["is_correction"] is None
 
 

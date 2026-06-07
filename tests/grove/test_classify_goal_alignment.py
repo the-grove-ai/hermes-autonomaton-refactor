@@ -13,7 +13,6 @@ in-flight responses mid-transition don't crash routing.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -51,21 +50,21 @@ _FAKE_TIER_CONFIG = TierConfig(
 )
 
 
-def _two_envelope_body(
+def _two_envelope_input(
     *,
     intent_class: str = "code_generation",
     register_class: str = "technical",
     complexity_signal: str = "moderate",
     confidence: float = 0.85,
     goal_alignment: str = "direct",
-) -> str:
-    """The raw body the parser receives after the prefilled "{".
+) -> dict:
+    """The classify_intent tool input dict the parser receives.
 
-    The classifier prefills assistant content with "{" so the response
-    starts the JSON object; the parser re-joins the prefill before
-    calling json.loads. Test bodies follow the same shape.
+    Sprint 65 (classifier-tool-use-refactor-v1): the classifier forces the
+    classify_intent tool, so _parse_classification consumes the tool's
+    structured ``input`` dict directly — no prefill, no JSON string.
     """
-    obj = {
+    return {
         "routing_envelope": {
             "intent_class": intent_class,
             "register_class": register_class,
@@ -76,10 +75,6 @@ def _two_envelope_body(
             "goal_alignment": goal_alignment,
         },
     }
-    serialized = json.dumps(obj)
-    # The fake omits the leading "{" because the real response continues
-    # from the prefill.
-    return serialized[1:]
 
 
 class _FakeUsage:
@@ -88,16 +83,22 @@ class _FakeUsage:
         self.output_tokens = output_tokens
 
 
-def _install_fake_anthropic(monkeypatch, *, text=None, usage=None):
-    """Patch anthropic.Anthropic so _call_classifier hits a fake client."""
+def _install_fake_anthropic(monkeypatch, *, tool_input=None, usage=None):
+    """Patch anthropic.Anthropic so _call_classifier hits a fake client.
 
-    class _Block:
+    Sprint 65: the fake returns a classify_intent tool_use block carrying
+    ``tool_input`` — the wire shape the classifier now consumes.
+    """
+
+    class _ToolUseBlock:
         def __init__(self, value):
-            self.text = value
+            self.type = "tool_use"
+            self.name = "classify_intent"
+            self.input = value
 
     class _Response:
         def __init__(self):
-            self.content = [_Block(text)]
+            self.content = [_ToolUseBlock(tool_input)]
             self.usage = usage or _FakeUsage()
 
     class _Messages:
@@ -227,20 +228,20 @@ class TestReadGoalsContent:
 
 class TestParseClassificationTwoEnvelope:
     def test_parses_two_envelope_response(self):
-        body = _two_envelope_body(
+        tool_input = _two_envelope_input(
             intent_class="debugging",
             confidence=0.7,
             goal_alignment="indirect",
         )
-        parsed = _parse_classification("{" + body)
+        parsed = _parse_classification(tool_input)
         assert parsed["intent_class"] == "debugging"
         assert parsed["confidence"] == 0.7
         assert parsed["goal_alignment"] == "indirect"
 
     @pytest.mark.parametrize("value", list(GOAL_ALIGNMENT_VALUES))
     def test_accepts_each_valid_goal_alignment(self, value: str):
-        body = _two_envelope_body(goal_alignment=value)
-        parsed = _parse_classification("{" + body)
+        tool_input = _two_envelope_input(goal_alignment=value)
+        parsed = _parse_classification(tool_input)
         assert parsed["goal_alignment"] == value
 
     def test_unknown_goal_alignment_drops_to_none(self, caplog):
@@ -248,29 +249,29 @@ class TestParseClassificationTwoEnvelope:
         # and dropped to None rather than failing the whole
         # classification — routing must not depend on the learning
         # envelope's correctness.
-        body = _two_envelope_body(goal_alignment="ratified")
+        tool_input = _two_envelope_input(goal_alignment="ratified")
         with caplog.at_level(logging.DEBUG, logger="grove.classify"):
-            parsed = _parse_classification("{" + body)
+            parsed = _parse_classification(tool_input)
         assert parsed["goal_alignment"] is None
         # Routing fields still valid.
         assert parsed["intent_class"] == "code_generation"
         assert parsed["confidence"] == 0.85
 
     def test_missing_learning_envelope_yields_none(self):
-        body = json.dumps({
+        tool_input = {
             "routing_envelope": {
                 "intent_class": "analysis",
                 "register_class": "strategic",
                 "complexity_signal": "complex",
                 "confidence": 0.6,
             },
-        })[1:]
-        parsed = _parse_classification("{" + body)
+        }
+        parsed = _parse_classification(tool_input)
         assert parsed["goal_alignment"] is None
         assert parsed["intent_class"] == "analysis"
 
     def test_missing_goal_alignment_field_yields_none(self):
-        body = json.dumps({
+        tool_input = {
             "routing_envelope": {
                 "intent_class": "analysis",
                 "register_class": "strategic",
@@ -278,8 +279,8 @@ class TestParseClassificationTwoEnvelope:
                 "confidence": 0.6,
             },
             "learning_envelope": {},
-        })[1:]
-        parsed = _parse_classification("{" + body)
+        }
+        parsed = _parse_classification(tool_input)
         assert parsed["goal_alignment"] is None
 
 
@@ -292,13 +293,13 @@ class TestParseClassificationLegacyFlat:
     and to keep the pre-Phase-2 test bodies passing without rewrite."""
 
     def test_parses_flat_response_routing_only(self):
-        body = json.dumps({
+        tool_input = {
             "intent_class": "code_generation",
             "register_class": "technical",
             "complexity_signal": "moderate",
             "confidence": 0.9,
-        })[1:]
-        parsed = _parse_classification("{" + body)
+        }
+        parsed = _parse_classification(tool_input)
         assert parsed["intent_class"] == "code_generation"
         assert parsed["confidence"] == 0.9
         # No learning envelope in the flat shape → goal_alignment None.
@@ -316,7 +317,7 @@ class TestClassifyForRoutingWithGoals:
             "Ship grove-autonomaton v0.1\n", encoding="utf-8",
         )
         _install_fake_anthropic(
-            monkeypatch, text=_two_envelope_body(goal_alignment="direct"),
+            monkeypatch, tool_input=_two_envelope_input(goal_alignment="direct"),
         )
         result = classify_for_routing("Let's wire the Dispatcher.")
         assert result is not None
@@ -331,7 +332,7 @@ class TestClassifyForRoutingWithGoals:
         assert not isolated_goals_path.exists()
         _install_fake_anthropic(
             monkeypatch,
-            text=_two_envelope_body(goal_alignment="no_goals_set"),
+            tool_input=_two_envelope_input(goal_alignment="no_goals_set"),
         )
         result = classify_for_routing("anything")
         assert result.goal_alignment == "no_goals_set"
@@ -349,21 +350,21 @@ class TestRoutingFieldsConsistency:
     """
 
     def test_routing_fields_identical_across_shapes(self):
-        flat = json.dumps({
+        flat = {
             "intent_class": "planning",
             "register_class": "strategic",
             "complexity_signal": "complex",
             "confidence": 0.72,
-        })[1:]
-        two_envelope = _two_envelope_body(
+        }
+        two_envelope = _two_envelope_input(
             intent_class="planning",
             register_class="strategic",
             complexity_signal="complex",
             confidence=0.72,
             goal_alignment="direct",
         )
-        flat_parsed = _parse_classification("{" + flat)
-        env_parsed = _parse_classification("{" + two_envelope)
+        flat_parsed = _parse_classification(flat)
+        env_parsed = _parse_classification(two_envelope)
         for key in (
             "intent_class", "register_class",
             "complexity_signal", "confidence",

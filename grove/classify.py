@@ -26,7 +26,6 @@ tracker follows the binding automatically.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 from dataclasses import dataclass
@@ -88,6 +87,91 @@ GOAL_ALIGNMENT_VALUES = (
 )
 
 
+# Sprint 65 (classifier-tool-use-refactor-v1): the classification tool.
+# tool_choice forces the telemetry model to CALL this tool, so the API
+# contract — not a prompt instruction — enforces the schema. The model
+# physically cannot return {follow_ups: [...]}; it can only emit a
+# classify_intent call carrying these parameters. Enums are sourced from
+# the module tuples above so the tool schema and the downstream validators
+# can never drift.
+_CLASSIFY_TOOL = {
+    "name": "classify_intent",
+    "description": (
+        "Record the classification of one operator request. Fill every "
+        "field with your single best judgment — the routing_envelope "
+        "drives tier selection, the learning_envelope feeds the learning "
+        "layer."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "routing_envelope": {
+                "type": "object",
+                "description": (
+                    "Drives tier selection. Keep these reliable; routing "
+                    "accuracy depends on them."
+                ),
+                "properties": {
+                    "intent_class": {
+                        "type": "string",
+                        "enum": list(INTENT_CLASSES),
+                        "description": "The kind of work the operator is asking for.",
+                    },
+                    "register_class": {
+                        "type": "string",
+                        "enum": list(REGISTER_CLASSES),
+                        "description": "The communication register.",
+                    },
+                    "complexity_signal": {
+                        "type": "string",
+                        "enum": list(COMPLEXITY_SIGNALS),
+                        "description": "How demanding the request is.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": "Confidence in intent_class, 0.0 to 1.0.",
+                    },
+                },
+                "required": [
+                    "intent_class",
+                    "register_class",
+                    "complexity_signal",
+                    "confidence",
+                ],
+            },
+            "learning_envelope": {
+                "type": "object",
+                "description": (
+                    "Feeds the feed-first learning layer. Routing ignores "
+                    "these."
+                ),
+                "properties": {
+                    "goal_alignment": {
+                        "type": "string",
+                        "enum": list(GOAL_ALIGNMENT_VALUES),
+                        "description": (
+                            "How the request aligns with the operator's "
+                            "current goals."
+                        ),
+                    },
+                    "is_correction": {
+                        "type": "boolean",
+                        "description": (
+                            "True if the message indicates the system's "
+                            "previous response was wrong or misunderstood."
+                        ),
+                    },
+                },
+                "required": ["is_correction"],
+            },
+        },
+        "required": ["routing_envelope", "learning_envelope"],
+    },
+}
+
+
 def _build_classification_system_prompt(goals_content: str) -> str:
     """Compose the classifier system prompt with the two-envelope schema.
 
@@ -106,12 +190,11 @@ def _build_classification_system_prompt(goals_content: str) -> str:
     )
     return f"""\
 You are the telemetry classifier for a cognitive-routing system. You read
-one operator request and return exactly one JSON object describing it —
-no prose, no markdown, no explanation.
+one operator request and judge what kind of work it is. Record your
+judgment by calling the classify_intent tool. Every routing field is
+required; fill each with your single best value.
 
-Return ONE JSON object with TWO envelopes:
-
-"routing_envelope" — drives tier selection. Keep these reliable; routing
+routing_envelope — drives tier selection. Keep these reliable; routing
 accuracy depends on them.
 
   intent_class — the kind of work the operator is asking for. Pick the
@@ -191,7 +274,7 @@ EXAMPLES — boundary cases the definitions alone can blur:
   "Review this PR for risks"
     → analysis, moderate       (synthesis on what is in front of you)
 
-"learning_envelope" — drives the feed-first learning layer. Routing
+learning_envelope — drives the feed-first learning layer. Routing
 ignores these; this is interpretive signal for cross-session pattern
 recognition.
 
@@ -216,8 +299,7 @@ recognition.
 OPERATOR GOALS (the alignment target):
 {goals_block}
 
-Pick the single best value for each field. Return ONE JSON object with
-both envelopes; no prose, no markdown, no explanation.\
+Pick the single best value for each field and call classify_intent.\
 """
 
 
@@ -313,8 +395,8 @@ def classify_for_routing(message: str) -> Optional[ClassificationResult]:
 
     try:
         runtime, tier_config = _telemetry_tier_runtime()
-        raw = _call_classifier(runtime, message, tier_config=tier_config)
-        fields = _parse_classification(raw)
+        tool_input = _call_classifier(runtime, message, tier_config=tier_config)
+        fields = _parse_classification(tool_input)
         return ClassificationResult(
             intent_class=fields["intent_class"],
             pattern_hash=_pattern_hash(fields["intent_class"], message),
@@ -368,8 +450,14 @@ def _call_classifier(
     message: str,
     *,
     tier_config: "Optional[Any]" = None,
-) -> str:
-    """Make the T-telemetry classification call; return the raw JSON text.
+) -> dict:
+    """Make the T-telemetry classification call; return the tool input dict.
+
+    Sprint 65 (classifier-tool-use-refactor-v1): the call forces the
+    ``classify_intent`` tool via ``tool_choice``, so the schema is enforced
+    by the API contract rather than by prompt instruction. The model
+    returns a ``tool_use`` block whose ``input`` is the structured
+    classification — no prefill, no freeform JSON, no bracket hunting.
 
     ``tier_config`` is the T-telemetry ``TierConfig`` resolved by
     ``_telemetry_tier_runtime``; its ``cost_per_mtok_input`` /
@@ -417,50 +505,56 @@ def _call_classifier(
         model=runtime["model"],
         max_tokens=_MAX_OUTPUT_TOKENS,
         system=system_prompt,
-        messages=[
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": "{"},  # prefill — force JSON
-        ],
+        tools=[_CLASSIFY_TOOL],
+        tool_choice={"type": "tool", "name": "classify_intent"},
+        messages=[{"role": "user", "content": message}],
     )
     _track_cost(response.usage, tier_config=tier_config)
-    # Prefill: the model continues from "{"; rejoin for a full object.
-    return "{" + response.content[0].text
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use" and \
+                getattr(block, "name", None) == "classify_intent":
+            return block.input
+    # tool_choice forces the call, so this should never fire. If it does,
+    # raise loudly — classify_for_routing's except logs it at ERROR and
+    # routes on default-tier behaviour (the commanded Sprint 12 D4
+    # degradation). A silent None would discard the diagnostic.
+    raise ValueError(
+        "classifier returned no classify_intent tool_use block: "
+        f"{getattr(response, 'content', None)!r}"
+    )
 
 
-def _parse_classification(raw: str) -> dict:
-    """Parse the classifier's JSON and validate the required fields.
+def _parse_classification(data: dict) -> dict:
+    """Validate the classifier tool input and map it to result fields.
+
+    Sprint 65 (classifier-tool-use-refactor-v1): ``data`` arrives as the
+    ``classify_intent`` tool's structured ``input`` dict — the API
+    contract already guarantees the envelope shape and the enums. This
+    function still validates and normalizes defensively (a model can omit
+    an optional field; confidence is clamped, ``goal_alignment`` is
+    closed-set-checked, ``is_correction`` is lenient-parsed) and maps the
+    two envelopes onto the ClassificationResult fields.
 
     Accepts both shapes:
 
-    * **Two-envelope (Sprint 28 Phase 2 contract).** The current prompt
-      produces ``{"routing_envelope": {...}, "learning_envelope": {...}}``.
-      Routing fields read from ``routing_envelope``; ``goal_alignment``
-      reads from ``learning_envelope`` (defaults to ``None`` if absent).
+    * **Two-envelope.** ``{"routing_envelope": {...},
+      "learning_envelope": {...}}`` — the tool's contract. Routing fields
+      read from ``routing_envelope``; ``goal_alignment`` /
+      ``is_correction`` read from ``learning_envelope``.
 
-    * **Flat (legacy / Sprint 12 contract).** A response where the
-      routing fields sit at the top level. Defensive support for tests
-      that mock the older shape and for any in-flight response that
-      arrives mid-prompt-transition. Treated as routing-only —
-      ``goal_alignment`` is ``None``.
+    * **Flat.** Routing fields at the top level — defensive support for
+      tests and any caller passing a flat dict. Treated as routing-only.
 
-    Raises ValueError if the response is not usable as routing
+    Raises ValueError if the input is not usable as routing
     classification — caught by ``classify_for_routing`` as a commanded
     fall-through (no classification → default tier; the agent still
     runs per Sprint 12 D4).
     """
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        end = raw.rfind("}")  # tolerate trailing prose after the object
-        if end == -1:
-            raise ValueError(f"classifier response is not JSON: {raw!r}")
-        data = json.loads(raw[: end + 1])
-
     if not isinstance(data, dict):
-        raise ValueError(f"classifier response is not a JSON object: {raw!r}")
+        raise ValueError(f"classifier tool input is not an object: {data!r}")
 
     # Two-envelope shape takes priority; otherwise treat the object as
-    # the legacy flat routing-only response.
+    # a flat routing-only input.
     if isinstance(data.get("routing_envelope"), dict):
         routing = data["routing_envelope"]
         learning = data.get("learning_envelope") if isinstance(
