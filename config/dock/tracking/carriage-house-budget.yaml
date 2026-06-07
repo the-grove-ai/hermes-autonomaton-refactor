@@ -1,0 +1,36 @@
+# Carriage House Budget — Local Tracking
+# Primary tracking is in Notion (data source c30780a7-8eef-83d8-a6bb-07603d0b746f)
+# This file is a quick-reference summary Mylo can read without a Notion call.
+
+project: carriage-house-renovation
+location: Indianapolis, IN
+status: planning
+
+budget_summary:
+  total_budget: 0      # Update as budget is set
+  total_actual: 0      # Update as expenses come in
+  variance: 0          # budget - actual
+
+# Add contractor bids here for comparison
+bids: []
+  # - contractor: "Example Contractor"
+  #   scope: "Framing and drywall"
+  #   amount: 0
+  #   date_received: 2026-06-01
+  #   notes: ""
+
+# Key dates
+timeline:
+  design_complete: null
+  permits_filed: null
+  permits_approved: null
+  construction_start: null
+  rough_in_inspection: null
+  construction_complete: null
+  final_inspection: null
+
+# Punch list items
+punch_list: []
+  # - item: "Touch up paint on north wall"
+  #   status: pending
+  #   assigned_to: ""

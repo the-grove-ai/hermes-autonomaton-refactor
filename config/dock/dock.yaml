@@ -1,100 +1,668 @@
-# ============================================================================
-# Grove Autonomaton — The Dock
-# ============================================================================
+# ══════════════════════════════════════════════════════════════════════
+# THE DOCK — Mylo's Strategic Compass
+# ══════════════════════════════════════════════════════════════════════
 #
-# Location:     ~/.grove/dock/dock.yaml (operator sovereign copy)
-#               config/dock/dock.yaml   (repo default template / seed)
+# Operator: Jim Calhoun
+# System: Mylo (Hermes Autonomaton, grove-autonomaton)
+# Updated: 2026-06-07
 #
-# Purpose:      The Dock is the operator's strategic command center. It holds
-#               long-running goals so the Autonomaton understands WHY a given
-#               intent is being asked — and silently collapses an ambiguous
-#               request into the operator's local reality (Superposition
-#               Collapse). Local-first, Obsidian-compatible: plain markdown
-#               under goals/, this manifest in YAML.
+# Purpose: The Dock holds the operator's strategic goals so each
+# conversation turn can identify the relevant vector, load context,
+# unlock skills, and surface opportunities to compound progress.
 #
-#               The Dock is sovereign. No Notion API calls for local context;
-#               dock.yaml is the source of truth (Sprint 68 the-dock-v1).
+# Lodestar: "Design is philosophy expressed through constraint."
 #
-# Failure register (Sprint 68 GATE-B, DECISION 2):
-#   * dock.yaml ABSENT          → Dock not installed; graceful, legacy
-#                                 goals.md path is unaffected.
-#   * dock.yaml MALFORMED       → fail-loud (ValueError), like the Sprint 29
-#                                 taxonomy loader.
-#   * a context_sources file
-#     present but unreadable     → retry 100/200/400ms (Obsidian race),
-#                                 then fail-loud.
+# North Star: The Autonomaton is a seismic inversion of computer
+# science. Classical CS = deterministic execution against implementer
+# code. Autonomaton = accumulated context and judgment at the sovereign
+# node — declarative, human-readable. The owner drives the system
+# toward destinations only their experience and soil generate.
+# Variance between nodes IS the point.
 #
-# Vector priority (conflict resolution): apex_strategic > strategic > personal
-# Status filter (active goals):          accelerating, cruising
-#                                        (paused, complete are excluded)
-# ----------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════
 
-version: 1
+version: "1.0"
+operator: jim-calhoun
+system_name: mylo
+home: ~/.grove/
 
-# Char budget for the per-turn injected goal-context block (Sprint 68
-# GATE-B DECISION 4). Tunable here; the budget guard truncates full
-# content → frontmatter-only → ANDON against this cap.
-context_char_budget: 4000
+# ──────────────────────────────────────────────────────────────────────
+# GOAL TAXONOMY
+# ──────────────────────────────────────────────────────────────────────
+#
+# Vectors:
+#   apex_strategic  — Singular forcing function. Everything feeds this.
+#   strategic       — Direct contributors to the apex goal.
+#   operational     — Recurring execution rhythms.
+#   product         — Discrete deliverables with ship dates.
+#   personal        — Non-Grove life management.
+#
+# Status:
+#   accelerating    — Active focus, consuming daily attention.
+#   cruising        — In motion, needs periodic check-ins.
+#   staging         — Defined but not yet started.
+#   blocked         — Waiting on a dependency.
+#   parked          — Intentionally paused.
+#
+# ──────────────────────────────────────────────────────────────────────
 
 goals:
-  - id: grv-001-humanity-ai
-    name: "GRV-001 — Humanity-Aligned AI"
+
+  # ════════════════════════════════════════════════════════════════════
+  # APEX GOAL — Everything feeds this.
+  # ════════════════════════════════════════════════════════════════════
+
+  - id: humanity-ai-funding
+    name: "HumanityAI Grant Submission"
     vector: apex_strategic
     status: accelerating
-    definition_of_done: >-
-      The Grove Pattern document is published and a public reference
-      implementation demonstrates model independence and sovereign
-      architecture.
+    deadline: 2026-08-31
+    definition_of_done: >
+      The Grove Foundation submits a compelling application to HumanityAI
+      for funding, backed by a published pattern document, a functional
+      reference implementation (Hermes), a live website with standards,
+      an active advisory board, and demonstrated public traction via
+      LinkedIn/Substack content and influencer engagement.
+    why_this_matters: >
+      Full-time Grove work requires funding. HumanityAI is the summer
+      target. Every other strategic goal either produces evidence for
+      this application or builds the institutional credibility to win it.
+    feeds_from:
+      - hermes-autonomaton
+      - grove-content-pipeline
+      - influencer-outreach
+      - grove-site
+      - advisory-board
     context_sources:
-      - "goals/grv-001-humanity-ai.md"
+      - ~/.grove/dock/goals/humanity-ai-context.md
     keywords:
-      - "grv-001"
-      - "humanity"
-      - "alignment"
-      - "pattern"
-      - "doctorow"
-      - "sovereign"
-      - "foundation"
-      - "model independence"
+      - humanity ai
+      - funding
+      - grant
+      - application
+      - submission
+      - 501c6
+      - foundation
+    milestones:
+      - name: "Application requirements researched"
+        status: pending
+      - name: "Narrative draft complete"
+        status: pending
+      - name: "Budget and use-of-funds prepared"
+        status: pending
+      - name: "Supporting materials package assembled"
+        status: pending
+      - name: "Application submitted"
+        status: pending
     unlocked_skills:
-      - "linkedin-thinkpiece"
-      - "jim-voice-writing-style"
+      - grove-thought-leadership
+      - grove-identity-governance
+
+  # ════════════════════════════════════════════════════════════════════
+  # STRATEGIC GOALS — Direct contributors to the apex.
+  # ════════════════════════════════════════════════════════════════════
+
+  - id: hermes-autonomaton
+    name: "Hermes Autonomaton — Reference Implementation"
+    vector: strategic
+    status: accelerating
+    definition_of_done: >
+      The Hermes Autonomaton (grove-autonomaton) is a fully functional
+      daily-driver replacement for Atlas, running the GRV-001 five-stage
+      pipeline with Sovereignty Gate, TPS mechanisms (Jidoka, Andon,
+      Kaizen), Cognitive Router, and the Dock goal system. The codebase
+      is clean enough to serve as the canonical open-source example of
+      the Autonomaton Pattern applied to a popular agent framework.
+    why_this_matters: >
+      Hermes IS the proof point. The HumanityAI application needs a
+      working reference implementation, not just a paper. Atlas is
+      deprecated — Hermes is the successor, and it needs to demonstrate
+      the pattern in production daily use.
+    context_sources:
+      - ~/.grove/dock/goals/hermes-context.md
+      - ~/GitHub/grove-autonomaton/README.md
+      - ~/GitHub/grove-autonomaton/CLAUDE.md
+    keywords:
+      - hermes
+      - mylo
+      - autonomaton
+      - grove-autonomaton
+      - dispatcher
+      - pipeline
+      - sovereignty gate
+      - andon
+      - jidoka
+      - kaizen
+      - cognitive router
+      - routing config
+      - zone model
+      - skill ratchet
+      - foundation loop
+    milestones:
+      - name: "Dock YAML integrated and functional"
+        status: in_progress
+      - name: "Sovereignty Gate operational (andon quarantine + promote)"
+        status: complete
+      - name: "Cognitive Router four-tier dispatch working"
+        status: complete
+      - name: "Foundation Loop sprint methodology ported"
+        status: in_progress
+      - name: "Atlas feature parity achieved"
+        status: pending
+      - name: "Notion MCP integration stable"
+        status: in_progress
+      - name: "README and release positioning finalized"
+        status: in_progress
+      - name: "Public repo cleaned and publishable"
+        status: pending
+    unlocked_skills:
+      - grove-architecture
+      - grove-cognitive-router
+      - grove-identity-governance
+      - grove-foundation-loop
+
+  - id: grove-content-pipeline
+    name: "Content Pipeline — LinkedIn, Substack, Pattern Document"
+    vector: strategic
+    status: accelerating
+    definition_of_done: >
+      The five-piece LinkedIn thinkpiece series is published. The
+      Autonomaton Pattern document (v1.4+) is finalized and hosted on
+      the-grove.ai. Substack is active with at least 4 posts. The
+      content pipeline is repeatable — not one-offs.
+    why_this_matters: >
+      Public traction is evidence for funders. The content pipeline
+      builds the audience that validates the thesis before anyone has
+      to be pitched. Guerrilla GTM: if you read the pattern and think
+      "this could work for multi-agent systems," you've independently
+      discovered the Grove thesis.
+    context_sources:
+      - ~/.grove/dock/goals/content-pipeline-context.md
+    keywords:
+      - linkedin
+      - thinkpiece
+      - substack
+      - pattern document
+      - content
+      - publishing
+      - writing
+      - zone 1
+      - zone 2
+      - zone 3
+      - vibe code
+      - reckoning
+      - apple generation
+      - knowledge polarity
+      - ratchet
+    milestones:
+      - name: "LinkedIn Piece 1 — 'The Vibe Code Reckoning' published"
+        status: pending
+      - name: "LinkedIn Piece 2 — 'What the Apple Generation Knew' published"
+        status: pending
+      - name: "LinkedIn Piece 3 — 'Your AI Is Not Learning' published"
+        status: pending
+      - name: "LinkedIn Piece 4 — 'The Governance Problem' published"
+        status: pending
+      - name: "LinkedIn Piece 5 — 'The Autonomaton Pattern' (launch) published"
+        status: pending
+      - name: "Pattern Document v1.4 finalized and hosted"
+        status: in_progress
+      - name: "Substack cadence established (2x/month minimum)"
+        status: in_progress
+      - name: "Hermes release post published"
+        status: pending
+    content_zones:
+      zone_1: "Practitioner-level, no thesis. Establishes credibility."
+      zone_2: "Thesis-adjacent, no product pitch. Introduces concepts."
+      zone_3: "Direct Grove positioning. The reveal."
+    unlocked_skills:
+      - grove-thought-leadership
+      - grove-pr-positioning
+      - linkedin-thinkpiece
+      - jim-voice-writing-style
 
   - id: influencer-outreach
-    name: "Influencer Outreach"
+    name: "Influencer & Institutional Outreach"
     vector: strategic
     status: cruising
-    definition_of_done: >-
-      Five aligned public voices are engaged on the Grove thesis and
-      carrying it into their own audiences.
+    definition_of_done: >
+      Five or more aligned public voices are engaged on the Grove thesis
+      and carrying it into their own audiences. At least two institutional
+      relationships (university, enterprise, or regulatory) are active.
+      The Notion outreach database is the operational CRM.
+    why_this_matters: >
+      The application is stronger with endorsements and partnerships.
+      More importantly, Grove's thesis spreads by being independently
+      rediscovered — outreach accelerates the surface area for discovery.
     context_sources:
-      - "goals/influencer-outreach.md"
+      - ~/.grove/dock/goals/influencer-outreach-context.md
     keywords:
-      - "outreach"
-      - "influencer"
-      - "email"
-      - "linkedin"
-      - "engage"
-      - "pitch"
-      - "draft to"
+      - outreach
+      - influencer
+      - media
+      - press
+      - PR
+      - Kara Swisher
+      - narrative
+      - amplification
+      - partnership
+    targets:
+      confirmed_advisors:
+        - name: "Clement Mok"
+          role: "Design strategy review, quality gate"
+          status: active
+        - name: "Susan Kare"
+          role: "Visual language critique, launch participation"
+          status: active
+        - name: "Randy Wigginton"
+          role: "Architecture review, operational credibility"
+          status: active
+      enterprise_targets:
+        - name: "Brinqa (Ron Dovich via Erik Cottrell)"
+          angle: "EU AI Act / CRA compliance forcing function, Aug-Sep 2026"
+          status: engaged
+        - name: "Dave Mariani / AtScale"
+          angle: "Semantic layer parallels, Zone Model review, OSI coalition"
+          status: engaged
+      institutional_targets:
+        - name: "Jamie Merisotis / Lumina Foundation"
+          angle: "Credentials of value, Goal 2040, GRV-003 convergence"
+          status: introduced
+        - name: "Bjarne Stroustrup"
+          angle: "Technical review, C++ governance-over-capability parallel"
+          status: pending_approach
+      press_targets:
+        - name: "Kara Swisher"
+          angle: "Primary media target, via Alison Bushnell"
+          status: pending
+        - name: "Alison Bushnell / 104 West Partners"
+          role: "PR partner"
+          status: briefed
+      connectors:
+        - name: "Erik Cottrell"
+          role: "GTM collaborator, Brinqa/Adobe/Lilly connector"
+        - name: "Derek"
+          role: "Merisotis introduction"
+    milestones:
+      - name: "Notion outreach database structured and populated"
+        status: in_progress
+      - name: "Outreach cadence established (2-3 contacts/week)"
+        status: pending
+      - name: "First press/media engagement secured"
+        status: pending
+      - name: "Brinqa engagement advanced to reference implementation"
+        status: pending
+      - name: "Stroustrup approach executed"
+        status: pending
     unlocked_skills:
-      - "jim-voice-writing-style"
+      - grove-thought-leadership
+      - grove-pr-positioning
 
-  - id: carriage-house
+  - id: advisory-board
+    name: "Advisory Board — Operational Rollout"
+    vector: strategic
+    status: cruising
+    definition_of_done: >
+      Clement Mok, Susan Kare, and Randy Wigginton are formally engaged
+      as Grove Foundation advisors with defined involvement cadences.
+      Advisory relationships are producing artifacts (reviews, endorsements,
+      introductions) that feed the funding application and public positioning.
+    why_this_matters: >
+      Three confirmed advisors with Apple lineage is an extraordinary
+      asset. The mode shifted from recruiting to operational rollout
+      in April 2026. Now the work is extracting value — reviews,
+      endorsements, network introductions — not onboarding.
+    context_sources:
+      - ~/.grove/dock/goals/advisory-board-context.md
+    keywords:
+      - advisor
+      - advisory board
+      - clement mok
+      - susan kare
+      - randy wigginton
+      - apple
+      - colophon
+    milestones:
+      - name: "All three advisors formally acknowledged in materials"
+        status: complete
+      - name: "Pattern document reviewed by at least two advisors"
+        status: pending
+      - name: "Advisory endorsement quotes secured for application"
+        status: pending
+    unlocked_skills: []
+
+  # ════════════════════════════════════════════════════════════════════
+  # OPERATIONAL GOALS — Recurring rhythms.
+  # ════════════════════════════════════════════════════════════════════
+
+  - id: grove-site
+    name: "the-grove.ai — Site Maintenance & Standards Publication"
+    vector: operational
+    status: cruising
+    definition_of_done: >
+      the-grove.ai is current, stable, and serves as the canonical
+      home for all published standards (GRV-001 through GRV-004),
+      the Λ methodology, the Knowledge Polarity paper, and the
+      Registrar. The site is hospitable-graph compliant — AI agents
+      can produce faithful summaries from its structure.
+    context_sources:
+      - ~/.grove/dock/goals/grove-site-context.md
+      - ~/GitHub/grove-launch-site/README.md
+    keywords:
+      - site
+      - the-grove.ai
+      - vercel
+      - deploy
+      - standards
+      - GRV-001
+      - GRV-002
+      - GRV-003
+      - GRV-004
+      - lambda
+      - knowledge polarity
+      - registrar
+      - hospitable graph
+    deploy_protocol: >
+      Manual deploy only: npx vercel --prod --yes from
+      ~/GitHub/grove-launch-site. Verify with curl, never web_fetch
+      (stale CDN). Two-pass regex for Λ entities.
+    active_backlog:
+      - protocol-retrofit-v1 (Bicameral Canon)
+      - manifest-design-v1
+      - css-coherence-v1
+      - footer-nav-standardization-v1
+      - homepage-card-grid-redesign-v1
+    milestones:
+      - name: "All GRV standards pages current"
+        status: in_progress
+      - name: "grove-standards.json corpus manifest up to date"
+        status: in_progress
+      - name: "Hospitable graph (llms.txt, sitemap, robots.txt) verified"
+        status: complete
+    unlocked_skills:
+      - grove-architecture
+
+  # ════════════════════════════════════════════════════════════════════
+  # PRODUCT GOALS — Discrete deliverables.
+  # ════════════════════════════════════════════════════════════════════
+
+  - id: lambda-watch
+    name: "Λ Watch — Subscription Research Product"
+    vector: product
+    status: staging
+    definition_of_done: >
+      Λ Watch MVP is live: Python cron telemetry scanning the AI
+      landscape, Claude API recognition, deterministic compilation,
+      Notion-based approval, and subscriber delivery. The product
+      demonstrates the Autonomaton Pattern applied to a real
+      monitoring use case — forkable for any domain.
+    why_this_matters: >
+      Λ Watch is both a revenue opportunity and a discovery vehicle.
+      Anyone who uses it experiences the Autonomaton Pattern without
+      being told they're using it. It also produces a continuous
+      stream of publishable content for the content pipeline.
+    context_sources:
+      - ~/.grove/dock/goals/lambda-watch-context.md
+    keywords:
+      - lambda watch
+      - Λ Watch
+      - monitoring
+      - subscription
+      - research product
+      - lambda score
+      - AI landscape
+    milestones:
+      - name: "Requirements document finalized"
+        status: pending
+      - name: "Telemetry cron MVP functional"
+        status: pending
+      - name: "First Λ Watch report produced"
+        status: pending
+    unlocked_skills:
+      - grove-architecture
+      - grove-cognitive-router
+
+  # ════════════════════════════════════════════════════════════════════
+  # PERSONAL GOALS — Non-Grove life management.
+  # ════════════════════════════════════════════════════════════════════
+
+  - id: carriage-house-renovation
     name: "Carriage House Renovation"
     vector: personal
     status: accelerating
-    definition_of_done: >-
-      The carriage house is renovated into usable workshop/studio space
-      and in regular use.
+    definition_of_done: >
+      The carriage house / garage is renovated into usable workshop
+      and studio space, construction is complete, inspections passed,
+      and the space is in regular use.
     context_sources:
-      - "goals/carriage-house.md"
+      - ~/.grove/dock/goals/carriage-house-context.md
     keywords:
-      - "carriage house"
-      - "epoxy"
-      - "flooring"
-      - "renovation"
-      - "indianapolis"
-      - "garage"
-      - "contractor"
+      - carriage house
+      - garage
+      - renovation
+      - construction
+      - contractor
+      - permits
+      - workshop
+      - studio
+      - building
+    tracking:
+      budget_file: ~/.grove/dock/tracking/carriage-house-budget.yaml
+      notes: >
+        Track contractor bids, material costs, permits, inspection
+        dates, and construction timeline. Mylo should help compare
+        bids, flag overruns, and maintain a punch list.
+    milestones:
+      - name: "Design and permits finalized"
+        status: pending
+      - name: "Contractor selected and scheduled"
+        status: pending
+      - name: "Construction started"
+        status: pending
+      - name: "Rough-in inspections passed"
+        status: pending
+      - name: "Construction complete"
+        status: pending
+      - name: "Final inspection passed"
+        status: pending
     unlocked_skills: []
+
+  - id: personal-finance
+    name: "Expense Tracking & Personal Finance"
+    vector: personal
+    status: cruising
+    definition_of_done: >
+      Expenses are tracked consistently. Monthly summaries are
+      produced. Grove Foundation expenses are separated from personal
+      expenses for tax and grant reporting purposes. The system is
+      low-friction enough to actually use.
+    context_sources:
+      - ~/.grove/dock/goals/personal-finance-context.md
+    keywords:
+      - expense
+      - expenses
+      - budget
+      - money
+      - finance
+      - receipt
+      - tax
+      - foundation expenses
+      - personal expenses
+      - reimbursement
+    tracking:
+      expense_log: ~/.grove/dock/tracking/expenses.yaml
+      categories:
+        - grove_foundation  # Standards work, hosting, legal, travel
+        - take_flight       # Consulting practice expenses
+        - personal          # Non-business
+        - carriage_house    # Construction project (cross-ref)
+    milestones:
+      - name: "Expense categories and tracking format established"
+        status: pending
+      - name: "Monthly review cadence set"
+        status: pending
+      - name: "Grove vs. personal separation clean for tax prep"
+        status: pending
+    unlocked_skills: []
+
+# ══════════════════════════════════════════════════════════════════════
+# GOAL RELATIONSHIPS — How goals feed each other.
+# ══════════════════════════════════════════════════════════════════════
+#
+# The dependency graph:
+#
+#   hermes-autonomaton ──────┐
+#   grove-content-pipeline ──┤
+#   influencer-outreach ─────┼──▶ humanity-ai-funding (APEX)
+#   grove-site ──────────────┤
+#   advisory-board ──────────┘
+#
+#   lambda-watch ◀── hermes-autonomaton (pattern proof)
+#   lambda-watch ──▶ grove-content-pipeline (produces content)
+#
+#   carriage-house ◀──▶ personal-finance (budget tracking)
+#
+# ══════════════════════════════════════════════════════════════════════
+
+# ──────────────────────────────────────────────────────────────────────
+# ROUTING HINTS — Help Mylo classify conversation turns.
+# ──────────────────────────────────────────────────────────────────────
+
+routing_hints:
+  # When the operator mentions these, activate the corresponding goal.
+  # Multiple goals can activate simultaneously.
+  patterns:
+    - match: ["funding", "grant", "humanity", "application", "submit"]
+      goals: [humanity-ai-funding]
+      zone: yellow
+
+    - match: ["hermes", "mylo", "dispatcher", "pipeline", "andon", "jidoka"]
+      goals: [hermes-autonomaton]
+      zone: green
+
+    - match: ["linkedin", "substack", "thinkpiece", "article", "draft", "write"]
+      goals: [grove-content-pipeline]
+      zone: green
+
+    - match: ["outreach", "influencer", "press", "PR", "media"]
+      goals: [influencer-outreach]
+      zone: green
+
+    - match: ["advisor", "clement", "susan", "randy", "wigginton", "mok", "kare"]
+      goals: [advisory-board, influencer-outreach]
+      zone: green
+
+    - match: ["site", "deploy", "vercel", "the-grove.ai", "standards"]
+      goals: [grove-site]
+      zone: green
+
+    - match: ["lambda watch", "Λ Watch", "monitoring", "subscription"]
+      goals: [lambda-watch]
+      zone: yellow
+
+    - match: ["garage", "carriage", "renovation", "contractor", "construction"]
+      goals: [carriage-house-renovation]
+      zone: green
+
+    - match: ["expense", "budget", "receipt", "money", "finance", "cost"]
+      goals: [personal-finance, carriage-house-renovation]
+      zone: green
+
+    - match: ["brinqa", "ron dovich", "erik", "EU AI Act", "compliance"]
+      goals: [influencer-outreach]
+      zone: yellow
+
+    - match: ["mariani", "atscale", "semantic layer", "OSI"]
+      goals: [influencer-outreach]
+      zone: green
+
+    - match: ["stroustrup", "bjarne", "C++", "technical review"]
+      goals: [influencer-outreach]
+      zone: yellow
+
+    - match: ["merisotis", "lumina", "credentials", "education"]
+      goals: [influencer-outreach]
+      zone: yellow
+
+    - match: ["tailwind", "dave", "danny", "saas", "proof point"]
+      goals: [hermes-autonomaton]
+      zone: yellow
+
+    - match: ["kara swisher", "alison", "bushnell", "press"]
+      goals: [influencer-outreach]
+      zone: red
+
+# ──────────────────────────────────────────────────────────────────────
+# OPERATOR PREFERENCES — Mylo behavioral calibration.
+# ──────────────────────────────────────────────────────────────────────
+
+operator_preferences:
+  voice:
+    register: "McKinsey-influenced. Lead with 'so what.' Active voice. No hedging."
+    institutional: "Use 'we' for Grove Foundation published materials."
+    personal: "First-person, warm but efficient for peer correspondence."
+    anti_patterns:
+      - "No sycophantic openings"
+      - "No corporate filler"
+      - "No breathless superlatives"
+      - "Less words, more weight"
+
+  tools:
+    primary_dev: mac
+    shell: zsh
+    python: python3
+    paths: "~/GitHub/ for repos"
+    deploy: "npx vercel --prod --yes, verify with curl"
+    notion: "Source of truth for GTM, sprints, and outreach"
+
+  workflow:
+    three_node: >
+      Claude Desktop (PM/strategy/writing) + Claude Code (execution)
+      + Jim (operator/approver). Desktop never modifies application
+      code directly.
+    sprint_gate: >
+      CC must state plan and list files before any write. Jim provides
+      explicit greenlight. Andon before any writes.
+    model_preference: >
+      Opus for writing/strategy. Other models for coding tasks.
+
+  naming_discipline:
+    - "Operator, not publisher"
+    - "Keg, not page"
+    - "Autonomaton, not autonomaton (case matters)"
+    - "Dispatcher is not renamed to Autonomaton (part-whole mismatch)"
+
+  factual_claims: >
+    Always source before publishing. Verify Λ scores via Python.
+    Flag approximations.
+
+# ──────────────────────────────────────────────────────────────────────
+# NOTION SOURCES — Key databases and pages.
+# ──────────────────────────────────────────────────────────────────────
+
+notion_sources:
+  gtm_plan: "313780a7-8eef-817b-8d70-fea0369e64e5"
+  bicameral_canon: "34b780a78eef80869776d82be123972e"
+  feature_roadmap: "Grove Feature Roadmap database"
+  outreach_database: "TBD — to be structured"
+  thought_capture: "b5eb61c0-af3f-4a43-9b5d-6e28f97377b8"
+
+# ──────────────────────────────────────────────────────────────────────
+# DESIGN SYSTEM — Canonical visual identity.
+# ──────────────────────────────────────────────────────────────────────
+
+design_system:
+  background: "#080808"
+  text: "#E8E2D9"
+  accent: "#D4621A"
+  accent_bright: "#F07030"
+  fonts:
+    display: "Instrument Serif"
+    body: "DM Sans (300-600)"
+    mono: "Fragment Mono (wide letter-spacing)"
+  mark: "Asanoha (麻の葉)"
+  mark_principles:
+    - Origin
+    - Self-Similarity
+    - Emergent Strength
+    - No Center of Authority

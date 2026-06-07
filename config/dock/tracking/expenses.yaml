@@ -1,0 +1,26 @@
+# Expense Tracking Log
+# Quick-entry format for Mylo to log and summarize expenses.
+
+categories:
+  - grove_foundation
+  - take_flight
+  - personal
+  - carriage_house
+
+# Monthly summaries (Mylo updates these)
+summaries: {}
+  # 2026-06:
+  #   grove_foundation: 0
+  #   take_flight: 0
+  #   personal: 0
+  #   carriage_house: 0
+  #   total: 0
+
+# Expense entries — append new ones at the bottom
+entries: []
+  # - date: 2026-06-07
+  #   category: grove_foundation
+  #   amount: 20.00
+  #   vendor: Vercel
+  #   description: "Monthly hosting"
+  #   receipt: false
