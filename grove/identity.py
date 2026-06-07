@@ -353,6 +353,16 @@ def _resolve_raw(
 
     Returns the file content (str) or None if no source resolves.
     """
+    # Memory is the one identity file whose store lives in a subdirectory:
+    # the memory subsystem writes ~/.grove/memories/MEMORY.md via
+    # get_memory_dir(), not the ~/.grove root the other identity files use.
+    # Resolve it through the substrate's own path function so identity and
+    # the memory tool can never diverge again.
+    if canonical == "memory.md":
+        from tools.memory_tool import get_memory_dir  # local: avoid import cycle
+        store_path = get_memory_dir() / "MEMORY.md"
+        return _read(store_path) if store_path.exists() else None
+
     canonical_path = home / canonical
     if canonical_path.exists():
         return _read(canonical_path)
