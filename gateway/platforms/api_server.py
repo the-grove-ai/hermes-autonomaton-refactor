@@ -582,20 +582,6 @@ def _derive_chat_session_id(
 # parse the operator's free-text reply. See grove/operator_input.py.
 
 
-def _args_hash(args: Optional[Dict[str, Any]]) -> str:
-    """Stable content hash of a tool's arguments, for grant matching.
-
-    A primed governance grant records (tool_name, args_hash); the replay
-    turn's handler matches the re-issued action against it so only the
-    exact approved action is auto-allowed.
-    """
-    try:
-        payload = json.dumps(args or {}, sort_keys=True, default=str)
-    except Exception:
-        payload = str(args)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 def _butler_governance_prompt(tool_name: str, tool_args: Optional[Dict[str, Any]]) -> str:
     """Butler-register governance prompt for a gated action.
 
@@ -3007,9 +2993,20 @@ class APIServerAdapter(BasePlatformAdapter):
                         grant = json.loads(grant_raw)
                     except Exception:
                         grant = {}
-                    if (grant.get("tool_name") == intent.tool_name
-                            and grant.get("args_hash") == _args_hash(args)):
+                    if grant.get("tool_name") == intent.tool_name:
                         # One-shot consume; let the approved action run.
+                        #
+                        # Matched on tool_name ONLY. The replay turn re-runs the
+                        # operator's original message, and the LLM regenerates
+                        # this tool's arguments non-deterministically (different
+                        # parent / properties / blocks each call). Binding the
+                        # grant to an exact args hash therefore never matched on
+                        # replay and the turn re-prompted forever (Sprint 67
+                        # smoke-test bug). The grant is already session-scoped,
+                        # one-shot, and tied to the operator's explicit approval
+                        # of THIS request, so tool-name scope is the right
+                        # granularity — a distinct protected tool still halts
+                        # and gets its own approval.
                         db.set_meta(governance_grant_key(session_id), "")
                         return grant.get("disposition", "once")
             now = time.time()
@@ -3107,7 +3104,6 @@ class APIServerAdapter(BasePlatformAdapter):
             db.set_meta(governance_grant_key(session_id), json.dumps({
                 "disposition": disposition,
                 "tool_name": pending.tool_name,
-                "args_hash": _args_hash(pending.tool_args),
             }))
             db.set_meta(state_key(session_id), "")
             logger.info(

@@ -30,7 +30,6 @@ from grove.operator_input import (
 from grove.zones import ZoneResult
 from gateway.platforms.api_server import (
     APIServerAdapter,
-    _args_hash,
     _butler_governance_prompt,
     _classify_governance_reply,
 )
@@ -121,29 +120,40 @@ class TestWebGovernanceHandler:
     def test_replay_with_grant_returns_disposition_and_consumes(self):
         fake = _FakeDB()
         adapter = _adapter(fake)
-        args = {"query": "x"}
         fake.set_meta(governance_grant_key("s1"), json.dumps({
             "disposition": "once",
             "tool_name": "mcp_notion_API_post_search",
-            "args_hash": _args_hash(args),
         }))
         handler = adapter._make_web_governance_handler("s1", "search")
-        assert handler(_halt(args=args)) == "once"
+        assert handler(_halt(args={"query": "x"})) == "once"
         # Grant consumed (one-shot).
         assert not fake.get_meta(governance_grant_key("s1"))
 
-    def test_grant_for_different_action_does_not_apply(self):
+    def test_grant_matches_same_tool_even_with_different_args(self):
+        """The Sprint 67 smoke-test fix: the replay regenerates tool args
+        non-deterministically, so a grant must match on tool_name ALONE —
+        not an exact args hash — or the turn re-prompts forever."""
         fake = _FakeDB()
         adapter = _adapter(fake)
         fake.set_meta(governance_grant_key("s1"), json.dumps({
             "disposition": "always",
             "tool_name": "mcp_notion_API_post_search",
-            "args_hash": _args_hash({"query": "x"}),
         }))
         handler = adapter._make_web_governance_handler("s1", "search")
-        # A DIFFERENT action (different args) must still halt.
+        # Same tool, DIFFERENT args (the replay) — must still apply.
+        assert handler(_halt(args={"query": "COMPLETELY DIFFERENT"})) == "always"
+
+    def test_grant_for_a_different_tool_does_not_apply(self):
+        fake = _FakeDB()
+        adapter = _adapter(fake)
+        fake.set_meta(governance_grant_key("s1"), json.dumps({
+            "disposition": "always",
+            "tool_name": "mcp_notion_API_post_search",
+        }))
+        handler = adapter._make_web_governance_handler("s1", "search")
+        # A DIFFERENT protected tool must still halt for its own approval.
         with pytest.raises(OperatorInputRequired):
-            handler(_halt(args={"query": "DIFFERENT"}))
+            handler(_halt(tool="mcp_notion_API_post_page", args={"title": "x"}))
 
 
 # ── resolution of the operator's next message ────────────────────────
