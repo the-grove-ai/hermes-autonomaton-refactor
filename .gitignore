@@ -23,6 +23,9 @@ tmp/
 temp_vision_images/
 hermes-*/*
 examples/
+# Skill workflow examples are content, not build artifacts — keep tracked
+!skills/**/examples/
+!skills/**/examples/**
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl
 run_datagen_kimik2-thinking.sh
