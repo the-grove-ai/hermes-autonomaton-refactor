@@ -21,9 +21,9 @@ Autonomaton's governance state.
 | Setting | Value |
 |---|---|
 | Project | `grove-hermes-autonomaton` |
-| Zone | `europe-west1-b` |
+| Zone | `us-central1-a` |
 | Instance | `hermes-gateway` |
-| Machine type | `e2-small` (2 vCPU, 2 GB) |
+| Machine type | `e2-standard-4` (4 vCPU, 16 GB) |
 | OS | Ubuntu 24.04 LTS |
 | Boot disk | 20 GB SSD |
 | Persistent disk | `grove-data-disk`, 10 GB SSD, mounted at `/mnt/grove-data` |
@@ -81,7 +81,7 @@ the SSH command + the OS Login role reminder.
 SSH in over the IAP tunnel:
 
 ```bash
-gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap
+gcloud compute ssh hermes-gateway --zone=us-central1-a --tunnel-through-iap
 ```
 
 Then run the setup script with sudo:
@@ -143,9 +143,9 @@ the `routing.config*.yaml` set, `zones.schema.yaml`, the identity files
 **Ship + extract it** (pipes over IAP; extracts as `hermes`):
 
 ```bash
-gcloud compute scp --tunnel-through-iap --zone=europe-west1-b \
+gcloud compute scp --tunnel-through-iap --zone=us-central1-a \
   /tmp/grove-state.tgz hermes-gateway:/tmp/grove-state.tgz
-gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap --command='
+gcloud compute ssh hermes-gateway --zone=us-central1-a --tunnel-through-iap --command='
   sudo tar xzf /tmp/grove-state.tgz -C /mnt/grove-data/.grove/
   sudo chown -R hermes:hermes /mnt/grove-data/.grove
   rm -f /tmp/grove-state.tgz'
@@ -163,7 +163,7 @@ its `.env`. This reads the key from Keychain and pipes it over SSH **stdin**
 ```bash
 KEY=$(security find-generic-password -s grove-anthropic-api-key -w) && \
 printf 'ANTHROPIC_API_KEY=%s\n' "$KEY" | \
-gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+gcloud compute ssh hermes-gateway --zone=us-central1-a --tunnel-through-iap \
   --command='sudo -u hermes tee -a /home/hermes/.grove/.env >/dev/null'
 ```
 
@@ -213,7 +213,7 @@ Work through these from your phone (Telegram) and an SSH session:
 **Deploy the latest `origin/main`:**
 
 ```bash
-scripts/deploy.sh                      # defaults: europe-west1-b / hermes-gateway
+scripts/deploy.sh                      # defaults: us-central1-a / hermes-gateway
 scripts/deploy.sh --zone us-central1-a --instance hermes-gateway
 ```
 
@@ -229,7 +229,7 @@ restarts the service, and prints the deployed commit.
 **SSH in:**
 
 ```bash
-gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap
+gcloud compute ssh hermes-gateway --zone=us-central1-a --tunnel-through-iap
 ```
 
 **Tail logs (journald — the gateway and the watchdog both log here):**
@@ -243,7 +243,7 @@ journalctl -u hermes-gateway --since "1 hour ago"
 **Back up state (from your Mac):**
 
 ```bash
-rsync -avz -e "gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap --" \
+rsync -avz -e "gcloud compute ssh hermes-gateway --zone=us-central1-a --tunnel-through-iap --" \
   :/mnt/grove-data/.grove/ ~/grove-vm-backup/
 ```
 
@@ -274,7 +274,7 @@ before it runs.
 1. Generate an auth key at https://login.tailscale.com/admin/settings/keys
 2. Join the tailnet from the VM:
    ```
-   gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+   gcloud compute ssh hermes-gateway --zone=us-central1-a --tunnel-through-iap \
      --command='sudo tailscale up --authkey=tskey-auth-XXXX'
    ```
    Note the tailnet hostname it reports (e.g. `hermes-gateway`).
@@ -284,13 +284,13 @@ before it runs.
    generates `API_SERVER_*` in `~/.grove/.env`, installs Open WebUI into a
    dedicated venv, and writes the launcher:
    ```
-   gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+   gcloud compute ssh hermes-gateway --zone=us-central1-a --tunnel-through-iap \
      --command="sudo -u hermes -H bash -lc 'cd ~/hermes-autonomaton-refactor && bash scripts/setup_open_webui.sh'"
    ```
 2. The script prints two root steps (it never escalates itself). Run them to
    bind the API server and start Open WebUI:
    ```
-   gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+   gcloud compute ssh hermes-gateway --zone=us-central1-a --tunnel-through-iap \
      --command='sudo systemctl restart hermes-gateway && sudo systemctl enable --now open-webui'
    ```
 
@@ -301,7 +301,7 @@ before it runs.
 - API server health (on the VM): `curl -fsS http://127.0.0.1:8642/health`.
 - Logs:
   ```
-  gcloud compute ssh hermes-gateway --zone=europe-west1-b --tunnel-through-iap \
+  gcloud compute ssh hermes-gateway --zone=us-central1-a --tunnel-through-iap \
     --command='journalctl -u open-webui -f'
   ```
 
@@ -327,7 +327,7 @@ with no public exposure.
 - **Adding a device.** Install Tailscale on it and run `tailscale up` under the
   same account; it joins the tailnet and reaches the VM by its tailnet name.
 - **If Tailscale is down.** The IAP tunnel remains the fallback for
-  administration: `gcloud compute ssh hermes-gateway --zone=europe-west1-b
+  administration: `gcloud compute ssh hermes-gateway --zone=us-central1-a
   --tunnel-through-iap`. Open WebUI itself is mesh-only by design.
 
 ---
@@ -365,10 +365,10 @@ sudo systemctl stop hermes-gateway
 sudo systemctl disable hermes-gateway
 
 # From your Mac — delete the VM (keeps the data disk):
-gcloud compute instances delete hermes-gateway --zone=europe-west1-b --keep-disks=data
+gcloud compute instances delete hermes-gateway --zone=us-central1-a --keep-disks=data
 
 # To also delete the persistent state disk (destructive):
-gcloud compute disks delete grove-data-disk --zone=europe-west1-b
+gcloud compute disks delete grove-data-disk --zone=us-central1-a
 
 # Remove the firewall rule:
 gcloud compute firewall-rules delete allow-iap-ssh
