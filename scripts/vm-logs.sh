@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-ZONE="europe-west1-b"
+ZONE="us-central1-a"
 VM="hermes-gateway"
 SSH="gcloud compute ssh ${VM} --zone=${ZONE} --tunnel-through-iap --command"
 

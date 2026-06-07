@@ -16,7 +16,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."   # run from repo root: web/ + hermes_cli/ live there
 
-ZONE="europe-west1-b"
+ZONE="us-central1-a"
 INSTANCE="hermes-gateway"
 REPO_DIR="/home/hermes/hermes-autonomaton-refactor"
 
