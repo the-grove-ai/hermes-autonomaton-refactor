@@ -3554,8 +3554,9 @@ class Dispatcher:
            * ``"deny"`` → add to deny cache.
            * ``"session"`` / ``"always"`` → add to allow cache.
            * ``"once"`` → no cache mutation.
-        7. ``"always"`` queues a ZonePromotionProposal to the
-           GRV-008 proposal queue.
+        7. ``"always"`` applies a zone rule immediately (Sprint 67):
+           operator-initiated "always" is self-approving, so the rule
+           is written to zones.schema.yaml rather than queued.
         8. Clear the pending_andon marker in ``finally``.
 
         Per D3 lock: pending_andon is a structural persistent marker —
@@ -3641,17 +3642,21 @@ class Dispatcher:
             self._session_allow_cache.add(cache_key)
         # "once" — no cache mutation.
 
-        # Sprint 32 Phase 2 — "always" builds and queues a
-        # ZonePromotionProposal. Failures degrade gracefully: the
-        # session_allow cache mutation above already gave the
-        # operator session-scoped relief; failing the queue write
-        # surfaces a warning but does NOT block the action.
-        # Non-TTY handlers (gateway, batch) never return "always"
-        # so this branch is implicitly TTY-scoped per the GATE-A
-        # A4 lock — the queue is not written from a surface the
-        # operator can't reach `autonomaton flywheel approve` from.
+        # Sprint 67 (kaizen-governance-parity-v1) — operator-initiated
+        # "always" APPLIES the zone rule immediately rather than queuing
+        # a proposal. Reaching this branch means an operator tapped or
+        # typed "always" on a live Andon prompt (CLI [a] or Telegram
+        # kz:always) — the tap IS the approval, so there is no second
+        # gate. This supersedes the Sprint 32 A4 lock that queued from
+        # non-TTY surfaces: a mobile operator cannot reach `flywheel
+        # approve`, so queuing stranded the decision (the bug this
+        # fixes). System-initiated promotions (Ratchet / observed
+        # patterns) are written to the queue by other code paths and are
+        # untouched here. Failures degrade with a loud warning — the
+        # session_allow cache mutation above already gave this turn's
+        # action its relief.
         if disposition == "always":
-            self._queue_zone_promotion_proposal(triggering_intent)
+            self._apply_zone_promotion(triggering_intent)
 
         # Sprint 53.2 — if an "allow once" disposition just let a
         # quarantined (.andon) skill run, flag it so the post-execution
@@ -3664,18 +3669,28 @@ class Dispatcher:
 
         return disposition
 
-    def _queue_zone_promotion_proposal(self, intent: Any) -> None:
-        """Build + append a ZonePromotionProposal to the GRV-008 queue.
+    def _apply_zone_promotion(self, intent: Any) -> None:
+        """Apply an operator-initiated "always" promotion immediately.
 
-        Sprint 32 Phase 2. Best-effort: a queue-write failure logs a
-        warning and returns silently — the operator-level relief
-        already landed via the session_allow cache. The
-        ``always``-path is observable through both the cache
-        population and (on success) the queue file.
+        Sprint 67 (kaizen-governance-parity-v1). Mirrors the apply step
+        that ``autonomaton flywheel approve`` performs
+        (``grove.flywheel_cli._approve_zone_promotion`` →
+        ``grove.zone_rules.save_zone_rule``) so an operator who taps
+        "Always" on a gateway surface — where ``flywheel approve`` is out
+        of reach — gets their decision honored without a second gate.
+        The pattern/reason are derived through
+        ``build_zone_promotion_proposal`` so the rule written here is
+        byte-identical to the one the queue+approve path would have
+        produced.
+
+        Best-effort: a save failure logs a warning and returns. The
+        session_allow cache mutation in the caller already gave this
+        turn's action its relief; persistence failing is observable but
+        must not block the line.
         """
         try:
             from grove.kaizen_promotion import build_zone_promotion_proposal
-            from grove.eval.proposal_queue import append as _queue_append
+            from grove.zone_rules import save_zone_rule
 
             arguments = intent.arguments or {}
             # For terminal halts the operator-faced command string
@@ -3688,31 +3703,29 @@ class Dispatcher:
                 else str(arguments)
             )
             evidence_turn_id = self._current_turn_id or ""
-            proposal, _payload = build_zone_promotion_proposal(
+            _proposal, payload = build_zone_promotion_proposal(
                 tool_name=intent.tool_name,
                 command_string=command_string or "",
                 evidence_turn_id=evidence_turn_id,
             )
-            appended = _queue_append(proposal)
-            if appended:
-                logger.info(
-                    "[grove.dispatcher] Kaizen 'always' queued "
-                    "zone_promotion proposal: tool=%s pattern=%r id=%s",
-                    intent.tool_name,
-                    proposal.payload.get("pattern"),
-                    proposal.proposal_id,
-                )
-            else:
-                logger.info(
-                    "[grove.dispatcher] Kaizen 'always' proposal already "
-                    "in queue for tool=%s — idempotent skip",
-                    intent.tool_name,
-                )
+            save_zone_rule(
+                tool_id=payload["tool"],
+                pattern=payload["pattern"],
+                zone=payload.get("zone", "green"),
+                reason=payload.get("reason", ""),
+            )
+            logger.info(
+                "[grove.dispatcher] operator 'always' applied immediately: "
+                "tool=%s pattern=%r zone=%s",
+                payload["tool"],
+                payload["pattern"],
+                payload.get("zone", "green"),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "[grove.dispatcher] Kaizen 'always' proposal queueing "
-                "failed (non-fatal; session_allow cache still applies): "
-                "%r", exc,
+                "[grove.dispatcher] operator 'always' promotion apply "
+                "failed (non-fatal; session_allow cache still applies this "
+                "turn): %r", exc,
             )
 
     # ── Sprint 63 — synthesized-skill acceptance materialization ─────────
