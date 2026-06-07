@@ -14,6 +14,8 @@ a thin dispatcher that delegates to a platform-provided callback.
 import json
 from typing import List, Optional, Callable
 
+from grove.operator_input import OperatorInputRequired
+
 
 # Maximum number of predefined choices the agent can offer.
 # A 5th "Other (type your answer)" option is always appended by the UI.
@@ -62,6 +64,15 @@ def clarify_tool(
 
     try:
         user_response = callback(question, choices)
+    except OperatorInputRequired:
+        # Sprint 67 — control-flow contract, not an error. A store-and-
+        # resume surface (web /v1/chat/completions) raises this from its
+        # clarify callback to yield control and deliver the question as
+        # the turn's response; the operator answers next turn. It must
+        # propagate past this generic catch untouched. (Redundant under
+        # the BaseException base class, but kept explicit so the contract
+        # is visible at the tool boundary — see grove/operator_input.py.)
+        raise
     except Exception as exc:
         return json.dumps(
             {"error": f"Failed to get user input: {exc}"},

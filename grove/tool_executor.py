@@ -38,6 +38,8 @@ import contextvars
 import logging
 import threading
 import time
+
+from grove.operator_input import OperatorInputRequired
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional, Protocol
 
@@ -887,6 +889,18 @@ class ToolExecutor:
                         tool_call_id=intent.call_id,
                         pre_tool_block_checked=True,
                     )
+                except OperatorInputRequired:
+                    # Sprint 67 — control-flow contract, not a tool error.
+                    # The clarify tool (NEVER-parallel, runs here in the
+                    # sequential executor) raises this from a store-and-
+                    # resume surface's callback to yield control and deliver
+                    # its question as the turn's response. It MUST propagate
+                    # past this generic catch, not become an "Error
+                    # executing tool" observation. (Redundant under the
+                    # BaseException base class; kept explicit so the
+                    # contract is visible at the tool boundary — see
+                    # grove/operator_input.py.)
+                    raise
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error(
