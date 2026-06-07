@@ -236,12 +236,21 @@ def test_safe_read_fails_loud_after_retries():
 # ── Component 3: per-turn goal-context injection (Path A′) ───────────────
 
 
-def _dock_with_context(tmp_path: Path, goals: List[dict], files: dict) -> Dock:
+def _dock_with_context(
+    tmp_path: Path,
+    goals: List[dict],
+    files: dict,
+    *,
+    context_char_budget_top: int = None,
+) -> Dock:
     """Write a dock.yaml plus its goals/*.md context files; load it."""
     (tmp_path / "goals").mkdir(exist_ok=True)
     for rel, body in files.items():
         (tmp_path / rel).write_text(body, encoding="utf-8")
-    return load_dock(_write_dock(tmp_path, goals))
+    top = {}
+    if context_char_budget_top is not None:
+        top["context_char_budget"] = context_char_budget_top
+    return load_dock(_write_dock(tmp_path, goals, **top))
 
 
 def test_resolve_goal_single_keyword_match(tmp_path):
@@ -317,3 +326,75 @@ def test_build_turn_goal_context_missing_file_fails_loud(tmp_path):
     ]))
     with pytest.raises(OSError, match="could not read"):
         build_turn_goal_context(dock, message="epoxy?")
+
+
+# ── Component 4: context budget guard ────────────────────────────────────
+
+
+def test_parse_frontmatter_present():
+    meta, body = dock_mod._parse_frontmatter(
+        "---\nsummary: hi\nlatest_update: now\n---\nThe body."
+    )
+    assert meta == {"summary": "hi", "latest_update": "now"}
+    assert body == "The body."
+
+
+def test_parse_frontmatter_absent():
+    meta, body = dock_mod._parse_frontmatter("No frontmatter here.")
+    assert meta == {}
+    assert body == "No frontmatter here."
+
+
+def test_load_goal_context_full_under_budget(tmp_path):
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="g", context_sources=["goals/g.md"])],
+        {"goals/g.md": "---\nsummary: s\n---\nShort body."},
+    )
+    out = load_goal_context(dock.goals[0], char_budget=4000)
+    assert "Short body." in out             # full content path
+
+
+def test_load_goal_context_truncates_to_frontmatter(tmp_path):
+    big_body = "X" * 500
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="g", context_sources=["goals/g.md"])],
+        {"goals/g.md": f"---\nsummary: short summary\nlatest_update: a tick\n---\n{big_body}"},
+    )
+    out = load_goal_context(dock.goals[0], char_budget=80)
+    assert "X" * 500 not in out             # body dropped
+    assert "short summary" in out           # digest kept
+    assert "Now: a tick" in out
+
+
+def test_load_goal_context_andon_when_digest_too_big(tmp_path):
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="g", context_sources=["goals/g.md"])],
+        {"goals/g.md": "---\nsummary: " + ("S" * 300) + "\n---\n" + ("B" * 300)},
+    )
+    with pytest.raises(dock_mod.DockBudgetAndon, match="cannot fit"):
+        load_goal_context(dock.goals[0], char_budget=50)
+
+
+def test_load_goal_context_andon_when_no_frontmatter_over_budget(tmp_path):
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="g", context_sources=["goals/g.md"])],
+        {"goals/g.md": "B" * 500},           # no frontmatter to fall back to
+    )
+    with pytest.raises(dock_mod.DockBudgetAndon):
+        load_goal_context(dock.goals[0], char_budget=50)
+
+
+def test_budget_andon_propagates_through_turn_context(tmp_path):
+    """A budget ANDON in load must surface out of the turn orchestration."""
+    dock = _dock_with_context(
+        tmp_path,
+        [_minimal_goal(id="g", keywords=["epoxy"], context_sources=["goals/g.md"])],
+        {"goals/g.md": "B" * 5000},
+        context_char_budget_top=80,
+    )
+    with pytest.raises(dock_mod.DockBudgetAndon):
+        build_turn_goal_context(dock, message="epoxy please")

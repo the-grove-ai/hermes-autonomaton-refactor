@@ -56,6 +56,7 @@ __all__ = [
     "Goal",
     "Dock",
     "TurnGoalContext",
+    "DockBudgetAndon",
     "VECTOR_RANK",
     "ACTIVE_STATUSES",
     "load_dock",
@@ -345,16 +346,88 @@ def resolve_goal(
     return max(matches, key=lambda g: g.rank)
 
 
-def load_goal_context(goal: Goal, char_budget: int) -> str:
-    """Load a goal's ``context_sources`` content for injection.
+class DockBudgetAndon(RuntimeError):
+    """Even the frontmatter digest exceeds the context budget — fail-loud.
 
-    Component 3 reads the full content via the Obsidian-race-tolerant
-    reader. Component 4 wraps this in the incremental truncation pipeline
-    (full → frontmatter-only → ANDON) against ``char_budget``. The
-    parameter is threaded now so the seam is stable across that change.
+    Truncating full content to the frontmatter digest is a DESIGNED
+    fallback, not an Andon. Only when the digest ITSELF will not fit does
+    the Dock halt the turn: the operator must raise ``context_char_budget``
+    or trim the goal file. Silent truncation past this floor is the
+    antipattern the Architectural Prime Directive forbids.
     """
-    parts = [_safe_read(p) for p in goal.resolved_sources()]
-    return "\n\n".join(parts).strip()
+
+
+def _parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
+    """Split a markdown file into (frontmatter mapping, body).
+
+    Frontmatter is a leading ``---`` fenced YAML block. Returns ``({}, text)``
+    when it is absent, unterminated, unparseable, or not a mapping — the
+    caller treats "no frontmatter" as "nothing to fall back to".
+    """
+    if not text.startswith("---"):
+        return {}, text
+    lines = text.split("\n")
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            try:
+                meta = yaml.safe_load("\n".join(lines[1:i])) or {}
+            except yaml.YAMLError:
+                return {}, text
+            if not isinstance(meta, dict):
+                return {}, text
+            return meta, "\n".join(lines[i + 1:]).strip()
+    return {}, text
+
+
+def _frontmatter_digest(meta: Dict[str, Any]) -> str:
+    """The summary + latest_update fallback rendering (Component 4 step 3)."""
+    out: List[str] = []
+    if meta.get("summary"):
+        out.append(str(meta["summary"]))
+    if meta.get("latest_update"):
+        out.append(f"Now: {meta['latest_update']}")
+    return "\n".join(out)
+
+
+def load_goal_context(goal: Goal, char_budget: int) -> str:
+    """Load a goal's ``context_sources``, truncating to fit ``char_budget``.
+
+    Incremental pipeline (Component 4):
+
+      1. full content fits the budget    → inject full content
+      2. full content over budget        → fall back to the frontmatter
+                                            digest (summary + latest_update)
+      3. digest also over (or absent)    → :class:`DockBudgetAndon`
+
+    Step 2 is a designed, logged truncation — not an Andon. Step 3 is the
+    Andon: the floor itself will not fit.
+    """
+    raw = [_safe_read(p) for p in goal.resolved_sources()]
+    full = "\n\n".join(r.strip() for r in raw).strip()
+    if len(full) <= char_budget:
+        return full
+
+    digests = []
+    for r in raw:
+        meta, _ = _parse_frontmatter(r)
+        d = _frontmatter_digest(meta)
+        if d:
+            digests.append(d)
+    digest = "\n\n".join(digests).strip()
+    if digest and len(digest) <= char_budget:
+        logger.warning(
+            "[dock] goal %r context (%d chars) over budget %d — truncated "
+            "to frontmatter digest (%d chars)",
+            goal.id, len(full), char_budget, len(digest),
+        )
+        return digest
+
+    raise DockBudgetAndon(
+        f"[dock] goal {goal.id!r} context cannot fit the {char_budget}-char "
+        f"budget: full={len(full)} chars, frontmatter digest={len(digest)} "
+        f"chars. Raise context_char_budget in dock.yaml or trim "
+        f"{', '.join(goal.context_sources)}."
+    )
 
 
 def build_turn_goal_context(
