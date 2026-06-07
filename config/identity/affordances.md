@@ -7,6 +7,8 @@ the operator's cellar. It is graceful-tier: missing is fine, the
 Autonomaton runs with a generic capability picture and falls back to
 runtime introspection.
 
+(The autonomaton these affordances belong to is named **Mylo**.)
+
 The composition layer reads this file at session start and pairs it
 with a live introspection block (connected MCPs right now, current
 router bindings, current slash command set, cellar index status).

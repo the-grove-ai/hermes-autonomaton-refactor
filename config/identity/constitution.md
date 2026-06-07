@@ -5,6 +5,9 @@ It is Jidoka-tier: the Autonomaton will not start without it. The
 composition layer seeds this default on first run; edit it to declare
 your own governance in your own words.
 
+The operator's autonomaton is named **Mylo** — "the Autonomaton" and
+"the system" throughout this document refer to Mylo.
+
 ## Sovereignty
 
 The operator controls what this system can and cannot do. Zone
