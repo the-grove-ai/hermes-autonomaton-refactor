@@ -398,3 +398,61 @@ def test_budget_andon_propagates_through_turn_context(tmp_path):
     )
     with pytest.raises(dock_mod.DockBudgetAndon):
         build_turn_goal_context(dock, message="epoxy please")
+
+
+# ── Component 5: conflict resolution (Ghost Active Goal Overlap) ──────────
+
+
+def test_resolve_vector_priority_wins(tmp_path):
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="strat", vector="strategic", keywords=["doctorow"]),
+        _minimal_goal(id="apex", vector="apex_strategic", keywords=["doctorow"]),
+    ]))
+    assert resolve_goal(dock, "email to doctorow").id == "apex"
+
+
+def test_resolve_vector_priority_beats_history(tmp_path):
+    """History only breaks ties WITHIN the top vector — it never overrides
+    a higher vector."""
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="apex", vector="apex_strategic", keywords=["doctorow"]),
+        _minimal_goal(id="strat", vector="strategic", keywords=["doctorow"]),
+    ]))
+    g = resolve_goal(dock, "email to doctorow", history=["strat", "strat", "strat"])
+    assert g.id == "apex"                   # vector priority, not momentum
+
+
+def test_resolve_tie_uses_history_momentum(tmp_path):
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="alpha", vector="strategic", keywords=["shared"]),
+        _minimal_goal(id="beta", vector="strategic", keywords=["shared"]),
+    ]))
+    # both strategic → tie; most-recent history entry among leaders wins
+    assert resolve_goal(dock, "the shared topic", history=["alpha", "beta"]).id == "beta"
+    assert resolve_goal(dock, "the shared topic", history=["beta", "alpha"]).id == "alpha"
+
+
+def test_resolve_tie_no_history_falls_to_manifest_order(tmp_path):
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="first", vector="strategic", keywords=["shared"]),
+        _minimal_goal(id="second", vector="strategic", keywords=["shared"]),
+    ]))
+    assert resolve_goal(dock, "shared topic", history=[]).id == "first"
+
+
+def test_resolve_history_window_is_last_three(tmp_path):
+    """Only the last 3 history entries count toward momentum."""
+    dock = load_dock(_write_dock(tmp_path, [
+        _minimal_goal(id="alpha", vector="strategic", keywords=["shared"]),
+        _minimal_goal(id="beta", vector="strategic", keywords=["shared"]),
+    ]))
+    # 'alpha' is 4 back (outside the window); 'beta' is within → beta wins
+    g = resolve_goal(dock, "shared", history=["alpha", "beta", "x", "y"])
+    assert g.id == "beta"
+
+
+def test_doctorow_example_against_seed():
+    """The SPEC worked example, against the committed seed manifest."""
+    dock = load_dock(_SEED_MANIFEST)
+    g = resolve_goal(dock, "Draft an email to Doctorow about the GRV-001 spec")
+    assert g.id == "grv-001-humanity-ai"    # apex_strategic > strategic

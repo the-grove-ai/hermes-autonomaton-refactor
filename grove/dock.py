@@ -326,12 +326,21 @@ def resolve_goal(
     message: str,
     history: Optional[List[str]] = None,
 ) -> Optional[Goal]:
-    """Identify which active goal a prompt touches, by keyword match.
+    """Identify which active goal a prompt touches (Ghost Active Goal Overlap).
 
-    Component 3 ships the keyword-match + single-result path. Component 5
-    hardens the multi-match case (vector priority + rolling 3-intent
-    history). Until then a multi-match deterministically returns the
-    highest-vector candidate (and, among ties, the manifest order).
+    Keyword match first. On a single match, return it. On overlap (the
+    prompt touches two goals at once), resolve deterministically:
+
+      1. Highest vector priority wins (apex_strategic > strategic >
+         personal).
+      2. Tie at the top vector → rolling 3-intent history momentum: the
+         most recently resolved of the tied leaders wins.
+      3. Still tied (no history) → manifest order (the first declared).
+
+    Example (the seeded Dock): "Draft an email to Doctorow about the
+    GRV-001 spec" hits both ``influencer-outreach`` (email, doctorow) and
+    ``grv-001-humanity-ai`` (grv-001, doctorow). Vector priority resolves
+    to ``grv-001-humanity-ai`` (apex_strategic > strategic).
     """
     lowered = message.lower()
     matches = [
@@ -342,8 +351,21 @@ def resolve_goal(
         return None
     if len(matches) == 1:
         return matches[0]
-    # Provisional multi-match pick — Component 5 adds the history tiebreak.
-    return max(matches, key=lambda g: g.rank)
+
+    # 1) highest vector priority
+    top_rank = max(g.rank for g in matches)
+    leaders = [g for g in matches if g.rank == top_rank]
+    if len(leaders) == 1:
+        return leaders[0]
+
+    # 2) tie → rolling 3-intent history momentum (most recent first)
+    leader_by_id = {g.id: g for g in leaders}
+    for gid in reversed(list(history or [])[-3:]):
+        if gid in leader_by_id:
+            return leader_by_id[gid]
+
+    # 3) deterministic floor — first in manifest order
+    return leaders[0]
 
 
 class DockBudgetAndon(RuntimeError):
