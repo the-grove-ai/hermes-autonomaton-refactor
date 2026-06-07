@@ -285,6 +285,19 @@ tool_zones:
       - match_pattern: '.*\.grove/skills/\.andon/.*'
         zone: yellow
         reason: "Quarantined skill — not yet promoted. Execution requires operator disposition (Sprint 53.2 quarantine pipeline)."
+      # ── Notion fallback skill: governed by SUBCOMMAND (Sprint 69) ──
+      # scripts/notion.py is the sovereign no-OAuth fallback to the hosted
+      # Notion MCP. Its path lives under ~/.grove/skills/, so without these
+      # rules the broad promoted-skills green rule below would auto-approve
+      # every subcommand — including writes. Explicit subcommand rules here
+      # (first-match-wins, ABOVE the broad rule) split read from write:
+      # search/get/query are Green, create-page/update-page are Yellow.
+      - match_pattern: '.*\bnotion\.py\s+(create-page|update-page)\b.*'
+        zone: yellow
+        reason: "Notion write (page create/update) via the fallback skill — Yellow-zone approval (Sprint 69)."
+      - match_pattern: '.*\bnotion\.py\s+(search|get|query)\b.*'
+        zone: green
+        reason: "Notion read (search/get/query) via the fallback skill — auto-approved Green (Sprint 69)."
       # ── Promoted skills: path-prefix GREEN ─────────────────────────
       # Any terminal command whose argument references a path under
       # ~/.grove/skills/ executes a skill the operator already approved
@@ -381,36 +394,32 @@ tool_zones:
   # Role/permission management on a shared service.
   discord_admin:                             red
 
-  # ── Notion MCP bridge: READ → GREEN ──
-  # Names follow `mcp_<server>_<operation>` per tools/mcp_tool.py.
-  # Notion is the only MCP server on the grove-autonomaton CLI;
-  # Google Workspace runs through Claude Desktop, not this CLI.
-  mcp_notion_API_get_block_children:         green
-  mcp_notion_API_get_self:                   green
-  mcp_notion_API_get_user:                   green
-  mcp_notion_API_get_users:                  green
-  mcp_notion_API_list_data_source_templates: green
-  mcp_notion_API_post_search:                green
-  mcp_notion_API_query_data_source:          green
-  mcp_notion_API_retrieve_a_block:           green
-  mcp_notion_API_retrieve_a_comment:         green
-  mcp_notion_API_retrieve_a_database:        green
-  mcp_notion_API_retrieve_a_data_source:     green
-  mcp_notion_API_retrieve_a_page:            green
-  mcp_notion_API_retrieve_a_page_property:   green
+  # ── Hosted Notion MCP: READ → GREEN (Sprint 69) ──
+  # Names follow `mcp_<server>_<operation>` per tools/mcp_tool.py. The
+  # server key is `notion` and the hosted tools are named `notion-*`, so
+  # the registered names carry a (cosmetic) doubled `notion`. These are
+  # the hosted surface at mcp.notion.com; verify exact registered names
+  # against the live registry after the OAuth bootstrap and adjust if the
+  # sanitizer differs. The retired local @notionhq server used different
+  # (`mcp_notion_API_*`) names — removed in Sprint 69.
+  mcp_notion_notion_search:              green
+  mcp_notion_notion_fetch:               green
+  mcp_notion_notion_get_comments:        green
+  mcp_notion_notion_get_users:           green
+  mcp_notion_notion_get_teams:           green
+  mcp_notion_notion_query_database_view: green
+  mcp_notion_notion_query_meeting_notes: green
 
-  # ── Notion MCP bridge: WRITE → YELLOW ──
-  mcp_notion_API_create_a_comment:           yellow
-  mcp_notion_API_create_a_data_source:       yellow
-  mcp_notion_API_move_page:                  yellow
-  mcp_notion_API_patch_block_children:       yellow
-  mcp_notion_API_patch_page:                 yellow
-  mcp_notion_API_post_page:                  yellow
-  mcp_notion_API_update_a_block:             yellow
-  mcp_notion_API_update_a_data_source:       yellow
-
-  # ── Notion MCP bridge: DELETE → RED ──
-  mcp_notion_API_delete_a_block:             red
+  # ── Hosted Notion MCP: WRITE → YELLOW (Sprint 69) ──
+  mcp_notion_notion_create_pages:        yellow
+  mcp_notion_notion_create_database:     yellow
+  mcp_notion_notion_update_page:         yellow
+  mcp_notion_notion_move_pages:          yellow
+  mcp_notion_notion_duplicate_page:      yellow
+  mcp_notion_notion_create_comment:      yellow
+  mcp_notion_notion_update_data_source:  yellow
+  mcp_notion_notion_create_view:         yellow
+  mcp_notion_notion_update_view:         yellow
 
   # ── Hierarchical example (commented out — zero behavior change) ──
   # Uncomment + edit to opt your terminal tool into argument-level

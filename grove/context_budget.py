@@ -43,9 +43,8 @@ __all__ = [
 
 
 _REQUIRED_TOP_LEVEL = frozenset({
-    "version", "core", "domain_chunks", "exploratory", "mcp_notion",
+    "version", "core", "domain_chunks", "exploratory",
 })
-_REQUIRED_MCP_KEYS = frozenset({"reads", "writes", "write_intents"})
 
 
 # ── Co-location guard ────────────────────────────────────────────────
@@ -178,22 +177,6 @@ def load_taxonomy(path: Optional[Path] = None) -> dict:
         raise ValueError(
             f"tool_groups.yaml at {target}: exploratory must be a list"
         )
-    if not isinstance(raw["mcp_notion"], dict):
-        raise ValueError(
-            f"tool_groups.yaml at {target}: mcp_notion must be a mapping"
-        )
-    mcp_missing = _REQUIRED_MCP_KEYS - set(raw["mcp_notion"].keys())
-    if mcp_missing:
-        raise ValueError(
-            f"tool_groups.yaml at {target}: mcp_notion missing keys "
-            f"{sorted(mcp_missing)}"
-        )
-    for key in ("reads", "writes", "write_intents"):
-        if not isinstance(raw["mcp_notion"][key], list):
-            raise ValueError(
-                f"tool_groups.yaml at {target}: mcp_notion[{key!r}] "
-                f"must be a list"
-            )
 
     if path is None:
         _taxonomy_cache = raw
@@ -234,12 +217,15 @@ def resolve_tool_set(
 
     selected: Set[str] = set()
     selected.update(taxonomy["core"])
-    selected.update(taxonomy["mcp_notion"]["reads"])
     selected.update(taxonomy["domain_chunks"].get(intent_class, []))
     if complexity_signal in ("complex", "novel"):
         selected.update(taxonomy["exploratory"])
-    if intent_class in taxonomy["mcp_notion"]["write_intents"]:
-        selected.update(taxonomy["mcp_notion"]["writes"])
+    # MCP tools (mcp_*) are not gated here — they pass the per-turn filter
+    # unconditionally in filter_tools_by_name, so any configured MCP server
+    # (Notion today, future integrations tomorrow) is always reachable and
+    # governed at execution time by the zone classifier rather than hidden
+    # by tool budgeting. Sprint 69 retired the Notion-specific mcp_notion
+    # taxonomy block in favor of this generic passthrough.
     _validate_co_location(selected, intent_class)
     return selected
 
@@ -262,6 +248,11 @@ def filter_tools_by_name(
         The filtered list, or the input list unchanged when allowed is
         None. Preserves insertion order — the registry's order survives
         the filter.
+
+    MCP tools (names prefixed ``mcp_``) always pass the filter regardless
+    of ``allowed`` — configured MCP servers are reachable every turn and
+    governed at execution time by the zone classifier, not by tool
+    budgeting (Sprint 69 generic MCP passthrough).
     """
     if allowed is None:
         return tools
@@ -272,7 +263,7 @@ def filter_tools_by_name(
         name = t.get("function", {}).get("name") if isinstance(
             t.get("function"), dict
         ) else None
-        if name in allowed:
+        if name in allowed or (isinstance(name, str) and name.startswith("mcp_")):
             out.append(t)
     return out
 

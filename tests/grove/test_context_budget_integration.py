@@ -144,20 +144,22 @@ class TestMaybeApplyToolFilter:
     def test_classification_to_filtered_set(
         self, monkeypatch: pytest.MonkeyPatch,
     ):
-        # code_generation, simple — should keep core + reads +
-        # code_generation domain chunk; should NOT add exploratory or
-        # writes.
+        # code_generation, simple — should keep core + code_generation
+        # domain chunk; should NOT add exploratory. MCP tools (reads AND
+        # writes) always pass through via the generic mcp_* passthrough
+        # (Sprint 69); they are governed at execution time by zones, not
+        # hidden by the per-turn budget.
         _set_classification(
             monkeypatch, intent_class="code_generation",
             complexity_signal="simple",
         )
         full = [
-            _tool("clarify"),                      # core
-            _tool("write_file"),                   # code_generation
-            _tool("patch"),                        # code_generation
-            _tool("delegate_task"),                # exploratory — excluded
-            _tool("mcp_notion_API_post_search"),   # mcp read — included
-            _tool("mcp_notion_API_patch_page"),    # mcp write — excluded
+            _tool("clarify"),                       # core
+            _tool("write_file"),                    # code_generation
+            _tool("patch"),                         # code_generation
+            _tool("delegate_task"),                 # exploratory — excluded
+            _tool("mcp_notion_notion_search"),      # mcp read — passthrough
+            _tool("mcp_notion_notion_update_page"), # mcp write — passthrough
         ]
         agent = _bare_agent_with_tools(full)
         agent._maybe_apply_tool_filter()
@@ -166,9 +168,9 @@ class TestMaybeApplyToolFilter:
         assert "clarify" in names
         assert "write_file" in names
         assert "patch" in names
-        assert "mcp_notion_API_post_search" in names
+        assert "mcp_notion_notion_search" in names
+        assert "mcp_notion_notion_update_page" in names  # passthrough, not excluded
         assert "delegate_task" not in names
-        assert "mcp_notion_API_patch_page" not in names
         assert agent._last_tool_selection["intent_class"] == "code_generation"
         assert agent._last_tool_selection["fallback"] is False
 

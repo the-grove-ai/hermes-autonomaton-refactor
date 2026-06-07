@@ -325,8 +325,13 @@ def _extract_install_package(arguments_str: str, install_verb: str) -> str:
 # (server, action) pairs get a concierge-register phrase; everything else falls
 # back to a generic, still-specific "use the {server} tool ({action})".
 _MCP_KAIZEN_PHRASES: Dict[Tuple[str, str], str] = {
-    ("notion", "search"): "search your Notion workspace",
-    ("notion", "fetch"): "fetch a page from Notion",
+    # Hosted Notion MCP (Sprint 69). Tools register as
+    # ``mcp_notion_notion_<op>``; ``_describe_mcp_kaizen`` splits on the
+    # FIRST underscore, so the action key carries the leading ``notion_``.
+    ("notion", "notion_search"): "search your Notion workspace",
+    ("notion", "notion_fetch"): "fetch a page from Notion",
+    ("notion", "notion_create_pages"): "create a page in Notion",
+    ("notion", "notion_update_page"): "update a page in Notion",
 }
 
 
