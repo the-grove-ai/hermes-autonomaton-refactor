@@ -93,6 +93,9 @@ domain_chunks:
     - search_files
     - terminal
     - execute_code
+    - skill_manage    # Sprint 66 Fix 3 (Test 3): "build me a skill" classifies
+                      # code_generation; without skill_manage here the agent
+                      # falls back to raw .andon writes that governance blocks.
   debugging:
     - search_files
     - terminal
