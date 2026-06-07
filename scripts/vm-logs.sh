@@ -37,19 +37,39 @@ case "${1:-}" in
     exec $SSH "systemctl is-active hermes-gateway open-webui 2>/dev/null; echo '---'; sudo ss -tlnp | grep -E '8642|8080|9119' || echo 'no listeners'; echo '---'; free -h | head -2; echo '---'; sudo systemctl status hermes-gateway open-webui --no-pager -l 2>/dev/null | head -30"
     ;;
   tools)
-    exec $SSH "sudo -u hermes bash -c 'cd /home/hermes/hermes-autonomaton-refactor && GROVE_DUMP_REQUESTS=1 timeout 30 .venv/bin/python -c \"
-from tools.registry import ToolRegistry
-from tools import register_builtin_tools
-from tools.mcp_tool import register_mcp_servers
-import time
+    # Dump the live tool registry — builtin + MCP — so CC can verify MCP
+    # tools are actually present without guessing from journal logs.
+    #
+    # The Python is kept readable in a quoted heredoc (no shell expansion
+    # inside it), then base64-encoded locally and decoded on the VM. This
+    # is the only quoting scheme that survives the ssh → sudo → bash -c →
+    # python nesting: base64 is a bare [A-Za-z0-9+/=] token, so nothing in
+    # the source can break out through the layers of quotes.
+    #
+    # discover_mcp_tools() is the real entry point (load config → connect
+    # → register); register_builtin_tools() alone never yields mcp_* names,
+    # which is why the previous version always reported "MCP tools: 0".
+    read -r -d '' PYSRC <<'PYEOF' || true
+from tools.registry import ToolRegistry, register_builtin_tools
+from tools.mcp_tool import discover_mcp_tools
+
 reg = ToolRegistry()
-register_builtin_tools(reg)
+builtin = register_builtin_tools(reg)
+try:
+    discover_mcp_tools(registry=reg)
+except Exception as exc:
+    print(f"MCP discovery failed: {exc!r}")
+
 names = reg.get_all_tool_names()
-mcp = [n for n in names if n.startswith(\"mcp_\")]
-print(f\"Builtin tools: {len(names)}\")
-print(f\"MCP tools: {len(mcp)}\")
-for m in sorted(mcp): print(f\"  {m}\")
-\" 2>/dev/null || echo \"Tool dump failed\"'"
+mcp = sorted(n for n in names if n.startswith("mcp_"))
+print(f"Builtin tools: {len(builtin)}")
+print(f"Total registry tools: {len(names)}")
+print(f"MCP tools: {len(mcp)}")
+for m in mcp:
+    print(f"  {m}")
+PYEOF
+    B64=$(printf '%s' "$PYSRC" | base64 | tr -d '\n')
+    exec $SSH "sudo -u hermes bash -c 'cd /home/hermes/hermes-autonomaton-refactor && echo ${B64} | base64 -d | GROVE_DUMP_REQUESTS=1 timeout 30 .venv/bin/python - 2>/dev/null || echo \"Tool dump failed\"'"
     ;;
   mem)
     exec $SSH "free -h; echo '---'; ps aux --sort=-rss | head -8"
