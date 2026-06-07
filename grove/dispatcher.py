@@ -259,6 +259,7 @@ class CompressionProbe:
 from grove.sovereign_prompt_handlers import (
     tty_sovereign_prompt as _default_sovereign_prompt,
 )
+from grove.operator_input import OperatorInputRequired
 
 
 # ── Sprint 32 Phase 3a — red-zone strike threshold ────────────────────
@@ -1247,6 +1248,16 @@ class Dispatcher:
         gen = agent._run_turn_generator(user_message=user_message, **kwargs)
         try:
             return self._drive_generator(agent, gen, ledger)
+        except OperatorInputRequired:
+            # Sprint 67 — NOT an error terminal. A store-and-resume surface
+            # (web /v1/chat/completions) deliberately yielded control to
+            # await operator input. Record a deferral outcome — never
+            # "error" — then re-raise so the surface's terminal catch
+            # persists the PendingOperatorRequest and surfaces the prompt.
+            # This guard sits ABOVE the BaseException catch precisely so
+            # the deferral is not mislabeled as a failure in the ledger.
+            self._write_intent_record(agent, outcome="awaiting_operator")
+            raise
         except BaseException:
             # Sprint 28 Phase 3 — error terminal. Any exception escaping
             # the drive loop (generator raise, internal error, KeyboardInterrupt)

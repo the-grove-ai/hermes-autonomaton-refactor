@@ -52,6 +52,7 @@ from gateway.platforms.base import (
 )
 from grove.dispatcher import Dispatcher
 from grove.sovereign_prompt_handlers import gateway_auto_allow_handler
+from grove.operator_input import OperatorInputRequired
 
 logger = logging.getLogger(__name__)
 
@@ -572,6 +573,118 @@ def _derive_chat_session_id(
     return f"api-{digest}"
 
 
+# =========================================================================
+# Sprint 67 — web store-and-resume governance helpers
+# =========================================================================
+# The web /v1/chat/completions surface delivers governance and clarify
+# decisions across the turn boundary (store-and-resume), not by blocking
+# the agent thread. These helpers build the butler-register prompts and
+# parse the operator's free-text reply. See grove/operator_input.py.
+
+
+def _args_hash(args: Optional[Dict[str, Any]]) -> str:
+    """Stable content hash of a tool's arguments, for grant matching.
+
+    A primed governance grant records (tool_name, args_hash); the replay
+    turn's handler matches the re-issued action against it so only the
+    exact approved action is auto-allowed.
+    """
+    try:
+        payload = json.dumps(args or {}, sort_keys=True, default=str)
+    except Exception:
+        payload = str(args)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _butler_governance_prompt(tool_name: str, tool_args: Optional[Dict[str, Any]]) -> str:
+    """Butler-register governance prompt for a gated action.
+
+    Standards register, no judgment, no sales voice. Names the action and
+    offers the three operator choices that map onto the four dispositions
+    (go ahead / always / not this time).
+    """
+    action = _describe_governed_action(tool_name, tool_args)
+    return (
+        f"I'd like to {action} — go ahead, always allow this, or not this "
+        f"time?"
+    )
+
+
+def _describe_governed_action(tool_name: str, tool_args: Optional[Dict[str, Any]]) -> str:
+    """A short, plain description of the gated action for the prompt."""
+    args = tool_args or {}
+    name = (tool_name or "").lower()
+    if name.startswith("mcp_notion") or "notion" in name:
+        verb = "search" if "search" in name or "query" in name else (
+            "update" if any(w in name for w in ("post", "patch", "update", "create", "move", "delete")) else "read"
+        )
+        return f"{verb} your Notion workspace"
+    if name == "terminal":
+        cmd = args.get("command") if isinstance(args, dict) else None
+        if isinstance(cmd, str) and cmd.strip():
+            return f"run `{cmd.strip()[:80]}`"
+        return "run a terminal command"
+    # Generic fallback — name the tool without editorializing.
+    return f"run the {tool_name} action"
+
+
+def _render_clarify_prompt(question: str, choices: Optional[List[str]]) -> str:
+    """Butler-register clarify question, with a numbered list when choices."""
+    q = (question or "").strip()
+    if choices:
+        lines = [q] + [f"{i}. {c}" for i, c in enumerate(choices, start=1)]
+        return "\n".join(lines)
+    return q
+
+
+# Operator reply → governance verdict. Order matters: "always" before the
+# generic approve set; explicit deny and dismiss before approve so phrases
+# like "just do the weather instead" are not read as approval.
+#
+# Matching is WORD-BOUNDARY (not substring): "ok" must not fire on "tokyo",
+# "no" must not fire on "notion". Short tokens are the whole reason the
+# naive ``in`` check is unsafe here.
+_GOV_ALWAYS = ("always", "remember it", "every time", "from now on")
+_GOV_DENY = ("not this time", "not now", "no thanks", "no", "nope", "deny",
+             "cancel", "don't", "dont", "do not", "stop", "leave it", "skip it")
+_GOV_DISMISS = ("just do", "instead", "ignore that", "ignore it", "forget it",
+                "forget that", "never mind", "nevermind", "drop it")
+_GOV_APPROVE = ("go ahead", "go for it", "yes", "yeah", "yep", "yup", "ok",
+                "okay", "sure", "proceed", "do it", "approved", "allow it",
+                "allow", "fine", "please do")
+
+
+def _phrase_match(text: str, phrases: tuple) -> bool:
+    """True if any phrase appears in *text* on word boundaries."""
+    for p in phrases:
+        if re.search(r"(?<![a-z])" + re.escape(p) + r"(?![a-z])", text):
+            return True
+    return False
+
+
+def _classify_governance_reply(text: str) -> str:
+    """Map an operator reply to a governance verdict.
+
+    Returns one of: ``approve_always`` / ``approve_once`` / ``deny`` /
+    ``dismiss`` / ``unrelated``. ``dismiss`` is an explicit "ignore the
+    pending decision, do this other thing" (inferred cancel); ``unrelated``
+    is an ambiguous new request that holds the pending decision and
+    re-surfaces it.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return "unrelated"
+    if _phrase_match(t, _GOV_ALWAYS):
+        return "approve_always"
+    if _phrase_match(t, _GOV_DISMISS):
+        return "dismiss"
+    if _phrase_match(t, _GOV_DENY):
+        return "deny"
+    if _phrase_match(t, _GOV_APPROVE):
+        return "approve_once"
+    return "unrelated"
+
+
 _CRON_AVAILABLE = False
 try:
     from cron.jobs import (
@@ -825,6 +938,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        sovereign_prompt_handler=None,
+        clarify_callback=None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -864,7 +979,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # agent_kwargs it reached the AIAgent while the Dispatcher kept its TTY
         # default and auto-declined on this no-TTY surface. Kept in agent_kwargs
         # too so forked sub-agents inherit it (dispatcher.py:1936).
-        agent = Dispatcher(session_db=self._ensure_session_db(), sovereign_prompt_handler=gateway_auto_allow_handler, agent_kwargs=dict(
+        #
+        # Sprint 67: chat/completions passes a web store-and-resume governance
+        # handler (text-based governance) instead of the silent auto-allow.
+        # Other surfaces (/v1/runs, /v1/responses) pass None and keep the
+        # auto-allow default — their governance is out of scope here.
+        _sph = sovereign_prompt_handler or gateway_auto_allow_handler
+        agent = Dispatcher(session_db=self._ensure_session_db(), sovereign_prompt_handler=_sph, agent_kwargs=dict(
             model=model,
             **runtime_kwargs,
             max_iterations=max_iterations,
@@ -884,8 +1005,12 @@ class APIServerAdapter(BasePlatformAdapter):
             # Sub-agent inheritance copy (the authoritative handler is the
             # direct Dispatcher kwarg above). Forked agents read this via
             # getattr(agent, "_sovereign_prompt_handler", None) (dispatcher.py:1936).
-            sovereign_prompt_handler=gateway_auto_allow_handler,
+            sovereign_prompt_handler=_sph,
         )).agent
+        # Sprint 67: web clarify callback (store-and-resume) when supplied.
+        # Without it the clarify tool returns "not available" on this surface.
+        if clarify_callback is not None:
+            agent.clarify_callback = clarify_callback
         return agent
 
     # ------------------------------------------------------------------
@@ -1115,6 +1240,32 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
+        # Sprint 67 — operator-input store-and-resume intercept. If a prior
+        # turn on this session left a pending governance/clarify decision,
+        # the operator's message here resolves it BEFORE classification:
+        #   approve  → prime a grant + replay the original action
+        #   deny     → acknowledge (direct reply, no agent run)
+        #   clarify  → seed the answer + replay the original
+        #   dismiss  → infer cancel, process THIS new request
+        #   unrelated→ hold the decision, acknowledge + re-surface it
+        #   timed-out→ auto-CANCEL, process THIS message fresh
+        effective_user_message = user_message
+        _pending_db = self._ensure_session_db()
+        if _pending_db is not None:
+            from grove.operator_input import state_key as _state_key
+            _pending_raw = _pending_db.get_meta(_state_key(session_id))
+            if _pending_raw:
+                _outcome = self._resolve_pending_operator_input(
+                    _pending_raw, user_message, _pending_db, session_id,
+                )
+                if "direct_reply" in _outcome:
+                    return await self._static_chat_completion(
+                        request, _outcome["direct_reply"], completion_id,
+                        model_name, created, session_id, gateway_session_key,
+                        stream,
+                    )
+                effective_user_message = _outcome["effective_user_message"]
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
@@ -1188,7 +1339,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # tool_call id), so they own the chat-completions SSE channel.
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
-                user_message=user_message,
+                user_message=effective_user_message,
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
@@ -1197,6 +1348,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                web_governance=True,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1211,11 +1363,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # Non-streaming: run the agent (with optional Idempotency-Key)
         async def _compute_completion():
             return await self._run_agent(
-                user_message=user_message,
+                user_message=effective_user_message,
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                web_governance=True,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2720,6 +2873,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        web_governance: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2731,10 +2885,28 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        Sprint 67: when ``web_governance`` is True (the /v1/chat/completions
+        surface), the agent is wired with store-and-resume governance and
+        clarify callbacks. A gated action or clarify question raises
+        ``OperatorInputRequired``; this method catches it, persists the
+        pending request to SessionDB.state_meta, and returns the butler
+        prompt as the turn's final response. The operator's next message
+        resolves it (see ``_resolve_pending_operator_input``).
         """
         loop = asyncio.get_running_loop()
+        run_user_message = user_message
 
         def _run():
+            sovereign_handler = None
+            clarify_cb = None
+            if web_governance:
+                sovereign_handler = self._make_web_governance_handler(
+                    session_id, run_user_message,
+                )
+                clarify_cb = self._make_web_clarify_callback(
+                    session_id, run_user_message,
+                )
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
@@ -2743,15 +2915,53 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                sovereign_prompt_handler=sovereign_handler,
+                clarify_callback=clarify_cb,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
             effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
-            )
+            try:
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+            except OperatorInputRequired as oir:
+                # Sprint 67 — the turn yielded control for operator input.
+                # Persist the pending request and surface the butler prompt
+                # as this turn's response (200 OK). The operator's next
+                # message resolves it via the intercept in
+                # _handle_chat_completions.
+                from grove.operator_input import state_key
+                db = self._ensure_session_db()
+                if db is not None:
+                    try:
+                        db.set_meta(state_key(session_id), oir.pending.to_json())
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(
+                            "[api_server] failed to persist pending operator "
+                            "request (session=%s): %r", session_id, exc,
+                        )
+                # Streaming surfaces: the deterministic prompt is not produced
+                # as LLM tokens, so push it onto the stream queue now.
+                if stream_delta_callback is not None:
+                    try:
+                        stream_delta_callback(oir.pending.prompt_text)
+                    except Exception:
+                        pass
+                _eff_sid = getattr(agent, "session_id", session_id)
+                result = {
+                    "final_response": oir.pending.prompt_text,
+                    "awaiting_operator": True,
+                    "completed": True,
+                    "partial": False,
+                    "failed": False,
+                }
+                if isinstance(_eff_sid, str) and _eff_sid:
+                    result["session_id"] = _eff_sid
+                usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+                return result, usage
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -2766,6 +2976,233 @@ class APIServerAdapter(BasePlatformAdapter):
             return result, usage
 
         return await loop.run_in_executor(None, _run)
+
+    # ------------------------------------------------------------------
+    # Sprint 67 — web store-and-resume governance / clarify
+    # ------------------------------------------------------------------
+
+    def _make_web_governance_handler(self, session_id, run_user_message):
+        """Build the store-and-resume Kaizen sovereign-prompt handler.
+
+        First encounter of a gated action → raise OperatorInputRequired
+        with a butler governance prompt. Replay turn (operator approved) →
+        find the primed grant in state_meta and return its disposition so
+        the action proceeds. The grant is matched on (tool_name, args_hash)
+        so only the exact approved action is auto-allowed.
+        """
+        from grove.operator_input import (
+            PendingOperatorRequest,
+            governance_grant_key,
+            TIMEOUT_SECONDS,
+        )
+
+        def _handler(halt):
+            intent = halt.intents[halt.triggering_index]
+            args = dict(getattr(intent, "arguments", None) or {})
+            db = self._ensure_session_db()
+            if db is not None:
+                grant_raw = db.get_meta(governance_grant_key(session_id))
+                if grant_raw:
+                    try:
+                        grant = json.loads(grant_raw)
+                    except Exception:
+                        grant = {}
+                    if (grant.get("tool_name") == intent.tool_name
+                            and grant.get("args_hash") == _args_hash(args)):
+                        # One-shot consume; let the approved action run.
+                        db.set_meta(governance_grant_key(session_id), "")
+                        return grant.get("disposition", "once")
+            now = time.time()
+            raise OperatorInputRequired(PendingOperatorRequest(
+                kind="governance",
+                prompt_text=_butler_governance_prompt(intent.tool_name, args),
+                original_user_message=run_user_message,
+                created_at=now,
+                timeout_at=now + TIMEOUT_SECONDS,
+                tool_name=intent.tool_name,
+                tool_args=args,
+            ))
+
+        return _handler
+
+    def _make_web_clarify_callback(self, session_id, run_user_message):
+        """Build the store-and-resume clarify callback.
+
+        First encounter → raise OperatorInputRequired with the question.
+        Replay turn → return the seeded answer from state_meta so the
+        clarify tool resolves and the agent continues.
+        """
+        from grove.operator_input import (
+            PendingOperatorRequest,
+            clarify_answer_key,
+            TIMEOUT_SECONDS,
+        )
+
+        def _callback(question, choices):
+            db = self._ensure_session_db()
+            if db is not None:
+                answer = db.get_meta(clarify_answer_key(session_id))
+                if answer:
+                    db.set_meta(clarify_answer_key(session_id), "")
+                    return answer
+            now = time.time()
+            raise OperatorInputRequired(PendingOperatorRequest(
+                kind="clarify",
+                prompt_text=_render_clarify_prompt(question, choices),
+                original_user_message=run_user_message,
+                created_at=now,
+                timeout_at=now + TIMEOUT_SECONDS,
+                question=question,
+                choices=list(choices) if choices else None,
+            ))
+
+        return _callback
+
+    def _resolve_pending_operator_input(self, pending_raw, user_message, db, session_id):
+        """Resolve a pending operator decision against the new message.
+
+        Returns a dict with exactly one key:
+          * ``effective_user_message`` — run the agent with this message
+            (replay of the original action, or the new request after a
+            dismiss / timeout).
+          * ``direct_reply`` — a fixed butler response, no agent run
+            (deny acknowledgment, or unrelated-request re-surface).
+        """
+        from grove.operator_input import (
+            PendingOperatorRequest,
+            state_key,
+            governance_grant_key,
+            clarify_answer_key,
+        )
+        try:
+            pending = PendingOperatorRequest.from_json(pending_raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[api_server] corrupt pending operator request (session=%s): "
+                "%r — clearing and processing message fresh", session_id, exc,
+            )
+            db.set_meta(state_key(session_id), "")
+            return {"effective_user_message": user_message}
+
+        now = time.time()
+        if now > pending.timeout_at:
+            db.set_meta(state_key(session_id), "")
+            logger.info(
+                "[api_server] pending %s auto-CANCELLED after %ds (no operator "
+                "response; session=%s)", pending.kind,
+                int(now - pending.created_at), session_id,
+            )
+            return {"effective_user_message": user_message}
+
+        if pending.kind == "clarify":
+            # The operator's message IS the answer. Seed it; replay original.
+            db.set_meta(clarify_answer_key(session_id), user_message)
+            db.set_meta(state_key(session_id), "")
+            return {"effective_user_message": pending.original_user_message}
+
+        # governance
+        verdict = _classify_governance_reply(user_message)
+        if verdict in ("approve_once", "approve_always"):
+            disposition = "always" if verdict == "approve_always" else "once"
+            db.set_meta(governance_grant_key(session_id), json.dumps({
+                "disposition": disposition,
+                "tool_name": pending.tool_name,
+                "args_hash": _args_hash(pending.tool_args),
+            }))
+            db.set_meta(state_key(session_id), "")
+            logger.info(
+                "[api_server] operator %s pending governance (tool=%s, "
+                "session=%s); replaying original action",
+                verdict, pending.tool_name, session_id,
+            )
+            return {"effective_user_message": pending.original_user_message}
+        if verdict == "deny":
+            db.set_meta(state_key(session_id), "")
+            logger.info(
+                "[api_server] operator DENIED pending governance (tool=%s, "
+                "session=%s)", pending.tool_name, session_id,
+            )
+            return {"direct_reply": (
+                "Understood — I'll leave that for now. Let me know if you'd "
+                "like anything else."
+            )}
+        if verdict == "dismiss":
+            db.set_meta(state_key(session_id), "")
+            logger.info(
+                "[api_server] operator dismissed pending governance (inferred "
+                "cancel; tool=%s, session=%s); processing new request",
+                pending.tool_name, session_id,
+            )
+            return {"effective_user_message": user_message}
+        # unrelated — hold the decision, acknowledge + re-surface it.
+        logger.info(
+            "[api_server] unrelated message while governance pending (tool=%s, "
+            "session=%s); holding decision and re-surfacing",
+            pending.tool_name, session_id,
+        )
+        return {"direct_reply": (
+            "I'll get to that — but I still need your call on the pending "
+            f"action. {pending.prompt_text}"
+        )}
+
+    async def _static_chat_completion(self, request, text, completion_id,
+                                      model_name, created, session_id,
+                                      gateway_session_key, stream):
+        """Return a fixed assistant message as a chat-completion response.
+
+        Used by the operator-input resolver for direct replies (deny
+        acknowledgment, unrelated re-surface) that need no agent run.
+        Honors the request's stream flag.
+        """
+        response_headers = {"X-Hermes-Session-Id": session_id}
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+
+        if not stream:
+            response_data = {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": model_name,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": "stop",
+                }],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            }
+            return web.json_response(response_data, headers=response_headers)
+
+        sse_headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Hermes-Session-Id": session_id,
+        }
+        if gateway_session_key:
+            sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+        response = web.StreamResponse(status=200, headers=sse_headers)
+        await response.prepare(request)
+
+        def _chunk(delta, finish=None):
+            return {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_name,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+            }
+
+        await response.write(f"data: {json.dumps(_chunk({'role': 'assistant'}))}\n\n".encode())
+        await response.write(f"data: {json.dumps(_chunk({'content': text}))}\n\n".encode())
+        await response.write(f"data: {json.dumps(_chunk({}, finish='stop'))}\n\n".encode())
+        await response.write(b"data: [DONE]\n\n")
+        await response.write_eof()
+        return response
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
