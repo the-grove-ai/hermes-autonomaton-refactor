@@ -407,17 +407,25 @@ def _secure_file(path):
 
 
 def _ensure_default_soul_md(home: Path) -> None:
-    """Seed a default SOUL.md into GROVE_HOME if the user doesn't have one yet."""
-    soul_path = home / "SOUL.md"
-    if soul_path.exists():
-        return
-    # Skip legacy seeding when the Grove identity template exists — a legacy
-    # SOUL.md here shadows the Atlas-pattern soul.md that load_identity() seeds.
+    """Seed a default soul.md into GROVE_HOME if the user doesn't have one yet.
+
+    The canonical Grove identity file is lowercase ``soul.md`` (the Atlas
+    pattern — what ``grove.identity.load_identity()`` reads and seeds). Honor an
+    existing file of either case so a case-sensitive filesystem (Linux) never
+    double-seeds or shadows, and write the canonical lowercase name when seeding.
+    """
+    for name in ("soul.md", "SOUL.md"):
+        if (home / name).exists():
+            return
+    # Skip legacy seeding when the Grove identity template exists — load_identity()
+    # seeds the canonical lowercase soul.md from it, and a file written here would
+    # only race or shadow that.
     grove_soul_template = (
         Path(__file__).resolve().parent.parent / "config" / "identity" / "soul.md"
     )
     if grove_soul_template.exists():
         return
+    soul_path = home / "soul.md"
     soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
     _secure_file(soul_path)
 
