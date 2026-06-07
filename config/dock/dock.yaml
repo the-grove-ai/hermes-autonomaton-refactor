@@ -1,0 +1,100 @@
+# ============================================================================
+# Grove Autonomaton — The Dock
+# ============================================================================
+#
+# Location:     ~/.grove/dock/dock.yaml (operator sovereign copy)
+#               config/dock/dock.yaml   (repo default template / seed)
+#
+# Purpose:      The Dock is the operator's strategic command center. It holds
+#               long-running goals so the Autonomaton understands WHY a given
+#               intent is being asked — and silently collapses an ambiguous
+#               request into the operator's local reality (Superposition
+#               Collapse). Local-first, Obsidian-compatible: plain markdown
+#               under goals/, this manifest in YAML.
+#
+#               The Dock is sovereign. No Notion API calls for local context;
+#               dock.yaml is the source of truth (Sprint 68 the-dock-v1).
+#
+# Failure register (Sprint 68 GATE-B, DECISION 2):
+#   * dock.yaml ABSENT          → Dock not installed; graceful, legacy
+#                                 goals.md path is unaffected.
+#   * dock.yaml MALFORMED       → fail-loud (ValueError), like the Sprint 29
+#                                 taxonomy loader.
+#   * a context_sources file
+#     present but unreadable     → retry 100/200/400ms (Obsidian race),
+#                                 then fail-loud.
+#
+# Vector priority (conflict resolution): apex_strategic > strategic > personal
+# Status filter (active goals):          accelerating, cruising
+#                                        (paused, complete are excluded)
+# ----------------------------------------------------------------------------
+
+version: 1
+
+# Char budget for the per-turn injected goal-context block (Sprint 68
+# GATE-B DECISION 4). Tunable here; the budget guard truncates full
+# content → frontmatter-only → ANDON against this cap.
+context_char_budget: 4000
+
+goals:
+  - id: grv-001-humanity-ai
+    name: "GRV-001 — Humanity-Aligned AI"
+    vector: apex_strategic
+    status: accelerating
+    definition_of_done: >-
+      The Grove Pattern document is published and a public reference
+      implementation demonstrates model independence and sovereign
+      architecture.
+    context_sources:
+      - "goals/grv-001-humanity-ai.md"
+    keywords:
+      - "grv-001"
+      - "humanity"
+      - "alignment"
+      - "pattern"
+      - "doctorow"
+      - "sovereign"
+      - "foundation"
+      - "model independence"
+    unlocked_skills:
+      - "linkedin-thinkpiece"
+      - "jim-voice-writing-style"
+
+  - id: influencer-outreach
+    name: "Influencer Outreach"
+    vector: strategic
+    status: cruising
+    definition_of_done: >-
+      Five aligned public voices are engaged on the Grove thesis and
+      carrying it into their own audiences.
+    context_sources:
+      - "goals/influencer-outreach.md"
+    keywords:
+      - "outreach"
+      - "influencer"
+      - "email"
+      - "linkedin"
+      - "engage"
+      - "pitch"
+      - "draft to"
+    unlocked_skills:
+      - "jim-voice-writing-style"
+
+  - id: carriage-house
+    name: "Carriage House Renovation"
+    vector: personal
+    status: accelerating
+    definition_of_done: >-
+      The carriage house is renovated into usable workshop/studio space
+      and in regular use.
+    context_sources:
+      - "goals/carriage-house.md"
+    keywords:
+      - "carriage house"
+      - "epoxy"
+      - "flooring"
+      - "renovation"
+      - "indianapolis"
+      - "garage"
+      - "contractor"
+    unlocked_skills: []
