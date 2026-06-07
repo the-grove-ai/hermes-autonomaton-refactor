@@ -4008,6 +4008,69 @@ def _expand_env_vars(obj):
     return obj
 
 
+class ConfigSecretAndon(RuntimeError):
+    """A secret literal appears in config.yaml — fail loud.
+
+    Per the Architectural Prime Directive, secrets belong in ``~/.grove/.env``
+    and are referenced from config.yaml as ``${VAR}`` (the loader expands
+    them via :func:`_expand_env_vars` and preserves the template on re-save).
+    A raw secret value written into config.yaml must halt loudly rather than
+    be persisted, logged, or silently tolerated (Sprint 69 secrets hygiene).
+    """
+
+
+# Two signals, deliberately scoped to flag REAL leaked secrets without
+# tripping on the many legitimate literal config fields:
+#
+#  1. value shape — a value that looks like a real credential (ntn_, sk-,
+#     ghp_, AKIA, …) is flagged wherever it appears. This catches the
+#     Sprint 69 motivating case (NOTION_TOKEN: ntn_…) by VALUE.
+#  2. env-var-named keys — ALL-CAPS names ending _TOKEN/_KEY/_SECRET/
+#     _PASSWORD (the env-var convention, e.g. NOTION_TOKEN, OPENROUTER_API_KEY)
+#     holding ANY literal. These slots are unambiguously secret env vars.
+#
+# We deliberately do NOT flag every lowercase ``api_key``/``token`` field:
+# ``model.api_key`` and custom-provider ``api_key`` are real config slots that
+# legitimately hold literals, and a real secret VALUE in them is still caught
+# by signal (1). ``record_key``/``redact_secrets``/empty values never trip.
+_SECRET_KEY_ENVVAR_RE = re.compile(r"^[A-Z][A-Z0-9_]*_(TOKEN|KEY|SECRET|PASSWORD)$")
+# Distinctive secret value shapes — flagged regardless of key name.
+_SECRET_VALUE_RE = re.compile(r"^(ntn_|secret_|sk-|xox[abprs]-|gh[posu]_|AKIA)")
+_ENV_REF_RE = re.compile(r"^\$\{[^}]+\}$")
+
+
+def _andon_secret_literals(node, config_path, trail=()):
+    """Walk a parsed config and raise :class:`ConfigSecretAndon` on a secret
+    literal. Run on the operator's on-disk config BEFORE ``${VAR}`` expansion,
+    so genuine env-references (``${NOTION_TOKEN}``) and empty values pass.
+    """
+    if isinstance(node, dict):
+        for k, v in node.items():
+            _andon_secret_literals(v, config_path, trail + (str(k),))
+        return
+    if isinstance(node, list):
+        for i, item in enumerate(node):
+            _andon_secret_literals(item, config_path, trail + (f"[{i}]",))
+        return
+    if not isinstance(node, str):
+        return
+    value = node.strip()
+    if not value or _ENV_REF_RE.match(value):
+        return  # empty, or a ${VAR} reference — both fine
+    key = trail[-1] if trail else ""
+    key_is_secret = bool(_SECRET_KEY_ENVVAR_RE.match(key))
+    value_looks_secret = bool(_SECRET_VALUE_RE.match(value)) and len(value) >= 16
+    if key_is_secret or value_looks_secret:
+        dotted = ".".join(trail) or "<root>"
+        envname = key.upper() if key else "SECRET_NAME"
+        raise ConfigSecretAndon(
+            f"Secret literal in config.yaml at {config_path}: key '{dotted}' "
+            f"holds a raw secret value. Secrets must not live in config.yaml. "
+            f"Move it to ~/.grove/.env (e.g. {envname}=<value>) and reference "
+            f"it here as ${{{envname}}}. (Sprint 69 secrets-hygiene Andon.)"
+        )
+
+
 def _items_by_unique_name(items):
     """Return a name-indexed dict only when all items have unique string names."""
     if not isinstance(items, list):
@@ -4244,13 +4307,14 @@ def load_config() -> Dict[str, Any]:
             return copy.deepcopy(cached[2])
 
         config = copy.deepcopy(DEFAULT_CONFIG)
+        user_config: Dict[str, Any] = {}
 
         if cache_key is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
 
-                if "max_turns" in user_config:
+                if isinstance(user_config, dict) and "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
                     if agent_user_config.get("max_turns") is None:
                         agent_user_config["max_turns"] = user_config["max_turns"]
@@ -4260,6 +4324,12 @@ def load_config() -> Dict[str, Any]:
                 config = _deep_merge(config, user_config)
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)
+
+        # Sprint 69 secrets-hygiene Andon. Runs on the operator's parsed file
+        # (pre-expansion, so ${VAR} references are still visible) and OUTSIDE
+        # the parse try/except above — so a secret literal halts loudly rather
+        # than being swallowed by the graceful parse-failure handler.
+        _andon_secret_literals(user_config, config_path)
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
