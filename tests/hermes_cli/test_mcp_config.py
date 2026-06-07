@@ -272,12 +272,16 @@ class TestMcpAdd:
         assert config["mcp_servers"]["broken"]["enabled"] is False
 
     def test_add_stdio_server_with_env(self, tmp_path, capsys, monkeypatch):
-        """Stdio servers can persist explicit environment variables."""
+        """Stdio servers can persist explicit environment variables. Secret
+        env values are ${VAR} references (Sprint 69 secrets-hygiene Andon
+        rejects raw secret literals in config.yaml); non-secret env vars
+        like DEBUG remain plain literals."""
         fake_tools = [FakeTool("search", "Search repos")]
 
         def mock_probe(name, config, **kw):
+            # cmd_mcp_add probes with the as-written config (pre-expansion).
             assert config["env"] == {
-                "MY_API_KEY": "secret123",
+                "MY_API_KEY": "${GITHUB_MCP_TOKEN}",
                 "DEBUG": "true",
             }
             return [(t.name, t.description) for t in fake_tools]
@@ -286,6 +290,7 @@ class TestMcpAdd:
             "hermes_cli.mcp_config._probe_single_server", mock_probe
         )
         monkeypatch.setattr("builtins.input", lambda _: "")
+        monkeypatch.setenv("GITHUB_MCP_TOKEN", "secret123")
 
         from hermes_cli.mcp_config import cmd_mcp_add
 
@@ -293,7 +298,7 @@ class TestMcpAdd:
             name="github",
             mcp_command="npx",
             args=["@mcp/github"],
-            env=["MY_API_KEY=secret123", "DEBUG=true"],
+            env=["MY_API_KEY=${GITHUB_MCP_TOKEN}", "DEBUG=true"],
         ))
         out = capsys.readouterr().out
         assert "Saved" in out
@@ -302,6 +307,7 @@ class TestMcpAdd:
 
         config = load_config()
         srv = config["mcp_servers"]["github"]
+        # load_config expands ${GITHUB_MCP_TOKEN} for runtime use.
         assert srv["env"] == {
             "MY_API_KEY": "secret123",
             "DEBUG": "true",

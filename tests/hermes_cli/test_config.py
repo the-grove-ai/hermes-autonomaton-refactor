@@ -535,7 +535,9 @@ class TestCustomProviderCompatibility:
                         {
                             "name": "OpenAI Direct",
                             "base_url": "https://api.openai.com/v1",
-                            "api_key": "test-key",
+                            # Secrets are ${VAR} refs, not literals (Sprint 69
+                            # secrets-hygiene Andon rejects literal api_keys).
+                            "api_key": "${OPENAI_DIRECT_KEY}",
                             "api_mode": "codex_responses",
                             "model": "gpt-5-mini",
                         }
@@ -548,6 +550,10 @@ class TestCustomProviderCompatibility:
             encoding="utf-8",
         )
 
+        # OPENAI_DIRECT_KEY is intentionally left UNSET: the ${VAR} ref stays
+        # verbatim through load + migrate + save (env-refs are preserved, never
+        # expanded-into-literal on disk), so the migrated file keeps the ref
+        # and the secrets-hygiene Andon stays satisfied.
         with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -556,7 +562,7 @@ class TestCustomProviderCompatibility:
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["providers"]["openai-direct"] == {
             "api": "https://api.openai.com/v1",
-            "api_key": "test-key",
+            "api_key": "${OPENAI_DIRECT_KEY}",
             "default_model": "gpt-5-mini",
             "name": "OpenAI Direct",
             "transport": "codex_responses",
@@ -575,7 +581,7 @@ class TestCustomProviderCompatibility:
                     "providers": {
                         "openai-direct": {
                             "api": "https://api.openai.com/v1",
-                            "api_key": "test-key",
+                            "api_key": "${OPENAI_DIRECT_KEY}",  # ref, not literal (Sprint 69)
                             "default_model": "gpt-5-mini",
                             "name": "OpenAI Direct",
                             "transport": "codex_responses",
@@ -637,13 +643,13 @@ class TestCustomProviderCompatibility:
                         {
                             "name": "OpenAI Direct",
                             "base_url": "https://api.openai.com/v1",
-                            "api_key": "legacy-key",
+                            "api_key": "${LEGACY_KEY}",  # ref, not literal (Sprint 69)
                         }
                     ],
                     "providers": {
                         "openai-direct": {
                             "api": "https://api.openai.com/v1",
-                            "api_key": "new-key",
+                            "api_key": "${NEW_KEY}",
                             "name": "OpenAI Direct",
                         }
                     },
@@ -652,7 +658,10 @@ class TestCustomProviderCompatibility:
             encoding="utf-8",
         )
 
-        with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {
+            "GROVE_HOME": str(tmp_path),
+            "LEGACY_KEY": "legacy-key", "NEW_KEY": "new-key",
+        }):
             compatible = get_compatible_custom_providers()
 
         assert len(compatible) == 1
