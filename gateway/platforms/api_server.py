@@ -858,7 +858,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
 
-        agent = Dispatcher(session_db=self._ensure_session_db(), agent_kwargs=dict(
+        # Sprint 66 Fix 2 (Test 9): the Dispatcher — not the AIAgent — processes
+        # Andon halts (dispatch_turn -> self._sovereign_prompt_handler), so the
+        # gateway handler must be a DIRECT Dispatcher kwarg. Passed only inside
+        # agent_kwargs it reached the AIAgent while the Dispatcher kept its TTY
+        # default and auto-declined on this no-TTY surface. Kept in agent_kwargs
+        # too so forked sub-agents inherit it (dispatcher.py:1936).
+        agent = Dispatcher(session_db=self._ensure_session_db(), sovereign_prompt_handler=gateway_auto_allow_handler, agent_kwargs=dict(
             model=model,
             **runtime_kwargs,
             max_iterations=max_iterations,
@@ -875,10 +881,9 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
-            # Sprint 27 Phase 3 — HTTP API request handler: no TTY surface.
-            # Andon halts auto-skip with Kaizen Ledger record. Covers both
-            # callers of this factory (run_conversation sites at lines
-            # 2739 and 2993).
+            # Sub-agent inheritance copy (the authoritative handler is the
+            # direct Dispatcher kwarg above). Forked agents read this via
+            # getattr(agent, "_sovereign_prompt_handler", None) (dispatcher.py:1936).
             sovereign_prompt_handler=gateway_auto_allow_handler,
         )).agent
         return agent
