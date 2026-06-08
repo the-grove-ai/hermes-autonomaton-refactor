@@ -2871,8 +2871,9 @@ class AIAgent:
         budgeted/non-budgeted split exactly like a taxonomy error: it surfaces
         on a budgeted turn, degrades to the full registry on a cloud turn.
         """
-        from grove.manifest import load_manifest, matched_mcp_servers
+        from grove.manifest import load_manifest, mcp_match_reasons
 
+        self._mcp_match_reasons = {}
         try:
             units = load_manifest()
         except FileNotFoundError:
@@ -2918,14 +2919,15 @@ class AIAgent:
                 sorted(unmanifested),
             )
 
-        return set(
-            matched_mcp_servers(
-                units,
-                intent_class=intent_class,
-                message=message,
-                resolved_goal_id=resolved_goal_id,
-            )
+        reasons = mcp_match_reasons(
+            units,
+            intent_class=intent_class,
+            message=message,
+            resolved_goal_id=resolved_goal_id,
         )
+        # Phase 4 — stash the per-server match reason for the /context ledger.
+        self._mcp_match_reasons = dict(reasons)
+        return set(reasons)
 
     def _latest_user_text(self) -> str:
         """Best-effort: the text of the most recent user message this turn.
@@ -2955,6 +2957,20 @@ class AIAgent:
             return ""
         return ""
 
+    @staticmethod
+    def _schema_tokens(obj) -> int:
+        """Rough token weight of a tool schema / record text — for the Phase 4
+        disclosure ledger (the same chars/4 estimator /context uses)."""
+        import json as _json
+        from agent.model_metadata import estimate_tokens_rough
+        try:
+            s = obj if isinstance(obj, str) else _json.dumps(
+                obj, ensure_ascii=False, sort_keys=True
+            )
+        except Exception:
+            s = str(obj)
+        return estimate_tokens_rough(s)
+
     def _apply_disclosure(self, res):
         """Sprint 74 Phase 3 — the T2/T3 disclosure surface.
 
@@ -2982,8 +2998,12 @@ class AIAgent:
 
         manifest = build_manifest(registry)
         self._disclosure_manifest = manifest
+        if getattr(self, "_disclosure_log", None) is None:
+            self._disclosure_log = []
 
         core = set(load_taxonomy().get("core", []))
+        reasons = getattr(self, "_mcp_match_reasons", None) or {}
+        mcp_tokens: Dict[str, int] = {}
         eager: List[Dict[str, Any]] = []
         eager_ids: set = set()
         for t in res.tools:
@@ -2993,10 +3013,18 @@ class AIAgent:
                 server = _mcp_server_of(nm)
                 if server:
                     eager_ids.add(server)
+                    mcp_tokens[server] = mcp_tokens.get(server, 0) + self._schema_tokens(t)
             elif nm in core:
                 eager.append(t)                       # core native — always eager
                 eager_ids.add(nm)
             # else: non-core native → withheld to the index, pulled on demand.
+
+        # Phase 4 — ledger the EAGER disclosures (matched MCP) with their reason.
+        for server, tok in mcp_tokens.items():
+            self._disclosure_log.append({
+                "unit_id": server, "kind": "mcp", "tokens": tok,
+                "reason": reasons.get(server, "match"),
+            })
 
         pull_defs = build_pull_tool_defs(manifest, eager_ids)
         return eager + pull_defs
@@ -3017,18 +3045,31 @@ class AIAgent:
             return intents
         from grove.disclosure import resolve_goal_record, resolve_pull
 
+        if getattr(self, "_disclosure_log", None) is None:
+            self._disclosure_log = []
+        kinds = {u.id: u.kind for u in manifest}
         remaining = []
         for it in intents:
             if it.tool_name == "read_tool_schema":
                 uid = str((it.arguments or {}).get("id", "")).strip()
                 text, defs = resolve_pull(manifest, self.tools or [], uid)
                 self._splice_pulled_defs(defs)
+                # Phase 4 — ledger the agent-pull (only a real schema, not a miss).
+                if defs:
+                    self._disclosure_log.append({
+                        "unit_id": uid, "kind": kinds.get(uid, "tool"),
+                        "tokens": self._schema_tokens(text), "reason": "agent-pull",
+                    })
                 messages.append(
                     {"role": "tool", "tool_call_id": it.call_id, "content": text}
                 )
             elif it.tool_name == "read_goal_context":
                 gid = str((it.arguments or {}).get("goal_id", "")).strip()
                 text = resolve_goal_record(gid)
+                self._disclosure_log.append({
+                    "unit_id": gid, "kind": "goal",
+                    "tokens": self._schema_tokens(text), "reason": "agent-pull",
+                })
                 messages.append(
                     {"role": "tool", "tool_call_id": it.call_id, "content": text}
                 )
@@ -3074,6 +3115,7 @@ class AIAgent:
         best-effort degrade so a cloud turn never crashes on an optimizer error.
         """
         self._tool_resolution = None
+        self._disclosure_log = []  # Phase 4 — fresh disclosure ledger per turn.
         # Skip when self.tools is empty/missing — nothing to filter.
         if not self.tools:
             return

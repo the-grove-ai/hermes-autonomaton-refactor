@@ -95,6 +95,82 @@ class ContextReport:
     excluded_context_blocks: List[str] = field(default_factory=list)
     excluded_mcp: List[str] = field(default_factory=list)
     stripped_groups: List[str] = field(default_factory=list)
+    # Sprint 74 Phase 4 — disclosure observability.
+    #  * ``always_loaded`` — the itemized always-loaded FLOOR (the Sprint 75
+    #    scoreboard): identity sub-parts, the Dock goal-index, the disclosure
+    #    tool-index, plus ``_total``. Re-measured from live config; read-only.
+    #  * ``disclosed_payloads`` — every unit whose full payload entered context
+    #    this turn: ``{unit_id, kind, tokens, reason}`` where reason is
+    #    intent-match / keyword-match / dock-match (eager) or agent-pull.
+    #  * ``disclosure_tier_mode`` — ``eager-core`` (T1), ``index+pull`` (T2/T3),
+    #    or ``eager`` (no tier / no disclosure).
+    always_loaded: Dict[str, int] = field(default_factory=dict)
+    disclosed_payloads: List[Dict[str, Any]] = field(default_factory=list)
+    disclosure_tier_mode: Optional[str] = None
+
+
+def measure_always_loaded_floor(manifest: Optional[Any] = None) -> Dict[str, int]:
+    """Itemize the always-loaded FLOOR — the Sprint 75 scoreboard (Phase 4).
+
+    Breaks the irreducible per-turn prefill into named lines so the operator can
+    see what rides EVERY turn regardless of tier or disclosure: the identity
+    composition (by sub-part), the Dock goal-index, and the disclosure tool-
+    index (the one-liner manifest). Read-only — re-measures from live config via
+    the chars/4 estimator; never mutates state.
+
+    Args:
+        manifest: a pre-built merged manifest (the agent's, when available) for
+            the tool-index line; falls back to the declarative-only manifest.
+
+    Returns:
+        ``{label: tokens}`` with a ``_total`` rollup.
+    """
+    out: Dict[str, int] = {}
+
+    # Identity floor — the dominant component (named here so Sprint 75 can see it).
+    try:
+        from grove.identity import load_identity, _strip_frontmatter
+
+        comp = load_identity()
+        parts = {
+            "identity.constitution": comp.constitution,
+            "identity.soul": _strip_frontmatter(comp.soul),
+            "identity.register": comp.register_overlay,
+            "identity.affordances": comp.affordances,
+            "identity.capabilities": comp.capabilities,
+            "identity.operator": comp.operator,
+        }
+        for label, text in parts.items():
+            out[label] = estimate_tokens_rough(text or "")
+        # The Dock goal-index rides the identity layer but is its own line.
+        out["dock_goal_index"] = estimate_tokens_rough(comp.goals or "")
+    except Exception as exc:  # observability must never crash a turn
+        logger.debug("[context_report] identity floor unavailable: %r", exc)
+
+    # Disclosure tool-index — the always-loaded one-liner manifest.
+    try:
+        units = manifest
+        if units is None:
+            from grove.manifest import load_manifest
+            units = load_manifest()
+        idx = "\n".join(f"- {u.id}: {u.oneline}" for u in units)
+        out["tool_index"] = estimate_tokens_rough(idx)
+    except Exception as exc:
+        logger.debug("[context_report] tool-index floor unavailable: %r", exc)
+        out["tool_index"] = 0
+
+    out["_total"] = sum(v for k, v in out.items() if k != "_total")
+    return out
+
+
+def _tier_mode(tier: Optional[str]) -> str:
+    """The disclosure mode for a routed tier: T1 eager-core, T2/T3 index+pull,
+    anything else (no tier / cloud-without-tier) eager."""
+    if tier == "T1":
+        return "eager-core"
+    if tier in ("T2", "T3"):
+        return "index+pull"
+    return "eager"
 
 
 def snapshot_path_for(
@@ -288,6 +364,16 @@ def build_context_report(
     stripped_groups = sorted(str(s) for s in (sel.get("stripped_groups") or []))
     excluded_context_blocks = sorted(str(b) for b in gated_blocks)
 
+    # Sprint 74 Phase 4 — the floor scoreboard + the disclosure ledger.
+    always_loaded = measure_always_loaded_floor(
+        getattr(agent, "_disclosure_manifest", None)
+    )
+    disclosed_payloads = [
+        dict(entry) for entry in (getattr(agent, "_disclosure_log", None) or [])
+        if isinstance(entry, Mapping)
+    ]
+    disclosure_tier_mode = _tier_mode(applied_tier)
+
     snapshot = snapshot_path_for(resolved_session, resolved_turn, snapshot_base_dir)
 
     return ContextReport(
@@ -305,6 +391,9 @@ def build_context_report(
         excluded_context_blocks=excluded_context_blocks,
         excluded_mcp=excluded_mcp,
         stripped_groups=stripped_groups,
+        always_loaded=always_loaded,
+        disclosed_payloads=disclosed_payloads,
+        disclosure_tier_mode=disclosure_tier_mode,
     )
 
 
@@ -407,6 +496,45 @@ def format_context_report(report: ContextReport) -> str:
                 f"  tool groups stripped     : {', '.join(report.stripped_groups)} "
                 f"(escalation requested — see ledger)"
             )
+
+    # Sprint 74 Phase 4 — the always-loaded FLOOR (the Sprint 75 scoreboard).
+    # What rides EVERY turn regardless of tier or disclosure. Identity dominates
+    # here by design; that is the residual Sprint 75 targets.
+    if report.always_loaded:
+        out.append("")
+        floor_total = report.always_loaded.get("_total", 0)
+        out.append(
+            f"{'Always-loaded floor (every turn)':<32}{_fmt_int(floor_total)}"
+        )
+        floor_subs = [
+            (k, v) for k, v in report.always_loaded.items() if k != "_total"
+        ]
+        floor_subs.sort(key=lambda kv: kv[1], reverse=True)
+        for label, tokens in floor_subs:
+            out.append(f"  {label:<30}{_fmt_int(tokens)}")
+
+    # Sprint 74 Phase 4 — the disclosure ledger. The mode (T1 eager-core vs
+    # T2/T3 index+pull) plus each payload that entered context this turn and WHY.
+    if report.disclosure_tier_mode:
+        out.append("")
+        out.append(f"Disclosure mode: {report.disclosure_tier_mode}")
+        if report.disclosed_payloads:
+            disc_total = sum(int(p.get("tokens", 0)) for p in report.disclosed_payloads)
+            out.append(
+                f"  Disclosed this turn ({len(report.disclosed_payloads)} unit(s), "
+                f"{disc_total:,} tok):"
+            )
+            for p in sorted(
+                report.disclosed_payloads,
+                key=lambda x: int(x.get("tokens", 0)), reverse=True,
+            ):
+                out.append(
+                    f"    {str(p.get('unit_id','?')):<24}"
+                    f"{_fmt_int(int(p.get('tokens', 0)))}  "
+                    f"[{p.get('kind','?')} · {p.get('reason','?')}]"
+                )
+        elif report.disclosure_tier_mode == "index+pull":
+            out.append("  Disclosed this turn: (none — index alone covered the turn)")
 
     out.append("")
     out.append(f"Snapshot: {report.snapshot_path}")
