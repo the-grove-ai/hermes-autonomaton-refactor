@@ -1,0 +1,512 @@
+# Grove Disclosure Manifest — Sprint 74 context-jit-disclosure-v1 (Phase 1).
+#
+# An INDEX of disclosable units: one always-loaded line per unit standing in
+# front of the heavy payload it points at. Read by grove.manifest.load_manifest
+# (fail-loud on cap violation). ADDITIVE to tool_groups.yaml: tool units carry
+# NO trigger (native intent->tool selection stays in Sprint 29's taxonomy); the
+# NEW trigger map is for mcp units (allow-by-default -> disclose-on-match) and
+# goal units (dock_goal pointer). payload is a POINTER, never the inlined schema.
+#
+# Caps (enforced fail-loud at load): oneline <= 120 chars, keywords <= 8,
+# tiers >= 1. tiers reflect today's routing.config.yaml budgets.
+version: 1
+units:
+- id: browser_back
+  kind: tool
+  oneline: Navigate back to the previous page in browser history. Requires browser_navigate to be called first.
+  payload: tool_schema:browser_back
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: browser_click
+  kind: tool
+  oneline: Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square bracket...
+  payload: tool_schema:browser_click
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: browser_console
+  kind: tool
+  oneline: Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages...
+  payload: tool_schema:browser_console
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: browser_get_images
+  kind: tool
+  oneline: Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with...
+  payload: tool_schema:browser_get_images
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: browser_navigate
+  kind: tool
+  oneline: Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser too...
+  payload: tool_schema:browser_navigate
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: browser_press
+  kind: tool
+  oneline: Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_...
+  payload: tool_schema:browser_press
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: browser_scroll
+  kind: tool
+  oneline: Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requ...
+  payload: tool_schema:browser_scroll
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: browser_snapshot
+  kind: tool
+  oneline: Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @...
+  payload: tool_schema:browser_snapshot
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: browser_type
+  kind: tool
+  oneline: Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires bro...
+  payload: tool_schema:browser_type
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: browser_vision
+  kind: tool
+  oneline: Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand wh...
+  payload: tool_schema:browser_vision
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: clarify
+  kind: tool
+  oneline: 'Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports two modes:'
+  payload: tool_schema:clarify
+  tiers:
+  - T1
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: delegate_task
+  kind: tool
+  oneline: Spawn one or more subagents to work on tasks in isolated contexts. Each subagent gets its own conversation, terminal...
+  payload: tool_schema:delegate_task
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: escalate
+  kind: tool
+  oneline: (no description)
+  payload: tool_schema:escalate
+  tiers:
+  - T1
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: execute_code
+  kind: tool
+  oneline: Run a Python script that can call Hermes tools programmatically. Use this when you need 3+ tool calls with processing...
+  payload: tool_schema:execute_code
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: invoke_skill
+  kind: tool
+  oneline: Run a skill by name. This is the ONLY correct way to execute a skill's procedure. NEVER use execute_code or a termina...
+  payload: tool_schema:invoke_skill
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: memory
+  kind: tool
+  oneline: Save durable information to persistent memory that survives across sessions. Memory is injected into future turns, so...
+  payload: tool_schema:memory
+  tiers:
+  - T1
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: patch
+  kind: tool
+  oneline: Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies)...
+  payload: tool_schema:patch
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: process
+  kind: tool
+  oneline: 'Manage background processes started with terminal(background=true). Actions: ''list'' (show all), ''poll'' (check status...'
+  payload: tool_schema:process
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: read_file
+  kind: tool
+  oneline: 'Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: ''LIN...'
+  payload: tool_schema:read_file
+  tiers:
+  - T1
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: search_files
+  kind: tool
+  oneline: Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster t...
+  payload: tool_schema:search_files
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: send_message
+  kind: tool
+  oneline: Send a message to a connected messaging platform, or list available targets.
+  payload: tool_schema:send_message
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: session_search
+  kind: tool
+  oneline: Search your long-term memory of past conversations, or browse recent sessions. This is your recall -- every past sess...
+  payload: tool_schema:session_search
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: skill_manage
+  kind: tool
+  oneline: "Manage skills (create, update, delete). Skills are reusable tools and procedures you build for the operator \u2014 on requ..."
+  payload: tool_schema:skill_manage
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: skill_view
+  kind: tool
+  oneline: Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a ski...
+  payload: tool_schema:skill_view
+  tiers:
+  - T1
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: skills_list
+  kind: tool
+  oneline: List available skills (name + description). Use skill_view(name) to load full content.
+  payload: tool_schema:skills_list
+  tiers:
+  - T1
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: terminal
+  kind: tool
+  oneline: Execute shell commands on a Linux environment. Filesystem usually persists between calls.
+  payload: tool_schema:terminal
+  tiers:
+  - T1
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: text_to_speech
+  kind: tool
+  oneline: 'Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers...'
+  payload: tool_schema:text_to_speech
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: todo
+  kind: tool
+  oneline: Manage your task list for the current session. Use for complex tasks with 3+ steps or when the user provides multiple...
+  payload: tool_schema:todo
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: video_analyze
+  kind: tool
+  oneline: Analyze a video from a URL or local file path using a multimodal AI model. Sends the video to a video-capable model (...
+  payload: tool_schema:video_analyze
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: vision_analyze
+  kind: tool
+  oneline: Load an image into the conversation so you can see it. Accepts a URL, local file path, or data URL. When your active...
+  payload: tool_schema:vision_analyze
+  tiers:
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: write_file
+  kind: tool
+  oneline: Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Cre...
+  payload: tool_schema:write_file
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords: []
+    dock_goal: null
+- id: notion
+  kind: mcp
+  oneline: 'Notion workspace: search, read, and write pages and databases.'
+  payload: mcp_schema:notion
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents:
+    - research
+    - retrieval
+    keywords:
+    - notion
+    - page
+    - database
+    - workspace
+    - doc
+    dock_goal: null
+- id: humanity-ai-funding
+  kind: goal
+  oneline: 'Goal [apex_strategic / accelerating]: HumanityAI Grant Submission'
+  payload: goal_record:humanity-ai-funding
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords:
+    - humanity ai
+    - funding
+    - grant
+    - application
+    - submission
+    - 501c6
+    - foundation
+    dock_goal: humanity-ai-funding
+- id: hermes-autonomaton
+  kind: goal
+  oneline: "Goal [strategic / accelerating]: Hermes Autonomaton \u2014 Reference Implementation"
+  payload: goal_record:hermes-autonomaton
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords:
+    - hermes
+    - mylo
+    - autonomaton
+    - grove-autonomaton
+    - dispatcher
+    - pipeline
+    - sovereignty gate
+    - andon
+    dock_goal: hermes-autonomaton
+- id: grove-content-pipeline
+  kind: goal
+  oneline: "Goal [strategic / accelerating]: Content Pipeline \u2014 LinkedIn, Substack, Pattern Document"
+  payload: goal_record:grove-content-pipeline
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords:
+    - linkedin
+    - thinkpiece
+    - substack
+    - pattern document
+    - content
+    - publishing
+    - writing
+    - zone 1
+    dock_goal: grove-content-pipeline
+- id: influencer-outreach
+  kind: goal
+  oneline: 'Goal [strategic / cruising]: Influencer & Institutional Outreach'
+  payload: goal_record:influencer-outreach
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords:
+    - outreach
+    - influencer
+    - media
+    - press
+    - PR
+    - Kara Swisher
+    - narrative
+    - amplification
+    dock_goal: influencer-outreach
+- id: advisory-board
+  kind: goal
+  oneline: "Goal [strategic / cruising]: Advisory Board \u2014 Operational Rollout"
+  payload: goal_record:advisory-board
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords:
+    - advisor
+    - advisory board
+    - clement mok
+    - susan kare
+    - randy wigginton
+    - apple
+    - colophon
+    dock_goal: advisory-board
+- id: grove-site
+  kind: goal
+  oneline: "Goal [operational / cruising]: the-grove.ai \u2014 Site Maintenance & Standards Publication"
+  payload: goal_record:grove-site
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords:
+    - site
+    - the-grove.ai
+    - vercel
+    - deploy
+    - standards
+    - GRV-001
+    - GRV-002
+    - GRV-003
+    dock_goal: grove-site
+- id: carriage-house-renovation
+  kind: goal
+  oneline: 'Goal [personal / accelerating]: Carriage House Renovation'
+  payload: goal_record:carriage-house-renovation
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords:
+    - carriage house
+    - garage
+    - renovation
+    - construction
+    - contractor
+    - permits
+    - workshop
+    - studio
+    dock_goal: carriage-house-renovation
+- id: personal-finance
+  kind: goal
+  oneline: 'Goal [personal / cruising]: Expense Tracking & Personal Finance'
+  payload: goal_record:personal-finance
+  tiers:
+  - T2
+  - T3
+  trigger:
+    intents: []
+    keywords:
+    - expense
+    - expenses
+    - budget
+    - money
+    - finance
+    - receipt
+    - tax
+    - foundation expenses
+    dock_goal: personal-finance
