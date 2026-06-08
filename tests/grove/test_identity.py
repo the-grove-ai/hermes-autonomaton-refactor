@@ -370,10 +370,12 @@ def _full_comp():
 
 
 def test_compose_stable_t1_is_irreducible():
+    # Refinement 1: operator rides T1 too (as the condensed stub); only the
+    # heavy self-model layers (affordances/capabilities) are gated off.
     out = _full_comp().compose_stable("T1")
-    for must in ("CONSTITUTION_X", "SOUL_X", "REGISTER_X", "DOCKGOALS_X"):
+    for must in ("CONSTITUTION_X", "SOUL_X", "REGISTER_X", "OPERATOR_X", "DOCKGOALS_X"):
         assert must in out
-    for excluded in ("AFFORDANCES_X", "CAPABILITIES_X", "OPERATOR_X"):
+    for excluded in ("AFFORDANCES_X", "CAPABILITIES_X"):
         assert excluded not in out
 
 
@@ -383,6 +385,7 @@ def test_compose_stable_t1_order():
         out.index("CONSTITUTION_X")
         < out.index("SOUL_X")
         < out.index("REGISTER_X")
+        < out.index("OPERATOR_X")
         < out.index("DOCKGOALS_X")
     )
 
@@ -432,8 +435,12 @@ def test_load_identity_t1_nulls_gated_layers_and_skips_introspection(
     assert comp.constitution and comp.soul          # always-on survive
     assert comp.capabilities is None                # gated on T1
     assert comp.affordances is None                 # gated on T1
-    assert comp.operator is None                    # gated on T1
     assert sentinel["called"] is False              # introspection skipped (cost)
+    # Refinement 1: operator rides T1 as the condensed stub (the marked region
+    # of the seeded operator.md), NOT the full file.
+    assert comp.operator is not None                # the stub is present
+    assert "How I Work" in comp.operator            # the marked region
+    assert "Who I Am" not in comp.operator          # full-file bio is NOT on T1
 
 
 def test_load_identity_t3_loads_everything(fake_home, monkeypatch):
@@ -442,3 +449,26 @@ def test_load_identity_t3_loads_everything(fake_home, monkeypatch):
     comp = load_identity(tier="T3")
     assert comp.capabilities == "CAPS_LIVE"
     assert comp.affordances is not None
+    # T3 reads the FULL operator file (markers stripped, bio included).
+    assert comp.operator is not None
+    assert "Who I Am" in comp.operator
+    assert "t1:start" not in comp.operator          # markers never leak
+
+
+def test_operator_stub_extraction_helpers():
+    from grove.identity import _extract_t1_stub, _strip_t1_markers
+    text = (
+        "# Operator\n\n<!-- t1:start -->\n## How I Work\nTerse by default.\n"
+        "<!-- t1:end -->\n\n## Who I Am\nJim Calhoun.\n"
+    )
+    stub = _extract_t1_stub(text)
+    assert "How I Work" in stub and "Terse by default" in stub
+    assert "Who I Am" not in stub and "Jim Calhoun" not in stub
+    full = _strip_t1_markers(text)
+    assert "How I Work" in full and "Who I Am" in full       # T2/T3 read all
+    assert "<!--" not in full and "t1:start" not in full     # markers stripped
+
+
+def test_operator_stub_none_when_no_markers():
+    from grove.identity import _extract_t1_stub
+    assert _extract_t1_stub("# Operator\n\nNo marked region here.") is None

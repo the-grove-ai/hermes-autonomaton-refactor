@@ -557,10 +557,12 @@ def test_floor_reflects_per_tier_identity():
     t1 = measure_always_loaded_floor(tier="T1")
     t3 = measure_always_loaded_floor(tier="T3")
     assert t1.get("identity.affordances", 0) == 0       # gated off on T1
-    assert t1.get("identity.operator", 0) == 0
     assert t1.get("identity.capabilities", 0) == 0
     assert t3.get("identity.affordances", 0) > 0        # full on T3
     assert t1["_total"] < t3["_total"]
     # constitution + soul ride every tier (the irreducible Mylo).
     assert t1.get("identity.constitution", 0) > 0
     assert t1.get("identity.soul", 0) > 0
+    # Refinement 1: operator rides T1 as the condensed stub — present, but
+    # smaller than the full operator file T3 reads.
+    assert 0 < t1.get("identity.operator", 0) < t3.get("identity.operator", 0)

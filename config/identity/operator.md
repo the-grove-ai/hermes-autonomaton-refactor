@@ -13,11 +13,17 @@ a `USER.md` and no `operator.md`, the Autonomaton falls back to it.)
 
 [Your name, your role, what you do.]
 
+<!-- t1:start -->
 ## How I Work
 
-[Your communication preferences, working style, the standards you
-hold work to. Be specific — "lead with the recommendation," "AP
-style," "no meetings before 10am" all sharpen the Autonomaton's help.]
+[Your communication preferences and working style — keep this section
+TERSE. It is the only operator-context the cheapest tier (T1) reads, so
+it should be your working-style essence, not your bio. Be specific:
+"lead with the recommendation," "terse by default — expand when I ask,"
+"AP style for public docs," "one blocking question or none." Everything
+between these two t1 markers rides every tier; everything outside them
+loads only on the heavier tiers.]
+<!-- t1:end -->
 
 ## Context
 
