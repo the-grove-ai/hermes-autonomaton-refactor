@@ -41,6 +41,7 @@ __all__ = [
     "TierBudget",
     "load_tier_budgets",
     "tier_admits_context_block",
+    "PERMISSIVE_TIER_BUDGET",
 ]
 
 
@@ -84,6 +85,18 @@ class TierBudget:
 
     context: Tuple[str, ...]
     tools: ToolBudget
+
+
+# Sprint 73 Phase 4b — a permissive budget: no group cap, no MCP exclusion.
+# The legacy / non-routed tool-filter path resolves through
+# ``grove.context_budget.resolve_tools_for_tier`` with THIS budget so there is
+# ONE resolution surface (the twin is retired). It reproduces the pre-Sprint-73
+# Sprint 29 behavior exactly — the intent selection passes through unchanged and
+# every MCP passes — so stripped_groups is always empty and no escalation fires.
+PERMISSIVE_TIER_BUDGET = TierBudget(
+    context=(),
+    tools=ToolBudget(allow_groups=(WILDCARD,), exclude_mcp=()),
+)
 
 
 def tier_admits_context_block(
