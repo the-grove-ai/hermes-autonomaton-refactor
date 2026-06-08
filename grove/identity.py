@@ -53,6 +53,7 @@ this register, can do.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -89,20 +90,32 @@ class IdentityError(RuntimeError):
 
 # ── Sprint 75 — tier-aware identity composition ──────────────────────────
 # Which identity layers ride each cognition tier. The always-on set
-# (constitution = values/safety, soul = character, register = voice, goals =
-# the Dock strategic index) rides EVERY tier — it is the irreducible Mylo.
-# Heavier self-model / operator-context layers escalate with the tier:
-#   T1 (irreducible) = constitution + soul + register + goals
-#   T2 (medium)      = T1 + operator + capabilities
+# (constitution = values/safety, soul = character, register = voice, operator =
+# working-style, goals = the Dock strategic index) rides EVERY tier — it is the
+# irreducible Mylo. Heavier self-model layers escalate with the tier:
+#   T1 (irreducible) = constitution + soul + register + operator(stub) + goals
+#   T2 (medium)      = T1 + capabilities; operator reads the FULL file
 #   T3 (full)        = T2 + affordances
+# ``operator`` rides every tier but with tier-scoped CONTENT — T1 reads only the
+# condensed ``<!-- t1:start/end -->`` stub (working-style essence), T2/T3 the
+# full operator.md. The Refinement-1 character fix: T1 keeps Mylo's working
+# voice (~100 tok) without the bio/manifesto.
 # An unknown / falsy tier returns None ⇒ FULL composition (legacy, safe — a
 # tier we don't recognize never silently drops character).
-_ALWAYS_LAYERS = ("constitution", "soul", "register", "goals")
+_ALWAYS_LAYERS = ("constitution", "soul", "register", "operator", "goals")
 _TIER_IDENTITY_LAYERS: dict[str, frozenset] = {
     "T1": frozenset(_ALWAYS_LAYERS),
-    "T2": frozenset(_ALWAYS_LAYERS + ("operator", "capabilities")),
-    "T3": frozenset(_ALWAYS_LAYERS + ("operator", "capabilities", "affordances")),
+    "T2": frozenset(_ALWAYS_LAYERS + ("capabilities",)),
+    "T3": frozenset(_ALWAYS_LAYERS + ("capabilities", "affordances")),
 }
+
+# The condensed-operator-stub markers (Refinement 1). The stub lives ONCE,
+# inside operator.md, between these markers — single-source, no drift: T1 reads
+# only the marked region, T2/T3 read the whole file (markers stripped).
+_T1_STUB_RE = re.compile(
+    r"<!--\s*t1:start\s*-->(.*?)<!--\s*t1:end\s*-->", re.DOTALL | re.IGNORECASE
+)
+_T1_MARKER_RE = re.compile(r"<!--\s*t1:(?:start|end)\s*-->[ \t]*\n?", re.IGNORECASE)
 
 
 def _identity_layers_for_tier(tier: Optional[str]) -> Optional[frozenset]:
@@ -115,6 +128,25 @@ def _identity_layers_for_tier(tier: Optional[str]) -> Optional[frozenset]:
     if not tier:
         return None
     return _TIER_IDENTITY_LAYERS.get(tier)  # unknown tier -> None -> full
+
+
+def _extract_t1_stub(text: Optional[str]) -> Optional[str]:
+    """The condensed T1 operator stub — the content of the ``<!-- t1:start -->``
+    / ``<!-- t1:end -->`` region(s) in operator.md. ``None`` when the file has no
+    marked region (graceful: T1 then composes without operator-context)."""
+    if not text:
+        return None
+    parts = [m.group(1).strip() for m in _T1_STUB_RE.finditer(text)]
+    parts = [p for p in parts if p]
+    return "\n\n".join(parts) if parts else None
+
+
+def _strip_t1_markers(text: Optional[str]) -> Optional[str]:
+    """Full operator text with the t1 marker comments removed — what T2/T3 read.
+    The markers orient the T1 extractor; they must never leak into the prompt."""
+    if not text:
+        return text
+    return _T1_MARKER_RE.sub("", text).strip()
 
 
 @dataclass
@@ -270,9 +302,18 @@ def load_identity(
         content = _resolve_file(home, canonical, legacy, template, ref_dir, file_tier)
         setattr(composition, canonical.removesuffix(".md"), content)
 
-    # Sprint 75 — operator-context is gated out below T2 (T1 is irreducible).
-    if not _admits("operator"):
-        composition.operator = None
+    # Sprint 75 (Refinement 1) — operator rides every tier but with tier-scoped
+    # CONTENT: T1 reads ONLY the condensed ``<!-- t1 -->`` stub (working-style
+    # essence — keeps Mylo's voice without the bio/manifesto); T2/T3 read the
+    # full operator.md (markers stripped). Single-source: the stub is a marked
+    # region inside operator.md, never a parallel copy that could drift. A file
+    # with no marked region yields no T1 stub (graceful — T1 omits operator).
+    if composition.operator:
+        composition.operator = (
+            _extract_t1_stub(composition.operator)
+            if tier == "T1"
+            else _strip_t1_markers(composition.operator)
+        )
 
     # Goals come from the Dock, not a file (Sprint 69). Absent Dock →
     # graceful (None, layer skipped); malformed dock.yaml → fail loud
