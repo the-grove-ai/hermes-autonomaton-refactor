@@ -18,8 +18,11 @@ truth for that property.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 # ── Public dataclasses ────────────────────────────────────────────────
 
@@ -67,17 +70,34 @@ class ComposedPrompt:
       ``_build_system_prompt_parts`` return shape, kept for
       backward compatibility with consumers that expected the
       tiered dict.
+    * ``gated_context_blocks`` — Sprint 73 (D5/D10): the gateable
+      context blocks switched OFF for this turn's tier (empty when no
+      tier allow-list was supplied). Captured at the moment of
+      exclusion so the ``/context`` report + Kaizen ledger can
+      attribute the payload (provenance).
     """
 
     text: str
     sections: Dict[str, str]
     tiers: Dict[str, str]
+    gated_context_blocks: FrozenSet[str] = field(default_factory=frozenset)
 
 
 # ── The composer ──────────────────────────────────────────────────────
 
 
 _TIER_ORDER: Tuple[str, ...] = ("stable", "context", "volatile")
+
+
+# Sprint 73 (D5) — the gateable context blocks a tier budget may switch off,
+# keyed by the composer registration NAME that emits each. Always-on baseline
+# providers are absent here and are therefore never tier-gated. ``goal_record``
+# is NOT a composer provider — it is the Dock ephemeral injection, gated by the
+# same allow-list at the run_agent.py seam.
+_PROVIDER_GATEABLE_BLOCK: Dict[str, str] = {
+    "context_files": "claude_contract",
+    "skills_index": "skills_index",
+}
 
 
 class PromptComposer:
@@ -135,13 +155,43 @@ class PromptComposer:
         providers need (see ``build_default_composer``'s providers for
         the field set). Providers MUST NOT reach back into the Agent
         instance — all state flows through this dict.
+
+        Sprint 73 (D5) — ``context["tier_context_blocks"]`` is an
+        optional allow-list (a set of gateable block names) for the
+        turn's tier. When present, a gateable provider whose block is
+        absent from the list is switched off (centralized gate; the
+        providers stay pure). When ``None`` / absent the gate is a
+        no-op — this is the Phase 3 isolation default; Phase 4 always
+        populates the list on an inference tier (absent != eager).
         """
+        # Sprint 73 — tier context allow-list (D5). None ⇒ gate disabled.
+        _raw_blocks = context.get("tier_context_blocks")
+        allow_set: Optional[FrozenSet[str]] = (
+            frozenset(_raw_blocks) if _raw_blocks is not None else None
+        )
+        gated_blocks: Set[str] = set()
+
         per_tier: Dict[str, List[Tuple[int, str, str]]] = {
             t: [] for t in _TIER_ORDER
         }
         for reg in self._sections.values():
             if not reg.enabled:
                 continue
+            # Sprint 73 (D5) — centralized tier context gate. A gateable
+            # block absent from the tier's allow-list is dropped here,
+            # before the provider runs; the exclusion is recorded for
+            # provenance (D10). Non-gateable (baseline) providers are not
+            # in the map and always compose.
+            if allow_set is not None:
+                _block = _PROVIDER_GATEABLE_BLOCK.get(reg.name)
+                if _block is not None and _block not in allow_set:
+                    gated_blocks.add(_block)
+                    logger.debug(
+                        "[composer] tier gate: context block %r (provider "
+                        "%r) excluded by tier_context_blocks",
+                        _block, reg.name,
+                    )
+                    continue
             try:
                 result = reg.provider(context)
             except Exception:
@@ -170,7 +220,12 @@ class PromptComposer:
             if tier_text:
                 joined_tiers.append(tier_text)
         full_text = "\n\n".join(joined_tiers)
-        return ComposedPrompt(text=full_text, sections=sections, tiers=tiers)
+        return ComposedPrompt(
+            text=full_text,
+            sections=sections,
+            tiers=tiers,
+            gated_context_blocks=frozenset(gated_blocks),
+        )
 
     def _section_config(self, name: str) -> Dict[str, Any]:
         """Return the ``prompt.sections.<name>`` config block, or {}."""

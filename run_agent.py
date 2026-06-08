@@ -12703,7 +12703,22 @@ class AIAgent:
         _dock_user_context = ""
         _disp_for_dock = getattr(self, "_dispatcher_singleton", None)
         _cls_for_dock = getattr(_disp_for_dock, "_current_turn_classification", None) if _disp_for_dock else None
-        if getattr(_cls_for_dock, "goal_alignment", None) == "direct":
+        # Sprint 73 (D5) — tier context gate for the Dock per-goal record.
+        # ``goal_record`` is injected this turn ONLY when the tier's allow-list
+        # admits it, in addition to the existing on-match rule. The carrier
+        # ``_tier_context_blocks`` is populated per turn by the Phase 4 wiring;
+        # when absent (None) the gate is a no-op — the Phase 3 isolation
+        # default, current behavior unchanged. (Once wired, an inference tier
+        # always populates it: absent != eager — see the Phase 4 invariants.)
+        from grove.tier_budget import tier_admits_context_block
+        _tier_blocks_for_dock = getattr(self, "_tier_context_blocks", None)
+        _goal_record_allowed = tier_admits_context_block(
+            "goal_record", _tier_blocks_for_dock
+        )
+        if (
+            _goal_record_allowed
+            and getattr(_cls_for_dock, "goal_alignment", None) == "direct"
+        ):
             from grove.dock import build_turn_goal_context, load_dock
             _dock = load_dock()
             if _dock is not None:
