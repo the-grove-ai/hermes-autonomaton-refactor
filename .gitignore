@@ -77,3 +77,9 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+
+# launchd plist for the local llama-server — machine-specific operator
+# config, not a repo artifact (binding-sprint territory). Kept in the
+# working tree but out of commits. (routing-profiles/ IS tracked — it is
+# Phase 6 /context measurement substrate and binding-sprint reference.)
+scripts/com.grove.llama-server.plist

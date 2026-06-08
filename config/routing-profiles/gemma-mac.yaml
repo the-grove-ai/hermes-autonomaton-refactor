@@ -1,0 +1,320 @@
+# ============================================================================
+# routing.config.yaml — Cognitive Router tier bindings
+# ============================================================================
+#
+# This file declares the four tiers of cognition the Autonomaton routes work
+# across, and the model bound to each. Edit it to change which model handles
+# which kind of work — or to point a tier at a different provider entirely.
+#
+# THE FOUR TIERS
+#   T0  Pattern Cache      Deterministic recall from your cellar. No model
+#                          call, no cost.
+#   T1  Cheap Cognition    A small, fast model for quick, simple work.
+#   T2  Premium Cognition  The default. Most interactions land here.
+#   T3  Apex Cognition     The strongest, slowest, costliest model, for
+#                          the hardest problems.
+#
+# CHANGING A BINDING
+#   A binding is just config. To move a tier to a different model — or a
+#   different provider, including a local one — edit its `provider` and
+#   `model` values and restart. No code change is required; nothing here is
+#   locked to one vendor.
+#
+# OWNERSHIP
+#   The Autonomaton seeds this file into ~/.grove/routing.config.yaml on
+#   first run. That copy is yours. The system reads it; it cannot write to
+#   it. Tier bindings change only by your hand.
+# ============================================================================
+
+routing:
+  # The shape of this file. Leave it at 1.
+  schema_version: 1
+
+  # The tier used for ordinary work, when nothing routes a request
+  # elsewhere.
+  #
+  # Sprint 54 (intent-taxonomy-v2): inverted from T2 to T1.  T1 is now
+  # the floor; the classifier drives upward escalation for the
+  # knowledge-work and architect intents.  Daily-driver intents
+  # (memory_operation, scheduling, messaging, retrieval, summarization,
+  # translation, conversation, factual_lookup) run on the cheap tier by
+  # default — the economic engine of the Autonomaton Pattern (T3 pays
+  # once, retrieval is forever cheap).
+  default_tier: T1
+
+  # Optional. Pin a tier for every action the zone classifier places in a
+  # given zone (green / yellow / red). An empty map — the default — means
+  # zones do not influence routing. Example: route every red-zone action
+  # (sovereignty-boundary work) to the apex tier —
+  #   zone_overrides:
+  #     red: T3
+  zone_overrides: {}
+
+  # Price figures below are May 2026 list prices. The "per average
+  # interaction" estimates are rough — real cost scales with how much
+  # context a request carries.
+  tier_preferences:
+    T0:
+      handler: pattern_cache
+      description: |
+        Deterministic recall — answers resolved from cached patterns in
+        your cellar (~/.grove/cellar/) with no model call. Instant, and
+        free. As the Autonomaton learns your recurring work, more of it
+        is answered here.
+      max_latency_ms: 50
+
+    T1:
+      provider: anthropic
+      # The wire protocol the runtime uses to call this tier's provider.
+      # ``anthropic_messages`` = the /v1/messages POST surface; the
+      # OpenAI-compatible /v1/chat/completions surface is the default
+      # when this field is absent, which silently 404s against
+      # api.anthropic.com. Declare it explicitly so the runtime never
+      # has to guess from the base_url.
+      api_mode: anthropic_messages
+      model: claude-haiku-4-5-20251001
+      description: |
+        Cheap, fast cognition — a small model for quick, well-scoped
+        work: classification, triage, short transformations. Also scores
+        incoming requests to decide where they should run.
+        Speed: fastest tier.
+        Price: ~$1 / ~$5 per million input / output tokens —
+        roughly $0.003 per average interaction.
+      max_tokens: 4096
+      # USD per million tokens. Read by the T-telemetry spend tracker in
+      # grove/classify.py to compute cumulative cost without hardcoding
+      # a model-specific constant. Update whenever the binding changes
+      # or the provider's list price moves.
+      cost_per_mtok_input: 1.0
+      cost_per_mtok_output: 5.0
+
+    T2:
+      provider: gemma-mac
+      model: gemma-4-12b
+      description: |
+        Premium cognition — Gemma 4 12B on the operator's Mac (Apple
+        Silicon, Metal GPU) via llama-server, reached over the Tailscale
+        mesh. Zero marginal cost, fully sovereign.
+        Reasoning model: emits a CoT scratchpad before the answer.
+        Speed: ~6-7 tok/s measured on an M5 (Metal engaged, but ggml
+        lacks tuned kernels for the Apple10/Metal4 GPU family — slow
+        until upstream catches up), plus a ~25ms Tailscale hop. Treat
+        as available-but-slow; keep the daily driver on a faster tier.
+      max_tokens: 2048
+      cost_per_mtok_input: 0.0
+      cost_per_mtok_output: 0.0
+
+    # ----- LOCAL BINDING — run T2 on-device with Ollama -------------------
+    # The T2 block above runs on a cloud model. To make the daily driver
+    # local — most interactions on-device, at zero marginal cost — install
+    # Ollama, pull a model, and replace the T2 block above with this one:
+    #
+    #   T2:
+    #     provider: ollama
+    #     model: gemma4
+    #     description: |
+    #       Daily driver. Most interactions run on-device at zero marginal
+    #       cost. Gemma 4 (Apache 2.0-licensed, large context) handles
+    #       drafting, analysis, code, and conversation. The GPU serves the
+    #       operator; the API bill drops to near-zero for routine work.
+    #     max_tokens: 8192
+    #
+    # The endpoint defaults to http://localhost:11434/v1. For Ollama on a
+    # different host or port, set OLLAMA_BASE_URL in the environment — the
+    # tier block carries no base_url field of its own.
+    #
+    # Keep T1 on an Anthropic-native provider. T1 runs the telemetry
+    # classifier, which the v0.1 build binds to the Anthropic Messages
+    # protocol; an Ollama T1 would route every request on default-tier
+    # behaviour with no classification.
+    #
+    # Full walkthrough: docs/guides/local-tier-binding.md
+    # ---------------------------------------------------------------------
+
+    T3:
+      provider: anthropic
+      api_mode: anthropic_messages
+      model: claude-opus-4-6   # 4.6, not 4.7 — predictable tokenization
+      description: |
+        Apex cognition — the strongest model, for the hardest problems:
+        multi-step planning, novel synthesis, architecture-level
+        reasoning. Slower and several times costlier than T2, so it is
+        used sparingly, only when the work needs it.
+        Speed: slowest tier.
+        Price: ~$5 / ~$25 per million input / output tokens —
+        roughly $0.08 per average interaction, about four times the
+        cost of a T2 interaction.
+      max_tokens: 16384
+      cost_per_mtok_input: 5.0
+      cost_per_mtok_output: 25.0
+
+  escalation:
+    threshold: 0.6
+    description: |
+      A confidence dial from 0.0 to 1.0. When the Autonomaton is less
+      than this sure it has picked the right tier for a request, it
+      moves the request up a tier rather than risk a weak answer on a
+      cheaper model. Raise it toward 1.0 to escalate more readily —
+      better answers, higher cost. Lower it to hold work on cheaper
+      tiers — lower cost, more risk of a thin answer.
+
+  # ----------------------------------------------------------------------
+  # Declarative routing rules. After operator overrides (--tier / --model)
+  # are checked, each enabled rule below is tested in order —
+  # upward_moderate, then upward, then escalation — against the telemetry
+  # classifier's read of the request. The first rule that matches decides
+  # the tier; if none match, the request runs on default_tier (T1).
+  #
+  # Sprint 54 (intent-taxonomy-v2): the floor inverted from T2 to T1.
+  # The legacy ``downward`` block is gone — T1 is the default, so there
+  # is no tier to descend to.  Two upward rules replace it:
+  #
+  #   * upward_moderate — moderate-complexity knowledge-work and
+  #     architect intents (planning is here at moderate so its FLOOR is
+  #     T2, never T1).
+  #   * upward — complex/novel work in the same family escalates to T3.
+  #
+  # The escalation step_up rule is narrowed: T1-native intents do NOT
+  # step up on low confidence (let Haiku handle uncertain chit-chat;
+  # stepping it to T2 is economic waste).
+  #
+  # This is the dial that makes routing yours: change a threshold, an
+  # intent list, or an `enabled` flag and the Autonomaton routes
+  # differently on the next request. No code change, no restart of intent.
+  # ----------------------------------------------------------------------
+  routing_rules:
+
+    # Send moderate-complexity knowledge work UP to Premium Cognition.
+    # Catches the bulk of code, debugging, analysis, research, writing,
+    # and system-admin work that needs T2 but not T3.  ``planning`` is
+    # included so its FLOOR is T2 — a moderate planning task must never
+    # fall through to T1 Haiku.
+    upward_moderate:
+      enabled: true
+      match:
+        complexity: moderate
+        intents: [code_generation, debugging, analysis, research,
+                  creative_writing, system_admin, planning]
+      target_tier: T2
+
+    # Send hard work UP to the apex tier: complex or novel requests in
+    # the knowledge-work / architect family.
+    upward:
+      enabled: true
+      match:
+        complexity: [complex, novel]
+        intents: [planning, analysis, code_generation, debugging,
+                  research, system_admin]
+      target_tier: T3
+
+    # When the classifier is not confident it has the right tier, step
+    # the request up one rung rather than risk a weak answer on a cheaper
+    # model.  Sprint 54: narrowed to T2/T3-native intents only.  Daily-
+    # driver intents (conversation, factual_lookup, retrieval,
+    # summarization, translation, scheduling, messaging,
+    # memory_operation) stay on T1 even at low confidence — the cost of
+    # an uncertain Haiku reply is well below the cost of escalating
+    # every uncertain chit-chat to Sonnet.
+    escalation:
+      enabled: true
+      match:
+        max_confidence: 0.6
+        intents: [code_generation, debugging, analysis, research,
+                  creative_writing, system_admin, planning]
+      action: step_up
+
+  telemetry:
+    tier: T1
+    description: |
+      Which tier scores incoming requests — judging what kind of work
+      each one is, and how confident that judgment is. T1 is the natural
+      home: the scoring is fast, high-volume, well-scoped work, and a
+      cheap model keeps the overhead negligible.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # ESCALATION POLICY (Sprint 30 — escalation-signal-v1)
+  # ────────────────────────────────────────────────────────────────────────
+  # Distinct from routing_rules.escalation above. That block is the
+  # confidence-driven step-up the classifier triggers when it's
+  # uncertain. THIS block is the Agent-driven escalation: the LLM calls
+  # the synthetic `escalate(reasoning_depth, context_size, blocker)`
+  # tool when it genuinely needs more capacity; the Dispatcher applies
+  # this policy to decide grant vs. deny.
+  #
+  # Default state: enabled=false. Vanilla installs auto-deny every
+  # escalate call (the synthetic tool is still in the LLM's surface,
+  # but nothing escalates without operator opt-in).
+  #
+  # When enabled, the policy is deterministic and silent: no operator
+  # prompt, no Kaizen halt. Auto-grant within budget+ceiling; auto-deny
+  # above. Both paths log to the Kaizen Ledger as escalation_decision
+  # events so the operator can audit grants/denies after the fact.
+  #
+  # Per GRV-005 § III: the Agent declares WHAT it needs (reasoning_depth
+  # mapped to a tier here). The Dispatcher decides HOW. The Agent never
+  # dictates infrastructure.
+  escalation_policy:
+    enabled: false
+    # Hard cap per turn — second escalate call in the same turn auto-
+    # denies regardless of budget.
+    max_escalations_per_turn: 1
+    # Soft budget across a session. Hits the deny path once exhausted.
+    max_escalations_per_session: 5
+    # Never escalate above this tier — even if the Agent asks for apex.
+    ceiling_tier: T3
+    # Reserved for v0.2 — distinguishes auto-grant tiers from operator-
+    # confirmation-required tiers. v0.1 treats any grant within ceiling
+    # as auto-grant.
+    auto_grant_above_tier: T3
+    # Map the declarative reasoning_depth the Agent emits to a concrete
+    # tier from tier_preferences above. Edit to tune which depth lands
+    # on which tier; the Agent's vocabulary stays declarative.
+    mapping:
+      shallow:  T1
+      moderate: T2
+      deep:     T3
+      apex:     T3
+
+    # ── Pre-route (Sprint 30.1 post-completion patch) ─────────────────
+    # Classifier-driven pre-routing for hard turns. Distinct from
+    # routing_rules.escalation above (Sprint 12 step_up; bumps one
+    # tier on low classifier confidence regardless of complexity).
+    #
+    # pre_route jumps STRAIGHT to mapping[target_depth] when:
+    #   complexity_signal in complexity_triggers AND
+    #   confidence < confidence_threshold
+    #
+    # The two are complementary:
+    #   step_up:   "classifier isn't sure" → one tier bump
+    #   pre_route: "this is genuinely hard" → jump to deep
+    #
+    # When both would trigger on the same turn, pre_route wins (the
+    # router enforces precedence). enabled defaults to the parent
+    # escalation_policy.enabled, so flipping the parent on enables
+    # pre-routing by default. Set pre_route.enabled: false to keep
+    # the Agent-driven escalation path (synthetic tool) without the
+    # classifier-driven pre-route.
+    pre_route:
+      enabled: false
+      complexity_triggers: [complex, novel]
+      confidence_threshold: 0.6
+      # Key into escalation_policy.mapping above.
+      target_depth: deep
+
+# ─────────────────────────────────────────────────────────────────────────
+# pattern_cache — T0 Pattern Compiler (Sprint 48/49; exclusion Sprint 56)
+# ─────────────────────────────────────────────────────────────────────────
+pattern_cache:
+  enabled: true
+
+  # Intent classes excluded from T0 candidacy. system_admin is OAuth
+  # redirect-callback noise; unknown is classification failure; conversation
+  # is small-talk with no tool and no stable answer — it would only ever drop,
+  # so the compiler stays focused on data and action queries (Sprint 56 Fix #4).
+  exclude_intents: [unknown, system_admin, conversation]
+
+  promotion:
+    min_repetitions: 5
+    within_days: 14
+    max_rejections: 0
+    max_response_variance: 0
