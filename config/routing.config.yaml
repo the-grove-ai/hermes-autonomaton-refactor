@@ -301,6 +301,60 @@ routing:
       target_depth: deep
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# tier_budgets — the per-tier prefill governor
+# (Sprint 73, declarative-jit-budget-v1)
+# ═════════════════════════════════════════════════════════════════════════
+# THE BUDGET, IN ONE PLACE. For each cognition tier this declares what the
+# autonomaton loads into the prompt BEFORE the model runs: which heavy
+# *context blocks* compose, and which *tool groups* + *MCP servers* are
+# exposed. It is the Cognitive Router applied to the prompt itself — load the
+# minimum a tier needs; keep the apex tier eager.
+#
+# POLICY HERE, TAXONOMY ELSEWHERE. allow_groups names tool groups defined in
+# tool_groups.yaml; this file never restates what is *in* a group. Re-tiering
+# the autonomaton is a config edit, not a code change.
+#
+# context — an allow-list over the GATEABLE heavy blocks only:
+#     claude_contract   the CLAUDE.md contract        (~4.5K)
+#     goal_record       the Dock per-goal record      (loaded on match)
+#     skills_index      the promoted-skills index      (~2.8K)
+#   The always-on baseline (identity, environment, platform, register, the
+#   Tier-0 routing manifest) is NEVER listed — it always composes. A block
+#   absent from a tier's list is gated OFF for that tier.
+#
+# tools.allow_groups — tool groups whose tools may load this tier; "*" = the
+#   full registry.
+# tools.exclude_mcp  — MCP servers excluded this tier (allowed by default);
+#   "*" = every MCP excluded. notion.py serves Notion on the local path via
+#   the terminal tool, so excluding the hosted Notion MCP on T2 costs no
+#   capability — only ~18.4K of schema.
+#
+# FAIL LOUD (no silent full-load): every provider-backed tier in
+# tier_preferences above MUST have an entry here, with known block and group
+# names, or the config raises at load. Non-inference tiers (the T0 pattern
+# cache) take no entry — they have no prefill to govern.
+tier_budgets:
+
+  T3:                       # Apex Cognition — unbounded window, eager.
+    context: [claude_contract, goal_record, skills_index]
+    tools:
+      allow_groups: ["*"]   # full registry
+      exclude_mcp: []       # hosted Notion MCP available
+
+  T2:                       # Premium Cognition — the prefill-budgeted path.
+    context: [goal_record]  # claude_contract + skills_index gated OFF; goal_record loads on match
+    tools:
+      allow_groups: [core, code_generation, debugging, analysis, system_admin]
+      exclude_mcp: [notion]  # the ~18.4K cut — Notion reached via notion.py (terminal, in core)
+
+  T1:                       # Cheap Cognition — the floor. Minimal prefill.
+    context: []             # no gateable heavy context
+    tools:
+      allow_groups: [core]
+      exclude_mcp: ["*"]    # no MCP on the cheap tier
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # pattern_cache — T0 Pattern Compiler (Sprint 48)
 # ─────────────────────────────────────────────────────────────────────────
