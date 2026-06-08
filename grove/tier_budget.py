@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import yaml
 
@@ -39,6 +39,7 @@ __all__ = [
     "ToolBudget",
     "TierBudget",
     "load_tier_budgets",
+    "tier_admits_context_block",
 ]
 
 # D5 — the only names a tier's ``context`` allow-list may contain. Everything
@@ -72,6 +73,24 @@ class TierBudget:
 
     context: Tuple[str, ...]
     tools: ToolBudget
+
+
+def tier_admits_context_block(
+    block: str, tier_context_blocks: Optional[FrozenSet[str]]
+) -> bool:
+    """Whether a gateable context block rides this turn under the tier allow-list.
+
+    Sprint 73 (D5) — the single admission predicate shared by the composer gate
+    and the Dock injection seam so context and tools can never disagree on what
+    a tier admits. ``tier_context_blocks`` is the tier's allow-list of gateable
+    block names, or ``None`` when no tier budget is threaded.
+
+    ``None`` ⇒ admitted — the Phase 3 isolation default / legacy path. NOTE
+    (Phase 4 invariant): on a wired inference tier the carrier is ALWAYS
+    populated; a ``None`` there must raise/escalate upstream, never silently
+    re-admit the eager payload. Absent is not eager.
+    """
+    return tier_context_blocks is None or block in tier_context_blocks
 
 
 def load_tier_budgets(
