@@ -2178,6 +2178,11 @@ class AIAgent:
         # register change routes through ``self._dispatcher_singleton
         # .recompose_system_prompt(...)`` via the back-reference.
         self._composed_system_prompt: Optional[str] = None
+        # Sprint 73 Phase 5 — the structured ComposedPrompt RESULT (sections +
+        # gated_context_blocks) retained alongside the text above, set from the
+        # same compose call. /context reads this (never recomposes) to attribute
+        # the actually-injected prompt. None until the first compose.
+        self._composed_prompt: Optional[Any] = None
 
         # Sprint 23 (soul-affordances-register-v1) — session-overlay
         # register name. None means "compose with the soul.md frontmatter
@@ -6631,8 +6636,15 @@ class AIAgent:
             "memory_manager": getattr(self, "memory_manager", None),
             "terminal_cwd": terminal_cwd,
             "system_message": system_message,
+            "tier_context_blocks": getattr(self, "_tier_context_blocks", None),
         }
-        return composer.compose(**context).text
+        # Sprint 73 Phase 5 — retain the structured result as data (see
+        # Dispatcher.compose_system_prompt). The dispatcher-driven path is the
+        # production one; this no-dispatcher fallback retains symmetrically so
+        # /context attributes the injected prompt rather than recomposing.
+        _composed = composer.compose(**context)
+        self._composed_prompt = _composed
+        return _composed.text
 
 
     # =========================================================================

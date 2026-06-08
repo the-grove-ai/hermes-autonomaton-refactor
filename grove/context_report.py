@@ -73,6 +73,12 @@ class ContextReport:
       combined).
     * ``cellar_context`` is a single integer (the ephemeral block).
     * ``grand_total`` is the sum of the four bucket totals.
+    * Sprint 73 (D10) tier-budget provenance — WHY this payload:
+      ``applied_tier`` (the routed tier), ``excluded_context_blocks`` (the
+      gateable blocks the tier gated OFF, from the retained
+      ``ComposedPrompt.gated_context_blocks``), ``excluded_mcp`` (MCP servers
+      the tier excluded) and ``stripped_groups`` (intent groups the tier
+      capped). Empty on a non-budgeted turn.
     """
 
     session_id: str
@@ -85,6 +91,10 @@ class ContextReport:
     cellar_context: int
     grand_total: int
     snapshot_path: Path = field(default_factory=lambda: Path(""))
+    applied_tier: Optional[str] = None
+    excluded_context_blocks: List[str] = field(default_factory=list)
+    excluded_mcp: List[str] = field(default_factory=list)
+    stripped_groups: List[str] = field(default_factory=list)
 
 
 def snapshot_path_for(
@@ -206,12 +216,18 @@ def build_context_report(
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     model = getattr(agent, "model", None)
 
-    # System prompt — read the labeled sub-sections the Sprint 24a
-    # refactor surfaces. Older agent objects without the refactor would
-    # return a 3-key dict; default to an empty sections map in that
-    # case rather than fail the snapshot.
-    parts = agent._build_system_prompt_parts(system_message=system_message)
-    sections_raw = parts.get("_sections") if isinstance(parts, Mapping) else None
+    # System prompt — read the RETAINED ComposedPrompt: the prompt actually
+    # injected this turn, NOT a recompose. Sprint 36 (GRV-007) extracted the
+    # old ``_build_system_prompt_parts`` method into the PromptComposer; the
+    # canonical source is the composition RESULT the compose path stashes on
+    # ``agent._composed_prompt`` (Sprint 73 Phase 5). Reading data — never
+    # re-running compose — keeps provenance truthful: a fresh compose could
+    # diverge from what was sent (volatile providers, carrier/state drift).
+    # ``system_message`` is intentionally unused here; it was already folded
+    # into the retained result at compose time.
+    composed = getattr(agent, "_composed_prompt", None)
+    sections_raw = getattr(composed, "sections", None)
+    gated_blocks = getattr(composed, "gated_context_blocks", None) or frozenset()
     system_prompt_sections: Dict[str, int] = {}
     if isinstance(sections_raw, Mapping):
         for label, text in sections_raw.items():
@@ -263,6 +279,15 @@ def build_context_report(
         + cellar_tokens
     )
 
+    # Tier-budget provenance (D10) — WHY this payload. The applied tier and the
+    # tool-side exclusions ride ``_last_tool_selection`` (enriched in Phase 4b);
+    # the gated context blocks come from the retained ComposedPrompt above.
+    sel = getattr(agent, "_last_tool_selection", None) or {}
+    applied_tier = sel.get("tier")
+    excluded_mcp = sorted(str(s) for s in (sel.get("excluded_mcp") or []))
+    stripped_groups = sorted(str(s) for s in (sel.get("stripped_groups") or []))
+    excluded_context_blocks = sorted(str(b) for b in gated_blocks)
+
     snapshot = snapshot_path_for(resolved_session, resolved_turn, snapshot_base_dir)
 
     return ContextReport(
@@ -276,6 +301,10 @@ def build_context_report(
         cellar_context=cellar_tokens,
         grand_total=grand_total,
         snapshot_path=snapshot,
+        applied_tier=applied_tier,
+        excluded_context_blocks=excluded_context_blocks,
+        excluded_mcp=excluded_mcp,
+        stripped_groups=stripped_groups,
     )
 
 
@@ -355,6 +384,30 @@ def format_context_report(report: ContextReport) -> str:
     out.append(
         f"{'Per-turn input total':<32}{_fmt_int(grand)}{_fmt_pct(grand, grand):>8}"
     )
+
+    # Tier-budget provenance (D10) — WHY this payload is the size it is.
+    if (
+        report.applied_tier
+        or report.excluded_context_blocks
+        or report.excluded_mcp
+        or report.stripped_groups
+    ):
+        out.append("")
+        out.append(f"Tier budget: {report.applied_tier or '(none)'}")
+        if report.excluded_context_blocks:
+            out.append(
+                f"  context blocks gated off : {', '.join(report.excluded_context_blocks)}"
+            )
+        if report.excluded_mcp:
+            out.append(
+                f"  MCP servers excluded     : {', '.join(report.excluded_mcp)}"
+            )
+        if report.stripped_groups:
+            out.append(
+                f"  tool groups stripped     : {', '.join(report.stripped_groups)} "
+                f"(escalation requested — see ledger)"
+            )
+
     out.append("")
     out.append(f"Snapshot: {report.snapshot_path}")
     return "\n".join(out)
@@ -391,6 +444,13 @@ def persist_context_report(
             "cellar_context": report.cellar_context,
         },
         "grand_total": report.grand_total,
+        # Sprint 73 (D10) — tier-budget provenance: why this payload.
+        "tier_budget": {
+            "applied_tier": report.applied_tier,
+            "excluded_context_blocks": report.excluded_context_blocks,
+            "excluded_mcp": report.excluded_mcp,
+            "stripped_groups": report.stripped_groups,
+        },
     }
     with open(target, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, ensure_ascii=False)
