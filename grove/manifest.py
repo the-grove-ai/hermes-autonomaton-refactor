@@ -45,6 +45,7 @@ __all__ = [
     "load_manifest",
     "build_manifest",
     "matched_mcp_servers",
+    "mcp_match_reasons",
 ]
 
 # ── Hard caps (D5) ───────────────────────────────────────────────────────
@@ -193,23 +194,46 @@ def matched_mcp_servers(
     Pure function: no I/O, no classifier call. Returns a frozenset of matched
     server ids (a unit's ``id`` is the MCP server name).
     """
+    return frozenset(
+        mcp_match_reasons(
+            units,
+            intent_class=intent_class,
+            message=message,
+            resolved_goal_id=resolved_goal_id,
+        )
+    )
+
+
+def mcp_match_reasons(
+    units,
+    *,
+    intent_class: Optional[str],
+    message: Optional[str],
+    resolved_goal_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """Like :func:`matched_mcp_servers`, but maps each matched server id to the
+    reason it disclosed — the observability (Phase 4) provenance.
+
+    First clause wins, in declared precedence: ``intent-match`` > ``keyword-
+    match`` > ``dock-match``. Servers that did not match are absent.
+    """
     msg = (message or "").lower()
-    out = set()
+    out: Dict[str, str] = {}
     for u in units:
         if u.kind != "mcp":
             continue
         t = u.trigger
-        if (
-            (intent_class is not None and intent_class in t.intents)
-            or any(kw.lower() in msg for kw in t.keywords)
-            or (
-                t.dock_goal is not None
-                and resolved_goal_id is not None
-                and t.dock_goal == resolved_goal_id
-            )
+        if intent_class is not None and intent_class in t.intents:
+            out[u.id] = "intent-match"
+        elif any(kw.lower() in msg for kw in t.keywords):
+            out[u.id] = "keyword-match"
+        elif (
+            t.dock_goal is not None
+            and resolved_goal_id is not None
+            and t.dock_goal == resolved_goal_id
         ):
-            out.add(u.id)
-    return frozenset(out)
+            out[u.id] = "dock-match"
+    return out
 
 
 # ── Loader + validator ───────────────────────────────────────────────────

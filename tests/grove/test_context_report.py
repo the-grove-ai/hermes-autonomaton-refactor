@@ -23,10 +23,67 @@ from grove.context_report import (
     ContextReport,
     build_context_report,
     format_context_report,
+    measure_always_loaded_floor,
     persist_context_report,
     snapshot_path_for,
     _tool_group_for,
 )
+
+
+# ── Sprint 74 Phase 4: floor scoreboard + disclosure ledger ──────────────
+
+
+def test_measure_always_loaded_floor_itemizes_identity_and_indexes():
+    floor = measure_always_loaded_floor()
+    assert "_total" in floor
+    # Identity floor sub-parts are surfaced (the Sprint 75 scoreboard).
+    assert any(k.startswith("identity.") for k in floor)
+    # The Dock goal-index and the disclosure tool-index are named lines.
+    assert "dock_goal_index" in floor
+    assert "tool_index" in floor
+    assert floor["_total"] == sum(v for k, v in floor.items() if k != "_total")
+    assert all(isinstance(v, int) for v in floor.values())
+
+
+def test_build_report_carries_disclosure_ledger_and_tier_mode():
+    agent = StubAgent(
+        sections={"identity": "id", "timestamp": "TS"},
+        model="claude-sonnet-4-6",
+        last_tool_selection={"tier": "T2"},
+        disclosure_log=[
+            {"unit_id": "notion", "kind": "mcp", "tokens": 1200, "reason": "keyword-match"},
+            {"unit_id": "search_files", "kind": "tool", "tokens": 380, "reason": "agent-pull"},
+        ],
+    )
+    report = build_context_report(agent)
+    assert report.disclosed_payloads == [
+        {"unit_id": "notion", "kind": "mcp", "tokens": 1200, "reason": "keyword-match"},
+        {"unit_id": "search_files", "kind": "tool", "tokens": 380, "reason": "agent-pull"},
+    ]
+    assert report.disclosure_tier_mode == "index+pull"          # T2 -> pull tier
+    assert report.always_loaded and report.always_loaded["_total"] >= 0
+
+
+def test_t1_tier_mode_is_eager_core():
+    agent = StubAgent(sections={"identity": "id"}, last_tool_selection={"tier": "T1"})
+    report = build_context_report(agent)
+    assert report.disclosure_tier_mode == "eager-core"
+    assert report.disclosed_payloads == []                       # nothing pulled on T1
+
+
+def test_format_shows_floor_and_disclosure_sections():
+    agent = StubAgent(
+        sections={"identity": "id"},
+        last_tool_selection={"tier": "T3"},
+        disclosure_log=[
+            {"unit_id": "notion", "kind": "mcp", "tokens": 1200, "reason": "agent-pull"},
+        ],
+    )
+    out = format_context_report(build_context_report(agent))
+    assert "Always-loaded floor" in out
+    assert "Disclosed this turn" in out
+    assert "notion" in out and "agent-pull" in out
+    assert "index+pull" in out
 
 
 # ── Stub agent ────────────────────────────────────────────────────────────────
@@ -49,6 +106,7 @@ class StubAgent:
         model: str = "claude-sonnet-4-6",
         gated_context_blocks: Optional[List[str]] = None,
         last_tool_selection: Optional[Dict] = None,
+        disclosure_log: Optional[List[Dict]] = None,
     ):
         from grove.prompt.composer import ComposedPrompt
         self._sections = dict(sections or {})
@@ -56,6 +114,8 @@ class StubAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.session_id = session_id
         self.model = model
+        if disclosure_log is not None:
+            self._disclosure_log = list(disclosure_log)
         # Sprint 73 Phase 5 — context_report reads the RETAINED ComposedPrompt,
         # not a recomposing method (GRV-007). Build a real ComposedPrompt from
         # the stub sections so the test exercises the production data path.
