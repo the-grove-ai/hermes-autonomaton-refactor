@@ -1804,6 +1804,18 @@ class Dispatcher:
             "turn_escalation_index": self._current_turn_escalations,
             "session_escalation_total": self._session_escalation_counts[session_id],
         }
+        # Sprint 73 Phase 4b (D8/D10) — tool-budget-strip escalations carry the
+        # provenance that makes over-escalation OBSERVABLE: tier + stripped
+        # groups + intent. A high rate is the signal to widen allow_groups in
+        # config (config-over-code), not a hidden cost. Logged to BOTH the
+        # ledger event and the IntentRecord-bound events list below.
+        _esc_source = request.get("source")
+        if _esc_source:
+            event_payload["source"] = _esc_source
+        if request.get("stripped_groups") is not None:
+            event_payload["stripped_groups"] = request.get("stripped_groups")
+        if request.get("intent_class") is not None:
+            event_payload["intent_class"] = request.get("intent_class")
         try:
             ledger.record("escalation_decision", **event_payload)
         except Exception as exc:

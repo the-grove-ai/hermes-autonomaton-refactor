@@ -1407,6 +1407,10 @@ class AIAgent:
         # ``tool_selection`` Kaizen Ledger event.
         self._tools_for_turn: Optional[List[Dict[str, Any]]] = None
         self._last_tool_selection: Optional[Dict[str, Any]] = None
+        # Sprint 73 Phase 4b — the tier-aware ToolResolution stashed by
+        # _maybe_apply_tool_filter; the generator reads its stripped_groups to
+        # fire the D8 escalation. None until the first per-turn filter runs.
+        self._tool_resolution: Optional[Any] = None
 
         self.model = model
         self.max_iterations = max_iterations
@@ -2847,84 +2851,104 @@ class AIAgent:
         return self.tools
 
     def _maybe_apply_tool_filter(self) -> None:
-        """Compute the per-turn filtered tool list and stash the
-        selection metadata for the Dispatcher to write to the ledger.
+        """Compute the per-turn filtered tool list and stash the selection +
+        provenance for the Dispatcher's ledger and the D8 escalation.
 
-        Fires inside ``_run_turn_generator`` right after
-        ``_maybe_route_for_turn`` — by which point Sprint 12's Haiku
-        classification has fired (or graceful-failed) and
-        ``grove.providers.current_classification()`` is set. Reads the
-        Sprint 29 tool-groups taxonomy and calls
-        ``grove.context_budget.resolve_tool_set`` to compute the
-        allowed name set; ``None`` from resolve signals maximal
-        fallback (full registry loaded — recorded loudly).
+        Sprint 73 Phase 4b — consolidated onto the single resolution surface
+        ``grove.context_budget.resolve_tools_for_tier`` (the legacy twin is
+        retired). When this turn routed to an inference tier, ``self._tier_budget``
+        (set pre-construction by the Dispatcher in Phase 4a) caps the intent
+        selection and may exclude MCP servers; otherwise the
+        ``PERMISSIVE_TIER_BUDGET`` reproduces the pre-Sprint-73 Sprint 29
+        behavior exactly (intent selection through, every MCP passes).
 
-        Safe to call repeatedly per turn — only the first non-None
-        application sticks because the Dispatcher resets state at
-        ``dispatch_turn`` entry. Best-effort: any failure logs at
-        WARNING and degrades to full registry — the operator's turn
-        MUST NOT crash because the optimizer threw.
+        Fires inside ``_run_turn_generator`` after classification, so
+        ``grove.providers.current_classification()`` is set.
+
+        FAIL LOUD on a budgeted turn: a co-location / config error surfaces
+        rather than degrading to the full registry that would overrun the
+        tier's prefill ceiling. The legacy (no-budget) path keeps the
+        best-effort degrade so a cloud turn never crashes on an optimizer error.
         """
+        self._tool_resolution = None
         # Skip when self.tools is empty/missing — nothing to filter.
         if not self.tools:
             return
-        try:
-            from grove.providers import current_classification
-            from grove.context_budget import (
-                load_taxonomy,
-                resolve_tool_set,
-                filter_tools_by_name,
+
+        from grove.providers import current_classification
+        from grove.context_budget import load_taxonomy, resolve_tools_for_tier
+        from grove.tier_budget import PERMISSIVE_TIER_BUDGET
+
+        classification = current_classification()
+        intent_class = classification.intent_class if classification else None
+        complexity = classification.complexity_signal if classification else None
+        goal_alignment = (
+            getattr(classification, "goal_alignment", None) if classification else None
+        )
+        tier_budget = getattr(self, "_tier_budget", None)
+        budgeted = tier_budget is not None
+
+        def _resolve():
+            return resolve_tools_for_tier(
+                self.tools,
+                intent_class,
+                complexity,
+                load_taxonomy(),
+                tier_budget if budgeted else PERMISSIVE_TIER_BUDGET,
             )
 
-            classification = current_classification()
-            taxonomy = load_taxonomy()
-            allowed = resolve_tool_set(
-                intent_class=(
-                    classification.intent_class if classification else None
-                ),
-                complexity_signal=(
-                    classification.complexity_signal if classification else None
-                ),
-                taxonomy=taxonomy,
-            )
-            if allowed is None:
-                # Maximal fallback. Leave _tools_for_turn None so
-                # _tools_for_api returns the full self.tools.
+        if budgeted:
+            # Never silently revert to the eager full registry on a budgeted
+            # (local-tier) turn — that is the M5-crash payload the budget exists
+            # to prevent. A config error (e.g. co-location) must surface.
+            res = _resolve()
+        else:
+            try:
+                res = _resolve()
+            except Exception as exc:
+                logger.warning(
+                    "[run_agent] tool filter failed; degrading to full "
+                    "registry: %r", exc,
+                )
                 self._tools_for_turn = None
                 self._last_tool_selection = {
-                    "intent_class": (
-                        classification.intent_class if classification else None
-                    ),
-                    "complexity_signal": (
-                        classification.complexity_signal if classification else None
-                    ),
                     "fallback": True,
+                    "error": repr(exc),
                     "selected_count": len(self.tools),
                     "full_count": len(self.tools),
                 }
                 return
-            filtered = filter_tools_by_name(self.tools, allowed)
-            self._tools_for_turn = filtered
-            self._last_tool_selection = {
-                "intent_class": classification.intent_class,
-                "complexity_signal": classification.complexity_signal,
-                "goal_alignment": classification.goal_alignment,
-                "fallback": False,
-                "selected_count": len(filtered),
-                "full_count": len(self.tools),
-            }
-        except Exception as exc:
-            logger.warning(
-                "[run_agent] tool filter failed; degrading to full "
-                "registry: %r", exc,
-            )
+
+        self._tool_resolution = res
+        # Preserve the Sprint 29 maximal-fallback signal: the LEGACY (no-budget)
+        # unknown-intent path leaves _tools_for_turn None so _tools_for_api
+        # returns the full registry verbatim. Every other case — any classified
+        # turn, and ANY budgeted turn (incl. a budgeted fallback, which must
+        # stay CAPPED, never revert to eager) — sets the resolved list.
+        if (not budgeted) and res.fallback:
             self._tools_for_turn = None
-            self._last_tool_selection = {
-                "fallback": True,
-                "error": repr(exc),
-                "selected_count": len(self.tools),
-                "full_count": len(self.tools),
-            }
+        else:
+            self._tools_for_turn = list(res.tools)
+
+        _tier_now = None
+        try:
+            from grove.providers import current_tier as _current_tier
+            _tier_now = _current_tier()
+        except Exception:
+            pass
+        self._last_tool_selection = {
+            "intent_class": intent_class,
+            "complexity_signal": complexity,
+            "goal_alignment": goal_alignment,
+            "fallback": res.fallback,
+            "selected_count": len(res.tools),
+            "full_count": len(self.tools),
+            # Sprint 73 Phase 4b — provenance (D10): why this payload.
+            "tier": _tier_now,
+            "stripped_groups": sorted(res.stripped_groups),
+            "excluded_mcp": sorted(res.excluded_mcp),
+            "unparseable_mcp": list(res.unparseable_mcp),
+        }
 
     def apply_tier(self, model, max_tokens):
         """Swap the active cognitive tier in place — model and token budget only.
@@ -12325,6 +12349,37 @@ class AIAgent:
         # the _tools_for_api property. Maximal fallback (full registry)
         # on unknown intent or any failure — never crashes the turn.
         self._maybe_apply_tool_filter()
+
+        # Sprint 73 Phase 4b (D8) — strip-driven escalation. The tier tool cap
+        # may remove a group the intent SELECTED (allow_groups too tight for
+        # this intent on this tier). Never strip silently: request escalation to
+        # a covering tier via the Sprint 30 contract BEFORE the first LLM call.
+        # Grant → the Dispatcher hot-swaps to the covering tier and THIS
+        # generator is replaced; deny → the request is logged and the turn
+        # proceeds with the capped set (so over-escalation surfaces as a config
+        # signal — widen allow_groups — not a hidden cost). The escalation
+        # event carries tier + stripped_groups + intent_class for observability.
+        _tres = self._tool_resolution
+        if _tres is not None and _tres.stripped_groups:
+            from grove.intents import EscalationRequest
+            _stripped = sorted(_tres.stripped_groups)
+            _sel = self._last_tool_selection or {}
+            _esc_intent_class = _sel.get("intent_class")
+            _esc_tier = _sel.get("tier")
+            yield EscalationRequest(
+                reason=(
+                    f"tier {_esc_tier or '?'} tool budget strips group(s) "
+                    f"{_stripped} that intent {_esc_intent_class!r} selected; "
+                    f"escalating to a tier that covers them"
+                ),
+                request={
+                    "reasoning_depth": "deep",
+                    "source": "tool_budget_strip",
+                    "stripped_groups": _stripped,
+                    "intent_class": _esc_intent_class,
+                    "current_tier": _esc_tier,
+                },
+            )
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
