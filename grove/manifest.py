@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 import yaml
 
@@ -43,6 +43,7 @@ __all__ = [
     "UnitTrigger",
     "DisclosableUnit",
     "load_manifest",
+    "build_manifest",
     "matched_mcp_servers",
 ]
 
@@ -340,3 +341,150 @@ def load_manifest(path: Optional[Path] = None) -> Tuple[DisclosableUnit, ...]:
         seen_ids.add(unit.id)
         units.append(unit)
     return tuple(units)
+
+
+# ── build_manifest (Phase 3): derive tool units + merge declarative ──────
+
+
+def _oneline_from_description(desc: str) -> str:
+    """The first line of a tool/MCP description, truncated to the cap.
+
+    The derived index entry is always-loaded prefill; the registry description
+    can be paragraphs. Take the first line and hard-cap it at ``ONELINE_CAP``.
+    """
+    first = (desc or "").strip().splitlines()[0].strip() if desc else ""
+    if not first:
+        first = "(no description)"
+    if len(first) > ONELINE_CAP:
+        first = first[: ONELINE_CAP - 3].rstrip() + "..."
+    return first
+
+
+def _groups_of_tool(name: str, taxonomy: Dict[str, Any]) -> Set[str]:
+    """The tool-group names a tool belongs to in ``tool_groups.yaml``."""
+    groups: Set[str] = set()
+    if name in (taxonomy.get("core") or []):
+        groups.add("core")
+    if name in (taxonomy.get("exploratory") or []):
+        groups.add("exploratory")
+    for chunk, members in (taxonomy.get("domain_chunks") or {}).items():
+        if name in (members or []):
+            groups.add(str(chunk))
+    return groups
+
+
+def _tiers_for_tool(
+    name: str, taxonomy: Dict[str, Any], tier_allow: Dict[str, Set[str]]
+) -> Tuple[str, ...]:
+    """The tiers eligible to disclose a derived tool unit.
+
+    Truthful by construction: a tool is eligible on a tier iff that tier's
+    ``allow_groups`` (from ``tier_budgets`` in routing.config.yaml) admits a
+    group the tool belongs to — ``"*"`` admits everything. This is the same
+    R1 rule the live filter uses, so the index's ``tiers`` metadata cannot
+    drift from the budget. A tool in no allow-listed group on any tier falls
+    back to the apex tier (it is still reachable where the budget is widest).
+    """
+    groups = _groups_of_tool(name, taxonomy)
+    tiers = [
+        tier
+        for tier, allow in tier_allow.items()
+        if WILDCARD in allow or (groups & allow)
+    ]
+    return tuple(tiers) if tiers else ("T3",)
+
+
+# Local mirror of grove.tier_budget.WILDCARD (kept here so this module carries
+# no import-time dependency on the budget loader).
+WILDCARD = "*"
+
+
+def build_manifest(
+    registry: Any,
+    *,
+    taxonomy: Optional[Dict[str, Any]] = None,
+    tier_budgets: Optional[Dict[str, Any]] = None,
+    manifest_path: Optional[Path] = None,
+) -> Tuple[DisclosableUnit, ...]:
+    """The FULL disclosure index: derived tool units merged with the
+    declarative (mcp / goal / contract) units from the YAML.
+
+    Phase 3 (D-GATE-B): tool units are DERIVED live from the registry — oneline
+    from each tool's description (capped), tiers from ``tool_groups`` ∩ the
+    per-tier ``allow_groups`` — so the tool index can never drift from the
+    registry. The YAML keeps only the declarative units that have no registry
+    source (MCP servers, goals, contract sections). The two halves merge here.
+
+    Fail-loud (banked Phase 3 pre-decision): ids are globally unique across the
+    merged manifest regardless of kind. A derived-tool id colliding with ANY
+    YAML id, or a duplicate within the YAML, raises ``ValueError`` at load.
+
+    Args:
+        registry: the Dispatcher-owned ToolRegistry (``get_all_tool_names`` +
+            ``get_definitions``). Source of the derived tool units.
+        taxonomy: tool-group taxonomy dict; loaded from ``tool_groups.yaml``
+            when ``None``.
+        tier_budgets: ``{tier_name: TierBudget}``; loaded from
+            ``routing.config.yaml`` when ``None``. Source of each tier's
+            ``allow_groups`` for the tiers metadata.
+        manifest_path: explicit declarative YAML path; resolved when ``None``.
+
+    Returns:
+        The merged tuple of :class:`DisclosableUnit` — derived tools first,
+        then the declarative units in declared order.
+    """
+    if taxonomy is None:
+        from grove.context_budget import load_taxonomy
+
+        taxonomy = load_taxonomy()
+    if tier_budgets is None:
+        from grove.tier_budget import load_tier_budgets
+
+        tier_budgets = load_tier_budgets()
+
+    tier_allow: Dict[str, Set[str]] = {
+        str(tier): set(getattr(b.tools, "allow_groups", ()) or ())
+        for tier, b in tier_budgets.items()
+    }
+
+    # Declarative half — load + validate the YAML (mcp / goal / contract).
+    declarative = load_manifest(manifest_path)
+
+    # Derived half — one tool unit per registered tool.
+    derived: list = []
+    names = sorted(registry.get_all_tool_names())
+    defs = registry.get_definitions(set(names), quiet=True)
+    by_name = {
+        (d.get("function") or {}).get("name") or d.get("name"): d for d in defs
+    }
+    for name in names:
+        d = by_name.get(name)
+        if d is None:
+            continue
+        fn = d.get("function") or {}
+        desc = fn.get("description") or d.get("description") or ""
+        derived.append(
+            DisclosableUnit(
+                id=name,
+                kind="tool",
+                oneline=_oneline_from_description(desc),
+                payload=f"tool_schema:{name}",
+                tiers=_tiers_for_tool(name, taxonomy, tier_allow),
+                trigger=UnitTrigger(intents=(), keywords=(), dock_goal=None),
+            )
+        )
+
+    # Merge — fail-loud on any global id collision (both directions).
+    merged: list = []
+    seen: Dict[str, str] = {}  # id -> kind of the unit that claimed it
+    for unit in (*derived, *declarative):
+        if unit.id in seen:
+            raise ValueError(
+                f"disclosure manifest id collision: {unit.id!r} is claimed by "
+                f"both a {seen[unit.id]} unit and a {unit.kind} unit. ids must "
+                f"be globally unique across derived tools and the declarative "
+                f"manifest — rename the YAML unit or the colliding tool."
+            )
+        seen[unit.id] = unit.kind
+        merged.append(unit)
+    return tuple(merged)

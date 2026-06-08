@@ -2955,6 +2955,104 @@ class AIAgent:
             return ""
         return ""
 
+    def _apply_disclosure(self, res):
+        """Sprint 74 Phase 3 — the T2/T3 disclosure surface.
+
+        Replaces the eager schemas of non-core tools with the always-loaded
+        index + agent-pull. The reduced API tool-list carries only: core native
+        tools (eager — always needed), the matched MCP schemas Phase 2 disclosed
+        (eager — likely needed), and the two pull tools whose descriptions embed
+        the one-liner index of everything else. The model pulls a full schema /
+        record on demand via read_tool_schema / read_goal_context.
+
+        MCP one-liners ride the index regardless of match (the universal-flip
+        safety condition: the agent can always see and pull an MCP a match
+        missed). Stashes the merged manifest for the agent-loop interception.
+        Falls back to the eager resolved list when no registry is reachable.
+        """
+        from grove.manifest import build_manifest
+        from grove.disclosure import build_pull_tool_defs
+        from grove.context_budget import load_taxonomy, _is_mcp, _mcp_server_of, _name_of
+
+        registry = getattr(
+            getattr(self, "_dispatcher_singleton", None), "registry", None
+        )
+        if registry is None:
+            return list(res.tools)
+
+        manifest = build_manifest(registry)
+        self._disclosure_manifest = manifest
+
+        core = set(load_taxonomy().get("core", []))
+        eager: List[Dict[str, Any]] = []
+        eager_ids: set = set()
+        for t in res.tools:
+            nm = _name_of(t)
+            if _is_mcp(nm):
+                eager.append(t)                       # matched MCP — Phase 2
+                server = _mcp_server_of(nm)
+                if server:
+                    eager_ids.add(server)
+            elif nm in core:
+                eager.append(t)                       # core native — always eager
+                eager_ids.add(nm)
+            # else: non-core native → withheld to the index, pulled on demand.
+
+        pull_defs = build_pull_tool_defs(manifest, eager_ids)
+        return eager + pull_defs
+
+    def _intercept_pull_intents(self, intents, messages):
+        """Sprint 74 Phase 3 — handle the agent-pull tools at the agent loop,
+        before the executor (the executor's frozen context has no path back to
+        the agent). read_tool_schema splices the resolved schema(s) into the
+        live per-turn surface so the model can CALL them on the next step;
+        read_goal_context returns a goal record. Both append their tool-result
+        message here. Returns the remaining (non-pull) intents for the executor.
+
+        A no-op (returns intents unchanged) when disclosure is inactive — so T1
+        / no-tier / no-manifest turns route every tool normally.
+        """
+        manifest = getattr(self, "_disclosure_manifest", None)
+        if not manifest:
+            return intents
+        from grove.disclosure import resolve_goal_record, resolve_pull
+
+        remaining = []
+        for it in intents:
+            if it.tool_name == "read_tool_schema":
+                uid = str((it.arguments or {}).get("id", "")).strip()
+                text, defs = resolve_pull(manifest, self.tools or [], uid)
+                self._splice_pulled_defs(defs)
+                messages.append(
+                    {"role": "tool", "tool_call_id": it.call_id, "content": text}
+                )
+            elif it.tool_name == "read_goal_context":
+                gid = str((it.arguments or {}).get("goal_id", "")).strip()
+                text = resolve_goal_record(gid)
+                messages.append(
+                    {"role": "tool", "tool_call_id": it.call_id, "content": text}
+                )
+            else:
+                remaining.append(it)
+        return remaining
+
+    def _splice_pulled_defs(self, defs) -> None:
+        """Add pulled tool defs to the live per-turn API surface (dedup by name)
+        so the next model call can call them. Materializes _tools_for_turn from
+        the full registry first if it was the None (full-registry) signal."""
+        if not defs:
+            return
+        from grove.context_budget import _name_of
+
+        if self._tools_for_turn is None:
+            self._tools_for_turn = list(self.tools or [])
+        have = {_name_of(t) for t in self._tools_for_turn}
+        for d in defs:
+            nm = _name_of(d)
+            if nm not in have:
+                self._tools_for_turn.append(d)
+                have.add(nm)
+
     def _maybe_apply_tool_filter(self) -> None:
         """Compute the per-turn filtered tool list and stash the selection +
         provenance for the Dispatcher's ledger and the D8 escalation.
@@ -3026,22 +3124,30 @@ class AIAgent:
                 return
 
         self._tool_resolution = res
-        # Preserve the Sprint 29 maximal-fallback signal: the LEGACY (no-budget)
-        # unknown-intent path leaves _tools_for_turn None so _tools_for_api
-        # returns the full registry verbatim. Every other case — any classified
-        # turn, and ANY budgeted turn (incl. a budgeted fallback, which must
-        # stay CAPPED, never revert to eager) — sets the resolved list.
-        if (not budgeted) and res.fallback:
-            self._tools_for_turn = None
-        else:
-            self._tools_for_turn = list(res.tools)
-
         _tier_now = None
         try:
             from grove.providers import current_tier as _current_tier
             _tier_now = _current_tier()
         except Exception:
             pass
+
+        # Preserve the Sprint 29 maximal-fallback signal: the LEGACY (no-budget)
+        # unknown-intent path leaves _tools_for_turn None so _tools_for_api
+        # returns the full registry verbatim. Every other case — any classified
+        # turn, and ANY budgeted turn (incl. a budgeted fallback, which must
+        # stay CAPPED, never revert to eager) — sets the resolved list.
+        #
+        # Sprint 74 Phase 3 — on T2/T3 the disclosure layer replaces the eager
+        # schemas of non-core tools with the always-loaded index + agent-pull;
+        # T1 (and the no-tier / cloud-without-tier path) stays eager (D3: a
+        # round-trip on Haiku costs more than it saves, so T1 never pulls).
+        self._disclosure_manifest = None
+        if (not budgeted) and res.fallback:
+            self._tools_for_turn = None
+        elif _tier_now in ("T2", "T3"):
+            self._tools_for_turn = self._apply_disclosure(res)
+        else:
+            self._tools_for_turn = list(res.tools)
         self._last_tool_selection = {
             "intent_class": intent_class,
             "complexity_signal": complexity,
@@ -15638,6 +15744,14 @@ class AIAgent:
                     # informational because the messages list is mutated
                     # by the consumer's executor.
                     _intents = self._extract_tool_intents(assistant_message)
+                    # Sprint 74 Phase 3 — agent-pull tools (read_tool_schema /
+                    # read_goal_context) are handled here, before the executor:
+                    # they need the registry / manifest / Dock the agent holds,
+                    # and read_tool_schema must splice the pulled schema into the
+                    # live surface for the next step. They append their own
+                    # tool-result messages and drop out of the executor batch.
+                    if _intents:
+                        _intents = self._intercept_pull_intents(_intents, messages)
                     if _intents:
                         # Sprint 31 Phase 2 — the per-batch scalars
                         # (effective_task_id, api_call_count) ride the
