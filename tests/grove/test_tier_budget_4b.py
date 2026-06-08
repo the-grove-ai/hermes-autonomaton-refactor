@@ -117,6 +117,36 @@ def _setup(monkeypatch, intent, complexity, tier="T2"):
     monkeypatch.setattr("grove.context_budget.load_taxonomy", lambda *a, **k: TAXONOMY)
 
 
+# ── Sprint 74 Phase 3: disclosure tier gate ────────────────────────────────
+
+
+def test_disclosure_gate_engages_on_t2(monkeypatch):
+    # T2 routes through the disclosure reduction (index + pull replaces eager).
+    _setup(monkeypatch, "code_generation", "moderate", tier="T2")
+    agent = _bare_agent(ALL_TOOLS)
+    called = []
+    monkeypatch.setattr(
+        agent, "_apply_disclosure", lambda res: called.append(1) or ["sentinel"]
+    )
+    agent._maybe_apply_tool_filter()
+    assert called, "T2 turn must route through _apply_disclosure"
+
+
+def test_disclosure_gate_t1_eager_core_no_pull(monkeypatch):
+    # D3: T1 stays eager-core — never reduces, never offers the pull tools.
+    _setup(monkeypatch, "code_generation", "moderate", tier="T1")
+    agent = _bare_agent(ALL_TOOLS)
+    monkeypatch.setattr(
+        agent, "_apply_disclosure",
+        lambda res: (_ for _ in ()).throw(AssertionError("T1 must not disclose")),
+    )
+    agent._maybe_apply_tool_filter()
+    names = set(_names(agent._tools_for_api or []))
+    assert "read_tool_schema" not in names
+    assert "read_goal_context" not in names
+    assert agent._disclosure_manifest is None
+
+
 def test_no_budget_native_matches_legacy_mcp_disclose_on_match(monkeypatch):
     # Sprint 74: the no-budget path still matches Sprint 29 legacy for NATIVE
     # tools; MCPs now disclose on manifest match instead of passing through.

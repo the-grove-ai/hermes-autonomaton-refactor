@@ -287,11 +287,133 @@ def test_matcher_ignores_non_mcp_units():
     ) == frozenset({"notion"})
 
 
+# ── Phase 3: build_manifest — derive tool units + merge declarative ──────
+
+from grove.manifest import build_manifest
+from grove.tier_budget import TierBudget, ToolBudget
+
+
+def _fake_registry(*tool_descs):
+    """A minimal registry stand-in exposing the two methods build_manifest uses."""
+    defs = [
+        {"type": "function", "function": {"name": n, "description": d}}
+        for n, d in tool_descs
+    ]
+
+    class _Reg:
+        def get_all_tool_names(self):
+            return [n for n, _ in tool_descs]
+
+        def get_definitions(self, names, quiet=True):
+            return [x for x in defs if x["function"]["name"] in names]
+
+    return _Reg()
+
+
+DERIVE_TAXONOMY = {
+    "version": 1,
+    "core": ["terminal", "clarify"],
+    "domain_chunks": {"code_generation": ["write_file"], "research": ["web_search"]},
+    "exploratory": ["delegate_task"],
+}
+
+
+def _tb(allow):
+    return TierBudget(context=(), tools=ToolBudget(allow_groups=tuple(allow), exclude_mcp=()))
+
+
+# T1 = core only; T2 = core + code_generation; T3 = wildcard (all groups).
+FAKE_BUDGETS = {"T1": _tb(["core"]), "T2": _tb(["core", "code_generation"]), "T3": _tb(["*"])}
+
+
+def _mcp_only_yaml():
+    return {
+        "version": 1,
+        "units": [
+            {
+                "id": "notion",
+                "kind": "mcp",
+                "oneline": "Notion workspace.",
+                "payload": "mcp_schema:notion",
+                "tiers": ["T2", "T3"],
+                "trigger": {"intents": ["research"], "keywords": ["notion"], "dock_goal": None},
+            }
+        ],
+    }
+
+
+def test_build_manifest_derives_tool_units(tmp_path):
+    reg = _fake_registry(
+        ("terminal", "Run a shell command in the operator's terminal."),
+        ("web_search", "Search the web for current information."),
+    )
+    units = build_manifest(
+        reg,
+        taxonomy=DERIVE_TAXONOMY,
+        tier_budgets=FAKE_BUDGETS,
+        manifest_path=_write(tmp_path, _mcp_only_yaml()),
+    )
+    by = {u.id: u for u in units}
+    # Tool units are DERIVED from the registry — oneline, pointer, tiers.
+    assert by["terminal"].kind == "tool"
+    assert by["terminal"].payload == "tool_schema:terminal"
+    assert by["terminal"].oneline.startswith("Run a shell command")
+    assert by["terminal"].trigger.intents == ()          # native — no trigger
+    assert by["terminal"].tiers == ("T1", "T2", "T3")     # core: every tier
+    assert by["web_search"].tiers == ("T3",)              # research only in T3 wildcard
+    # The declarative MCP unit is merged in unchanged.
+    assert by["notion"].kind == "mcp"
+    assert by["notion"].trigger.intents == ("research",)
+
+
+def test_build_manifest_oneline_capped_from_long_description(tmp_path):
+    reg = _fake_registry(("terminal", "X" * 400))
+    units = build_manifest(
+        reg, taxonomy=DERIVE_TAXONOMY, tier_budgets=FAKE_BUDGETS,
+        manifest_path=_write(tmp_path, _mcp_only_yaml()),
+    )
+    term = {u.id: u for u in units}["terminal"]
+    assert len(term.oneline) <= ONELINE_CAP
+
+
+def test_build_manifest_collision_derived_vs_yaml_fails_loud(tmp_path):
+    # A YAML unit whose id collides with a derived tool id -> fail loud.
+    reg = _fake_registry(("notion", "A native tool that happens to be named notion."))
+    with pytest.raises(ValueError, match="collision|collid|duplicate"):
+        build_manifest(
+            reg, taxonomy=DERIVE_TAXONOMY, tier_budgets=FAKE_BUDGETS,
+            manifest_path=_write(tmp_path, _mcp_only_yaml()),
+        )
+
+
+def test_build_manifest_duplicate_within_yaml_fails_loud(tmp_path):
+    reg = _fake_registry(("terminal", "Run shell."))
+    data = _mcp_only_yaml()
+    data["units"].append(dict(data["units"][0]))  # duplicate notion id
+    with pytest.raises(ValueError, match="collision|collid|duplicate"):
+        build_manifest(
+            reg, taxonomy=DERIVE_TAXONOMY, tier_budgets=FAKE_BUDGETS,
+            manifest_path=_write(tmp_path, data),
+        )
+
+
+def test_build_manifest_ids_globally_unique_across_kinds(tmp_path):
+    reg = _fake_registry(("terminal", "Run shell."), ("write_file", "Write a file."))
+    units = build_manifest(
+        reg, taxonomy=DERIVE_TAXONOMY, tier_budgets=FAKE_BUDGETS,
+        manifest_path=_write(tmp_path, _mcp_only_yaml()),
+    )
+    ids = [u.id for u in units]
+    assert len(ids) == len(set(ids))           # no dup ids across derived + declarative
+    assert {u.kind for u in units} == {"tool", "mcp"}
+
+
 # ── 4. the committed repo manifest is itself valid ───────────────────────
 
-def test_repo_manifest_loads_and_is_valid():
-    """The shipped config/manifest.yaml must load clean — same contract the
-    tier_budget loader holds for routing.config.yaml."""
+def test_repo_yaml_loads_and_holds_only_declarative_units():
+    """The shipped config/manifest.yaml is the DECLARATIVE half only after
+    Phase 3: mcp/goal/contract units, NO derived tool units (those come from
+    build_manifest at load)."""
     from pathlib import Path
     import grove.manifest as m
 
@@ -301,6 +423,26 @@ def test_repo_manifest_loads_and_is_valid():
     assert all(u.oneline and len(u.oneline) <= ONELINE_CAP for u in units)
     assert all(u.tiers for u in units)
     assert all(":" in u.payload and "{" not in u.payload for u in units)
-    # All three live kinds are represented in the shipped index.
+    kinds = {u.kind for u in units}
+    assert "tool" not in kinds                 # tool units are derived, not in YAML
+    assert {"mcp", "goal"} <= kinds
+
+
+def test_repo_build_manifest_merges_derived_tools_with_declarative():
+    """build_manifest against the real registry yields the FULL merged index:
+    derived tool units + the declarative mcp/goal units, all ids unique."""
+    import os
+    os.environ.setdefault("GROVE_HOME", os.path.expanduser("~/.grove"))
+    from tools.registry import ToolRegistry, register_builtin_tools
+
+    reg = ToolRegistry()
+    register_builtin_tools(reg)
+    units = build_manifest(reg)
     kinds = {u.kind for u in units}
     assert {"tool", "mcp", "goal"} <= kinds
+    ids = [u.id for u in units]
+    assert len(ids) == len(set(ids))
+    assert all(len(u.oneline) <= ONELINE_CAP for u in units)
+    # Tool units point at tool_schema:<name>; never an inlined schema.
+    tool_units = [u for u in units if u.kind == "tool"]
+    assert tool_units and all(u.payload.startswith("tool_schema:") for u in tool_units)
