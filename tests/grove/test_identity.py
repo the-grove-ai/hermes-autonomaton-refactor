@@ -352,3 +352,93 @@ def test_legacy_memory_and_agents_fallback(
     comp = load_identity()
     assert comp.memory is not None and "Legacy Memory" in comp.memory
     assert comp.agents is not None and "Legacy Agents" in comp.agents
+
+
+# ── Sprint 75 Phase 1: tier-aware identity composition ───────────────────
+
+def _full_comp():
+    """An IdentityComposition with every layer set to an identifiable marker."""
+    return IdentityComposition(
+        constitution="CONSTITUTION_X",
+        soul="SOUL_X",
+        operator="OPERATOR_X",
+        goals="DOCKGOALS_X",
+        register_overlay="REGISTER_X",
+        affordances="AFFORDANCES_X",
+        capabilities="CAPABILITIES_X",
+    )
+
+
+def test_compose_stable_t1_is_irreducible():
+    out = _full_comp().compose_stable("T1")
+    for must in ("CONSTITUTION_X", "SOUL_X", "REGISTER_X", "DOCKGOALS_X"):
+        assert must in out
+    for excluded in ("AFFORDANCES_X", "CAPABILITIES_X", "OPERATOR_X"):
+        assert excluded not in out
+
+
+def test_compose_stable_t1_order():
+    out = _full_comp().compose_stable("T1")
+    assert (
+        out.index("CONSTITUTION_X")
+        < out.index("SOUL_X")
+        < out.index("REGISTER_X")
+        < out.index("DOCKGOALS_X")
+    )
+
+
+def test_compose_stable_t2_adds_operator_and_capabilities():
+    out = _full_comp().compose_stable("T2")
+    for must in ("CONSTITUTION_X", "SOUL_X", "REGISTER_X", "DOCKGOALS_X",
+                 "OPERATOR_X", "CAPABILITIES_X"):
+        assert must in out
+    assert "AFFORDANCES_X" not in out          # affordances is T3-only
+
+
+def test_compose_stable_t3_is_full():
+    out = _full_comp().compose_stable("T3")
+    for must in ("CONSTITUTION_X", "SOUL_X", "REGISTER_X", "AFFORDANCES_X",
+                 "CAPABILITIES_X", "OPERATOR_X", "DOCKGOALS_X"):
+        assert must in out
+
+
+def test_compose_stable_no_tier_is_full_legacy():
+    c = _full_comp()
+    assert c.compose_stable() == c.compose_stable(None)
+    assert c.compose_stable() == c.compose_stable("T3")   # full == T3 layer set
+
+
+def test_compose_stable_unknown_tier_defaults_full():
+    # An unrecognized tier must not silently drop character — default to full.
+    out = _full_comp().compose_stable("T9")
+    for must in ("CONSTITUTION_X", "SOUL_X", "AFFORDANCES_X", "OPERATOR_X"):
+        assert must in out
+
+
+def test_load_identity_t1_nulls_gated_layers_and_skips_introspection(
+    fake_home, monkeypatch
+):
+    # On T1, load skips the expensive capability introspection and nulls the
+    # gated layers so the composition reflects the tier actually sent.
+    import grove.affordances as aff
+    sentinel = {"called": False}
+
+    def _boom():
+        sentinel["called"] = True
+        return "CAPS"
+
+    monkeypatch.setattr(aff, "introspect_capabilities", _boom)
+    comp = load_identity(tier="T1")
+    assert comp.constitution and comp.soul          # always-on survive
+    assert comp.capabilities is None                # gated on T1
+    assert comp.affordances is None                 # gated on T1
+    assert comp.operator is None                    # gated on T1
+    assert sentinel["called"] is False              # introspection skipped (cost)
+
+
+def test_load_identity_t3_loads_everything(fake_home, monkeypatch):
+    import grove.affordances as aff
+    monkeypatch.setattr(aff, "introspect_capabilities", lambda: "CAPS_LIVE")
+    comp = load_identity(tier="T3")
+    assert comp.capabilities == "CAPS_LIVE"
+    assert comp.affordances is not None

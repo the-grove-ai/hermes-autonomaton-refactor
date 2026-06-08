@@ -549,3 +549,18 @@ class TestComposedPromptRetentionSmoke:
         assert report.excluded_mcp == []
         assert report.stripped_groups == []
         assert "identity" in report.system_prompt_sections
+
+
+def test_floor_reflects_per_tier_identity():
+    """Sprint 75 — the floor is composed at the routed tier: T1 drops
+    affordances/operator/capabilities; T3 carries them. The floor total falls."""
+    t1 = measure_always_loaded_floor(tier="T1")
+    t3 = measure_always_loaded_floor(tier="T3")
+    assert t1.get("identity.affordances", 0) == 0       # gated off on T1
+    assert t1.get("identity.operator", 0) == 0
+    assert t1.get("identity.capabilities", 0) == 0
+    assert t3.get("identity.affordances", 0) > 0        # full on T3
+    assert t1["_total"] < t3["_total"]
+    # constitution + soul ride every tier (the irreducible Mylo).
+    assert t1.get("identity.constitution", 0) > 0
+    assert t1.get("identity.soul", 0) > 0

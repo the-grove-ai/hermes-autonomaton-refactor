@@ -256,9 +256,14 @@ def _identity_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     skip_context_files = bool(ctx.get("skip_context_files", False))
     if load_soul_identity or not skip_context_files:
         from grove.identity import load_identity
+        # Sprint 75 — the routed tier gates which identity layers compose. It
+        # rides ctx the same way session_register does (Dispatcher threads it
+        # from _apply_tier_budget). None ⇒ full composition (legacy / non-routed).
+        _tier = ctx.get("tier")
         composed = load_identity(
             session_register=ctx.get("session_register"),
-        ).compose_stable()
+            tier=_tier,
+        ).compose_stable(_tier)
         if composed:
             return SectionResult(label="identity", text=composed)
     return SectionResult(label="identity", text=DEFAULT_AGENT_IDENTITY)

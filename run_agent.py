@@ -6886,6 +6886,7 @@ class AIAgent:
             "terminal_cwd": terminal_cwd,
             "system_message": system_message,
             "tier_context_blocks": getattr(self, "_tier_context_blocks", None),
+            "tier": getattr(self, "_tier_name", None),  # Sprint 75 — identity gate
         }
         # Sprint 73 Phase 5 — retain the structured result as data (see
         # Dispatcher.compose_system_prompt). The dispatcher-driven path is the
