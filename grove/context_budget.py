@@ -315,20 +315,32 @@ def _partition_tools(
     tools: List[dict],
     allowed: Optional[Set[str]],
     tier_budget: Optional["TierBudget"],
+    mcp_allow: Optional[Set[str]] = None,
 ) -> Tuple[List[dict], Set[str], List[str]]:
-    """Single source of truth for per-tool admission (D4).
+    """Single source of truth for per-tool admission (D4 + Sprint 74 Phase 2).
 
     Returns ``(kept, excluded_mcp_servers, unparseable_mcp_names)``.
 
-    * MCP tool (name starts ``mcp_``): admitted UNLESS ``tier_budget`` excludes
-      its server (``"*"`` in ``exclude_mcp`` = all). An unparseable MCP name is
-      admitted by default and recorded — never silently swallowed.
+    * MCP tool (name starts ``mcp_``): gated by TWO independent rules that
+      compose — the tier's hard ceiling and the per-turn disclosure match.
+        - ``exclude_mcp`` (``tier_budget``) is the HARD CEILING: a server in it
+          (``"*"`` = all) is excluded outright and recorded in
+          ``excluded_mcp_servers``. This wins over any match.
+        - ``mcp_allow`` is the per-turn DISCLOSE-ON-MATCH set (Sprint 74). When
+          ``None`` the flip is OFF — every non-excluded MCP passes, byte-for-
+          byte legacy (the no-manifest / pre-Sprint-74 behavior). When a set,
+          the flip is ON — a non-excluded MCP passes ONLY if its server is in
+          the set (it matched this turn's manifest trigger); an unmatched
+          server is withheld.
+      An unparseable MCP name is admitted by default and recorded — never
+      silently swallowed, and never subject to the match flip (it cannot be
+      mapped to a manifest unit, so surfacing beats guessing).
     * non-MCP tool: admitted when ``allowed is None`` (pass-through) or its name
-      is in ``allowed``.
+      is in ``allowed``. The MCP flip never touches native tools.
 
-    With ``tier_budget=None`` the exclude set is empty, so every MCP passes —
-    the legacy Sprint 29 behavior is the empty-exclude case of the rule, not a
-    separate code path.
+    With ``tier_budget=None`` and ``mcp_allow=None`` every MCP passes — the
+    legacy Sprint 29 behavior is the empty-exclude / flip-off case of the rule,
+    not a separate code path.
     """
     exclude: Set[str] = (
         set(tier_budget.tools.exclude_mcp) if tier_budget is not None else set()
@@ -353,8 +365,13 @@ def _partition_tools(
                 unparseable.append(name)  # type: ignore[arg-type]
                 kept.append(tool)
                 continue
+            # Hard ceiling first: tier exclusion wins over any per-turn match.
             if exclude_all or server in exclude:
                 excluded_mcp.add(server)
+                continue
+            # Disclose-on-match flip (Sprint 74). None ⇒ flip off (legacy
+            # passthrough). A set ⇒ admit only the servers that matched.
+            if mcp_allow is not None and server not in mcp_allow:
                 continue
             kept.append(tool)
             continue
@@ -369,6 +386,7 @@ def filter_tools_by_name(
     allowed: Optional[Set[str]],
     *,
     tier_budget: Optional["TierBudget"] = None,
+    mcp_allow: Optional[Set[str]] = None,
 ) -> List[dict]:
     """Filter an OpenAI-format tools list by tool name, with optional per-tier
     MCP gating (Sprint 73, D4).
@@ -386,11 +404,11 @@ def filter_tools_by_name(
     Returns:
         The filtered list, preserving insertion order.
     """
-    # Legacy fast-path: no tier and no name set returns the list verbatim
-    # (including any non-dict entries) exactly as Sprint 29 did.
-    if tier_budget is None and allowed is None:
+    # Legacy fast-path: no tier, no name set, and no MCP match-gate returns the
+    # list verbatim (including any non-dict entries) exactly as Sprint 29 did.
+    if tier_budget is None and allowed is None and mcp_allow is None:
         return tools
-    kept, _, _ = _partition_tools(tools, allowed, tier_budget)
+    kept, _, _ = _partition_tools(tools, allowed, tier_budget, mcp_allow)
     return kept
 
 
@@ -428,6 +446,8 @@ def resolve_tools_for_tier(
     complexity_signal: Optional[str],
     taxonomy: dict,
     tier_budget: "TierBudget",
+    *,
+    mcp_allow: Optional[Set[str]] = None,
 ) -> ToolResolution:
     """Resolve the per-turn tool surface under a tier budget (R1 + D4 + D8).
 
@@ -436,7 +456,12 @@ def resolve_tools_for_tier(
     the intent selection passes through unchanged — the T3 "unchanged / full
     load" case). A group the intent needs but the tier forbids is reported in
     ``stripped_groups`` for the escalation net (D8); it is never silently
-    dropped. MCP exposure is gated by the tier's ``exclude_mcp`` (D4).
+    dropped. MCP exposure is gated by the tier's ``exclude_mcp`` (D4) and, when
+    ``mcp_allow`` is supplied, by the Sprint 74 disclose-on-match flip: a
+    non-excluded MCP server is admitted only if it matched this turn's manifest
+    trigger (``mcp_allow`` is the matched-server set). ``mcp_allow=None`` leaves
+    the pre-Sprint-74 allow-by-default-unless-excluded behavior byte-for-byte —
+    the flip engages only when the caller threads a matched set.
 
     On an unknown intent (maximal fallback) the budget is STILL honored — the
     surface is capped to ``allow_groups`` (or left full when the tier allows
@@ -474,7 +499,9 @@ def resolve_tools_for_tier(
         if allowed:
             _validate_co_location(allowed, intent_class or "")
 
-    kept, excluded_mcp, unparseable = _partition_tools(tools, allowed, tier_budget)
+    kept, excluded_mcp, unparseable = _partition_tools(
+        tools, allowed, tier_budget, mcp_allow
+    )
     return ToolResolution(
         tools=tuple(kept),
         allowed_names=frozenset(allowed or ()),

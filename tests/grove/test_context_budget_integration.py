@@ -145,10 +145,12 @@ class TestMaybeApplyToolFilter:
         self, monkeypatch: pytest.MonkeyPatch,
     ):
         # code_generation, simple — should keep core + code_generation
-        # domain chunk; should NOT add exploratory. MCP tools (reads AND
-        # writes) always pass through via the generic mcp_* passthrough
-        # (Sprint 69); they are governed at execution time by zones, not
-        # hidden by the per-turn budget.
+        # domain chunk; should NOT add exploratory. Sprint 74 flip: MCP tools
+        # no longer pass through by default — they disclose only on a manifest
+        # trigger match. This turn is code_generation with no notion keyword in
+        # the message, so the notion MCP unit (intents=[research,retrieval],
+        # keywords=[notion,...]) does NOT match and notion is WITHHELD. Native
+        # selection (tool_groups.yaml) is unchanged.
         _set_classification(
             monkeypatch, intent_class="code_generation",
             complexity_signal="simple",
@@ -158,8 +160,8 @@ class TestMaybeApplyToolFilter:
             _tool("write_file"),                    # code_generation
             _tool("patch"),                         # code_generation
             _tool("delegate_task"),                 # exploratory — excluded
-            _tool("mcp_notion_notion_search"),      # mcp read — passthrough
-            _tool("mcp_notion_notion_update_page"), # mcp write — passthrough
+            _tool("mcp_notion_notion_search"),      # mcp read — unmatched
+            _tool("mcp_notion_notion_update_page"), # mcp write — unmatched
         ]
         agent = _bare_agent_with_tools(full)
         agent._maybe_apply_tool_filter()
@@ -168,8 +170,8 @@ class TestMaybeApplyToolFilter:
         assert "clarify" in names
         assert "write_file" in names
         assert "patch" in names
-        assert "mcp_notion_notion_search" in names
-        assert "mcp_notion_notion_update_page" in names  # passthrough, not excluded
+        assert "mcp_notion_notion_search" not in names       # unmatched -> withheld
+        assert "mcp_notion_notion_update_page" not in names  # unmatched -> withheld
         assert "delegate_task" not in names
         assert agent._last_tool_selection["intent_class"] == "code_generation"
         assert agent._last_tool_selection["fallback"] is False
@@ -205,12 +207,14 @@ class TestMaybeApplyToolFilter:
         assert "delegate_task" in names
         assert "browser_navigate" in names
 
-    def test_planning_intent_adds_notion_writes(
+    def test_matched_mcp_intent_discloses_notion(
         self, monkeypatch: pytest.MonkeyPatch,
     ):
-        # planning is in write_intents → writes loaded.
+        # Sprint 74: a turn whose intent is in the notion unit's manifest
+        # trigger (research) discloses the notion MCP — reads AND writes. This
+        # is the disclose-on-match replacement for the old by-intent passthrough.
         _set_classification(
-            monkeypatch, intent_class="planning", complexity_signal="moderate",
+            monkeypatch, intent_class="research", complexity_signal="moderate",
         )
         full = [
             _tool("clarify"),
@@ -222,6 +226,24 @@ class TestMaybeApplyToolFilter:
         names = {t["function"]["name"] for t in agent._tools_for_turn}
         assert "mcp_notion_API_post_page" in names
         assert "mcp_notion_API_post_search" in names
+
+    def test_matched_mcp_keyword_in_message_discloses_notion(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ):
+        # The keyword clause: a message mentioning a notion trigger keyword
+        # discloses notion even when the intent doesn't match. Exercises the
+        # _latest_user_text() seam reading self._current_messages.
+        _set_classification(
+            monkeypatch, intent_class="code_generation", complexity_signal="simple",
+        )
+        full = [_tool("clarify"), _tool("mcp_notion_API_post_search")]
+        agent = _bare_agent_with_tools(full)
+        agent._current_messages = [
+            {"role": "user", "content": "update the notion database for the sprint"},
+        ]
+        agent._maybe_apply_tool_filter()
+        names = {t["function"]["name"] for t in agent._tools_for_turn}
+        assert "mcp_notion_API_post_search" in names  # keyword 'notion' matched
 
     def test_filter_failure_degrades_to_full(
         self, monkeypatch: pytest.MonkeyPatch, caplog,

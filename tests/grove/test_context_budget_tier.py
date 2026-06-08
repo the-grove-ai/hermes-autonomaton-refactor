@@ -89,6 +89,66 @@ def test_resolve_tool_set_legacy_unchanged():
     got = resolve_tool_set("code_generation", "moderate", TAXONOMY)
     assert got == set(TAXONOMY["core"]) | set(TAXONOMY["domain_chunks"]["code_generation"])
     assert resolve_tool_set("unknown", "simple", TAXONOMY) is None
+
+
+# ── Sprint 74 Phase 2: MCP disclose-on-match (mcp_allow) ───────────────────
+#
+# mcp_allow=None  -> legacy: every MCP admitted unless tier-excluded (the flip
+#                    is OFF, byte-for-byte — backward-compat for no-manifest).
+# mcp_allow=<set> -> the flip is ON: an MCP server is admitted only when it
+#                    MATCHED this turn (server in the set) AND its server is not
+#                    in the tier's exclude_mcp (exclude stays the hard ceiling).
+
+
+def test_mcp_allow_none_is_legacy_byte_for_byte():
+    # No mcp_allow argument == today's behavior: all MCP pass on an all-MCP tier.
+    legacy = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", TAXONOMY, T3)
+    flip_off = resolve_tools_for_tier(
+        ALL_TOOLS, "research", "moderate", TAXONOMY, T3, mcp_allow=None
+    )
+    assert _names(list(legacy.tools)) == _names(list(flip_off.tools))
+    assert "mcp_notion_API_post_page" in _names(list(legacy.tools))
+    assert "mcp_other_do_thing" in _names(list(legacy.tools))
+
+
+def test_mcp_allow_discloses_only_matched_servers():
+    res = resolve_tools_for_tier(
+        ALL_TOOLS, "research", "moderate", TAXONOMY, T3, mcp_allow={"notion"}
+    )
+    n = _names(list(res.tools))
+    assert "mcp_notion_API_post_page" in n     # notion matched -> disclosed
+    assert "mcp_notion_API_post_search" in n
+    assert "mcp_other_do_thing" not in n        # unmatched -> withheld
+
+
+def test_mcp_allow_empty_withholds_all_mcp():
+    res = resolve_tools_for_tier(
+        ALL_TOOLS, "research", "moderate", TAXONOMY, T3, mcp_allow=set()
+    )
+    assert not any(x.startswith("mcp_") for x in _names(list(res.tools)))
+    # native tools are untouched by the MCP flip (core rides every turn)
+    assert "terminal" in _names(list(res.tools))
+
+
+def test_exclude_mcp_is_hard_ceiling_over_match():
+    # T2 excludes 'notion'. Even when notion MATCHED this turn, it stays out;
+    # 'other' matched and is not excluded, so it discloses.
+    res = resolve_tools_for_tier(
+        ALL_TOOLS, "analysis", "moderate", TAXONOMY, T2, mcp_allow={"notion", "other"}
+    )
+    n = _names(list(res.tools))
+    assert "mcp_notion_API_post_page" not in n   # excluded ceiling wins
+    assert "notion" in res.excluded_mcp
+    assert "mcp_other_do_thing" in n             # matched + not excluded
+
+
+def test_mcp_allow_via_filter_tools_by_name():
+    # The public name-filter surface also honors mcp_allow.
+    allowed = resolve_tool_set("analysis", "moderate", TAXONOMY)
+    kept = filter_tools_by_name(ALL_TOOLS, allowed, tier_budget=T3, mcp_allow={"notion"})
+    n = _names(kept)
+    assert "mcp_notion_API_post_page" in n
+    assert "mcp_other_do_thing" not in n
     assert resolve_tool_set(None, None, TAXONOMY) is None
 
 

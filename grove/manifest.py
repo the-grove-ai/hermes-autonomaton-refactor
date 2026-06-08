@@ -43,6 +43,7 @@ __all__ = [
     "UnitTrigger",
     "DisclosableUnit",
     "load_manifest",
+    "matched_mcp_servers",
 ]
 
 # ── Hard caps (D5) ───────────────────────────────────────────────────────
@@ -116,6 +117,28 @@ class DisclosableUnit:
                 f"that no tier can disclose is dead weight — list >= 1 tier"
             )
         self._validate_payload()
+        self._validate_mcp_trigger()
+
+    def _validate_mcp_trigger(self) -> None:
+        """Untriggered-MCP policy (Phase 2, D-GATE-B item 2): an ``mcp`` unit
+        MUST declare at least one trigger signal (intents OR keywords OR
+        dock_goal). Under disclose-on-match an mcp unit with no trigger could
+        never match — it would silently vanish from every turn, the exact
+        allow-by-default-to-nothing failure the flip must not introduce.
+        Declarative discipline: adding a connector = a manifest entry WITH its
+        trigger. Tool units are exempt — native selection (tool_groups.yaml)
+        owns them, so they carry no trigger by design.
+        """
+        if self.kind != "mcp":
+            return
+        t = self.trigger
+        if not (t.intents or t.keywords or t.dock_goal):
+            raise ValueError(
+                f"DisclosableUnit {self.id!r} is an mcp unit with no trigger "
+                f"(no intents, no keywords, no dock_goal). Under disclose-on-"
+                f"match it could never disclose — a silent vanish. Every "
+                f"disclosable MCP must declare a trigger."
+            )
 
     def _validate_payload(self) -> None:
         payload = self.payload or ""
@@ -141,6 +164,51 @@ class DisclosableUnit:
                 f"schema, not a pointer. The index must NEVER carry the heavy "
                 f"payload it points at — use a '<namespace>:<key>' pointer"
             )
+
+
+# ── Match-pass (Phase 2): MCP disclose-on-match ──────────────────────────
+
+
+def matched_mcp_servers(
+    units,
+    *,
+    intent_class: Optional[str],
+    message: Optional[str],
+    resolved_goal_id: Optional[str] = None,
+) -> frozenset:
+    """The MCP server ids whose manifest trigger matches this turn.
+
+    A ``kind == "mcp"`` unit matches when ANY clause fires:
+
+    * **intent** — ``intent_class`` is in the unit's ``trigger.intents``.
+    * **keyword** — a ``trigger.keywords`` entry is a (case-insensitive)
+      substring of ``message`` (the same surface-form match the Dock uses).
+    * **goal** — ``trigger.dock_goal`` is set and equals ``resolved_goal_id``.
+      The caller supplies ``resolved_goal_id`` only on a goal-aligned turn
+      (``goal_alignment == "direct"``) — that is the "Dock goal-match via
+      goal_alignment" clause; on any other turn it is ``None`` and inert.
+
+    Tool and goal units are ignored — this gate governs MCP exposure only.
+    Pure function: no I/O, no classifier call. Returns a frozenset of matched
+    server ids (a unit's ``id`` is the MCP server name).
+    """
+    msg = (message or "").lower()
+    out = set()
+    for u in units:
+        if u.kind != "mcp":
+            continue
+        t = u.trigger
+        if (
+            (intent_class is not None and intent_class in t.intents)
+            or any(kw.lower() in msg for kw in t.keywords)
+            or (
+                t.dock_goal is not None
+                and resolved_goal_id is not None
+                and t.dock_goal == resolved_goal_id
+            )
+        ):
+            out.add(u.id)
+    return frozenset(out)
 
 
 # ── Loader + validator ───────────────────────────────────────────────────

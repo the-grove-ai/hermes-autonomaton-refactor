@@ -117,14 +117,25 @@ def _setup(monkeypatch, intent, complexity, tier="T2"):
     monkeypatch.setattr("grove.context_budget.load_taxonomy", lambda *a, **k: TAXONOMY)
 
 
-def test_no_budget_filter_matches_legacy(monkeypatch):
+def test_no_budget_native_matches_legacy_mcp_disclose_on_match(monkeypatch):
+    # Sprint 74: the no-budget path still matches Sprint 29 legacy for NATIVE
+    # tools; MCPs now disclose on manifest match instead of passing through.
+    # This code_generation turn (no notion keyword) matches no MCP -> withheld.
     _setup(monkeypatch, "code_generation", "moderate")
     agent = _bare_agent(ALL_TOOLS)            # no _tier_budget
     agent._maybe_apply_tool_filter()
-    legacy = filter_tools_by_name(
-        ALL_TOOLS, resolve_tool_set("code_generation", "moderate", TAXONOMY)
-    )
-    assert _names(agent._tools_for_api) == _names(legacy)
+    got = _names(agent._tools_for_api)
+    legacy_native = [
+        n
+        for n in _names(
+            filter_tools_by_name(
+                ALL_TOOLS, resolve_tool_set("code_generation", "moderate", TAXONOMY)
+            )
+        )
+        if not n.startswith("mcp_")
+    ]
+    assert [n for n in got if not n.startswith("mcp_")] == legacy_native
+    assert not any(n.startswith("mcp_") for n in got)   # no MCP matched -> withheld
     assert agent._last_tool_selection["fallback"] is False
     assert agent._last_tool_selection["stripped_groups"] == []   # permissive
     assert agent._tool_resolution is not None
@@ -145,9 +156,13 @@ def test_budgeted_caps_and_excludes_mcp(monkeypatch):
     agent._maybe_apply_tool_filter()
     got = _names(agent._tools_for_api)
     assert "write_file" in got                       # code_generation allowed
-    assert "mcp_notion_API_post_page" not in got      # notion excluded
-    assert "mcp_other_do_thing" in got                # other MCP allowed
+    assert "mcp_notion_API_post_page" not in got      # notion: tier exclude ceiling
+    # Sprint 74: 'other' has no manifest unit and nothing matched this turn —
+    # disclose-on-match withholds it (distinct from the tier-exclude ceiling).
+    assert "mcp_other_do_thing" not in got
     sel = agent._last_tool_selection
+    # Provenance still distinguishes the TIER exclusion (notion) from match-
+    # withholding (other): only tier-excluded servers land in excluded_mcp.
     assert sel["excluded_mcp"] == ["notion"]
     assert sel["stripped_groups"] == []               # code_generation in allow
     assert sel["tier"] == "T2"

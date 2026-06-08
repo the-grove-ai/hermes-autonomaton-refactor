@@ -2855,6 +2855,106 @@ class AIAgent:
             return self._tools_for_turn
         return self.tools
 
+    def _compute_mcp_allow(self, intent_class, goal_alignment):
+        """Sprint 74 Phase 2 — the per-turn MCP disclose-on-match set.
+
+        Reads the disclosure manifest and returns the set of MCP server ids
+        whose trigger matched this turn (intent / keyword / Dock-goal). Threaded
+        into ``resolve_tools_for_tier`` as ``mcp_allow``: a matched server
+        discloses, an unmatched one is withheld, and the tier's ``exclude_mcp``
+        ceiling still wins over a match. Native (non-MCP) tool selection is
+        untouched — it stays in tool_groups.yaml (the ADDITIVE principle).
+
+        Returns ``None`` — the flip-OFF / legacy signal (every MCP passes unless
+        tier-excluded, byte-for-byte) — when NO manifest is installed. A
+        malformed manifest raises (fail-loud), handled by the caller's
+        budgeted/non-budgeted split exactly like a taxonomy error: it surfaces
+        on a budgeted turn, degrades to the full registry on a cloud turn.
+        """
+        from grove.manifest import load_manifest, matched_mcp_servers
+
+        try:
+            units = load_manifest()
+        except FileNotFoundError:
+            # No manifest -> the flip is not wired; legacy allow-by-default.
+            return None
+
+        message = self._latest_user_text()
+
+        # The Dock-goal clause only matters when a manifest MCP unit declares a
+        # dock_goal AND this turn is goal-aligned; otherwise skip the Dock read.
+        resolved_goal_id = None
+        if goal_alignment == "direct" and any(
+            u.kind == "mcp" and u.trigger.dock_goal for u in units
+        ):
+            from grove.dock import load_dock, resolve_goal
+
+            dock = load_dock()
+            if dock is not None:
+                g = resolve_goal(dock, message or "")
+                resolved_goal_id = g.id if g else None
+
+        # Fail-loud surface (Architectural Prime Directive): under strict
+        # disclose-on-match an MCP server with NO manifest unit can never
+        # surface — it has no trigger to match. Warn so an un-manifested
+        # connector is a loud "add a manifest entry", never a silent vanish.
+        from grove.context_budget import _is_mcp, _mcp_server_of, _name_of
+
+        known = {u.id for u in units if u.kind == "mcp"}
+        unmanifested = {
+            s
+            for s in (
+                _mcp_server_of(_name_of(t))
+                for t in (self.tools or [])
+                if isinstance(t, dict) and _is_mcp(_name_of(t))
+            )
+            if s and s not in known
+        }
+        if unmanifested:
+            logger.warning(
+                "[run_agent] MCP server(s) %s have tools in the registry but no "
+                "disclosure-manifest unit; under disclose-on-match they will "
+                "NEVER surface. Add a manifest entry (with a trigger) per server.",
+                sorted(unmanifested),
+            )
+
+        return set(
+            matched_mcp_servers(
+                units,
+                intent_class=intent_class,
+                message=message,
+                resolved_goal_id=resolved_goal_id,
+            )
+        )
+
+    def _latest_user_text(self) -> str:
+        """Best-effort: the text of the most recent user message this turn.
+
+        Reads ``self._current_messages`` (the active list). Returns "" when the
+        list is absent or the last user content is non-text — the keyword clause
+        then simply does not fire; the intent and Dock-goal clauses are
+        unaffected. This is a matching signal, not a governance gate, so it
+        degrades quietly rather than raising.
+        """
+        msgs = getattr(self, "_current_messages", None)
+        if not msgs:
+            return ""
+        for msg in reversed(msgs):
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = [
+                    blk["text"]
+                    for blk in content
+                    if isinstance(blk, dict) and isinstance(blk.get("text"), str)
+                ]
+                return " ".join(parts)
+            return ""
+        return ""
+
     def _maybe_apply_tool_filter(self) -> None:
         """Compute the per-turn filtered tool list and stash the selection +
         provenance for the Dispatcher's ledger and the D8 escalation.
@@ -2900,6 +3000,7 @@ class AIAgent:
                 complexity,
                 load_taxonomy(),
                 tier_budget if budgeted else PERMISSIVE_TIER_BUDGET,
+                mcp_allow=self._compute_mcp_allow(intent_class, goal_alignment),
             )
 
         if budgeted:
