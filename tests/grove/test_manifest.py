@@ -21,6 +21,7 @@ from grove.manifest import (
     DisclosableUnit,
     UnitTrigger,
     load_manifest,
+    matched_mcp_servers,
 )
 
 
@@ -188,6 +189,102 @@ def test_inlined_schema_payload_fails_loud(tmp_path):
     data["units"][0]["payload"] = '{"type": "function", "function": {"name": "terminal"}}'
     with pytest.raises(ValueError, match="payload"):
         load_manifest(_write(tmp_path, data))
+
+
+# ── Phase 2: untriggered-MCP policy — fail loud at load ──────────────────
+
+def test_mcp_unit_without_any_trigger_fails_loud(tmp_path):
+    """An mcp unit with no intents, no keywords, and no dock_goal can never
+    disclose — under disclose-on-match it would silently vanish. Declarative
+    discipline: adding a connector = a manifest entry WITH its trigger."""
+    data = copy.deepcopy(VALID_MANIFEST)
+    data["units"][1]["trigger"] = {"intents": [], "keywords": [], "dock_goal": None}
+    with pytest.raises(ValueError, match="trigger"):
+        load_manifest(_write(tmp_path, data))
+
+
+def test_mcp_unit_without_trigger_fails_at_dataclass():
+    """The invariant holds on the dataclass itself, not only the loader."""
+    with pytest.raises(ValueError, match="trigger"):
+        DisclosableUnit(
+            id="ghost",
+            kind="mcp",
+            oneline="A server nobody can reach.",
+            payload="mcp_schema:ghost",
+            tiers=("T3",),
+            trigger=UnitTrigger(intents=(), keywords=(), dock_goal=None),
+        )
+
+
+def test_tool_unit_with_empty_trigger_is_fine():
+    """Tool units carry NO trigger by design — native selection owns them.
+    The untriggered guard must not fire for kind=='tool'."""
+    u = DisclosableUnit(
+        id="terminal",
+        kind="tool",
+        oneline="Run a shell command.",
+        payload="tool_schema:terminal",
+        tiers=("T1",),
+        trigger=UnitTrigger(intents=(), keywords=(), dock_goal=None),
+    )
+    assert u.trigger.keywords == ()
+
+
+# ── Phase 2: the pure MCP matcher ────────────────────────────────────────
+
+def _mcp_unit(uid, intents=(), keywords=(), dock_goal=None):
+    return DisclosableUnit(
+        id=uid,
+        kind="mcp",
+        oneline=f"{uid} server.",
+        payload=f"mcp_schema:{uid}",
+        tiers=("T2", "T3"),
+        trigger=UnitTrigger(
+            intents=tuple(intents), keywords=tuple(keywords), dock_goal=dock_goal
+        ),
+    )
+
+
+def test_matched_on_intent():
+    units = [_mcp_unit("notion", intents=("research",), keywords=("notion",))]
+    assert matched_mcp_servers(
+        units, intent_class="research", message="anything"
+    ) == frozenset({"notion"})
+
+
+def test_matched_on_keyword_substring():
+    units = [_mcp_unit("notion", intents=("research",), keywords=("notion", "page"))]
+    assert matched_mcp_servers(
+        units, intent_class="code_generation", message="update the Notion page"
+    ) == frozenset({"notion"})
+
+
+def test_no_match_returns_empty():
+    units = [_mcp_unit("notion", intents=("research",), keywords=("notion",))]
+    assert matched_mcp_servers(
+        units, intent_class="code_generation", message="fix the failing test"
+    ) == frozenset()
+
+
+def test_matched_on_dock_goal():
+    units = [_mcp_unit("airtable", keywords=("__nomatch__",), dock_goal="grv-001")]
+    assert matched_mcp_servers(
+        units, intent_class=None, message="x", resolved_goal_id="grv-001"
+    ) == frozenset({"airtable"})
+    assert matched_mcp_servers(
+        units, intent_class=None, message="x", resolved_goal_id="other-goal"
+    ) == frozenset()
+
+
+def test_matcher_ignores_non_mcp_units():
+    tool = DisclosableUnit(
+        id="terminal", kind="tool", oneline="run", payload="tool_schema:terminal",
+        tiers=("T1",), trigger=UnitTrigger((), (), None),
+    )
+    units = [tool, _mcp_unit("notion", keywords=("notion",))]
+    assert matched_mcp_servers(
+        units, intent_class=None, message="open notion"
+    ) == frozenset({"notion"})
 
 
 # ── 4. the committed repo manifest is itself valid ───────────────────────
