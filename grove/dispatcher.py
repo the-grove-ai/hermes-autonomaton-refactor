@@ -3214,6 +3214,13 @@ class Dispatcher:
             # applies the current tier's context gate.
             tier_context_blocks=getattr(agent, "_tier_context_blocks", None),
         )
+        # Sprint 73 Phase 5 — retain the structured composition RESULT as data
+        # on the agent (NOT a recomposing method — GRV-007 deleted that). The
+        # /context report reads agent._composed_prompt to attribute the ACTUAL
+        # injected prompt (sections + gated_context_blocks); it is set from the
+        # SAME result whose .text becomes _composed_system_prompt, so the two
+        # can never diverge.
+        agent._composed_prompt = result
         return result.text
 
     def _compose_and_inject_system_prompt(

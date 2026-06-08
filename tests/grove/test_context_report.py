@@ -47,23 +47,26 @@ class StubAgent:
         ephemeral_system_prompt: str = "",
         session_id: str = "test-session",
         model: str = "claude-sonnet-4-6",
+        gated_context_blocks: Optional[List[str]] = None,
+        last_tool_selection: Optional[Dict] = None,
     ):
+        from grove.prompt.composer import ComposedPrompt
         self._sections = dict(sections or {})
         self.tools = list(tools or [])
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.session_id = session_id
         self.model = model
-
-    def _build_system_prompt_parts(self, system_message=None):
-        # Mirror the AIAgent 4-key dict shape. The legacy stable/context/volatile
-        # keys are present for backward-compat but context_report only reads
-        # `_sections` so the values can be empty here.
-        return {
-            "stable": "",
-            "context": "",
-            "volatile": "",
-            "_sections": dict(self._sections),
-        }
+        # Sprint 73 Phase 5 — context_report reads the RETAINED ComposedPrompt,
+        # not a recomposing method (GRV-007). Build a real ComposedPrompt from
+        # the stub sections so the test exercises the production data path.
+        self._composed_prompt = ComposedPrompt(
+            text="\n\n".join(self._sections.values()),
+            sections=dict(self._sections),
+            tiers={},
+            gated_context_blocks=frozenset(gated_context_blocks or ()),
+        )
+        if last_tool_selection is not None:
+            self._last_tool_selection = last_tool_selection
 
 
 @pytest.fixture
@@ -312,9 +315,14 @@ class TestPersistContextReport:
         )
         path = persist_context_report(report, base_dir=tmp_path)
         payload = json.loads(path.read_text(encoding="utf-8"))
-        # Top-level keys per D4 schema.
+        # Top-level keys per D4 schema, extended with the Sprint 73 (D10)
+        # tier_budget provenance block.
         assert set(payload.keys()) == {
             "session_id", "turn", "timestamp", "model", "sections", "grand_total",
+            "tier_budget",
+        }
+        assert set(payload["tier_budget"].keys()) == {
+            "applied_tier", "excluded_context_blocks", "excluded_mcp", "stripped_groups",
         }
         # Sections sub-keys per D4 schema.
         assert set(payload["sections"].keys()) == {
@@ -388,3 +396,96 @@ class TestSnapshotPathFor:
         """Empty session_id becomes 'no-session' so the path is always valid."""
         path = snapshot_path_for("", 0, base_dir=tmp_path)
         assert path.name == "no-session_0.json"
+
+
+# ── Sprint 73 Phase 5 — non-stub /context smoke + provenance ──────────────────
+
+
+class TestComposedPromptRetentionSmoke:
+    """MANDATORY non-stub smoke: /context reads the RETAINED ComposedPrompt (the
+    prompt actually injected), not a recompose. A bare agent with no composer /
+    dispatcher proves no recompose path is taken — so recompose-divergence
+    cannot silently return — and the report attributes the tier + gating."""
+
+    def _bare_agent(self, composed, tier_selection):
+        class _BareAgent:
+            pass
+        a = _BareAgent()
+        a.session_id = "smoke"
+        a.model = "gemma-4-12b"
+        a._composed_prompt = composed                 # retained result (data)
+        a._composed_system_prompt = composed.text     # the injected text
+        a.tools = [{"function": {"name": "terminal"}}]
+        a._tools_for_api = [{"function": {"name": "terminal"}}]
+        a.ephemeral_system_prompt = ""
+        a._last_tool_selection = tier_selection
+        return a
+
+    def test_report_matches_injected_prompt_and_attributes_tier(self, tmp_path):
+        from grove.prompt.composer import PromptComposer, SectionResult
+        from grove.context_report import (
+            build_context_report,
+            format_context_report,
+            persist_context_report,
+        )
+
+        def _p(label, text):
+            return lambda ctx: SectionResult(label=label, text=text)
+
+        composer = PromptComposer()
+        composer.register_section("identity", _p("identity", "I AM"), order=10, tier="stable")
+        composer.register_section("context_files", _p("context_files", "CLAUDE CONTRACT BODY"), order=20, tier="context")
+        composer.register_section("skills_index", _p("skills_index", "SKILLS BODY"), order=50, tier="stable")
+        composer.register_section("timestamp", _p("timestamp", "NOW"), order=100, tier="volatile")
+
+        # A real T2-style compose: claude_contract + skills_index gated OFF.
+        composed = composer.compose(tier_context_blocks=frozenset({"goal_record"}))
+        assert "context_files" not in composed.sections
+        assert composed.gated_context_blocks == frozenset({"claude_contract", "skills_index"})
+
+        agent = self._bare_agent(
+            composed,
+            {"tier": "T2", "excluded_mcp": ["notion"], "stripped_groups": ["retrieval"]},
+        )
+        report = build_context_report(agent, conversation_history=[], snapshot_base_dir=tmp_path)
+
+        # Sections are EXACTLY the retained result's (gated blocks absent) — read
+        # from data, not recomposed (the bare agent has no composer).
+        assert set(report.system_prompt_sections) == set(composed.sections) | {"_total"}
+        assert "context_files" not in report.system_prompt_sections
+        assert "skills_index" not in report.system_prompt_sections
+        assert "identity" in report.system_prompt_sections
+
+        # Provenance attributes WHY this payload is the size it is.
+        assert report.applied_tier == "T2"
+        assert report.excluded_context_blocks == ["claude_contract", "skills_index"]
+        assert report.excluded_mcp == ["notion"]
+        assert report.stripped_groups == ["retrieval"]
+
+        rendered = format_context_report(report)
+        assert "Tier budget: T2" in rendered
+        assert "claude_contract" in rendered and "notion" in rendered
+
+        path = persist_context_report(report, base_dir=tmp_path)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["tier_budget"]["applied_tier"] == "T2"
+        assert payload["tier_budget"]["excluded_context_blocks"] == ["claude_contract", "skills_index"]
+        assert payload["tier_budget"]["stripped_groups"] == ["retrieval"]
+
+    def test_no_budget_turn_has_empty_provenance(self, tmp_path):
+        from grove.prompt.composer import PromptComposer, SectionResult
+        from grove.context_report import build_context_report
+
+        composer = PromptComposer()
+        composer.register_section(
+            "identity", lambda ctx: SectionResult(label="identity", text="I AM"),
+            order=10, tier="stable",
+        )
+        composed = composer.compose()  # no tier gate
+        agent = self._bare_agent(composed, {})  # no tier in selection
+        report = build_context_report(agent, conversation_history=[], snapshot_base_dir=tmp_path)
+        assert report.applied_tier is None
+        assert report.excluded_context_blocks == []
+        assert report.excluded_mcp == []
+        assert report.stripped_groups == []
+        assert "identity" in report.system_prompt_sections
