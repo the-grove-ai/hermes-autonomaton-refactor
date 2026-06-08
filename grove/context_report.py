@@ -109,18 +109,23 @@ class ContextReport:
     disclosure_tier_mode: Optional[str] = None
 
 
-def measure_always_loaded_floor(manifest: Optional[Any] = None) -> Dict[str, int]:
+def measure_always_loaded_floor(
+    manifest: Optional[Any] = None, tier: Optional[str] = None
+) -> Dict[str, int]:
     """Itemize the always-loaded FLOOR — the Sprint 75 scoreboard (Phase 4).
 
     Breaks the irreducible per-turn prefill into named lines so the operator can
-    see what rides EVERY turn regardless of tier or disclosure: the identity
-    composition (by sub-part), the Dock goal-index, and the disclosure tool-
-    index (the one-liner manifest). Read-only — re-measures from live config via
-    the chars/4 estimator; never mutates state.
+    see what rides EVERY turn regardless of disclosure: the identity composition
+    (by sub-part), the Dock goal-index, and the disclosure tool-index (the
+    one-liner manifest). Read-only — re-measures from live config via the
+    chars/4 estimator; never mutates state.
 
     Args:
         manifest: a pre-built merged manifest (the agent's, when available) for
             the tool-index line; falls back to the declarative-only manifest.
+        tier: Sprint 75 — the routed tier. The identity is composed at THIS
+            tier, so gated sub-parts (affordances/operator/capabilities on T1)
+            read 0 and the floor reflects what was actually sent.
 
     Returns:
         ``{label: tokens}`` with a ``_total`` rollup.
@@ -131,7 +136,7 @@ def measure_always_loaded_floor(manifest: Optional[Any] = None) -> Dict[str, int
     try:
         from grove.identity import load_identity, _strip_frontmatter
 
-        comp = load_identity()
+        comp = load_identity(tier=tier)
         parts = {
             "identity.constitution": comp.constitution,
             "identity.soul": _strip_frontmatter(comp.soul),
@@ -365,8 +370,11 @@ def build_context_report(
     excluded_context_blocks = sorted(str(b) for b in gated_blocks)
 
     # Sprint 74 Phase 4 — the floor scoreboard + the disclosure ledger.
+    # Sprint 75 — compose the floor at the routed tier so it reflects the
+    # per-tier identity actually sent (T1 drops affordances/operator/capabilities).
     always_loaded = measure_always_loaded_floor(
-        getattr(agent, "_disclosure_manifest", None)
+        getattr(agent, "_disclosure_manifest", None),
+        tier=applied_tier,
     )
     disclosed_payloads = [
         dict(entry) for entry in (getattr(agent, "_disclosure_log", None) or [])

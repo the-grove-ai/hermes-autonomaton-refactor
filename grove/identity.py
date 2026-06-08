@@ -87,6 +87,36 @@ class IdentityError(RuntimeError):
     not be seeded — the Autonomaton must not start. Fail loud."""
 
 
+# ── Sprint 75 — tier-aware identity composition ──────────────────────────
+# Which identity layers ride each cognition tier. The always-on set
+# (constitution = values/safety, soul = character, register = voice, goals =
+# the Dock strategic index) rides EVERY tier — it is the irreducible Mylo.
+# Heavier self-model / operator-context layers escalate with the tier:
+#   T1 (irreducible) = constitution + soul + register + goals
+#   T2 (medium)      = T1 + operator + capabilities
+#   T3 (full)        = T2 + affordances
+# An unknown / falsy tier returns None ⇒ FULL composition (legacy, safe — a
+# tier we don't recognize never silently drops character).
+_ALWAYS_LAYERS = ("constitution", "soul", "register", "goals")
+_TIER_IDENTITY_LAYERS: dict[str, frozenset] = {
+    "T1": frozenset(_ALWAYS_LAYERS),
+    "T2": frozenset(_ALWAYS_LAYERS + ("operator", "capabilities")),
+    "T3": frozenset(_ALWAYS_LAYERS + ("operator", "capabilities", "affordances")),
+}
+
+
+def _identity_layers_for_tier(tier: Optional[str]) -> Optional[frozenset]:
+    """The layer-name set a tier admits, or ``None`` for the full set.
+
+    ``None`` means "no gate" — the full composition. A falsy tier (legacy /
+    non-routed) and an unrecognized tier both return ``None`` so character is
+    never silently dropped on an unexpected tier.
+    """
+    if not tier:
+        return None
+    return _TIER_IDENTITY_LAYERS.get(tier)  # unknown tier -> None -> full
+
+
 @dataclass
 class IdentityComposition:
     """The composed identity layer.
@@ -145,26 +175,38 @@ class IdentityComposition:
         ]
         return "\n\n".join(p.strip() for p in layers if p and p.strip())
 
-    def compose_stable(self) -> str:
-        """Assemble the stable-tier layers in D5 (Sprint 23) order.
+    def compose_stable(self, tier: Optional[str] = None) -> str:
+        """Assemble the stable-tier layers in D5 (Sprint 23) order, gated by
+        ``tier`` (Sprint 75).
 
         Sprint 07 injects this subset into the system prompt's stable
         tier; memory and agents keep their existing delivery mechanisms
         (the MemoryStore volatile tier and the context-files prompt).
         Sprint 23 inserts register / affordances / capabilities between
         soul and operator. The soul layer's YAML frontmatter is
-        stripped — parsed into ``frontmatter`` (PL-2). Returns the
-        joined prompt text.
+        stripped — parsed into ``frontmatter`` (PL-2).
+
+        Sprint 75 — ``tier`` selects which layers compose: T1 the irreducible
+        set (constitution + soul + register + goals), T2 adds operator +
+        capabilities, T3 adds affordances. ``None`` / unknown tier composes the
+        full set (legacy). The D5 ORDER is preserved; gated layers are skipped
+        in place. Returns the joined prompt text.
         """
-        layers = [
-            self.constitution,
-            _strip_frontmatter(self.soul),
-            self.register_overlay,
-            self.affordances,
-            self.capabilities,
-            self.operator,
-            self.goals,
+        admit = _identity_layers_for_tier(tier)
+
+        def _keep(name: str) -> bool:
+            return admit is None or name in admit
+
+        ordered = [
+            ("constitution", self.constitution),
+            ("soul", _strip_frontmatter(self.soul)),
+            ("register", self.register_overlay),
+            ("affordances", self.affordances),
+            ("capabilities", self.capabilities),
+            ("operator", self.operator),
+            ("goals", self.goals),
         ]
+        layers = [text for name, text in ordered if _keep(name)]
         return "\n\n".join(p.strip() for p in layers if p and p.strip())
 
 
@@ -172,6 +214,7 @@ def load_identity(
     persona: Optional[str] = None,
     *,
     session_register: Optional[str] = None,
+    tier: Optional[str] = None,
 ) -> IdentityComposition:
     """Load and compose the operator's identity from ``~/.grove/``.
 
@@ -214,9 +257,22 @@ def load_identity(
     ref_dir = _reference_dir()
     composition = IdentityComposition()
 
-    for canonical, legacy, template, tier in _IDENTITY_FILES:
-        content = _resolve_file(home, canonical, legacy, template, ref_dir, tier)
+    # Sprint 75 — which identity layers this tier admits (None ⇒ full).
+    admit = _identity_layers_for_tier(tier)
+
+    def _admits(name: str) -> bool:
+        return admit is None or name in admit
+
+    # NB: the loop variable below is the FILE's failure tier (jidoka/graceful/
+    # silent) from _IDENTITY_FILES — named ``file_tier`` so it cannot shadow the
+    # cognition-``tier`` parameter (Sprint 75).
+    for canonical, legacy, template, file_tier in _IDENTITY_FILES:
+        content = _resolve_file(home, canonical, legacy, template, ref_dir, file_tier)
         setattr(composition, canonical.removesuffix(".md"), content)
+
+    # Sprint 75 — operator-context is gated out below T2 (T1 is irreducible).
+    if not _admits("operator"):
+        composition.operator = None
 
     # Goals come from the Dock, not a file (Sprint 69). Absent Dock →
     # graceful (None, layer skipped); malformed dock.yaml → fail loud
@@ -281,14 +337,22 @@ def load_identity(
 
     # D1 affordances: graceful for the operator copy (warn + None if
     # empty), Jidoka inside load_affordances if the reference template
-    # is missing entirely (install incomplete).
-    composition.affordances = load_affordances(home)
+    # is missing entirely (install incomplete). Sprint 75 — ALWAYS call
+    # load_affordances so the Jidoka template check runs on every tier; null
+    # the content when the tier doesn't admit it (T1/T2). The install-integrity
+    # invariant must not weaken just because the layer is gated off.
+    _affordances = load_affordances(home)
+    composition.affordances = _affordances if _admits("affordances") else None
 
     # D2 introspection: composer-orchestrated per GATE-A. Read-only; the
     # helpers degrade to "(unavailable)" prose on read failures rather
-    # than raising — introspection is reporting, not governance. See
-    # grove/affordances.py module docstring for the asymmetry rationale.
-    composition.capabilities = introspect_capabilities()
+    # than raising — introspection is reporting, not governance. Sprint 75 —
+    # SKIP it entirely when the tier doesn't admit capabilities (T1): the live
+    # enumeration is the one genuinely expensive per-turn op, so gating it off
+    # is a real cost saving, not just a token saving.
+    composition.capabilities = (
+        introspect_capabilities() if _admits("capabilities") else None
+    )
 
     return composition
 

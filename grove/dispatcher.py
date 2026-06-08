@@ -1217,6 +1217,7 @@ class Dispatcher:
         # which builds a fresh agent that must not inherit a stale T2 budget.
         agent._tier_budget = None
         agent._tier_context_blocks = None
+        agent._tier_name = None  # Sprint 75 — routed tier for identity gating
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -3213,6 +3214,7 @@ class Dispatcher:
             # any recompose (tier change, compression, session_register change)
             # applies the current tier's context gate.
             tier_context_blocks=getattr(agent, "_tier_context_blocks", None),
+            tier=getattr(agent, "_tier_name", None),  # Sprint 75 — identity gate
         )
         # Sprint 73 Phase 5 — retain the structured composition RESULT as data
         # on the agent (NOT a recomposing method — GRV-007 deleted that). The
@@ -3300,6 +3302,8 @@ class Dispatcher:
             )
         agent._tier_budget = budget
         agent._tier_context_blocks = frozenset(budget.context)
+        agent._tier_name = tier  # Sprint 75 — the routed tier name for the
+        # identity composer (gates which identity layers ride this tier).
         self._maybe_recompose_for_tier(agent)
 
     def _maybe_recompose_for_tier(self, agent: Any) -> None:
