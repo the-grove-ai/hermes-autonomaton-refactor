@@ -54,6 +54,11 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+# Sprint 73 Phase 4a — sentinel for the "no tier gating applied yet" state, so
+# the first carrier application always triggers a recompose (a real frozenset,
+# including the empty one, can never compare equal to this).
+_TIER_CTX_UNSET = object()
+
 
 # ── RuntimeContext ─────────────────────────────────────────────────────────
 
@@ -502,6 +507,14 @@ class Dispatcher:
         self._anthropic_client_cache: Dict[tuple, Any] = {}
         self._context_length_cache: Dict[str, int] = {}
         self._compression_probe_cache: Optional[CompressionProbe] = None
+        # ── Sprint 73 Phase 4a — tier-budget carriers ────────────────
+        # ``_tier_budgets_cache`` holds the validated load_tier_budgets()
+        # result, loaded lazily on the first routed turn (fail-loud at load,
+        # D7). ``_last_applied_tier_context_blocks`` tracks the last gating
+        # set applied so the carrier-change recompose stays cache-friendly;
+        # the sentinel guarantees the first application always recomposes.
+        self._tier_budgets_cache: Optional[Dict[str, Any]] = None
+        self._last_applied_tier_context_blocks: Any = _TIER_CTX_UNSET
         # ── Sprint 28 Phase 3 — intent record store + per-turn state ──
         # The IntentStore is optional so legacy / test Dispatchers (which
         # construct ``Dispatcher()`` with no kwargs) skip the write path
@@ -1197,6 +1210,13 @@ class Dispatcher:
         # itself blocks every turn); per-turn counter prevents the
         # agent from looping within a single turn.
         self._current_turn_andon_strikes = {}
+        # Sprint 73 Phase 4a — wipe the tier-budget carriers every turn. They
+        # are repopulated below by _classify_and_bind_turn (or the
+        # already_routed branch) from the turn's resolved tier. No carryover
+        # across turns — especially after a Sprint 30 escalation hot-swap,
+        # which builds a fresh agent that must not inherit a stale T2 budget.
+        agent._tier_budget = None
+        agent._tier_context_blocks = None
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -1233,8 +1253,15 @@ class Dispatcher:
         if not already_routed and isinstance(user_message, str):
             self._classify_and_bind_turn(agent, user_message, ledger)
         else:
-            from grove.providers import current_classification as _current_classification
+            from grove.providers import (
+                current_classification as _current_classification,
+                current_tier as _current_tier,
+            )
             self._current_turn_classification = _current_classification()
+            # Sprint 73 Phase 4a — the pre-routed (CLI / hot-swap rebuild)
+            # path still resolves a tier; thread its budget carriers from the
+            # same single source so context gating applies here too.
+            self._apply_tier_budget(agent, _current_tier())
         if previous_turn_id is not None:
             self._finalize_previous_turn_pending(previous_turn_id)
             # Sprint 49 Phase 2 — correction-driven auto-demotion. If the
@@ -1858,6 +1885,11 @@ class Dispatcher:
         new_agent._sovereign_prompt_handler = getattr(
             agent, "_sovereign_prompt_handler", None,
         )
+        # Sprint 73 Phase 4a — the escalated tier is a new routing decision;
+        # re-apply the budget carriers on the fresh agent (PER-TURN WIPE +
+        # SINGLE SOURCE) so context gating reflects target_tier, not the
+        # retired T2 shell's. Recompose fires here because the carrier changed.
+        self._apply_tier_budget(new_agent, decision.target_tier)
 
         # Start the new generator with the snapshotted messages. The
         # Agent's conversation_history kwarg accepts pre-seeded
@@ -2266,6 +2298,11 @@ class Dispatcher:
         # base_url / api_mode change. The selection rule mirrors the
         # pre-Sprint-35 ``_maybe_route_for_turn`` logic byte-for-byte.
         self._bind_agent_to_tier(agent, decision, resolve_tier_to_runtime)
+        # Sprint 73 Phase 4a — thread this turn's tier budget carriers from the
+        # one resolved tier (SINGLE SOURCE). decision.tier is always an
+        # inference tier here (T0 is intercepted before classification), so a
+        # missing budget fails loud rather than reverting to eager.
+        self._apply_tier_budget(agent, decision.tier)
 
     # ── Sprint 49 — T0 Pattern Cache dispatch path ──────────────────────
 
@@ -3158,6 +3195,12 @@ class Dispatcher:
             terminal_cwd=terminal_cwd,
             pattern_hash=pattern_hash,
             intent_class=intent_class,
+            # Sprint 73 (D5) — per-tier context allow-list. None on a
+            # non-routed / construction-time compose (no gating); populated by
+            # Phase 4a's _apply_tier_budget on every routed inference tier, so
+            # any recompose (tier change, compression, session_register change)
+            # applies the current tier's context gate.
+            tier_context_blocks=getattr(agent, "_tier_context_blocks", None),
         )
         return result.text
 
@@ -3193,6 +3236,78 @@ class Dispatcher:
             self.agent, system_message=system_message,
         )
         return self.agent._composed_system_prompt
+
+    # ── Sprint 73 Phase 4a — tier-budget carriers (context side) ─────────
+
+    def _get_tier_budgets(self) -> Dict[str, Any]:
+        """Lazily load + cache the validated ``tier_budgets`` map.
+
+        Loaded on the first routed turn (not at construction), so test /
+        gateway Dispatchers that never route are unaffected. ``load_tier_budgets``
+        fails loud at load (D7) when the active ``routing.config.yaml`` lacks the
+        block or an inference tier's entry — the operator syncs the template
+        block to ``~/.grove/routing.config.yaml`` before live turns.
+        """
+        cached = self._tier_budgets_cache
+        if cached is not None:
+            return cached
+        from grove.tier_budget import load_tier_budgets
+        budgets = load_tier_budgets()
+        self._tier_budgets_cache = budgets
+        return budgets
+
+    def _apply_tier_budget(self, agent: Any, tier: Optional[str]) -> None:
+        """Resolve THIS turn's tier budget once and thread both carriers from
+        it (Phase 4a — context side; the tools-side read lands in 4b).
+
+        SINGLE SOURCE: ``agent._tier_budget`` and ``agent._tier_context_blocks``
+        both derive from one resolved ``TierBudget``, so context and tools can
+        never disagree on the tier. FAIL LOUD (invariant 3): a routed tier with
+        no resolvable budget raises ``TierBudgetMissing`` — never a silent eager
+        fallthrough. A falsy ``tier`` (no routed tier — a legacy / non-router
+        path) is a no-op; the carriers stay ``None`` and the enforcers behave as
+        pre-Sprint-73. That is the legacy path, NOT an inference tier.
+        """
+        if not tier:
+            return
+        budgets = self._get_tier_budgets()
+        budget = budgets.get(tier)
+        if budget is None:
+            from grove.tier_budget import TierBudgetMissing
+            raise TierBudgetMissing(
+                f"routed tier {tier!r} has no tier_budgets entry; the prefill "
+                f"budget cannot be resolved. Add a tier_budgets[{tier!r}] block "
+                f"to routing.config.yaml (D7 — no silent full-load)."
+            )
+        agent._tier_budget = budget
+        agent._tier_context_blocks = frozenset(budget.context)
+        self._maybe_recompose_for_tier(agent)
+
+    def _maybe_recompose_for_tier(self, agent: Any) -> None:
+        """Recompose the system prompt when this turn's context-block set
+        differs from the last applied (cache-friendly).
+
+        ADDITIVE: this is ONE recompose trigger among several. Sprint 36's
+        compression-boundary and ``session_register``-change recomposes call
+        ``recompose_system_prompt`` independently; this method never gates them
+        off — it only short-circuits ITS OWN trigger. A ``session_register``
+        change with an unchanged tier therefore still recomposes via Sprint 36's
+        path (``compose_system_prompt`` re-reads the carrier on every recompose).
+        """
+        if agent is not self.agent:
+            # The escalation hot-swap's new agent is not yet ``self.agent``;
+            # compose it directly so its prompt reflects the escalated tier's
+            # carrier before its generator starts.
+            self._compose_and_inject_system_prompt(agent)
+            self._last_applied_tier_context_blocks = getattr(
+                agent, "_tier_context_blocks", None,
+            )
+            return
+        current = getattr(agent, "_tier_context_blocks", None)
+        if current == self._last_applied_tier_context_blocks:
+            return
+        self._last_applied_tier_context_blocks = current
+        self.recompose_system_prompt()
 
     def execute_memory_write(self, intent: "MemoryWriteIntent") -> "MemoryWriteResult":
         """Handle a ``MemoryWriteIntent`` — synchronous return.

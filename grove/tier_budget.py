@@ -36,11 +36,22 @@ import yaml
 __all__ = [
     "GATEABLE_CONTEXT_BLOCKS",
     "WILDCARD",
+    "TierBudgetMissing",
     "ToolBudget",
     "TierBudget",
     "load_tier_budgets",
     "tier_admits_context_block",
 ]
+
+
+class TierBudgetMissing(RuntimeError):
+    """A routed inference tier has no resolvable prefill budget — fail-loud.
+
+    The Prime-Directive backstop for invariant 3 (Phase 4a): on an inference
+    tier the budget carrier is ALWAYS populated. If a routed tier cannot
+    resolve a budget, raise this — never silently revert to the eager payload.
+    A ``raise`` (not an ``assert``) so it fires under ``python -O``.
+    """
 
 # D5 — the only names a tier's ``context`` allow-list may contain. Everything
 # else in the prompt is always-on baseline and is never budget-listed.
