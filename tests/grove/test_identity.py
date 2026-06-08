@@ -455,20 +455,84 @@ def test_load_identity_t3_loads_everything(fake_home, monkeypatch):
     assert "t1:start" not in comp.operator          # markers never leak
 
 
-def test_operator_stub_extraction_helpers():
-    from grove.identity import _extract_t1_stub, _strip_t1_markers
+def test_strip_t1_markers_for_full_read():
+    from grove.identity import _strip_t1_markers
     text = (
-        "# Operator\n\n<!-- t1:start -->\n## How I Work\nTerse by default.\n"
-        "<!-- t1:end -->\n\n## Who I Am\nJim Calhoun.\n"
+        "# Operator\n\n<!-- t1:start -->\n## How I Work\nTerse.\n"
+        "<!-- t1:end -->\n\n## Who I Am\nJim.\n"
     )
-    stub = _extract_t1_stub(text)
-    assert "How I Work" in stub and "Terse by default" in stub
-    assert "Who I Am" not in stub and "Jim Calhoun" not in stub
     full = _strip_t1_markers(text)
     assert "How I Work" in full and "Who I Am" in full       # T2/T3 read all
     assert "<!--" not in full and "t1:start" not in full     # markers stripped
 
 
-def test_operator_stub_none_when_no_markers():
-    from grove.identity import _extract_t1_stub
-    assert _extract_t1_stub("# Operator\n\nNo marked region here.") is None
+# ── Refinement-1 hardening: guarded T1 operator-stub extraction ──────────
+
+def _stub_region(body):
+    return f"# Operator\n\n<!-- t1:start -->\n{body}\n<!-- t1:end -->\n\n## Who I Am\nJim.\n"
+
+
+def test_t1_stub_wellformed_uses_region():
+    from grove.identity import _resolve_t1_operator_stub
+    out = _resolve_t1_operator_stub(_stub_region("## How I Work\nTerse by default."))
+    assert out == "## How I Work\nTerse by default."          # the region, stripped
+
+
+def _assert_falls_back(text, problem_substr, caplog):
+    from grove.identity import _resolve_t1_operator_stub, _DEFAULT_T1_OPERATOR_STUB
+    import logging as _l
+    with caplog.at_level(_l.WARNING, logger="grove.identity"):
+        out = _resolve_t1_operator_stub(text)
+    assert out == _DEFAULT_T1_OPERATOR_STUB                   # never full, never nothing
+    msgs = " ".join(r.message for r in caplog.records)
+    assert "operator.md" in msgs                              # names the file
+    assert "t1:start" in msgs                                 # names the one-line fix
+    assert problem_substr in msgs.lower()                     # names the specific problem
+
+
+def test_t1_stub_missing_markers_falls_back(caplog):
+    _assert_falls_back("# Operator\n\nA bio, no markers.\n", "no", caplog)
+
+
+def test_t1_stub_absent_operator_falls_back(caplog):
+    _assert_falls_back(None, "absent", caplog)
+
+
+def test_t1_stub_duplicated_markers_falls_back(caplog):
+    text = "<!-- t1:start -->\nA\n<!-- t1:end -->\n<!-- t1:start -->\nB\n<!-- t1:end -->"
+    _assert_falls_back(text, "exactly one", caplog)
+
+
+def test_t1_stub_unmatched_marker_falls_back(caplog):
+    _assert_falls_back("<!-- t1:start -->\nA, but no end marker", "exactly one", caplog)
+
+
+def test_t1_stub_end_before_start_falls_back(caplog):
+    _assert_falls_back("<!-- t1:end -->\nbackwards\n<!-- t1:start -->", "before", caplog)
+
+
+def test_t1_stub_empty_region_falls_back(caplog):
+    _assert_falls_back("<!-- t1:start -->\n   \n<!-- t1:end -->", "empty", caplog)
+
+
+def test_t1_stub_over_cap_falls_back(caplog):
+    big = "word " * 1000  # ~1,250 tokens, well over the ~200 cap
+    _assert_falls_back(f"<!-- t1:start -->\n{big}\n<!-- t1:end -->", "cap", caplog)
+
+
+def test_t1_default_stub_is_bounded_and_grounding():
+    from grove.identity import _DEFAULT_T1_OPERATOR_STUB, _T1_STUB_TOKEN_CAP
+    from agent.model_metadata import estimate_tokens_rough
+    assert _DEFAULT_T1_OPERATOR_STUB.strip()                  # never nothing
+    assert estimate_tokens_rough(_DEFAULT_T1_OPERATOR_STUB) <= _T1_STUB_TOKEN_CAP
+
+
+def test_load_identity_t1_no_markers_uses_bounded_default(fake_home):
+    from grove.identity import _DEFAULT_T1_OPERATOR_STUB
+    fake_home.mkdir(parents=True, exist_ok=True)
+    (fake_home / "operator.md").write_text(
+        "# Operator\n\n## Who I Am\nJim, no markers.\n", encoding="utf-8"
+    )
+    comp = load_identity(tier="T1")
+    assert comp.operator == _DEFAULT_T1_OPERATOR_STUB         # default, not None, not full
+    assert "Who I Am" not in comp.operator                   # the full bio did NOT load
