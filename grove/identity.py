@@ -112,10 +112,27 @@ _TIER_IDENTITY_LAYERS: dict[str, frozenset] = {
 # The condensed-operator-stub markers (Refinement 1). The stub lives ONCE,
 # inside operator.md, between these markers — single-source, no drift: T1 reads
 # only the marked region, T2/T3 read the whole file (markers stripped).
-_T1_STUB_RE = re.compile(
-    r"<!--\s*t1:start\s*-->(.*?)<!--\s*t1:end\s*-->", re.DOTALL | re.IGNORECASE
-)
+_T1_START_RE = re.compile(r"<!--\s*t1:start\s*-->", re.IGNORECASE)
+_T1_END_RE = re.compile(r"<!--\s*t1:end\s*-->", re.IGNORECASE)
 _T1_MARKER_RE = re.compile(r"<!--\s*t1:(?:start|end)\s*-->[ \t]*\n?", re.IGNORECASE)
+
+# Hard cap on the T1 operator stub (Refinement-1 hardening). The stub is
+# always-loaded prefill on the cheapest tier; an unbounded region is the budget
+# blowout the guard exists to prevent.
+_T1_STUB_TOKEN_CAP = 200
+
+# Baked-in fallback stub — guaranteed bounded, guaranteed to keep T1 GROUNDED.
+# Used when operator.md's marked region is missing / malformed / over-cap, so
+# T1 never loads the full operator block (budget blowout) AND never loads
+# nothing (grounding loss). Generic working-style essence only — no bio, no
+# canon. Mirrors the operator.md template's guidance so the two never disagree.
+_DEFAULT_T1_OPERATOR_STUB = (
+    "## How I Work\n\n"
+    "Terse by default, full when asked. Lead with the answer or the "
+    "recommendation; expand only when asked to. Be opinionated — your judgment, "
+    "not a menu. Deliverables are paste-ready artifacts, not chat dumps. One "
+    "blocking question per turn, or none."
+)
 
 
 def _identity_layers_for_tier(tier: Optional[str]) -> Optional[frozenset]:
@@ -130,15 +147,65 @@ def _identity_layers_for_tier(tier: Optional[str]) -> Optional[frozenset]:
     return _TIER_IDENTITY_LAYERS.get(tier)  # unknown tier -> None -> full
 
 
-def _extract_t1_stub(text: Optional[str]) -> Optional[str]:
-    """The condensed T1 operator stub — the content of the ``<!-- t1:start -->``
-    / ``<!-- t1:end -->`` region(s) in operator.md. ``None`` when the file has no
-    marked region (graceful: T1 then composes without operator-context)."""
-    if not text:
-        return None
-    parts = [m.group(1).strip() for m in _T1_STUB_RE.finditer(text)]
-    parts = [p for p in parts if p]
-    return "\n\n".join(parts) if parts else None
+def _resolve_t1_operator_stub(
+    text: Optional[str], source_path: Optional[object] = None
+) -> str:
+    """The bounded T1 operator stub — GUARANTEED non-empty and under the cap.
+
+    Validates the ``<!-- t1:start -->`` / ``<!-- t1:end -->`` region of
+    operator.md: exactly one well-formed start+end pair, start before end,
+    non-empty content, and at most ``_T1_STUB_TOKEN_CAP`` tokens. On success the
+    region is the stub. On ANY failure — markers missing / duplicated /
+    unmatched / reversed, region empty, or over the cap — it does three things,
+    per the Refinement-1 hardening:
+
+    * NEVER loads the full operator block on T1 (the budget blowout);
+    * NEVER loads nothing (the grounding loss);
+    * returns the baked-in :data:`_DEFAULT_T1_OPERATOR_STUB` (bounded + grounding)
+      and emits a loud warning naming operator.md, the specific problem, and the
+      one-line fix.
+
+    Always returns a string — T1 is never ungrounded and never over budget.
+    """
+    from agent.model_metadata import estimate_tokens_rough
+
+    where = str(source_path) if source_path is not None else "operator.md"
+    problem: Optional[str] = None
+
+    if not text or not text.strip():
+        problem = "operator.md is absent or empty"
+    else:
+        starts = list(_T1_START_RE.finditer(text))
+        ends = list(_T1_END_RE.finditer(text))
+        if not starts and not ends:
+            problem = "no <!-- t1:start -->/<!-- t1:end --> markers present"
+        elif len(starts) != 1 or len(ends) != 1:
+            problem = (
+                f"expected exactly one <!-- t1:start --> + one <!-- t1:end --> "
+                f"pair, found {len(starts)} start / {len(ends)} end"
+            )
+        elif starts[0].start() >= ends[0].start():
+            problem = "<!-- t1:end --> appears before <!-- t1:start -->"
+        else:
+            region = text[starts[0].end():ends[0].start()].strip()
+            if not region:
+                problem = "the t1 region is empty"
+            elif estimate_tokens_rough(region) > _T1_STUB_TOKEN_CAP:
+                problem = (
+                    f"the t1 region is {estimate_tokens_rough(region)} tokens, "
+                    f"over the {_T1_STUB_TOKEN_CAP}-token cap"
+                )
+            else:
+                return region  # valid — use it as-is
+
+    logger.warning(
+        "[identity] T1 operator-stub invalid: %s in %s — falling back to the "
+        "baked-in minimal stub so T1 stays grounded AND under budget. Fix: wrap "
+        "ONE concise working-style block in %s between '<!-- t1:start -->' and "
+        "'<!-- t1:end -->' (<= %d tokens).",
+        problem, where, where, _T1_STUB_TOKEN_CAP,
+    )
+    return _DEFAULT_T1_OPERATOR_STUB
 
 
 def _strip_t1_markers(text: Optional[str]) -> Optional[str]:
@@ -302,18 +369,22 @@ def load_identity(
         content = _resolve_file(home, canonical, legacy, template, ref_dir, file_tier)
         setattr(composition, canonical.removesuffix(".md"), content)
 
-    # Sprint 75 (Refinement 1) — operator rides every tier but with tier-scoped
-    # CONTENT: T1 reads ONLY the condensed ``<!-- t1 -->`` stub (working-style
-    # essence — keeps Mylo's voice without the bio/manifesto); T2/T3 read the
-    # full operator.md (markers stripped). Single-source: the stub is a marked
-    # region inside operator.md, never a parallel copy that could drift. A file
-    # with no marked region yields no T1 stub (graceful — T1 omits operator).
-    if composition.operator:
-        composition.operator = (
-            _extract_t1_stub(composition.operator)
-            if tier == "T1"
-            else _strip_t1_markers(composition.operator)
+    # Sprint 75 (Refinement 1 + hardening) — operator rides every tier but with
+    # tier-scoped CONTENT: T1 reads ONLY the condensed ``<!-- t1 -->`` stub
+    # (working-style essence — keeps Mylo's voice without the bio/manifesto);
+    # T2/T3 read the full operator.md (markers stripped). Single-source: the stub
+    # is a marked region inside operator.md, never a parallel copy that drifts.
+    #
+    # The T1 read is GUARDED — a missing/malformed/over-cap region falls back to
+    # a bounded baked-in stub (never the full block, never nothing), loudly. So
+    # the T1 path always yields a grounded, budget-safe stub regardless of the
+    # operator.md state.
+    if tier == "T1":
+        composition.operator = _resolve_t1_operator_stub(
+            composition.operator, home / "operator.md"
         )
+    elif composition.operator:
+        composition.operator = _strip_t1_markers(composition.operator)
 
     # Goals come from the Dock, not a file (Sprint 69). Absent Dock →
     # graceful (None, layer skipped); malformed dock.yaml → fail loud
