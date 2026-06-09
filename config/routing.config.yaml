@@ -188,16 +188,6 @@ routing:
     # and system-admin work that needs T2 but not T3.  ``planning`` is
     # included so its FLOOR is T2 — a moderate planning task must never
     # fall through to T1 Haiku.
-    # Coding is apex work (Sprint 77.4 — coding->T3 ruling): route
-    # code_generation + debugging to T3 at EVERY complexity. No complexity
-    # clause => matches all. Evaluated first so coding never lands on a T2 that
-    # no longer carries code tools, and never falls through to T1.
-    coding_apex:
-      enabled: true
-      match:
-        intents: [code_generation, debugging]
-      target_tier: T3
-
     upward_moderate:
       enabled: true
       match:
@@ -210,7 +200,7 @@ routing:
     upward:
       enabled: true
       match:
-        complexity: [complex, novel]
+        complexity: [moderate, complex, novel]
         intents: [planning, analysis, code_generation, debugging,
                   research, system_admin]
       target_tier: T3
