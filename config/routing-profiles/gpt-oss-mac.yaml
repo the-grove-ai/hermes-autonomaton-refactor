@@ -169,11 +169,13 @@ tier_budgets:
       exclude_mcp: [notion]  # the ~18.4K cut — Notion reached via notion.py (terminal)
     # Sprint 77.0a memory governor: the max composed-prefill tokens the local
     # gpt-oss endpoint may receive. MUST stay below the llama-server -c context
-    # size (8192) so an over-ceiling prefill ESCALATES (or, with
-    # escalation_policy disabled, fails loud) rather than hitting the context
-    # wall. This is a TEMPLATE default — tune per-instance from a live ~5K
-    # prefill measurement in measurement mode (GROVE_PREFILL_GOVERNOR_MODE).
-    prefill_ceiling_tokens: 7000
+    # size (24576 — memory-validated at ~2.39 GB min-avail, Sprint 77.4) so an
+    # over-ceiling prefill ESCALATES (or, with escalation_policy disabled, fails
+    # loud) rather than hitting the context wall. Set Sprint 77.4/77.5: the live
+    # gpt-oss-side T2 prefill is ~15K after the 77.5 tool_affordances compaction;
+    # 18000 sits above that + margin and below the 24576 wall, leaving room for
+    # the 4096-token T2 generation (15K prefill + 4K gen < 24576).
+    prefill_ceiling_tokens: 18000
 
   T1:                       # Cheap Cognition — floor.
     context: []
