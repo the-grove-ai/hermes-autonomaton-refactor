@@ -37,6 +37,7 @@ __all__ = [
     "GATEABLE_CONTEXT_BLOCKS",
     "WILDCARD",
     "TierBudgetMissing",
+    "PrefillCeilingExceeded",
     "ToolBudget",
     "TierBudget",
     "load_tier_budgets",
@@ -52,6 +53,21 @@ class TierBudgetMissing(RuntimeError):
     tier the budget carrier is ALWAYS populated. If a routed tier cannot
     resolve a budget, raise this — never silently revert to the eager payload.
     A ``raise`` (not an ``assert``) so it fires under ``python -O``.
+    """
+
+
+class PrefillCeilingExceeded(RuntimeError):
+    """A local-tier prefill exceeds the tier's memory ceiling and could not
+    escalate — fail-loud, never send (Sprint 77.0a local-prefill-governor-v1).
+
+    The pre-flight governor (``run_agent._run_turn_generator``) raises this on
+    the deny branch: the composed prefill for a local, memory-budgeted tier is
+    over the tier's ``prefill_ceiling_tokens`` AND the escalation to a covering
+    tier was denied (or ``escalation_policy`` is disabled). Sending the prefill
+    to the local endpoint would OOM the host (the Sprint 71 24K-prefill crash),
+    so the governor refuses rather than degrade silently. A ``raise`` (not a
+    fall-through to the send) is the Prime-Directive guarantee that the
+    over-ceiling prefill never reaches the wire.
     """
 
 # D5 — the only names a tier's ``context`` allow-list may contain. Everything
@@ -81,10 +97,23 @@ class ToolBudget:
 
 @dataclass(frozen=True)
 class TierBudget:
-    """One tier's prefill governor: gateable context + tool exposure."""
+    """One tier's prefill governor: gateable context + tool exposure + an
+    optional memory ceiling.
+
+    ``prefill_ceiling_tokens`` (Sprint 77.0a) — the maximum composed-prefill
+    token count this tier's endpoint may safely receive. ``None`` (the default,
+    and the only value for cloud tiers) means no memory governor: the tier has
+    an effectively unbounded window and the pre-flight governor no-ops. A
+    positive int is set ONLY for a local, memory-constrained tier (the qwen-mac
+    MLX endpoint bound in Sprint 77.1) — it is what makes the governor
+    "local-path only" by configuration rather than by a hardcoded provider
+    name. The value is the measured prefill knee minus margin (interim:
+    operator-confirmed live ~5K prefill + margin, until 77.1 measures the knee).
+    """
 
     context: Tuple[str, ...]
     tools: ToolBudget
+    prefill_ceiling_tokens: Optional[int] = None
 
 
 # Sprint 73 Phase 4b — a permissive budget: no group cap, no MCP exclusion.
@@ -344,12 +373,29 @@ def _parse_tier_budget(
                 f"tool_groups.yaml, D2)."
             )
 
+    # ── prefill_ceiling_tokens: optional memory governor (Sprint 77.0a) ───
+    # Absent ⇒ None ⇒ the pre-flight governor no-ops for this tier (every
+    # cloud tier; an unbounded window). Present ⇒ a positive int — the local
+    # memory ceiling. Fail-loud on malformed (D7 / Prime Directive); ``bool``
+    # is rejected explicitly because ``isinstance(True, int)`` is True.
+    ceiling_raw = spec.get("prefill_ceiling_tokens")
+    prefill_ceiling_tokens: Optional[int] = None
+    if ceiling_raw is not None:
+        if isinstance(ceiling_raw, bool) or not isinstance(ceiling_raw, int) or ceiling_raw <= 0:
+            raise ValueError(
+                f"routing config at {target}: tier_budgets[{tier_name!r}]."
+                f"prefill_ceiling_tokens must be a positive integer when present "
+                f"(got {ceiling_raw!r}); omit it for an unbounded (cloud) tier."
+            )
+        prefill_ceiling_tokens = ceiling_raw
+
     return TierBudget(
         context=tuple(context),
         tools=ToolBudget(
             allow_groups=tuple(allow_groups),
             exclude_mcp=tuple(exclude_mcp),
         ),
+        prefill_ceiling_tokens=prefill_ceiling_tokens,
     )
 
 

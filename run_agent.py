@@ -12916,6 +12916,98 @@ class AIAgent:
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
+        # ── Pre-flight memory governor (Sprint 77.0a local-prefill-governor-v1) ──
+        # A sibling of the preflight-compression check above, on the SAME
+        # composed-prefill estimate. Keyed on the resolved tier's memory ceiling
+        # (TierBudget.prefill_ceiling_tokens): None ⇒ no-op for this tier (every
+        # cloud tier — an unbounded window). A positive ceiling is configured
+        # ONLY for a local, memory-constrained tier (the qwen-mac MLX endpoint,
+        # Sprint 77.1), so the guard is "local-path only" by config, not by a
+        # hardcoded provider name.
+        #
+        # The MLX prefill activation spike — not steady state — OOM'd the 24 GB
+        # M5 in Sprint 71. This governor is the PRIMARY, proactive guard: it acts
+        # on the token count BEFORE the send, with no timing race (unlike the
+        # reactive watchdog backstop). Two modes (GROVE_PREFILL_GOVERNOR_MODE):
+        #   * production (default): over-ceiling ⇒ escalate to a covering tier
+        #     via the Sprint 30/D8 contract, and NEVER send. Grant ⇒ the
+        #     Dispatcher closes this generator and hot-swaps to the covering tier
+        #     (the send never happens here). Deny — or escalation_policy disabled,
+        #     the default — ⇒ raise PrefillCeilingExceeded: fail loud, never OOM.
+        #   * measurement (the Sprint 77.1 knee harness): record the pre-flight
+        #     token count and do NOT refuse; the watchdog catches any overshoot.
+        #     This is what lets 77.1's binary search step the prefill upward.
+        _tier_budget = getattr(self, "_tier_budget", None)
+        _prefill_ceiling = getattr(_tier_budget, "prefill_ceiling_tokens", None)
+        if _prefill_ceiling is not None:
+            _governor_tokens = estimate_request_tokens_rough(
+                messages,
+                system_prompt=active_system_prompt or "",
+                tools=self._tools_for_api or None,
+            )
+            _governor_tier = getattr(self, "_tier_name", None)
+            _governor_mode = (
+                os.environ.get("GROVE_PREFILL_GOVERNOR_MODE", "production")
+                .strip().lower()
+            )
+            # Provenance for the harness + /context, set regardless of mode.
+            self._last_prefill_governor = {
+                "tier": _governor_tier,
+                "prefill_tokens": _governor_tokens,
+                "ceiling_tokens": _prefill_ceiling,
+                "mode": _governor_mode,
+                "over_ceiling": _governor_tokens >= _prefill_ceiling,
+            }
+            if _governor_mode == "measurement":
+                # Record only — never refuse. The tightened watchdog
+                # (scripts/mlx-harness/mlx_watchdog.py) is the backstop that
+                # catches an overshoot during the knee binary-search.
+                logger.info(
+                    "[prefill-governor:measurement] tier=%s prefill~%s tok "
+                    "ceiling=%s over=%s",
+                    _governor_tier, f"{_governor_tokens:,}",
+                    f"{_prefill_ceiling:,}", _governor_tokens >= _prefill_ceiling,
+                )
+                self._emit_status(
+                    f"📐 prefill governor (measurement): ~{_governor_tokens:,} tok "
+                    f"vs {_prefill_ceiling:,}-tok ceiling"
+                )
+            elif _governor_tokens >= _prefill_ceiling:
+                # Production, over-ceiling: escalate (D8) — and never send.
+                from grove.intents import EscalationRequest
+                from grove.tier_budget import PrefillCeilingExceeded
+                logger.warning(
+                    "[prefill-governor:production] tier=%s prefill~%s tok >= "
+                    "ceiling %s — escalating; will NOT send to the local endpoint",
+                    _governor_tier, f"{_governor_tokens:,}", f"{_prefill_ceiling:,}",
+                )
+                yield EscalationRequest(
+                    reason=(
+                        f"local prefill ~{_governor_tokens} tok exceeds "
+                        f"{_prefill_ceiling}-tok memory ceiling"
+                    ),
+                    request={
+                        "reasoning_depth": "deep",
+                        "source": "prefill_memory_ceiling",
+                        "prefill_tokens": _governor_tokens,
+                        "ceiling_tokens": _prefill_ceiling,
+                        "current_tier": _governor_tier,
+                    },
+                )
+                # Reaching here means GRANT did not hot-swap us away (the
+                # Dispatcher closes this generator on grant). So escalation was
+                # DENIED, or escalation_policy is disabled (the default): sending
+                # the over-ceiling prefill would OOM the host. Fail loud — the
+                # raise is the Prime-Directive guarantee the prefill never
+                # reaches the wire.
+                raise PrefillCeilingExceeded(
+                    f"local prefill ~{_governor_tokens} tok exceeds the "
+                    f"{_prefill_ceiling}-tok ceiling for tier {_governor_tier}, and "
+                    f"escalation to a covering tier was denied/disabled; refusing "
+                    f"to send (would OOM the local endpoint). Enable "
+                    f"escalation_policy (deep→T3) or reduce the turn's context."
+                )
+
         # Plugin hook: pre_llm_call
         # Fired once per turn before the tool-calling loop.  Plugins can
         # return a dict with a ``context`` key (or a plain string) whose
