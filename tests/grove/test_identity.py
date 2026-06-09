@@ -64,8 +64,10 @@ def test_first_run_seeds_templated_files(fake_home: Path) -> None:
     assert comp.soul is not None
     assert comp.operator is not None
     assert comp.goals is None  # no Dock in the test home → goals layer omitted
-    for name in ("constitution.md", "soul.md", "operator.md"):
+    # Sprint 76: operator is two files now — operator-core.md + operator-extended.md.
+    for name in ("constitution.md", "soul.md", "operator-core.md", "operator-extended.md"):
         assert (fake_home / name).exists(), f"{name} not seeded"
+    assert not (fake_home / "operator.md").exists()  # retired in Sprint 76
     assert not (fake_home / "goals.md").exists()  # retired in Sprint 69
 
 
@@ -167,10 +169,11 @@ def test_empty_constitution_hard_fails(
 def test_missing_operator_warns_and_continues(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """operator.md missing AND unseedable → warning logged, composition
-    continues (graceful-tier)."""
+    """operator-core.md missing AND unseedable → bounded grounding default +
+    warning (Sprint 76 fail-safe); composition continues."""
+    from grove.identity import _DEFAULT_T1_OPERATOR_STUB
     home = tmp_path / "grove_home"
-    # Reference dir has the Jidoka files but NOT operator/goals.
+    # Reference dir has the Jidoka files but NOT operator-core/extended.
     ref = _make_ref_dir(
         tmp_path, {"constitution.md": _CONSTITUTION, "soul.md": _SOUL_NO_FM}
     )
@@ -178,10 +181,11 @@ def test_missing_operator_warns_and_continues(
     monkeypatch.setattr(gid, "_reference_dir", lambda: ref)
     with caplog.at_level(logging.WARNING, logger="grove.identity"):
         comp = load_identity()
-    assert comp.operator is None
+    # Never nothing: the fail-safe grounds the operator with the bounded default.
+    assert comp.operator == _DEFAULT_T1_OPERATOR_STUB
     assert comp.goals is None
     assert comp.constitution is not None and comp.soul is not None
-    assert any("operator.md" in r.getMessage() for r in caplog.records)
+    assert any("operator-core" in r.getMessage() for r in caplog.records)
 
 
 def test_missing_agents_is_silent(
@@ -325,18 +329,10 @@ def test_legacy_soul_md_fallback(
     assert "Old identity." in comp.soul
 
 
-def test_legacy_user_md_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home = tmp_path / "grove_home"
-    home.mkdir()
-    (home / "constitution.md").write_text(_CONSTITUTION, encoding="utf-8")
-    (home / "soul.md").write_text(_SOUL_NO_FM, encoding="utf-8")
-    (home / "USER.md").write_text("# Legacy User\n\nOld operator.\n", encoding="utf-8")
-    monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
-    comp = load_identity()
-    assert comp.operator is not None
-    assert "Legacy User" in comp.operator
+# Sprint 76 retired the single operator.md (and with it the USER.md legacy
+# fallback): operator is now operator-core.md + operator-extended.md, two new
+# files with no legacy aliases. The old test_legacy_user_md_fallback is removed
+# (the behavior it pinned no longer exists — "no migration to design").
 
 
 def test_legacy_memory_and_agents_fallback(
@@ -436,11 +432,11 @@ def test_load_identity_t1_nulls_gated_layers_and_skips_introspection(
     assert comp.capabilities is None                # gated on T1
     assert comp.affordances is None                 # gated on T1
     assert sentinel["called"] is False              # introspection skipped (cost)
-    # Refinement 1: operator rides T1 as the condensed stub (the marked region
-    # of the seeded operator.md), NOT the full file.
-    assert comp.operator is not None                # the stub is present
-    assert "How I Work" in comp.operator            # the marked region
-    assert "Who I Am" not in comp.operator          # full-file bio is NOT on T1
+    # Sprint 76: operator rides T1 as operator-core.md (working-style), NOT the
+    # bio in operator-extended.md.
+    assert comp.operator is not None                # the core stub is present
+    assert "How I Work" in comp.operator            # operator-core
+    assert "Who I Am" not in comp.operator          # operator-extended bio is NOT on T1
 
 
 def test_load_identity_t3_loads_everything(fake_home, monkeypatch):
@@ -449,90 +445,76 @@ def test_load_identity_t3_loads_everything(fake_home, monkeypatch):
     comp = load_identity(tier="T3")
     assert comp.capabilities == "CAPS_LIVE"
     assert comp.affordances is not None
-    # T3 reads the FULL operator file (markers stripped, bio included).
+    # T3 reads operator-core + operator-extended (bio included). No markers exist.
     assert comp.operator is not None
     assert "Who I Am" in comp.operator
-    assert "t1:start" not in comp.operator          # markers never leak
+    assert "t1:start" not in comp.operator          # no marker machinery anymore
 
 
-def test_strip_t1_markers_for_full_read():
-    from grove.identity import _strip_t1_markers
-    text = (
-        "# Operator\n\n<!-- t1:start -->\n## How I Work\nTerse.\n"
-        "<!-- t1:end -->\n\n## Who I Am\nJim.\n"
-    )
-    full = _strip_t1_markers(text)
-    assert "How I Work" in full and "Who I Am" in full       # T2/T3 read all
-    assert "<!--" not in full and "t1:start" not in full     # markers stripped
+# ── Sprint 76: operator-core / operator-extended (no markers) ────────────
+
+def test_resolve_operator_core_valid_returns_content():
+    from grove.identity import _resolve_operator_core
+    assert _resolve_operator_core("## How I Work\n\nTerse.") == "## How I Work\n\nTerse."
 
 
-# ── Refinement-1 hardening: guarded T1 operator-stub extraction ──────────
-
-def _stub_region(body):
-    return f"# Operator\n\n<!-- t1:start -->\n{body}\n<!-- t1:end -->\n\n## Who I Am\nJim.\n"
-
-
-def test_t1_stub_wellformed_uses_region():
-    from grove.identity import _resolve_t1_operator_stub
-    out = _resolve_t1_operator_stub(_stub_region("## How I Work\nTerse by default."))
-    assert out == "## How I Work\nTerse by default."          # the region, stripped
-
-
-def _assert_falls_back(text, problem_substr, caplog):
-    from grove.identity import _resolve_t1_operator_stub, _DEFAULT_T1_OPERATOR_STUB
+def _assert_core_falls_back(text, problem_substr, caplog):
+    from grove.identity import _resolve_operator_core, _DEFAULT_T1_OPERATOR_STUB
     import logging as _l
     with caplog.at_level(_l.WARNING, logger="grove.identity"):
-        out = _resolve_t1_operator_stub(text)
-    assert out == _DEFAULT_T1_OPERATOR_STUB                   # never full, never nothing
+        out = _resolve_operator_core(text, "operator-core.md")
+    assert out == _DEFAULT_T1_OPERATOR_STUB                   # never empty, never over-cap
     msgs = " ".join(r.message for r in caplog.records)
-    assert "operator.md" in msgs                              # names the file
-    assert "t1:start" in msgs                                 # names the one-line fix
-    assert problem_substr in msgs.lower()                     # names the specific problem
+    assert "operator-core.md" in msgs                        # names the file
+    assert "operator-extended.md" in msgs                    # names the fix (move bio out)
+    assert problem_substr in msgs.lower()
 
 
-def test_t1_stub_missing_markers_falls_back(caplog):
-    _assert_falls_back("# Operator\n\nA bio, no markers.\n", "no", caplog)
+def test_operator_core_absent_falls_back(caplog):
+    _assert_core_falls_back(None, "absent", caplog)
 
 
-def test_t1_stub_absent_operator_falls_back(caplog):
-    _assert_falls_back(None, "absent", caplog)
+def test_operator_core_empty_falls_back(caplog):
+    _assert_core_falls_back("   \n  ", "absent", caplog)
 
 
-def test_t1_stub_duplicated_markers_falls_back(caplog):
-    text = "<!-- t1:start -->\nA\n<!-- t1:end -->\n<!-- t1:start -->\nB\n<!-- t1:end -->"
-    _assert_falls_back(text, "exactly one", caplog)
-
-
-def test_t1_stub_unmatched_marker_falls_back(caplog):
-    _assert_falls_back("<!-- t1:start -->\nA, but no end marker", "exactly one", caplog)
-
-
-def test_t1_stub_end_before_start_falls_back(caplog):
-    _assert_falls_back("<!-- t1:end -->\nbackwards\n<!-- t1:start -->", "before", caplog)
-
-
-def test_t1_stub_empty_region_falls_back(caplog):
-    _assert_falls_back("<!-- t1:start -->\n   \n<!-- t1:end -->", "empty", caplog)
-
-
-def test_t1_stub_over_cap_falls_back(caplog):
+def test_operator_core_over_cap_falls_back(caplog):
     big = "word " * 1000  # ~1,250 tokens, well over the ~200 cap
-    _assert_falls_back(f"<!-- t1:start -->\n{big}\n<!-- t1:end -->", "cap", caplog)
+    _assert_core_falls_back(big, "cap", caplog)
 
 
-def test_t1_default_stub_is_bounded_and_grounding():
+def test_default_stub_is_bounded_and_grounding():
     from grove.identity import _DEFAULT_T1_OPERATOR_STUB, _T1_STUB_TOKEN_CAP
     from agent.model_metadata import estimate_tokens_rough
     assert _DEFAULT_T1_OPERATOR_STUB.strip()                  # never nothing
     assert estimate_tokens_rough(_DEFAULT_T1_OPERATOR_STUB) <= _T1_STUB_TOKEN_CAP
 
 
-def test_load_identity_t1_no_markers_uses_bounded_default(fake_home):
-    from grove.identity import _DEFAULT_T1_OPERATOR_STUB
-    fake_home.mkdir(parents=True, exist_ok=True)
-    (fake_home / "operator.md").write_text(
-        "# Operator\n\n## Who I Am\nJim, no markers.\n", encoding="utf-8"
-    )
+def test_load_identity_t1_reads_core_only(fake_home):
+    # T1 = operator-core.md (working-style); operator-extended.md (bio) is gated.
     comp = load_identity(tier="T1")
-    assert comp.operator == _DEFAULT_T1_OPERATOR_STUB         # default, not None, not full
-    assert "Who I Am" not in comp.operator                   # the full bio did NOT load
+    assert comp.operator is not None
+    assert "How I Work" in comp.operator                     # core working-style
+    assert "Who I Am" not in comp.operator                   # extended bio absent on T1
+
+
+def test_load_identity_t3_reads_core_then_extended(fake_home, monkeypatch):
+    import grove.affordances as aff
+    monkeypatch.setattr(aff, "introspect_capabilities", lambda: "CAPS")
+    comp = load_identity(tier="T3")
+    assert "How I Work" in comp.operator                     # core
+    assert "Who I Am" in comp.operator                       # extended bio present on T3
+    # composed core-then-extended: working-style leads, bio follows.
+    assert comp.operator.index("How I Work") < comp.operator.index("Who I Am")
+
+
+def test_load_identity_t1_over_cap_core_uses_bounded_default(fake_home, caplog):
+    # operator-core.md present but over the cap -> bounded default, not the bloat.
+    from grove.identity import _DEFAULT_T1_OPERATOR_STUB
+    import logging as _l
+    fake_home.mkdir(parents=True, exist_ok=True)
+    (fake_home / "operator-core.md").write_text("word " * 1000, encoding="utf-8")
+    with caplog.at_level(_l.WARNING, logger="grove.identity"):
+        comp = load_identity(tier="T1")
+    assert comp.operator == _DEFAULT_T1_OPERATOR_STUB
+    assert any("operator-core" in r.message for r in caplog.records)
