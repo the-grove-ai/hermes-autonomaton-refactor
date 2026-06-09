@@ -492,23 +492,44 @@ def _tool_affordances_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     body = "\n".join(f"- {name}: {desc}" for _, name, desc in lines)
 
     # Build the "Available skills" summary line from promoted skills.
+    #
+    # Sprint 77.5 — tier-gated via ctx["tier"] (the same seam S75's
+    # _identity_provider uses; the Dispatcher threads tier into ctx). On the
+    # cheap / prefill-budgeted tiers (T1/T2) emit NAMES + one-liners ONLY —
+    # enough for recognition and anti-confabulation, tool_affordances' original
+    # S53/54 job — and let the model pull the full invocation command via
+    # skill_view on demand. The eager per-skill command embed was the dominant
+    # T2-prefill lever (Sprint 77.4: ~3.5K of the ~5K tool_affordances). T3
+    # (apex) and any unrecognized / None tier keep the full eager commands: the
+    # S75 safe default — never silently drop capability on an unexpected tier.
     skills_root = ctx.get("skills_root")  # test-injectable override
     promoted = _load_promoted_skills(skills_root=skills_root)
+    _compact_skills = ctx.get("tier") in ("T1", "T2")
     skills_line = ""
     if promoted:
-        # Embed the ACTUAL invocation command(s) extracted from each skill's
-        # SKILL.md, so the agent sees the exact command and uses it — no
-        # intermediate skill_view step to skip. When a skill has no extractable
-        # invocation pattern, fall back to the skill_view-first reminder.
         blocks: List[str] = []
         for sname, sdesc, invs in promoted:
-            if invs:
+            if _compact_skills:
+                # Name + a true ONE-LINER (first line, <=120 chars, mirroring
+                # the tool-affordance truncation above); the full description
+                # and the exact command are pulled via skill_view on demand.
+                one = (sdesc or "").splitlines()[0].strip() if sdesc else ""
+                if len(one) > 120:
+                    one = one[:117].rstrip() + "..."
+                blocks.append(f"- {sname} ({one})" if one else f"- {sname}")
+            elif invs:
                 lines = [f"- {sname} ({sdesc})"]
                 lines += [f"    {label}: {cmd}" for label, cmd in invs]
                 blocks.append("\n".join(lines))
             else:
                 blocks.append(f"- {sname} ({sdesc}) — call skill_view first")
-        skills_line = "\nAvailable skills:\n" + "\n".join(blocks)
+        header = (
+            "\nAvailable skills (call `skill_view <name>` for full instructions "
+            "+ the exact invocation command):\n"
+            if _compact_skills
+            else "\nAvailable skills:\n"
+        )
+        skills_line = header + "\n".join(blocks)
 
     text = (
         "## Available tools (turn-0 affordances)\n"
