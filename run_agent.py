@@ -12972,6 +12972,45 @@ class AIAgent:
                     f"📐 prefill governor (measurement): ~{_governor_tokens:,} tok "
                     f"vs {_prefill_ceiling:,}-tok ceiling"
                 )
+                # Sprint 77.4 — prefill component breakdown (measurement mode
+                # ONLY; no behavior change to live turns). Splits the composed
+                # prefill into system prompt / tool surface / messages so the
+                # dominant sizing lever is visible, and surfaces the tool-filter
+                # provenance (selected vs full count, stripped groups, excluded
+                # MCP) that reveals whether the budget cap + Sprint-74 disclosure
+                # actually reduced the payload on this (classified) turn.
+                try:
+                    _sys_tok = estimate_request_tokens_rough(
+                        [], system_prompt=active_system_prompt or "", tools=None,
+                    )
+                    _toolset = self._tools_for_api or []
+                    _tools_tok = estimate_request_tokens_rough(
+                        [], system_prompt="", tools=_toolset or None,
+                    )
+                    _msg_tok = estimate_request_tokens_rough(
+                        messages, system_prompt="", tools=None,
+                    )
+                    _blocks = sorted(getattr(self, "_tier_context_blocks", None) or [])
+                    _sel = getattr(self, "_last_tool_selection", None) or {}
+                    _prov = {
+                        k: _sel.get(k)
+                        for k in ("selected_count", "full_count", "fallback",
+                                  "stripped_groups", "excluded_mcp")
+                    }
+                    logger.info(
+                        "[prefill-components] tier=%s total~%s system~%s "
+                        "tools~%s(n=%s) messages~%s context_blocks=%s selection=%s",
+                        _governor_tier, f"{_governor_tokens:,}", f"{_sys_tok:,}",
+                        f"{_tools_tok:,}", len(_toolset), f"{_msg_tok:,}",
+                        _blocks or "[]", _prov,
+                    )
+                    self._emit_status(
+                        f"📊 components: system ~{_sys_tok:,} | tools ~{_tools_tok:,} "
+                        f"(n={len(_toolset)}) | msgs ~{_msg_tok:,} | "
+                        f"blocks={_blocks or '[]'} | sel={_prov}"
+                    )
+                except Exception as _ce:  # never break a measurement turn
+                    logger.warning("[prefill-components] dump failed: %r", _ce)
             elif _governor_tokens >= _prefill_ceiling:
                 # Production, over-ceiling: escalate (D8) — and never send.
                 from grove.intents import EscalationRequest
