@@ -893,8 +893,13 @@ from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 import sys
 
 
-# Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem usually persists between calls.
+# Tool description for LLM. Sprint 75 Phase 2 — split into a tier-invariant CORE
+# (shell intro + routing guidance + workdir; the part that drives tool-selection
+# and is the only terminal description T1 reads) and an ADVANCED block (the
+# async/background machinery — only meaningful when terminal exposes those
+# params, i.e. on T2/T3). The full description is the two composed, so there is
+# ONE source: T1 reads the core, T2/T3 read core + advanced. No parallel copy.
+_TERMINAL_DESC_CORE = """Execute shell commands on a Linux environment. Filesystem usually persists between calls.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
@@ -903,18 +908,55 @@ Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
-Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
+Working directory: Use 'workdir' for per-command cwd."""
+
+_TERMINAL_DESC_ADVANCED = """Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
 Background: Set background=true to get a session_id. Two patterns:
   (1) Long-lived processes that never exit (servers, watchers).
   (2) Long-running tasks with notify_on_complete=true — you can keep working on other things and the system auto-notifies you when the task finishes. Great for test suites, builds, deployments, or anything that takes more than a minute.
 For servers/watchers, do NOT use shell-level background wrappers (nohup/disown/setsid/trailing '&') in foreground mode. Use background=true so Hermes can track lifecycle and output.
 After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
 Use process(action="poll") for progress checks, process(action="wait") to block until done.
-Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
 
-Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
-"""
+Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page."""
+
+TERMINAL_TOOL_DESCRIPTION = _TERMINAL_DESC_CORE + "\n\n" + _TERMINAL_DESC_ADVANCED + "\n"
+
+# The params terminal exposes on T1 — command + workdir only. The async/
+# background machinery (background/timeout/pty/notify_on_complete/watch_patterns)
+# is T2/T3. Single tier tag; the T1 schema DERIVES from the full one.
+TERMINAL_T1_PARAMS = ("command", "workdir")
+
+
+def scope_terminal_def_for_t1(tool_def: dict) -> dict:
+    """Return a T1-scoped copy of an OpenAI-format ``terminal`` tool def.
+
+    T1 sees only command + workdir, with the tier-invariant core description.
+    terminal stays EAGER and directly callable on T1 — no pull, no round-trip
+    latency. The scoped def DERIVES from ``tool_def``'s own param schemas + the
+    single-source ``TERMINAL_T1_PARAMS`` / ``_TERMINAL_DESC_CORE`` — never a
+    parallel 'lite' schema that could drift. Any non-terminal def is returned
+    unchanged (this is terminal-specific, not a general mechanism).
+    """
+    fn = (tool_def or {}).get("function") or {}
+    if fn.get("name") != "terminal":
+        return tool_def
+    params = fn.get("parameters") or {}
+    props = params.get("properties") or {}
+    required = params.get("required") or []
+    return {
+        "type": tool_def.get("type", "function"),
+        "function": {
+            "name": "terminal",
+            "description": _TERMINAL_DESC_CORE,
+            "parameters": {
+                "type": "object",
+                "properties": {k: props[k] for k in TERMINAL_T1_PARAMS if k in props},
+                "required": [r for r in required if r in TERMINAL_T1_PARAMS],
+            },
+        },
+    }
 
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}

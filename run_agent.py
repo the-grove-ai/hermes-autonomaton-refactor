@@ -3189,7 +3189,16 @@ class AIAgent:
         elif _tier_now in ("T2", "T3"):
             self._tools_for_turn = self._apply_disclosure(res)
         else:
-            self._tools_for_turn = list(res.tools)
+            tools = list(res.tools)
+            if _tier_now == "T1":
+                # Sprint 75 Phase 2 — T1 core economics: param-scope terminal to
+                # command + workdir (the async/background params are T2/T3). It
+                # stays EAGER and directly callable on T1 — no pull, no round-
+                # trip. terminal is the lone param-outlier; this is scoped to it,
+                # not a general tier-schema mechanism.
+                from tools.terminal_tool import scope_terminal_def_for_t1
+                tools = [scope_terminal_def_for_t1(t) for t in tools]
+            self._tools_for_turn = tools
         self._last_tool_selection = {
             "intent_class": intent_class,
             "complexity_signal": complexity,

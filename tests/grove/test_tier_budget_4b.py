@@ -216,3 +216,36 @@ def test_empty_tools_is_noop(monkeypatch):
     assert agent._tool_resolution is None
     assert agent._tools_for_turn is None
     assert agent._last_tool_selection is None
+
+
+# ── Sprint 75 Phase 2: T1 param-scopes terminal (eager, not pulled) ────────
+
+
+def _terminal_def():
+    from tools.terminal_tool import TERMINAL_SCHEMA
+    return {"type": "function", "function": {
+        "name": "terminal",
+        "description": TERMINAL_SCHEMA["description"],
+        "parameters": TERMINAL_SCHEMA["parameters"],
+    }}
+
+
+def test_t1_param_scopes_terminal_to_command_and_workdir(monkeypatch):
+    _setup(monkeypatch, "code_generation", "moderate", tier="T1")
+    agent = _bare_agent([_mk("clarify")[0], _terminal_def()])
+    agent._maybe_apply_tool_filter()
+    api = {t["function"]["name"]: t for t in (agent._tools_for_api or [])}
+    assert "terminal" in api                         # eager, directly callable
+    props = api["terminal"]["function"]["parameters"]["properties"]
+    assert set(props) == {"command", "workdir"}       # async params dropped on T1
+    assert "background=true" not in api["terminal"]["function"]["description"]
+
+
+def test_t2_leaves_terminal_full(monkeypatch):
+    # T2 keeps terminal full (no param-scope) — the async machinery is available.
+    _setup(monkeypatch, "code_generation", "moderate", tier="T2")
+    agent = _bare_agent([_mk("clarify")[0], _terminal_def()])
+    agent._maybe_apply_tool_filter()
+    api = {t["function"]["name"]: t for t in (agent._tools_for_api or [])}
+    assert "terminal" in api
+    assert "background" in api["terminal"]["function"]["parameters"]["properties"]
