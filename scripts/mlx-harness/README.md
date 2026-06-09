@@ -16,7 +16,7 @@ concern, not the harness's.
 | `mlx_probe_nostream.py` | **Tool-call grammar probe.** Non-streaming request; reports whether `message.tool_calls` came back structured (PASS) or whether the call is sitting raw in `message.content`. This is the tool that captures the literal XML emission for the XML→`tool_calls` parser. | `mlx_lm.server` | 8080 |
 | `mlx_real_5k.py` | Streaming measure at the **~5K** prefill (the Sprint 71 *survived* point): prompt tokens, TTFT, decode t/s, tool emission. | `mlx_lm.server` | 8080 |
 | `mlx_real.py` | Streaming measure at the **large** prefill (synthetic ~15K-token system + 22 tools). **The box-crasher — see warning below.** | `mlx_lm.server` | 8080 |
-| `mlx_watchdog.py` | **Andon OOM watchdog.** Samples available RAM via `vm_stat`; on 3 consecutive breaches of the floor, `SIGKILL`s `mlx_lm.server` to prevent a hard OOM crash. Fail loud. | local | — |
+| `mlx_watchdog.py` | **Andon OOM watchdog (backstop).** Samples the server's RSS at a fast cadence (~150 ms); a **dRSS/dt predictor** fires mid-climb when projected free RAM would cross the floor — catching a sub-second spike before free RAM is spent. A LOW absolute floor (~1 GB) is the last resort. `SIGKILL`s the server. Pure `evaluate()` for unit-testing. Fail loud. | local | — |
 | `bake_measure.py` | T2 bake-off, native Ollama `/api/chat`, synthetic weather tool + repo `affordances.md` as system. | Ollama | 11434 |
 | `bake_real.py` | Bake-off replaying the **real** newest gateway session. Operator-run only — see note. | Ollama | 11434 |
 
@@ -37,13 +37,25 @@ python mlx_real.py 8080         # terminal 2 — the large-prefill run
 
 Measuring that knee under the guard is the binding sprint's (77.1) job, not this one.
 
-### Watchdog cadence — a 77.1 validation item, not yet trusted
+### Watchdog design (Sprint 77.0a redesign — validated)
 
-`mlx_watchdog.py` uses `FLOOR_GB = 1.0` with a 3-strike rule at a 2 s sampling interval — up to ~6 s below
-the floor before it kills the server. A prefill activation spike can be **sub-second**, so the watchdog may
-not sample fast enough to pre-empt a kernel OOM-kill on the steep part of the curve. **The guard must be
-proven against a real spike before it is trusted.** Treat the current cadence as a starting point to
-validate (and likely tighten) in 77.1, not a settled safety mechanism.
+`mlx_watchdog.py` is the **backstop** to the primary pre-flight token governor
+(`grove/tier_budget.py` `prefill_ceiling_tokens` + the governor in `run_agent._run_turn_generator`).
+Together they are the two-layer guard the Sprint 77.1 dangerous runs depend on.
+
+- **dRSS/dt predictor (primary trigger).** Samples the server's RSS every ~150 ms; if it is growing,
+  projects the growth a couple of windows ahead (RSS growth consumes free RAM ~1:1) and fires the moment
+  projected free RAM would cross the floor — killing **mid-climb**, before free RAM is actually spent. This
+  is what catches a sub-second spike that a 2 s/3-strike sampler cannot.
+- **Absolute floor (last resort), set LOW (~1 GB).** Below the live ~5 K T2 prefill's working minimum so it
+  never false-fires on a normal turn — explicitly **not** the 2–2.5 GB a naive reading would pick (that
+  would kill every normal local turn, whose peak dips close to the floor).
+- **Pure `evaluate()`.** The decision is a side-effect-free function, so it is proven against a simulated
+  sub-second spike trace with **zero real allocation** — see `test_watchdog_predictor.py`. Integration is
+  confirmed against a sandboxed, self-capped memory balloon that never approaches a real OOM.
+
+CLI knobs: `--floor-gb`, `--interval-ms`, `--lookahead-windows`, `--floor-strikes`, `--match`,
+`--target-pid` (pin a process — used by the balloon validation), `--max-seconds` (bound the loop).
 
 ## Fixtures (`fixtures/`)
 
