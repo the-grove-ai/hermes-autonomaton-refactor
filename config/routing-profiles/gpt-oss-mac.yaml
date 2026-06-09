@@ -1,0 +1,186 @@
+# ============================================================================
+# routing.config.yaml — Cognitive Router tier bindings (profile: gpt-oss-mac)
+# ============================================================================
+#
+# Cross-machine local-T2 profile. T2 (Premium Cognition) runs on the operator's
+# Mac: gpt-oss-20b (MXFP4) on llama.cpp's llama-server, bound to the Tailscale
+# interface and reached by the agent host (the GCP gateway VM) over the tailnet.
+# Zero marginal cost, fully sovereign. T1 (the telemetry classifier) and T3
+# (apex) stay on Anthropic.
+#
+# This is the companion to the gemma-mac profile: same cross-machine shape, a
+# faster substrate (gpt-oss-20b measured ~0.22s warm TTFT / ~39 tok/s decode /
+# 96% prompt-cache collapse over the mesh; harmony tool-calls parse structured,
+# parser-free), plus the Sprint 77.0a prefill governor wired via
+# tier_budgets.T2.prefill_ceiling_tokens.
+#
+# OWNERSHIP
+#   The Autonomaton seeds this file into ~/.grove/routing.config.yaml on first
+#   run. That copy is yours. The system reads it; it cannot write to it. The
+#   gpt-oss-local PROVIDER DEFINITION (its base_url, the Mac's Tailscale IP,
+#   credentials) is operator data and lives in ~/.grove/config.yaml — never
+#   here, so this profile carries no endpoint.
+# ============================================================================
+
+routing:
+  schema_version: 1
+  default_tier: T1
+  zone_overrides: {}
+
+  tier_preferences:
+    T0:
+      handler: pattern_cache
+      description: |
+        Deterministic recall — answers resolved from cached patterns in
+        your cellar (~/.grove/cellar/) with no model call. Instant, and
+        free.
+      max_latency_ms: 50
+
+    T1:
+      provider: anthropic
+      api_mode: anthropic_messages
+      model: claude-haiku-4-5-20251001
+      description: |
+        Cheap, fast cognition — a small model for quick, well-scoped
+        work, and the telemetry classifier that scores incoming requests.
+        Kept on an Anthropic-native provider: the classifier binds to the
+        Anthropic Messages protocol.
+      max_tokens: 4096
+      cost_per_mtok_input: 1.0
+      cost_per_mtok_output: 5.0
+
+    T2:
+      provider: gpt-oss-local
+      # OpenAI-compatible /v1/chat/completions surface (llama-server). Declared
+      # explicitly so the runtime never guesses from the base_url. The provider
+      # definition (base_url -> the Mac's Tailscale IP, api_key) is in
+      # ~/.grove/config.yaml, not here.
+      api_mode: chat_completions
+      model: gpt-oss-20b-mxfp4.gguf
+      description: |
+        Premium cognition — the daily driver, on-device and sovereign.
+        gpt-oss-20b (MXFP4) on llama.cpp / llama-server on the operator's
+        Mac (Apple Silicon, Metal), reached over Tailscale. Zero marginal
+        cost. Harmony tool-calls parse structured (parser-free). Measured
+        cross-machine: ~0.22s warm TTFT, ~39 tok/s decode, ~96% prompt-
+        cache collapse. mmap/evictable — safe-failure, not wired-OOM.
+      max_tokens: 8192
+      cost_per_mtok_input: 0.0
+      cost_per_mtok_output: 0.0
+
+    T3:
+      provider: anthropic
+      api_mode: anthropic_messages
+      model: claude-opus-4-6   # 4.6, not 4.7 — predictable tokenization
+      description: |
+        Apex cognition — the strongest model, for the hardest problems:
+        multi-step planning, novel synthesis, architecture-level reasoning.
+        Used sparingly. Also the covering tier the prefill governor names
+        when a local-T2 prefill would exceed the memory ceiling.
+      max_tokens: 16384
+      cost_per_mtok_input: 5.0
+      cost_per_mtok_output: 25.0
+
+  escalation:
+    threshold: 0.6
+    description: |
+      Confidence dial (0.0–1.0). When the Autonomaton is less than this
+      sure it picked the right tier, it moves the request up a tier.
+
+  routing_rules:
+    upward_moderate:
+      enabled: true
+      match:
+        complexity: moderate
+        intents: [code_generation, debugging, analysis, research,
+                  creative_writing, system_admin, planning]
+      target_tier: T2
+    upward:
+      enabled: true
+      match:
+        complexity: [complex, novel]
+        intents: [planning, analysis, code_generation, debugging,
+                  research, system_admin]
+      target_tier: T3
+    escalation:
+      enabled: true
+      match:
+        max_confidence: 0.6
+        intents: [code_generation, debugging, analysis, research,
+                  creative_writing, system_admin, planning]
+      action: step_up
+
+  telemetry:
+    tier: T1
+    description: |
+      Which tier scores incoming requests. T1 is the natural home: fast,
+      high-volume, well-scoped, and a cheap model keeps overhead negligible.
+
+  # Agent-driven escalation policy. Kept DISABLED here (Sprint 77.4 decision):
+  # an over-ceiling local-T2 prefill fails loud (PrefillCeilingExceeded, never
+  # sends) rather than silently escalating to T3. Graceful T3 escalation on the
+  # memory ceiling is Sprint 77.3's job, not a global flip in the bind.
+  escalation_policy:
+    enabled: false
+    max_escalations_per_turn: 1
+    max_escalations_per_session: 5
+    ceiling_tier: T3
+    auto_grant_above_tier: T3
+    mapping:
+      shallow:  T1
+      moderate: T2
+      deep:     T3
+      apex:     T3
+    pre_route:
+      enabled: false
+      complexity_triggers: [complex, novel]
+      confidence_threshold: 0.6
+      target_depth: deep
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# tier_budgets — per-tier prefill governor (Sprint 73, declarative-jit-budget-v1;
+# prefill_ceiling_tokens added Sprint 77.0a). context = gateable heavy blocks;
+# the always-on baseline is never listed. tools.allow_groups names tool_groups.yaml
+# groups ("*" = full registry); tools.exclude_mcp names excluded MCP servers.
+# Every provider-backed tier MUST have an entry or load fails loud (D7).
+# ═════════════════════════════════════════════════════════════════════════
+tier_budgets:
+
+  T3:                       # Apex Cognition — unbounded window, eager.
+    context: [claude_contract, goal_record, skills_index]
+    tools:
+      allow_groups: ["*"]
+      exclude_mcp: []
+
+  T2:                       # Premium Cognition — local, memory-budgeted.
+    context: [goal_record]  # claude_contract + skills_index gated OFF
+    tools:
+      allow_groups: [core, code_generation, debugging, analysis, system_admin]
+      exclude_mcp: [notion]  # the ~18.4K cut — Notion reached via notion.py (terminal)
+    # Sprint 77.0a memory governor: the max composed-prefill tokens the local
+    # gpt-oss endpoint may receive. MUST stay below the llama-server -c context
+    # size (8192) so an over-ceiling prefill ESCALATES (or, with
+    # escalation_policy disabled, fails loud) rather than hitting the context
+    # wall. This is a TEMPLATE default — tune per-instance from a live ~5K
+    # prefill measurement in measurement mode (GROVE_PREFILL_GOVERNOR_MODE).
+    prefill_ceiling_tokens: 7000
+
+  T1:                       # Cheap Cognition — floor.
+    context: []
+    tools:
+      allow_groups: [core]
+      exclude_mcp: ["*"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# pattern_cache — T0 Pattern Compiler (Sprint 48/49; exclusion Sprint 56)
+# ─────────────────────────────────────────────────────────────────────────
+pattern_cache:
+  enabled: true
+  exclude_intents: [unknown, system_admin, conversation]
+  promotion:
+    min_repetitions: 5
+    within_days: 14
+    max_rejections: 0
+    max_response_variance: 0
