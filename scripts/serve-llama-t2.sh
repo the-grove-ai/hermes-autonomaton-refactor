@@ -23,7 +23,9 @@
 #   GROVE_LLAMA_T2_MODEL     REQUIRED — path to the gpt-oss GGUF.
 #   GROVE_LLAMA_T2_PORT      listen port (default 8080).
 #   GROVE_LLAMA_T2_CTX       context size; the prefill governor's ceiling sits
-#                            below this (default 8192).
+#                            below this (default 24576 — holds the ~15K live T2
+#                            prefill + a 4096-tok generation; memory-validated
+#                            at ~2.39 GB min-avail, Sprint 77.4).
 #   GROVE_LLAMA_T2_NGL       GPU layers to offload (default 99 = all).
 #   GROVE_LLAMA_BIN          llama-server binary (default: first on PATH).
 #   GROVE_TAILSCALE_BIN      tailscale binary (default: first on PATH).
@@ -36,7 +38,7 @@ set -uo pipefail
 
 MODEL="${GROVE_LLAMA_T2_MODEL:?set GROVE_LLAMA_T2_MODEL to the gpt-oss GGUF path}"
 PORT="${GROVE_LLAMA_T2_PORT:-8080}"
-CTX="${GROVE_LLAMA_T2_CTX:-8192}"
+CTX="${GROVE_LLAMA_T2_CTX:-24576}"
 NGL="${GROVE_LLAMA_T2_NGL:-99}"
 LLAMA_BIN="${GROVE_LLAMA_BIN:-$(command -v llama-server || true)}"
 TAILSCALE_BIN="${GROVE_TAILSCALE_BIN:-$(command -v tailscale || true)}"
