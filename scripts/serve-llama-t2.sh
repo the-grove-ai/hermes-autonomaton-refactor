@@ -67,12 +67,25 @@ echo "[serve-llama-t2] binding llama-server to ${TS_IP}:${PORT} (ctx=${CTX}, ngl
   --host "$TS_IP" --port "$PORT" &
 LLAMA_PID=$!
 
-# 3. Arm the watchdog backstop (best-effort; never blocks serving).
+# 3. Wait for the model to finish loading BEFORE arming the watchdog. The
+#    one-time weight+KV allocation is a bounded, fast climb (dRSS/dt) that the
+#    predictor would false-fire on (it extrapolates the climb past the floor and
+#    SIGKILLs mid-load — exactly what bit the -c 24576 first attempt). The
+#    watchdog's real job is the SERVING prefill spikes, not the load; arm it
+#    only once the server is healthy. (gpt-oss is mmap/evictable, so the bounded
+#    load dip is reclaimable, not a wired OOM.)
+for _ in $(seq 1 120); do
+  curl -s --max-time 2 "http://${TS_IP}:${PORT}/health" 2>/dev/null | grep -q '"ok"' && break
+  kill -0 "$LLAMA_PID" 2>/dev/null || break   # server died during load
+  sleep 2
+done
+
+# 4. Arm the watchdog backstop on the SERVING phase (best-effort; never blocks).
 WD_PID=""
-if [ -f "$WATCHDOG" ] && command -v python3 >/dev/null 2>&1; then
+if kill -0 "$LLAMA_PID" 2>/dev/null && [ -f "$WATCHDOG" ] && command -v python3 >/dev/null 2>&1; then
   python3 "$WATCHDOG" --target-pid "$LLAMA_PID" --floor-gb "$FLOOR_GB" --interval-ms 150 &
   WD_PID=$!
-  echo "[serve-llama-t2] watchdog armed (pid ${WD_PID}, floor ${FLOOR_GB}GB, target ${LLAMA_PID})"
+  echo "[serve-llama-t2] watchdog armed post-load (pid ${WD_PID}, floor ${FLOOR_GB}GB, target ${LLAMA_PID})"
 fi
 
 # 4. Stay foreground for launchd. If llama-server dies, exit so KeepAlive
