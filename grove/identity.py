@@ -53,7 +53,6 @@ this register, can do.
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -74,10 +73,14 @@ logger = logging.getLogger(__name__)
 # truth for operator goals. The goals layer is rendered from the Dock by
 # ``_render_dock_goals`` and assigned to ``composition.goals`` in
 # ``load_identity`` after this loop runs.
+#
+# ``operator`` is NOT in this loop either (Sprint 76): it is two tier-scoped
+# files — operator-core.md (every tier) + operator-extended.md (T2/T3) — loaded
+# and composed by ``load_identity`` after the loop. The old single operator.md
+# (with its <!-- t1 --> markers) is retired.
 _IDENTITY_FILES: list[tuple[str, Optional[str], Optional[str], str]] = [
     ("constitution.md", None,        "constitution.md", "jidoka"),
     ("soul.md",         "SOUL.md",   "soul.md",         "jidoka"),
-    ("operator.md",     "USER.md",   "operator.md",     "graceful"),
     ("memory.md",       "MEMORY.md", None,              "graceful"),
     ("agents.md",       "AGENTS.md", None,              "silent"),
 ]
@@ -88,18 +91,18 @@ class IdentityError(RuntimeError):
     not be seeded — the Autonomaton must not start. Fail loud."""
 
 
-# ── Sprint 75 — tier-aware identity composition ──────────────────────────
+# ── Sprint 75/76 — tier-aware identity composition ───────────────────────
 # Which identity layers ride each cognition tier. The always-on set
 # (constitution = values/safety, soul = character, register = voice, operator =
-# working-style, goals = the Dock strategic index) rides EVERY tier — it is the
+# working-style, goals = the Dock strategic index) rides EVERY tier — the
 # irreducible Mylo. Heavier self-model layers escalate with the tier:
-#   T1 (irreducible) = constitution + soul + register + operator(stub) + goals
-#   T2 (medium)      = T1 + capabilities; operator reads the FULL file
+#   T1 (irreducible) = constitution + soul + register + operator-core + goals
+#   T2 (medium)      = T1 + capabilities + operator-extended
 #   T3 (full)        = T2 + affordances
-# ``operator`` rides every tier but with tier-scoped CONTENT — T1 reads only the
-# condensed ``<!-- t1:start/end -->`` stub (working-style essence), T2/T3 the
-# full operator.md. The Refinement-1 character fix: T1 keeps Mylo's working
-# voice (~100 tok) without the bio/manifesto.
+# ``operator`` rides every tier but with tier-scoped CONTENT (Sprint 76): T1
+# reads operator-core.md (working-style only); T2/T3 read operator-core.md +
+# operator-extended.md (bio/context). Two single-source files — no marker
+# machinery, no content duplicated across them.
 # An unknown / falsy tier returns None ⇒ FULL composition (legacy, safe — a
 # tier we don't recognize never silently drops character).
 _ALWAYS_LAYERS = ("constitution", "soul", "register", "operator", "goals")
@@ -109,23 +112,16 @@ _TIER_IDENTITY_LAYERS: dict[str, frozenset] = {
     "T3": frozenset(_ALWAYS_LAYERS + ("capabilities", "affordances")),
 }
 
-# The condensed-operator-stub markers (Refinement 1). The stub lives ONCE,
-# inside operator.md, between these markers — single-source, no drift: T1 reads
-# only the marked region, T2/T3 read the whole file (markers stripped).
-_T1_START_RE = re.compile(r"<!--\s*t1:start\s*-->", re.IGNORECASE)
-_T1_END_RE = re.compile(r"<!--\s*t1:end\s*-->", re.IGNORECASE)
-_T1_MARKER_RE = re.compile(r"<!--\s*t1:(?:start|end)\s*-->[ \t]*\n?", re.IGNORECASE)
-
-# Hard cap on the T1 operator stub (Refinement-1 hardening). The stub is
-# always-loaded prefill on the cheapest tier; an unbounded region is the budget
-# blowout the guard exists to prevent.
+# Hard cap on operator-core.md — it rides the cheapest tier (T1) as the only
+# operator-context, so an unbounded core is the budget blowout the fail-safe
+# guards against.
 _T1_STUB_TOKEN_CAP = 200
 
 # Baked-in fallback stub — guaranteed bounded, guaranteed to keep T1 GROUNDED.
-# Used when operator.md's marked region is missing / malformed / over-cap, so
-# T1 never loads the full operator block (budget blowout) AND never loads
-# nothing (grounding loss). Generic working-style essence only — no bio, no
-# canon. Mirrors the operator.md template's guidance so the two never disagree.
+# Used when operator-core.md is missing / empty / over-cap, so T1 never loads
+# nothing (grounding loss) AND never loads an oversized core (budget blowout).
+# Generic working-style essence only — no bio, no canon. Mirrors the
+# operator-core.md template so the two never disagree.
 _DEFAULT_T1_OPERATOR_STUB = (
     "## How I Work\n\n"
     "Terse by default, full when asked. Lead with the answer or the "
@@ -147,73 +143,41 @@ def _identity_layers_for_tier(tier: Optional[str]) -> Optional[frozenset]:
     return _TIER_IDENTITY_LAYERS.get(tier)  # unknown tier -> None -> full
 
 
-def _resolve_t1_operator_stub(
+def _resolve_operator_core(
     text: Optional[str], source_path: Optional[object] = None
 ) -> str:
-    """The bounded T1 operator stub — GUARANTEED non-empty and under the cap.
+    """The bounded operator-core stub — GUARANTEED non-empty and under the cap.
 
-    Validates the ``<!-- t1:start -->`` / ``<!-- t1:end -->`` region of
-    operator.md: exactly one well-formed start+end pair, start before end,
-    non-empty content, and at most ``_T1_STUB_TOKEN_CAP`` tokens. On success the
-    region is the stub. On ANY failure — markers missing / duplicated /
-    unmatched / reversed, region empty, or over the cap — it does three things,
-    per the Refinement-1 hardening:
-
-    * NEVER loads the full operator block on T1 (the budget blowout);
-    * NEVER loads nothing (the grounding loss);
-    * returns the baked-in :data:`_DEFAULT_T1_OPERATOR_STUB` (bounded + grounding)
-      and emits a loud warning naming operator.md, the specific problem, and the
-      one-line fix.
-
-    Always returns a string — T1 is never ungrounded and never over budget.
+    operator-core.md is the working-style block that rides EVERY tier (the only
+    operator-context T1 reads). Sprint 76 moved the fail-safe here, off the
+    deleted marker machinery: if the file is missing / empty / over the
+    ``_T1_STUB_TOKEN_CAP`` token cap, return the baked-in
+    :data:`_DEFAULT_T1_OPERATOR_STUB` (bounded + grounding) and emit a loud
+    warning naming the file, the problem, and the fix. Otherwise return the file
+    content. Always returns a string — T1 is never ungrounded and never over
+    budget, regardless of operator-core.md's state.
     """
     from agent.model_metadata import estimate_tokens_rough
 
-    where = str(source_path) if source_path is not None else "operator.md"
-    problem: Optional[str] = None
-
+    where = str(source_path) if source_path is not None else "operator-core.md"
     if not text or not text.strip():
-        problem = "operator.md is absent or empty"
+        problem = "operator-core.md is absent or empty"
+    elif estimate_tokens_rough(text) > _T1_STUB_TOKEN_CAP:
+        problem = (
+            f"operator-core.md is {estimate_tokens_rough(text)} tokens, over the "
+            f"{_T1_STUB_TOKEN_CAP}-token cap"
+        )
     else:
-        starts = list(_T1_START_RE.finditer(text))
-        ends = list(_T1_END_RE.finditer(text))
-        if not starts and not ends:
-            problem = "no <!-- t1:start -->/<!-- t1:end --> markers present"
-        elif len(starts) != 1 or len(ends) != 1:
-            problem = (
-                f"expected exactly one <!-- t1:start --> + one <!-- t1:end --> "
-                f"pair, found {len(starts)} start / {len(ends)} end"
-            )
-        elif starts[0].start() >= ends[0].start():
-            problem = "<!-- t1:end --> appears before <!-- t1:start -->"
-        else:
-            region = text[starts[0].end():ends[0].start()].strip()
-            if not region:
-                problem = "the t1 region is empty"
-            elif estimate_tokens_rough(region) > _T1_STUB_TOKEN_CAP:
-                problem = (
-                    f"the t1 region is {estimate_tokens_rough(region)} tokens, "
-                    f"over the {_T1_STUB_TOKEN_CAP}-token cap"
-                )
-            else:
-                return region  # valid — use it as-is
+        return text.strip()
 
     logger.warning(
-        "[identity] T1 operator-stub invalid: %s in %s — falling back to the "
-        "baked-in minimal stub so T1 stays grounded AND under budget. Fix: wrap "
-        "ONE concise working-style block in %s between '<!-- t1:start -->' and "
-        "'<!-- t1:end -->' (<= %d tokens).",
+        "[identity] operator-core invalid: %s in %s — falling back to the baked-in "
+        "minimal stub so T1 stays grounded AND under budget. Fix: keep %s a "
+        "concise working-style block (<= %d tokens); put bio/context in "
+        "operator-extended.md.",
         problem, where, where, _T1_STUB_TOKEN_CAP,
     )
     return _DEFAULT_T1_OPERATOR_STUB
-
-
-def _strip_t1_markers(text: Optional[str]) -> Optional[str]:
-    """Full operator text with the t1 marker comments removed — what T2/T3 read.
-    The markers orient the T1 extractor; they must never leak into the prompt."""
-    if not text:
-        return text
-    return _T1_MARKER_RE.sub("", text).strip()
 
 
 @dataclass
@@ -369,22 +333,27 @@ def load_identity(
         content = _resolve_file(home, canonical, legacy, template, ref_dir, file_tier)
         setattr(composition, canonical.removesuffix(".md"), content)
 
-    # Sprint 75 (Refinement 1 + hardening) — operator rides every tier but with
-    # tier-scoped CONTENT: T1 reads ONLY the condensed ``<!-- t1 -->`` stub
-    # (working-style essence — keeps Mylo's voice without the bio/manifesto);
-    # T2/T3 read the full operator.md (markers stripped). Single-source: the stub
-    # is a marked region inside operator.md, never a parallel copy that drifts.
-    #
-    # The T1 read is GUARDED — a missing/malformed/over-cap region falls back to
-    # a bounded baked-in stub (never the full block, never nothing), loudly. So
-    # the T1 path always yields a grounded, budget-safe stub regardless of the
-    # operator.md state.
+    # Sprint 76 — operator identity is two single-source files: operator-core.md
+    # (working-style, rides EVERY tier) + operator-extended.md (bio/context, T2/
+    # T3 only). T1 = core; T2/T3 (and the legacy/unknown-tier full path) = core +
+    # extended, composed core-then-extended. No content is duplicated across the
+    # two. The core read is GUARDED via _resolve_operator_core — missing / empty
+    # / over-cap falls back to a bounded grounding default, loudly — so T1 is
+    # always grounded and never over budget regardless of the file's state.
+    _core_raw = _resolve_file(
+        home, "operator-core.md", None, "operator-core.md", ref_dir, "graceful"
+    )
+    _core = _resolve_operator_core(_core_raw, home / "operator-core.md")
     if tier == "T1":
-        composition.operator = _resolve_t1_operator_stub(
-            composition.operator, home / "operator.md"
+        composition.operator = _core
+    else:
+        _ext = _resolve_file(
+            home, "operator-extended.md", None, "operator-extended.md",
+            ref_dir, "graceful",
         )
-    elif composition.operator:
-        composition.operator = _strip_t1_markers(composition.operator)
+        composition.operator = "\n\n".join(
+            p.strip() for p in (_core, _ext) if p and p.strip()
+        )
 
     # Goals come from the Dock, not a file (Sprint 69). Absent Dock →
     # graceful (None, layer skipped); malformed dock.yaml → fail loud
