@@ -67,6 +67,17 @@ _GROVE_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Google Workspace — first-class native verbs (workspace-first-class-
+    # capability-v1). Self-gate on the ~/.grove OAuth token via check_fn.
+    # Reads green / mutations yellow in zones.schema.yaml::tool_zones.
+    "gmail_search", "gmail_get", "gmail_labels",
+    "calendar_list", "drive_search", "drive_get", "drive_download",
+    "contacts_list", "sheets_get", "docs_get",
+    "gmail_send", "gmail_reply", "gmail_modify",
+    "calendar_create", "calendar_delete",
+    "drive_upload", "drive_create_folder", "drive_share", "drive_delete",
+    "sheets_update", "sheets_append", "sheets_create",
+    "docs_create", "docs_append",
     # Kanban multi-agent coordination — only in schema when the agent is
     # spawned as a kanban worker (GROVE_KANBAN_TASK env set) or the current
     # profile explicitly enables the kanban toolset. Gated via check_fn in

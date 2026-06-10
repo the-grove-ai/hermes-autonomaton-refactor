@@ -430,6 +430,38 @@ tool_zones:
   mcp_notion_notion_create_view:         yellow
   mcp_notion_notion_update_view:         yellow
 
+  # ── Google Workspace native verbs: READ → GREEN (workspace-first-class-capability-v1) ──
+  # First-class native tools wrapping google_api.py. Classified by the bare
+  # tool_name at the Dispatcher intent gate — the in-process call bypasses the
+  # terminal-command classifier, so THESE entries are the enforcement. An
+  # omitted verb defaults to Yellow in the classifier (fail-safe).
+  gmail_search:        green
+  gmail_get:           green
+  gmail_labels:        green
+  calendar_list:       green
+  drive_search:        green
+  drive_get:           green
+  drive_download:      green
+  contacts_list:       green
+  sheets_get:          green
+  docs_get:            green
+
+  # ── Google Workspace native verbs: MUTATION → YELLOW ──
+  gmail_send:          yellow
+  gmail_reply:         yellow
+  gmail_modify:        yellow
+  calendar_create:     yellow
+  calendar_delete:     yellow
+  drive_upload:        yellow
+  drive_create_folder: yellow
+  drive_share:         yellow
+  drive_delete:        yellow
+  sheets_update:       yellow
+  sheets_append:       yellow
+  sheets_create:       yellow
+  docs_create:         yellow
+  docs_append:         yellow
+
   # ── Hierarchical example (commented out — zero behavior change) ──
   # Uncomment + edit to opt your terminal tool into argument-level
   # rules. The example below replaces the bare `terminal: yellow`
