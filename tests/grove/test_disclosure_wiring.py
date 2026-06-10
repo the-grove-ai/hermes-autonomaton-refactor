@@ -106,6 +106,43 @@ def test_apply_disclosure_no_registry_falls_back_to_eager():
     assert agent._disclosure_manifest is None
 
 
+# gateway-disclosure-trigger-v1: a derived native verb's domain-chunk intents
+# make it eager on a matched-intent turn and withheld (pull-only) otherwise.
+_WS_REGISTRY = _Registry([
+    ("terminal", "Run a shell command."),       # core -> always eager
+    ("calendar_list", "List calendar events."),  # Workspace verb in scheduling chunk
+    ("web_search", "Search the web."),           # non-core, not a scheduling verb
+])
+
+
+def test_apply_disclosure_eager_on_matched_intent():
+    agent = _bare_agent([])
+    agent._dispatcher_singleton = _DispatcherHolder(_WS_REGISTRY)
+    res = _res([_tool("terminal"), _tool("calendar_list"), _tool("web_search")])
+    reduced = agent._apply_disclosure(res, intent_class="scheduling")
+    names = _names(reduced)
+    assert "terminal" in names                              # core eager
+    assert "calendar_list" in names                         # intent-matched -> eager (JIT)
+    assert "web_search" not in names                        # not a scheduling verb -> withheld
+    # No double-exposure: the eager verb is omitted from the pull index.
+    rts = next(t for t in reduced if t["function"]["name"] == "read_tool_schema")
+    assert "calendar_list" not in rts["function"]["description"]
+    assert "web_search" in rts["function"]["description"]    # still pullable
+
+
+def test_apply_disclosure_withheld_on_unmatched_intent():
+    # JIT intact: on a non-Workspace turn the verb stays pull-only, not eager.
+    agent = _bare_agent([])
+    agent._dispatcher_singleton = _DispatcherHolder(_WS_REGISTRY)
+    res = _res([_tool("terminal"), _tool("calendar_list")])
+    reduced = agent._apply_disclosure(res, intent_class="conversation")
+    names = _names(reduced)
+    assert "terminal" in names                              # core still eager
+    assert "calendar_list" not in names                     # withheld
+    rts = next(t for t in reduced if t["function"]["name"] == "read_tool_schema")
+    assert "calendar_list" in rts["function"]["description"]  # pullable
+
+
 def test_intercept_read_tool_schema_splices_pulled_def():
     agent = _bare_agent([_tool("web_search", "Search the web.")])
     # Disclosure active: a manifest with a web_search tool unit.
