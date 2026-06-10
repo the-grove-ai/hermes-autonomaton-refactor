@@ -10831,7 +10831,10 @@ class GatewayRunner:
                         logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
-                agent = Dispatcher(session_db=self._session_db, agent_kwargs=dict(
+                # INV-7: wire the intent store so gateway turns are recorded
+                # (mirrors cli.py / run_agent.py; the gateway path never had it).
+                from grove.intent_store import get_store as _get_intent_store
+                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
@@ -15457,7 +15460,10 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
-                agent = Dispatcher(session_db=self._session_db, agent_kwargs=dict(
+                # INV-7: wire the intent store so gateway turns are recorded
+                # (mirrors cli.py / run_agent.py; the gateway path never had it).
+                from grove.intent_store import get_store as _get_intent_store
+                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
