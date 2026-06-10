@@ -971,7 +971,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # Other surfaces (/v1/runs, /v1/responses) pass None and keep the
         # auto-allow default — their governance is out of scope here.
         _sph = sovereign_prompt_handler or gateway_auto_allow_handler
-        agent = Dispatcher(session_db=self._ensure_session_db(), sovereign_prompt_handler=_sph, agent_kwargs=dict(
+        # INV-7: wire the intent store so API/webui turns are recorded
+        # (mirrors cli.py / run_agent.py / the messaging Dispatchers).
+        from grove.intent_store import get_store as _get_intent_store
+        agent = Dispatcher(session_db=self._ensure_session_db(), sovereign_prompt_handler=_sph, intent_store=_get_intent_store(), agent_kwargs=dict(
             model=model,
             **runtime_kwargs,
             max_iterations=max_iterations,
