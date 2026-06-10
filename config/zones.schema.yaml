@@ -247,33 +247,27 @@ tool_zones:
       - match_pattern: '^doas\s+.*'
         zone: red
         reason: "doas privilege escalation requires sovereign approval."
-      # ── Google Workspace skill wrappers: precise GREEN ─────────────
-      # Known-safe script paths under ~/.grove/skills/productivity/google-workspace/.
-      # Daily-driver UX: asking the autonomaton "what's on my calendar"
-      # routes through these wrappers and should not halt for every
-      # invocation.
+      # ── Google Workspace: governed by SUBCOMMAND (BLOCKER refactor) ──
+      # google_api.py is the Workspace entrypoint (Gmail/Calendar/Drive/
+      # Sheets/Docs). Its path lives under ~/.grove/skills/, so without
+      # these rules the broad promoted-skills green rule below would
+      # auto-approve every subcommand — including writes (the BLOCKER:
+      # Workspace authority lived in memory prose, not the zone layer).
+      # Explicit subcommand rules here (first-match-wins, ABOVE the broad
+      # rule) split read from write: the read allow-list is Green; every
+      # mutation OR unrecognized subcommand falls through to the Yellow
+      # default. Per GRV-001 Principle IV + Zone Model.
       #
-      # Sprint 53 — pattern widened. The original `^GAPI=.*python3.*` prefix
-      # only matched commands of the form `GAPI=<token> python3 .../gws.py
-      # <subcommand>`; bare `gws calendar list` invocations (and any other
-      # entrypoint that doesn't carry the env-var prefix on the command
-      # line) fell through to the terminal default_zone: yellow and halted
-      # every session. The path-prefix match below is sufficient: the
-      # operator's grant of the skill via Andon promotion IS the trust act.
-      #
-      # The `gws` CLI itself (when the skill's bin/ is on PATH and it is
-      # invoked by name, including inside a `bash -c "..."` wrapper) needs
-      # its own rule — the path-based pattern below won't catch it. The
-      # `\bgws\b` word-boundary match catches `gws` anywhere on the command
-      # line, not just at the start, so wrapped invocations classify green.
-      # The `gws` binary is bundled inside the promoted skill directory; the
-      # promotion act covers it.
-      - match_pattern: '.*\bgws\b.*'
+      # The external `gws` CLI's subcommand grammar is not enumerated from
+      # this repo, so the bare `gws` path is Yellow in full (reads
+      # included) — fail-closed friction over silent over-grant. Locked
+      # GATE-B decision (workspace-zone-authority-refactor).
+      - match_pattern: '.*\bgoogle_api\.py\s+(gmail\s+(search|get|labels)|calendar\s+list|drive\s+(search|get|download)|contacts\s+list|sheets\s+get|docs\s+get)\b.*'
         zone: green
-        reason: "Google Workspace skill wrapper (gws CLI) — known-safe entrypoint."
-      - match_pattern: '.*\.grove/skills/productivity/google-workspace/.*'
-        zone: green
-        reason: "Google Workspace skill wrapper — known-safe script path."
+        reason: "Google Workspace READ via google_api.py (gmail search/get/labels, calendar list, drive search/get/download, contacts list, sheets get, docs get) — auto-approved Green (BLOCKER refactor)."
+      - match_pattern: '.*\b(google_api\.py|gws)\b.*'
+        zone: yellow
+        reason: "Google Workspace mutation or unrecognized google_api.py subcommand, or any gws-CLI invocation — Yellow-zone approval; writes and unknowns fail closed (BLOCKER refactor)."
       # ── Quarantined skills: path-prefix YELLOW (Sprint 53.2) ───────
       # Skills the Autonomaton authored land in ~/.grove/skills/.andon/
       # (the quarantine) and are NOT yet operator-approved. Executing one
@@ -311,7 +305,6 @@ tool_zones:
   skill_manage.create:       yellow
   skill_manage.promote:      red
   file_operations.write:     yellow
-  calendar.read:             green
   honcho.dialectic.read:     green
   cron.create:               yellow
   cron.delete:               yellow
