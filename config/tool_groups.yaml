@@ -73,13 +73,66 @@ core:
 # orchestrate; T2/T3-native intents add their domain-specific surfaces.
 domain_chunks:
   # ── Daily driver — T1-native ──────────────────────────────────────────
-  memory_operation: []           # core memory tools handle store/recall/forget
-  scheduling: []                 # google-workspace skill loads via skill_view
-  messaging: []                  # platform/imsg/email skills load via skill_view
+  # Google Workspace native verbs (workspace-first-class-capability-v1): the 24
+  # first-class tools, anchored here and aliased into the other clean Workspace
+  # intents. Self-gate on the OAuth token via check_fn. Reads green / mutations
+  # yellow in zones.schema.yaml::tool_zones.
+  memory_operation: &gws_verbs   # core memory via core tools; + Workspace verbs (sheet update/append land here)
+    - gmail_search
+    - gmail_get
+    - gmail_labels
+    - calendar_list
+    - drive_search
+    - drive_get
+    - drive_download
+    - contacts_list
+    - sheets_get
+    - docs_get
+    - gmail_send
+    - gmail_reply
+    - gmail_modify
+    - calendar_create
+    - calendar_delete
+    - drive_upload
+    - drive_create_folder
+    - drive_share
+    - drive_delete
+    - sheets_update
+    - sheets_append
+    - sheets_create
+    - docs_create
+    - docs_append
+  scheduling: *gws_verbs         # calendar → Workspace native verbs (alias)
+  messaging: *gws_verbs          # email/file-share → Workspace native verbs (alias)
   retrieval:
     - session_search
     - web_search
     - web_extract
+    # + Google Workspace native verbs (workspace-first-class-capability-v1)
+    - gmail_search
+    - gmail_get
+    - gmail_labels
+    - calendar_list
+    - drive_search
+    - drive_get
+    - drive_download
+    - contacts_list
+    - sheets_get
+    - docs_get
+    - gmail_send
+    - gmail_reply
+    - gmail_modify
+    - calendar_create
+    - calendar_delete
+    - drive_upload
+    - drive_create_folder
+    - drive_share
+    - drive_delete
+    - sheets_update
+    - sheets_append
+    - sheets_create
+    - docs_create
+    - docs_append
   summarization: []              # supplied text; read_file from core if pathed
   translation: []                # conversational
   conversation: []               # core only
@@ -123,12 +176,62 @@ domain_chunks:
     - cronjob
     - process
     - skill_manage
+    # + Google Workspace native verbs (doc-create classifies here; native at T2/T3)
+    - gmail_search
+    - gmail_get
+    - gmail_labels
+    - calendar_list
+    - drive_search
+    - drive_get
+    - drive_download
+    - contacts_list
+    - sheets_get
+    - docs_get
+    - gmail_send
+    - gmail_reply
+    - gmail_modify
+    - calendar_create
+    - calendar_delete
+    - drive_upload
+    - drive_create_folder
+    - drive_share
+    - drive_delete
+    - sheets_update
+    - sheets_append
+    - sheets_create
+    - docs_create
+    - docs_append
 
   # ── Architect work — T2 floor (via upward_moderate), T3-native ────────
   planning:
     - search_files
     - web_search
     - write_file
+    # + Google Workspace native verbs (sheet-create classifies here; native at T3)
+    - gmail_search
+    - gmail_get
+    - gmail_labels
+    - calendar_list
+    - drive_search
+    - drive_get
+    - drive_download
+    - contacts_list
+    - sheets_get
+    - docs_get
+    - gmail_send
+    - gmail_reply
+    - gmail_modify
+    - calendar_create
+    - calendar_delete
+    - drive_upload
+    - drive_create_folder
+    - drive_share
+    - drive_delete
+    - sheets_update
+    - sheets_append
+    - sheets_create
+    - docs_create
+    - docs_append
 
 # ── Exploratory — added only for complex/novel turns ────────────────────────
 # Heavier tools that unlock capability for novel work. Browser automation,
