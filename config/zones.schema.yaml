@@ -247,6 +247,22 @@ tool_zones:
       - match_pattern: '^doas\s+.*'
         zone: red
         reason: "doas privilege escalation requires sovereign approval."
+      # ── Catastrophic delete: explicit RED (INV-9) ──────────────────
+      # Targets the catastrophic family ONLY — root (/, //, /*), home
+      # (~, ~/), and the --no-preserve-root override. Target guards are
+      # anchored (re.fullmatch), so safe deletes like `rm -rf /tmp/foo`
+      # or `rm -rf ~/Documents` do NOT match — they stay Yellow. Combined
+      # recursive/force flags (-rf/-fr/-rfv) match; separate-token or
+      # exotic orderings fall through to Yellow (still gated), never Green.
+      - match_pattern: '^rm\s+-[a-zA-Z]*[rRfF][a-zA-Z]*\s+/+\*?\s*'
+        zone: red
+        reason: "Catastrophic recursive delete of the root filesystem (rm -rf / or /*). INV-9."
+      - match_pattern: '^rm\s+-[a-zA-Z]*[rRfF][a-zA-Z]*\s+~/?\s*'
+        zone: red
+        reason: "Catastrophic recursive delete of the home directory (rm -rf ~). INV-9."
+      - match_pattern: '^rm\s+.*--no-preserve-root.*'
+        zone: red
+        reason: "rm --no-preserve-root: explicit override of the root-deletion guard. INV-9."
       # ── Google Workspace: governed by SUBCOMMAND (BLOCKER refactor) ──
       # google_api.py is the Workspace entrypoint (Gmail/Calendar/Drive/
       # Sheets/Docs). Its path lives under ~/.grove/skills/, so without
