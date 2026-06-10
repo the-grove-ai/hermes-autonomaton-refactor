@@ -790,7 +790,16 @@ def _external_memory_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         return None
     if not text:
         return None
-    return SectionResult(label="external_memory", text=text)
+    # GRV-001 Principle IV: external-provider memory is recalled prose too —
+    # fence it as data so it cannot assert authority or change a zone. Same
+    # shared seam as the built-in memory/user-profile blocks. Local import
+    # avoids a tools<->grove.prompt import cycle.
+    from tools.memory_tool import fence_memory_block
+
+    return SectionResult(
+        label="external_memory",
+        text=fence_memory_block("EXTERNAL MEMORY", text),
+    )
 
 
 def _timestamp_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
