@@ -2971,7 +2971,7 @@ class AIAgent:
             s = str(obj)
         return estimate_tokens_rough(s)
 
-    def _apply_disclosure(self, res):
+    def _apply_disclosure(self, res, intent_class=None):
         """Sprint 74 Phase 3 — the T2/T3 disclosure surface.
 
         Replaces the eager schemas of non-core tools with the always-loaded
@@ -2985,8 +2985,14 @@ class AIAgent:
         safety condition: the agent can always see and pull an MCP a match
         missed). Stashes the merged manifest for the agent-loop interception.
         Falls back to the eager resolved list when no registry is reachable.
+
+        gateway-disclosure-trigger-v1: ``intent_class`` selects which DERIVED
+        native tool units disclose eagerly (intent-matched verbs reach the
+        model directly, JIT-preserved). Defaults to None so any caller without
+        the classification degrades to the pre-change behavior (no derived units
+        eager — core + matched MCP only).
         """
-        from grove.manifest import build_manifest
+        from grove.manifest import build_manifest, matched_tool_units
         from grove.disclosure import build_pull_tool_defs
         from grove.context_budget import load_taxonomy, _is_mcp, _mcp_server_of, _name_of
 
@@ -3001,6 +3007,11 @@ class AIAgent:
         if getattr(self, "_disclosure_log", None) is None:
             self._disclosure_log = []
 
+        # gateway-disclosure-trigger-v1: native verbs whose derived trigger
+        # matched this turn's intent. Admitted to the eager surface below (and
+        # to eager_ids, so build_pull_tool_defs omits them from the index — no
+        # double-exposure). Empty set when intent_class is None.
+        matched = matched_tool_units(manifest, intent_class=intent_class)
         core = set(load_taxonomy().get("core", []))
         reasons = getattr(self, "_mcp_match_reasons", None) or {}
         mcp_tokens: Dict[str, int] = {}
@@ -3016,6 +3027,9 @@ class AIAgent:
                     mcp_tokens[server] = mcp_tokens.get(server, 0) + self._schema_tokens(t)
             elif nm in core:
                 eager.append(t)                       # core native — always eager
+                eager_ids.add(nm)
+            elif nm in matched:
+                eager.append(t)                       # intent-matched native verb — eager (JIT)
                 eager_ids.add(nm)
             # else: non-core native → withheld to the index, pulled on demand.
 
@@ -3187,7 +3201,7 @@ class AIAgent:
         if (not budgeted) and res.fallback:
             self._tools_for_turn = None
         elif _tier_now in ("T2", "T3"):
-            self._tools_for_turn = self._apply_disclosure(res)
+            self._tools_for_turn = self._apply_disclosure(res, intent_class=intent_class)
         else:
             tools = list(res.tools)
             if _tier_now == "T1":

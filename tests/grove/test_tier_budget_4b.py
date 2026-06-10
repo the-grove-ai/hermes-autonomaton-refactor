@@ -126,7 +126,8 @@ def test_disclosure_gate_engages_on_t2(monkeypatch):
     agent = _bare_agent(ALL_TOOLS)
     called = []
     monkeypatch.setattr(
-        agent, "_apply_disclosure", lambda res: called.append(1) or ["sentinel"]
+        agent, "_apply_disclosure",
+        lambda res, intent_class=None: called.append(1) or ["sentinel"]
     )
     agent._maybe_apply_tool_filter()
     assert called, "T2 turn must route through _apply_disclosure"

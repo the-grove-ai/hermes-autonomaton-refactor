@@ -46,6 +46,7 @@ __all__ = [
     "build_manifest",
     "matched_mcp_servers",
     "mcp_match_reasons",
+    "matched_tool_units",
 ]
 
 # ── Hard caps (D5) ───────────────────────────────────────────────────────
@@ -234,6 +235,27 @@ def mcp_match_reasons(
         ):
             out[u.id] = "dock-match"
     return out
+
+
+def matched_tool_units(units, *, intent_class) -> frozenset:
+    """The derived ``tool`` unit ids whose trigger matches this turn's intent.
+
+    gateway-disclosure-trigger-v1: the native counterpart to
+    :func:`matched_mcp_servers`. A ``kind == "tool"`` unit matches when
+    ``intent_class`` is in its ``trigger.intents`` (derived from domain-chunk
+    membership in :func:`build_manifest`). SAME intent clause MCP units use
+    (``mcp_match_reasons``), but a SEPARATE function on purpose: the MCP path's
+    result feeds ``mcp_allow``; this one feeds only the eager surface in
+    ``_apply_disclosure``, so the two never cross. Pure function; ignores
+    ``mcp``/``goal``/``contract`` units. Empty when ``intent_class`` is None.
+    """
+    return frozenset(
+        u.id
+        for u in units
+        if u.kind == "tool"
+        and intent_class is not None
+        and intent_class in u.trigger.intents
+    )
 
 
 # ── Loader + validator ───────────────────────────────────────────────────
@@ -494,7 +516,19 @@ def build_manifest(
                 oneline=_oneline_from_description(desc),
                 payload=f"tool_schema:{name}",
                 tiers=_tiers_for_tool(name, taxonomy, tier_allow),
-                trigger=UnitTrigger(intents=(), keywords=(), dock_goal=None),
+                # gateway-disclosure-trigger-v1: derive intents from the tool's
+                # domain-chunk membership (chunk keys ARE intent_class values,
+                # tool_groups.yaml). Scoped to domain_chunks only — "core"/
+                # "exploratory" are pseudo-groups, not intents. This lets a
+                # non-core native verb disclose eagerly on its intent-matched
+                # turn (JIT-preserved), instead of always withheld to the index.
+                trigger=UnitTrigger(
+                    intents=tuple(sorted(
+                        g for g in _groups_of_tool(name, taxonomy)
+                        if g in (taxonomy.get("domain_chunks") or {})
+                    )),
+                    keywords=(), dock_goal=None,
+                ),
             )
         )
 
