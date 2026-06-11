@@ -245,6 +245,34 @@ def test_no_transition_out_of_deprecated():
             cap.transition(target, actor="operator", reason="terminal")
 
 
+# ── GRV-009 Amendment A1 — rejected state + quarantine rejection edge ─────────
+
+
+def test_quarantine_to_rejected_succeeds_and_logs():
+    cap = make_valid(lifecycle=Lifecycle(state=LifecycleState.QUARANTINE))
+    rec = cap.transition(
+        LifecycleState.REJECTED, actor="operator", reason="failed quarantine validation"
+    )
+    assert cap.lifecycle.state is LifecycleState.REJECTED
+    assert len(cap.lineage.decision_log) == 1
+    assert rec.from_state == "quarantine"
+    assert rec.to_state == "rejected"
+
+
+def test_rejected_is_terminal():
+    cap = make_valid(lifecycle=Lifecycle(state=LifecycleState.REJECTED))
+    for target in LifecycleState:
+        with pytest.raises(IllegalTransitionError):
+            cap.transition(target, actor="operator", reason="terminal")
+
+
+def test_quarantine_cannot_reach_deprecated():
+    # Amendment A1: deprecated is reserved for exits from active, never quarantine.
+    cap = make_valid(lifecycle=Lifecycle(state=LifecycleState.QUARANTINE))
+    with pytest.raises(IllegalTransitionError):
+        cap.transition(LifecycleState.DEPRECATED, actor="operator", reason="wrong exit")
+
+
 # ── YAML round-trip ──────────────────────────────────────────────────────────
 
 

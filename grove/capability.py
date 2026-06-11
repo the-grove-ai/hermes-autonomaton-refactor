@@ -75,6 +75,7 @@ class LifecycleState(str, Enum):
     ACTIVE = "active"
     REFINED = "refined"
     DEPRECATED = "deprecated"
+    REJECTED = "rejected"  # GRV-009 Amendment A1 — terminal; only from quarantine
 
 
 class Provenance(str, Enum):
@@ -115,16 +116,19 @@ class IllegalTransitionError(ValueError):
 
 
 # ── State machine — the ONLY legal transitions ───────────────────────────────
-# Rejection edges out of quarantine are deliberately deferred (not added here).
-# ``deprecated`` is terminal.
+# GRV-009 Amendment A1: ``rejected`` is reachable ONLY from ``quarantine`` — a
+# capability rejected/failed during quarantine never lived. ``deprecated`` is
+# reserved exclusively for graceful exits from ``active``. Both are terminal; no
+# other edges out of them.
 
 LEGAL_TRANSITIONS: dict[LifecycleState, frozenset[LifecycleState]] = {
     LifecycleState.PROPOSED: frozenset({LifecycleState.QUARANTINE}),
-    LifecycleState.QUARANTINE: frozenset({LifecycleState.APPROVED}),
+    LifecycleState.QUARANTINE: frozenset({LifecycleState.APPROVED, LifecycleState.REJECTED}),
     LifecycleState.APPROVED: frozenset({LifecycleState.ACTIVE}),
     LifecycleState.ACTIVE: frozenset({LifecycleState.REFINED, LifecycleState.DEPRECATED}),
     LifecycleState.REFINED: frozenset({LifecycleState.ACTIVE}),
     LifecycleState.DEPRECATED: frozenset(),
+    LifecycleState.REJECTED: frozenset(),
 }
 
 
