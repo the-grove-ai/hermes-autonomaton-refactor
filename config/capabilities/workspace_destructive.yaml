@@ -1,0 +1,75 @@
+# Google Workspace — DESTRUCTIVE capability (GRV-009 E2, workspace-beachhead-v1).
+# Risk profile: destructive (irreversible external state change — outbound send,
+# external exposure, or data loss). Governs the 5 destructive verbs:
+#   gmail_send, gmail_reply, drive_share, calendar_delete, drive_delete.
+# Zone YELLOW per the operator's locked map — strict parity this sprint
+# (byte-identical routing proves the primitive before any escalation to red).
+id: workspace_destructive
+kind: verb
+trigger:
+  intents: [memory_operation, scheduling, messaging, retrieval]
+  keywords: [send, reply, share, delete]
+  dock_affinity: []
+tier_rule:
+  eligible: [1, 2, 3]
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track: [invocation, result, cost, latency, confidence, human_feedback]
+context:
+  disclosure: eager
+  dock_composition: goal_context
+  payload: |
+    Google Workspace — DESTRUCTIVE operations. Each makes an irreversible
+    external change: an email leaves the account, a file's access changes, or
+    data is deleted. NEVER execute one without first showing the operator
+    exactly what will happen (recipients, file id, share role/scope, what is
+    deleted) and getting explicit approval.
+
+    Verbs:
+      gmail_send(to, subject, body, cc, from_header, html, thread_id) — send a
+        new email. Irreversible once sent. body is HTML when html=true.
+      gmail_reply(message_id, body, from_header) — reply to a message; threads
+        automatically. Irreversible.
+      drive_share(file_id, role=reader, type=user, email, domain, notify) —
+        change sharing/permissions. type=anyone exposes the file via link;
+        confirm the blast radius before sharing.
+      calendar_delete(event_id, calendar='primary') — delete an event.
+      drive_delete(file_id, permanent=false) — trash a Drive file (reversible)
+        by default. PREFER trash; only pass permanent=true on explicit operator
+        instruction — permanent deletion cannot be undone.
+
+    Rule: confirm-before-act is mandatory for every verb here. For deletions,
+    default to reversible trash over permanent removal.
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: "2026-06-11T00:00:00+00:00"
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+    - actor: operator
+      timestamp: "2026-06-11T00:00:00+00:00"
+      from_state: migrated
+      to_state: approved
+      reason: "E2 migration — workspace-beachhead-v1: record replaces the Workspace skill + native destructive verbs at the operator-locked gate (zone yellow, parity)"
+      evidence: ["notion:37c780a78eef818b8c3bfb9910f98723"]
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+    - "capability: workspace_destructive"
+    - "subsystem: google_api.py via tools/google_workspace_tool.py (native verb handlers)"
+    - "check: ~/.grove/google_token.json OAuth token present with the required write/send scopes"
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

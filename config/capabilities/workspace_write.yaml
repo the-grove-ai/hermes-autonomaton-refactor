@@ -1,0 +1,80 @@
+# Google Workspace — WRITE capability (GRV-009 E2, workspace-beachhead-v1).
+# Risk profile: write (creates/modifies remote data; additive or recoverable).
+# Governs the 9 write verbs:
+#   gmail_modify, calendar_create, drive_upload, drive_create_folder,
+#   sheets_update, sheets_append, sheets_create, docs_create, docs_append.
+# Zone YELLOW per the operator's locked map (strict parity — routes through the
+# existing requires-approval mechanism).
+id: workspace_write
+kind: verb
+trigger:
+  intents: [memory_operation, scheduling, messaging, retrieval]
+  keywords: [gmail, calendar, drive, sheets, docs]
+  dock_affinity: []
+tier_rule:
+  eligible: [1, 2, 3]
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track: [invocation, result, cost, latency, confidence, human_feedback]
+context:
+  disclosure: eager
+  dock_composition: goal_context
+  payload: |
+    Google Workspace — WRITE operations. These create or modify remote data and
+    require operator approval (Yellow zone). Before executing, show the operator
+    exactly what will change (target id, content, range) and confirm.
+
+    Verbs:
+      gmail_modify(message_id, add_labels, remove_labels) — add/remove label
+        ids on a message (comma-separated).
+      calendar_create(summary, start, end, location, description, attendees,
+        calendar='primary') — create an event. start/end MUST be ISO 8601 WITH
+        timezone offset (e.g. 2026-03-01T10:00:00-06:00) or UTC 'Z'. attendees
+        is comma-separated emails.
+      drive_upload(path, name, parent, mime_type) — upload a local file;
+        MIME auto-detected unless overridden.
+      drive_create_folder(name, parent) — create a folder (parent defaults to
+        root).
+      sheets_create(title, sheet_name='Sheet1') — new spreadsheet.
+      sheets_update(sheet_id, range, values) — overwrite an A1 range; values is
+        a JSON array of arrays, e.g. [["Name","Score"],["Alice","95"]].
+      sheets_append(sheet_id, range, values) — append rows after an A1 range.
+      docs_create(title, body) — new document, optionally seeded with body text.
+      docs_append(doc_id, text) — append text to the end of a document.
+
+    Rules: confirm before writing; use ISO 8601 with timezone for calendar;
+    batch where possible and respect rate limits. New write scopes may require
+    re-authorization (AUTHENTICATED partial / "Token missing scopes").
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: "2026-06-11T00:00:00+00:00"
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+    - actor: operator
+      timestamp: "2026-06-11T00:00:00+00:00"
+      from_state: migrated
+      to_state: approved
+      reason: "E2 migration — workspace-beachhead-v1: record replaces the Workspace skill + native write verbs at the operator-locked gate"
+      evidence: ["notion:37c780a78eef818b8c3bfb9910f98723"]
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+    - "capability: workspace_write"
+    - "subsystem: google_api.py via tools/google_workspace_tool.py (native verb handlers)"
+    - "check: ~/.grove/google_token.json OAuth token present with write scopes granted"
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

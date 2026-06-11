@@ -1,0 +1,84 @@
+# Google Workspace — READ capability (GRV-009 E2, workspace-beachhead-v1).
+# Risk profile: read (no remote mutation). Governs the 10 read verbs:
+#   gmail_search, gmail_get, gmail_labels, calendar_list, drive_search,
+#   drive_get, drive_download, contacts_list, sheets_get, docs_get.
+# Zone GREEN per the operator's locked map (strict parity with zones.schema.yaml).
+id: workspace_read
+kind: verb
+trigger:
+  # Parity: the verbs' current intent aliases in tool_groups.yaml.
+  intents: [memory_operation, scheduling, messaging, retrieval]
+  keywords: [gmail, calendar, drive, sheets, docs, contacts]
+  dock_affinity: []   # empty at migration — affinity is operator-curated later
+tier_rule:
+  eligible: [1, 2, 3]   # D6 parity: allow_groups admits these intents at T1/T2/T3
+  preferred: 1          # T1-native daily driver (default_tier T1)
+  promotion_criteria: {}
+  validation:           # inert placeholders — validation fires only on promotion (epic out-of-scope)
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed     # binding string only — the unified feed lands in E3
+  track: [invocation, result, cost, latency, confidence, human_feedback]
+context:
+  disclosure: eager
+  dock_composition: goal_context
+  payload: |
+    Google Workspace — READ operations (Gmail, Calendar, Drive, Contacts,
+    Sheets, Docs) over Hermes-managed OAuth. All commands return JSON.
+
+    Auth: reads require a valid ~/.grove/google_token.json. If a call returns
+    NOT_AUTHENTICATED / REFRESH_FAILED, the operator must (re)run the Workspace
+    OAuth setup before reads succeed.
+
+    Verbs:
+      gmail_search(query, max=10)   — search Gmail; returns [{id, threadId,
+        from, to, subject, date, snippet, labels}]. Use Gmail operators:
+        is:unread, from:, to:, subject:, has:attachment, filename:pdf,
+        newer_than:1d, older_than:7d.
+      gmail_get(message_id)         — full message {id, from, to, subject,
+        date, labels, body}.
+      gmail_labels()                — [{id, name}].
+      calendar_list(start, end, max=25, calendar='primary') — events
+        [{id, summary, start, end, location, description, htmlLink}].
+      drive_search(query, max=10, raw_query=false) — files [{id, name,
+        mimeType, modifiedTime, webViewLink}]. raw_query passes a Drive API
+        query verbatim (e.g. "mimeType='application/pdf'").
+      drive_get(file_id)            — file metadata.
+      drive_download(file_id, output, export_mime) — reads a Drive file,
+        writes it locally. Google-native files export to a sensible default
+        (Docs->pdf, Sheets->csv, Slides->pdf); override with export_mime.
+      contacts_list(max=50)         — [{name, emails, phones}].
+      sheets_get(sheet_id, range)   — values [[cell, ...], ...] for an A1
+        range like 'Sheet1!A1:C10'.
+      docs_get(doc_id)              — the document's text.
+
+    Times: ISO 8601. Batch reads where possible; respect rate limits.
+lifecycle:
+  state: approved          # migrated capability enters at the operator's locked gate
+  provenance: migrated
+  created_at: "2026-06-11T00:00:00+00:00"
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+    - actor: operator
+      timestamp: "2026-06-11T00:00:00+00:00"
+      from_state: migrated
+      to_state: approved
+      reason: "E2 migration — workspace-beachhead-v1: record replaces the Workspace skill + native read verbs at the operator-locked gate"
+      evidence: ["notion:37c780a78eef818b8c3bfb9910f98723"]
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+    - "capability: workspace_read"
+    - "subsystem: google_api.py via tools/google_workspace_tool.py (native verb handlers)"
+    - "check: ~/.grove/google_token.json OAuth token present and google_api.py path resolvable"
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
