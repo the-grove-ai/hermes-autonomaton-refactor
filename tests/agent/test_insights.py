@@ -15,6 +15,29 @@ from agent.insights import (
 )
 
 
+def _seed_feed(invocations):
+    """GRV-009 E3 C3 — write capability-feed records for executed tool
+    invocations. ``invocations``: iterable of ``(session_id, tool_name,
+    ts_epoch)``. Writes the feed file directly (no async drainer) for
+    deterministic tests; the per-test GROVE_HOME (autouse hermetic fixture)
+    isolates the path."""
+    import json as _json
+    from datetime import datetime, timezone
+    from grove.capability_feed import feed_dir, FIELDS
+
+    d = feed_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / "feed.jsonl").open("a", encoding="utf-8") as fh:
+        for sid, tool, ts in invocations:
+            rec = {f: None for f in FIELDS}
+            rec.update({
+                "ts": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                "session_id": sid, "turn_id": f"{sid}#1",
+                "tool_name": tool, "invocation": "native", "result_status": "ok",
+            })
+            fh.write(_json.dumps(rec) + "\n")
+
+
 @pytest.fixture()
 def db(tmp_path):
     """Create a SessionDB with a temp database file."""
@@ -135,6 +158,18 @@ def populated_db(db):
     db.append_message("s_old", role="assistant", content="old reply")
 
     db._conn.commit()
+
+    # GRV-009 E3 C3 — tool usage now reads the capability feed, not the
+    # transcript; seed the feed to mirror the executed tool invocations above.
+    _seed_feed([
+        ("s1", "search_files", now - 2 * day),
+        ("s1", "read_file", now - 2 * day),
+        ("s1", "patch", now - 2 * day),
+        ("s2", "web_search", now - 5 * day),
+        ("s3", "terminal", now - 10 * day),
+        ("s3", "terminal", now - 10 * day),
+        ("s3", "search_files", now - 10 * day),
+    ])
     return db
 
 
@@ -594,34 +629,25 @@ class TestEdgeCases:
         assert custom["cost"] == 0.0
         assert custom["has_pricing"] is False
 
-    def test_tool_usage_from_tool_calls_json(self, db):
-        """Tool usage should be extracted from tool_calls JSON when tool_name is NULL."""
-        import json as _json
+    def test_tool_usage_from_feed(self, db):
+        """GRV-009 E3 C3 — tool usage is read from the capability feed, so it is
+        correct regardless of how the platform populated the transcript (the old
+        CLI ``tool_name``-NULL gap that this test once guarded no longer matters
+        — the feed records every executed invocation directly)."""
+        now = time.time()
         db.create_session(session_id="s1", source="cli", model="test")
-        # Assistant message with tool_calls (this is what CLI produces)
-        db.append_message("s1", role="assistant", content="Let me search",
-                          tool_calls=[{"id": "call_1", "type": "function",
-                                       "function": {"name": "search_files", "arguments": "{}"}}])
-        # Tool response WITHOUT tool_name (this is the CLI bug)
-        db.append_message("s1", role="tool", content="found results",
-                          tool_call_id="call_1")
-        db.append_message("s1", role="assistant", content="Now reading",
-                          tool_calls=[{"id": "call_2", "type": "function",
-                                       "function": {"name": "read_file", "arguments": "{}"}}])
-        db.append_message("s1", role="tool", content="file content",
-                          tool_call_id="call_2")
-        db.append_message("s1", role="assistant", content="And searching again",
-                          tool_calls=[{"id": "call_3", "type": "function",
-                                       "function": {"name": "search_files", "arguments": "{}"}}])
-        db.append_message("s1", role="tool", content="more results",
-                          tool_call_id="call_3")
+        db.append_message("s1", role="user", content="do some work")
         db._conn.commit()
+        _seed_feed([
+            ("s1", "search_files", now),
+            ("s1", "read_file", now),
+            ("s1", "search_files", now),
+        ])
 
         engine = InsightsEngine(db)
         report = engine.generate(days=30)
         tools = report["tools"]
 
-        # Should find tools from tool_calls JSON even though tool_name is NULL
         tool_names = [t["tool"] for t in tools]
         assert "search_files" in tool_names
         assert "read_file" in tool_names
