@@ -232,3 +232,65 @@ def test_A7_emit_failure_never_crosses_into_turn(monkeypatch):
 
     out = a._invoke_tool("web_search", {}, "task1")  # must not raise
     assert out == "clean result"
+
+
+# ── GRV-009 E4 C3 — MCP feed attribution ──────────────────────────────────────
+
+
+def test_invoke_tool_mcp_attributed_read(monkeypatch):
+    captured = []
+    a = _agent(monkeypatch, captured)
+    a._invoke_tool_impl = lambda *args, **kw: "{}"
+    monkeypatch.setattr("grove.zones.classify", lambda name: SimpleNamespace(zone="green"))
+    a._invoke_tool("mcp_notion_notion_search", {}, "t")
+    rec = captured[0]
+    assert rec["invocation"] == "mcp"
+    assert rec["capability_id"] == "notion_read"
+
+
+def test_invoke_tool_mcp_attributed_write(monkeypatch):
+    captured = []
+    a = _agent(monkeypatch, captured)
+    a._invoke_tool_impl = lambda *args, **kw: "{}"
+    monkeypatch.setattr("grove.zones.classify", lambda name: SimpleNamespace(zone="yellow"))
+    a._invoke_tool("mcp_notion_notion_create_pages", {}, "t")
+    rec = captured[0]
+    assert rec["invocation"] == "mcp"
+    assert rec["capability_id"] == "notion_write"
+
+
+def test_invoke_tool_mcp_api_variant_yellow_failsafe(monkeypatch):
+    # Unmapped mcp_notion_API_* variants default to yellow -> notion_write.
+    captured = []
+    a = _agent(monkeypatch, captured)
+    a._invoke_tool_impl = lambda *args, **kw: "{}"
+    monkeypatch.setattr("grove.zones.classify", lambda name: SimpleNamespace(zone="yellow"))
+    a._invoke_tool("mcp_notion_API_post_search", {}, "t")
+    assert captured[0]["capability_id"] == "notion_write"
+
+
+def test_invoke_tool_mcp_non_record_stays_null(monkeypatch):
+    captured = []
+    a = _agent(monkeypatch, captured)
+    a._invoke_tool_impl = lambda *args, **kw: "ok"
+    monkeypatch.setattr("grove.zones.classify", lambda name: SimpleNamespace(zone="green"))
+    a._invoke_tool("mcp_unknownserver_do_thing", {}, "t")
+    rec = captured[0]
+    assert rec["invocation"] == "mcp"
+    assert rec["capability_id"] is None   # non-record MCP server -> null-attributed
+
+
+def test_A7_mcp_attribution_failure_never_crosses_into_turn(monkeypatch):
+    captured = []
+    a = _agent(monkeypatch, captured)
+    a._invoke_tool_impl = lambda *args, **kw: "clean"
+    monkeypatch.setattr("grove.zones.classify", lambda name: SimpleNamespace(zone="green"))
+    # The attribution-map build explodes — must not reach the turn.
+    monkeypatch.setattr(
+        "grove.capability_registry.load_capabilities",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("registry boom")),
+    )
+    out = a._invoke_tool("mcp_notion_notion_search", {}, "t")  # must not raise
+    assert out == "clean"
+    assert captured[0]["invocation"] == "mcp"
+    assert captured[0]["capability_id"] is None   # empty map -> null

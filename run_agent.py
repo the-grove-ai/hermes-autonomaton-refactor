@@ -11887,12 +11887,24 @@ class AIAgent:
         })
 
     def _capability_id_for_invocation(self, tool_name, zone):
-        """Attribution from the spike-C1 hook. Non-null ONLY when the hook fired
-        this turn (``_capability_applied_zones`` non-empty) AND the invoked tool
-        is a Workspace carrier verb; the value is the applied record whose zone
-        governs this invocation (deterministic: zone-matched, sorted, first).
-        Non-capability tools and capability-less turns yield null — the
-        null-attribution path the raw write site exists to capture."""
+        """Attribution for a feed record. Two paths, both null for everything
+        unmatched:
+
+        * MCP (GRV-009 E4 C3): an ``mcp_<server>_*`` invocation attributes via
+          the cached ``{(server, zone): record_id}`` map built from the
+          ``kind=mcp`` records — ``notion``+green -> ``notion_read``,
+          ``notion``+yellow -> ``notion_write`` (and the yellow fail-safe catches
+          unmapped ``mcp_notion_API_*`` variants). A server/zone with no record
+          yields null (non-record MCP stays null-attributed).
+        * Workspace verb (E3 C1): the per-turn hook stash
+          (``_capability_applied_zones``) — null when the hook did not fire or
+          the tool is not a carrier verb.
+        """
+        from grove.context_budget import _is_mcp, _mcp_server_of
+        if _is_mcp(tool_name):
+            server = _mcp_server_of(tool_name)
+            return self._mcp_attribution_map().get((server, zone)) if server else None
+
         applied = getattr(self, "_capability_applied_zones", None) or {}
         if not applied:
             return None
@@ -11904,6 +11916,31 @@ class AIAgent:
             return None
         matches = sorted(rid for rid, z in applied.items() if z == zone)
         return matches[0] if matches else sorted(applied)[0]
+
+    def _mcp_attribution_map(self):
+        """Cached ``{(server, zone): record_id}`` over the ``kind=mcp`` records —
+        the GRV-009 E4 C3 emit-time attribution lookup. Built once per agent
+        (records are immutable within a session; a restart reloads). Server is
+        the ``mcp_schema:<server>`` pointer in ``context.payload``. Never raises
+        into the turn (A7) — a load failure yields an empty map (null
+        attribution for every MCP invocation)."""
+        cached = getattr(self, "_mcp_attr_map_cache", None)
+        if cached is not None:
+            return cached
+        m: Dict[Tuple[str, str], str] = {}
+        try:
+            from grove.capability import CapabilityKind
+            from grove.capability_registry import load_capabilities
+            for c in load_capabilities().values():
+                if c.kind != CapabilityKind.MCP:
+                    continue
+                server = self._mcp_server_of_record(c)
+                if server:
+                    m[(server, c.zone.value)] = c.id
+        except Exception:
+            m = {}
+        self._mcp_attr_map_cache = m
+        return m
 
     # Tools ``_invoke_tool_impl`` dispatches inline (NOT through the registry
     # handler) — kept in sync with that method's branches. Provider-memory
