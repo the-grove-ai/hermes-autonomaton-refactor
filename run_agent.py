@@ -3227,6 +3227,107 @@ class AIAgent:
             "unparseable_mcp": list(res.unparseable_mcp),
         }
 
+        # GRV-009 E2 C3 — additive Workspace capability hook. This single call
+        # is the ONLY new per-turn behavior; deleting it restores prior tool
+        # resolution byte-for-byte. No-op outside the four Workspace intents.
+        self._apply_capability_hook(intent_class)
+
+    # ── GRV-009 E2 C3 — Workspace Capability hook (additive) ─────────────────
+    # A Workspace-shaped turn (one of the four Workspace intent classes) resolves
+    # THROUGH the committed Capability records: the records stamp the turn and
+    # carry the guidance the retired SKILL.md used to provide. Zone enforcement
+    # is unchanged — green passes, yellow keeps routing through the existing
+    # tool_zones approval gate (the records mirror it). Both entrypoints inherit
+    # this: gateway and CLI/direct both drive _run_turn_generator ->
+    # _maybe_apply_tool_filter (the gateway at grove/dispatcher.py via
+    # ``agent._run_turn_generator``).
+    _WORKSPACE_CAPABILITY_INTENTS = frozenset(
+        {"memory_operation", "scheduling", "messaging", "retrieval"}
+    )
+
+    @staticmethod
+    def _compose_capability_guidance(records) -> str:
+        """Partitioned eager guidance from the matched records' payloads."""
+        blocks = [
+            f"[{r.id} — zone {r.zone.value}]\n{(r.context.payload or '').strip()}"
+            for r in records
+        ]
+        return (
+            "Google Workspace is delivered through Capability records (GRV-009). "
+            "Follow the per-record guidance below:\n\n" + "\n\n".join(blocks)
+        )
+
+    def _workspace_verb_names(self):
+        """The google-workspace verb names, read declaratively from the registry
+        toolset (never hardcoded). Empty when no registry is reachable."""
+        reg = getattr(
+            getattr(self, "_dispatcher_singleton", None), "registry", None
+        )
+        if reg is None:
+            return frozenset()
+        try:
+            return frozenset(reg.get_tool_names_for_toolset("google-workspace"))
+        except Exception:
+            return frozenset()
+
+    def _apply_capability_hook(self, intent_class) -> None:
+        """Resolve a Workspace-shaped turn through the Capability records.
+
+        No-op on every non-Workspace turn. On a Workspace turn it (1) stamps the
+        governing record ids on ``_capability_records_applied`` (provenance) and
+        (2) attaches the records' partitioned payload as eager guidance onto the
+        per-turn tool surface — a single deterministic Workspace-verb carrier,
+        whose dict is COPIED so the shared registry object is never mutated.
+        Never raises into the turn: records are dry-run validated at commit, so a
+        load failure here is the unreachable-config branch and degrades to prior
+        behavior (loudly logged).
+        """
+        self._capability_records_applied = []
+        self._capability_guidance = None
+        if intent_class not in self._WORKSPACE_CAPABILITY_INTENTS:
+            return  # additive no-op outside the four Workspace intent classes
+
+        try:
+            from grove.capability_registry import load_capabilities
+            records = sorted(
+                (
+                    c for c in load_capabilities().values()
+                    if intent_class in c.trigger.intents
+                ),
+                key=lambda c: c.id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[run_agent] Workspace capability hook skipped — records "
+                "unloadable: %r", exc,
+            )
+            return
+        if not records:
+            return
+
+        self._capability_records_applied = [c.id for c in records]
+        guidance = self._compose_capability_guidance(records)
+        self._capability_guidance = guidance
+
+        surface = self._tools_for_turn
+        if not surface:
+            return  # fallback / full-registry turn — guidance stays stashed
+        ws_names = self._workspace_verb_names()
+        if not ws_names:
+            return
+        for i, t in enumerate(surface):
+            if not isinstance(t, dict):
+                continue
+            if t.get("function", {}).get("name") in ws_names:
+                carrier = dict(t)
+                fn = dict(carrier.get("function", {}))
+                desc = fn.get("description", "")
+                if "GRV-009" not in desc:  # idempotent
+                    fn["description"] = guidance + "\n\n" + desc
+                carrier["function"] = fn
+                surface[i] = carrier
+                break  # one carrier — the model reads every tool description
+
     def apply_tier(self, model, max_tokens):
         """Swap the active cognitive tier in place — model and token budget only.
 
