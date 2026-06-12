@@ -210,12 +210,14 @@ class TestMaybeApplyToolFilter:
     def test_matched_mcp_intent_discloses_notion(
         self, monkeypatch: pytest.MonkeyPatch,
     ):
-        # Sprint 74: a turn whose intent is in the notion unit's manifest
-        # trigger (research) discloses the notion MCP — reads AND writes. This
-        # is the disclose-on-match replacement for the old by-intent passthrough.
+        # A turn whose intent is in the notion record's trigger (research)
+        # discloses the notion MCP — reads AND writes. GRV-009 E4 C2: gating is
+        # registry-driven; notion is eligible only on T3 (tier_rule.eligible:[3]),
+        # so pin the tier to T3 — the only tier where notion can disclose.
         _set_classification(
             monkeypatch, intent_class="research", complexity_signal="moderate",
         )
+        monkeypatch.setattr("grove.providers._last_routed_tier", "T3")
         full = [
             _tool("clarify"),
             _tool("mcp_notion_API_post_page"),  # write
@@ -236,6 +238,7 @@ class TestMaybeApplyToolFilter:
         _set_classification(
             monkeypatch, intent_class="code_generation", complexity_signal="simple",
         )
+        monkeypatch.setattr("grove.providers._last_routed_tier", "T3")  # notion's eligible tier
         full = [_tool("clarify"), _tool("mcp_notion_API_post_search")]
         agent = _bare_agent_with_tools(full)
         agent._current_messages = [
