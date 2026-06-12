@@ -78,6 +78,16 @@ CONFIGURABLE_TOOLSETS = [
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
+    # GRV-009 spike C2 — Google Workspace native verbs. Registry-backed
+    # (the 24 verbs register under toolset="google-workspace" in
+    # tools/google_workspace_tool.py; resolve_toolset/validate_toolset read it
+    # from the registry, so it needs no static TOOLSETS entry). Default-ON: not
+    # in _DEFAULT_OFF_TOOLSETS and not platform-restricted, so it is admitted to
+    # telegram / webui / cli / all platforms whose default toolset universe
+    # includes the verbs — closing the admission gap that left Workspace-intent
+    # T1 turns with no calendar_list to call. The per-turn trimmer keeps it off
+    # non-Workspace turns (byte-identical delivered surface there).
+    ("google-workspace", "📅 Google Workspace",         "gmail, calendar, drive, docs, sheets, contacts"),
 ]
 
 # Toolsets that are OFF by default for new installs.
