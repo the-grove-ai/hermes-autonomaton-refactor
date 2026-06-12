@@ -34,7 +34,6 @@ T2 = TierBudget(
     context=("goal_record",),
     tools=ToolBudget(
         allow_groups=("core", "code_generation", "debugging", "analysis"),
-        exclude_mcp=("notion",),
     ),
 )
 
@@ -82,7 +81,6 @@ def test_permissive_budget_reproduces_legacy(intent, complexity):
 
 def test_permissive_budget_is_wildcard():
     assert PERMISSIVE_TIER_BUDGET.tools.allow_groups == ("*",)
-    assert PERMISSIVE_TIER_BUDGET.tools.exclude_mcp == ()
     assert PERMISSIVE_TIER_BUDGET.context == ()
 
 
@@ -187,14 +185,13 @@ def test_budgeted_caps_and_excludes_mcp(monkeypatch):
     agent._maybe_apply_tool_filter()
     got = _names(agent._tools_for_api)
     assert "write_file" in got                       # code_generation allowed
-    assert "mcp_notion_API_post_page" not in got      # notion: tier exclude ceiling
-    # Sprint 74: 'other' has no manifest unit and nothing matched this turn —
-    # disclose-on-match withholds it (distinct from the tier-exclude ceiling).
+    # GRV-009 E4 C4 — both notion (not eligible on T2 per tier_rule.eligible)
+    # and 'other' (no record) are withheld by the registry-driven mcp_allow; the
+    # exclude_mcp ceiling is gone, so excluded_mcp is always empty now.
+    assert "mcp_notion_API_post_page" not in got
     assert "mcp_other_do_thing" not in got
     sel = agent._last_tool_selection
-    # Provenance still distinguishes the TIER exclusion (notion) from match-
-    # withholding (other): only tier-excluded servers land in excluded_mcp.
-    assert sel["excluded_mcp"] == ["notion"]
+    assert sel["excluded_mcp"] == []
     assert sel["stripped_groups"] == []               # code_generation in allow
     assert sel["tier"] == "T2"
 

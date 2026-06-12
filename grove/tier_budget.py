@@ -76,8 +76,7 @@ GATEABLE_CONTEXT_BLOCKS: frozenset = frozenset(
     {"claude_contract", "goal_record", "skills_index"}
 )
 
-# Wildcard token. ``allow_groups: ["*"]`` = the full tool registry;
-# ``exclude_mcp: ["*"]`` = every MCP server excluded on the tier.
+# Wildcard token. ``allow_groups: ["*"]`` = the full tool registry.
 WILDCARD = "*"
 
 
@@ -86,13 +85,16 @@ class ToolBudget:
     """The ``tools`` half of a tier budget (D4).
 
     ``allow_groups`` — tool-group names (from ``tool_groups.yaml``) whose tools
-    may load on this tier; ``("*",)`` admits the full registry. ``exclude_mcp``
-    — MCP server names excluded on this tier; ``("*",)`` excludes every MCP.
-    Both are stored in declared order.
+    may load on this tier; ``("*",)`` admits the full registry. Stored in
+    declared order.
+
+    GRV-009 E4 C4 — ``exclude_mcp`` retired: per-tier MCP exposure is now
+    governed solely by the ``kind=mcp`` Capability records (``tier_rule.eligible``
+    is the tier ceiling, ``trigger`` the per-turn allow). See
+    ``grove.capability_registry`` and ``run_agent._compute_mcp_allow``.
     """
 
     allow_groups: Tuple[str, ...]
-    exclude_mcp: Tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -124,7 +126,7 @@ class TierBudget:
 # every MCP passes — so stripped_groups is always empty and no escalation fires.
 PERMISSIVE_TIER_BUDGET = TierBudget(
     context=(),
-    tools=ToolBudget(allow_groups=(WILDCARD,), exclude_mcp=()),
+    tools=ToolBudget(allow_groups=(WILDCARD,)),
 )
 
 
@@ -344,19 +346,18 @@ def _parse_tier_budget(
             )
         context.append(item)
 
-    # ── tools: allow_groups + exclude_mcp (D4) ───────────────────────────
+    # ── tools: allow_groups (D4). GRV-009 E4 C4 — exclude_mcp retired; an
+    # ``exclude_mcp`` key in an old config is now silently ignored (MCP is
+    # registry-governed). ────────────────────────────────────────────────
     tools_raw = spec.get("tools")
     if not isinstance(tools_raw, dict):
         raise ValueError(
             f"routing config at {target}: tier_budgets[{tier_name!r}].tools must "
-            f"be a mapping with 'allow_groups' and 'exclude_mcp' (got "
+            f"be a mapping with 'allow_groups' (got "
             f"{type(tools_raw).__name__})"
         )
     allow_groups = _parse_str_list(
         tools_raw.get("allow_groups"), tier_name, "tools.allow_groups", target
-    )
-    exclude_mcp = _parse_str_list(
-        tools_raw.get("exclude_mcp"), tier_name, "tools.exclude_mcp", target
     )
 
     # allow_groups cross-check against the taxonomy (D2). '*' is the wildcard;
@@ -393,7 +394,6 @@ def _parse_tier_budget(
         context=tuple(context),
         tools=ToolBudget(
             allow_groups=tuple(allow_groups),
-            exclude_mcp=tuple(exclude_mcp),
         ),
         prefill_ceiling_tokens=prefill_ceiling_tokens,
     )

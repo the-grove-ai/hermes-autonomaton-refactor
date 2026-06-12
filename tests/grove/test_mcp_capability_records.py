@@ -49,6 +49,8 @@ def test_record_is_mcp_kind_with_locked_trigger_and_tier(caps, rid):
     assert c.lifecycle.state == LifecycleState.APPROVED
     assert c.lifecycle.provenance == Provenance.MIGRATED
     assert c.telemetry.feed  # non-empty binding
+    # GRV-009 E4 C4 — eager-on-match is the live semantics after index retirement.
+    assert c.context.disclosure.value == "eager"
     # Server binding the C3 attribution map parses.
     assert c.context.payload.startswith("mcp_schema:notion")
 
@@ -59,12 +61,12 @@ def test_read_record_is_green_write_record_is_yellow(caps):
     assert caps["notion_write"].zone == Zone.YELLOW
 
 
-def test_nothing_consumes_records_yet(caps):
-    # C1 guardrail: the gating still reads the legacy keys; no production code
-    # consumes the MCP records this commit. (Documents intent; the C2 wiring is
-    # what flips authority to the registry.)
-    import grove.context_budget as cb
-    src = (REPO / "grove" / "context_budget.py").read_text()
-    # The legacy ceiling is still the live gate (registry not yet wired in).
-    assert "exclude_mcp" in src
-    assert hasattr(cb, "resolve_tools_for_tier")
+def test_records_are_the_sole_mcp_gate_after_c4(caps):
+    # C1 wrote this as a "nothing consumes them yet" guardrail; C2/C4 flipped
+    # authority to the registry and retired the legacy keys. The exclude_mcp
+    # field is gone from the tier budget, and the registry gating helpers exist.
+    from grove.tier_budget import ToolBudget
+    import run_agent
+    assert "exclude_mcp" not in ToolBudget.__dataclass_fields__
+    assert hasattr(run_agent.AIAgent, "_compute_mcp_allow")
+    assert hasattr(run_agent.AIAgent, "_mcp_server_of_record")

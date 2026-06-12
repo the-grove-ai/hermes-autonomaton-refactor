@@ -36,16 +36,19 @@ TAXONOMY = {
 }
 
 
-def _tb(allow, exclude, context=()):
+def _tb(allow, context=()):
     return TierBudget(
         context=tuple(context),
-        tools=ToolBudget(allow_groups=tuple(allow), exclude_mcp=tuple(exclude)),
+        tools=ToolBudget(allow_groups=tuple(allow)),
     )
 
 
-T3 = _tb(["*"], [])  # apex — no group cap, all MCP
-T2 = _tb(["core", "code_generation", "debugging", "analysis"], ["notion"])
-T1 = _tb(["core"], ["*"])  # floor — core only, no MCP
+# GRV-009 E4 C4 — exclude_mcp retired; MCP exposure is governed by the registry
+# (kind=mcp records), not the tier budget. These low-level budgets exercise the
+# native group cap + the registry-driven ``mcp_allow`` flip in _partition_tools.
+T3 = _tb(["*"])  # apex — no group cap
+T2 = _tb(["core", "code_generation", "debugging", "analysis"])
+T1 = _tb(["core"])  # floor — core only
 
 
 def _mk(*names):
@@ -91,13 +94,13 @@ def test_resolve_tool_set_legacy_unchanged():
     assert resolve_tool_set("unknown", "simple", TAXONOMY) is None
 
 
-# ── Sprint 74 Phase 2: MCP disclose-on-match (mcp_allow) ───────────────────
+# ── MCP disclose-on-match (mcp_allow) — the _partition_tools flip ──────────
 #
-# mcp_allow=None  -> legacy: every MCP admitted unless tier-excluded (the flip
-#                    is OFF, byte-for-byte — backward-compat for no-manifest).
-# mcp_allow=<set> -> the flip is ON: an MCP server is admitted only when it
-#                    MATCHED this turn (server in the set) AND its server is not
-#                    in the tier's exclude_mcp (exclude stays the hard ceiling).
+# mcp_allow=None  -> no mcp records / legacy: every MCP admitted (flip OFF).
+# mcp_allow=<set> -> flip ON: an MCP server is admitted only when its server is
+#                    in the set (eligible-on-tier AND trigger-matched, computed
+#                    by run_agent._compute_mcp_allow). GRV-009 E4 C4: the
+#                    exclude_mcp ceiling is retired — the set is the sole gate.
 
 
 def test_mcp_allow_none_is_legacy_byte_for_byte():
@@ -130,16 +133,10 @@ def test_mcp_allow_empty_withholds_all_mcp():
     assert "terminal" in _names(list(res.tools))
 
 
-def test_exclude_mcp_is_hard_ceiling_over_match():
-    # T2 excludes 'notion'. Even when notion MATCHED this turn, it stays out;
-    # 'other' matched and is not excluded, so it discloses.
-    res = resolve_tools_for_tier(
-        ALL_TOOLS, "analysis", "moderate", TAXONOMY, T2, mcp_allow={"notion", "other"}
-    )
-    n = _names(list(res.tools))
-    assert "mcp_notion_API_post_page" not in n   # excluded ceiling wins
-    assert "notion" in res.excluded_mcp
-    assert "mcp_other_do_thing" in n             # matched + not excluded
+# GRV-009 E4 C4 — test_exclude_mcp_is_hard_ceiling_over_match retired: the
+# exclude_mcp ceiling is gone. The tier ceiling now lives in tier_rule.eligible
+# and is folded into the mcp_allow set by run_agent._compute_mcp_allow (covered
+# by tests/grove/test_mcp_gating_parity.py).
 
 
 def test_mcp_allow_via_filter_tools_by_name():
@@ -168,21 +165,12 @@ def test_t3_wildcard_equals_legacy_sprint29():
     assert res.fallback is False
 
 
-# ── R1 intersection + D4 mcp exclude ───────────────────────────────────────
-
-
-def test_t2_caps_intent_and_excludes_notion_keeps_other_mcp():
-    res = resolve_tools_for_tier(
-        ALL_TOOLS, "code_generation", "moderate", TAXONOMY, T2
-    )
-    got = _names(res.tools)
-    assert "write_file" in got and "patch" in got           # code_generation in allow
-    assert "mcp_notion_API_post_page" not in got            # notion excluded
-    assert "mcp_notion_API_post_search" not in got
-    assert "mcp_other_do_thing" in got                      # other MCP allowed by default
-    assert res.excluded_mcp == frozenset({"notion"})
-    assert res.stripped_groups == frozenset()               # code_generation not stripped
-    assert "delegate_task" not in got                       # exploratory not selected (moderate)
+# ── R1 intersection (native group cap) ─────────────────────────────────────
+# GRV-009 E4 C4 — test_t2_caps_intent_and_excludes_notion_keeps_other_mcp
+# retired: the exclude_mcp ceiling that withheld notion on T2 is gone. T2 MCP
+# exposure (notion withheld; T2 not in tier_rule.eligible) is now proven in
+# tests/grove/test_mcp_gating_parity.py. The native group cap is exercised by
+# the remaining tests in this file.
 
 
 # ── D8 strip-detection: intent group the tier forbids ──────────────────────
@@ -207,7 +195,9 @@ def test_complex_turn_strips_exploratory_on_t2():
     assert "delegate_task" not in _names(res.tools)
 
 
-def test_t1_caps_to_core_strips_domain_and_excludes_all_mcp():
+def test_t1_caps_to_core_strips_domain():
+    # GRV-009 E4 C4 — the MCP assertions moved to test_mcp_gating_parity.py (T1
+    # MCP-free is now registry-enforced, not the exclude_mcp ["*"] ceiling).
     res = resolve_tools_for_tier(
         ALL_TOOLS, "code_generation", "moderate", TAXONOMY, T1
     )
@@ -215,8 +205,6 @@ def test_t1_caps_to_core_strips_domain_and_excludes_all_mcp():
     assert res.stripped_groups == frozenset({"code_generation"})
     assert "write_file" not in got                          # domain stripped
     assert "clarify" in got                                 # core survives
-    assert not any(n.startswith("mcp_") for n in got)       # exclude_mcp: ["*"]
-    assert "notion" in res.excluded_mcp and "other" in res.excluded_mcp
 
 
 # ── crash-proof unparseable MCP: admitted + recorded + logged ──────────────
@@ -251,7 +239,8 @@ def test_unknown_intent_fallback_capped_on_t2():
     assert res.stripped_groups == frozenset()
     assert "write_file" in res.allowed_names                # allow_groups materialized
     assert "delegate_task" not in res.allowed_names         # exploratory not allowed
-    assert "mcp_notion_API_post_page" not in _names(res.tools)  # notion still excluded
+    # GRV-009 E4 C4 — MCP gating moved to the registry (mcp_allow); at this
+    # low-level call with mcp_allow=None nothing gates MCP. See test_mcp_gating_parity.
 
 
 def test_unknown_intent_fallback_full_on_t3():

@@ -321,31 +321,25 @@ def _partition_tools(
 
     Returns ``(kept, excluded_mcp_servers, unparseable_mcp_names)``.
 
-    * MCP tool (name starts ``mcp_``): gated by TWO independent rules that
-      compose — the tier's hard ceiling and the per-turn disclosure match.
-        - ``exclude_mcp`` (``tier_budget``) is the HARD CEILING: a server in it
-          (``"*"`` = all) is excluded outright and recorded in
-          ``excluded_mcp_servers``. This wins over any match.
-        - ``mcp_allow`` is the per-turn DISCLOSE-ON-MATCH set (Sprint 74). When
-          ``None`` the flip is OFF — every non-excluded MCP passes, byte-for-
-          byte legacy (the no-manifest / pre-Sprint-74 behavior). When a set,
-          the flip is ON — a non-excluded MCP passes ONLY if its server is in
-          the set (it matched this turn's manifest trigger); an unmatched
-          server is withheld.
+    * MCP tool (name starts ``mcp_``): gated by the ``mcp_allow`` set alone.
+      GRV-009 E4 C4 — the legacy ``exclude_mcp`` ceiling is RETIRED;
+      ``mcp_allow`` (computed by ``run_agent._compute_mcp_allow`` from the
+      ``kind=mcp`` Capability records: ``tier_rule.eligible`` ceiling +
+      ``trigger`` per-turn match) is the SOLE MCP gate. ``None`` ⇒ no records
+      (flip OFF, every MCP passes — vanilla/legacy). A set ⇒ a server passes
+      ONLY if it is in the set; otherwise withheld. ``excluded_mcp_servers`` is
+      always empty now (kept for the return shape / provenance).
       An unparseable MCP name is admitted by default and recorded — never
-      silently swallowed, and never subject to the match flip (it cannot be
-      mapped to a manifest unit, so surfacing beats guessing).
+      silently swallowed, and never subject to the match flip.
     * non-MCP tool: admitted when ``allowed is None`` (pass-through) or its name
       is in ``allowed``. The MCP flip never touches native tools.
 
-    With ``tier_budget=None`` and ``mcp_allow=None`` every MCP passes — the
-    legacy Sprint 29 behavior is the empty-exclude / flip-off case of the rule,
-    not a separate code path.
+    With ``mcp_allow=None`` every MCP passes — the no-records / vanilla case.
     """
-    exclude: Set[str] = (
-        set(tier_budget.tools.exclude_mcp) if tier_budget is not None else set()
-    )
-    exclude_all = _WILDCARD in exclude
+    # GRV-009 E4 C4 — the exclude_mcp ceiling is retired; the registry-driven
+    # ``mcp_allow`` (kind=mcp records: tier_rule.eligible + trigger) is the sole
+    # MCP gate. ``excluded_mcp`` is always empty now (kept for the return shape /
+    # the D10 provenance field).
     kept: List[dict] = []
     excluded_mcp: Set[str] = set()
     unparseable: List[str] = []
@@ -365,12 +359,9 @@ def _partition_tools(
                 unparseable.append(name)  # type: ignore[arg-type]
                 kept.append(tool)
                 continue
-            # Hard ceiling first: tier exclusion wins over any per-turn match.
-            if exclude_all or server in exclude:
-                excluded_mcp.add(server)
-                continue
-            # Disclose-on-match flip (Sprint 74). None ⇒ flip off (legacy
-            # passthrough). A set ⇒ admit only the servers that matched.
+            # Disclose-on-match (GRV-009 E4): the registry-driven ``mcp_allow``.
+            # None ⇒ no mcp records (legacy allow-by-default). A set ⇒ admit
+            # only the servers eligible-on-tier AND trigger-matched this turn.
             if mcp_allow is not None and server not in mcp_allow:
                 continue
             kept.append(tool)
@@ -456,12 +447,11 @@ def resolve_tools_for_tier(
     the intent selection passes through unchanged — the T3 "unchanged / full
     load" case). A group the intent needs but the tier forbids is reported in
     ``stripped_groups`` for the escalation net (D8); it is never silently
-    dropped. MCP exposure is gated by the tier's ``exclude_mcp`` (D4) and, when
-    ``mcp_allow`` is supplied, by the Sprint 74 disclose-on-match flip: a
-    non-excluded MCP server is admitted only if it matched this turn's manifest
-    trigger (``mcp_allow`` is the matched-server set). ``mcp_allow=None`` leaves
-    the pre-Sprint-74 allow-by-default-unless-excluded behavior byte-for-byte —
-    the flip engages only when the caller threads a matched set.
+    dropped. MCP exposure is gated solely by ``mcp_allow`` (GRV-009 E4 C4 — the
+    ``exclude_mcp`` ceiling is retired): a server is admitted only if it is in
+    the matched set (``run_agent._compute_mcp_allow`` from the kind=mcp records:
+    tier_rule.eligible + trigger). ``mcp_allow=None`` ⇒ no records, allow-by-
+    default.
 
     On an unknown intent (maximal fallback) the budget is STILL honored — the
     surface is capped to ``allow_groups`` (or left full when the tier allows
@@ -483,7 +473,7 @@ def resolve_tools_for_tier(
         logger.info(
             "[grove.context_budget] maximal fallback under tier budget "
             "(intent_class=%r) — capped to allow_groups=%s, MCP gated by "
-            "exclude_mcp",
+            "the registry mcp_allow",
             intent_class,
             "*" if wildcard_groups else sorted(allow),
         )

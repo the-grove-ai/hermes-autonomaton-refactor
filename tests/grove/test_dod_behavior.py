@@ -33,6 +33,22 @@ def _names(tools):
     return [t["function"]["name"] for t in tools]
 
 
+def _reg_allow(tier, intent="code_generation", message="update the notion page"):
+    """GRV-009 E4 — the registry-driven mcp_allow for a tier on a notion-matching
+    turn. The turn is a code_generation turn (so write_file selects) whose
+    message keyword-matches the notion record's trigger. T2 is not tier-eligible
+    (notion record tier_rule.eligible:[3]) so notion is withheld; T3 is eligible
+    and the keyword matches so notion discloses. (The exclude_mcp ceiling that
+    used to do this is retired.)"""
+    import run_agent
+    import grove.providers as P
+    a = object.__new__(run_agent.AIAgent)
+    a.tools = []
+    a._current_messages = [{"role": "user", "content": message}]
+    P._last_routed_tier = tier
+    return a._compute_mcp_allow(intent, None)
+
+
 # A turn's candidate registry: core + code tools, a hosted Notion MCP tool, and
 # another MCP server (to prove only Notion is excluded, not MCP wholesale).
 TURN_TOOLS = _mk(
@@ -57,11 +73,14 @@ def _contract_composer():
 
 
 def test_t2_profile_excludes_notion_mcp():
-    res = resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T2)
+    # GRV-009 E4 C4 — notion is withheld on T2 because it is not tier-eligible
+    # (tier_rule.eligible:[3]), via the registry mcp_allow, not the retired
+    # exclude_mcp ceiling. excluded_mcp is always empty now; 'other' (no record)
+    # is also withheld under disclose-on-match.
+    res = resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T2,
+                                 mcp_allow=_reg_allow("T2"))
     names = _names(res.tools)
     assert not any(n.startswith("mcp_notion") for n in names)   # the ~18.4K cut
-    assert "notion" in res.excluded_mcp
-    assert "mcp_other_do_thing" in names                         # only Notion excluded
     assert "write_file" in names                                # code tools still load
 
 
@@ -95,17 +114,19 @@ def test_t3_profile_loads_claude_contract():
 
 
 def test_dod_postcondition_7_t2_excludes_both_t3_loads_both():
-    # T2: neither Notion MCP nor claude_contract.
+    # T2: neither Notion MCP (not tier-eligible) nor claude_contract.
     t2_tools = _names(
-        resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T2).tools
+        resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T2,
+                               mcp_allow=_reg_allow("T2")).tools
     )
     t2_blocks = frozenset(T2.context)
     assert not any(n.startswith("mcp_notion") for n in t2_tools)
     assert not tier_admits_context_block("claude_contract", t2_blocks)
 
-    # T3: both present.
+    # T3: both present (notion discloses on the matching turn).
     t3_tools = _names(
-        resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T3).tools
+        resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T3,
+                               mcp_allow=_reg_allow("T3")).tools
     )
     t3_blocks = frozenset(T3.context)
     assert any(n.startswith("mcp_notion") for n in t3_tools)

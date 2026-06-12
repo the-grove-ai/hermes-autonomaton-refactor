@@ -21,7 +21,6 @@ from grove.manifest import (
     DisclosableUnit,
     UnitTrigger,
     load_manifest,
-    matched_mcp_servers,
 )
 
 
@@ -245,46 +244,10 @@ def _mcp_unit(uid, intents=(), keywords=(), dock_goal=None):
     )
 
 
-def test_matched_on_intent():
-    units = [_mcp_unit("notion", intents=("research",), keywords=("notion",))]
-    assert matched_mcp_servers(
-        units, intent_class="research", message="anything"
-    ) == frozenset({"notion"})
-
-
-def test_matched_on_keyword_substring():
-    units = [_mcp_unit("notion", intents=("research",), keywords=("notion", "page"))]
-    assert matched_mcp_servers(
-        units, intent_class="code_generation", message="update the Notion page"
-    ) == frozenset({"notion"})
-
-
-def test_no_match_returns_empty():
-    units = [_mcp_unit("notion", intents=("research",), keywords=("notion",))]
-    assert matched_mcp_servers(
-        units, intent_class="code_generation", message="fix the failing test"
-    ) == frozenset()
-
-
-def test_matched_on_dock_goal():
-    units = [_mcp_unit("airtable", keywords=("__nomatch__",), dock_goal="grv-001")]
-    assert matched_mcp_servers(
-        units, intent_class=None, message="x", resolved_goal_id="grv-001"
-    ) == frozenset({"airtable"})
-    assert matched_mcp_servers(
-        units, intent_class=None, message="x", resolved_goal_id="other-goal"
-    ) == frozenset()
-
-
-def test_matcher_ignores_non_mcp_units():
-    tool = DisclosableUnit(
-        id="terminal", kind="tool", oneline="run", payload="tool_schema:terminal",
-        tiers=("T1",), trigger=UnitTrigger((), (), None),
-    )
-    units = [tool, _mcp_unit("notion", keywords=("notion",))]
-    assert matched_mcp_servers(
-        units, intent_class=None, message="open notion"
-    ) == frozenset({"notion"})
+# GRV-009 E4 C4 — the manifest MCP-matching tests (matched_mcp_servers) are
+# retired with the function: per-turn MCP disclose-on-match moved onto the
+# kind=mcp Capability records and is covered by tests/grove/test_mcp_gating_parity.py
+# (run_agent._compute_mcp_allow / _mcp_trigger_reason).
 
 
 # ── Phase 3: build_manifest — derive tool units + merge declarative ──────
@@ -319,7 +282,7 @@ DERIVE_TAXONOMY = {
 
 
 def _tb(allow):
-    return TierBudget(context=(), tools=ToolBudget(allow_groups=tuple(allow), exclude_mcp=()))
+    return TierBudget(context=(), tools=ToolBudget(allow_groups=tuple(allow)))
 
 
 # T1 = core only; T2 = core + code_generation; T3 = wildcard (all groups).
@@ -425,7 +388,8 @@ def test_repo_yaml_loads_and_holds_only_declarative_units():
     assert all(":" in u.payload and "{" not in u.payload for u in units)
     kinds = {u.kind for u in units}
     assert "tool" not in kinds                 # tool units are derived, not in YAML
-    assert {"mcp", "goal"} <= kinds
+    assert {"goal"} <= kinds
+    assert "mcp" not in kinds                   # GRV-009 E4 C4 — mcp units retired
 
 
 def test_repo_build_manifest_merges_derived_tools_with_declarative():
@@ -439,7 +403,8 @@ def test_repo_build_manifest_merges_derived_tools_with_declarative():
     register_builtin_tools(reg)
     units = build_manifest(reg)
     kinds = {u.kind for u in units}
-    assert {"tool", "mcp", "goal"} <= kinds
+    assert {"tool", "goal"} <= kinds
+    assert "mcp" not in kinds                   # GRV-009 E4 C4 — mcp units retired
     ids = [u.id for u in units]
     assert len(ids) == len(set(ids))
     assert all(len(u.oneline) <= ONELINE_CAP for u in units)
