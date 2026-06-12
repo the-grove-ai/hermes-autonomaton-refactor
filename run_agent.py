@@ -2098,6 +2098,23 @@ class AIAgent:
         elif not self.quiet_mode:
             print("🛠️  No tools loaded (all tools filtered out or unavailable)")
         
+        # GRV-009 spike C1 — construction-surface provenance. The root cause the
+        # spike traced (Workspace verbs absent from a scheduling/T1 turn) was a
+        # platform-admission gate UPSTREAM of the per-turn trimmer: the verbs
+        # never entered ``self.tools``, so the tier ``tool_selection`` trace —
+        # which only sees what the trimmer received — could not reveal it.
+        # Snapshot WHICH toolsets the platform admitted and the names that
+        # reached the construction surface; the first per-turn ``tool_selection``
+        # event carries it (lazy emit in ``_maybe_apply_tool_filter``). Pure
+        # read of already-computed state — no behavior change.
+        self._construction_provenance = {
+            "enabled_toolsets": sorted(self.enabled_toolsets or []),
+            "disabled_toolsets": sorted(disabled_toolsets or []),
+            "construction_tool_count": len(self.tools or []),
+            "construction_tool_names": sorted(self.valid_tool_names),
+        }
+        self._construction_provenance_emitted = False
+
         # Check tool requirements
         if self.tools and not self.quiet_mode:
             # Sprint 53 — read from the Dispatcher-owned registry.
@@ -3225,11 +3242,34 @@ class AIAgent:
             "stripped_groups": sorted(res.stripped_groups),
             "excluded_mcp": sorted(res.excluded_mcp),
             "unparseable_mcp": list(res.unparseable_mcp),
+            # GRV-009 spike C1 — the selected tool NAMES, not just the count.
+            # Without these the operator cannot tell from telemetry whether a
+            # given verb (e.g. calendar_list) was on the delivered surface.
+            "selected_names": sorted(
+                t["function"]["name"]
+                for t in res.tools
+                if isinstance(t, dict) and t.get("function", {}).get("name")
+            ),
         }
+
+        # GRV-009 spike C1 — ride the construction-surface provenance on the
+        # FIRST tool_selection event of the session (lazy; existing sink). It
+        # answers "did the platform admit the Workspace toolset at all" — the
+        # question the per-turn trimmer trace alone cannot. Guarded so agents
+        # built outside __init__ (tests) never emit a half-captured snapshot.
+        if not getattr(self, "_construction_provenance_emitted", True):
+            self._last_tool_selection["construction_provenance"] = (
+                self._construction_provenance
+            )
+            self._construction_provenance_emitted = True
 
         # GRV-009 E2 C3 — additive Workspace capability hook. This single call
         # is the ONLY new per-turn behavior; deleting it restores prior tool
         # resolution byte-for-byte. No-op outside the four Workspace intents.
+        # GRV-009 spike C1 — the hook stamps its outcome (fired / carrier verbs /
+        # payload-attached) onto ``_last_tool_selection`` so the same ledger
+        # event carries it; this is what reveals whether the direct/CLI path
+        # actually attached the payload.
         self._apply_capability_hook(intent_class)
 
     # ── GRV-009 E2 C3 — Workspace Capability hook (additive) ─────────────────
@@ -3284,49 +3324,101 @@ class AIAgent:
         """
         self._capability_records_applied = []
         self._capability_guidance = None
-        if intent_class not in self._WORKSPACE_CAPABILITY_INTENTS:
-            return  # additive no-op outside the four Workspace intent classes
-
+        # GRV-009 spike C1 — outcome stamped at the single exit (``finally``) so
+        # EVERY return path records whether the hook fired, which Workspace
+        # carrier verbs were present on the delivered surface, and whether the
+        # payload actually attached. An empty ``carrier_verbs_present`` on a
+        # fired turn is the admission-gate signature (the verbs never reached
+        # the surface — the spike's root cause). Behavior below is byte-identical
+        # to the pre-C1 hook; only the bookkeeping vars + the stamp are new.
+        fired = intent_class in self._WORKSPACE_CAPABILITY_INTENTS
+        carrier_verbs_present: List[str] = []
+        payload_attached = False
         try:
-            from grove.capability_registry import load_capabilities
-            records = sorted(
-                (
-                    c for c in load_capabilities().values()
-                    if intent_class in c.trigger.intents
-                ),
-                key=lambda c: c.id,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[run_agent] Workspace capability hook skipped — records "
-                "unloadable: %r", exc,
-            )
-            return
-        if not records:
-            return
+            if not fired:
+                return  # additive no-op outside the four Workspace intent classes
 
-        self._capability_records_applied = [c.id for c in records]
-        guidance = self._compose_capability_guidance(records)
-        self._capability_guidance = guidance
+            try:
+                from grove.capability_registry import load_capabilities
+                records = sorted(
+                    (
+                        c for c in load_capabilities().values()
+                        if intent_class in c.trigger.intents
+                    ),
+                    key=lambda c: c.id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[run_agent] Workspace capability hook skipped — records "
+                    "unloadable: %r", exc,
+                )
+                return
+            if not records:
+                return
 
-        surface = self._tools_for_turn
-        if not surface:
-            return  # fallback / full-registry turn — guidance stays stashed
-        ws_names = self._workspace_verb_names()
-        if not ws_names:
-            return
-        for i, t in enumerate(surface):
-            if not isinstance(t, dict):
-                continue
-            if t.get("function", {}).get("name") in ws_names:
-                carrier = dict(t)
-                fn = dict(carrier.get("function", {}))
-                desc = fn.get("description", "")
-                if "GRV-009" not in desc:  # idempotent
-                    fn["description"] = guidance + "\n\n" + desc
-                carrier["function"] = fn
-                surface[i] = carrier
-                break  # one carrier — the model reads every tool description
+            self._capability_records_applied = [c.id for c in records]
+            guidance = self._compose_capability_guidance(records)
+            self._capability_guidance = guidance
+
+            surface = self._tools_for_turn
+            if not surface:
+                return  # fallback / full-registry turn — guidance stays stashed
+            ws_names = self._workspace_verb_names()
+            if not ws_names:
+                return
+            carrier_verbs_present = sorted(
+                n for n in ws_names
+                if any(
+                    isinstance(t, dict) and t.get("function", {}).get("name") == n
+                    for t in surface
+                )
+            )
+            for i, t in enumerate(surface):
+                if not isinstance(t, dict):
+                    continue
+                if t.get("function", {}).get("name") in ws_names:
+                    carrier = dict(t)
+                    fn = dict(carrier.get("function", {}))
+                    desc = fn.get("description", "")
+                    if "GRV-009" not in desc:  # idempotent
+                        fn["description"] = guidance + "\n\n" + desc
+                    carrier["function"] = fn
+                    surface[i] = carrier
+                    payload_attached = True
+                    break  # one carrier — the model reads every tool description
+        finally:
+            self._stamp_capability_outcome(
+                fired=fired,
+                carrier_verbs_present=carrier_verbs_present,
+                payload_attached=payload_attached,
+            )
+
+    def _stamp_capability_outcome(
+        self, *, fired: bool, carrier_verbs_present, payload_attached: bool
+    ) -> None:
+        """GRV-009 spike C1 — record the capability-hook outcome.
+
+        Rides the per-turn ``tool_selection`` trace (existing kaizen sink) by
+        merging onto ``_last_tool_selection``, and emits a log line for the
+        direct/CLI path where no ledger turn-write fires. ``fired`` = the turn
+        matched a Workspace intent; ``carrier_verbs_present`` = the Workspace
+        verbs actually on the delivered surface (empty on a fired turn ⇒ the
+        admission gate dropped them upstream); ``payload_attached`` = a carrier
+        received the records' guidance. Never raises into the turn.
+        """
+        outcome = {
+            "capability_hook_fired": bool(fired),
+            "capability_records_applied": list(self._capability_records_applied),
+            "capability_carrier_verbs_present": list(carrier_verbs_present),
+            "capability_payload_attached": bool(payload_attached),
+        }
+        sel = getattr(self, "_last_tool_selection", None)
+        if isinstance(sel, dict):
+            sel.update(outcome)
+        logger.info(
+            "[grove.capability_hook] %s",
+            json.dumps(outcome, sort_keys=True, default=str),
+        )
 
     def apply_tier(self, model, max_tokens):
         """Swap the active cognitive tier in place — model and token budget only.
