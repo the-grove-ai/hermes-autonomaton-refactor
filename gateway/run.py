@@ -5206,6 +5206,19 @@ class GatewayRunner:
                 len(active_agents),
                 self._running_agent_count(),
             )
+            # GRV-009 E3 — flush the capability-telemetry feed once agents have
+            # drained, so a clean (service) restart loses no records. The
+            # SIGKILL boundary is accepted and documented. Best-effort: a feed
+            # flush failure must never block shutdown.
+            try:
+                from grove import capability_feed as _capfeed
+                _capfeed.flush(timeout=5.0)
+                logger.info(
+                    "Shutdown phase: capability feed flushed at +%.2fs",
+                    _phase_elapsed(),
+                )
+            except Exception as _e:
+                logger.debug("capability_feed flush error: %s", _e)
             if timed_out:
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
