@@ -32,6 +32,13 @@ from hermes_constants import get_hermes_home
 _SCRIPT_REL = "skills/productivity/google-workspace/scripts/google_api.py"
 _TOOLSET = "google-workspace"
 
+# Workspace OAuth credential files the verbs require — migrated from the retired
+# google-workspace SKILL.md ``required_credential_files`` frontmatter (GRV-009
+# E2 C3). Registered at register() time so remote sandboxes (Modal/Docker) mount
+# them and a missing token surfaces as setup. Final home is a Capability record
+# field (banked Amendment A4 candidate, "implementation bindings").
+_REQUIRED_CREDENTIAL_FILES = ["google_token.json", "google_client_secret.json"]
+
 
 def _script_path() -> Path:
     return Path(get_hermes_home()) / _SCRIPT_REL
@@ -239,3 +246,8 @@ def register(reg):
             check_fn=_workspace_check,
             emoji=emoji,
         )
+    # GRV-009 E2 C3 — register the Workspace OAuth credential files so remote
+    # sandboxes mount them and a missing token surfaces as setup. This replaces
+    # the registration the retired skill performed from its frontmatter.
+    from tools.credential_files import register_credential_files
+    register_credential_files(_REQUIRED_CREDENTIAL_FILES)
