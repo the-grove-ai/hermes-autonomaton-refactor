@@ -363,3 +363,70 @@ class TestDispatcherToolSelectionEvent:
         d.dispatch_turn(agent, user_message="hi")
         events = d.ledger_for(agent).events_by_type("tool_selection")
         assert events == []
+
+
+# ── GRV-009 spike C1 — selected names + construction-surface provenance ────
+
+
+class TestSpikeC1Observability:
+    """The three observability signals the spike's GATE-A trace found missing:
+    the selected tool NAMES, the capability-hook outcome (covered in
+    test_capability_hook.py), and construction-surface provenance — all riding
+    the existing ``tool_selection`` event so no new sink is introduced."""
+
+    def test_selected_names_recorded(self, monkeypatch: pytest.MonkeyPatch):
+        _set_classification(
+            monkeypatch, intent_class="code_generation", complexity_signal="simple",
+        )
+        full = [
+            _tool("clarify"),        # core
+            _tool("write_file"),     # code_generation
+            _tool("patch"),          # code_generation
+            _tool("delegate_task"),  # exploratory — excluded on a simple turn
+        ]
+        agent = _bare_agent_with_tools(full)
+        agent._maybe_apply_tool_filter()
+        sel = agent._last_tool_selection
+        # The NAMES, not just the count — this is what would have shown
+        # calendar_list's absence on the failing turn.
+        assert sel["selected_names"] == ["clarify", "patch", "write_file"]
+        assert sel["selected_count"] == len(sel["selected_names"])
+        assert "delegate_task" not in sel["selected_names"]
+
+    def test_construction_provenance_emitted_once(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ):
+        _set_classification(
+            monkeypatch, intent_class="code_generation", complexity_signal="simple",
+        )
+        agent = _bare_agent_with_tools([_tool("clarify"), _tool("write_file")])
+        agent._construction_provenance = {
+            "enabled_toolsets": ["file"],
+            "disabled_toolsets": [],
+            "construction_tool_count": 2,
+            "construction_tool_names": ["clarify", "write_file"],
+        }
+        agent._construction_provenance_emitted = False
+
+        agent._maybe_apply_tool_filter()
+        first = agent._last_tool_selection
+        assert "construction_provenance" in first
+        assert first["construction_provenance"]["enabled_toolsets"] == ["file"]
+        assert agent._construction_provenance_emitted is True
+
+        # Second turn of the same session: provenance is NOT repeated.
+        agent._maybe_apply_tool_filter()
+        second = agent._last_tool_selection
+        assert "construction_provenance" not in second
+
+    def test_provenance_absent_when_not_captured(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Agents built outside __init__ (no provenance captured) never emit a
+        # half-formed snapshot — the lazy guard defaults to "already emitted".
+        _set_classification(
+            monkeypatch, intent_class="code_generation", complexity_signal="simple",
+        )
+        agent = _bare_agent_with_tools([_tool("clarify")])
+        agent._maybe_apply_tool_filter()
+        assert "construction_provenance" not in agent._last_tool_selection

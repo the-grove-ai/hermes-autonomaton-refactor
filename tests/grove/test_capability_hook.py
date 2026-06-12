@@ -126,6 +126,64 @@ def test_hook_wired_into_shared_per_turn_method():
     assert "agent._run_turn_generator(" in disp
 
 
+# ── GRV-009 spike C1 — hook outcome observability ─────────────────────────────
+
+
+def test_hook_stamps_outcome_when_payload_attaches():
+    carrier = _tool("gmail_search", "Search Gmail.")
+    surface = [_tool("terminal"), carrier, _tool("calendar_list")]
+    agent = _ws_agent(surface)
+    agent._last_tool_selection = {}
+
+    agent._apply_capability_hook("scheduling")
+
+    sel = agent._last_tool_selection
+    assert sel["capability_hook_fired"] is True
+    assert sel["capability_records_applied"] == WORKSPACE_IDS
+    assert sel["capability_payload_attached"] is True
+    # Both Workspace verbs on the surface are reported as carrier candidates.
+    assert sel["capability_carrier_verbs_present"] == ["calendar_list", "gmail_search"]
+
+
+def test_hook_stamps_admission_gate_signature_when_no_verbs_on_surface():
+    # The spike's root-cause shape: a Workspace intent fires but the platform
+    # admission gate left ZERO Workspace verbs on the surface — fired, yet
+    # nothing to carry. This is the telemetry signature that would have named
+    # the bug on turn one.
+    surface = [_tool("terminal"), _tool("read_file")]
+    agent = _ws_agent(surface)
+    agent._last_tool_selection = {}
+
+    agent._apply_capability_hook("scheduling")
+
+    sel = agent._last_tool_selection
+    assert sel["capability_hook_fired"] is True
+    assert sel["capability_carrier_verbs_present"] == []   # admission gate dropped them
+    assert sel["capability_payload_attached"] is False
+
+
+def test_hook_stamps_outcome_non_workspace_intent():
+    agent = _ws_agent([_tool("terminal"), _tool("web_search")])
+    agent._last_tool_selection = {}
+
+    agent._apply_capability_hook("conversation")
+
+    sel = agent._last_tool_selection
+    assert sel["capability_hook_fired"] is False
+    assert sel["capability_records_applied"] == []
+    assert sel["capability_payload_attached"] is False
+    assert sel["capability_carrier_verbs_present"] == []
+
+
+def test_hook_outcome_stamp_tolerates_absent_selection():
+    # The direct/CLI path may invoke the hook before any tool_selection dict
+    # exists; the stamp must log-only, never raise. (Residual CLI question.)
+    agent = _ws_agent([_tool("gmail_search")])
+    # deliberately no _last_tool_selection attribute
+    agent._apply_capability_hook("messaging")  # must not raise
+    assert agent._capability_records_applied == WORKSPACE_IDS
+
+
 # ── Skill retirement: gone from every scanned path, verbs/scripts intact ──────
 
 
