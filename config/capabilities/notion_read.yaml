@@ -1,0 +1,70 @@
+# Notion MCP — READ capability (GRV-009 E4, mcp-migration-v1).
+# Risk profile: read (no remote mutation). Governs the GREEN-zoned hosted
+# Notion MCP tools:
+#   mcp_notion_notion_search, mcp_notion_notion_fetch,
+#   mcp_notion_notion_get_comments, mcp_notion_notion_get_users,
+#   mcp_notion_notion_get_teams, mcp_notion_notion_query_database_view,
+#   mcp_notion_notion_query_meeting_notes.
+# Zone GREEN — strict parity with zones.schema.yaml::tool_zones (Sprint 69).
+id: notion_read
+kind: mcp
+trigger:
+  # Strict parity with config/manifest.yaml notion unit's disclose-on-match
+  # trigger (the per-turn mcp_allow signal this record replaces).
+  intents: [research, retrieval]
+  keywords: [notion, page, database, workspace, doc]
+  dock_affinity: []   # manifest notion unit declares dock_goal: null — empty, exactly as today
+tier_rule:
+  # D2/D3 parity: notion's EFFECTIVE exposure is T3 only — T2 ceiling
+  # (exclude_mcp: [notion]) and T1 wildcard (exclude_mcp: ["*"]) deny it.
+  # eligible: [3] reproduces that ceiling; T1 AND T2 stay MCP-free.
+  eligible: [3]
+  preferred: 3          # must be in eligible (dry-run validation)
+  promotion_criteria: {}
+  validation:           # inert placeholders — validation fires only on promotion (epic out-of-scope)
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed     # binding string per the E2 record pattern (unified feed = E3 capability_feed)
+  track: [invocation, result, cost, latency, confidence, human_feedback]
+context:
+  disclosure: pull      # MCP schemas disclose-on-match then pull on demand (not eager)
+  dock_composition: none
+  payload: |
+    mcp_schema:notion
+
+    Notion workspace MCP (hosted at https://mcp.notion.com/mcp, Hermes-managed
+    OAuth) — READ operations. Schema is pulled live from the connected server;
+    this pointer binds the record to the ``notion`` MCP server.
+
+    Read tools (Green): search, fetch, get_comments, get_users, get_teams,
+    query_database_view, query_meeting_notes. Use these to find and read
+    Notion pages, databases, comments, and meeting notes.
+lifecycle:
+  state: approved          # migrated capability enters at the operator's locked gate
+  provenance: migrated
+  created_at: "2026-06-12T00:00:00+00:00"
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+    - actor: operator
+      timestamp: "2026-06-12T00:00:00+00:00"
+      from_state: migrated
+      to_state: approved
+      reason: "E4 migration — mcp-migration-v1: record replaces the notion manifest unit's read-side disclose-on-match + the exclude_mcp ceiling at the operator-locked gate (GATE-A)"
+      evidence: ["config/manifest.yaml#notion", "zones.schema.yaml#Notion-MCP-bridge"]
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+    - "capability: notion_read"
+    - "subsystem: hosted Notion MCP (mcp.notion.com/mcp) via tools/mcp_tool.py"
+    - "check: notion MCP server connected and OAuth valid (~/.grove auth); server reachable"
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
