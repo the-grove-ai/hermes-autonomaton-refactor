@@ -21,16 +21,16 @@ from grove.dispatcher import Dispatcher
 from grove.tier_budget import TierBudget, TierBudgetMissing, ToolBudget
 
 
-def _budget(context, allow=("core",), exclude=()):
+def _budget(context, allow=("core",)):
     return TierBudget(
         context=tuple(context),
-        tools=ToolBudget(allow_groups=tuple(allow), exclude_mcp=tuple(exclude)),
+        tools=ToolBudget(allow_groups=tuple(allow)),
     )
 
 
 BUDGETS = {
-    "T1": _budget([], allow=("core",), exclude=("*",)),
-    "T2": _budget(["goal_record"], allow=("core", "code_generation"), exclude=("notion",)),
+    "T1": _budget([], allow=("core",)),
+    "T2": _budget(["goal_record"], allow=("core", "code_generation")),
     "T3": _budget(["claude_contract", "goal_record", "skills_index"], allow=("*",)),
 }
 

@@ -25,7 +25,7 @@ _VALID_GROUPS = frozenset({"core", "exploratory", "analysis"})
 
 
 def _spec(**over):
-    base = {"context": [], "tools": {"allow_groups": ["core"], "exclude_mcp": []}}
+    base = {"context": [], "tools": {"allow_groups": ["core"]}}
     base.update(over)
     return base
 

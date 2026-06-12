@@ -44,8 +44,6 @@ __all__ = [
     "DisclosableUnit",
     "load_manifest",
     "build_manifest",
-    "matched_mcp_servers",
-    "mcp_match_reasons",
     "matched_tool_units",
 ]
 
@@ -172,69 +170,10 @@ class DisclosableUnit:
 # ── Match-pass (Phase 2): MCP disclose-on-match ──────────────────────────
 
 
-def matched_mcp_servers(
-    units,
-    *,
-    intent_class: Optional[str],
-    message: Optional[str],
-    resolved_goal_id: Optional[str] = None,
-) -> frozenset:
-    """The MCP server ids whose manifest trigger matches this turn.
-
-    A ``kind == "mcp"`` unit matches when ANY clause fires:
-
-    * **intent** — ``intent_class`` is in the unit's ``trigger.intents``.
-    * **keyword** — a ``trigger.keywords`` entry is a (case-insensitive)
-      substring of ``message`` (the same surface-form match the Dock uses).
-    * **goal** — ``trigger.dock_goal`` is set and equals ``resolved_goal_id``.
-      The caller supplies ``resolved_goal_id`` only on a goal-aligned turn
-      (``goal_alignment == "direct"``) — that is the "Dock goal-match via
-      goal_alignment" clause; on any other turn it is ``None`` and inert.
-
-    Tool and goal units are ignored — this gate governs MCP exposure only.
-    Pure function: no I/O, no classifier call. Returns a frozenset of matched
-    server ids (a unit's ``id`` is the MCP server name).
-    """
-    return frozenset(
-        mcp_match_reasons(
-            units,
-            intent_class=intent_class,
-            message=message,
-            resolved_goal_id=resolved_goal_id,
-        )
-    )
-
-
-def mcp_match_reasons(
-    units,
-    *,
-    intent_class: Optional[str],
-    message: Optional[str],
-    resolved_goal_id: Optional[str] = None,
-) -> Dict[str, str]:
-    """Like :func:`matched_mcp_servers`, but maps each matched server id to the
-    reason it disclosed — the observability (Phase 4) provenance.
-
-    First clause wins, in declared precedence: ``intent-match`` > ``keyword-
-    match`` > ``dock-match``. Servers that did not match are absent.
-    """
-    msg = (message or "").lower()
-    out: Dict[str, str] = {}
-    for u in units:
-        if u.kind != "mcp":
-            continue
-        t = u.trigger
-        if intent_class is not None and intent_class in t.intents:
-            out[u.id] = "intent-match"
-        elif any(kw.lower() in msg for kw in t.keywords):
-            out[u.id] = "keyword-match"
-        elif (
-            t.dock_goal is not None
-            and resolved_goal_id is not None
-            and t.dock_goal == resolved_goal_id
-        ):
-            out[u.id] = "dock-match"
-    return out
+# GRV-009 E4 C4 — ``matched_mcp_servers`` and ``mcp_match_reasons`` retired.
+# Per-turn MCP disclose-on-match moved onto the kind=mcp Capability records;
+# ``run_agent._compute_mcp_allow`` now matches a record's ``trigger`` (intents /
+# keywords / dock_affinity) directly. The manifest no longer carries mcp units.
 
 
 def matched_tool_units(units, *, intent_class) -> frozenset:

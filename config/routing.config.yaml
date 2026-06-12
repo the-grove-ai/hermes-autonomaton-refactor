@@ -324,10 +324,9 @@ routing:
 #
 # tools.allow_groups — tool groups whose tools may load this tier; "*" = the
 #   full registry.
-# tools.exclude_mcp  — MCP servers excluded this tier (allowed by default);
-#   "*" = every MCP excluded. notion.py serves Notion on the local path via
-#   the terminal tool, so excluding the hosted Notion MCP on T2 costs no
-#   capability — only ~18.4K of schema.
+# (GRV-009 E4 C4: tools.exclude_mcp retired — per-tier MCP exposure is now
+#  governed by the kind=mcp Capability records' tier_rule.eligible + trigger;
+#  see config/capabilities/notion_*.yaml.)
 #
 # FAIL LOUD (no silent full-load): every provider-backed tier in
 # tier_preferences above MUST have an entry here, with known block and group
@@ -339,19 +338,16 @@ tier_budgets:
     context: [claude_contract, goal_record, skills_index]
     tools:
       allow_groups: ["*"]   # full registry
-      exclude_mcp: []       # hosted Notion MCP available
 
   T2:                       # Premium Cognition — the prefill-budgeted path.
     context: [goal_record]  # claude_contract + skills_index gated OFF; goal_record loads on match
     tools:
       allow_groups: [core, code_generation, debugging, analysis, system_admin, scheduling, messaging, retrieval, memory_operation]
-      exclude_mcp: [notion]  # the ~18.4K cut — Notion reached via notion.py (terminal, in core)
 
   T1:                       # Cheap Cognition — the floor. Minimal prefill.
     context: []             # no gateable heavy context
     tools:
       allow_groups: [core, scheduling, messaging, retrieval, memory_operation]  # + Workspace daily-driver verbs (workspace-first-class-capability-v1); NOT code/debug/analysis/system_admin
-      exclude_mcp: ["*"]    # no MCP on the cheap tier
 
 
 # ─────────────────────────────────────────────────────────────────────────

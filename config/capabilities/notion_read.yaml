@@ -30,7 +30,9 @@ telemetry:
   feed: intent_feed     # binding string per the E2 record pattern (unified feed = E3 capability_feed)
   track: [invocation, result, cost, latency, confidence, human_feedback]
 context:
-  disclosure: pull      # MCP schemas disclose-on-match then pull on demand (not eager)
+  disclosure: eager     # GRV-009 E4 C4 — the manifest index-pull line is retired;
+                        # an eligible-tier trigger-matched turn discloses eagerly
+                        # (no index backdoor). The record describes live behavior.
   dock_composition: none
   payload: |
     mcp_schema:notion

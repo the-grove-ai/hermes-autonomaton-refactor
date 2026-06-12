@@ -9,25 +9,14 @@
 # mcp units flip allow-by-default -> disclose-on-match (trigger required).
 # payload is a POINTER (mcp_schema:<server>, goal_record:<id>), never inlined.
 version: 1
+# GRV-009 E4 C4 — the `notion` mcp unit was retired here. MCP delivery is now
+# sole-path through the kind=mcp Capability records (config/capabilities/
+# notion_*.yaml): gating (tier_rule.eligible + trigger) AND attribution. The
+# disclosure-index one-liner for MCP is RETIRED with it — MCP discloses eagerly
+# on a trigger-matched eligible-tier turn (no manifest index backdoor). A missed
+# match is fixed by broadening a record's trigger (declarative governance), not
+# a hidden index-pull. Goal and contract units remain declarative below.
 units:
-- id: notion
-  kind: mcp
-  oneline: 'Notion workspace: search, read, and write pages and databases.'
-  payload: mcp_schema:notion
-  tiers:
-  - T2
-  - T3
-  trigger:
-    intents:
-    - research
-    - retrieval
-    keywords:
-    - notion
-    - page
-    - database
-    - workspace
-    - doc
-    dock_goal: null
 - id: humanity-ai-funding
   kind: goal
   oneline: 'Goal [apex_strategic / accelerating]: HumanityAI Grant Submission'

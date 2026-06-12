@@ -45,17 +45,16 @@ BASE_TIERS = {
 }
 
 VALID_BUDGETS = {
-    "T1": {"context": [], "tools": {"allow_groups": ["core"], "exclude_mcp": ["*"]}},
+    "T1": {"context": [], "tools": {"allow_groups": ["core"]}},
     "T2": {
         "context": ["goal_record"],
         "tools": {
             "allow_groups": ["core", "code_generation", "debugging", "analysis", "system_admin"],
-            "exclude_mcp": ["notion"],
         },
     },
     "T3": {
         "context": ["claude_contract", "goal_record", "skills_index"],
-        "tools": {"allow_groups": ["*"], "exclude_mcp": []},
+        "tools": {"allow_groups": ["*"]},
     },
 }
 
@@ -109,7 +108,6 @@ def test_valid_budget_values_are_typed_and_ordered(tmp_path):
     assert t2.tools.allow_groups == (
         "core", "code_generation", "debugging", "analysis", "system_admin",
     )
-    assert t2.tools.exclude_mcp == ("notion",)
     # frozen dataclasses are hashable / immutable
     with pytest.raises(Exception):
         t2.context = ("x",)  # type: ignore[misc]
@@ -118,7 +116,6 @@ def test_valid_budget_values_are_typed_and_ordered(tmp_path):
 def test_wildcards_accepted(tmp_path):
     budgets = _load(tmp_path)
     assert budgets["T3"].tools.allow_groups == ("*",)
-    assert budgets["T1"].tools.exclude_mcp == ("*",)
 
 
 def test_t0_handler_tier_requires_no_budget(tmp_path):
@@ -144,14 +141,14 @@ def test_inference_tier_without_budget_raises(tmp_path):
 
 def test_budget_for_handler_tier_raises(tmp_path):
     budgets = copy.deepcopy(VALID_BUDGETS)
-    budgets["T0"] = {"context": [], "tools": {"allow_groups": ["core"], "exclude_mcp": ["*"]}}
+    budgets["T0"] = {"context": [], "tools": {"allow_groups": ["core"]}}
     with pytest.raises(ValueError, match=r"T0.*not a provider-backed tier"):
         _load(tmp_path, budgets=budgets)
 
 
 def test_budget_for_unknown_tier_raises(tmp_path):
     budgets = copy.deepcopy(VALID_BUDGETS)
-    budgets["T9"] = {"context": [], "tools": {"allow_groups": ["core"], "exclude_mcp": ["*"]}}
+    budgets["T9"] = {"context": [], "tools": {"allow_groups": ["core"]}}
     with pytest.raises(ValueError, match=r"T9.*not a provider-backed tier"):
         _load(tmp_path, budgets=budgets)
 
@@ -204,11 +201,8 @@ def test_allow_groups_required(tmp_path):
         _load(tmp_path, budgets=budgets)
 
 
-def test_exclude_mcp_required(tmp_path):
-    budgets = copy.deepcopy(VALID_BUDGETS)
-    del budgets["T2"]["tools"]["exclude_mcp"]
-    with pytest.raises(ValueError, match="tools.exclude_mcp is required"):
-        _load(tmp_path, budgets=budgets)
+# GRV-009 E4 C4 — test_exclude_mcp_required retired: exclude_mcp is no longer a
+# tier_budget field (MCP exposure is governed by the kind=mcp Capability records).
 
 
 def test_allow_groups_must_be_a_list(tmp_path):

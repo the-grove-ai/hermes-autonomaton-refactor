@@ -141,7 +141,8 @@ routing:
 # tier_budgets — per-tier prefill governor (Sprint 73, declarative-jit-budget-v1;
 # prefill_ceiling_tokens added Sprint 77.0a). context = gateable heavy blocks;
 # the always-on baseline is never listed. tools.allow_groups names tool_groups.yaml
-# groups ("*" = full registry); tools.exclude_mcp names excluded MCP servers.
+# groups ("*" = full registry). (GRV-009 E4 C4: tools.exclude_mcp retired — MCP
+# exposure is governed by the kind=mcp Capability records, not this key.)
 # Every provider-backed tier MUST have an entry or load fails loud (D7).
 # ═════════════════════════════════════════════════════════════════════════
 tier_budgets:
@@ -150,13 +151,11 @@ tier_budgets:
     context: [claude_contract, goal_record, skills_index]
     tools:
       allow_groups: ["*"]
-      exclude_mcp: []
 
   T2:                       # Premium Cognition — local, memory-budgeted.
     context: [goal_record]  # claude_contract + skills_index gated OFF
     tools:
       allow_groups: [core, code_generation, debugging, analysis, system_admin]
-      exclude_mcp: [notion]  # the ~18.4K cut — Notion reached via notion.py (terminal)
     # Sprint 77.0a memory governor: the max composed-prefill tokens the local
     # gpt-oss endpoint may receive. MUST stay below the llama-server -c context
     # size (24576 — memory-validated at ~2.39 GB min-avail, Sprint 77.4) so an
@@ -171,7 +170,6 @@ tier_budgets:
     context: []
     tools:
       allow_groups: [core]
-      exclude_mcp: ["*"]
 
 
 # ─────────────────────────────────────────────────────────────────────────
