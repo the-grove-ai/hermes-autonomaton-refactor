@@ -205,92 +205,69 @@ class InsightsEngine:
         return [dict(row) for row in cursor.fetchall()]
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Get tool call counts from messages.
+        """Tool-call counts from the unified capability feed (GRV-009 E3 C3).
 
-        Uses two sources:
-        1. tool_name column on 'tool' role messages (set by gateway)
-        2. tool_calls JSON on 'assistant' role messages (covers CLI where
-           tool_name is not populated on tool responses)
+        The feed (``capability_feed.py``) is the per-invocation source of truth —
+        one record per executed tool call, attributed or not. This replaces the
+        prior telemetry.db transcript scan (``messages.tool_name`` +
+        ``tool_calls`` JSON), which is retired as a capability-usage reader.
+
+        Feed-era only: NO pre-cutover backfill and NO dual-read shim (the
+        operator re-lock cancelled the shim — this is a development system with
+        no historical-data obligation, so feed-era-only counts are correct).
+        ``source`` still filters by platform via the ``sessions`` table, which
+        remains the platform authority; only the tool counts moved to the feed.
+
+        Returns the same ``[{"tool_name", "count"}]`` shape as before.
         """
-        tool_counts = Counter()
+        from datetime import datetime, timezone
+        from grove.capability_feed import feed_dir
 
-        # Source 1: explicit tool_name on tool response messages
+        allowed_sessions = None
         if source:
-            cursor = self._conn.execute(
-                """SELECT m.tool_name, COUNT(*) as count
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?
-                     AND m.role = 'tool' AND m.tool_name IS NOT NULL
-                   GROUP BY m.tool_name
-                   ORDER BY count DESC""",
+            cur = self._conn.execute(
+                "SELECT id FROM sessions WHERE started_at >= ? AND source = ?",
                 (cutoff, source),
             )
-        else:
-            cursor = self._conn.execute(
-                """SELECT m.tool_name, COUNT(*) as count
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?
-                     AND m.role = 'tool' AND m.tool_name IS NOT NULL
-                   GROUP BY m.tool_name
-                   ORDER BY count DESC""",
-                (cutoff,),
-            )
-        for row in cursor.fetchall():
-            tool_counts[row["tool_name"]] += row["count"]
+            allowed_sessions = {row["id"] for row in cur.fetchall()}
+            if not allowed_sessions:
+                return []
 
-        # Source 2: extract from tool_calls JSON on assistant messages
-        # (covers CLI sessions where tool_name is NULL on tool responses)
-        if source:
-            cursor2 = self._conn.execute(
-                """SELECT m.tool_calls
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff, source),
-            )
-        else:
-            cursor2 = self._conn.execute(
-                """SELECT m.tool_calls
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff,),
-            )
+        cutoff_dt = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+        tool_counts: Counter = Counter()
+        d = feed_dir()
+        if d.exists():
+            for path in sorted(d.glob("feed*.jsonl")):
+                try:
+                    fh = path.open(encoding="utf-8")
+                except OSError:
+                    continue
+                with fh:
+                    for raw in fh:
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            rec = json.loads(raw)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        name = rec.get("tool_name")
+                        if not name:
+                            continue
+                        if allowed_sessions is not None and rec.get("session_id") not in allowed_sessions:
+                            continue
+                        ts = rec.get("ts")
+                        if ts is not None:
+                            try:
+                                rec_dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                                if rec_dt.tzinfo is None:
+                                    rec_dt = rec_dt.replace(tzinfo=timezone.utc)
+                                if rec_dt < cutoff_dt:
+                                    continue
+                            except (ValueError, TypeError):
+                                pass
+                        tool_counts[name] += 1
 
-        tool_calls_counts = Counter()
-        for row in cursor2.fetchall():
-            try:
-                calls = row["tool_calls"]
-                if isinstance(calls, str):
-                    calls = json.loads(calls)
-                if isinstance(calls, list):
-                    for call in calls:
-                        func = call.get("function", {}) if isinstance(call, dict) else {}
-                        name = func.get("name")
-                        if name:
-                            tool_calls_counts[name] += 1
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                continue
-
-        # Merge: prefer tool_name source, supplement with tool_calls source
-        # for tools not already counted
-        if not tool_counts and tool_calls_counts:
-            # No tool_name data at all — use tool_calls exclusively
-            tool_counts = tool_calls_counts
-        elif tool_counts and tool_calls_counts:
-            # Both sources have data — use whichever has the higher count per tool
-            # (they may overlap, so take the max to avoid double-counting)
-            all_tools = set(tool_counts) | set(tool_calls_counts)
-            merged = Counter()
-            for tool in all_tools:
-                merged[tool] = max(tool_counts.get(tool, 0), tool_calls_counts.get(tool, 0))
-            tool_counts = merged
-
-        # Convert to the expected format
         return [
             {"tool_name": name, "count": count}
             for name, count in tool_counts.most_common()
