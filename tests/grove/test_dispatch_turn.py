@@ -926,9 +926,13 @@ class TestPhase6KaizenLedgerWiring:
         agent.session_id = "phase6_session"
         return agent
 
-    def test_green_batch_records_tool_batch_executed(
+    def test_green_batch_no_longer_records_tool_batch_executed(
         self, monkeypatch: pytest.MonkeyPatch
     ):
+        # GRV-009 E3 C4 — tool_batch_executed is RETIRED; the unified capability
+        # feed (per-invocation at AIAgent._invoke_tool) is sole-path for
+        # invocation usage. The dispatcher emits no such ledger event anymore.
+        # final_response is still recorded.
         _patch_classifier_green(monkeypatch)
         msgs: List[Dict] = []
         agent = self._bare_agent(msgs)
@@ -944,11 +948,8 @@ class TestPhase6KaizenLedgerWiring:
 
         ledger = d.ledger_for(agent)
         assert ledger is not None
-        batch_events = ledger.events_by_type("tool_batch_executed")
-        assert len(batch_events) == 1
-        assert batch_events[0]["batch_size"] == 2
-        assert "latency_ms" in batch_events[0]
-        # Final response also recorded for completeness
+        assert ledger.events_by_type("tool_batch_executed") == []  # retired (C4)
+        # Final response still recorded.
         final_events = ledger.events_by_type("final_response")
         assert len(final_events) == 1
         assert final_events[0]["content_length"] == len("ok")
@@ -996,9 +997,11 @@ class TestPhase6KaizenLedgerWiring:
         d.dispatch_turn(agent, user_message="turn 2")
 
         ledger = d.ledger_for(agent)
-        batch_events = ledger.events_by_type("tool_batch_executed")
-        # Two turns = two batch_executed events on the same ledger
-        assert len(batch_events) == 2
+        # GRV-009 E3 C4 — tool_batch_executed retired; use final_response (one
+        # per turn, still emitted) to prove cross-turn ledger persistence.
+        final_events = ledger.events_by_type("final_response")
+        # Two turns = two final_response events on the same ledger
+        assert len(final_events) == 2
 
     def test_ledger_isolated_per_session(
         self, monkeypatch: pytest.MonkeyPatch
