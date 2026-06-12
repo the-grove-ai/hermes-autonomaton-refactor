@@ -24,9 +24,11 @@ WORKSPACE_INTENTS = ["memory_operation", "scheduling", "messaging", "retrieval"]
 
 
 def test_registry_loads_the_three_real_records():
+    # E4 (mcp-migration-v1) added notion_read/notion_write to the same dir;
+    # the three Workspace records must still be present and VERB-kind.
     caps = load_capabilities()
-    assert set(caps) == WORKSPACE_IDS
-    for c in caps.values():
+    assert WORKSPACE_IDS <= set(caps)
+    for c in (caps[i] for i in WORKSPACE_IDS):
         assert c.kind is CapabilityKind.VERB
         assert c.lifecycle.state is LifecycleState.APPROVED
         assert c.lifecycle.provenance is Provenance.MIGRATED
@@ -41,15 +43,17 @@ def test_locked_zone_map():
 
 
 def test_locked_tier_parity():
+    # Workspace records are T1/T2/T3-eligible; the E4 MCP records differ
+    # ([3]-only) and are asserted in test_mcp_capability_records.py.
     caps = load_capabilities()
-    for c in caps.values():
+    for c in (caps[i] for i in WORKSPACE_IDS):
         assert c.tier_rule.eligible == [1, 2, 3]
         assert c.tier_rule.preferred == 1
 
 
 def test_locked_intent_parity():
     caps = load_capabilities()
-    for c in caps.values():
+    for c in (caps[i] for i in WORKSPACE_IDS):
         assert c.trigger.intents == WORKSPACE_INTENTS
 
 
@@ -64,9 +68,13 @@ def test_records_seed_one_migration_decision_log_entry():
 
 
 def test_telemetry_feed_binding():
+    # feed binding is shared by all migrated records; disclosure/dock_composition
+    # are Workspace-specific (eager native verbs) — the E4 MCP records are
+    # pull/none (asserted in test_mcp_capability_records.py).
     caps = load_capabilities()
     for c in caps.values():
         assert c.telemetry.feed == "intent_feed"
+    for c in (caps[i] for i in WORKSPACE_IDS):
         assert c.context.disclosure.value == "eager"
         assert c.context.dock_composition.value == "goal_context"
 
