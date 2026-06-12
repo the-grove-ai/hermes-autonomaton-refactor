@@ -2873,78 +2873,133 @@ class AIAgent:
         return self.tools
 
     def _compute_mcp_allow(self, intent_class, goal_alignment):
-        """Sprint 74 Phase 2 — the per-turn MCP disclose-on-match set.
+        """The per-turn MCP disclose-on-match set, threaded into
+        ``resolve_tools_for_tier`` as ``mcp_allow``.
 
-        Reads the disclosure manifest and returns the set of MCP server ids
-        whose trigger matched this turn (intent / keyword / Dock-goal). Threaded
-        into ``resolve_tools_for_tier`` as ``mcp_allow``: a matched server
-        discloses, an unmatched one is withheld, and the tier's ``exclude_mcp``
-        ceiling still wins over a match. Native (non-MCP) tool selection is
-        untouched — it stays in tool_groups.yaml (the ADDITIVE principle).
-
-        Returns ``None`` — the flip-OFF / legacy signal (every MCP passes unless
-        tier-excluded, byte-for-byte) — when NO manifest is installed. A
-        malformed manifest raises (fail-loud), handled by the caller's
-        budgeted/non-budgeted split exactly like a taxonomy error: it surfaces
-        on a budgeted turn, degrades to the full registry on a cloud turn.
+        GRV-009 E4 C2 — registry-driven: the matched-server set now comes from
+        the ``kind=mcp`` Capability records, not the disclosure manifest. A
+        server discloses iff (a) some record bound to it is eligible on the
+        CURRENT tier (``tier_rule.eligible`` — the exclude_mcp ceiling, now from
+        the registry) AND (b) that record's trigger matches this turn
+        (``trigger.intents`` / ``keywords`` / ``dock_affinity``, same clause
+        precedence the manifest used). The registry is authoritative; the legacy
+        ``exclude_mcp`` key remains a redundant second gate in
+        ``_partition_tools`` until C4. Returns ``None`` — the flip-OFF / legacy
+        allow-by-default signal — when NO mcp records exist. Never raises into
+        the turn.
         """
-        from grove.manifest import load_manifest, mcp_match_reasons
-
         self._mcp_match_reasons = {}
         try:
-            units = load_manifest()
-        except FileNotFoundError:
-            # No manifest -> the flip is not wired; legacy allow-by-default.
+            from grove.capability import CapabilityKind
+            from grove.capability_registry import load_capabilities
+            records = [
+                c for c in load_capabilities().values()
+                if c.kind == CapabilityKind.MCP
+            ]
+        except Exception as exc:
+            logger.warning(
+                "[run_agent] MCP gating: capability records unloadable (%r); "
+                "MCP flip OFF (legacy allow-by-default).", exc,
+            )
             return None
+        if not records:
+            return None  # no mcp records -> flip OFF, legacy allow-by-default
 
-        message = self._latest_user_text()
+        tier_int = self._current_tier_int()
+        message_lower = (self._latest_user_text() or "").lower()
+        resolved_goal_id = self._resolve_mcp_dock_goal(records, goal_alignment, message_lower)
 
-        # The Dock-goal clause only matters when a manifest MCP unit declares a
-        # dock_goal AND this turn is goal-aligned; otherwise skip the Dock read.
-        resolved_goal_id = None
-        if goal_alignment == "direct" and any(
-            u.kind == "mcp" and u.trigger.dock_goal for u in units
-        ):
-            from grove.dock import load_dock, resolve_goal
-
-            dock = load_dock()
-            if dock is not None:
-                g = resolve_goal(dock, message or "")
-                resolved_goal_id = g.id if g else None
-
-        # Fail-loud surface (Architectural Prime Directive): under strict
-        # disclose-on-match an MCP server with NO manifest unit can never
-        # surface — it has no trigger to match. Warn so an un-manifested
-        # connector is a loud "add a manifest entry", never a silent vanish.
+        # Fail-loud (Architectural Prime Directive): an MCP server whose tools are
+        # in the registry but have NO kind=mcp record can never surface under
+        # disclose-on-match. Warn so an un-recorded connector is a loud "add a
+        # record", never a silent vanish.
         from grove.context_budget import _is_mcp, _mcp_server_of, _name_of
 
-        known = {u.id for u in units if u.kind == "mcp"}
-        unmanifested = {
+        recorded = {self._mcp_server_of_record(r) for r in records} - {None}
+        unrecorded = {
             s
             for s in (
                 _mcp_server_of(_name_of(t))
                 for t in (self.tools or [])
                 if isinstance(t, dict) and _is_mcp(_name_of(t))
             )
-            if s and s not in known
+            if s and s not in recorded
         }
-        if unmanifested:
+        if unrecorded:
             logger.warning(
                 "[run_agent] MCP server(s) %s have tools in the registry but no "
-                "disclosure-manifest unit; under disclose-on-match they will "
-                "NEVER surface. Add a manifest entry (with a trigger) per server.",
-                sorted(unmanifested),
+                "kind=mcp Capability record; under disclose-on-match they will "
+                "NEVER surface. Add a record (with a trigger) per server.",
+                sorted(unrecorded),
             )
 
-        reasons = mcp_match_reasons(
-            units,
-            intent_class=intent_class,
-            message=message,
-            resolved_goal_id=resolved_goal_id,
-        )
-        # Phase 4 — stash the per-server match reason for the /context ledger.
-        self._mcp_match_reasons = dict(reasons)
-        return set(reasons)
+        matched: set = set()
+        for rec in records:
+            server = self._mcp_server_of_record(rec)
+            if server is None:
+                continue
+            # Tier ceiling (tier_rule.eligible) — the exclude_mcp equivalent.
+            if tier_int is not None and tier_int not in rec.tier_rule.eligible:
+                continue
+            # Per-turn disclose-on-match (trigger.intents/keywords/dock_affinity).
+            reason = self._mcp_trigger_reason(
+                rec.trigger, intent_class, message_lower, resolved_goal_id
+            )
+            if reason:
+                matched.add(server)
+                self._mcp_match_reasons.setdefault(server, reason)
+        return matched
+
+    @staticmethod
+    def _current_tier_int():
+        """The current cognitive tier as an int (1/2/3), or None when no tier
+        was routed (cloud / vanilla path — the ceiling then does not apply,
+        mirroring an empty exclude_mcp)."""
+        from grove.providers import current_tier
+        t = current_tier()
+        return {"T1": 1, "T2": 2, "T3": 3}.get(t) if t else None
+
+    @staticmethod
+    def _mcp_server_of_record(record):
+        """Parse the bound MCP server id from the record's ``mcp_schema:<server>``
+        context-payload pointer (the manifest convention the records carry)."""
+        payload = getattr(getattr(record, "context", None), "payload", "") or ""
+        for line in payload.splitlines():
+            line = line.strip()
+            if line.startswith("mcp_schema:"):
+                return line[len("mcp_schema:"):].strip() or None
+        return None
+
+    @staticmethod
+    def _mcp_trigger_reason(trigger, intent_class, message_lower, resolved_goal_id):
+        """The disclose reason for an mcp record's trigger, or None — same clause
+        precedence (intent > keyword > dock) as the retired
+        ``manifest.mcp_match_reasons``."""
+        if intent_class is not None and intent_class in (trigger.intents or []):
+            return "intent-match"
+        if any(kw.lower() in message_lower for kw in (trigger.keywords or [])):
+            return "keyword-match"
+        if resolved_goal_id is not None and resolved_goal_id in (trigger.dock_affinity or []):
+            return "dock-match"
+        return None
+
+    def _resolve_mcp_dock_goal(self, records, goal_alignment, message_lower):
+        """Resolve the active Dock goal id when goal-aligned AND some mcp record
+        declares ``dock_affinity`` — mirrors the retired manifest dock clause.
+        Returns None (skip the Dock read) otherwise. Never raises into the turn."""
+        if goal_alignment != "direct":
+            return None
+        if not any(r.trigger.dock_affinity for r in records):
+            return None
+        try:
+            from grove.dock import load_dock, resolve_goal
+            dock = load_dock()
+            if dock is None:
+                return None
+            g = resolve_goal(dock, message_lower or "")
+            return g.id if g else None
+        except Exception:
+            return None
 
     def _latest_user_text(self) -> str:
         """Best-effort: the text of the most recent user message this turn.
