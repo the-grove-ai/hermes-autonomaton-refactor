@@ -3324,6 +3324,10 @@ class AIAgent:
         """
         self._capability_records_applied = []
         self._capability_guidance = None
+        # GRV-009 E3 — per-applied-record zone map, so the feed write site can
+        # attribute a Workspace invocation to its governing record without any
+        # per-invocation capability-registry load. Empty on non-Workspace turns.
+        self._capability_applied_zones = {}
         # GRV-009 spike C1 — outcome stamped at the single exit (``finally``) so
         # EVERY return path records whether the hook fired, which Workspace
         # carrier verbs were present on the delivered surface, and whether the
@@ -3357,6 +3361,7 @@ class AIAgent:
                 return
 
             self._capability_records_applied = [c.id for c in records]
+            self._capability_applied_zones = {c.id: c.zone.value for c in records}
             guidance = self._compose_capability_guidance(records)
             self._capability_guidance = guidance
 
@@ -11756,11 +11761,131 @@ class AIAgent:
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
+        """The per-invocation chokepoint BOTH executor paths share — concurrent
+        (``tool_executor.py:484``) and sequential (``tool_executor.py:885``) both
+        call ``side_effects.invoke_tool = self._invoke_tool``. (Sprint 31 Phase
+        1b consolidated the sequential path onto the executor, retiring its
+        former inline invocation; the prior "sequential retains its own inline
+        invocation" note was stale.)
+
+        GRV-009 E3: this thin shell times the call and writes ONE
+        capability-telemetry feed record per EXECUTED invocation, then returns
+        the impl's result byte-for-byte. Telemetry never alters the result and
+        never raises into the turn (A7 absolute): the emit is wrapped so any
+        failure is swallowed here and surfaced only on the dedicated
+        observability alert inside the feed module.
+        """
+        import time as _time
+        from grove import capability_feed as _capfeed
+        _start = _time.perf_counter()
+        _status = "ok"
+        try:
+            return self._invoke_tool_impl(
+                function_name, function_args, effective_task_id,
+                tool_call_id=tool_call_id, messages=messages,
+                pre_tool_block_checked=pre_tool_block_checked,
+            )
+        except Exception:
+            _status = "error"
+            raise
+        finally:
+            try:
+                self._emit_capability_feed_record(
+                    function_name, _status,
+                    (_time.perf_counter() - _start) * 1000.0, _capfeed,
+                )
+            except Exception:
+                pass  # A7: telemetry never crosses into the turn
+
+    def _emit_capability_feed_record(self, tool_name, result_status, latency_ms, capfeed) -> None:
+        """Assemble + enqueue one feed record for an executed invocation. All
+        attribution comes from already-present turn state (the spike-C1 hook
+        instruments + the per-turn classification); the only turn-path cost is a
+        queue ``put`` — all file I/O is off-path on the drainer."""
+        from grove.providers import current_classification, current_tier
+        cls = current_classification()
+        try:
+            from grove.zones import classify as _zone_classify
+            zone = _zone_classify(tool_name).zone
+        except Exception:
+            zone = None
+        turn_id = getattr(
+            getattr(self, "_dispatcher_singleton", None), "_current_turn_id", None
+        ) or self.session_id
+        capfeed.enqueue({
+            "ts": capfeed.utc_now_iso(),
+            "session_id": self.session_id,
+            "turn_id": turn_id,
+            "capability_id": self._capability_id_for_invocation(tool_name, zone),
+            "tool_name": tool_name,
+            "intent_class": cls.intent_class if cls else None,
+            "tier": current_tier(),
+            "zone": zone,
+            "invocation": self._invocation_kind(tool_name),
+            "result_status": result_status,
+            # Per-invocation cost is not separable at this layer; session-level
+            # cost stays in telemetry.db (D1 sink #6 "stays"). Nullable.
+            "cost_usd": None,
+            # Populated by a later feedback path (banked); nullable now.
+            "latency_ms": round(float(latency_ms), 3),
+            "human_feedback": None,
+        })
+
+    def _capability_id_for_invocation(self, tool_name, zone):
+        """Attribution from the spike-C1 hook. Non-null ONLY when the hook fired
+        this turn (``_capability_applied_zones`` non-empty) AND the invoked tool
+        is a Workspace carrier verb; the value is the applied record whose zone
+        governs this invocation (deterministic: zone-matched, sorted, first).
+        Non-capability tools and capability-less turns yield null — the
+        null-attribution path the raw write site exists to capture."""
+        applied = getattr(self, "_capability_applied_zones", None) or {}
+        if not applied:
+            return None
+        try:
+            ws = self._workspace_verb_names()
+        except Exception:
+            ws = frozenset()
+        if tool_name not in ws:
+            return None
+        matches = sorted(rid for rid, z in applied.items() if z == zone)
+        return matches[0] if matches else sorted(applied)[0]
+
+    # Tools ``_invoke_tool_impl`` dispatches inline (NOT through the registry
+    # handler) — kept in sync with that method's branches. Provider-memory
+    # tools are also agent-dispatched but resolved dynamically below.
+    _AGENT_INLINE_TOOLS = frozenset(
+        {"todo", "session_search", "memory", "clarify", "delegate_task"}
+    )
+
+    def _invocation_kind(self, tool_name) -> str:
+        """The explicit invocation kind for the feed (GRV-009 E3): ``mcp`` for
+        MCP tools, ``agent-tool`` for the agent's inline-dispatched builtins,
+        else ``native`` (registry-dispatched verb). A first-class column, not a
+        name-prefix convention — E4 lands MCP invocations in this same stream."""
+        try:
+            from grove.context_budget import _is_mcp
+            if _is_mcp(tool_name):
+                return "mcp"
+        except Exception:
+            pass
+        if tool_name in self._AGENT_INLINE_TOOLS:
+            return "agent-tool"
+        try:
+            mm = self._memory_manager_via_dispatcher()
+            if mm is not None and mm.has_tool(tool_name):
+                return "agent-tool"
+        except Exception:
+            pass
+        return "native"
+
+    def _invoke_tool_impl(self, function_name: str, function_args: dict, effective_task_id: str,
+                          tool_call_id: Optional[str] = None, messages: list = None,
+                          pre_tool_block_checked: bool = False) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
         Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
-        tools. Used by the concurrent execution path; the sequential path retains
-        its own inline invocation for backward-compatible display handling.
+        tools. Reached only via ``_invoke_tool`` (the instrumented shell); both
+        executor paths route here.
         """
         # Check plugin hooks for a block directive before executing anything.
         block_message: Optional[str] = None
