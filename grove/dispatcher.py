@@ -1481,7 +1481,6 @@ class Dispatcher:
                         and hasattr(agent, "_build_execution_context_sequential")
                         and hasattr(agent, "_apply_execution_results_to_messages")
                     )
-                    _exec_t0 = _time.monotonic()
                     if _has_executor:
                         from run_agent import _should_parallelize_intents as _spi
                         if _spi(_batch):
@@ -1508,17 +1507,11 @@ class Dispatcher:
                         )
                     else:
                         _exec_results = []
-                    _exec_latency_ms = (_time.monotonic() - _exec_t0) * 1000.0
-                    # Phase 6 — record successful batch execution
-                    ledger.record(
-                        "tool_batch_executed",
-                        intents=[
-                            {"tool_name": i.tool_name, "call_id": i.call_id}
-                            for i in _batch
-                        ],
-                        batch_size=len(_batch),
-                        latency_ms=round(_exec_latency_ms, 2),
-                    )
+                    # GRV-009 E3 C4 — tool_batch_executed retired. The unified
+                    # capability feed (written per-invocation at
+                    # AIAgent._invoke_tool) is now sole-path for invocation
+                    # usage; parity (GATE-PARITY, match_rate 1.0) proved the feed
+                    # subsumes this event. No ledger write here.
                     observations: List[Any] = []
                     for intent in _batch:
                         tool_msg = None
