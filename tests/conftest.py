@@ -582,6 +582,15 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # GRV-009 E5 C-SEAM5 — the routed tier is per-turn global state set fresh by
+    # the router each turn in production; reset it between tests so a prior test's
+    # routed tier cannot leak into the C-SEAM5 secondary tier-eligibility gate.
+    try:
+        from grove import providers as _prov_mod
+        _prov_mod._last_routed_tier = None
+    except Exception:
+        pass
+
     yield
 
 

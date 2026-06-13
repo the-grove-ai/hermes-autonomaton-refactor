@@ -2221,6 +2221,9 @@ class TestConcurrentToolExecution:
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
+        # GRV-009 E5 C-SEAM5 — the tool must be OFFERED this turn to execute; the
+        # web_search-only fixture surface is extended to admit todo.
+        agent.tools = list(agent.tools) + _make_tool_defs("todo")
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
@@ -2228,6 +2231,9 @@ class TestConcurrentToolExecution:
 
     def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
         """_invoke_tool should return error JSON when a plugin blocks the tool."""
+        # C-SEAM5: admit todo so the plugin-block path (not the admission gate) is
+        # what skips execution — this test asserts the block behavior specifically.
+        agent.tools = list(agent.tools) + _make_tool_defs("todo")
         monkeypatch.setattr(
             "hermes_cli.plugins.get_pre_tool_call_block_message",
             lambda *args, **kwargs: "Blocked by test policy",
@@ -2281,6 +2287,8 @@ class TestConcurrentToolExecution:
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5
+        # C-SEAM5: admit memory so the plugin-block path is what skips execution.
+        agent.tools = list(agent.tools) + _make_tool_defs("memory")
         monkeypatch.setattr(
             "hermes_cli.plugins.get_pre_tool_call_block_message",
             lambda *args, **kwargs: "Blocked",
@@ -3442,6 +3450,9 @@ class TestRunConversation:
         once. If the retry succeeds (valid JSON args), tool execution proceeds."""
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
+        # GRV-009 E5 C-SEAM5 — admit write_file in the offered surface (not just
+        # valid_tool_names) so the executor reaches handle_function_call.
+        agent.tools = list(agent.tools) + _make_tool_defs("write_file")
         bad_tc = _mock_tool_call(
             name="write_file",
             arguments='{"path":"report.md","content":"partial',

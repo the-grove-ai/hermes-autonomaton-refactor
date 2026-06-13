@@ -11813,6 +11813,90 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _seam5_tool_records(self):
+        """Cached ``{tool_name: Capability}`` over the whole registry (native +
+        MCP), for the C-SEAM5 secondary tier-eligibility refusal. Built once per
+        agent; the registry is the single source of truth the resolver also reads."""
+        cache = getattr(self, "_seam5_records_cache", None)
+        if cache is None:
+            cache = {}
+            try:
+                from grove.capability_registry import load_capabilities
+                for c in load_capabilities().values():
+                    for t in c.bindings.tools:
+                        cache[t] = c
+            except Exception:
+                cache = {}
+            self._seam5_records_cache = cache
+        return cache
+
+    def _seam5_refusal(self, function_name: str, reason: str) -> str:
+        """The fail-loud refusal payload (the executor's block_message idiom):
+        no silent execution, full diagnostic surfaced to the model + a loud log.
+        GRV-009 E5 C-SEAM5 — offering IS the governance; execution honors it."""
+        from grove.providers import current_classification, current_tier
+        cls = current_classification()
+        intent = cls.intent_class if cls else None
+        tier = current_tier()
+        msg = (
+            f"Tool {function_name!r} refused by the execution-admission seam "
+            f"(GRV-009 E5 C-SEAM5): {reason}. tier={tier} intent={intent}. A tool "
+            f"must be OFFERED this turn to execute — offering is the governance, "
+            f"execution honors it."
+        )
+        logging.warning("[grove.seam5] %s", msg)
+        return json.dumps(
+            {
+                "error": msg,
+                "andon": "execution_admission",
+                "tool": function_name,
+                "tier": tier,
+                "intent": intent,
+            },
+            ensure_ascii=False,
+        )
+
+    def _seam5_admission_refusal(self, function_name: str) -> Optional[str]:
+        """PRIMARY (C-SEAM5, D1 universal): refuse a tool the model named that was
+        NOT offered this turn — checked against the per-turn ADMITTED set (the
+        resolver's output via ``_tools_for_api``), NOT the construction-surface
+        ``valid_tool_names``. When there is no per-turn surface (maximal fallback /
+        no filter), ``_tools_for_api`` is the full construction surface, so the
+        only thing newly blocked is a tool that exists but was not offered."""
+        from grove.context_budget import _name_of
+        # Robust read (no reliance on the _tools_for_api property, which would
+        # raise on a bare instance): per-turn surface if filtered, else the full
+        # construction surface (== no new constraint).
+        surface = getattr(self, "_tools_for_turn", None)
+        if surface is None:
+            surface = getattr(self, "tools", None)
+        if not surface:
+            return None  # no surface constraint — admit (no-tools / pre-filter path)
+        admitted = {_name_of(t) for t in surface if isinstance(t, dict)}
+        if function_name in admitted:
+            return None
+        return self._seam5_refusal(function_name, "not in the per-turn offered surface")
+
+    def _seam5_tier_refusal(self, function_name: str) -> Optional[str]:
+        """SECONDARY (C-SEAM5): defense-in-depth at dispatch, independent of the
+        offer path. Refuse a tool whose governing capability record marks the
+        CURRENT tier ineligible (``tier_rule.eligible``). Ungoverned tools and the
+        no-tier path (vanilla/cloud — no ceiling, mirroring an empty exclude_mcp)
+        are not refused here."""
+        rec = self._seam5_tool_records().get(function_name)
+        if rec is None:
+            return None
+        tier = self._current_tier_int()
+        if tier is None:
+            return None
+        if tier not in (rec.tier_rule.eligible or []):
+            return self._seam5_refusal(
+                function_name,
+                f"tier {tier} not in governing record {rec.id!r} "
+                f"tier_rule.eligible={list(rec.tier_rule.eligible)}",
+            )
+        return None
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -11829,7 +11913,18 @@ class AIAgent:
         never raises into the turn (A7 absolute): the emit is wrapped so any
         failure is swallowed here and surfaced only on the dedicated
         observability alert inside the feed module.
+
+        GRV-009 E5 C-SEAM5 — the fifth seam (execution admission). PRIMARY check:
+        a named-but-unoffered tool is refused HERE, before it can run, against the
+        per-turn admitted set. This closes the universal execution-without-offering
+        leak (D1) — native and MCP alike, including the E4 T1 hosted-MCP green-read.
         """
+        # PRIMARY execution-admission gate — refused tools never reach the impl,
+        # never execute, and (being un-executed) emit no telemetry feed record.
+        _refusal = self._seam5_admission_refusal(function_name)
+        if _refusal is not None:
+            return _refusal
+
         import time as _time
         from grove import capability_feed as _capfeed
         _start = _time.perf_counter()
@@ -11991,6 +12086,14 @@ class AIAgent:
                 pass
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
+
+        # GRV-009 E5 C-SEAM5 SECONDARY — registry tier-eligibility refusal at
+        # dispatch (defense-in-depth, independent of the offer path): a tool whose
+        # governing record excludes the current tier never executes, even if it
+        # somehow reached here.
+        _tier_refusal = self._seam5_tier_refusal(function_name)
+        if _tier_refusal is not None:
+            return _tier_refusal
 
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
