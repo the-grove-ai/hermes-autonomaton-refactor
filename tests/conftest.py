@@ -576,6 +576,9 @@ def _reset_module_state():
     try:
         from grove import context_budget as _cb_mod
         _cb_mod._taxonomy_cache = None
+        # GRV-009 E5 C-RESOLVE — the registry projection cache the native
+        # resolver reads; reset alongside the taxonomy cache for isolation.
+        _cb_mod._caps_index_cache = None
     except Exception:
         pass
 

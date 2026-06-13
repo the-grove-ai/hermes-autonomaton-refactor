@@ -7,7 +7,10 @@ id: workspace_read
 kind: verb
 trigger:
   # Parity: the verbs' current intent aliases in tool_groups.yaml.
-  intents: [memory_operation, scheduling, messaging, retrieval]
+  # GRV-009 E5 C-RESOLVE parity fix: intents extended to the full tool_groups
+  # reverse-map for the 24 verbs (+ system_admin, planning) — E2 authored only the
+  # 4 daily-driver intents; the verbs were also aliased into system_admin/planning.
+  intents: [memory_operation, scheduling, messaging, retrieval, system_admin, planning]
   keywords: [gmail, calendar, drive, sheets, docs, contacts]
   dock_affinity: []   # empty at migration — affinity is operator-curated later
 bindings:

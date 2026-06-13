@@ -8,7 +8,10 @@
 id: workspace_write
 kind: verb
 trigger:
-  intents: [memory_operation, scheduling, messaging, retrieval]
+  # GRV-009 E5 C-RESOLVE parity fix: intents extended to the full tool_groups
+  # reverse-map for the 24 verbs (+ system_admin, planning) — E2 authored only the
+  # 4 daily-driver intents; the verbs were also aliased into system_admin/planning.
+  intents: [memory_operation, scheduling, messaging, retrieval, system_admin, planning]
   keywords: [gmail, calendar, drive, sheets, docs]
   dock_affinity: []
 bindings:

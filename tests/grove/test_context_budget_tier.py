@@ -88,9 +88,16 @@ def test_no_tier_filter_allowed_none_returns_list_verbatim():
     assert filter_tools_by_name(weird, None) is weird
 
 
-def test_resolve_tool_set_legacy_unchanged():
+def test_resolve_tool_set_is_registry_driven():
+    # GRV-009 E5 C-RESOLVE — resolve_tool_set derives the intent-only (tier-
+    # unaware) surface from the capability registry, not the passed taxonomy
+    # materialization. The intent selects proactive-intent records + core; a
+    # moderate turn excludes complexity records; fallback records never appear.
     got = resolve_tool_set("code_generation", "moderate", TAXONOMY)
-    assert got == set(TAXONOMY["core"]) | set(TAXONOMY["domain_chunks"]["code_generation"])
+    assert {"write_file", "patch", "search_files", "execute_code", "skill_manage"} <= got
+    assert {"clarify", "terminal", "read_file"} <= got            # core (always)
+    assert "spotify_search" not in got                            # fallback — never proactive
+    assert "browser_navigate" not in got                          # complexity — not on a moderate turn
     assert resolve_tool_set("unknown", "simple", TAXONOMY) is None
 
 

@@ -254,14 +254,14 @@ class TestCoLocationGuard:
         return tax
 
     def test_skill_view_without_terminal_raises(self) -> None:
-        """The exact bug reproduction: skill_view in core, terminal
-        absent from both core and the domain chunk → RuntimeError."""
-        tax = self._taxonomy_with(
-            core=["clarify", "skill_view", "read_file"],
-            domain={"factual_retrieval": ["web_search"]},
-        )
+        """The co-location guard fires on a half-loaded pair. GRV-009 E5
+        C-RESOLVE: resolve_tool_set is registry-driven and ignores a synthetic
+        taxonomy, so the guard is now exercised against the resolved set directly
+        (skill_view present, terminal absent → Andon)."""
         with pytest.raises(RuntimeError) as exc_info:
-            resolve_tool_set("factual_retrieval", "simple", tax)
+            _cb_mod._validate_co_location(
+                {"clarify", "skill_view", "read_file"}, "factual_retrieval"
+            )
         message = str(exc_info.value)
         assert "skill_view" in message
         assert "terminal" in message
@@ -302,14 +302,9 @@ class TestCoLocationGuard:
         assert result is None  # maximal fallback signal
 
     def test_message_points_at_fix_path(self) -> None:
-        """The Andon message MUST tell the operator exactly where to
-        edit — tool_groups.yaml, with the specific chunks named."""
-        tax = self._taxonomy_with(
-            core=["clarify", "skill_view"],
-            domain={"factual_retrieval": ["web_search"]},
-        )
+        """The Andon message still names the fix location for the operator."""
         with pytest.raises(RuntimeError) as exc_info:
-            resolve_tool_set("factual_retrieval", "simple", tax)
+            _cb_mod._validate_co_location({"clarify", "skill_view"}, "factual_retrieval")
         message = str(exc_info.value)
         assert "tool_groups.yaml" in message
         assert "core" in message
