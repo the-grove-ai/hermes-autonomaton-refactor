@@ -14,6 +14,21 @@ trigger:
   intents: [research, retrieval]
   keywords: [notion, page, database, workspace, doc]
   dock_affinity: []   # manifest notion unit declares dock_goal: null — empty, exactly as today
+bindings:
+  # A4 (GRV-009 E5 C-BACKFILL) — strict 1:1 tool ownership. The 7 GREEN hosted
+  # Notion MCP read tools (names per zones.schema.yaml::tool_zones, Sprint 69).
+  # toolset_key is null: hosted MCP, not a CONFIGURABLE_TOOLSETS key — schema is
+  # pulled live from mcp.notion.com/mcp.
+  tools:
+    - mcp_notion_notion_search
+    - mcp_notion_notion_fetch
+    - mcp_notion_notion_get_comments
+    - mcp_notion_notion_get_users
+    - mcp_notion_notion_get_teams
+    - mcp_notion_notion_query_database_view
+    - mcp_notion_notion_query_meeting_notes
+  credentials: notion-oauth
+  toolset_key: null
 tier_rule:
   # D2/D3 parity: notion's EFFECTIVE exposure is T3 only — T2 ceiling
   # (exclude_mcp: [notion]) and T1 wildcard (exclude_mcp: ["*"]) deny it.
