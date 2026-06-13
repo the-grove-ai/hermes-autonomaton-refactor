@@ -195,50 +195,36 @@ def load_taxonomy(path: Optional[Path] = None) -> dict:
     return raw
 
 
-def _resolve_intent_groups(
+def _selected_group_names(
     intent_class: Optional[str],
     complexity_signal: Optional[str],
-    taxonomy: dict,
 ) -> Optional[Set[str]]:
-    """The tool-GROUP names an intent selects, or ``None`` for the maximal-
-    fallback signal (unknown / missing intent).
+    """The tool-GROUP names a turn selects, or ``None`` for the maximal-fallback
+    signal (unknown / missing intent).
 
-    Single source of truth for the Sprint 29 group-selection rule: ``core``
-    always, the matching ``domain_chunks`` group, plus ``exploratory`` for
-    complex / novel turns. Both :func:`resolve_tool_set` (legacy, name-set
-    return) and :func:`resolve_tools_for_tier` (tier-aware) resolve groups
-    through this helper so the two paths can never drift (Phase 4 consolidates
-    them onto one surface).
+    GRV-009 E5 C-RETIRE — taxonomy-free. The group-selection rule is purely
+    structural: ``core`` always, the intent's own group (the intent_class name
+    IS its group name), plus ``exploratory`` on complex/novel turns. It needs no
+    ``tool_groups.yaml`` read — the tool->group taxonomy the records subsumed.
+    This is the group-NAME logic the resolver uses for the ``stripped`` / fallback
+    provenance; native tool admission itself is registry-driven
+    (``_registry_allowed_names``).
     """
     if intent_class is None or intent_class == "unknown":
         return None
+    from grove.classify import INTENT_CLASSES
     groups: Set[str] = {"core"}
-    domain = taxonomy.get("domain_chunks") or {}
-    if intent_class in domain:
+    if intent_class in INTENT_CLASSES:
         groups.add(intent_class)
     if complexity_signal in ("complex", "novel"):
         groups.add("exploratory")
     return groups
 
 
-def _materialize(groups: Set[str], taxonomy: dict) -> Set[str]:
-    """Expand group names to the union of their tool names per the taxonomy."""
-    names: Set[str] = set()
-    domain = taxonomy.get("domain_chunks") or {}
-    for group in groups:
-        if group == "core":
-            names.update(taxonomy.get("core", []))
-        elif group == "exploratory":
-            names.update(taxonomy.get("exploratory", []))
-        elif group in domain:
-            names.update(domain[group])
-    return names
-
-
 def resolve_tool_set(
     intent_class: Optional[str],
     complexity_signal: Optional[str],
-    taxonomy: dict,
+    taxonomy: Optional[dict] = None,
 ) -> Optional[Set[str]]:
     """Compute the per-turn allowed tool-name set (Sprint 29, intent-only).
 
@@ -248,10 +234,9 @@ def resolve_tool_set(
     the Kaizen Ledger so the operator can audit how often the
     classifier failed to give the optimizer enough to work with.
 
-    This is the LEGACY (tier-unaware) surface — behavior is unchanged from
-    Sprint 29. The tier-aware cap lives in :func:`resolve_tools_for_tier`
-    (Sprint 73); this function and that one share :func:`_resolve_intent_groups`
-    so neither can drift from the group-selection rule.
+    The tier-unaware surface; the tier-aware cap lives in
+    :func:`resolve_tools_for_tier`. Both share :func:`_selected_group_names` so
+    neither can drift from the group-selection rule.
 
     Args:
         intent_class: one of the Sprint 12 INTENT_CLASSES, or
@@ -259,12 +244,14 @@ def resolve_tool_set(
         complexity_signal: one of the Sprint 12 COMPLEXITY_SIGNALS
             (``simple`` / ``moderate`` / ``complex`` / ``novel``).
             ``complex`` / ``novel`` add the exploratory group.
-        taxonomy: the dict returned by :func:`load_taxonomy`.
+        taxonomy: GRV-009 E5 C-RETIRE — accepted for back-compatibility and
+            IGNORED; native selection is registry-driven and reads no
+            ``tool_groups.yaml`` taxonomy.
 
     Returns:
         Set of tool names to expose this turn, or None for "load all".
     """
-    groups = _resolve_intent_groups(intent_class, complexity_signal, taxonomy)
+    groups = _selected_group_names(intent_class, complexity_signal)
     if groups is None:
         logger.info(
             "[grove.context_budget] tool selection: maximal fallback "
@@ -556,9 +543,10 @@ def resolve_tools_for_tier(
 
     # Provenance (D8 escalation net): the group-name selection is unchanged — the
     # intent still selects {core, <intent>, exploratory?}; ``stripped`` is the
-    # groups the tier's allow_groups forbids. (Group-name logic only; the
-    # tool->group materialization is what C-RESOLVE retires.)
-    groups = _resolve_intent_groups(intent_class, complexity_signal, taxonomy)
+    # groups the tier's allow_groups forbids. GRV-009 E5 C-RETIRE — group-name
+    # logic only, taxonomy-free; the ``taxonomy`` arg is accepted for back-compat
+    # and IGNORED (the resolver path reads no tool_groups.yaml).
+    groups = _selected_group_names(intent_class, complexity_signal)
     if groups is None:
         fallback = True
         stripped: Set[str] = set()

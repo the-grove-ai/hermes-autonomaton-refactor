@@ -24,11 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from grove import context_budget as cb
 from grove.classify import COMPLEXITY_SIGNALS, INTENT_CLASSES
 from grove.context_budget import (
-    _materialize,
-    _resolve_intent_groups,
     load_taxonomy,
     resolve_tool_set,
     resolve_tools_for_tier,
@@ -41,6 +38,35 @@ _TAX = _REPO / "config" / "tool_groups.yaml"
 
 BUDGETS = load_tier_budgets(_CFG, taxonomy_path=_TAX)
 TAXONOMY = load_taxonomy(_TAX)
+
+
+# GRV-009 E5 C-RETIRE — the production _resolve_intent_groups / _materialize
+# (the tool_groups.yaml tool->group readers) are retired from the resolver path.
+# The moving oracle keeps a SELF-CONTAINED copy of that legacy group-level logic,
+# reading the still-present tool_groups.yaml directly, so it still proves the
+# registry resolver reproduces the legacy surface — independent of production.
+def _legacy_intent_groups(intent, cx):
+    if intent is None or intent == "unknown":
+        return None
+    groups = {"core"}
+    if intent in (TAXONOMY.get("domain_chunks") or {}):
+        groups.add(intent)
+    if cx in ("complex", "novel"):
+        groups.add("exploratory")
+    return groups
+
+
+def _legacy_materialize(groups):
+    names = set()
+    domain = TAXONOMY.get("domain_chunks") or {}
+    for g in groups:
+        if g == "core":
+            names.update(TAXONOMY.get("core", []))
+        elif g == "exploratory":
+            names.update(TAXONOMY.get("exploratory", []))
+        elif g in domain:
+            names.update(domain[g])
+    return names
 
 
 def _native_surface():
@@ -63,14 +89,14 @@ def _legacy_oracle(intent, cx, tier_budget):
     """The legacy group-level native surface (the logic C-RESOLVE replaced)."""
     allow = set(tier_budget.tools.allow_groups)
     wildcard = "*" in allow
-    groups = _resolve_intent_groups(intent, cx, TAXONOMY)
+    groups = _legacy_intent_groups(intent, cx)
     native = {t["function"]["name"] for t in TOOLS}
     if groups is None:                         # unknown / maximal fallback
         if wildcard:
             return set(native)
-        return _materialize(allow, TAXONOMY) & native
+        return _legacy_materialize(allow) & native
     kept = set(groups) if wildcard else (groups & allow)
-    return _materialize(kept, TAXONOMY) & native
+    return _legacy_materialize(kept) & native
 
 
 # ── Part 2: the intersection matrix (both entrypoints) ───────────────────────
@@ -96,12 +122,12 @@ def test_intersection_matrix_tier_unaware_entrypoint():
     for intent in INTENTS:
         for cx in COMPLEXITY_SIGNALS:
             got = resolve_tool_set(intent, cx, TAXONOMY)
-            groups = _resolve_intent_groups(intent, cx, TAXONOMY)
+            groups = _legacy_intent_groups(intent, cx)
             if groups is None:
                 if got is not None:
                     mism[f"{intent}|{cx}"] = ("expected None", got)
                 continue
-            want = _materialize(set(groups), TAXONOMY) & native
+            want = _legacy_materialize(set(groups)) & native
             got_native = {n for n in (got or set()) if n in native}
             if got_native != want:
                 mism[f"{intent}|{cx}"] = (sorted(got_native - want), sorted(want - got_native))

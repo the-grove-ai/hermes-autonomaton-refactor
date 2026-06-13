@@ -251,12 +251,14 @@ class TestMaybeApplyToolFilter:
     def test_filter_failure_degrades_to_full(
         self, monkeypatch: pytest.MonkeyPatch, caplog,
     ):
-        # If the taxonomy loader explodes, the agent must NOT crash
-        # the turn — degrade to full registry with a WARNING.
+        # If the resolver explodes, the agent must NOT crash the turn — degrade
+        # to full registry with a WARNING. GRV-009 E5 C-RETIRE: the resolver path
+        # no longer reads tool_groups.yaml (load_taxonomy is off it), so the
+        # failure is injected at the resolver itself (the still-present call).
         _set_classification(monkeypatch)
         import grove.context_budget as _cb
         monkeypatch.setattr(
-            _cb, "load_taxonomy",
+            _cb, "resolve_tools_for_tier",
             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("yaml broken")),
         )
         full = [_tool("clarify"), _tool("write_file")]
