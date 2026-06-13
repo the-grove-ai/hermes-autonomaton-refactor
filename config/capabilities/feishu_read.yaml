@@ -1,15 +1,15 @@
-# GRV-009 E5 C-VERBS (declarative-resolution-v1) — grouped verb record.
-# family=null:feishu  zone=green  tiers=[3]  trigger=always
+# GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
+# family=null:feishu  zone=green  tiers=[3]  disclosure=fallback  trigger=fallback
 id: feishu_read
 kind: verb
 trigger:
   intents: []
   keywords: []
   dock_affinity: []
-  always: true
+  always: false
+  disclosure: fallback
 bindings:
   tools:
-  - feishu_doc_read
   - feishu_drive_list_comment_replies
   - feishu_drive_list_comments
   credentials: null
@@ -35,8 +35,7 @@ telemetry:
   - human_feedback
 context:
   disclosure: eager
-  payload: 'Native feishu tools (read, zone green). Tools: feishu_doc_read, feishu_drive_list_comment_replies,
-    feishu_drive_list_comments.
+  payload: 'Native feishu tools (read, zone green). Tools: feishu_drive_list_comment_replies, feishu_drive_list_comments.
 
     '
   dock_composition: none

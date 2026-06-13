@@ -1,15 +1,15 @@
-# GRV-009 E5 C-VERBS (declarative-resolution-v1) — grouped verb record.
-# family=homeassistant  zone=green  tiers=[3]  trigger=always
+# GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
+# family=homeassistant  zone=green  tiers=[3]  disclosure=fallback  trigger=fallback
 id: homeassistant_read
 kind: verb
 trigger:
   intents: []
   keywords: []
   dock_affinity: []
-  always: true
+  always: false
+  disclosure: fallback
 bindings:
   tools:
-  - ha_get_state
   - ha_list_entities
   - ha_list_services
   credentials: null
@@ -35,7 +35,7 @@ telemetry:
   - human_feedback
 context:
   disclosure: eager
-  payload: 'Native homeassistant tools (read, zone green). Tools: ha_get_state, ha_list_entities, ha_list_services.
+  payload: 'Native homeassistant tools (read, zone green). Tools: ha_list_entities, ha_list_services.
 
     '
   dock_composition: none

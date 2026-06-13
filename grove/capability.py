@@ -32,6 +32,7 @@ __all__ = [
     "LifecycleState",
     "Provenance",
     "Disclosure",
+    "TriggerDisclosure",
     "DockComposition",
     "ValidationStrategy",
     "FailureFallback",
@@ -91,6 +92,27 @@ class Disclosure(str, Enum):
     ALWAYS = "always"
 
 
+class TriggerDisclosure(str, Enum):
+    """GRV-009 E5 Amendment A4t — the per-record native-disclosure mode.
+
+    The golden offer-parity snapshot shows native disclosure has three modes the
+    ``always``/``intents`` trigger alone cannot express. This field declares the
+    mode the resolver (C-RESOLVE) honors; it never re-narrows in code what a
+    record declares open.
+
+    * ``proactive`` — offered whenever tier-eligible on any intent/complexity
+      (core control tools via ``always``; intent records via ``intents``).
+    * ``complexity`` — offered only on complex/novel turns (the exploratory
+      cohort), regardless of intent.
+    * ``fallback`` — never offered proactively; reachable only via the
+      maximal unknown-intent fallback (the never-grouped integration families).
+    """
+
+    PROACTIVE = "proactive"
+    COMPLEXITY = "complexity"
+    FALLBACK = "fallback"
+
+
 class DockComposition(str, Enum):
     NONE = "none"
     GOAL_CONTEXT = "goal_context"
@@ -146,6 +168,8 @@ class Trigger:
     # tools and the D4 verb backfill ride this). The strict intent/keyword
     # trigger requirement in ``validate()`` is relaxed only when ``always`` is set.
     always: bool = False
+    # GRV-009 E5 Amendment A4t — native-disclosure mode (see TriggerDisclosure).
+    disclosure: "TriggerDisclosure" = field(default_factory=lambda: TriggerDisclosure.PROACTIVE)
 
 
 @dataclass
@@ -270,15 +294,25 @@ class Capability:
                 "lifecycle.state must be a valid LifecycleState enum member"
             )
 
-        # A unit without a strict trigger silently vanishes from disclosure —
-        # unless it declares trigger.always (A4 bootstrap/ungated disclosure),
-        # in which case it offers unconditionally and needs no intent/keyword.
-        if not (
-            self.trigger.always or self.trigger.intents or self.trigger.keywords
-        ):
+        # Trigger discipline (A4 + A4t). A unit without a strict trigger silently
+        # vanishes from disclosure — EXCEPT a ``disclosure: fallback`` record,
+        # which is fallback-reachable by design (the maximal unknown-intent path),
+        # so it legitimately carries no proactive trigger. The carve-out is tight:
+        # ONLY fallback records may be empty, and a fallback record must carry NO
+        # proactive trigger at all (else its declared mode contradicts itself).
+        t = self.trigger
+        if t.disclosure == TriggerDisclosure.FALLBACK:
+            if t.always or t.intents or t.keywords:
+                raise ValueError(
+                    "disclosure: fallback is a fallback-only capability and must "
+                    "carry no proactive trigger (always must be False; intents and "
+                    "keywords must be empty)"
+                )
+        elif not (t.always or t.intents or t.keywords):
             raise ValueError(
-                "trigger must declare at least one strict trigger: "
-                "intents or keywords must be non-empty (or set trigger.always)"
+                "trigger must declare at least one strict trigger: intents or "
+                "keywords must be non-empty (or set trigger.always) — only a "
+                "disclosure: fallback record may declare an empty trigger"
             )
 
         # A4 bindings — structural per-record checks (the strict 1:1 ownership
@@ -378,6 +412,7 @@ class Capability:
                 "keywords": list(self.trigger.keywords),
                 "dock_affinity": list(self.trigger.dock_affinity),
                 "always": self.trigger.always,
+                "disclosure": self.trigger.disclosure.value,
             },
             "bindings": {
                 "tools": list(self.bindings.tools),
@@ -462,6 +497,9 @@ class Capability:
                 keywords=list(t.get("keywords", [])),
                 dock_affinity=list(t.get("dock_affinity", [])),
                 always=bool(t.get("always", False)),
+                disclosure=TriggerDisclosure(
+                    t.get("disclosure", TriggerDisclosure.PROACTIVE.value)
+                ),
             )
 
         if "bindings" in d:

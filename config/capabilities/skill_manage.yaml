@@ -1,5 +1,5 @@
-# GRV-009 E5 C-VERBS (declarative-resolution-v1) — grouped verb record.
-# family=skills  zone=yellow  tiers=[2, 3]  trigger=code_generation/system_admin
+# GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
+# family=skills  zone=yellow  tiers=[2, 3]  disclosure=proactive  trigger=code_generation/system_admin
 id: skill_manage
 kind: verb
 trigger:
@@ -9,6 +9,7 @@ trigger:
   keywords: []
   dock_affinity: []
   always: false
+  disclosure: proactive
 bindings:
   tools:
   - skill_manage

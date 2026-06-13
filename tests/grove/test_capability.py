@@ -22,6 +22,7 @@ from grove.capability import (
     TierRule,
     TierValidation,
     Trigger,
+    TriggerDisclosure,
     ValidationStrategy,
     Zone,
 )
@@ -368,3 +369,45 @@ def test_bindings_tools_must_be_nonempty_strings():
 def test_bindings_tools_no_intra_record_duplicate():
     with pytest.raises(ValueError, match="repeat"):
         make_valid(bindings=Bindings(tools=["gmail_search", "gmail_search"]))
+
+
+# ── GRV-009 E5 Amendment A4t — trigger.disclosure mode ───────────────────────
+
+
+def test_trigger_disclosure_defaults_proactive():
+    assert make_valid().trigger.disclosure is TriggerDisclosure.PROACTIVE
+
+
+def test_trigger_disclosure_round_trips():
+    cap = make_valid(trigger=Trigger(always=True, disclosure=TriggerDisclosure.COMPLEXITY))
+    restored = Capability.from_yaml(cap.to_yaml())
+    assert restored == cap
+    assert restored.trigger.disclosure is TriggerDisclosure.COMPLEXITY
+
+
+def test_complexity_record_still_needs_a_trigger():
+    # disclosure: complexity is NOT a trigger carve-out — it still needs always
+    # or intents (the exploratory cohort carries always:true).
+    cap = make_valid(trigger=Trigger(always=True, disclosure=TriggerDisclosure.COMPLEXITY))
+    assert cap.trigger.disclosure is TriggerDisclosure.COMPLEXITY
+    with pytest.raises(ValueError, match="trigger"):
+        make_valid(trigger=Trigger(disclosure=TriggerDisclosure.COMPLEXITY))  # empty -> raises
+
+
+def test_fallback_record_may_have_empty_trigger():
+    # The carve-out: a fallback-only record is fallback-reachable by design, so
+    # an empty trigger (no intents/keywords, always:false) is legal HERE only.
+    cap = make_valid(trigger=Trigger(disclosure=TriggerDisclosure.FALLBACK))
+    assert cap.trigger.disclosure is TriggerDisclosure.FALLBACK
+    assert cap.trigger.always is False and cap.trigger.intents == []
+
+
+def test_fallback_record_must_not_carry_a_proactive_trigger():
+    # Tight carve-out: a fallback record declaring always / intents / keywords
+    # contradicts its own mode and fails loud.
+    with pytest.raises(ValueError, match="fallback"):
+        make_valid(trigger=Trigger(always=True, disclosure=TriggerDisclosure.FALLBACK))
+    with pytest.raises(ValueError, match="fallback"):
+        make_valid(trigger=Trigger(intents=["research"], disclosure=TriggerDisclosure.FALLBACK))
+    with pytest.raises(ValueError, match="fallback"):
+        make_valid(trigger=Trigger(keywords=["x"], disclosure=TriggerDisclosure.FALLBACK))

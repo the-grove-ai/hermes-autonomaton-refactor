@@ -1,5 +1,5 @@
-# GRV-009 E5 C-VERBS (declarative-resolution-v1) — grouped verb record.
-# family=video_gen  zone=yellow  tiers=[3]  trigger=creative_writing
+# GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
+# family=video_gen  zone=yellow  tiers=[3]  disclosure=proactive  trigger=creative_writing
 id: video_generate
 kind: verb
 trigger:
@@ -8,6 +8,7 @@ trigger:
   keywords: []
   dock_affinity: []
   always: false
+  disclosure: proactive
 bindings:
   tools:
   - video_generate

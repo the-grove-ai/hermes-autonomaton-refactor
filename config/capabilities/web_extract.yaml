@@ -1,5 +1,5 @@
-# GRV-009 E5 C-VERBS (declarative-resolution-v1) — grouped verb record.
-# family=web  zone=green  tiers=[1, 2, 3]  trigger=analysis/research/retrieval
+# GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
+# family=web  zone=green  tiers=[1, 2, 3]  disclosure=proactive  trigger=analysis/research/retrieval
 id: web_extract
 kind: verb
 trigger:
@@ -10,6 +10,7 @@ trigger:
   keywords: []
   dock_affinity: []
   always: false
+  disclosure: proactive
 bindings:
   tools:
   - web_extract
