@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grove.context_budget import load_taxonomy, resolve_tools_for_tier
+from grove.context_budget import resolve_tools_for_tier
 from grove.prompt.composer import PromptComposer, SectionResult
 from grove.tier_budget import load_tier_budgets, tier_admits_context_block
 
@@ -22,7 +22,7 @@ _TAX = _REPO / "config" / "tool_groups.yaml"
 # The real committed budgets + taxonomy drive the behavior — not hand-typed copies.
 BUDGETS = load_tier_budgets(_CFG, taxonomy_path=_TAX)
 T2, T3 = BUDGETS["T2"], BUDGETS["T3"]
-TAXONOMY = load_taxonomy(_TAX)
+TAXONOMY = None  # GRV-009 E5b C2 — tool_groups.yaml retired; resolver ignores taxonomy
 
 
 def _mk(*names):

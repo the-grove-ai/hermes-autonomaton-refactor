@@ -43,8 +43,6 @@ __all__ = [
     "UnitTrigger",
     "DisclosableUnit",
     "load_manifest",
-    "build_manifest",
-    "matched_tool_units",
 ]
 
 # ── Hard caps (D5) ───────────────────────────────────────────────────────
@@ -168,33 +166,11 @@ class DisclosableUnit:
 
 
 # ── Match-pass (Phase 2): MCP disclose-on-match ──────────────────────────
-
-
-# GRV-009 E4 C4 — ``matched_mcp_servers`` and ``mcp_match_reasons`` retired.
-# Per-turn MCP disclose-on-match moved onto the kind=mcp Capability records;
-# ``run_agent._compute_mcp_allow`` now matches a record's ``trigger`` (intents /
-# keywords / dock_affinity) directly. The manifest no longer carries mcp units.
-
-
-def matched_tool_units(units, *, intent_class) -> frozenset:
-    """The derived ``tool`` unit ids whose trigger matches this turn's intent.
-
-    gateway-disclosure-trigger-v1: the native counterpart to
-    :func:`matched_mcp_servers`. A ``kind == "tool"`` unit matches when
-    ``intent_class`` is in its ``trigger.intents`` (derived from domain-chunk
-    membership in :func:`build_manifest`). SAME intent clause MCP units use
-    (``mcp_match_reasons``), but a SEPARATE function on purpose: the MCP path's
-    result feeds ``mcp_allow``; this one feeds only the eager surface in
-    ``_apply_disclosure``, so the two never cross. Pure function; ignores
-    ``mcp``/``goal``/``contract`` units. Empty when ``intent_class`` is None.
-    """
-    return frozenset(
-        u.id
-        for u in units
-        if u.kind == "tool"
-        and intent_class is not None
-        and intent_class in u.trigger.intents
-    )
+# GRV-009 E4 C4 — ``matched_mcp_servers`` / ``mcp_match_reasons`` retired (MCP
+# disclose-on-match moved onto the kind=mcp Capability records).
+# GRV-009 E5b C2 — ``matched_tool_units`` retired: the native eager/pull split
+# is derived from capability records (grove.disclosure.disclosure_split_sets),
+# not from manifest-derived per-unit triggers.
 
 
 # ── Loader + validator ───────────────────────────────────────────────────
@@ -345,143 +321,10 @@ def _oneline_from_description(desc: str) -> str:
     return first
 
 
-def _groups_of_tool(name: str, taxonomy: Dict[str, Any]) -> Set[str]:
-    """The tool-group names a tool belongs to in ``tool_groups.yaml``."""
-    groups: Set[str] = set()
-    if name in (taxonomy.get("core") or []):
-        groups.add("core")
-    if name in (taxonomy.get("exploratory") or []):
-        groups.add("exploratory")
-    for chunk, members in (taxonomy.get("domain_chunks") or {}).items():
-        if name in (members or []):
-            groups.add(str(chunk))
-    return groups
-
-
-def _tiers_for_tool(
-    name: str, taxonomy: Dict[str, Any], tier_allow: Dict[str, Set[str]]
-) -> Tuple[str, ...]:
-    """The tiers eligible to disclose a derived tool unit.
-
-    Truthful by construction: a tool is eligible on a tier iff that tier's
-    ``allow_groups`` (from ``tier_budgets`` in routing.config.yaml) admits a
-    group the tool belongs to — ``"*"`` admits everything. This is the same
-    R1 rule the live filter uses, so the index's ``tiers`` metadata cannot
-    drift from the budget. A tool in no allow-listed group on any tier falls
-    back to the apex tier (it is still reachable where the budget is widest).
-    """
-    groups = _groups_of_tool(name, taxonomy)
-    tiers = [
-        tier
-        for tier, allow in tier_allow.items()
-        if WILDCARD in allow or (groups & allow)
-    ]
-    return tuple(tiers) if tiers else ("T3",)
-
-
-# Local mirror of grove.tier_budget.WILDCARD (kept here so this module carries
-# no import-time dependency on the budget loader).
-WILDCARD = "*"
-
-
-def build_manifest(
-    registry: Any,
-    *,
-    taxonomy: Optional[Dict[str, Any]] = None,
-    tier_budgets: Optional[Dict[str, Any]] = None,
-    manifest_path: Optional[Path] = None,
-) -> Tuple[DisclosableUnit, ...]:
-    """The FULL disclosure index: derived tool units merged with the
-    declarative (mcp / goal / contract) units from the YAML.
-
-    Phase 3 (D-GATE-B): tool units are DERIVED live from the registry — oneline
-    from each tool's description (capped), tiers from ``tool_groups`` ∩ the
-    per-tier ``allow_groups`` — so the tool index can never drift from the
-    registry. The YAML keeps only the declarative units that have no registry
-    source (MCP servers, goals, contract sections). The two halves merge here.
-
-    Fail-loud (banked Phase 3 pre-decision): ids are globally unique across the
-    merged manifest regardless of kind. A derived-tool id colliding with ANY
-    YAML id, or a duplicate within the YAML, raises ``ValueError`` at load.
-
-    Args:
-        registry: the Dispatcher-owned ToolRegistry (``get_all_tool_names`` +
-            ``get_definitions``). Source of the derived tool units.
-        taxonomy: tool-group taxonomy dict; loaded from ``tool_groups.yaml``
-            when ``None``.
-        tier_budgets: ``{tier_name: TierBudget}``; loaded from
-            ``routing.config.yaml`` when ``None``. Source of each tier's
-            ``allow_groups`` for the tiers metadata.
-        manifest_path: explicit declarative YAML path; resolved when ``None``.
-
-    Returns:
-        The merged tuple of :class:`DisclosableUnit` — derived tools first,
-        then the declarative units in declared order.
-    """
-    if taxonomy is None:
-        from grove.context_budget import load_taxonomy
-
-        taxonomy = load_taxonomy()
-    if tier_budgets is None:
-        from grove.tier_budget import load_tier_budgets
-
-        tier_budgets = load_tier_budgets()
-
-    tier_allow: Dict[str, Set[str]] = {
-        str(tier): set(getattr(b.tools, "allow_groups", ()) or ())
-        for tier, b in tier_budgets.items()
-    }
-
-    # Declarative half — load + validate the YAML (mcp / goal / contract).
-    declarative = load_manifest(manifest_path)
-
-    # Derived half — one tool unit per registered tool.
-    derived: list = []
-    names = sorted(registry.get_all_tool_names())
-    defs = registry.get_definitions(set(names), quiet=True)
-    by_name = {
-        (d.get("function") or {}).get("name") or d.get("name"): d for d in defs
-    }
-    for name in names:
-        d = by_name.get(name)
-        if d is None:
-            continue
-        fn = d.get("function") or {}
-        desc = fn.get("description") or d.get("description") or ""
-        derived.append(
-            DisclosableUnit(
-                id=name,
-                kind="tool",
-                oneline=_oneline_from_description(desc),
-                payload=f"tool_schema:{name}",
-                tiers=_tiers_for_tool(name, taxonomy, tier_allow),
-                # gateway-disclosure-trigger-v1: derive intents from the tool's
-                # domain-chunk membership (chunk keys ARE intent_class values,
-                # tool_groups.yaml). Scoped to domain_chunks only — "core"/
-                # "exploratory" are pseudo-groups, not intents. This lets a
-                # non-core native verb disclose eagerly on its intent-matched
-                # turn (JIT-preserved), instead of always withheld to the index.
-                trigger=UnitTrigger(
-                    intents=tuple(sorted(
-                        g for g in _groups_of_tool(name, taxonomy)
-                        if g in (taxonomy.get("domain_chunks") or {})
-                    )),
-                    keywords=(), dock_goal=None,
-                ),
-            )
-        )
-
-    # Merge — fail-loud on any global id collision (both directions).
-    merged: list = []
-    seen: Dict[str, str] = {}  # id -> kind of the unit that claimed it
-    for unit in (*derived, *declarative):
-        if unit.id in seen:
-            raise ValueError(
-                f"disclosure manifest id collision: {unit.id!r} is claimed by "
-                f"both a {seen[unit.id]} unit and a {unit.kind} unit. ids must "
-                f"be globally unique across derived tools and the declarative "
-                f"manifest — rename the YAML unit or the colliding tool."
-            )
-        seen[unit.id] = unit.kind
-        merged.append(unit)
-    return tuple(merged)
+# ── build_manifest / _groups_of_tool / _tiers_for_tool — RETIRED ─────────
+# GRV-009 E5b C2 — the derived-tool disclosure-split half of the manifest is
+# gone: native disclosure is registry-driven (grove.disclosure
+# .build_disclosure_units for the index units, disclosure_split_sets for the
+# eager/pull split). tool_groups.yaml is deleted; nothing derives tool units
+# from it. The DECLARATIVE half (load_manifest + DisclosableUnit + UnitTrigger,
+# above) stays — goal/contract/mcp units have no registry source.

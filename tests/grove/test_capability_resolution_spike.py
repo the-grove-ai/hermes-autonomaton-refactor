@@ -81,11 +81,11 @@ def test_workspace_admitted_to_constructed_surface(monkeypatch, platform):
 
 
 def _delivered_for_scheduling(reg, platform):
-    from grove.context_budget import load_taxonomy, resolve_tools_for_tier
+    from grove.context_budget import resolve_tools_for_tier
     from grove.tier_budget import load_tier_budgets
 
     _enabled, tools = _platform_surface(reg, platform)
-    tax = load_taxonomy(REPO / "config" / "tool_groups.yaml")
+    tax = None  # GRV-009 E5b C2 — tool_groups.yaml retired; resolver ignores taxonomy
     t1 = load_tier_budgets()["T1"]
     res = resolve_tools_for_tier(tools, "scheduling", "simple", tax, t1)
     return list(res.tools)

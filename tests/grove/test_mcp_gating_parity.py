@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from grove.context_budget import load_taxonomy, resolve_tools_for_tier, _is_mcp, _name_of
+from grove.context_budget import resolve_tools_for_tier, _is_mcp, _name_of
 from grove.tier_budget import load_tier_budgets
 
 REPO = Path(__file__).resolve().parents[2]
-TAX = load_taxonomy(REPO / "config" / "tool_groups.yaml")
+TAX = None  # GRV-009 E5b C2 — tool_groups.yaml retired; resolver ignores taxonomy
 BUDGETS = load_tier_budgets()
 
 MCP_READ = "mcp_notion_notion_search"
