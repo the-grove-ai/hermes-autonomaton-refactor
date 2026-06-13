@@ -397,6 +397,20 @@ tool_zones:
   yb_send_dm:                                yellow
   yb_send_sticker:                           yellow
 
+  # ── GRV-009 E5 C-VERBS — make the default-source tools EXPLICIT ──
+  # These 8 tools previously resolved to yellow only via the classifier's
+  # default (no tool_zones entry). Their governing verb records (skills/spotify)
+  # carry zone: yellow; declarative-over-implicit, parity-preserving. Their
+  # current effective zone is yellow — any rezoning is a later deliberate act.
+  invoke_skill:                              yellow
+  spotify_albums:                            yellow
+  spotify_devices:                           yellow
+  spotify_library:                           yellow
+  spotify_playback:                          yellow
+  spotify_playlists:                         yellow
+  spotify_queue:                             yellow
+  spotify_search:                            yellow
+
   # ── Native tools: SECURITY / SYSTEM → RED ──
   # OS-level UI automation; keystroke-injection territory.
   computer_use:                              red

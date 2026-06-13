@@ -1,0 +1,69 @@
+# GRV-009 E5 C-VERBS (declarative-resolution-v1) — grouped verb record.
+# family=image_gen  zone=yellow  tiers=[3]  trigger=creative_writing
+id: image_generate
+kind: verb
+trigger:
+  intents:
+  - creative_writing
+  keywords: []
+  dock_affinity: []
+  always: false
+bindings:
+  tools:
+  - image_generate
+  credentials: null
+  toolset_key: image_gen
+tier_rule:
+  eligible:
+  - 3
+  preferred: 3
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'Native image_gen tools (write, zone yellow). Tools: image_generate.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: '2026-06-12T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-12T00:00:00+00:00'
+    from_state: migrated
+    to_state: approved
+    reason: 'E5 C-VERBS — declarative-resolution-v1: grouped verb record (strict A2: zone+tier+trigger
+      homogeneous) governing native tools at the operator-locked gate'
+    evidence:
+    - config/tool_groups.yaml
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: image_generate'
+  - 'subsystem: native verb registry (tools.registry)'
+  - 'check: tool registered + zone mapped in zones.schema.yaml'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

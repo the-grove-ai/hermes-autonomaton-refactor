@@ -250,16 +250,28 @@ def test_hosted_mcp_null_toolset_key_does_not_fail(tmp_path):
     assert "notion_read" in caps
 
 
-def test_uncovered_configurable_toolsets_are_reported_not_raised():
-    # key -> record direction: the real registry loads (no raise) and the
-    # uncovered set is returned for reporting. google-workspace IS governed;
-    # un-backfilled keys (e.g. web) are reported until D4.
+def test_real_registry_has_zero_uncovered_after_verbs():
+    # GRV-009 E5 C-VERBS drove the migration-coverage gap to zero: every
+    # CONFIGURABLE_TOOLSETS key now has a governing capability record.
     caps = load_capabilities()
     uncovered = _validate_toolset_keys(caps)
+    assert uncovered == frozenset(), f"residual uncovered keys: {sorted(uncovered)}"
+
+
+def test_uncovered_keys_reported_not_raised_synthetic(tmp_path):
+    # key -> record direction (mechanism): a record set that covers only one key
+    # leaves the rest uncovered — returned for reporting, NEVER raised.
+    base = yaml.safe_load((REPO_CAPS / "workspace_read.yaml").read_text(encoding="utf-8"))
+    base["bindings"] = {"tools": ["gmail_search"], "credentials": "google",
+                        "toolset_key": "google-workspace"}
+    (tmp_path / "only.yaml").write_text(yaml.safe_dump(base), encoding="utf-8")
+
+    caps = load_capabilities(tmp_path)          # loads clean — no raise on uncovered
+    uncovered = _validate_toolset_keys(caps)
     valid = _configurable_toolset_keys()
-    assert "google-workspace" not in uncovered   # governed by the workspace records
-    assert "web" in uncovered                      # not yet record-governed (D4 pending)
-    assert uncovered < valid                        # strict subset — at least one is covered
+    assert "google-workspace" not in uncovered  # the lone covered key
+    assert "web" in uncovered                    # the rest are reported, not fatal
+    assert uncovered < valid
 
 
 def test_missing_directory_fails_loud(tmp_path):
