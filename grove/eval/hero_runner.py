@@ -46,7 +46,6 @@ from grove.classify import (
     classify_for_routing,
 )
 from grove.context_budget import (
-    load_taxonomy,
     resolve_tool_set,
 )
 from grove.providers import _ensure_router
@@ -235,14 +234,15 @@ def _route(
 
 
 def _tools(classification: Optional[ClassificationResult]) -> Optional[Set[str]]:
-    """Compute the tool set via the production resolver."""
-    taxonomy = load_taxonomy()
+    """Compute the tool set via the production resolver.
+
+    GRV-009 E5 C-RETIRE — registry-driven; reads no tool_groups.yaml taxonomy.
+    """
     return resolve_tool_set(
         intent_class=classification.intent_class if classification else None,
         complexity_signal=(
             classification.complexity_signal if classification else None
         ),
-        taxonomy=taxonomy,
     )
 
 

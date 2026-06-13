@@ -3207,7 +3207,7 @@ class AIAgent:
             return
 
         from grove.providers import current_classification
-        from grove.context_budget import load_taxonomy, resolve_tools_for_tier
+        from grove.context_budget import resolve_tools_for_tier
         from grove.tier_budget import PERMISSIVE_TIER_BUDGET
 
         classification = current_classification()
@@ -3220,11 +3220,14 @@ class AIAgent:
         budgeted = tier_budget is not None
 
         def _resolve():
+            # GRV-009 E5 C-RETIRE — the resolver path reads no tool_groups.yaml
+            # taxonomy (native selection is registry-driven); the positional
+            # taxonomy arg is back-compat-only and ignored, so pass None.
             return resolve_tools_for_tier(
                 self.tools,
                 intent_class,
                 complexity,
-                load_taxonomy(),
+                None,
                 tier_budget if budgeted else PERMISSIVE_TIER_BUDGET,
                 mcp_allow=self._compute_mcp_allow(intent_class, goal_alignment),
             )
