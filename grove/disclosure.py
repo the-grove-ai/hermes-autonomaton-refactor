@@ -27,9 +27,99 @@ from grove.context_budget import _is_mcp, _mcp_server_of, _name_of
 __all__ = [
     "PULL_TOOL_NAMES",
     "build_pull_tool_defs",
+    "build_disclosure_units",
+    "disclosure_split_sets",
+    "reset_disclosure_split_cache",
     "resolve_pull",
     "resolve_goal_record",
 ]
+
+
+def build_disclosure_units(registry):
+    """GRV-009 E5b C1 — the disclosure-index units, registry + declarative ONLY
+    (no tool_groups.yaml). Derived tool units carry id/kind/oneline/payload; the
+    eager/pull SPLIT now comes from capability records
+    (:func:`disclosure_split_sets`), NOT per-unit tiers/trigger, so those are
+    empty here. The declarative half (goal/contract/mcp) is unchanged. The id
+    set, kinds, onelines and order are identical to the legacy ``build_manifest``,
+    so the pull-index string is byte-for-byte the same — just without the
+    tool_groups read."""
+    from grove.manifest import (
+        DisclosableUnit, UnitTrigger, load_manifest, _oneline_from_description,
+    )
+
+    names = sorted(registry.get_all_tool_names())
+    defs = registry.get_definitions(set(names), quiet=True)
+    by_name = {
+        (d.get("function") or {}).get("name") or d.get("name"): d for d in defs
+    }
+    derived = []
+    for name in names:
+        d = by_name.get(name)
+        if d is None:
+            continue
+        fn = d.get("function") or {}
+        desc = fn.get("description") or d.get("description") or ""
+        derived.append(DisclosableUnit(
+            id=name, kind="tool", oneline=_oneline_from_description(desc),
+            payload=f"tool_schema:{name}",
+            # tiers is unused by the disclosure split (build_pull_tool_defs /
+            # resolve_pull read only id/kind/oneline) — a neutral non-empty
+            # placeholder satisfies DisclosableUnit's >=1-tier invariant. The
+            # eligible-tier truth lives in the resolver (tier_rule + allow_groups).
+            tiers=("T1", "T2", "T3"),
+            trigger=UnitTrigger(intents=(), keywords=(), dock_goal=None),
+        ))
+    declarative = load_manifest()
+    merged, seen = [], {}
+    for u in (*derived, *declarative):
+        if u.id in seen:
+            raise ValueError(
+                f"disclosure manifest id collision: {u.id!r} is claimed by both "
+                f"a {seen[u.id]} unit and a {u.kind} unit. ids must be globally "
+                f"unique across derived tools and the declarative manifest."
+            )
+        seen[u.id] = u.kind
+        merged.append(u)
+    return tuple(merged)
+
+
+_split_cache = None
+
+
+def disclosure_split_sets():
+    """GRV-009 E5b C1 — the always-eager (core) set and the per-intent matched
+    map, derived from capability records (the trigger-driven legacy mechanism):
+
+    * proactive + always  → ``core`` (always eager; == taxonomy.core, verified).
+    * proactive + intents → matched on those intents (eager on a matching turn).
+    * complexity / fallback → never eager (omitted; they ride the pull-index).
+
+    Returns ``(core_frozenset, {tool: set(intents)})``. Cached (the resolver runs
+    per turn); reset between tests via :func:`reset_disclosure_split_cache`."""
+    global _split_cache
+    if _split_cache is None:
+        from grove.capability_registry import load_capabilities
+        from grove.capability import TriggerDisclosure as TD
+
+        core, intent_map = set(), {}
+        for c in load_capabilities().values():
+            nt = [t for t in c.bindings.tools if not _is_mcp(t)]
+            if not nt:
+                continue
+            if c.trigger.disclosure == TD.PROACTIVE and c.trigger.always:
+                core.update(nt)
+            elif c.trigger.disclosure == TD.PROACTIVE:
+                for t in nt:
+                    intent_map.setdefault(t, set()).update(c.trigger.intents)
+        _split_cache = (frozenset(core), intent_map)
+    return _split_cache
+
+
+def reset_disclosure_split_cache() -> None:
+    """Drop the records→split projection cache (conftest resets between tests)."""
+    global _split_cache
+    _split_cache = None
 
 # The two net-new agent-pull tools. Held here so the agent loop's interception
 # and the wiring agree on one source of truth for the names.

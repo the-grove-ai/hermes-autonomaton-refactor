@@ -582,6 +582,13 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # GRV-009 E5b C1 — the records->disclosure-split projection cache.
+    try:
+        from grove import disclosure as _disc_mod
+        _disc_mod._split_cache = None
+    except Exception:
+        pass
+
     # GRV-009 E5 C-SEAM5 — the routed tier is per-turn global state set fresh by
     # the router each turn in production; reset it between tests so a prior test's
     # routed tier cannot leak into the C-SEAM5 secondary tier-eligibility gate.

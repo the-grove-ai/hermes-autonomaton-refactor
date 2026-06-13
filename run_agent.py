@@ -3064,9 +3064,15 @@ class AIAgent:
         the classification degrades to the pre-change behavior (no derived units
         eager — core + matched MCP only).
         """
-        from grove.manifest import build_manifest, matched_tool_units
-        from grove.disclosure import build_pull_tool_defs
-        from grove.context_budget import load_taxonomy, _is_mcp, _mcp_server_of, _name_of
+        # GRV-009 E5b C1 — the eager/pull split now derives from capability
+        # records (build_disclosure_units for the index units; disclosure_split_sets
+        # for core + matched), NOT build_manifest/matched_tool_units/load_taxonomy
+        # over tool_groups.yaml. Byte-for-byte equivalent (proven against the
+        # split-parity golden); the registry is sole-path for native disclosure.
+        from grove.disclosure import (
+            build_disclosure_units, build_pull_tool_defs, disclosure_split_sets,
+        )
+        from grove.context_budget import _is_mcp, _mcp_server_of, _name_of
 
         registry = getattr(
             getattr(self, "_dispatcher_singleton", None), "registry", None
@@ -3074,17 +3080,20 @@ class AIAgent:
         if registry is None:
             return list(res.tools)
 
-        manifest = build_manifest(registry)
-        self._disclosure_manifest = manifest
+        units = build_disclosure_units(registry)
+        self._disclosure_manifest = units
         if getattr(self, "_disclosure_log", None) is None:
             self._disclosure_log = []
 
-        # gateway-disclosure-trigger-v1: native verbs whose derived trigger
-        # matched this turn's intent. Admitted to the eager surface below (and
-        # to eager_ids, so build_pull_tool_defs omits them from the index — no
-        # double-exposure). Empty set when intent_class is None.
-        matched = matched_tool_units(manifest, intent_class=intent_class)
-        core = set(load_taxonomy().get("core", []))
+        # Record-derived split: ``core`` = proactive-always (always eager);
+        # ``matched`` = proactive-intent records whose trigger.intents include this
+        # turn's intent (eager, JIT). Complexity/fallback records are never eager —
+        # they ride the pull-index. Empty matched when intent_class is None.
+        core, _intent_map = disclosure_split_sets()
+        matched = (
+            {t for t, ins in _intent_map.items() if intent_class in ins}
+            if intent_class is not None else set()
+        )
         reasons = getattr(self, "_mcp_match_reasons", None) or {}
         mcp_tokens: Dict[str, int] = {}
         eager: List[Dict[str, Any]] = []
@@ -3112,7 +3121,7 @@ class AIAgent:
                 "reason": reasons.get(server, "match"),
             })
 
-        pull_defs = build_pull_tool_defs(manifest, eager_ids)
+        pull_defs = build_pull_tool_defs(units, eager_ids)
         return eager + pull_defs
 
     def _intercept_pull_intents(self, intents, messages):

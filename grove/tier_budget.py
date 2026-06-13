@@ -281,28 +281,19 @@ def _inference_tiers(routing: Dict[str, Any], target: Path) -> Set[str]:
 
 
 def _valid_group_names(
-    taxonomy: Optional[Dict[str, Any]], taxonomy_path: Optional[Path]
+    taxonomy: Optional[Dict[str, Any]] = None, taxonomy_path: Optional[Path] = None
 ) -> frozenset:
     """The set of tool-group names ``allow_groups`` may reference (besides ``*``).
 
-    Derived from ``tool_groups.yaml``: the ``core`` group, the ``exploratory``
-    group, and every ``domain_chunks`` key. Policy references taxonomy names;
-    the catalog itself stays in ``tool_groups.yaml`` (D2).
+    GRV-009 E5b C1 — a CLOSED CONSTANT catalog: the ``core`` and ``exploratory``
+    pseudo-groups plus the intent-class group names (``INTENT_CLASSES``, which is
+    exactly ``domain_chunks.keys()`` today). No ``tool_groups.yaml`` read — the
+    catalog source moves off the retired file. The ``taxonomy`` / ``taxonomy_path``
+    args are accepted for back-compatibility and IGNORED.
     """
-    if taxonomy is None:
-        from grove.context_budget import load_taxonomy
+    from grove.classify import INTENT_CLASSES
 
-        taxonomy = load_taxonomy(taxonomy_path)
-    if not isinstance(taxonomy, dict):
-        raise ValueError(
-            "tool-group taxonomy did not load as a mapping; cannot validate "
-            "allow_groups names"
-        )
-    names: Set[str] = {"core", "exploratory"}
-    domain = taxonomy.get("domain_chunks")
-    if isinstance(domain, dict):
-        names |= {str(k) for k in domain.keys()}
-    return frozenset(names)
+    return frozenset({"core", "exploratory"} | set(INTENT_CLASSES))
 
 
 def _parse_tier_budget(
