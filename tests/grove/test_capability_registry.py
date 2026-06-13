@@ -11,6 +11,8 @@ from grove.capability import (
 )
 from grove.capability_registry import (
     CapabilityLoadError,
+    _configurable_toolset_keys,
+    _validate_toolset_keys,
     default_capabilities_dir,
     load_capabilities,
 )
@@ -216,6 +218,48 @@ def test_real_notion_bindings_match_zones_schema():
         "mcp_notion_notion_update_data_source", "mcp_notion_notion_create_view",
         "mcp_notion_notion_update_view",
     }
+
+
+# ── D2<->D3 mutual check (GRV-009 E5 C-SEAM4) ────────────────────────────────
+
+
+def test_unknown_toolset_key_on_record_fails_loud(tmp_path):
+    # record -> key direction: a non-null toolset_key that is not a known
+    # CONFIGURABLE_TOOLSETS key aborts the load, naming record + bad key.
+    base = yaml.safe_load((REPO_CAPS / "workspace_read.yaml").read_text(encoding="utf-8"))
+    base["id"] = "phantom"
+    base["bindings"] = {
+        "tools": ["gmail_search"],
+        "credentials": "google",
+        "toolset_key": "not_a_real_toolset",
+    }
+    (tmp_path / "phantom.yaml").write_text(yaml.safe_dump(base), encoding="utf-8")
+
+    with pytest.raises(CapabilityLoadError) as ei:
+        load_capabilities(tmp_path)
+    msg = str(ei.value)
+    assert "not_a_real_toolset" in msg
+    assert "phantom" in msg
+
+
+def test_hosted_mcp_null_toolset_key_does_not_fail(tmp_path):
+    # A null toolset_key (hosted MCP) is skipped by the record->key check.
+    base = yaml.safe_load((REPO_CAPS / "notion_read.yaml").read_text(encoding="utf-8"))
+    (tmp_path / "n.yaml").write_text(yaml.safe_dump(base), encoding="utf-8")
+    caps = load_capabilities(tmp_path)
+    assert "notion_read" in caps
+
+
+def test_uncovered_configurable_toolsets_are_reported_not_raised():
+    # key -> record direction: the real registry loads (no raise) and the
+    # uncovered set is returned for reporting. google-workspace IS governed;
+    # un-backfilled keys (e.g. web) are reported until D4.
+    caps = load_capabilities()
+    uncovered = _validate_toolset_keys(caps)
+    valid = _configurable_toolset_keys()
+    assert "google-workspace" not in uncovered   # governed by the workspace records
+    assert "web" in uncovered                      # not yet record-governed (D4 pending)
+    assert uncovered < valid                        # strict subset — at least one is covered
 
 
 def test_missing_directory_fails_loud(tmp_path):

@@ -3137,9 +3137,17 @@ def tools_disable_enable_command(args):
     valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
     unknown_toolsets = [t for t in toolset_targets if t not in valid_toolsets]
     if unknown_toolsets:
-        for name in unknown_toolsets:
-            _print_error(f"Unknown toolset '{name}'")
-        toolset_targets = [t for t in toolset_targets if t in valid_toolsets]
+        # GRV-009 E5 C-SEAM4 — fail loud: an unknown toolset name aborts the whole
+        # command rather than warn-and-apply-the-rest. No partial mutation of the
+        # config on a typo'd name. Diagnostics: the bad names + the known set + the
+        # config source.
+        from toolsets import UnknownToolsetError
+        raise UnknownToolsetError(
+            f"unknown toolset(s) {unknown_toolsets} for platform '{platform}' — known "
+            f"toolsets: {sorted(valid_toolsets)} (configured in "
+            f"hermes_cli/tools_config.py::CONFIGURABLE_TOOLSETS or registered by a plugin). "
+            f"No change applied."
+        )
 
     # Reject platform-scoped toolsets on platforms that don't allow them.
     restricted_targets = [
