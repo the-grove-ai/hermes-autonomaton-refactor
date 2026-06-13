@@ -274,6 +274,31 @@ def test_uncovered_keys_reported_not_raised_synthetic(tmp_path):
     assert uncovered < valid
 
 
+# ── A4t disclosure modes (derived from the golden snapshot) ──────────────────
+
+
+def test_real_records_disclosure_modes_match_golden():
+    from grove.capability import TriggerDisclosure as TD
+    caps = load_capabilities()
+    # exploratory cohort -> complexity (present on complex-known T3, absent simple).
+    for rid in ("browser_read", "browser_write", "delegate_task", "mixture_of_agents",
+                "vision_analyze", "video_analyze", "feishu_doc_read", "ha_get_state",
+                "ha_call_service"):
+        assert caps[rid].trigger.disclosure is TD.COMPLEXITY, rid
+    # never-grouped integrations -> fallback (only on maximal unknown fallback).
+    for rid in ("spotify_write", "kanban_read", "kanban_write", "yuanbao_read",
+                "yuanbao_write", "discord", "discord_admin", "computer_use", "todo",
+                "invoke_skill", "send_message", "feishu_read", "feishu_write",
+                "homeassistant_read"):
+        assert caps[rid].trigger.disclosure is TD.FALLBACK, rid
+        # carve-out holds on the real records: no proactive trigger.
+        assert not caps[rid].trigger.always and not caps[rid].trigger.intents
+    # core + intent records stay proactive.
+    for rid in ("clarify", "memory", "read_file", "terminal", "escalate",
+                "web_search", "search_files", "execute_code", "x_search"):
+        assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
+
+
 def test_missing_directory_fails_loud(tmp_path):
     with pytest.raises(CapabilityLoadError):
         load_capabilities(tmp_path / "does_not_exist")

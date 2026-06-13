@@ -1,20 +1,18 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=yuanbao  zone=green  tiers=[3]  disclosure=fallback  trigger=fallback
-id: yuanbao_read
+# family=homeassistant  zone=green  tiers=[3]  disclosure=complexity  trigger=complexity
+id: ha_get_state
 kind: verb
 trigger:
   intents: []
   keywords: []
   dock_affinity: []
-  always: false
-  disclosure: fallback
+  always: true
+  disclosure: complexity
 bindings:
   tools:
-  - yb_query_group_info
-  - yb_query_group_members
-  - yb_search_sticker
+  - ha_get_state
   credentials: null
-  toolset_key: yuanbao
+  toolset_key: homeassistant
 tier_rule:
   eligible:
   - 3
@@ -36,8 +34,7 @@ telemetry:
   - human_feedback
 context:
   disclosure: eager
-  payload: 'Native yuanbao tools (read, zone green). Tools: yb_query_group_info, yb_query_group_members,
-    yb_search_sticker.
+  payload: 'Native homeassistant tools (read, zone green). Tools: ha_get_state.
 
     '
   dock_composition: none
@@ -64,7 +61,7 @@ lineage:
 failure:
   fallback: halt_and_surface
   diagnostic_context:
-  - 'capability: yuanbao_read'
+  - 'capability: ha_get_state'
   - 'subsystem: native verb registry (tools.registry)'
   - 'check: tool registered + zone mapped in zones.schema.yaml'
   circuit_breaker:
