@@ -1,8 +1,11 @@
 """Tests for toolsets.py — toolset resolution, validation, and composition."""
 
+import pytest
+
 from tools.registry import ToolRegistry
 from toolsets import (
     TOOLSETS,
+    UnknownToolsetError,
     get_toolset,
     resolve_toolset,
     resolve_multiple_toolsets,
@@ -83,8 +86,14 @@ class TestResolveToolset:
             del TOOLSETS["_cycle_a"]
             del TOOLSETS["_cycle_b"]
 
-    def test_unknown_toolset_returns_empty(self):
-        assert resolve_toolset("nonexistent", _REGISTRY) == []
+    def test_unknown_toolset_raises_fail_loud(self):
+        # GRV-009 E5 C-SEAM4 — an unknown toolset is a config error, not a
+        # degraded empty surface: resolve_toolset raises with diagnostics.
+        with pytest.raises(UnknownToolsetError) as ei:
+            resolve_toolset("nonexistent", _REGISTRY)
+        msg = str(ei.value)
+        assert "nonexistent" in msg          # names the bad toolset
+        assert "known toolsets" in msg        # surfaces the known set
 
     def test_plugin_toolset_uses_registry_snapshot(self):
         reg = ToolRegistry()

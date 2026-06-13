@@ -17,12 +17,20 @@ per-turn disclosure hook that reads the registry lands in E2 commit 3.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, FrozenSet, Optional
 
 from grove.capability import Capability
 
 __all__ = ["CapabilityLoadError", "default_capabilities_dir", "load_capabilities"]
+
+logger = logging.getLogger(__name__)
+
+# Process-level guard so the migration-coverage report (uncovered CONFIGURABLE_
+# TOOLSETS keys) is logged once per distinct gap, not on every load_capabilities
+# call (run_agent loads the registry several times per turn).
+_reported_uncovered: set[FrozenSet[str]] = set()
 
 
 class CapabilityLoadError(RuntimeError):
@@ -57,6 +65,66 @@ def _validate_binding_uniqueness(records: Dict[str, Capability]) -> None:
                     f"tool-to-record ownership"
                 )
             owner[tool] = rid
+
+
+def _configurable_toolset_keys() -> FrozenSet[str]:
+    """The known CONFIGURABLE_TOOLSETS keys, imported lazily.
+
+    GRV-009 E5 C-SEAM4 — the import is deferred to call time (not module top) so
+    the capability layer carries no import-time dependency on the CLI layer; no
+    circular coupling. ``tools_config`` does not import the capability layer, so
+    by the time the post-load pass runs both modules are fully resolved.
+    """
+    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+    return frozenset(key for key, *_ in CONFIGURABLE_TOOLSETS)
+
+
+def _validate_toolset_keys(records: Dict[str, Capability]) -> FrozenSet[str]:
+    """The D2<->D3 mutual check (GRV-009 E5 C-SEAM4) — ONE post-load pass.
+
+    Two directions, two dispositions (per the locked design):
+
+    * **record -> key (fail loud):** a record whose ``bindings.toolset_key`` is
+      non-null but not a known CONFIGURABLE_TOOLSETS key is a binding to a
+      phantom toolset — raise :class:`CapabilityLoadError` naming the record, the
+      bad key, and the known set. (Hosted-MCP records carry ``toolset_key: null``
+      and are skipped — they have no CONFIGURABLE_TOOLSETS key by design.)
+
+    * **key -> record (reported):** a CONFIGURABLE_TOOLSETS key that no record
+      yet governs is a migration-coverage gap (D4 verb backfill closes it), not a
+      corruption — returned for the caller to report, never raised. Returning it
+      (rather than logging here) keeps the pass pure and deterministically
+      testable.
+    """
+    valid = _configurable_toolset_keys()
+    governed: set[str] = set()
+    for rid in sorted(records):
+        tk = records[rid].bindings.toolset_key
+        if tk is None:
+            continue
+        if tk not in valid:
+            raise CapabilityLoadError(
+                f"{rid}: bindings.toolset_key {tk!r} is not a known "
+                f"CONFIGURABLE_TOOLSETS key — known: {sorted(valid)} "
+                f"(defined in hermes_cli/tools_config.py::CONFIGURABLE_TOOLSETS)"
+            )
+        governed.add(tk)
+    return valid - frozenset(governed)
+
+
+def _report_uncovered_toolsets(uncovered: FrozenSet[str]) -> None:
+    """Report (log once per distinct gap) the CONFIGURABLE_TOOLSETS keys that no
+    capability record governs yet — the migration-coverage signal D4 drives to
+    zero. Non-fatal by design (see :func:`_validate_toolset_keys`)."""
+    if not uncovered or uncovered in _reported_uncovered:
+        return
+    _reported_uncovered.add(uncovered)
+    logger.warning(
+        "[grove.capability_registry] %d CONFIGURABLE_TOOLSETS key(s) have no "
+        "governing capability record yet (D4 verb backfill pending): %s",
+        len(uncovered),
+        sorted(uncovered),
+    )
 
 
 def load_capabilities(directory: Optional[Path] = None) -> Dict[str, Capability]:
@@ -100,5 +168,9 @@ def load_capabilities(directory: Optional[Path] = None) -> Dict[str, Capability]
 
     # A4 collection-level invariant — strict 1:1 tool ownership across records.
     _validate_binding_uniqueness(records)
+
+    # D2<->D3 mutual check (C-SEAM4): record toolset_keys must be real (fail
+    # loud); uncovered CONFIGURABLE_TOOLSETS keys are reported (non-fatal).
+    _report_uncovered_toolsets(_validate_toolset_keys(records))
 
     return records

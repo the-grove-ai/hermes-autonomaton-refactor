@@ -29,6 +29,16 @@ if TYPE_CHECKING:
     from tools.registry import ToolRegistry
 
 
+class UnknownToolsetError(ValueError):
+    """A toolset name could not be resolved to a known toolset.
+
+    GRV-009 E5 C-SEAM4 (Digital Jidoka / fail-loud canon): an unknown toolset
+    name is a configuration error, not a degraded-surface fallback. Resolving
+    one raises this with full diagnostics (the bad name + the known set) rather
+    than silently returning an empty tool list.
+    """
+
+
 # Shared tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
 _GROVE_CORE_TOOLS = [
@@ -647,7 +657,16 @@ def resolve_toolset(
             except Exception:
                 pass
 
-        return []
+        # GRV-009 E5 C-SEAM4 — fail loud: a genuinely unknown toolset (not the
+        # all/* alias at the top, not a cycle re-entry via ``visited``, not a
+        # registered hermes-<platform>) is a config error. No degraded empty
+        # surface. Diagnostics: the bad name + the full known set.
+        raise UnknownToolsetError(
+            f"unknown toolset {name!r} — known toolsets: {get_toolset_names(registry)}. "
+            f"Not a static TOOLSETS entry, a registry/plugin toolset, an alias, or a "
+            f"registered hermes-<platform>. Define it in toolsets.TOOLSETS or register "
+            f"its platform before resolving."
+        )
 
     tools = set(toolset.get("tools", []))
 

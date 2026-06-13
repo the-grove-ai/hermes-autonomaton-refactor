@@ -2,7 +2,10 @@
 from argparse import Namespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.tools_config import tools_disable_enable_command
+from toolsets import UnknownToolsetError
 
 
 # ── Built-in toolset disable ────────────────────────────────────────────────
@@ -191,34 +194,38 @@ class TestToolsValidation:
         out = capsys.readouterr().out
         assert "Unknown platform 'invalid_platform'" in out
 
-    def test_unknown_toolset_prints_error(self, capsys):
+    def test_unknown_toolset_raises_fail_loud(self):
+        # GRV-009 E5 C-SEAM4 — warn-and-continue is retired: an unknown toolset
+        # aborts the command with diagnostics (bad name + known set).
         config = {"platform_toolsets": {"cli": ["web"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \
              patch("hermes_cli.tools_config.save_config"):
-            tools_disable_enable_command(
-                Namespace(tools_action="disable", names=["nonexistent_toolset"], platform="cli")
-            )
-        out = capsys.readouterr().out
-        assert "Unknown toolset 'nonexistent_toolset'" in out
+            with pytest.raises(UnknownToolsetError) as ei:
+                tools_disable_enable_command(
+                    Namespace(tools_action="disable", names=["nonexistent_toolset"], platform="cli")
+                )
+        assert "nonexistent_toolset" in str(ei.value)
 
     def test_unknown_toolset_does_not_corrupt_config(self):
+        # Fail-loud is atomic: the raise precedes save, so the config is never
+        # written on a typo'd toolset name.
         config = {"platform_toolsets": {"cli": ["web", "memory"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \
              patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(
-                Namespace(tools_action="disable", names=["nonexistent_toolset"], platform="cli")
-            )
-        saved = mock_save.call_args[0][0]
-        assert "web" in saved["platform_toolsets"]["cli"]
-        assert "memory" in saved["platform_toolsets"]["cli"]
+            with pytest.raises(UnknownToolsetError):
+                tools_disable_enable_command(
+                    Namespace(tools_action="disable", names=["nonexistent_toolset"], platform="cli")
+                )
+        mock_save.assert_not_called()
 
-    def test_mixed_valid_and_invalid_applies_valid_only(self):
+    def test_mixed_valid_and_invalid_aborts_whole_command(self):
+        # No partial apply: a single unknown name aborts the batch — the valid
+        # 'web' is NOT removed, config untouched (the deliberate C-SEAM4 change).
         config = {"platform_toolsets": {"cli": ["web", "memory"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \
              patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(
-                Namespace(tools_action="disable", names=["web", "bad_toolset"], platform="cli")
-            )
-        saved = mock_save.call_args[0][0]
-        assert "web" not in saved["platform_toolsets"]["cli"]
-        assert "memory" in saved["platform_toolsets"]["cli"]
+            with pytest.raises(UnknownToolsetError):
+                tools_disable_enable_command(
+                    Namespace(tools_action="disable", names=["web", "bad_toolset"], platform="cli")
+                )
+        mock_save.assert_not_called()
