@@ -109,6 +109,52 @@ def test_no_partial_registry_on_failure(tmp_path):
     assert "x.yaml" in str(ei.value)
 
 
+def test_binding_collision_fails_loud(tmp_path):
+    # GRV-009 E5 A4 — strict 1:1: two records claiming the same tool aborts the
+    # load, naming both records and the colliding tool.
+    base = yaml.safe_load((REPO_CAPS / "workspace_read.yaml").read_text(encoding="utf-8"))
+
+    a = dict(base)
+    a["id"] = "owner_a"
+    a["bindings"] = {"tools": ["gmail_search"], "credentials": "google", "toolset_key": "google-workspace"}
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(a), encoding="utf-8")
+
+    b = dict(base)
+    b["id"] = "owner_b"
+    b["bindings"] = {"tools": ["gmail_search"], "credentials": "google", "toolset_key": "google-workspace"}
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(b), encoding="utf-8")
+
+    with pytest.raises(CapabilityLoadError) as ei:
+        load_capabilities(tmp_path)
+    msg = str(ei.value)
+    assert "gmail_search" in msg
+    assert "owner_a" in msg and "owner_b" in msg
+
+
+def test_disjoint_bindings_load_clean(tmp_path):
+    # Two records with disjoint tool sets coexist — the 1:1 invariant only fires
+    # on a genuine collision.
+    base = yaml.safe_load((REPO_CAPS / "workspace_read.yaml").read_text(encoding="utf-8"))
+    a = dict(base); a["id"] = "owner_a"
+    a["bindings"] = {"tools": ["gmail_search"], "credentials": "google", "toolset_key": "google-workspace"}
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(a), encoding="utf-8")
+    b = dict(base); b["id"] = "owner_b"
+    b["bindings"] = {"tools": ["gmail_get"], "credentials": "google", "toolset_key": "google-workspace"}
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(b), encoding="utf-8")
+
+    caps = load_capabilities(tmp_path)
+    assert {"owner_a", "owner_b"} <= set(caps)
+
+
+def test_real_records_load_clean_with_empty_bindings():
+    # Pre-backfill the 5 live records carry no bindings — the 1:1 pass is inert
+    # and the real registry still loads.
+    caps = load_capabilities()
+    assert WORKSPACE_IDS <= set(caps)
+    for c in (caps[i] for i in WORKSPACE_IDS):
+        assert c.bindings.tools == []
+
+
 def test_missing_directory_fails_loud(tmp_path):
     with pytest.raises(CapabilityLoadError):
         load_capabilities(tmp_path / "does_not_exist")

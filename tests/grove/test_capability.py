@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from grove.capability import (
+    Bindings,
     Capability,
     CapabilityKind,
     CircuitBreaker,
@@ -311,3 +312,59 @@ def test_from_yaml_missing_governance_field_fails_loud():
     text = yaml.safe_dump(d)
     with pytest.raises(TypeError):
         Capability.from_yaml(text)
+
+
+# ── GRV-009 E5 Amendment A4 — bindings + trigger.always ──────────────────────
+
+
+def test_bindings_default_empty():
+    # A record with no bindings block falls to the safe empty default.
+    cap = make_valid()
+    assert cap.bindings.tools == []
+    assert cap.bindings.credentials is None
+    assert cap.bindings.toolset_key is None
+    assert cap.trigger.always is False
+
+
+def test_bindings_and_trigger_always_round_trip():
+    cap = make_valid(
+        trigger=Trigger(always=True),  # no intents/keywords — always relaxes the rule
+        bindings=Bindings(
+            tools=["gmail_search", "gmail_get"],
+            credentials="google",
+            toolset_key="google-workspace",
+        ),
+    )
+    restored = Capability.from_yaml(cap.to_yaml())
+    assert restored == cap
+    assert restored.bindings.tools == ["gmail_search", "gmail_get"]
+    assert restored.bindings.credentials == "google"
+    assert restored.bindings.toolset_key == "google-workspace"
+    assert restored.trigger.always is True
+
+
+def test_trigger_always_relaxes_strict_trigger():
+    # always:true offers unconditionally, so an empty intent/keyword trigger is OK.
+    cap = make_valid(trigger=Trigger(always=True))
+    assert cap.trigger.always is True
+    # ...and without always, the empty trigger still fails loud (unchanged rule).
+    with pytest.raises(ValueError, match="trigger"):
+        make_valid(trigger=Trigger())
+
+
+def test_bindings_partial_without_tools_fails_loud():
+    # A credential/toolset handle with no tools to govern is a dangling binding.
+    with pytest.raises(ValueError, match="bindings"):
+        make_valid(bindings=Bindings(toolset_key="google-workspace"))
+    with pytest.raises(ValueError, match="bindings"):
+        make_valid(bindings=Bindings(credentials="google"))
+
+
+def test_bindings_tools_must_be_nonempty_strings():
+    with pytest.raises(ValueError, match="bindings.tools"):
+        make_valid(bindings=Bindings(tools=["gmail_search", ""]))
+
+
+def test_bindings_tools_no_intra_record_duplicate():
+    with pytest.raises(ValueError, match="repeat"):
+        make_valid(bindings=Bindings(tools=["gmail_search", "gmail_search"]))

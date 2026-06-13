@@ -36,6 +36,7 @@ __all__ = [
     "ValidationStrategy",
     "FailureFallback",
     "Trigger",
+    "Bindings",
     "TierValidation",
     "TierRule",
     "Telemetry",
@@ -140,6 +141,28 @@ class Trigger:
     intents: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     dock_affinity: list[str] = field(default_factory=list)
+    # GRV-009 E5 Amendment A4 — bootstrap/ungated disclosure. A record with
+    # ``always: true`` offers regardless of intent/keyword match (the control
+    # tools and the D4 verb backfill ride this). The strict intent/keyword
+    # trigger requirement in ``validate()`` is relaxed only when ``always`` is set.
+    always: bool = False
+
+
+@dataclass
+class Bindings:
+    """GRV-009 E5 Amendment A4 — the tool-ownership binding.
+
+    ``tools`` is the strict set of tool names this record governs — 1:1 across
+    the whole registry, enforced at load (``capability_registry`` post-load
+    pass). ``credentials`` is a declarative credential handle (e.g. ``"google"``,
+    ``"notion-oauth"``) — a pointer, not a secret. ``toolset_key`` is the
+    ``CONFIGURABLE_TOOLSETS`` key the tools live under, or ``None`` for
+    hosted-MCP records whose schema is pulled live from the server.
+    """
+
+    tools: list[str] = field(default_factory=list)
+    credentials: str | None = None
+    toolset_key: str | None = None
 
 
 @dataclass
@@ -220,6 +243,7 @@ class Capability:
     id: str  # governance-bearing — no default
     kind: CapabilityKind  # governance-bearing — no default
     trigger: Trigger = field(default_factory=Trigger)
+    bindings: Bindings = field(default_factory=Bindings)
     tier_rule: TierRule = field(default_factory=TierRule)
     zone: Zone  # governance-bearing — no default
     telemetry: Telemetry  # governance-bearing (contains feed) — no default
@@ -246,11 +270,42 @@ class Capability:
                 "lifecycle.state must be a valid LifecycleState enum member"
             )
 
-        # A unit without a strict trigger silently vanishes from disclosure.
-        if not (self.trigger.intents or self.trigger.keywords):
+        # A unit without a strict trigger silently vanishes from disclosure —
+        # unless it declares trigger.always (A4 bootstrap/ungated disclosure),
+        # in which case it offers unconditionally and needs no intent/keyword.
+        if not (
+            self.trigger.always or self.trigger.intents or self.trigger.keywords
+        ):
             raise ValueError(
                 "trigger must declare at least one strict trigger: "
-                "intents or keywords must be non-empty"
+                "intents or keywords must be non-empty (or set trigger.always)"
+            )
+
+        # A4 bindings — structural per-record checks (the strict 1:1 ownership
+        # invariant is a collection-level post-load pass in capability_registry).
+        b = self.bindings
+        if b.tools:
+            if not all(isinstance(t, str) and t for t in b.tools):
+                raise ValueError("bindings.tools must all be non-empty strings")
+            if len(set(b.tools)) != len(b.tools):
+                raise ValueError(
+                    "bindings.tools must not repeat a tool name within a record"
+                )
+        else:
+            # A partial binding (credential/toolset handle without the tools it
+            # governs) is malformed — fail loud rather than carry a dangling ref.
+            if b.credentials is not None or b.toolset_key is not None:
+                raise ValueError(
+                    "bindings.credentials/toolset_key set without bindings.tools "
+                    "— a binding must name the tools it governs"
+                )
+        if b.credentials is not None and not b.credentials:
+            raise ValueError(
+                "bindings.credentials, if set, must be a non-empty string"
+            )
+        if b.toolset_key is not None and not b.toolset_key:
+            raise ValueError(
+                "bindings.toolset_key, if set, must be a non-empty string"
             )
 
         if not self.telemetry.feed:
@@ -322,6 +377,12 @@ class Capability:
                 "intents": list(self.trigger.intents),
                 "keywords": list(self.trigger.keywords),
                 "dock_affinity": list(self.trigger.dock_affinity),
+                "always": self.trigger.always,
+            },
+            "bindings": {
+                "tools": list(self.bindings.tools),
+                "credentials": self.bindings.credentials,
+                "toolset_key": self.bindings.toolset_key,
             },
             "tier_rule": {
                 "eligible": list(self.tier_rule.eligible),
@@ -400,6 +461,15 @@ class Capability:
                 intents=list(t.get("intents", [])),
                 keywords=list(t.get("keywords", [])),
                 dock_affinity=list(t.get("dock_affinity", [])),
+                always=bool(t.get("always", False)),
+            )
+
+        if "bindings" in d:
+            bd = d["bindings"]
+            kwargs["bindings"] = Bindings(
+                tools=list(bd.get("tools", [])),
+                credentials=bd.get("credentials"),
+                toolset_key=bd.get("toolset_key"),
             )
 
         if "tier_rule" in d:

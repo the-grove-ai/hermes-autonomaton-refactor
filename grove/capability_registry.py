@@ -38,6 +38,27 @@ def default_capabilities_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "config" / "capabilities"
 
 
+def _validate_binding_uniqueness(records: Dict[str, Capability]) -> None:
+    """Strict 1:1 tool-to-record ownership (GRV-009 E5 Amendment A4).
+
+    A collection-level post-load pass: scans every record's ``bindings.tools``
+    and fails loud — naming both owning records and the colliding tool — if any
+    tool name is claimed by two records. Inert until the C-BACKFILL / C-VERBS
+    records populate bindings; the invariant exists from the schema commit so the
+    resolution swap (C-RESOLVE) can trust single-owner attribution.
+    """
+    owner: Dict[str, str] = {}
+    for rid in sorted(records):
+        for tool in records[rid].bindings.tools:
+            if tool in owner:
+                raise CapabilityLoadError(
+                    f"binding collision: tool {tool!r} is claimed by both "
+                    f"{owner[tool]!r} and {rid!r} — A4 requires strict 1:1 "
+                    f"tool-to-record ownership"
+                )
+            owner[tool] = rid
+
+
 def load_capabilities(directory: Optional[Path] = None) -> Dict[str, Capability]:
     """Load and dry-run-validate every ``*.yaml`` record in *directory*.
 
@@ -76,5 +97,8 @@ def load_capabilities(directory: Optional[Path] = None) -> Dict[str, Capability]
 
     if not records:
         raise CapabilityLoadError(f"no capability records found in {target}")
+
+    # A4 collection-level invariant — strict 1:1 tool ownership across records.
+    _validate_binding_uniqueness(records)
 
     return records
