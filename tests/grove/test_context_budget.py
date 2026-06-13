@@ -50,26 +50,10 @@ def _tool(name: str) -> dict:
     return {"type": "function", "function": {"name": name, "description": ""}}
 
 
-# ── load_taxonomy — repo template ─────────────────────────────────────────
-
-
-class TestLoadTaxonomyRepoTemplate:
-    """The repo's config/tool_groups.yaml is the shipped baseline. The
-    loader must accept it as-is and pass every structural check."""
-
-    def test_repo_template_loads_clean(self):
-        # The repo template is the shipped baseline — must always load.
-        repo_yaml = (
-            Path(__file__).resolve().parents[2]
-            / "config" / "tool_groups.yaml"
-        )
-        taxonomy = load_taxonomy(path=repo_yaml)
-        assert taxonomy["version"] == 1
-        assert "clarify" in taxonomy["core"]
-        assert "code_generation" in taxonomy["domain_chunks"]
-        # Sprint 69 retired the mcp_notion taxonomy block — MCP tools now
-        # pass the per-turn filter generically, so the key is gone.
-        assert "mcp_notion" not in taxonomy
+# ── load_taxonomy — repo template — RETIRED (GRV-009 E5b C2) ──────────────
+# config/tool_groups.yaml is deleted; native disclosure is registry-driven.
+# load_taxonomy remains (dormant, no production caller) and its structural
+# validation is still covered by TestSchemaValidation on synthetic fixtures.
 
 
 # ── load_taxonomy — schema validation ─────────────────────────────────────
@@ -309,22 +293,18 @@ class TestCoLocationGuard:
         assert "tool_groups.yaml" in message
         assert "core" in message
 
-    def test_repo_template_satisfies_guard_for_every_intent(self) -> None:
-        """The shipped ``config/tool_groups.yaml`` MUST satisfy the
-        co-location invariant for every intent_class × complexity
-        combination — the architectural commitment ships, not just
-        the validation logic."""
-        from grove.context_budget import load_taxonomy
-        reset_taxonomy_cache()
-        tax = load_taxonomy()
+    def test_registry_satisfies_guard_for_every_intent(self) -> None:
+        """The co-location commitment (skill_view ⇒ terminal) MUST hold for every
+        intent × complexity — now record-driven (GRV-009 E5b C2: tool_groups.yaml
+        retired). resolve_tool_set is registry-driven and ignores the taxonomy."""
         intents = [
             "code_generation", "debugging", "analysis", "planning",
-            "factual_retrieval", "creative_writing", "system_admin",
+            "factual_lookup", "creative_writing", "system_admin",
             "conversation",
         ]
         for intent in intents:
             for complexity in ("simple", "moderate", "complex", "novel"):
-                result = resolve_tool_set(intent, complexity, tax)
+                result = resolve_tool_set(intent, complexity)
                 assert result is not None
                 if "skill_view" in result:
                     assert "terminal" in result, (

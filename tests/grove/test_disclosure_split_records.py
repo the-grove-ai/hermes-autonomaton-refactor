@@ -88,55 +88,6 @@ def test_split_parity_matches_golden_byte_for_byte():
     assert not mism, f"split-parity byte mismatch in {len(mism)} cell(s): {dict(list(mism.items())[:5])}"
 
 
-def test_equivalence_gate_full_byte_parity_in_run():
-    # The env-INDEPENDENT byte proof (the operator's "model sees the same bytes",
-    # robust to the credential-gated tool surface): for every cell, compute BOTH
-    # the legacy build_manifest split AND the record split against the SAME in-run
-    # surface, and assert the eager NAME list (ordered), the pull-index STRING
-    # (verbatim) and its token count are identical. Same res + same units ⇒ same
-    # eager schemas, so this is full byte parity. Also: proactive-always == core.
-    from agent.model_metadata import estimate_tokens_rough
-    from grove.manifest import build_manifest, matched_tool_units
-    reg, defs_by, tooldicts, budgets = _setup()
-    repo_tax = load_taxonomy(_REPO / "config" / "tool_groups.yaml")
-    legacy_manifest = build_manifest(reg, taxonomy=repo_tax)
-    lean_units = build_disclosure_units(reg)
-    legacy_core = set(repo_tax.get("core", []))
-    rec_core, intent_map = disclosure_split_sets()
-    assert set(rec_core) == legacy_core, sorted(set(rec_core) ^ legacy_core)
-
-    def idx(units, eager):
-        pull = [u for u in units if u.kind in ("tool", "mcp") and u.id not in set(eager)]
-        return "\n".join(f"- {u.id}: {u.oneline}" for u in pull) or "(none)"
-
-    mism = []
-    for tier in ("T2", "T3"):
-        for intent in INTENT_CLASSES:
-            for cx in COMPLEXITY_SIGNALS:
-                res = [_name_of(t) for t in
-                       resolve_tools_for_tier(tooldicts, intent, cx, None, budgets[tier], mcp_allow=None).tools]
-                matched_legacy = matched_tool_units(legacy_manifest, intent_class=intent)
-                eager_legacy = [n for n in res if n in legacy_core or n in matched_legacy]
-                rec_matched = {t for t, ins in intent_map.items() if intent in ins}
-                eager_rec = [n for n in res if n in rec_core or n in rec_matched]
-                idx_legacy = idx(legacy_manifest, eager_legacy)
-                idx_rec = idx(lean_units, eager_rec)
-                if (eager_legacy != eager_rec or idx_legacy != idx_rec
-                        or estimate_tokens_rough(idx_legacy) != estimate_tokens_rough(idx_rec)):
-                    mism.append(f"{tier}|{intent}|{cx}")
-    assert not mism, f"record split diverges from legacy (bytes) in {len(mism)} cells: {mism[:6]}"
-
-
-def test_build_disclosure_units_pull_index_byte_identical_to_legacy():
-    from grove.manifest import build_manifest
-    reg, *_ = _setup()
-    repo_tax = load_taxonomy(_REPO / "config" / "tool_groups.yaml")
-    legacy = build_manifest(reg, taxonomy=repo_tax)
-    lean = build_disclosure_units(reg)
-    # Same ids, kinds, onelines, order → identical pull index for any eager set.
-    assert [(u.id, u.kind, u.oneline) for u in legacy] == [(u.id, u.kind, u.oneline) for u in lean]
-
-
 def test_valid_group_names_is_constant_catalog():
     from grove.tier_budget import _valid_group_names
     cat = _valid_group_names()  # no args — no tool_groups read

@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 from grove.classify import COMPLEXITY_SIGNALS, INTENT_CLASSES
-from grove.context_budget import load_taxonomy, resolve_tools_for_tier
+from grove.context_budget import resolve_tools_for_tier
 from grove.tier_budget import load_tier_budgets
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -28,7 +28,7 @@ def _live_surface():
     tools = [{"type": "function", "function": {"name": n}} for n in native]
     budgets = load_tier_budgets(_REPO / "config" / "routing.config.yaml",
                                 taxonomy_path=_REPO / "config" / "tool_groups.yaml")
-    tax = load_taxonomy(_REPO / "config" / "tool_groups.yaml")
+    tax = None  # GRV-009 E5b C2 — tool_groups.yaml retired; resolver ignores taxonomy
     intents = list(INTENT_CLASSES) + ["__unknown__"]
     out = {}
     for tier in ("T1", "T2", "T3"):

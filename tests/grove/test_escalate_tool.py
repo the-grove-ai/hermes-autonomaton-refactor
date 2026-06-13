@@ -200,20 +200,15 @@ class TestEscalateIntentIntercept:
         assert names == ["escalate", "read_file"]
 
 
-# ── tool_groups.yaml taxonomy includes escalate in core ───────────────────
+# ── escalate is in the always-eager core set ──────────────────────────────
 
 
 class TestEscalateInCoreChunk:
     def test_escalate_listed_in_core(self):
-        # Sprint 30 lands `escalate` in the Sprint 29 core chunk so the
-        # Sprint 29 selective-loading filter exposes it on EVERY
-        # classified-intent turn. Without this, the LLM never sees
-        # the escalate surface and the Agent-Tool option is dead.
-        from pathlib import Path
-        import yaml
-        repo_yaml = (
-            Path(__file__).resolve().parents[2]
-            / "config" / "tool_groups.yaml"
-        )
-        taxonomy = yaml.safe_load(repo_yaml.read_text())
-        assert "escalate" in taxonomy["core"]
+        # `escalate` must be exposed on EVERY classified-intent turn (the Agent-Tool
+        # option). GRV-009 E5b C2: tool_groups.yaml is retired — "core" is now the
+        # records' proactive-always set (disclosure_split_sets). Assert escalate is
+        # in it, so the registry-driven resolver/disclosure surfaces it every turn.
+        from grove.disclosure import disclosure_split_sets
+        core, _intent_map = disclosure_split_sets()
+        assert "escalate" in core
