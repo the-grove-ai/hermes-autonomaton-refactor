@@ -146,13 +146,76 @@ def test_disjoint_bindings_load_clean(tmp_path):
     assert {"owner_a", "owner_b"} <= set(caps)
 
 
-def test_real_records_load_clean_with_empty_bindings():
-    # Pre-backfill the 5 live records carry no bindings — the 1:1 pass is inert
-    # and the real registry still loads.
+def test_real_records_carry_backfilled_bindings():
+    # GRV-009 E5 C-BACKFILL — the 5 live records explicitly claim their tool
+    # subsets (locked D3 table). Counts + credentials + toolset_key per record.
     caps = load_capabilities()
-    assert WORKSPACE_IDS <= set(caps)
-    for c in (caps[i] for i in WORKSPACE_IDS):
-        assert c.bindings.tools == []
+    expected = {
+        "workspace_read": (10, "google", "google-workspace"),
+        "workspace_write": (9, "google", "google-workspace"),
+        "workspace_destructive": (5, "google", "google-workspace"),
+        "notion_read": (7, "notion-oauth", None),
+        "notion_write": (9, "notion-oauth", None),
+    }
+    for rid, (n, cred, tk) in expected.items():
+        b = caps[rid].bindings
+        assert len(b.tools) == n, (rid, len(b.tools))
+        assert b.credentials == cred
+        assert b.toolset_key == tk
+
+
+def test_real_records_bindings_are_strictly_one_to_one():
+    # The 40 governed tools are disjoint across records — the load-time 1:1
+    # invariant passed, and no tool is double-owned.
+    caps = load_capabilities()
+    governed = [
+        t
+        for rid in (
+            "workspace_read", "workspace_write", "workspace_destructive",
+            "notion_read", "notion_write",
+        )
+        for t in caps[rid].bindings.tools
+    ]
+    assert len(governed) == 40
+    assert len(set(governed)) == 40  # no collision
+
+
+def test_real_workspace_zone_tool_parity_with_zones_schema():
+    # The bound tool sets match zones.schema.yaml exactly: read=green verbs,
+    # write+destructive=the yellow verbs. Guards against drift between the
+    # binding and the zone map the Dispatcher gate reads.
+    caps = load_capabilities()
+    assert set(caps["workspace_read"].bindings.tools) == {
+        "gmail_search", "gmail_get", "gmail_labels", "calendar_list",
+        "drive_search", "drive_get", "drive_download", "contacts_list",
+        "sheets_get", "docs_get",
+    }
+    yellow = set(caps["workspace_write"].bindings.tools) | set(
+        caps["workspace_destructive"].bindings.tools
+    )
+    assert yellow == {
+        "gmail_send", "gmail_reply", "gmail_modify", "calendar_create",
+        "calendar_delete", "drive_upload", "drive_create_folder", "drive_share",
+        "drive_delete", "sheets_update", "sheets_append", "sheets_create",
+        "docs_create", "docs_append",
+    }
+
+
+def test_real_notion_bindings_match_zones_schema():
+    caps = load_capabilities()
+    assert set(caps["notion_read"].bindings.tools) == {
+        "mcp_notion_notion_search", "mcp_notion_notion_fetch",
+        "mcp_notion_notion_get_comments", "mcp_notion_notion_get_users",
+        "mcp_notion_notion_get_teams", "mcp_notion_notion_query_database_view",
+        "mcp_notion_notion_query_meeting_notes",
+    }
+    assert set(caps["notion_write"].bindings.tools) == {
+        "mcp_notion_notion_create_pages", "mcp_notion_notion_create_database",
+        "mcp_notion_notion_update_page", "mcp_notion_notion_move_pages",
+        "mcp_notion_notion_duplicate_page", "mcp_notion_notion_create_comment",
+        "mcp_notion_notion_update_data_source", "mcp_notion_notion_create_view",
+        "mcp_notion_notion_update_view",
+    }
 
 
 def test_missing_directory_fails_loud(tmp_path):

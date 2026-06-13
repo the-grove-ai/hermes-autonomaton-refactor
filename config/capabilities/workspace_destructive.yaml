@@ -10,6 +10,17 @@ trigger:
   intents: [memory_operation, scheduling, messaging, retrieval]
   keywords: [send, reply, share, delete]
   dock_affinity: []
+bindings:
+  # A4 (GRV-009 E5 C-BACKFILL) — strict 1:1 tool ownership. The 5 destructive
+  # verbs register under toolset="google-workspace" (tools/google_workspace_tool.py).
+  tools:
+    - gmail_send
+    - gmail_reply
+    - drive_share
+    - calendar_delete
+    - drive_delete
+  credentials: google
+  toolset_key: google-workspace
 tier_rule:
   eligible: [1, 2, 3]
   preferred: 1

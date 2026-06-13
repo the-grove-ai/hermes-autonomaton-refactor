@@ -10,6 +10,22 @@ trigger:
   intents: [memory_operation, scheduling, messaging, retrieval]
   keywords: [gmail, calendar, drive, sheets, docs, contacts]
   dock_affinity: []   # empty at migration — affinity is operator-curated later
+bindings:
+  # A4 (GRV-009 E5 C-BACKFILL) — strict 1:1 tool ownership. The 10 GREEN read
+  # verbs register under toolset="google-workspace" (tools/google_workspace_tool.py).
+  tools:
+    - gmail_search
+    - gmail_get
+    - gmail_labels
+    - calendar_list
+    - drive_search
+    - drive_get
+    - drive_download
+    - contacts_list
+    - sheets_get
+    - docs_get
+  credentials: google
+  toolset_key: google-workspace
 tier_rule:
   eligible: [1, 2, 3]   # D6 parity: allow_groups admits these intents at T1/T2/T3
   preferred: 1          # T1-native daily driver (default_tier T1)

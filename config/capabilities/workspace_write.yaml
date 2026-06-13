@@ -11,6 +11,21 @@ trigger:
   intents: [memory_operation, scheduling, messaging, retrieval]
   keywords: [gmail, calendar, drive, sheets, docs]
   dock_affinity: []
+bindings:
+  # A4 (GRV-009 E5 C-BACKFILL) — strict 1:1 tool ownership. The 9 YELLOW write
+  # verbs register under toolset="google-workspace" (tools/google_workspace_tool.py).
+  tools:
+    - gmail_modify
+    - calendar_create
+    - drive_upload
+    - drive_create_folder
+    - sheets_update
+    - sheets_append
+    - sheets_create
+    - docs_create
+    - docs_append
+  credentials: google
+  toolset_key: google-workspace
 tier_rule:
   eligible: [1, 2, 3]
   preferred: 1
