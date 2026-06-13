@@ -50,6 +50,7 @@ __all__ = [
     "resolve_tools_for_tier",
     "filter_tools_by_name",
     "reset_taxonomy_cache",
+    "reset_caps_index_cache",
 ]
 
 
@@ -271,10 +272,14 @@ def resolve_tool_set(
             intent_class,
         )
         return None
-    # MCP tools (mcp_*) are not gated here — the per-turn filter governs MCP
-    # exposure (Sprint 73: per-tier exclude_mcp when a budget is threaded;
-    # legacy: unconditional pass when none is).
-    selected = _materialize(groups, taxonomy)
+    # GRV-009 E5 C-RESOLVE — the intent-only (tier-unaware) native surface now
+    # derives from the capability registry, NOT _materialize over tool_groups.
+    # Tier-unaware == the wildcard case of the registry resolver (every group
+    # admitted; only the intent/complexity/disclosure gate applies). MCP tools
+    # (mcp_*) are not enumerated here — the per-turn filter governs MCP exposure.
+    selected = _registry_allowed_names(
+        intent_class, complexity_signal, allow=set(), wildcard=True
+    )
     _validate_co_location(selected, intent_class)
     return selected
 
@@ -431,6 +436,93 @@ class ToolResolution:
     fallback: bool
 
 
+# ── GRV-009 E5 C-RESOLVE — registry-driven native admission ──────────────────
+# The native offered surface now derives from the capability registry (each
+# record's disclosure mode + intents + bindings.tools) intersected with the
+# tier's allow_groups budget (A8 ruling: allow_groups STAYS as the tier->intent
+# admission policy; the records subsume the tool_groups.yaml tool->group taxonomy).
+# Cached: load_capabilities() does file I/O and the resolver runs per turn.
+
+_caps_index_cache: Optional[List[tuple]] = None
+
+
+def _caps_index() -> List[tuple]:
+    """Cached projection of the registry for native admission.
+
+    Each entry is ``(disclosure, always, intents_frozenset, native_tools_tuple)``
+    for records that govern at least one native (non-MCP) tool. MCP tools are
+    gated separately by ``mcp_allow`` (E4) and excluded here.
+    """
+    global _caps_index_cache
+    if _caps_index_cache is None:
+        from grove.capability_registry import load_capabilities
+
+        index: List[tuple] = []
+        for c in load_capabilities().values():
+            native = tuple(t for t in c.bindings.tools if not _is_mcp(t))
+            if not native:
+                continue
+            index.append(
+                (
+                    c.trigger.disclosure.value,
+                    bool(c.trigger.always),
+                    frozenset(c.trigger.intents),
+                    native,
+                )
+            )
+        _caps_index_cache = index
+    return _caps_index_cache
+
+
+def reset_caps_index_cache() -> None:
+    """Drop the registry projection cache (conftest resets between tests)."""
+    global _caps_index_cache
+    _caps_index_cache = None
+
+
+def _registry_allowed_names(
+    intent_class: Optional[str],
+    complexity_signal: Optional[str],
+    allow: Set[str],
+    wildcard: bool,
+) -> Set[str]:
+    """The native tool-name surface admitted this turn (C-RESOLVE).
+
+    Reproduces the legacy group-level AND — a record's tools are admitted iff its
+    declared group is BOTH selected by the turn AND in the tier's allow_groups:
+
+    * ``fallback`` — never proactive; admitted only on the maximal unknown-intent
+      fallback, and only when the tier admits everything (``allow_groups: '*'``),
+      because fallback tools carry no group to match a budgeted tier.
+    * ``complexity`` — the exploratory group; admitted on complex/novel turns (or
+      the unknown fallback) when ``exploratory`` is in allow_groups (i.e. ``'*'``).
+    * ``proactive`` + ``always`` — the ``core`` group; admitted when ``core`` is in
+      allow_groups (every tier) — i.e. always.
+    * ``proactive`` + ``intents`` — admitted iff the turn's intent is one of the
+      record's intents AND that intent is in allow_groups(T). On the unknown
+      fallback, admitted iff any of its intents is in allow_groups(T).
+    """
+    unknown = intent_class is None or intent_class == "unknown"
+    cx_high = complexity_signal in ("complex", "novel")
+    names: Set[str] = set()
+    for disclosure, always, intents, native_tools in _caps_index():
+        if disclosure == "fallback":
+            admit = unknown and wildcard
+        elif disclosure == "complexity":
+            grp_ok = wildcard or ("exploratory" in allow)
+            admit = grp_ok if unknown else (cx_high and grp_ok)
+        elif always:  # proactive core
+            admit = wildcard or ("core" in allow)
+        else:  # proactive intent
+            if unknown:
+                admit = wildcard or any(g in allow for g in intents)
+            else:
+                admit = (intent_class in intents) and (wildcard or intent_class in allow)
+        if admit:
+            names.update(native_tools)
+    return names
+
+
 def resolve_tools_for_tier(
     tools: List[dict],
     intent_class: Optional[str],
@@ -462,32 +554,33 @@ def resolve_tools_for_tier(
     allow: Set[str] = set(tier_budget.tools.allow_groups)
     wildcard_groups = _WILDCARD in allow
 
+    # Provenance (D8 escalation net): the group-name selection is unchanged — the
+    # intent still selects {core, <intent>, exploratory?}; ``stripped`` is the
+    # groups the tier's allow_groups forbids. (Group-name logic only; the
+    # tool->group materialization is what C-RESOLVE retires.)
     groups = _resolve_intent_groups(intent_class, complexity_signal, taxonomy)
     if groups is None:
         fallback = True
         stripped: Set[str] = set()
-        if wildcard_groups:
-            allowed: Optional[Set[str]] = None  # tier permits the full registry
-        else:
-            allowed = _materialize(allow, taxonomy)
+    else:
+        fallback = False
+        stripped = set() if wildcard_groups else (groups - allow)
+
+    # C-RESOLVE: the native admitted surface now comes from the capability
+    # registry intersected with allow_groups — NOT _materialize over tool_groups.
+    allowed: Set[str] = _registry_allowed_names(
+        intent_class, complexity_signal, allow, wildcard_groups
+    )
+    if not fallback and allowed:
+        _validate_co_location(allowed, intent_class or "")
+    if fallback:
         logger.info(
             "[grove.context_budget] maximal fallback under tier budget "
-            "(intent_class=%r) — capped to allow_groups=%s, MCP gated by "
-            "the registry mcp_allow",
+            "(intent_class=%r) — registry-driven surface capped to allow_groups=%s, "
+            "MCP gated by the registry mcp_allow",
             intent_class,
             "*" if wildcard_groups else sorted(allow),
         )
-    else:
-        fallback = False
-        if wildcard_groups:
-            kept_groups = set(groups)
-            stripped = set()
-        else:
-            kept_groups = groups & allow
-            stripped = groups - allow
-        allowed = _materialize(kept_groups, taxonomy)
-        if allowed:
-            _validate_co_location(allowed, intent_class or "")
 
     kept, excluded_mcp, unparseable = _partition_tools(
         tools, allowed, tier_budget, mcp_allow

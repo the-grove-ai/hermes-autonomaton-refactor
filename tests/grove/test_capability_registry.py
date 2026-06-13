@@ -19,7 +19,15 @@ from grove.capability_registry import (
 
 REPO_CAPS = default_capabilities_dir()
 WORKSPACE_IDS = {"workspace_read", "workspace_write", "workspace_destructive"}
-WORKSPACE_INTENTS = ["memory_operation", "scheduling", "messaging", "retrieval"]
+# GRV-009 E5 C-RESOLVE parity fix — the workspace records' intents were extended
+# to the full tool_groups reverse-map of the 24 verbs (+ system_admin, planning);
+# E2 authored only the 4 daily-driver intents, but the verbs were also aliased
+# into the system_admin / planning groups, so the registry-driven resolver needs
+# those intents to reproduce the golden offered surface there.
+WORKSPACE_INTENTS = [
+    "memory_operation", "scheduling", "messaging", "retrieval",
+    "system_admin", "planning",
+]
 
 
 # ── The real records load + dry-run validate ─────────────────────────────────
