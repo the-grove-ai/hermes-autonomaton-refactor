@@ -1,0 +1,105 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.apple.apple-reminders
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: apple-reminders\n\
+    description: \"Apple Reminders via remindctl: add, list, complete.\"\nversion:\
+    \ 1.0.0\nauthor: Hermes Agent\nlicense: MIT\nplatforms: [macos]\nmetadata:\n \
+    \ hermes:\n    tags: [Reminders, tasks, todo, macOS, Apple]\nprerequisites:\n\
+    \  commands: [remindctl]\n---\n\n# Apple Reminders\n\nUse `remindctl` to manage\
+    \ Apple Reminders directly from the terminal. Tasks sync across all Apple devices\
+    \ via iCloud.\n\n## Prerequisites\n\n- **macOS** with Reminders.app\n- Install:\
+    \ `brew install steipete/tap/remindctl`\n- Grant Reminders permission when prompted\n\
+    - Check: `remindctl status` / Request: `remindctl authorize`\n\n## When to Use\n\
+    \n- User mentions \"reminder\" or \"Reminders app\"\n- Creating personal to-dos\
+    \ with due dates that sync to iOS\n- Managing Apple Reminders lists\n- User wants\
+    \ tasks to appear on their iPhone/iPad\n\n## When NOT to Use\n\n- Scheduling agent\
+    \ alerts \u2192 use the cronjob tool instead\n- Calendar events \u2192 use Apple\
+    \ Calendar or Google Calendar\n- Project task management \u2192 use GitHub Issues,\
+    \ Notion, etc.\n- If user says \"remind me\" but means an agent alert \u2192 clarify\
+    \ first\n\n## Quick Reference\n\n### View Reminders\n\n```bash\nremindctl    \
+    \                # Today's reminders\nremindctl today              # Today\nremindctl\
+    \ tomorrow           # Tomorrow\nremindctl week               # This week\nremindctl\
+    \ overdue            # Past due\nremindctl all                # Everything\nremindctl\
+    \ 2026-01-04         # Specific date\n```\n\n### Manage Lists\n\n```bash\nremindctl\
+    \ list               # List all lists\nremindctl list Work          # Show specific\
+    \ list\nremindctl list Projects --create    # Create list\nremindctl list Work\
+    \ --delete        # Delete list\n```\n\n### Create Reminders\n\n```bash\nremindctl\
+    \ add \"Buy milk\"\nremindctl add --title \"Call mom\" --list Personal --due tomorrow\n\
+    remindctl add --title \"Meeting prep\" --due \"2026-02-15 09:00\"\n```\n\n###\
+    \ Complete / Delete\n\n```bash\nremindctl complete 1 2 3          # Complete by\
+    \ ID\nremindctl delete 4A83 --force     # Delete by ID\n```\n\n### Output Formats\n\
+    \n```bash\nremindctl today --json       # JSON for scripting\nremindctl today\
+    \ --plain      # TSV format\nremindctl today --quiet      # Counts only\n```\n\
+    \n## Date Formats\n\nAccepted by `--due` and date filters:\n- `today`, `tomorrow`,\
+    \ `yesterday`\n- `YYYY-MM-DD`\n- `YYYY-MM-DD HH:mm`\n- ISO 8601 (`2026-01-04T12:34:56Z`)\n\
+    \n## Rules\n\n1. When user says \"remind me\", clarify: Apple Reminders (syncs\
+    \ to phone) vs agent cronjob alert\n2. Always confirm reminder content and due\
+    \ date before creating\n3. Use `--json` for programmatic parsing\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/apple/apple-reminders/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.apple.apple-reminders'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: apple

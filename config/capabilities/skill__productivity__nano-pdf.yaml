@@ -1,0 +1,91 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.productivity.nano-pdf
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: nano-pdf\ndescription:\
+    \ \"Edit PDF text/typos/titles via nano-pdf CLI (NL prompts).\"\nversion: 1.0.0\n\
+    author: community\nlicense: MIT\nplatforms: [linux, macos, windows]\nmetadata:\n\
+    \  hermes:\n    tags: [PDF, Documents, Editing, NLP, Productivity]\n    homepage:\
+    \ https://pypi.org/project/nano-pdf/\n---\n\n# nano-pdf\n\nEdit PDFs using natural-language\
+    \ instructions. Point it at a page and describe what to change.\n\n## Prerequisites\n\
+    \n```bash\n# Install with uv (recommended \u2014 already available in Hermes)\n\
+    uv pip install nano-pdf\n\n# Or with pip\npip install nano-pdf\n```\n\n## Usage\n\
+    \n```bash\nnano-pdf edit <file.pdf> <page_number> \"<instruction>\"\n```\n\n##\
+    \ Examples\n\n```bash\n# Change a title on page 1\nnano-pdf edit deck.pdf 1 \"\
+    Change the title to 'Q3 Results' and fix the typo in the subtitle\"\n\n# Update\
+    \ a date on a specific page\nnano-pdf edit report.pdf 3 \"Update the date from\
+    \ January to February 2026\"\n\n# Fix content\nnano-pdf edit contract.pdf 2 \"\
+    Change the client name from 'Acme Corp' to 'Acme Industries'\"\n```\n\n## Notes\n\
+    \n- Page numbers may be 0-based or 1-based depending on version \u2014 if the\
+    \ edit hits the wrong page, retry with \xB11\n- Always verify the output PDF after\
+    \ editing (use `read_file` to check file size, or open it)\n- The tool uses an\
+    \ LLM under the hood \u2014 requires an API key (check `nano-pdf --help` for config)\n\
+    - Works well for text changes; complex layout modifications may need a different\
+    \ approach\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/productivity/nano-pdf/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.productivity.nano-pdf'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: productivity

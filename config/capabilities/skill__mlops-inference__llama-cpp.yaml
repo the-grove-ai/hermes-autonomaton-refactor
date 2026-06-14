@@ -1,0 +1,182 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.mlops-inference.llama-cpp
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: llama-cpp\ndescription:\
+    \ llama.cpp local GGUF inference + HF Hub model discovery.\nversion: 2.1.2\nauthor:\
+    \ Orchestra Research\nlicense: MIT\ndependencies: [llama-cpp-python>=0.2.0]\n\
+    platforms: [linux, macos, windows]\nmetadata:\n  hermes:\n    tags: [llama.cpp,\
+    \ GGUF, Quantization, Hugging Face Hub, CPU Inference, Apple Silicon, Edge Deployment,\
+    \ AMD GPUs, Intel GPUs, NVIDIA, URL-first]\n---\n\n# llama.cpp + GGUF\n\nUse this\
+    \ skill for local GGUF inference, quant selection, or Hugging Face repo discovery\
+    \ for llama.cpp.\n\n## When to use\n\n- Run local models on CPU, Apple Silicon,\
+    \ CUDA, ROCm, or Intel GPUs\n- Find the right GGUF for a specific Hugging Face\
+    \ repo\n- Build a `llama-server` or `llama-cli` command from the Hub\n- Search\
+    \ the Hub for models that already support llama.cpp\n- Enumerate available `.gguf`\
+    \ files and sizes for a repo\n- Decide between Q4/Q5/Q6/IQ variants for the user's\
+    \ RAM or VRAM\n\n## Model Discovery workflow\n\nPrefer URL workflows before asking\
+    \ for `hf`, Python, or custom scripts.\n\n1. Search for candidate repos on the\
+    \ Hub:\n   - Base: `https://huggingface.co/models?apps=llama.cpp&sort=trending`\n\
+    \   - Add `search=<term>` for a model family\n   - Add `num_parameters=min:0,max:24B`\
+    \ or similar when the user has size constraints\n2. Open the repo with the llama.cpp\
+    \ local-app view:\n   - `https://huggingface.co/<repo>?local-app=llama.cpp`\n\
+    3. Treat the local-app snippet as the source of truth when it is visible:\n  \
+    \ - copy the exact `llama-server` or `llama-cli` command\n   - report the recommended\
+    \ quant exactly as HF shows it\n4. Read the same `?local-app=llama.cpp` URL as\
+    \ page text or HTML and extract the section under `Hardware compatibility`:\n\
+    \   - prefer its exact quant labels and sizes over generic tables\n   - keep repo-specific\
+    \ labels such as `UD-Q4_K_M` or `IQ4_NL_XL`\n   - if that section is not visible\
+    \ in the fetched page source, say so and fall back to the tree API plus generic\
+    \ quant guidance\n5. Query the tree API to confirm what actually exists:\n   -\
+    \ `https://huggingface.co/api/models/<repo>/tree/main?recursive=true`\n   - keep\
+    \ entries where `type` is `file` and `path` ends with `.gguf`\n   - use `path`\
+    \ and `size` as the source of truth for filenames and byte sizes\n   - separate\
+    \ quantized checkpoints from `mmproj-*.gguf` projector files and `BF16/` shard\
+    \ files\n   - use `https://huggingface.co/<repo>/tree/main` only as a human fallback\n\
+    6. If the local-app snippet is not text-visible, reconstruct the command from\
+    \ the repo plus the chosen quant:\n   - shorthand quant selection: `llama-server\
+    \ -hf <repo>:<QUANT>`\n   - exact-file fallback: `llama-server --hf-repo <repo>\
+    \ --hf-file <filename.gguf>`\n7. Only suggest conversion from Transformers weights\
+    \ if the repo does not already expose GGUF files.\n\n## Quick start\n\n### Install\
+    \ llama.cpp\n\n```bash\n# macOS / Linux (simplest)\nbrew install llama.cpp\n```\n\
+    \n```bash\nwinget install llama.cpp\n```\n\n```bash\ngit clone https://github.com/ggml-org/llama.cpp\n\
+    cd llama.cpp\ncmake -B build\ncmake --build build --config Release\n```\n\n###\
+    \ Run directly from the Hugging Face Hub\n\n```bash\nllama-cli -hf bartowski/Llama-3.2-3B-Instruct-GGUF:Q8_0\n\
+    ```\n\n```bash\nllama-server -hf bartowski/Llama-3.2-3B-Instruct-GGUF:Q8_0\n```\n\
+    \n### Run an exact GGUF file from the Hub\n\nUse this when the tree API shows\
+    \ custom file naming or the exact HF snippet is missing.\n\n```bash\nllama-server\
+    \ \\\n    --hf-repo microsoft/Phi-3-mini-4k-instruct-gguf \\\n    --hf-file Phi-3-mini-4k-instruct-q4.gguf\
+    \ \\\n    -c 4096\n```\n\n### OpenAI-compatible server check\n\n```bash\ncurl\
+    \ http://localhost:8080/v1/chat/completions \\\n  -H \"Content-Type: application/json\"\
+    \ \\\n  -d '{\n    \"messages\": [\n      {\"role\": \"user\", \"content\": \"\
+    Write a limerick about Python exceptions\"}\n    ]\n  }'\n```\n\n## Python bindings\
+    \ (llama-cpp-python)\n\n`pip install llama-cpp-python` (CUDA: `CMAKE_ARGS=\"-DGGML_CUDA=on\"\
+    \ pip install llama-cpp-python --force-reinstall --no-cache-dir`; Metal: `CMAKE_ARGS=\"\
+    -DGGML_METAL=on\" ...`).\n\n### Basic generation\n\n```python\nfrom llama_cpp\
+    \ import Llama\n\nllm = Llama(\n    model_path=\"./model-q4_k_m.gguf\",\n    n_ctx=4096,\n\
+    \    n_gpu_layers=35,     # 0 for CPU, 99 to offload everything\n    n_threads=8,\n\
+    )\n\nout = llm(\"What is machine learning?\", max_tokens=256, temperature=0.7)\n\
+    print(out[\"choices\"][0][\"text\"])\n```\n\n### Chat + streaming\n\n```python\n\
+    llm = Llama(\n    model_path=\"./model-q4_k_m.gguf\",\n    n_ctx=4096,\n    n_gpu_layers=35,\n\
+    \    chat_format=\"llama-3\",   # or \"chatml\", \"mistral\", etc.\n)\n\nresp\
+    \ = llm.create_chat_completion(\n    messages=[\n        {\"role\": \"system\"\
+    , \"content\": \"You are a helpful assistant.\"},\n        {\"role\": \"user\"\
+    , \"content\": \"What is Python?\"},\n    ],\n    max_tokens=256,\n)\nprint(resp[\"\
+    choices\"][0][\"message\"][\"content\"])\n\n# Streaming\nfor chunk in llm(\"Explain\
+    \ quantum computing:\", max_tokens=256, stream=True):\n    print(chunk[\"choices\"\
+    ][0][\"text\"], end=\"\", flush=True)\n```\n\n### Embeddings\n\n```python\nllm\
+    \ = Llama(model_path=\"./model-q4_k_m.gguf\", embedding=True, n_gpu_layers=35)\n\
+    vec = llm.embed(\"This is a test sentence.\")\nprint(f\"Embedding dimension: {len(vec)}\"\
+    )\n```\n\nYou can also load a GGUF straight from the Hub:\n\n```python\nllm =\
+    \ Llama.from_pretrained(\n    repo_id=\"bartowski/Llama-3.2-3B-Instruct-GGUF\"\
+    ,\n    filename=\"*Q4_K_M.gguf\",\n    n_gpu_layers=35,\n)\n```\n\n## Choosing\
+    \ a quant\n\nUse the Hub page first, generic heuristics second.\n\n- Prefer the\
+    \ exact quant that HF marks as compatible for the user's hardware profile.\n-\
+    \ For general chat, start with `Q4_K_M`.\n- For code or technical work, prefer\
+    \ `Q5_K_M` or `Q6_K` if memory allows.\n- For very tight RAM budgets, consider\
+    \ `Q3_K_M`, `IQ` variants, or `Q2` variants only if the user explicitly prioritizes\
+    \ fit over quality.\n- For multimodal repos, mention `mmproj-*.gguf` separately.\
+    \ The projector is not the main model file.\n- Do not normalize repo-native labels.\
+    \ If the page says `UD-Q4_K_M`, report `UD-Q4_K_M`.\n\n## Extracting available\
+    \ GGUFs from a repo\n\nWhen the user asks what GGUFs exist, return:\n\n- filename\n\
+    - file size\n- quant label\n- whether it is a main model or an auxiliary projector\n\
+    \nIgnore unless requested:\n\n- README\n- BF16 shard files\n- imatrix blobs or\
+    \ calibration artifacts\n\nUse the tree API for this step:\n\n- `https://huggingface.co/api/models/<repo>/tree/main?recursive=true`\n\
+    \nFor a repo like `unsloth/Qwen3.6-35B-A3B-GGUF`, the local-app page can show\
+    \ quant chips such as `UD-Q4_K_M`, `UD-Q5_K_M`, `UD-Q6_K`, and `Q8_0`, while the\
+    \ tree API exposes exact file paths such as `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` and\
+    \ `Qwen3.6-35B-A3B-Q8_0.gguf` with byte sizes. Use the tree API to turn a quant\
+    \ label into an exact filename.\n\n## Search patterns\n\nUse these URL shapes\
+    \ directly:\n\n```text\nhttps://huggingface.co/models?apps=llama.cpp&sort=trending\n\
+    https://huggingface.co/models?search=<term>&apps=llama.cpp&sort=trending\nhttps://huggingface.co/models?search=<term>&apps=llama.cpp&num_parameters=min:0,max:24B&sort=trending\n\
+    https://huggingface.co/<repo>?local-app=llama.cpp\nhttps://huggingface.co/api/models/<repo>/tree/main?recursive=true\n\
+    https://huggingface.co/<repo>/tree/main\n```\n\n## Output format\n\nWhen answering\
+    \ discovery requests, prefer a compact structured result like:\n\n```text\nRepo:\
+    \ <repo>\nRecommended quant from HF: <label> (<size>)\nllama-server: <command>\n\
+    Other GGUFs:\n- <filename> - <size>\n- <filename> - <size>\nSource URLs:\n- <local-app\
+    \ URL>\n- <tree API URL>\n```\n\n## References\n\n- **[hub-discovery.md](references/hub-discovery.md)**\
+    \ - URL-only Hugging Face workflows, search patterns, GGUF extraction, and command\
+    \ reconstruction\n- **[advanced-usage.md](references/advanced-usage.md)** \u2014\
+    \ speculative decoding, batched inference, grammar-constrained generation, LoRA,\
+    \ multi-GPU, custom builds, benchmark scripts\n- **[quantization.md](references/quantization.md)**\
+    \ \u2014 quant quality tradeoffs, when to use Q4/Q5/Q6/IQ, model size scaling,\
+    \ imatrix\n- **[server.md](references/server.md)** \u2014 direct-from-Hub server\
+    \ launch, OpenAI API endpoints, Docker deployment, NGINX load balancing, monitoring\n\
+    - **[optimization.md](references/optimization.md)** \u2014 CPU threading, BLAS,\
+    \ GPU offload heuristics, batch tuning, benchmarks\n- **[troubleshooting.md](references/troubleshooting.md)**\
+    \ \u2014 install/convert/quantize/inference/server issues, Apple Silicon, debugging\n\
+    \n## Resources\n\n- **GitHub**: https://github.com/ggml-org/llama.cpp\n- **Hugging\
+    \ Face GGUF + llama.cpp docs**: https://huggingface.co/docs/hub/gguf-llamacpp\n\
+    - **Hugging Face Local Apps docs**: https://huggingface.co/docs/hub/main/local-apps\n\
+    - **Hugging Face Local Agents docs**: https://huggingface.co/docs/hub/agents-local\n\
+    - **Example local-app page**: https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF?local-app=llama.cpp\n\
+    - **Example tree API**: https://huggingface.co/api/models/unsloth/Qwen3.6-35B-A3B-GGUF/tree/main?recursive=true\n\
+    - **Example llama.cpp search**: https://huggingface.co/models?num_parameters=min:0,max:24B&apps=llama.cpp&sort=trending\n\
+    - **License**: MIT\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/mlops/inference/llama-cpp/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.mlops-inference.llama-cpp'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: mlops/inference

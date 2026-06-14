@@ -1,0 +1,101 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.apple.apple-notes
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: apple-notes\ndescription:\
+    \ \"Manage Apple Notes via memo CLI: create, search, edit.\"\nversion: 1.0.0\n\
+    author: Hermes Agent\nlicense: MIT\nplatforms: [macos]\nmetadata:\n  hermes:\n\
+    \    tags: [Notes, Apple, macOS, note-taking]\n    related_skills: [obsidian]\n\
+    prerequisites:\n  commands: [memo]\n---\n\n# Apple Notes\n\nUse `memo` to manage\
+    \ Apple Notes directly from the terminal. Notes sync across all Apple devices\
+    \ via iCloud.\n\n## Prerequisites\n\n- **macOS** with Notes.app\n- Install: `brew\
+    \ tap antoniorodr/memo && brew install antoniorodr/memo/memo`\n- Grant Automation\
+    \ access to Notes.app when prompted (System Settings \u2192 Privacy \u2192 Automation)\n\
+    \n## When to Use\n\n- User asks to create, view, or search Apple Notes\n- Saving\
+    \ information to Notes.app for cross-device access\n- Organizing notes into folders\n\
+    - Exporting notes to Markdown/HTML\n\n## When NOT to Use\n\n- Obsidian vault management\
+    \ \u2192 use the `obsidian` skill\n- Bear Notes \u2192 separate app (not supported\
+    \ here)\n- Quick agent-only notes \u2192 use the `memory` tool instead\n\n## Quick\
+    \ Reference\n\n### View Notes\n\n```bash\nmemo notes                        #\
+    \ List all notes\nmemo notes -f \"Folder Name\"       # Filter by folder\nmemo\
+    \ notes -s \"query\"             # Search notes (fuzzy)\n```\n\n### Create Notes\n\
+    \n```bash\nmemo notes -a                     # Interactive editor\nmemo notes\
+    \ -a \"Note Title\"        # Quick add with title\n```\n\n### Edit Notes\n\n```bash\n\
+    memo notes -e                     # Interactive selection to edit\n```\n\n###\
+    \ Delete Notes\n\n```bash\nmemo notes -d                     # Interactive selection\
+    \ to delete\n```\n\n### Move Notes\n\n```bash\nmemo notes -m                 \
+    \    # Move note to folder (interactive)\n```\n\n### Export Notes\n\n```bash\n\
+    memo notes -ex                    # Export to HTML/Markdown\n```\n\n## Limitations\n\
+    \n- Cannot edit notes containing images or attachments\n- Interactive prompts\
+    \ require terminal access (use pty=true if needed)\n- macOS only \u2014 requires\
+    \ Apple Notes.app\n\n## Rules\n\n1. Prefer Apple Notes when user wants cross-device\
+    \ sync (iPhone/iPad/Mac)\n2. Use the `memory` tool for agent-internal notes that\
+    \ don't need to sync\n3. Use the `obsidian` skill for Markdown-native knowledge\
+    \ management\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/apple/apple-notes/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.apple.apple-notes'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: apple

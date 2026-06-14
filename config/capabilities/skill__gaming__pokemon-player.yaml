@@ -1,0 +1,186 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.gaming.pokemon-player
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: pokemon-player\n\
+    description: \"Play Pokemon via headless emulator + RAM reads.\"\ntags: [gaming,\
+    \ pokemon, emulator, pyboy, gameplay, gameboy]\nplatforms: [linux, macos, windows]\n\
+    ---\n# Pokemon Player\n\nPlay Pokemon games via headless emulation using the `pokemon-agent`\
+    \ package.\n\n## When to Use\n- User says \"play pokemon\", \"start pokemon\"\
+    , \"pokemon game\"\n- User asks about Pokemon Red, Blue, Yellow, FireRed, etc.\n\
+    - User wants to watch an AI play Pokemon\n- User references a ROM file (.gb, .gbc,\
+    \ .gba)\n\n## Startup Procedure\n\n### 1. First-time setup (clone, venv, install)\n\
+    The repo is NousResearch/pokemon-agent on GitHub. Clone it, then\nset up a Python\
+    \ 3.10+ virtual environment. Use uv (preferred for speed)\nto create the venv\
+    \ and install the package in editable mode with the\npyboy extra. If uv is not\
+    \ available, fall back to python3 -m venv + pip.\n\nOn this machine it is already\
+    \ set up at /home/teknium/pokemon-agent\nwith a venv ready \u2014 just cd there\
+    \ and source .venv/bin/activate.\n\nYou also need a ROM file. Ask the user for\
+    \ theirs. On this machine\none exists at roms/pokemon_red.gb inside that directory.\n\
+    NEVER download or provide ROM files \u2014 always ask the user.\n\n### 2. Start\
+    \ the game server\nFrom inside the pokemon-agent directory with the venv activated,\
+    \ run\npokemon-agent serve with --rom pointing to the ROM and --port 9876.\nRun\
+    \ it in the background with &.\nTo resume from a saved game, add --load-state\
+    \ with the save name.\nWait 4 seconds for startup, then verify with GET /health.\n\
+    \n### 3. Set up live dashboard for user to watch\nUse an SSH reverse tunnel via\
+    \ localhost.run so the user can view\nthe dashboard in their browser. Connect\
+    \ with ssh, forwarding local\nport 9876 to remote port 80 on nokey@localhost.run.\
+    \ Redirect output\nto a log file, wait 10 seconds, then grep the log for the .lhr.life\n\
+    URL. Give the user the URL with /dashboard/ appended.\nThe tunnel URL changes\
+    \ each time \u2014 give the user the new one if restarted.\n\n## Save and Load\n\
+    \n### When to save\n- Every 15-20 turns of gameplay\n- ALWAYS before gym battles,\
+    \ rival encounters, or risky fights\n- Before entering a new town or dungeon\n\
+    - Before any action you are unsure about\n\n### How to save\nPOST /save with a\
+    \ descriptive name. Good examples:\nbefore_brock, route1_start, mt_moon_entrance,\
+    \ got_cut\n\n### How to load\nPOST /load with the save name.\n\n### List available\
+    \ saves\nGET /saves returns all saved states.\n\n### Loading on server startup\n\
+    Use --load-state flag when starting the server to auto-load a save.\nThis is faster\
+    \ than loading via the API after startup.\n\n## The Gameplay Loop\n\n### Step\
+    \ 1: OBSERVE \u2014 check state AND take a screenshot\nGET /state for position,\
+    \ HP, battle, dialog.\nGET /screenshot and save to /tmp/pokemon.png, then use\
+    \ vision_analyze.\nAlways do BOTH \u2014 RAM state gives numbers, vision gives\
+    \ spatial awareness.\n\n### Step 2: ORIENT\n- Dialog/text on screen \u2192 advance\
+    \ it\n- In battle \u2192 fight or run\n- Party hurt \u2192 head to Pokemon Center\n\
+    - Near objective \u2192 navigate carefully\n\n### Step 3: DECIDE\nPriority: dialog\
+    \ > battle > heal > story objective > training > explore\n\n### Step 4: ACT \u2014\
+    \ move 2-4 steps max, then re-check\nPOST /action with a SHORT action list (2-4\
+    \ actions, not 10-15).\n\n### Step 5: VERIFY \u2014 screenshot after every move\
+    \ sequence\nTake a screenshot and use vision_analyze to confirm you moved where\n\
+    intended. This is the MOST IMPORTANT step. Without vision you WILL get lost.\n\
+    \n### Step 6: RECORD progress to memory with PKM: prefix\n\n### Step 7: SAVE periodically\n\
+    \n## Action Reference\n- press_a \u2014 confirm, talk, select\n- press_b \u2014\
+    \ cancel, close menu\n- press_start \u2014 open game menu\n- walk_up/down/left/right\
+    \ \u2014 move one tile\n- hold_b_N \u2014 hold B for N frames (use for speeding\
+    \ through text)\n- wait_60 \u2014 wait about 1 second (60 frames)\n- a_until_dialog_end\
+    \ \u2014 press A repeatedly until dialog clears\n\n## Critical Tips from Experience\n\
+    \n### USE VISION CONSTANTLY\n- Take a screenshot every 2-4 movement steps\n- The\
+    \ RAM state tells you position and HP but NOT what is around you\n- Ledges, fences,\
+    \ signs, building doors, NPCs \u2014 only visible via screenshot\n- Ask the vision\
+    \ model specific questions: \"what is one tile north of me?\"\n- When stuck, always\
+    \ screenshot before trying random directions\n\n### Warp Transitions Need Extra\
+    \ Wait Time\nWhen walking through a door or stairs, the screen fades to black\
+    \ during\nthe map transition. You MUST wait for it to complete. Add 2-3 wait_60\n\
+    actions after any door/stair warp. Without waiting, the position reads\nas stale\
+    \ and you will think you are still in the old map.\n\n### Building Exit Trap\n\
+    When you exit a building, you appear directly IN FRONT of the door.\nIf you walk\
+    \ north, you go right back inside. ALWAYS sidestep first\nby walking left or right\
+    \ 2 tiles, then proceed in your intended direction.\n\n### Dialog Handling\nGen\
+    \ 1 text scrolls slowly letter-by-letter. To speed through dialog,\nhold B for\
+    \ 120 frames then press A. Repeat as needed. Holding B makes\ntext display at\
+    \ max speed. Then press A to advance to the next line.\nThe a_until_dialog_end\
+    \ action checks the RAM dialog flag, but this flag\ndoes not catch ALL text states.\
+    \ If dialog seems stuck, use the manual\nhold_b + press_a pattern instead and\
+    \ verify via screenshot.\n\n### Ledges Are One-Way\nLedges (small cliff edges)\
+    \ can only be jumped DOWN (south), never climbed\nUP (north). If blocked by a\
+    \ ledge going north, you must go left or right\nto find the gap around it. Use\
+    \ vision to identify which direction the\ngap is. Ask the vision model explicitly.\n\
+    \n### Navigation Strategy\n- Move 2-4 steps at a time, then screenshot to check\
+    \ position\n- When entering a new area, screenshot immediately to orient\n- Ask\
+    \ the vision model \"which direction to [destination]?\"\n- If stuck for 3+ attempts,\
+    \ screenshot and re-evaluate completely\n- Do not spam 10-15 movements \u2014\
+    \ you will overshoot or get stuck\n\n### Running from Wild Battles\nOn the battle\
+    \ menu, RUN is bottom-right. To reach it from the default\ncursor position (FIGHT,\
+    \ top-left): press down then right to move cursor\nto RUN, then press A. Wrap\
+    \ with hold_b to speed through text/animations.\n\n### Battling (FIGHT)\nOn the\
+    \ battle menu FIGHT is top-left (default cursor position).\nPress A to enter move\
+    \ selection, A again to use the first move.\nThen hold B to speed through attack\
+    \ animations and text.\n\n## Battle Strategy\n\n### Decision Tree\n1. Want to\
+    \ catch? \u2192 Weaken then throw Poke Ball\n2. Wild you don't need? \u2192 RUN\n\
+    3. Type advantage? \u2192 Use super-effective move\n4. No advantage? \u2192 Use\
+    \ strongest STAB move\n5. Low HP? \u2192 Switch or use Potion\n\n### Gen 1 Type\
+    \ Chart (key matchups)\n- Water beats Fire, Ground, Rock\n- Fire beats Grass,\
+    \ Bug, Ice\n- Grass beats Water, Ground, Rock\n- Electric beats Water, Flying\n\
+    - Ground beats Fire, Electric, Rock, Poison\n- Psychic beats Fighting, Poison\
+    \ (dominant in Gen 1!)\n\n### Gen 1 Quirks\n- Special stat = both offense AND\
+    \ defense for special moves\n- Psychic type is overpowered (Ghost moves bugged)\n\
+    - Critical hits based on Speed stat\n- Wrap/Bind prevent opponent from acting\n\
+    - Focus Energy bug: REDUCES crit rate instead of raising it\n\n## Memory Conventions\n\
+    | Prefix | Purpose | Example |\n|--------|---------|---------|\n| PKM:OBJECTIVE\
+    \ | Current goal | Get Parcel from Viridian Mart |\n| PKM:MAP | Navigation knowledge\
+    \ | Viridian: mart is northeast |\n| PKM:STRATEGY | Battle/team plans | Need Grass\
+    \ type before Misty |\n| PKM:PROGRESS | Milestone tracker | Beat rival, heading\
+    \ to Viridian |\n| PKM:STUCK | Stuck situations | Ledge at y=28 go right to bypass\
+    \ |\n| PKM:TEAM | Team notes | Squirtle Lv6, Tackle + Tail Whip |\n\n## Progression\
+    \ Milestones\n- Choose starter\n- Deliver Parcel from Viridian Mart, receive Pokedex\n\
+    - Boulder Badge \u2014 Brock (Rock) \u2192 use Water/Grass\n- Cascade Badge \u2014\
+    \ Misty (Water) \u2192 use Grass/Electric\n- Thunder Badge \u2014 Lt. Surge (Electric)\
+    \ \u2192 use Ground\n- Rainbow Badge \u2014 Erika (Grass) \u2192 use Fire/Ice/Flying\n\
+    - Soul Badge \u2014 Koga (Poison) \u2192 use Ground/Psychic\n- Marsh Badge \u2014\
+    \ Sabrina (Psychic) \u2192 hardest gym\n- Volcano Badge \u2014 Blaine (Fire) \u2192\
+    \ use Water/Ground\n- Earth Badge \u2014 Giovanni (Ground) \u2192 use Water/Grass/Ice\n\
+    - Elite Four \u2192 Champion!\n\n## Stopping Play\n1. Save the game with a descriptive\
+    \ name via POST /save\n2. Update memory with PKM:PROGRESS\n3. Tell user: \"Game\
+    \ saved as [name]! Say 'play pokemon' to resume.\"\n4. Kill the server and tunnel\
+    \ background processes\n\n## Pitfalls\n- NEVER download or provide ROM files\n\
+    - Do NOT send more than 4-5 actions without checking vision\n- Always sidestep\
+    \ after exiting buildings before going north\n- Always add wait_60 x2-3 after\
+    \ door/stair warps\n- Dialog detection via RAM is unreliable \u2014 verify with\
+    \ screenshots\n- Save BEFORE risky encounters\n- The tunnel URL changes each time\
+    \ you restart it\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/gaming/pokemon-player/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.gaming.pokemon-player'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: gaming

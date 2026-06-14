@@ -1,0 +1,42 @@
+# GRV-009 E6a C2 — skill category descriptions (the index's category headers).
+# Keyed by category name; governance-free presentation side-record (lock 2).
+version: 1
+categories:
+  autonomous-ai-agents: Skills for spawning and orchestrating autonomous AI coding
+    agents and multi-agent workflows — running independent agent processes, delegating
+    tasks, and coordinating parallel workstreams.
+  creative: Creative content generation — ASCII art, hand-drawn style diagrams, and
+    visual design tools.
+  data-science: Skills for data science workflows — interactive exploration, Jupyter
+    notebooks, data analysis, and visualization.
+  email: Skills for sending, receiving, searching, and managing email from the terminal.
+  gaming: Skills for setting up, configuring, and managing game servers, modpacks,
+    and gaming-related infrastructure.
+  github: GitHub workflow skills for managing repositories, pull requests, code reviews,
+    issues, and CI/CD pipelines using the gh CLI and git via terminal.
+  mcp: Skills for working with MCP (Model Context Protocol) servers, tools, and integrations.
+    Documents the built-in native MCP client — configure servers in config.yaml for
+    automatic tool discovery.
+  media: Skills for working with media content — YouTube transcripts, GIF search,
+    music generation, and audio visualization.
+  mlops: Knowledge and Tools for Machine Learning Operations - tools and frameworks
+    for training, fine-tuning, deploying, and optimizing ML/AI models
+  mlops/evaluation: Model evaluation benchmarks, experiment tracking, data curation,
+    tokenizers, and interpretability tools.
+  mlops/inference: Model serving, quantization (GGUF/GPTQ), structured output, inference
+    optimization, and model surgery tools for deploying and running LLMs.
+  mlops/models: Specific model architectures and tools — image segmentation (Segment
+    Anything / SAM) and audio generation (AudioCraft / MusicGen). Additional model
+    skills (CLIP, Stable Diffusion, Whisper, LLaVA) are available as optional skills.
+  mlops/research: ML research frameworks for building and optimizing AI systems with
+    declarative programming.
+  note-taking: Note taking skills, to save information, assist with research, and
+    collab on multi-session planning and information sharing.
+  productivity: Skills for document creation, presentations, spreadsheets, and other
+    productivity workflows.
+  research: Skills for academic research, paper discovery, literature review, domain
+    reconnaissance, market data, content monitoring, and scientific knowledge retrieval.
+  smart-home: Skills for controlling smart home devices — lights, switches, sensors,
+    and home automation systems.
+  social-media: Skills for interacting with social platforms and social-media workflows
+    — posting, reading, monitoring, and account operations.

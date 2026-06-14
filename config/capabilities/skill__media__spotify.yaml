@@ -1,0 +1,154 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.media.spotify
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: spotify\ndescription:\
+    \ \"Spotify: play, search, queue, manage playlists and devices.\"\nversion: 1.0.0\n\
+    author: Hermes Agent\nlicense: MIT\nplatforms: [linux, macos, windows]\nprerequisites:\n\
+    \  tools: [spotify_playback, spotify_devices, spotify_queue, spotify_search, spotify_playlists,\
+    \ spotify_albums, spotify_library]\nmetadata:\n  hermes:\n    tags: [spotify,\
+    \ music, playback, playlists, media]\n    related_skills: [gif-search]\n---\n\n\
+    # Spotify\n\nControl the user's Spotify account via the Hermes Spotify toolset\
+    \ (7 tools). Setup guide: https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify\n\
+    \n## When to use this skill\n\nThe user says something like \"play X\", \"pause\"\
+    , \"skip\", \"queue up X\", \"what's playing\", \"search for X\", \"add to my\
+    \ X playlist\", \"make a playlist\", \"save this to my library\", etc.\n\n## The\
+    \ 7 tools\n\n- `spotify_playback` \u2014 play, pause, next, previous, seek, set_repeat,\
+    \ set_shuffle, set_volume, get_state, get_currently_playing, recently_played\n\
+    - `spotify_devices` \u2014 list, transfer\n- `spotify_queue` \u2014 get, add\n\
+    - `spotify_search` \u2014 search the catalog\n- `spotify_playlists` \u2014 list,\
+    \ get, create, add_items, remove_items, update_details\n- `spotify_albums` \u2014\
+    \ get, tracks\n- `spotify_library` \u2014 list/save/remove with `kind: \"tracks\"\
+    |\"albums\"`\n\nPlayback-mutating actions require Spotify Premium; search/library/playlist\
+    \ ops work on Free.\n\n## Canonical patterns (minimize tool calls)\n\n### \"Play\
+    \ <artist/track/album>\"\nOne search, then play by URI. Do NOT loop through search\
+    \ results describing them unless the user asked for options.\n\n```\nspotify_search({\"\
+    query\": \"miles davis kind of blue\", \"types\": [\"album\"], \"limit\": 1})\n\
+    \u2192 got album URI spotify:album:1weenld61qoidwYuZ1GESA\nspotify_playback({\"\
+    action\": \"play\", \"context_uri\": \"spotify:album:1weenld61qoidwYuZ1GESA\"\
+    })\n```\n\nFor \"play some <artist>\" (no specific song), prefer `types: [\"artist\"\
+    ]` and play the artist context URI \u2014 Spotify handles smart shuffle. If the\
+    \ user says \"the song\" or \"that track\", search `types: [\"track\"]` and pass\
+    \ `uris: [track_uri]` to play.\n\n### \"What's playing?\" / \"What am I listening\
+    \ to?\"\nSingle call \u2014 don't chain get_state after get_currently_playing.\n\
+    \n```\nspotify_playback({\"action\": \"get_currently_playing\"})\n```\n\nIf it\
+    \ returns 204/empty (`is_playing: false`), tell the user nothing is playing. Don't\
+    \ retry.\n\n### \"Pause\" / \"Skip\" / \"Volume 50\"\nDirect action, no preflight\
+    \ inspection needed.\n\n```\nspotify_playback({\"action\": \"pause\"})\nspotify_playback({\"\
+    action\": \"next\"})\nspotify_playback({\"action\": \"set_volume\", \"volume_percent\"\
+    : 50})\n```\n\n### \"Add to my <playlist name> playlist\"\n1. `spotify_playlists\
+    \ list` to find the playlist ID by name\n2. Get the track URI (from currently\
+    \ playing, or search)\n3. `spotify_playlists add_items` with the playlist_id and\
+    \ URIs\n\n```\nspotify_playlists({\"action\": \"list\"})\n\u2192 found \"Late\
+    \ Night Jazz\" = 37i9dQZF1DX4wta20PHgwo\nspotify_playback({\"action\": \"get_currently_playing\"\
+    })\n\u2192 current track uri = spotify:track:0DiWol3AO6WpXZgp0goxAV\nspotify_playlists({\"\
+    action\": \"add_items\",\n                   \"playlist_id\": \"37i9dQZF1DX4wta20PHgwo\"\
+    ,\n                   \"uris\": [\"spotify:track:0DiWol3AO6WpXZgp0goxAV\"]})\n\
+    ```\n\n### \"Create a playlist called X and add the last 3 songs I played\"\n\
+    ```\nspotify_playback({\"action\": \"recently_played\", \"limit\": 3})\nspotify_playlists({\"\
+    action\": \"create\", \"name\": \"Focus 2026\"})\n\u2192 got playlist_id back\
+    \ in response\nspotify_playlists({\"action\": \"add_items\", \"playlist_id\":\
+    \ <id>, \"uris\": [<3 uris>]})\n```\n\n### \"Save / unsave / is this saved?\"\n\
+    Use `spotify_library` with the right `kind`.\n\n```\nspotify_library({\"kind\"\
+    : \"tracks\", \"action\": \"save\", \"uris\": [\"spotify:track:...\"]})\nspotify_library({\"\
+    kind\": \"albums\", \"action\": \"list\", \"limit\": 50})\n```\n\n### \"Transfer\
+    \ playback to my <device>\"\n```\nspotify_devices({\"action\": \"list\"})\n\u2192\
+    \ pick the device_id by matching name/type\nspotify_devices({\"action\": \"transfer\"\
+    , \"device_id\": \"<id>\", \"play\": true})\n```\n\n## Critical failure modes\n\
+    \n**`403 Forbidden \u2014 No active device found`** on any playback action means\
+    \ Spotify isn't running anywhere. Tell the user: \"Open Spotify on your phone/desktop/web\
+    \ player first, start any track for a second, then retry.\" Don't retry the tool\
+    \ call blindly \u2014 it will fail the same way. You can call `spotify_devices\
+    \ list` to confirm; an empty list means no active device.\n\n**`403 Forbidden\
+    \ \u2014 Premium required`** means the user is on Free and tried to mutate playback.\
+    \ Don't retry; tell them this action needs Premium. Reads still work (search,\
+    \ playlists, library, get_state).\n\n**`204 No Content` on `get_currently_playing`**\
+    \ is NOT an error \u2014 it means nothing is playing. The tool returns `is_playing:\
+    \ false`. Just report that to the user.\n\n**`429 Too Many Requests`** = rate\
+    \ limit. Wait and retry once. If it keeps happening, you're looping \u2014 stop.\n\
+    \n**`401 Unauthorized` after a retry** \u2014 refresh token revoked. Tell the\
+    \ user to run `hermes auth spotify` again.\n\n## URI and ID formats\n\nSpotify\
+    \ uses three interchangeable ID formats. The tools accept all three and normalize:\n\
+    \n- URI: `spotify:track:0DiWol3AO6WpXZgp0goxAV` (preferred)\n- URL: `https://open.spotify.com/track/0DiWol3AO6WpXZgp0goxAV`\n\
+    - Bare ID: `0DiWol3AO6WpXZgp0goxAV`\n\nWhen in doubt, use full URIs. Search results\
+    \ return URIs in the `uri` field \u2014 pass those directly.\n\nEntity types:\
+    \ `track`, `album`, `artist`, `playlist`, `show`, `episode`. Use the right type\
+    \ for the action \u2014 `spotify_playback.play` with a `context_uri` expects album/playlist/artist;\
+    \ `uris` expects an array of track URIs.\n\n## What NOT to do\n\n- **Don't call\
+    \ `get_state` before every action.** Spotify accepts play/pause/skip without preflight.\
+    \ Only inspect state when the user asked \"what's playing\" or you need to reason\
+    \ about device/track.\n- **Don't describe search results unless asked.** If the\
+    \ user said \"play X\", search, grab the top URI, play it. They'll hear it's wrong\
+    \ if it's wrong.\n- **Don't retry on `403 Premium required` or `403 No active\
+    \ device`.** Those are permanent until user action.\n- **Don't use `spotify_search`\
+    \ to find a playlist by name** \u2014 that searches the public Spotify catalog.\
+    \ User playlists come from `spotify_playlists list`.\n- **Don't mix `kind: \"\
+    tracks\"` with album URIs** in `spotify_library` (or vice versa). The tool normalizes\
+    \ IDs but the API endpoint differs.\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/media/spotify/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.media.spotify'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: media

@@ -73,7 +73,12 @@ def test_records_seed_one_migration_decision_log_entry():
         assert len(c.lineage.decision_log) == 1
         rec = c.lineage.decision_log[0]
         assert rec.actor == "operator"
-        assert rec.to_state == "approved"
+        # E2–E5 verb/mcp records seed migrated→approved; E6a (GRV-009) kind=skill
+        # records seed migrated→active — the operator ruling: migrated skills
+        # carry years of use, so they land active, not approved (unlike the
+        # execution-historyless verb/mcp records). Both seed exactly one entry.
+        expected_to = "active" if c.kind is CapabilityKind.SKILL else "approved"
+        assert rec.to_state == expected_to
         assert rec.evidence  # carries the sprint-page evidence id
 
 

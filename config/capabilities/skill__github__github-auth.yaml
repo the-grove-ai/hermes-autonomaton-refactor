@@ -1,0 +1,170 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.github.github-auth
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: github-auth\ndescription:\
+    \ \"GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login.\"\nversion: 1.1.0\n\
+    author: Hermes Agent\nlicense: MIT\nplatforms: [linux, macos, windows]\nmetadata:\n\
+    \  hermes:\n    tags: [GitHub, Authentication, Git, gh-cli, SSH, Setup]\n    related_skills:\
+    \ [github-pr-workflow, github-code-review, github-issues, github-repo-management]\n\
+    ---\n\n# GitHub Authentication Setup\n\nThis skill sets up authentication so the\
+    \ agent can work with GitHub repositories, PRs, issues, and CI. It covers two\
+    \ paths:\n\n- **`git` (always available)** \u2014 uses HTTPS personal access tokens\
+    \ or SSH keys\n- **`gh` CLI (if installed)** \u2014 richer GitHub API access with\
+    \ a simpler auth flow\n\n## Detection Flow\n\nWhen a user asks you to work with\
+    \ GitHub, run this check first:\n\n```bash\n# Check what's available\ngit --version\n\
+    gh --version 2>/dev/null || echo \"gh not installed\"\n\n# Check if already authenticated\n\
+    gh auth status 2>/dev/null || echo \"gh not authenticated\"\ngit config --global\
+    \ credential.helper 2>/dev/null || echo \"no git credential helper\"\n```\n\n\
+    **Decision tree:**\n1. If `gh auth status` shows authenticated \u2192 you're good,\
+    \ use `gh` for everything\n2. If `gh` is installed but not authenticated \u2192\
+    \ use \"gh auth\" method below\n3. If `gh` is not installed \u2192 use \"git-only\"\
+    \ method below (no sudo needed)\n\n---\n\n## Method 1: Git-Only Authentication\
+    \ (No gh, No sudo)\n\nThis works on any machine with `git` installed. No root\
+    \ access needed.\n\n### Option A: HTTPS with Personal Access Token (Recommended)\n\
+    \nThis is the most portable method \u2014 works everywhere, no SSH config needed.\n\
+    \n**Step 1: Create a personal access token**\n\nTell the user to go to: **https://github.com/settings/tokens**\n\
+    \n- Click \"Generate new token (classic)\"\n- Give it a name like \"hermes-agent\"\
+    \n- Select scopes:\n  - `repo` (full repository access \u2014 read, write, push,\
+    \ PRs)\n  - `workflow` (trigger and manage GitHub Actions)\n  - `read:org` (if\
+    \ working with organization repos)\n- Set expiration (90 days is a good default)\n\
+    - Copy the token \u2014 it won't be shown again\n\n**Step 2: Configure git to\
+    \ store the token**\n\n```bash\n# Set up the credential helper to cache credentials\n\
+    # \"store\" saves to ~/.git-credentials in plaintext (simple, persistent)\ngit\
+    \ config --global credential.helper store\n\n# Now do a test operation that triggers\
+    \ auth \u2014 git will prompt for credentials\n# Username: <their-github-username>\n\
+    # Password: <paste the personal access token, NOT their GitHub password>\ngit\
+    \ ls-remote https://github.com/<their-username>/<any-repo>.git\n```\n\nAfter entering\
+    \ credentials once, they're saved and reused for all future operations.\n\n**Alternative:\
+    \ cache helper (credentials expire from memory)**\n\n```bash\n# Cache in memory\
+    \ for 8 hours (28800 seconds) instead of saving to disk\ngit config --global credential.helper\
+    \ 'cache --timeout=28800'\n```\n\n**Alternative: set the token directly in the\
+    \ remote URL (per-repo)**\n\n```bash\n# Embed token in the remote URL (avoids\
+    \ credential prompts entirely)\ngit remote set-url origin https://<username>:<token>@github.com/<owner>/<repo>.git\n\
+    ```\n\n**Step 3: Configure git identity**\n\n```bash\n# Required for commits \u2014\
+    \ set name and email\ngit config --global user.name \"Their Name\"\ngit config\
+    \ --global user.email \"their-email@example.com\"\n```\n\n**Step 4: Verify**\n\
+    \n```bash\n# Test push access (this should work without any prompts now)\ngit\
+    \ ls-remote https://github.com/<their-username>/<any-repo>.git\n\n# Verify identity\n\
+    git config --global user.name\ngit config --global user.email\n```\n\n### Option\
+    \ B: SSH Key Authentication\n\nGood for users who prefer SSH or already have keys\
+    \ set up.\n\n**Step 1: Check for existing SSH keys**\n\n```bash\nls -la ~/.ssh/id_*.pub\
+    \ 2>/dev/null || echo \"No SSH keys found\"\n```\n\n**Step 2: Generate a key if\
+    \ needed**\n\n```bash\n# Generate an ed25519 key (modern, secure, fast)\nssh-keygen\
+    \ -t ed25519 -C \"their-email@example.com\" -f ~/.ssh/id_ed25519 -N \"\"\n\n#\
+    \ Display the public key for them to add to GitHub\ncat ~/.ssh/id_ed25519.pub\n\
+    ```\n\nTell the user to add the public key at: **https://github.com/settings/keys**\n\
+    - Click \"New SSH key\"\n- Paste the public key content\n- Give it a title like\
+    \ \"hermes-agent-<machine-name>\"\n\n**Step 3: Test the connection**\n\n```bash\n\
+    ssh -T git@github.com\n# Expected: \"Hi <username>! You've successfully authenticated...\"\
+    \n```\n\n**Step 4: Configure git to use SSH for GitHub**\n\n```bash\n# Rewrite\
+    \ HTTPS GitHub URLs to SSH automatically\ngit config --global url.\"git@github.com:\"\
+    .insteadOf \"https://github.com/\"\n```\n\n**Step 5: Configure git identity**\n\
+    \n```bash\ngit config --global user.name \"Their Name\"\ngit config --global user.email\
+    \ \"their-email@example.com\"\n```\n\n---\n\n## Method 2: gh CLI Authentication\n\
+    \nIf `gh` is installed, it handles both API access and git credentials in one\
+    \ step.\n\n### Interactive Browser Login (Desktop)\n\n```bash\ngh auth login\n\
+    # Select: GitHub.com\n# Select: HTTPS\n# Authenticate via browser\n```\n\n###\
+    \ Token-Based Login (Headless / SSH Servers)\n\n```bash\necho \"<THEIR_TOKEN>\"\
+    \ | gh auth login --with-token\n\n# Set up git credentials through gh\ngh auth\
+    \ setup-git\n```\n\n### Verify\n\n```bash\ngh auth status\n```\n\n---\n\n## Using\
+    \ the GitHub API Without gh\n\nWhen `gh` is not available, you can still access\
+    \ the full GitHub API using `curl` with a personal access token. This is how the\
+    \ other GitHub skills implement their fallbacks.\n\n### Setting the Token for\
+    \ API Calls\n\n```bash\n# Option 1: Export as env var (preferred \u2014 keeps\
+    \ it out of commands)\nexport GITHUB_TOKEN=\"<token>\"\n\n# Then use in curl calls:\n\
+    curl -s -H \"Authorization: token $GITHUB_TOKEN\" \\\n  https://api.github.com/user\n\
+    ```\n\n### Extracting the Token from Git Credentials\n\nIf git credentials are\
+    \ already configured (via credential.helper store), the token can be extracted:\n\
+    \n```bash\n# Read from git credential store\ngrep \"github.com\" ~/.git-credentials\
+    \ 2>/dev/null | head -1 | sed 's|https://[^:]*:\\([^@]*\\)@.*|\\1|'\n```\n\n###\
+    \ Helper: Detect Auth Method\n\nUse this pattern at the start of any GitHub workflow:\n\
+    \n```bash\n# Try gh first, fall back to git + curl\nif command -v gh &>/dev/null\
+    \ && gh auth status &>/dev/null; then\n  echo \"AUTH_METHOD=gh\"\nelif [ -n \"\
+    $GITHUB_TOKEN\" ]; then\n  echo \"AUTH_METHOD=curl\"\nelif [ -f ~/.hermes/.env\
+    \ ] && grep -q \"^GITHUB_TOKEN=\" ~/.hermes/.env; then\n  export GITHUB_TOKEN=$(grep\
+    \ \"^GITHUB_TOKEN=\" ~/.hermes/.env | head -1 | cut -d= -f2 | tr -d '\\n\\r')\n\
+    \  echo \"AUTH_METHOD=curl\"\nelif grep -q \"github.com\" ~/.git-credentials 2>/dev/null;\
+    \ then\n  export GITHUB_TOKEN=$(grep \"github.com\" ~/.git-credentials | head\
+    \ -1 | sed 's|https://[^:]*:\\([^@]*\\)@.*|\\1|')\n  echo \"AUTH_METHOD=curl\"\
+    \nelse\n  echo \"AUTH_METHOD=none\"\n  echo \"Need to set up authentication first\"\
+    \nfi\n```\n\n---\n\n## Troubleshooting\n\n| Problem | Solution |\n|---------|----------|\n\
+    | `git push` asks for password | GitHub disabled password auth. Use a personal\
+    \ access token as the password, or switch to SSH |\n| `remote: Permission to X\
+    \ denied` | Token may lack `repo` scope \u2014 regenerate with correct scopes\
+    \ |\n| `fatal: Authentication failed` | Cached credentials may be stale \u2014\
+    \ run `git credential reject` then re-authenticate |\n| `ssh: connect to host\
+    \ github.com port 22: Connection refused` | Try SSH over HTTPS port: add `Host\
+    \ github.com` with `Port 443` and `Hostname ssh.github.com` to `~/.ssh/config`\
+    \ |\n| Credentials not persisting | Check `git config --global credential.helper`\
+    \ \u2014 must be `store` or `cache` |\n| Multiple GitHub accounts | Use SSH with\
+    \ different keys per host alias in `~/.ssh/config`, or per-repo credential URLs\
+    \ |\n| `gh: command not found` + no sudo | Use git-only Method 1 above \u2014\
+    \ no installation needed |\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/github/github-auth/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.github.github-auth'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: github

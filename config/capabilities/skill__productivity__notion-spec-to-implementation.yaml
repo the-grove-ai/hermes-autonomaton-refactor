@@ -1,0 +1,183 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.productivity.notion-spec-to-implementation
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\nname: notion-spec-to-implementation\ndescription: Turns product or\
+    \ tech specs into concrete Notion tasks that Claude code can implement. Breaks\
+    \ down spec pages into detailed implementation plans with clear tasks, acceptance\
+    \ criteria, and progress tracking to guide development from requirements to completion.\n\
+    ---\n\n# Spec to Implementation\n\nTransforms specifications into actionable implementation\
+    \ plans with progress tracking. Fetches spec documents, extracts requirements,\
+    \ breaks down into tasks, and manages implementation workflow.\n\n## Quick Start\n\
+    \nWhen asked to implement a specification:\n\n1. **Find spec**: Use `mcp_notion_notion_search`\
+    \ to locate specification page\n2. **Fetch spec**: Use `mcp_notion_notion_fetch`\
+    \ to read specification content\n3. **Extract requirements**: Parse and structure\
+    \ requirements from spec\n4. **Create plan**: Use `mcp_notion_notion_create_pages`\
+    \ for implementation plan\n5. **Find task database**: Use `mcp_notion_notion_search`\
+    \ to locate tasks database\n6. **Create tasks**: Use `mcp_notion_notion_create_pages`\
+    \ for individual tasks in task database\n7. **Track progress**: Use `mcp_notion_notion_update_page`\
+    \ to log progress and update status\n\n## Implementation Workflow\n\n### Step\
+    \ 1: Find the specification\n\n```\n1. Search for spec:\n   - Use mcp_notion_notion_search\
+    \ with spec name or topic\n   - Apply filters if needed (e.g., created_date_range,\
+    \ teamspace_id)\n   - Look for spec title or keyword matches\n   - If not found\
+    \ or ambiguous, ask user for spec URL/ID\n\nExample searches:\n- \"User Authentication\
+    \ spec\"\n- \"Payment Integration specification\"\n- \"Mobile App Redesign PRD\"\
+    \n```\n\n### Step 2: Fetch and analyze specification\n\n```\n1. Fetch spec page:\n\
+    \   - Use mcp_notion_notion_fetch with spec URL/ID from search results\n   - Read\
+    \ full content including requirements, design, constraints\n\n2. Parse specification:\n\
+    \   - Identify functional requirements\n   - Note non-functional requirements\
+    \ (performance, security, etc.)\n   - Extract acceptance criteria\n   - Identify\
+    \ dependencies and blockers\n```\n\nSee [reference/spec-parsing.md](reference/spec-parsing.md)\
+    \ for parsing patterns.\n\n### Step 3: Create implementation plan\n\n```\n1. Break\
+    \ down into phases/milestones\n2. Identify technical approach\n3. List required\
+    \ tasks\n4. Estimate effort\n5. Identify risks\n\nUse implementation plan template\
+    \ (see [reference/standard-implementation-plan.md](reference/standard-implementation-plan.md)\
+    \ or [reference/quick-implementation-plan.md](reference/quick-implementation-plan.md))\n\
+    ```\n\n### Step 4: Create implementation plan page\n\n```\nUse mcp_notion_notion_create_pages:\n\
+    - Title: \"Implementation Plan: [Feature Name]\"\n- Content: Structured plan with\
+    \ phases, tasks, timeline\n- Link back to original spec\n- Add to appropriate\
+    \ location (project page, database)\n```\n\n### Step 5: Find task database\n\n\
+    ```\n1. Search for task database:\n   - Use mcp_notion_notion_search to find \"\
+    Tasks\" or \"Task Management\" database\n   - Look for engineering/project task\
+    \ tracking system\n   - If not found or ambiguous, ask user for database location\n\
+    \n2. Fetch database schema:\n   - Use mcp_notion_notion_fetch with database URL/ID\n\
+    \   - Get property names, types, and options\n   - Identify correct data source\
+    \ from <data-source> tags\n   - Note required properties for new tasks\n```\n\n\
+    ### Step 6: Create implementation tasks\n\n```\nFor each task in plan:\n1. Create\
+    \ task in task database using mcp_notion_notion_create_pages\n2. Use parent: {\
+    \ data_source_id: 'collection://...' }\n3. Set properties from schema:\n   - Name/Title:\
+    \ Task description\n   - Status: To Do\n   - Priority: Based on criticality\n\
+    \   - Related Tasks: Link to spec and plan\n4. Add implementation details in content\n\
+    ```\n\nSee [reference/task-creation.md](reference/task-creation.md) for task patterns.\n\
+    \n### Step 7: Begin implementation\n\n```\n1. Update task status to \"In Progress\"\
+    \n2. Add initial progress note\n3. Document approach and decisions\n4. Link relevant\
+    \ resources\n```\n\n### Step 8: Track progress\n\n```\nRegular updates:\n1. Update\
+    \ task properties (status, progress)\n2. Add progress notes with:\n   - What's\
+    \ completed\n   - Current focus\n   - Blockers/issues\n3. Update implementation\
+    \ plan with milestone completion\n4. Link to related work (PRs, designs, etc.)\n\
+    ```\n\nSee [reference/progress-tracking.md](reference/progress-tracking.md) for\
+    \ tracking patterns.\n\n## Spec Analysis Patterns\n\n**Functional Requirements**:\
+    \ User stories, feature descriptions, workflows, data requirements, integration\
+    \ points\n\n**Non-Functional Requirements**: Performance targets, security requirements,\
+    \ scalability needs, availability, compliance\n\n**Acceptance Criteria**: Testable\
+    \ conditions, user validation points, performance benchmarks, completion definitions\n\
+    \nSee [reference/spec-parsing.md](reference/spec-parsing.md) for detailed parsing\
+    \ techniques.\n\n## Implementation Plan Structure\n\n**Plan includes**: Overview\
+    \ \u2192 Linked Spec \u2192 Requirements Summary \u2192 Technical Approach \u2192\
+    \ Implementation Phases (Goal, Tasks checklist, Estimated effort) \u2192 Dependencies\
+    \ \u2192 Risks & Mitigation \u2192 Timeline \u2192 Success Criteria\n\nSee [reference/standard-implementation-plan.md](reference/standard-implementation-plan.md)\
+    \ for full plan template.\n\n## Task Breakdown Patterns\n\n**By Component**: Database,\
+    \ API endpoints, frontend components, integration, testing\n**By Feature Slice**:\
+    \ Vertical slices (auth flow, data entry, report generation)\n**By Priority**:\
+    \ P0 (must have), P1 (important), P2 (nice to have)\n\n\n## Progress Logging\n\
+    \n**Daily Updates** (active work): Add progress note with completed items, current\
+    \ focus, blockers\n**Milestone Updates** (major progress): Update plan checkboxes,\
+    \ add milestone summary, adjust timeline\n**Status Changes** (task transitions):\
+    \ Update properties (In Progress \u2192 In Review \u2192 Done), add completion\
+    \ notes, link deliverables\n\n**Progress Format**: Date heading \u2192 Completed\
+    \ \u2192 In Progress \u2192 Next Steps \u2192 Blockers \u2192 Notes\n\nSee [reference/progress-tracking.md](reference/progress-tracking.md)\
+    \ for detailed patterns.\n\n## Linking Spec to Implementation\n\n**Forward Links**:\
+    \ Update spec page with \"Implementation\" section linking to plan and tasks\n\
+    **Backward Links**: Reference spec in plan and tasks with \"Specification\" section\n\
+    **Bidirectional Traceability**: Maintain both directions for easy tracking\n\n\
+    ## Implementation Status Tracking\n\n**Plan Status**: Update with phase completion\
+    \ (\u2705 Complete, \U0001F504 In Progress %, \u23F3 Not Started) and overall\
+    \ percentage\n**Task Aggregation**: Query task database by plan ID to generate\
+    \ summary (complete, in progress, blocked, not started)\n\n## Handling Spec Changes\n\
+    \n**Detection**: Fetch updated spec \u2192 compare with plan \u2192 identify new\
+    \ requirements \u2192 assess impact\n**Propagation**: Update plan \u2192 create\
+    \ new tasks \u2192 update affected tasks \u2192 add change note \u2192 notify\
+    \ via comments\n**Change Log**: Track spec evolution with date, what changed,\
+    \ and impact\n\n## Common Patterns\n\n**Feature Flag**: Backend (behind flag)\
+    \ \u2192 Testing \u2192 Frontend (flagged) \u2192 Internal rollout \u2192 External\
+    \ rollout\n**Database Migration**: Schema design \u2192 Migration script \u2192\
+    \ Staging test \u2192 Production migration \u2192 Validation\n**API Development**:\
+    \ API design \u2192 Backend implementation \u2192 Testing & docs \u2192 Client\
+    \ integration \u2192 Deployment\n\n\n## Best Practices\n\n1. **Always link spec\
+    \ and implementation**: Maintain bidirectional references\n2. **Break down into\
+    \ small tasks**: Each task should be completable in 1-2 days\n3. **Extract clear\
+    \ acceptance criteria**: Know when \"done\" is done\n4. **Identify dependencies\
+    \ early**: Note blockers in plan\n5. **Update progress regularly**: Daily notes\
+    \ for active work\n6. **Track changes**: Document spec updates and their impact\n\
+    7. **Use checklists**: Visual progress indicators help everyone\n8. **Link deliverables**:\
+    \ PRs, designs, docs should link back to tasks\n\n## Advanced Features\n\nFor\
+    \ additional implementation patterns and techniques, see the reference files in\
+    \ [reference/](reference/).\n\n## Common Issues\n\n**\"Can't find spec\"**: Use\
+    \ mcp_notion_notion_search with spec name/topic, try broader terms, or ask user\
+    \ for URL\n**\"Multiple specs found\"**: Ask user which spec to implement or show\
+    \ options\n**\"Can't find task database\"**: Search for \"Tasks\" or \"Task Management\"\
+    , or ask user for database location\n**\"Spec unclear\"**: Note ambiguities in\
+    \ plan, create clarification tasks\n**\"Requirements conflicting\"**: Document\
+    \ conflicts, create decision task\n**\"Scope too large\"**: Break into smaller\
+    \ specs/phases\n\n## Examples\n\nSee [examples/](examples/) for complete workflows:\n\
+    - [examples/api-feature.md](examples/api-feature.md) - API feature implementation\n\
+    - [examples/ui-component.md](examples/ui-component.md) - Frontend component\n\
+    - [examples/database-migration.md](examples/database-migration.md) - Schema changes\n\
+    \n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/productivity/notion-spec-to-implementation/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.productivity.notion-spec-to-implementation'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: productivity

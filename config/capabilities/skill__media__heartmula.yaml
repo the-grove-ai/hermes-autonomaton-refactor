@@ -1,0 +1,152 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.media.heartmula
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: heartmula\ndescription:\
+    \ \"HeartMuLa: Suno-like song generation from lyrics + tags.\"\nversion: 1.0.0\n\
+    platforms: [linux, macos, windows]\nmetadata:\n  hermes:\n    tags: [music, audio,\
+    \ generation, ai, heartmula, heartcodec, lyrics, songs]\n    related_skills: [audiocraft]\n\
+    ---\n\n# HeartMuLa - Open-Source Music Generation\n\n## Overview\nHeartMuLa is\
+    \ a family of open-source music foundation models (Apache-2.0) that generates\
+    \ music conditioned on lyrics and tags, with multilingual support. Generates full\
+    \ songs from lyrics + tags. Comparable to Suno for open-source. Includes:\n- **HeartMuLa**\
+    \ - Music language model (3B/7B) for generation from lyrics + tags\n- **HeartCodec**\
+    \ - 12.5Hz music codec for high-fidelity audio reconstruction\n- **HeartTranscriptor**\
+    \ - Whisper-based lyrics transcription\n- **HeartCLAP** - Audio-text alignment\
+    \ model\n\n## When to Use\n- User wants to generate music/songs from text descriptions\n\
+    - User wants an open-source Suno alternative\n- User wants local/offline music\
+    \ generation\n- User asks about HeartMuLa, heartlib, or AI music generation\n\n\
+    ## Hardware Requirements\n- **Minimum**: 8GB VRAM with `--lazy_load true` (loads/unloads\
+    \ models sequentially)\n- **Recommended**: 16GB+ VRAM for comfortable single-GPU\
+    \ usage\n- **Multi-GPU**: Use `--mula_device cuda:0 --codec_device cuda:1` to\
+    \ split across GPUs\n- 3B model with lazy_load peaks at ~6.2GB VRAM\n\n## Installation\
+    \ Steps\n\n### 1. Clone Repository\n```bash\ncd ~/  # or desired directory\ngit\
+    \ clone https://github.com/HeartMuLa/heartlib.git\ncd heartlib\n```\n\n### 2.\
+    \ Create Virtual Environment (Python 3.10 required)\n```bash\nuv venv --python\
+    \ 3.10 .venv\n. .venv/bin/activate\nuv pip install -e .\n```\n\n### 3. Fix Dependency\
+    \ Compatibility Issues\n\n**IMPORTANT**: As of Feb 2026, the pinned dependencies\
+    \ have conflicts with newer packages. Apply these fixes:\n\n```bash\n# Upgrade\
+    \ datasets (old version incompatible with current pyarrow)\nuv pip install --upgrade\
+    \ datasets\n\n# Upgrade transformers (needed for huggingface-hub 1.x compatibility)\n\
+    uv pip install --upgrade transformers\n```\n\n### 4. Patch Source Code (Required\
+    \ for transformers 5.x)\n\n**Patch 1 - RoPE cache fix** in `src/heartlib/heartmula/modeling_heartmula.py`:\n\
+    \nIn the `setup_caches` method of the `HeartMuLa` class, add RoPE reinitialization\
+    \ after the `reset_caches` try/except block and before the `with device:` block:\n\
+    \n```python\n# Re-initialize RoPE caches that were skipped during meta-device\
+    \ loading\nfrom torchtune.models.llama3_1._position_embeddings import Llama3ScaledRoPE\n\
+    for module in self.modules():\n    if isinstance(module, Llama3ScaledRoPE) and\
+    \ not module.is_cache_built:\n        module.rope_init()\n        module.to(device)\n\
+    ```\n\n**Why**: `from_pretrained` creates model on meta device first; `Llama3ScaledRoPE.rope_init()`\
+    \ skips cache building on meta tensors, then never rebuilds after weights are\
+    \ loaded to real device.\n\n**Patch 2 - HeartCodec loading fix** in `src/heartlib/pipelines/music_generation.py`:\n\
+    \nAdd `ignore_mismatched_sizes=True` to ALL `HeartCodec.from_pretrained()` calls\
+    \ (there are 2: the eager load in `__init__` and the lazy load in the `codec`\
+    \ property).\n\n**Why**: VQ codebook `initted` buffers have shape `[1]` in checkpoint\
+    \ vs `[]` in model. Same data, just scalar vs 0-d tensor. Safe to ignore.\n\n\
+    ### 5. Download Model Checkpoints\n```bash\ncd heartlib  # project root\nhf download\
+    \ --local-dir './ckpt' 'HeartMuLa/HeartMuLaGen'\nhf download --local-dir './ckpt/HeartMuLa-oss-3B'\
+    \ 'HeartMuLa/HeartMuLa-oss-3B-happy-new-year'\nhf download --local-dir './ckpt/HeartCodec-oss'\
+    \ 'HeartMuLa/HeartCodec-oss-20260123'\n```\n\nAll 3 can be downloaded in parallel.\
+    \ Total size is several GB.\n\n## GPU / CUDA\n\nHeartMuLa uses CUDA by default\
+    \ (`--mula_device cuda --codec_device cuda`). No extra setup needed if the user\
+    \ has an NVIDIA GPU with PyTorch CUDA support installed.\n\n- The installed `torch==2.4.1`\
+    \ includes CUDA 12.1 support out of the box\n- `torchtune` may report version\
+    \ `0.4.0+cpu` \u2014 this is just package metadata, it still uses CUDA via PyTorch\n\
+    - To verify GPU is being used, look for \"CUDA memory\" lines in the output (e.g.\
+    \ \"CUDA memory before unloading: 6.20 GB\")\n- **No GPU?** You can run on CPU\
+    \ with `--mula_device cpu --codec_device cpu`, but expect generation to be **extremely\
+    \ slow** (potentially 30-60+ minutes for a single song vs ~4 minutes on GPU).\
+    \ CPU mode also requires significant RAM (~12GB+ free). If the user has no NVIDIA\
+    \ GPU, recommend using a cloud GPU service (Google Colab free tier with T4, Lambda\
+    \ Labs, etc.) or the online demo at https://heartmula.github.io/ instead.\n\n\
+    ## Usage\n\n### Basic Generation\n```bash\ncd heartlib\n. .venv/bin/activate\n\
+    python ./examples/run_music_generation.py \\\n  --model_path=./ckpt \\\n  --version=\"\
+    3B\" \\\n  --lyrics=\"./assets/lyrics.txt\" \\\n  --tags=\"./assets/tags.txt\"\
+    \ \\\n  --save_path=\"./assets/output.mp3\" \\\n  --lazy_load true\n```\n\n###\
+    \ Input Formatting\n\n**Tags** (comma-separated, no spaces):\n```\npiano,happy,wedding,synthesizer,romantic\n\
+    ```\nor\n```\nrock,energetic,guitar,drums,male-vocal\n```\n\n**Lyrics** (use bracketed\
+    \ structural tags):\n```\n[Intro]\n\n[Verse]\nYour lyrics here...\n\n[Chorus]\n\
+    Chorus lyrics...\n\n[Bridge]\nBridge lyrics...\n\n[Outro]\n```\n\n### Key Parameters\n\
+    | Parameter | Default | Description |\n|-----------|---------|-------------|\n\
+    | `--max_audio_length_ms` | 240000 | Max length in ms (240s = 4 min) |\n| `--topk`\
+    \ | 50 | Top-k sampling |\n| `--temperature` | 1.0 | Sampling temperature |\n\
+    | `--cfg_scale` | 1.5 | Classifier-free guidance scale |\n| `--lazy_load` | false\
+    \ | Load/unload models on demand (saves VRAM) |\n| `--mula_dtype` | bfloat16 |\
+    \ Dtype for HeartMuLa (bf16 recommended) |\n| `--codec_dtype` | float32 | Dtype\
+    \ for HeartCodec (fp32 recommended for quality) |\n\n### Performance\n- RTF (Real-Time\
+    \ Factor) \u2248 1.0 \u2014 a 4-minute song takes ~4 minutes to generate\n- Output:\
+    \ MP3, 48kHz stereo, 128kbps\n\n## Pitfalls\n1. **Do NOT use bf16 for HeartCodec**\
+    \ \u2014 degrades audio quality. Use fp32 (default).\n2. **Tags may be ignored**\
+    \ \u2014 known issue (#90). Lyrics tend to dominate; experiment with tag ordering.\n\
+    3. **Triton not available on macOS** \u2014 Linux/CUDA only for GPU acceleration.\n\
+    4. **RTX 5080 incompatibility** reported in upstream issues.\n5. The dependency\
+    \ pin conflicts require the manual upgrades and patches described above.\n\n##\
+    \ Links\n- Repo: https://github.com/HeartMuLa/heartlib\n- Models: https://huggingface.co/HeartMuLa\n\
+    - Paper: https://arxiv.org/abs/2601.10547\n- License: Apache-2.0\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/media/heartmula/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.media.heartmula'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: media

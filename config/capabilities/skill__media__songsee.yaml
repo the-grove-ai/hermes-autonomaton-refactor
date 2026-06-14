@@ -1,0 +1,101 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.media.songsee
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: songsee\ndescription:\
+    \ \"Audio spectrograms/features (mel, chroma, MFCC) via CLI.\"\nversion: 1.0.0\n\
+    author: community\nlicense: MIT\nplatforms: [linux, macos, windows]\nmetadata:\n\
+    \  hermes:\n    tags: [Audio, Visualization, Spectrogram, Music, Analysis]\n \
+    \   homepage: https://github.com/steipete/songsee\nprerequisites:\n  commands:\
+    \ [songsee]\n---\n\n# songsee\n\nGenerate spectrograms and multi-panel audio feature\
+    \ visualizations from audio files.\n\n## Prerequisites\n\nRequires [Go](https://go.dev/doc/install):\n\
+    ```bash\ngo install github.com/steipete/songsee/cmd/songsee@latest\n```\n\nOptional:\
+    \ `ffmpeg` for formats beyond WAV/MP3.\n\n## Quick Start\n\n```bash\n# Basic spectrogram\n\
+    songsee track.mp3\n\n# Save to specific file\nsongsee track.mp3 -o spectrogram.png\n\
+    \n# Multi-panel visualization grid\nsongsee track.mp3 --viz spectrogram,mel,chroma,hpss,selfsim,loudness,tempogram,mfcc,flux\n\
+    \n# Time slice (start at 12.5s, 8s duration)\nsongsee track.mp3 --start 12.5 --duration\
+    \ 8 -o slice.jpg\n\n# From stdin\ncat track.mp3 | songsee - --format png -o out.png\n\
+    ```\n\n## Visualization Types\n\nUse `--viz` with comma-separated values:\n\n\
+    | Type | Description |\n|------|-------------|\n| `spectrogram` | Standard frequency\
+    \ spectrogram |\n| `mel` | Mel-scaled spectrogram |\n| `chroma` | Pitch class\
+    \ distribution |\n| `hpss` | Harmonic/percussive separation |\n| `selfsim` | Self-similarity\
+    \ matrix |\n| `loudness` | Loudness over time |\n| `tempogram` | Tempo estimation\
+    \ |\n| `mfcc` | Mel-frequency cepstral coefficients |\n| `flux` | Spectral flux\
+    \ (onset detection) |\n\nMultiple `--viz` types render as a grid in a single image.\n\
+    \n## Common Flags\n\n| Flag | Description |\n|------|-------------|\n| `--viz`\
+    \ | Visualization types (comma-separated) |\n| `--style` | Color palette: `classic`,\
+    \ `magma`, `inferno`, `viridis`, `gray` |\n| `--width` / `--height` | Output image\
+    \ dimensions |\n| `--window` / `--hop` | FFT window and hop size |\n| `--min-freq`\
+    \ / `--max-freq` | Frequency range filter |\n| `--start` / `--duration` | Time\
+    \ slice of the audio |\n| `--format` | Output format: `jpg` or `png` |\n| `-o`\
+    \ | Output file path |\n\n## Notes\n\n- WAV and MP3 are decoded natively; other\
+    \ formats require `ffmpeg`\n- Output images can be inspected with `vision_analyze`\
+    \ for automated audio analysis\n- Useful for comparing audio outputs, debugging\
+    \ synthesis, or documenting audio processing pipelines\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/media/songsee/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.media.songsee'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: media

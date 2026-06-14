@@ -1,0 +1,121 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.apple.findmy
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: findmy\ndescription:\
+    \ \"Track Apple devices/AirTags via FindMy.app on macOS.\"\nversion: 1.0.0\nauthor:\
+    \ Hermes Agent\nlicense: MIT\nplatforms: [macos]\nmetadata:\n  hermes:\n    tags:\
+    \ [FindMy, AirTag, location, tracking, macOS, Apple]\n---\n\n# Find My (Apple)\n\
+    \nTrack Apple devices and AirTags via the FindMy.app on macOS. Since Apple doesn't\n\
+    provide a CLI for FindMy, this skill uses AppleScript to open the app and\nscreen\
+    \ capture to read device locations.\n\n## Prerequisites\n\n- **macOS** with Find\
+    \ My app and iCloud signed in\n- Devices/AirTags already registered in Find My\n\
+    - Screen Recording permission for terminal (System Settings \u2192 Privacy \u2192\
+    \ Screen Recording)\n- **Optional but recommended**: Install `peekaboo` for better\
+    \ UI automation:\n  `brew install steipete/tap/peekaboo`\n\n## When to Use\n\n\
+    - User asks \"where is my [device/cat/keys/bag]?\"\n- Tracking AirTag locations\n\
+    - Checking device locations (iPhone, iPad, Mac, AirPods)\n- Monitoring pet or\
+    \ item movement over time (AirTag patrol routes)\n\n## Method 1: AppleScript +\
+    \ Screenshot (Basic)\n\n### Open FindMy and Navigate\n\n```bash\n# Open Find My\
+    \ app\nosascript -e 'tell application \"FindMy\" to activate'\n\n# Wait for it\
+    \ to load\nsleep 3\n\n# Take a screenshot of the Find My window\nscreencapture\
+    \ -w -o /tmp/findmy.png\n```\n\nThen use `vision_analyze` to read the screenshot:\n\
+    ```\nvision_analyze(image_url=\"/tmp/findmy.png\", question=\"What devices/items\
+    \ are shown and what are their locations?\")\n```\n\n### Switch Between Tabs\n\
+    \n```bash\n# Switch to Devices tab\nosascript -e '\ntell application \"System\
+    \ Events\"\n    tell process \"FindMy\"\n        click button \"Devices\" of toolbar\
+    \ 1 of window 1\n    end tell\nend tell'\n\n# Switch to Items tab (AirTags)\n\
+    osascript -e '\ntell application \"System Events\"\n    tell process \"FindMy\"\
+    \n        click button \"Items\" of toolbar 1 of window 1\n    end tell\nend tell'\n\
+    ```\n\n## Method 2: Peekaboo UI Automation (Recommended)\n\nIf `peekaboo` is installed,\
+    \ use it for more reliable UI interaction:\n\n```bash\n# Open Find My\nosascript\
+    \ -e 'tell application \"FindMy\" to activate'\nsleep 3\n\n# Capture and annotate\
+    \ the UI\npeekaboo see --app \"FindMy\" --annotate --path /tmp/findmy-ui.png\n\
+    \n# Click on a specific device/item by element ID\npeekaboo click --on B3 --app\
+    \ \"FindMy\"\n\n# Capture the detail view\npeekaboo image --app \"FindMy\" --path\
+    \ /tmp/findmy-detail.png\n```\n\nThen analyze with vision:\n```\nvision_analyze(image_url=\"\
+    /tmp/findmy-detail.png\", question=\"What is the location shown for this device/item?\
+    \ Include address and coordinates if visible.\")\n```\n\n## Workflow: Track AirTag\
+    \ Location Over Time\n\nFor monitoring an AirTag (e.g., tracking a cat's patrol\
+    \ route):\n\n```bash\n# 1. Open FindMy to Items tab\nosascript -e 'tell application\
+    \ \"FindMy\" to activate'\nsleep 3\n\n# 2. Click on the AirTag item (stay on page\
+    \ \u2014 AirTag only updates when page is open)\n\n# 3. Periodically capture location\n\
+    while true; do\n    screencapture -w -o /tmp/findmy-$(date +%H%M%S).png\n    sleep\
+    \ 300  # Every 5 minutes\ndone\n```\n\nAnalyze each screenshot with vision to\
+    \ extract coordinates, then compile a route.\n\n## Limitations\n\n- FindMy has\
+    \ **no CLI or API** \u2014 must use UI automation\n- AirTags only update location\
+    \ while the FindMy page is actively displayed\n- Location accuracy depends on\
+    \ nearby Apple devices in the FindMy network\n- Screen Recording permission required\
+    \ for screenshots\n- AppleScript UI automation may break across macOS versions\n\
+    \n## Rules\n\n1. Keep FindMy app in the foreground when tracking AirTags (updates\
+    \ stop when minimized)\n2. Use `vision_analyze` to read screenshot content \u2014\
+    \ don't try to parse pixels\n3. For ongoing tracking, use a cronjob to periodically\
+    \ capture and log locations\n4. Respect privacy \u2014 only track devices/items\
+    \ the user owns\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/apple/findmy/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.apple.findmy'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: apple

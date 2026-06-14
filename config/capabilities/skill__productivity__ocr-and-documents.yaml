@@ -1,0 +1,142 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.productivity.ocr-and-documents
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: ocr-and-documents\n\
+    description: \"Extract text from PDFs/scans (pymupdf, marker-pdf).\"\nversion:\
+    \ 2.3.0\nauthor: Hermes Agent\nlicense: MIT\nplatforms: [linux, macos, windows]\n\
+    metadata:\n  hermes:\n    tags: [PDF, Documents, Research, Arxiv, Text-Extraction,\
+    \ OCR]\n    related_skills: [powerpoint]\n---\n\n# PDF & Document Extraction\n\
+    \nFor DOCX: use `python-docx` (parses actual document structure, far better than\
+    \ OCR).\nFor PPTX: see the `powerpoint` skill (uses `python-pptx` with full slide/notes\
+    \ support).\nThis skill covers **PDFs and scanned documents**.\n\n## Step 1: Remote\
+    \ URL Available?\n\nIf the document has a URL, **always try `web_extract` first**:\n\
+    \n```\nweb_extract(urls=[\"https://arxiv.org/pdf/2402.03300\"])\nweb_extract(urls=[\"\
+    https://example.com/report.pdf\"])\n```\n\nThis handles PDF-to-markdown conversion\
+    \ via Firecrawl with no local dependencies.\n\nOnly use local extraction when:\
+    \ the file is local, web_extract fails, or you need batch processing.\n\n## Step\
+    \ 2: Choose Local Extractor\n\n| Feature | pymupdf (~25MB) | marker-pdf (~3-5GB)\
+    \ |\n|---------|-----------------|---------------------|\n| **Text-based PDF**\
+    \ | \u2705 | \u2705 |\n| **Scanned PDF (OCR)** | \u274C | \u2705 (90+ languages)\
+    \ |\n| **Tables** | \u2705 (basic) | \u2705 (high accuracy) |\n| **Equations /\
+    \ LaTeX** | \u274C | \u2705 |\n| **Code blocks** | \u274C | \u2705 |\n| **Forms**\
+    \ | \u274C | \u2705 |\n| **Headers/footers removal** | \u274C | \u2705 |\n| **Reading\
+    \ order detection** | \u274C | \u2705 |\n| **Images extraction** | \u2705 (embedded)\
+    \ | \u2705 (with context) |\n| **Images \u2192 text (OCR)** | \u274C | \u2705\
+    \ |\n| **EPUB** | \u2705 | \u2705 |\n| **Markdown output** | \u2705 (via pymupdf4llm)\
+    \ | \u2705 (native, higher quality) |\n| **Install size** | ~25MB | ~3-5GB (PyTorch\
+    \ + models) |\n| **Speed** | Instant | ~1-14s/page (CPU), ~0.2s/page (GPU) |\n\
+    \n**Decision**: Use pymupdf unless you need OCR, equations, forms, or complex\
+    \ layout analysis.\n\nIf the user needs marker capabilities but the system lacks\
+    \ ~5GB free disk:\n> \"This document needs OCR/advanced extraction (marker-pdf),\
+    \ which requires ~5GB for PyTorch and models. Your system has [X]GB free. Options:\
+    \ free up space, provide a URL so I can use web_extract, or I can try pymupdf\
+    \ which works for text-based PDFs but not scanned documents or equations.\"\n\n\
+    ---\n\n## pymupdf (lightweight)\n\n```bash\npip install pymupdf pymupdf4llm\n\
+    ```\n\n**Via helper script**:\n```bash\npython scripts/extract_pymupdf.py document.pdf\
+    \              # Plain text\npython scripts/extract_pymupdf.py document.pdf --markdown\
+    \    # Markdown\npython scripts/extract_pymupdf.py document.pdf --tables     \
+    \ # Tables\npython scripts/extract_pymupdf.py document.pdf --images out/ # Extract\
+    \ images\npython scripts/extract_pymupdf.py document.pdf --metadata    # Title,\
+    \ author, pages\npython scripts/extract_pymupdf.py document.pdf --pages 0-4  \
+    \ # Specific pages\n```\n\n**Inline**:\n```bash\npython3 -c \"\nimport pymupdf\n\
+    doc = pymupdf.open('document.pdf')\nfor page in doc:\n    print(page.get_text())\n\
+    \"\n```\n\n---\n\n## marker-pdf (high-quality OCR)\n\n```bash\n# Check disk space\
+    \ first\npython scripts/extract_marker.py --check\n\npip install marker-pdf\n\
+    ```\n\n**Via helper script**:\n```bash\npython scripts/extract_marker.py document.pdf\
+    \                # Markdown\npython scripts/extract_marker.py document.pdf --json\
+    \         # JSON with metadata\npython scripts/extract_marker.py document.pdf\
+    \ --output_dir out/  # Save images\npython scripts/extract_marker.py scanned.pdf\
+    \                 # Scanned PDF (OCR)\npython scripts/extract_marker.py document.pdf\
+    \ --use_llm      # LLM-boosted accuracy\n```\n\n**CLI** (installed with marker-pdf):\n\
+    ```bash\nmarker_single document.pdf --output_dir ./output\nmarker /path/to/folder\
+    \ --workers 4    # Batch\n```\n\n---\n\n## Arxiv Papers\n\n```\n# Abstract only\
+    \ (fast)\nweb_extract(urls=[\"https://arxiv.org/abs/2402.03300\"])\n\n# Full paper\n\
+    web_extract(urls=[\"https://arxiv.org/pdf/2402.03300\"])\n\n# Search\nweb_search(query=\"\
+    arxiv GRPO reinforcement learning 2026\")\n```\n\n## Split, Merge & Search\n\n\
+    pymupdf handles these natively \u2014 use `execute_code` or inline Python:\n\n\
+    ```python\n# Split: extract pages 1-5 to a new PDF\nimport pymupdf\ndoc = pymupdf.open(\"\
+    report.pdf\")\nnew = pymupdf.open()\nfor i in range(5):\n    new.insert_pdf(doc,\
+    \ from_page=i, to_page=i)\nnew.save(\"pages_1-5.pdf\")\n```\n\n```python\n# Merge\
+    \ multiple PDFs\nimport pymupdf\nresult = pymupdf.open()\nfor path in [\"a.pdf\"\
+    , \"b.pdf\", \"c.pdf\"]:\n    result.insert_pdf(pymupdf.open(path))\nresult.save(\"\
+    merged.pdf\")\n```\n\n```python\n# Search for text across all pages\nimport pymupdf\n\
+    doc = pymupdf.open(\"report.pdf\")\nfor i, page in enumerate(doc):\n    results\
+    \ = page.search_for(\"revenue\")\n    if results:\n        print(f\"Page {i+1}:\
+    \ {len(results)} match(es)\")\n        print(page.get_text(\"text\"))\n```\n\n\
+    No extra dependencies needed \u2014 pymupdf covers split, merge, search, and text\
+    \ extraction in one package.\n\n---\n\n## Notes\n\n- `web_extract` is always first\
+    \ choice for URLs\n- pymupdf is the safe default \u2014 instant, no models, works\
+    \ everywhere\n- marker-pdf is for OCR, scanned docs, equations, complex layouts\
+    \ \u2014 install only when needed\n- Both helper scripts accept `--help` for full\
+    \ usage\n- marker-pdf downloads ~2.5GB of models to `~/.cache/huggingface/` on\
+    \ first use\n- For Word docs: `pip install python-docx` (better than OCR \u2014\
+    \ parses actual structure)\n- For PowerPoint: see the `powerpoint` skill (uses\
+    \ python-pptx)\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/productivity/ocr-and-documents/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.productivity.ocr-and-documents'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: productivity

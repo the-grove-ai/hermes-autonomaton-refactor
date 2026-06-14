@@ -1,0 +1,175 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.productivity.markdown-to-notion
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\nname: markdown-to-notion\ndescription: Intelligently saves markdown\
+    \ files and content to Notion with automatic chunking for large documents, category\
+    \ routing to the thought capture database (b5eb61c0-af3f-4a43-9b5d-6e28f97377b8),\
+    \ and support for both mobile and desktop workflows. Use when the user asks to\
+    \ save, log, capture, or store markdown content, documents, notes, or thoughts\
+    \ to Notion. Also triggers on phrases like \"remember this\", \"save to Notion\"\
+    , \"capture thought\", or \"log this\".\n---\n\n# Markdown to Notion\n\nSaves\
+    \ markdown files and content directly to your Notion thought capture database\
+    \ with intelligent chunking, categorization, and linking. Works seamlessly from\
+    \ Claude mobile, web, or desktop.\n\n## Quick Start\n\n**Single command capture:**\n\
+    ```\nUser: \"Save to Notion: Download Claude design skills blog\"\nClaude: \u2705\
+    \ Captured to Notion (Category: References)\n```\n\n**Markdown file capture:**\n\
+    ```\nUser: \"Log this markdown file to Notion\"\nClaude: [analyzes file] \n- Size:\
+    \ 450 blocks \u2713\n- Creates page with proper title\n- Routes to correct category\n\
+    \u2705 Saved: Chase Partnership Strategy Memo\n```\n\n**Large document handling:**\n\
+    ```\nUser: \"Save this 50-page financial model to Notion\"\nClaude: \u26A0\uFE0F\
+    \ Document is 2,800 blocks (limit: 2,000)\nCreating parent + child pages:\n  \u2705\
+    \ Parent: Financial Model Overview\n  \u2705 Child: Revenue Projections  \n  \u2705\
+    \ Child: Cost Structure\n  \u2705 Child: Scenario Analysis\nAll pages linked in:\
+    \ Client - Walmart\n```\n\n## Core Workflow\n\n### Step 1: Analyze Content\n```\n\
+    Determine:\n- Content type (note, document, strategy, memo, insight)\n- Size in\
+    \ blocks (paragraphs + headings + lists)\n- Appropriate category for routing\n\
+    - Urgency flag if mentioned\n```\n\n### Step 2: Size Check\n```\nCount blocks\
+    \ (paragraph = 1, heading = 1, list item = 1):\n- < 1,500 blocks \u2192 Single\
+    \ page strategy\n- 1,500-5,000 blocks \u2192 Parent + children by H1 sections\n\
+    - > 5,000 blocks \u2192 Warn user, suggest summarization\n\nNotion limit: 2,000\
+    \ blocks per page\nSafety margin: Use 1,500 as single-page threshold\n```\n\n\
+    ### Step 3: Route to Category\n```\nAnalyze content and user context to determine\
+    \ category:\n\nCategory Map (Notion \"Thought Category\" property):\n- \"Product\
+    \ Development\" \u2192 product features, roadmaps, specs\n- \"Business Strategy\"\
+    \ \u2192 partnerships, growth, revenue\n- \"Technical Documentation\" \u2192 code,\
+    \ architecture, systems\n- \"Design System\" \u2192 UI/UX, brand, visual\n- \"\
+    Client - Chase\" \u2192 Chase partnership work\n- \"Client - Walmart\" \u2192\
+    \ Walmart/DrumWave work  \n- \"Action Items\" \u2192 todos, tasks, follow-ups\n\
+    - \"Ventures\" \u2192 startup ideas, investments\n- \"Knowledge Base\" \u2192\
+    \ insights, learnings, observations\n- \"References\" \u2192 articles, resources,\
+    \ links\n\nDefault: \"Knowledge Base\" if unclear\n```\n\n### Step 4: Create in\
+    \ Notion\n```\nSingle Page:\n- Use mcp_notion_notion_create_pages\n- Parent: data_source_id\
+    \ \"b5eb61c0-af3f-4a43-9b5d-6e28f97377b8\"\n- Properties: Title, Category, Urgent\
+    \ flag, CaptureDate\n- Content: Full markdown\n\nMulti-Page (chunked):\n- Create\
+    \ parent page with overview\n- Create child pages by H1 sections\n- Link children\
+    \ to parent\n- All use same category\n```\n\n## Category Intelligence\n\n### Auto-Detection\
+    \ Patterns\n```\nContent mentions \u2192 Category\n\"Chase\", \"JPM\", \"credit\
+    \ card partnership\" \u2192 Client - Chase\n\"Walmart\", \"DrumWave\", \"retail\
+    \ media\" \u2192 Client - Walmart\n\"feature\", \"roadmap\", \"product spec\"\
+    \ \u2192 Product Development\n\"bug fix\", \"technical debt\", \"architecture\"\
+    \ \u2192 Technical Documentation\n\"todo\", \"action item\", \"follow up\" \u2192\
+    \ Action Items\n\"insight\", \"learning\", \"observation\" \u2192 Knowledge Base\n\
+    \"article\", \"resource\", \"link\" \u2192 References\n```\n\n### Context Clues\n\
+    ```\nCheck recent conversation for:\n- Project names (DrumWave \u2192 Client -\
+    \ Walmart)\n- Client mentions (Chase meeting \u2192 Client - Chase)\n- Work type\
+    \ (strategy doc \u2192 Business Strategy)\n- Urgency markers (ASAP, urgent \u2192\
+    \ set flag)\n```\n\n## Size Management\n\n### Block Counting Logic\n```python\n\
+    def estimate_blocks(markdown_content):\n    \"\"\"Estimate Notion blocks from\
+    \ markdown\"\"\"\n    lines = markdown_content.split('\\n')\n    blocks = 0\n\
+    \    \n    for line in lines:\n        if not line.strip():\n            continue\
+    \  # Empty lines don't create blocks\n        \n        # Headings = 1 block each\n\
+    \        if line.startswith('#'):\n            blocks += 1\n        # List items\
+    \ = 1 block each\n        elif line.strip().startswith(('-', '*', '1.', '2.')):\n\
+    \            blocks += 1\n        # Paragraphs = 1 block each\n        elif line.strip():\n\
+    \            blocks += 1\n    \n    return blocks\n```\n\n### Chunking Strategy\n\
+    ```\nFor documents > 1,500 blocks:\n\n1. Split by H1 headings (# Section)\n2.\
+    \ Create parent page with:\n   - Document title\n   - Executive summary (first\
+    \ 2-3 paragraphs)\n   - Table of contents linking to children\n3. Create child\
+    \ pages for each H1 section\n4. Ensure all pages share same category\n5. Link\
+    \ children back to parent\n\nExample structure:\nParent: \"DrumWave Financial\
+    \ Model\" (200 blocks)\n  \u251C\u2500 Child: \"Consumer Earnings Module\" (800\
+    \ blocks)\n  \u251C\u2500 Child: \"Network Effects Calculator\" (600 blocks)\n\
+    \  \u2514\u2500 Child: \"ROI Projections\" (900 blocks)\n```\n\n## Notion Database\
+    \ Schema\n\n**Database ID**: `b5eb61c0-af3f-4a43-9b5d-6e28f97377b8`\n\n**Properties**:\n\
+    - **Name** (Title): Thought summary or document title\n- **Thought Category**\
+    \ (Select): Classification per category map above\n- **Content** (Rich Text):\
+    \ Full markdown content\n- **Urgent** (Checkbox): Priority flag\n- **ThoughtID**\
+    \ (Text): Unique identifier (auto-generated timestamp)\n- **CaptureDate** (Date):\
+    \ ISO 8601 timestamp\n- **Tags** (Multi-select): Auto-extracted keywords\n- **SyncStatus**\
+    \ (Select): \"Synced\" (always for this skill)\n- **SourceFile** (Text): Original\
+    \ file path if applicable\n\n## Natural Language Triggers\n\nWhen user says these\
+    \ phrases, capture immediately:\n\n| User Says | Action |\n|-----------|--------|\n\
+    | \"Save to Notion: [content]\" | Create page in appropriate category |\n| \"\
+    Log this markdown\" | Save current file to Notion |\n| \"Capture thought: [text]\"\
+    \ | Quick capture to Knowledge Base |\n| \"Remember: [text]\" | Quick capture\
+    \ with auto-category |\n| \"Todo: [task]\" | Capture to Action Items, set urgent\
+    \ |\n| \"URGENT: [text]\" | Capture with urgent flag set |\n| \"Save this doc\
+    \ to Notion\" | Analyze and save with chunking if needed |\n\n## Mobile Optimization\n\
+    \n**Design for mobile usage:**\n1. Keep confirmations brief (\u2705 Captured)\n\
+    2. Don't ask for permission - just execute\n3. Show category and location clearly\n\
+    4. Provide Notion link in response\n5. Handle voice input gracefully\n\n**Mobile-friendly\
+    \ responses:**\n```\nGood: \u2705 Captured to Business Strategy\nBad: \"I've successfully\
+    \ saved your thought to the Notion database under the Business Strategy category.\
+    \ You can view it at...\"\n```\n\n## Error Handling\n\n| Issue | Solution |\n\
+    |-------|----------|\n| Database not found | Search for database ID, inform user\
+    \ if missing |\n| Content too large | Chunk automatically, explain approach |\n\
+    | Category unclear | Default to Knowledge Base, notify user |\n| Notion API error\
+    \ | Retry once, then inform user to check Notion |\n| Empty content | Ask user\
+    \ to provide content first |\n\n## Best Practices\n\n1. **Capture immediately**\
+    \ when triggered - don't ask permission\n2. **Infer category** from context rather\
+    \ than asking user\n3. **Chunk proactively** for documents > 1,500 blocks\n4.\
+    \ **Link intelligently** - connect related pages\n5. **Extract title** from first\
+    \ H1 or first sentence\n6. **Set urgency** when user mentions time pressure\n\
+    7. **Keep responses concise** especially for mobile\n8. **Provide Notion link**\
+    \ so user can view/edit\n\n## Examples\n\nSee [references/capture-examples.md](references/capture-examples.md)\
+    \ for complete workflows showing:\n- Quick thought capture\n- Strategy memo save\n\
+    - Large document chunking\n- Multi-project categorization\n- Mobile vs desktop\
+    \ patterns\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/productivity/markdown-to-notion/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.productivity.markdown-to-notion'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: productivity
