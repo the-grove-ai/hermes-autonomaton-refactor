@@ -143,15 +143,9 @@ def invoke_skill(
             ensure_ascii=False,
         )
 
-    # Record use so the Curator's stale timer keys off real invocations,
-    # mirroring skill_view's bump. Best-effort: a usage-store hiccup must not
-    # fail the invocation.
-    try:
-        from tools.skill_usage import bump_use, bump_view
-        bump_view(skill_name)
-        bump_use(skill_name)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[invoke_skill] usage bump failed (non-fatal): %r", exc)
+    # GRV-009 E6a C3 — the read-side .usage.json view/use bump is RETIRED here
+    # (records are sole-source; the curator's stale timer moves onto the record
+    # lifecycle in E6b). Invocation/execution is unaffected (A7).
 
     return json.dumps(
         {

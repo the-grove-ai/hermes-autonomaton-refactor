@@ -130,9 +130,12 @@ class TestBuildJobPromptScansSkillContent:
 
     def test_builtin_style_github_api_example_is_allowed(self, cron_env):
         hermes_home, scheduler = cron_env
+        # GRV-009 E6a C3 — use a NON-migrated skill name so skill_view file-reads
+        # the planted content (a migrated name like "github-auth" would resolve to
+        # its canonical record body, shadowing this test's planted example).
         _plant_skill(
             hermes_home,
-            "github-auth",
+            "gh-auth-example",
             'Use this fallback:\n\ncurl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user',
         )
 
@@ -140,7 +143,7 @@ class TestBuildJobPromptScansSkillContent:
             "id": "job-gh-auth",
             "name": "github auth check",
             "prompt": "verify GitHub auth",
-            "skills": ["github-auth"],
+            "skills": ["gh-auth-example"],
         }
 
         prompt = scheduler._build_job_prompt(job)

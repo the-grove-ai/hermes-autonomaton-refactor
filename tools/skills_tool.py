@@ -569,6 +569,112 @@ def _iter_quarantined_skill_files(scan_dir: Path):
             yield skill_md
 
 
+def _skill_description(frontmatter: Dict[str, Any], body: str) -> str:
+    """The skills-list description: frontmatter ``description`` or the first
+    non-heading body line, truncated to ``MAX_DESCRIPTION_LENGTH``."""
+    description = frontmatter.get("description", "")
+    if not description:
+        for line in body.strip().split("\n"):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                description = line
+                break
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+    return description
+
+
+def _load_skill_records_by_name() -> Dict[str, str]:
+    """GRV-009 E6a C3 — ``{frontmatter_name: inline_body}`` for every migrated
+    kind=skill record. The name is the skill_view / skills_list lookup key (the
+    index dedups on it). Records are sole-source for the bundled set."""
+    from grove.capability import CapabilityKind
+    from grove.capability_registry import load_capabilities
+
+    out: Dict[str, str] = {}
+    for rec in load_capabilities().values():
+        if rec.kind is not CapabilityKind.SKILL:
+            continue
+        frontmatter, _ = _parse_frontmatter(rec.context.payload)
+        name = frontmatter.get("name")
+        if name:
+            out[str(name)] = rec.context.payload
+    return out
+
+
+def _migrated_skill_payload(file_content: str) -> "str | None":
+    """The kind=skill record body for the skill whose SKILL.md is *file_content*,
+    or ``None`` if the skill is not migrated (e.g. an external-dir skill).
+
+    Keyed on the frontmatter name. When a record exists it WINS over the on-disk
+    bytes (sole-source): a drifted local copy still resolves to the canonical
+    record body. The explicit None return drives skill_view's typed branch — a
+    miss is an external skill (file-read), never a silent empty body."""
+    frontmatter, _ = _parse_frontmatter(file_content)
+    name = frontmatter.get("name")
+    if not name:
+        return None
+    return _load_skill_records_by_name().get(str(name))
+
+
+def _bundled_skill_entries_from_records() -> List[Dict[str, Any]]:
+    """GRV-009 E6a C3 — the bundled skills-list entries, sole-sourced from
+    kind=skill records (the bundled filesystem scan is retired). Name/description
+    are parsed from each record's inline payload exactly as the legacy scan did;
+    category comes from the record's ``skill.category``."""
+    from grove.capability import CapabilityKind
+    from grove.capability_registry import load_capabilities
+
+    out: List[Dict[str, Any]] = []
+    for rec in load_capabilities().values():
+        if rec.kind is not CapabilityKind.SKILL or rec.skill is None:
+            continue
+        frontmatter, body = _parse_frontmatter(rec.context.payload)
+        if not skill_matches_platform(frontmatter):
+            continue
+        name = str(frontmatter.get("name") or rec.id.rsplit(".", 1)[-1])[:MAX_NAME_LENGTH]
+        out.append({
+            "name": name,
+            "description": _skill_description(frontmatter, body),
+            "category": rec.skill.category,
+        })
+    return out
+
+
+def _fs_skill_entry(skill_md: Path, *, quarantined: bool) -> "Dict[str, Any] | None":
+    """Parse an on-disk SKILL.md into a skills-list entry — the RETAINED read
+    paths (external dirs + ``.andon`` quarantine). Returns None on an
+    incompatible platform or an unreadable/malformed file (logged, not hidden)."""
+    try:
+        content = skill_md.read_text(encoding="utf-8")[:4000]
+    except (UnicodeDecodeError, PermissionError) as e:
+        logger.debug("Failed to read skill file %s: %s", skill_md, e)
+        return None
+    try:
+        frontmatter, body = _parse_frontmatter(content)
+        if not skill_matches_platform(frontmatter):
+            return None
+        name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
+        description = _skill_description(frontmatter, body)
+        entry: Dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "category": _get_category_from_path(skill_md),
+        }
+        if quarantined:
+            # Loadable via skill_view, but NOT operator-approved — surface the
+            # status unmistakably (flag, don't hide; GATE-A decision 1).
+            entry["quarantined"] = True
+            entry["status"] = "[QUARANTINED]"
+            entry["description"] = f"[QUARANTINED] {description}".rstrip()
+        return entry
+    except Exception as e:
+        logger.debug(
+            "Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True
+        )
+        return None
+
+
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.grove/skills/ and external dirs.
 
@@ -579,85 +685,54 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     Returns:
         List of skill metadata dicts (name, description, category).
+
+    GRV-009 E6a C3 — the BUNDLED set is sole-sourced from kind=skill records
+    (the bundled filesystem scan is retired). External-dir skills remain a
+    retained FS scan (operator config; never bundled); quarantined ``.andon``
+    proposals remain a retained FS scan (the E6b surface). Active records win the
+    ``seen_names`` dedup over same-name external/quarantined drafts; quarantined
+    survivors are tagged ``[QUARANTINED]``. Agent-created active local skills are
+    not surfaced until E6b migrates the write path.
     """
     from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
-    skills = []
+    skills: List[Dict[str, Any]] = []
     seen_names: set = set()
 
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
-    dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
+    # 1. Bundled active skills — SOLE-SOURCED from kind=skill records.
+    for entry in _bundled_skill_entries_from_records():
+        name = entry["name"]
+        if name in disabled or name in seen_names:
+            continue
+        seen_names.add(name)
+        skills.append(entry)
 
-    for scan_dir in dirs_to_scan:
-        # iter_skill_index_files hard-excludes .andon, keeping quarantined
-        # skills out of the ACTIVE set. Per GATE-A decision 1 (flag, don't
-        # hide), append them explicitly AFTER active skills so active wins
-        # the ``seen_names`` dedup; quarantined survivors are tagged
-        # [QUARANTINED] below.
-        active_files = list(iter_skill_index_files(scan_dir, "SKILL.md"))
-        quarantined_files = list(_iter_quarantined_skill_files(scan_dir))
-        for skill_md in (*active_files, *quarantined_files):
+    # 2. External-dir active skills — retained FS scan (never bundled).
+    for scan_dir in get_external_skills_dirs():
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
-
-            skill_dir = skill_md.parent
-            quarantined = ANDON_DIRNAME in skill_md.parts
-
-            try:
-                content = skill_md.read_text(encoding="utf-8")[:4000]
-                frontmatter, body = _parse_frontmatter(content)
-
-                if not skill_matches_platform(frontmatter):
-                    continue
-
-                name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
-                if name in seen_names:
-                    continue
-                if name in disabled:
-                    continue
-
-                description = frontmatter.get("description", "")
-                if not description:
-                    for line in body.strip().split("\n"):
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            description = line
-                            break
-
-                if len(description) > MAX_DESCRIPTION_LENGTH:
-                    description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
-
-                category = _get_category_from_path(skill_md)
-
-                seen_names.add(name)
-                entry = {
-                    "name": name,
-                    "description": description,
-                    "category": category,
-                }
-                if quarantined:
-                    # Loadable via skill_view, but NOT operator-approved.
-                    # Surface the status unmistakably so the agent never
-                    # confuses a quarantined draft with a promoted skill.
-                    entry["quarantined"] = True
-                    entry["status"] = "[QUARANTINED]"
-                    entry["description"] = f"[QUARANTINED] {description}".rstrip()
-                skills.append(entry)
-
-            except (UnicodeDecodeError, PermissionError) as e:
-                logger.debug("Failed to read skill file %s: %s", skill_md, e)
+            entry = _fs_skill_entry(skill_md, quarantined=False)
+            if entry is None or entry["name"] in disabled or entry["name"] in seen_names:
                 continue
-            except Exception as e:
-                logger.debug(
-                    "Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True
-                )
+            seen_names.add(entry["name"])
+            skills.append(entry)
+
+    # 3. Quarantined .andon proposals — retained FS scan (local + external).
+    #    Appended AFTER active skills so an active record/external skill wins the
+    #    dedup; flag-don't-hide (GATE-A decision 1).
+    for scan_dir in (SKILLS_DIR, *get_external_skills_dirs()):
+        for skill_md in _iter_quarantined_skill_files(scan_dir):
+            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
+            entry = _fs_skill_entry(skill_md, quarantined=True)
+            if entry is None or entry["name"] in disabled or entry["name"] in seen_names:
+                continue
+            seen_names.add(entry["name"])
+            skills.append(entry)
 
     return skills
 
@@ -1108,7 +1183,7 @@ def skill_view(
 
         # Read the file once — reused for platform check and main content below
         try:
-            content = skill_md.read_text(encoding="utf-8")
+            file_content = skill_md.read_text(encoding="utf-8")
         except Exception as e:
             return json.dumps(
                 {
@@ -1117,6 +1192,16 @@ def skill_view(
                 },
                 ensure_ascii=False,
             )
+
+        # GRV-009 E6a C3 — explicit body-source branch on MIGRATION STATUS (not a
+        # silent default). A migrated skill's body is SOLE-SOURCED from its
+        # kind=skill record (the record wins over on-disk bytes); an external-dir
+        # skill reads from disk. Both flow through the same A8 wrapper downstream.
+        _record_body = _migrated_skill_payload(file_content)
+        if _record_body is not None:
+            content = _record_body          # migrated: record is sole-source
+        else:
+            content = file_content          # external skill: retained file-read
 
         # Security: warn if skill is loaded from outside trusted directories
         # (local skills dir + configured external_dirs are all trusted)
@@ -1606,29 +1691,17 @@ SKILL_VIEW_SCHEMA = {
     },
 }
 
-def _skill_view_with_bump(args, **kw):
-    """Invoke skill_view, then bump view_count on success. Best-effort: a
-    telemetry failure never breaks the tool call."""
-    name = args.get("name", "")
-    result = skill_view(
-        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+def _skill_view_handler(args, **kw):
+    """Adapt the dispatcher ``(args, **kw)`` call shape to ``skill_view``.
+
+    GRV-009 E6a C3 — the read-side ``.usage.json`` view/use bumps this wrapper
+    used to fire are RETIRED (records are sole-source; the curator's stale timer
+    moves onto the record lifecycle in E6b). The curator state machinery
+    (``set_state``/``archive_skill``) stays dormant. This remains only as the
+    arg-shape adapter."""
+    return skill_view(
+        args.get("name", ""), file_path=args.get("file_path"), task_id=kw.get("task_id")
     )
-    try:
-        parsed = json.loads(result)
-        if isinstance(parsed, dict) and parsed.get("success"):
-            # Use the resolved skill name from the payload when present —
-            # qualified forms ("plugin:skill") return with the canonical name.
-            resolved = parsed.get("name") or name
-            if resolved:
-                from tools.skill_usage import bump_use, bump_view
-                bump_view(str(resolved))
-                # A skill_view tool call is the agent actively loading the skill
-                # to act on it — that counts as use, not just a browse/view.
-                # Curator's stale timer keys off last_used_at (see agent/curator.py).
-                bump_use(str(resolved))
-    except Exception:
-        pass
-    return result
 
 def register(reg):
     """Sprint 53 — Dispatcher-driven registration entrypoint."""
@@ -1646,7 +1719,7 @@ def register(reg):
         name="skill_view",
         toolset="skills",
         schema=SKILL_VIEW_SCHEMA,
-        handler=_skill_view_with_bump,
+        handler=_skill_view_handler,
         check_fn=check_skills_requirements,
         emoji="📚",
     )
