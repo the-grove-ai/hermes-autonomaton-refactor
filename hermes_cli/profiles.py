@@ -615,6 +615,16 @@ def create_profile(
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
+        # GRV-009 E6b C1 — registration hook: mint managed records for the skills
+        # carried into the cloned profile (dedup-guarded; no-op for already-known
+        # skills). Best-effort — a mint failure never breaks profile creation.
+        try:
+            from grove.capability_registry import register_skills_in_tree
+            register_skills_in_tree(profile_dir / "skills")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "profile clone-all capability mint failed", exc_info=True)
     else:
         # Bootstrap directory structure
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -635,6 +645,16 @@ def create_profile(
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
                 shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                # GRV-009 E6b C1 — registration hook: mint managed records for
+                # the cloned skills (dedup-guarded; no-op for already-known
+                # skills). Best-effort.
+                try:
+                    from grove.capability_registry import register_skills_in_tree
+                    register_skills_in_tree(profile_dir / "skills")
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).debug(
+                        "profile clone-skills capability mint failed", exc_info=True)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
