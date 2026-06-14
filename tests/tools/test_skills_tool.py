@@ -56,6 +56,53 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
     return external_category
 
 
+# GRV-009 E6a C3 — bundled skills are sole-sourced from kind=skill records.
+# These helpers let the _find_all_skills / skills_list tests provide synthetic
+# records (the SKILL.md inlined as payload) in isolation from the real bundle,
+# and reframe FS-scan-internal tests (git-skip, symlinks) onto the retained
+# external-dir scan.
+
+
+def _skill_record(name, *, frontmatter_extra="", body="Step 1: Do the thing.",
+                  category="general", description=None):
+    from grove.capability import (
+        Capability, CapabilityKind, CircuitBreaker, Context, Disclosure,
+        DockComposition, Failure, Lifecycle, LifecycleState, Provenance,
+        SkillPresentation, Telemetry, TierRule, TierValidation, Trigger,
+        TriggerDisclosure, Zone,
+    )
+    desc_line = "" if description == "" else (
+        f"description: {description if description is not None else f'Description for {name}.'}\n"
+    )
+    payload = f"---\nname: {name}\n{desc_line}{frontmatter_extra}---\n\n# {name}\n\n{body}\n"
+    return Capability(
+        id=f"skill.{category}.{name}", kind=CapabilityKind.SKILL,
+        trigger=Trigger(always=True, disclosure=TriggerDisclosure.PROACTIVE),
+        tier_rule=TierRule(eligible=[1, 2, 3], preferred=1,
+                           validation=TierValidation(confidence_threshold=0.95, shadow_window=20)),
+        zone=Zone.GREEN, telemetry=Telemetry(feed="intent_feed"),
+        context=Context(disclosure=Disclosure.PULL, payload=payload,
+                        dock_composition=DockComposition.NONE),
+        lifecycle=Lifecycle(state=LifecycleState.ACTIVE, provenance=Provenance.MIGRATED),
+        failure=Failure(circuit_breaker=CircuitBreaker(threshold=3, window_seconds=300)),
+        skill=SkillPresentation(category=category),
+    )
+
+
+def _patch_skill_records(monkeypatch, *records):
+    reg = {r.id: r for r in records}
+    monkeypatch.setattr(
+        "grove.capability_registry.load_capabilities", lambda *a, **k: reg
+    )
+
+
+def _patch_external_dir(monkeypatch, path):
+    """Route an FS-scan test onto the RETAINED external-dir scan path."""
+    monkeypatch.setattr(
+        "agent.skill_utils.get_external_skills_dirs", lambda: [path]
+    )
+
+
 # ---------------------------------------------------------------------------
 # _parse_frontmatter
 # ---------------------------------------------------------------------------
@@ -206,78 +253,82 @@ class TestGetCategoryFromPath:
 
 
 class TestFindAllSkills:
-    def test_finds_skills(self, tmp_path):
+    def test_finds_skills(self, monkeypatch, tmp_path):
+        # GRV-009 E6a C3 — bundled skills come from records (no external/andon).
+        _patch_skill_records(monkeypatch, _skill_record("skill-a"), _skill_record("skill-b"))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "skill-a")
-            _make_skill(tmp_path, "skill-b")
             skills = _find_all_skills()
         assert len(skills) == 2
         names = {s["name"] for s in skills}
         assert "skill-a" in names
         assert "skill-b" in names
 
-    def test_empty_directory(self, tmp_path):
+    def test_empty_directory(self, monkeypatch, tmp_path):
+        _patch_skill_records(monkeypatch)  # no records
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skills = _find_all_skills()
         assert skills == []
 
-    def test_nonexistent_directory(self, tmp_path):
+    def test_nonexistent_directory(self, monkeypatch, tmp_path):
+        _patch_skill_records(monkeypatch)  # no records
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "nope"):
             skills = _find_all_skills()
         assert skills == []
 
-    def test_categorized_skills(self, tmp_path):
+    def test_categorized_skills(self, monkeypatch, tmp_path):
+        _patch_skill_records(monkeypatch, _skill_record("axolotl", category="mlops"))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "axolotl", category="mlops")
             skills = _find_all_skills()
         assert len(skills) == 1
         assert skills[0]["category"] == "mlops"
 
-    def test_description_from_body_when_missing(self, tmp_path):
+    def test_description_from_body_when_missing(self, monkeypatch, tmp_path):
         """If no description in frontmatter, first non-header line is used."""
-        skill_dir = tmp_path / "no-desc"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: no-desc\n---\n\n# Heading\n\nFirst paragraph.\n"
-        )
+        _patch_skill_records(monkeypatch, _skill_record(
+            "no-desc", description="", body="# Heading\n\nFirst paragraph."))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skills = _find_all_skills()
         assert skills[0]["description"] == "First paragraph."
 
-    def test_long_description_truncated(self, tmp_path):
+    def test_long_description_truncated(self, monkeypatch, tmp_path):
         long_desc = "x" * (MAX_DESCRIPTION_LENGTH + 100)
-        skill_dir = tmp_path / "long-desc"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            f"---\nname: long\ndescription: {long_desc}\n---\n\nBody.\n"
-        )
+        _patch_skill_records(monkeypatch, _skill_record("long", description=long_desc))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skills = _find_all_skills()
         assert len(skills[0]["description"]) <= MAX_DESCRIPTION_LENGTH
 
-    def test_skips_git_directories(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "real-skill")
-            git_dir = tmp_path / ".git" / "fake-skill"
-            git_dir.mkdir(parents=True)
-            (git_dir / "SKILL.md").write_text(
-                "---\nname: fake\ndescription: x\n---\n\nBody.\n"
-            )
+    def test_skips_git_directories(self, monkeypatch, tmp_path):
+        # The .git exclusion now lives on the retained external-dir scan.
+        _patch_skill_records(monkeypatch)  # no bundled records
+        _make_skill(tmp_path, "real-skill")
+        git_dir = tmp_path / ".git" / "fake-skill"
+        git_dir.mkdir(parents=True)
+        (git_dir / "SKILL.md").write_text(
+            "---\nname: fake\ndescription: x\n---\n\nBody.\n"
+        )
+        _patch_external_dir(monkeypatch, tmp_path)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "_local"):
             skills = _find_all_skills()
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
-    def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
+    def test_finds_skills_in_symlinked_category_dir(self, monkeypatch, tmp_path):
+        # Symlinked-category handling now lives on the retained external-dir scan.
+        _patch_skill_records(monkeypatch)  # no bundled records
         external_root = tmp_path / "repo"
-        skills_root = tmp_path / "skills"
-        skills_root.mkdir()
-
-        external_category = _symlink_category(skills_root, external_root, "linked")
+        ext_dir = tmp_path / "ext"
+        ext_dir.mkdir()
+        external_category = _symlink_category(ext_dir, external_root, "linked")
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
-
-        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+        _patch_external_dir(monkeypatch, ext_dir)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "_local"):
             skills = _find_all_skills()
-
         assert [s["name"] for s in skills] == ["knowledge-brain"]
         assert skills[0]["category"] == "linked"
 
@@ -297,32 +348,40 @@ class TestSkillsList:
         assert result["skills"] == []
         assert skills_dir.exists()
 
-    def test_lists_skills(self, tmp_path):
+    def test_lists_skills(self, monkeypatch, tmp_path):
+        # GRV-009 E6a C3 — skills_list is record-driven for the bundled set.
+        _patch_skill_records(monkeypatch, _skill_record("alpha"), _skill_record("beta"))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "alpha")
-            _make_skill(tmp_path, "beta")
             raw = skills_list()
         result = json.loads(raw)
         assert result["count"] == 2
 
-    def test_category_filter(self, tmp_path):
+    def test_category_filter(self, monkeypatch, tmp_path):
+        _patch_skill_records(
+            monkeypatch,
+            _skill_record("skill-a", category="devops"),
+            _skill_record("skill-b", category="mlops"),
+        )
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "skill-a", category="devops")
-            _make_skill(tmp_path, "skill-b", category="mlops")
             raw = skills_list(category="devops")
         result = json.loads(raw)
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
 
-    def test_category_filter_finds_symlinked_category(self, tmp_path):
+    def test_category_filter_finds_symlinked_category(self, monkeypatch, tmp_path):
+        # Symlinked-category handling now lives on the retained external-dir scan.
+        _patch_skill_records(monkeypatch)  # no bundled records
         external_root = tmp_path / "repo"
-        skills_root = tmp_path / "skills"
-        skills_root.mkdir()
-
-        external_category = _symlink_category(skills_root, external_root, "linked")
+        ext_dir = tmp_path / "ext"
+        ext_dir.mkdir()
+        external_category = _symlink_category(ext_dir, external_root, "linked")
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
-
-        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+        _patch_external_dir(monkeypatch, ext_dir)
+        local = tmp_path / "_local"
+        local.mkdir()  # skills_list short-circuits if SKILLS_DIR is absent
+        with patch("tools.skills_tool.SKILLS_DIR", local):
             raw = skills_list(category="linked")
 
         result = json.loads(raw)
@@ -520,12 +579,17 @@ class TestSkillView:
         assert result["success"] is True
         assert result["name"] == "knowledge-brain"
 
-    def test_not_found_hint_uses_same_order_as_skills_list(self, tmp_path):
+    def test_not_found_hint_uses_same_order_as_skills_list(self, monkeypatch, tmp_path):
+        # GRV-009 E6a C3 — both the not-found hint and skills_list are now
+        # record-driven; their order must still agree.
+        _patch_skill_records(
+            monkeypatch,
+            _skill_record("zeta", category="z-cat"),
+            _skill_record("alpha", category="a-cat"),
+            _skill_record("beta", category="a-cat"),
+        )
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "zeta", category="z-cat")
-            _make_skill(tmp_path, "alpha", category="a-cat")
-            _make_skill(tmp_path, "beta", category="a-cat")
-
             list_result = json.loads(skills_list())
             view_result = json.loads(skill_view("missing-skill"))
 
@@ -563,10 +627,13 @@ class TestSkillViewSecureSetupOnLoad:
             raising=False,
         )
 
+        # GRV-009 E6a C3 — use a NON-migrated skill name so skill_view takes the
+        # file-read branch (a migrated name would resolve to the canonical record
+        # body, shadowing this test's custom frontmatter).
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
-                "gif-search",
+                "tenor-test-skill",
                 frontmatter_extra=(
                     "required_environment_variables:\n"
                     "  - name: TENOR_API_KEY\n"
@@ -575,17 +642,17 @@ class TestSkillViewSecureSetupOnLoad:
                     "    required_for: full functionality\n"
                 ),
             )
-            raw = skill_view("gif-search")
+            raw = skill_view("tenor-test-skill")
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert result["name"] == "gif-search"
+        assert result["name"] == "tenor-test-skill"
         assert calls == [
             {
                 "var_name": "TENOR_API_KEY",
                 "prompt": "Tenor API key",
                 "metadata": {
-                    "skill_name": "gif-search",
+                    "skill_name": "tenor-test-skill",
                     "help": "Get a key from https://developers.google.com/tenor",
                     "required_for": "full functionality",
                 },
@@ -726,50 +793,46 @@ class TestSkillMatchesPlatform:
 class TestFindAllSkillsPlatformFiltering:
     """Test that _find_all_skills respects the platforms field."""
 
-    def test_excludes_incompatible_platform(self, tmp_path):
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
-        ):
+    def test_excludes_incompatible_platform(self, monkeypatch, tmp_path):
+        _patch_skill_records(
+            monkeypatch,
+            _skill_record("universal-skill"),
+            _skill_record("mac-only", frontmatter_extra="platforms: [macos]\n"),
+        )
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
-            _make_skill(tmp_path, "universal-skill")
-            _make_skill(tmp_path, "mac-only", frontmatter_extra="platforms: [macos]\n")
             skills = _find_all_skills()
         names = {s["name"] for s in skills}
         assert "universal-skill" in names
         assert "mac-only" not in names
 
-    def test_includes_matching_platform(self, tmp_path):
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
-        ):
+    def test_includes_matching_platform(self, monkeypatch, tmp_path):
+        _patch_skill_records(monkeypatch, _skill_record(
+            "mac-only", frontmatter_extra="platforms: [macos]\n"))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
-            _make_skill(tmp_path, "mac-only", frontmatter_extra="platforms: [macos]\n")
             skills = _find_all_skills()
-        names = {s["name"] for s in skills}
-        assert "mac-only" in names
+        assert "mac-only" in {s["name"] for s in skills}
 
-    def test_no_platforms_always_included(self, tmp_path):
+    def test_no_platforms_always_included(self, monkeypatch, tmp_path):
         """Skills without platforms field should appear on any platform."""
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
-        ):
+        _patch_skill_records(monkeypatch, _skill_record("generic-skill"))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
+        with patch("agent.skill_utils.sys") as mock_sys, \
+                patch("tools.skills_tool.SKILLS_DIR", tmp_path):  # empty .andon
             mock_sys.platform = "win32"
-            _make_skill(tmp_path, "generic-skill")
             skills = _find_all_skills()
         assert len(skills) == 1
         assert skills[0]["name"] == "generic-skill"
 
-    def test_multi_platform_skill(self, tmp_path):
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
-        ):
-            _make_skill(
-                tmp_path, "cross-plat", frontmatter_extra="platforms: [macos, linux]\n"
-            )
+    def test_multi_platform_skill(self, monkeypatch, tmp_path):
+        _patch_skill_records(monkeypatch, _skill_record(
+            "cross-plat", frontmatter_extra="platforms: [macos, linux]\n"))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
+        with patch("agent.skill_utils.sys") as mock_sys, \
+                patch("tools.skills_tool.SKILLS_DIR", tmp_path):  # empty .andon
             mock_sys.platform = "darwin"
             skills_darwin = _find_all_skills()
             mock_sys.platform = "linux"
@@ -787,14 +850,13 @@ class TestFindAllSkillsPlatformFiltering:
 
 
 class TestFindAllSkillsSecureSetup:
-    def test_skills_with_missing_env_vars_remain_listed(self, tmp_path, monkeypatch):
+    def test_skills_with_missing_env_vars_remain_listed(self, monkeypatch, tmp_path):
         monkeypatch.delenv("NONEXISTENT_API_KEY_XYZ", raising=False)
+        _patch_skill_records(monkeypatch, _skill_record(
+            "needs-key",
+            frontmatter_extra="prerequisites:\n  env_vars: [NONEXISTENT_API_KEY_XYZ]\n"))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "needs-key",
-                frontmatter_extra="prerequisites:\n  env_vars: [NONEXISTENT_API_KEY_XYZ]\n",
-            )
             skills = _find_all_skills()
         assert len(skills) == 1
         assert skills[0]["name"] == "needs-key"
@@ -802,44 +864,38 @@ class TestFindAllSkillsSecureSetup:
         assert "missing_prerequisites" not in skills[0]
 
     def test_skills_with_met_prereqs_have_same_listing_shape(
-        self, tmp_path, monkeypatch
+        self, monkeypatch, tmp_path
     ):
         monkeypatch.setenv("MY_PRESENT_KEY", "val")
+        _patch_skill_records(monkeypatch, _skill_record(
+            "has-key", frontmatter_extra="prerequisites:\n  env_vars: [MY_PRESENT_KEY]\n"))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "has-key",
-                frontmatter_extra="prerequisites:\n  env_vars: [MY_PRESENT_KEY]\n",
-            )
             skills = _find_all_skills()
         assert len(skills) == 1
         assert skills[0]["name"] == "has-key"
         assert "readiness_status" not in skills[0]
 
-    def test_skills_without_prereqs_have_same_listing_shape(self, tmp_path):
+    def test_skills_without_prereqs_have_same_listing_shape(self, monkeypatch, tmp_path):
+        _patch_skill_records(monkeypatch, _skill_record("simple-skill"))
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "simple-skill")
             skills = _find_all_skills()
         assert len(skills) == 1
         assert skills[0]["name"] == "simple-skill"
         assert "readiness_status" not in skills[0]
 
     def test_skill_listing_does_not_probe_backend_for_env_vars(
-        self, tmp_path, monkeypatch
+        self, monkeypatch, tmp_path
     ):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-
+        _patch_skill_records(
+            monkeypatch,
+            _skill_record("skill-a", frontmatter_extra="prerequisites:\n  env_vars: [A_KEY]\n"),
+            _skill_record("skill-b", frontmatter_extra="prerequisites:\n  env_vars: [B_KEY]\n"),
+        )
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "skill-a",
-                frontmatter_extra="prerequisites:\n  env_vars: [A_KEY]\n",
-            )
-            _make_skill(
-                tmp_path,
-                "skill-b",
-                frontmatter_extra="prerequisites:\n  env_vars: [B_KEY]\n",
-            )
             skills = _find_all_skills()
 
         assert len(skills) == 2

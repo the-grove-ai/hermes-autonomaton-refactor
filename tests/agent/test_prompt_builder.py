@@ -33,6 +33,53 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 
 # =========================================================================
+# GRV-009 E6a C3 — skill records are the bundled index source. These helpers
+# let the skills-index tests provide synthetic kind=skill records (the SKILL.md
+# frontmatter inlined as the record payload) in ISOLATION from the real bundle.
+# =========================================================================
+
+
+def _make_skill_record(category, name, *, description="", platforms=None,
+                       frontmatter_extra="", body="Body.", rid=None):
+    from grove.capability import (
+        Capability, CapabilityKind, CircuitBreaker, Context, Disclosure,
+        DockComposition, Failure, Lifecycle, LifecycleState, Provenance,
+        SkillPresentation, Telemetry, TierRule, TierValidation, Trigger,
+        TriggerDisclosure, Zone,
+    )
+    fm = "---\n"
+    if name is not None:
+        fm += f"name: {name}\n"
+    if description:
+        fm += f"description: {description}\n"
+    if platforms:
+        fm += f"platforms: [{', '.join(platforms)}]\n"
+    if frontmatter_extra:
+        fm += frontmatter_extra.rstrip("\n") + "\n"
+    fm += f"---\n\n{body}\n"
+    return Capability(
+        id=rid or f"skill.{category}.{name if name is not None else category}",
+        kind=CapabilityKind.SKILL,
+        trigger=Trigger(always=True, disclosure=TriggerDisclosure.PROACTIVE),
+        tier_rule=TierRule(eligible=[1, 2, 3], preferred=1,
+                           validation=TierValidation(confidence_threshold=0.95, shadow_window=20)),
+        zone=Zone.GREEN, telemetry=Telemetry(feed="intent_feed"),
+        context=Context(disclosure=Disclosure.PULL, payload=fm,
+                        dock_composition=DockComposition.NONE),
+        lifecycle=Lifecycle(state=LifecycleState.ACTIVE, provenance=Provenance.MIGRATED),
+        failure=Failure(circuit_breaker=CircuitBreaker(threshold=3, window_seconds=300)),
+        skill=SkillPresentation(category=category),
+    )
+
+
+def _patch_skill_records(monkeypatch, *records):
+    reg = {r.id: r for r in records}
+    monkeypatch.setattr(
+        "grove.capability_registry.load_capabilities", lambda *a, **k: reg
+    )
+
+
+# =========================================================================
 # Guidance constants
 # =========================================================================
 
@@ -250,17 +297,17 @@ class TestBuildSkillsSystemPrompt:
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
     def test_empty_when_no_skills_dir(self, monkeypatch, tmp_path):
+        # GRV-009 E6a C3 — "empty" now means no skill records (the FS scan is
+        # retired); GROVE_HOME=tmp keeps external/andon empty too.
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+        _patch_skill_records(monkeypatch)  # no migrated skill records
         result = build_skills_system_prompt()
         assert result == ""
 
     def test_builds_index_with_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
-        skills_dir.mkdir(parents=True)
-        (skills_dir / "SKILL.md").write_text(
-            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "coding", "python-debug", description="Debug Python scripts"))
         result = build_skills_system_prompt()
         assert "python-debug" in result
         assert "Debug Python scripts" in result
@@ -268,35 +315,27 @@ class TestBuildSkillsSystemPrompt:
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        cat_dir = tmp_path / "skills" / "tools"
-        for subdir in ["search", "search"]:
-            d = cat_dir / subdir
-            d.mkdir(parents=True, exist_ok=True)
-            (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
+        # Two records under the same category sharing a frontmatter name (distinct
+        # record ids) — the index dedups the entry within the category to one.
+        _patch_skill_records(
+            monkeypatch,
+            _make_skill_record("tools", "search", description="Search stuff",
+                               rid="skill.tools.search"),
+            _make_skill_record("tools", "search", description="Search stuff",
+                               rid="skill.tools.search-2"),
+        )
         result = build_skills_system_prompt()
-        # "search" should appear only once per category
         assert result.count("- search") == 1
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skills_dir = tmp_path / "skills" / "apple"
-        skills_dir.mkdir(parents=True)
-
-        # macOS-only skill
-        mac_skill = skills_dir / "imessage"
-        mac_skill.mkdir()
-        (mac_skill / "SKILL.md").write_text(
-            "---\nname: imessage\ndescription: Send iMessages\nplatforms: [macos]\n---\n"
+        _patch_skill_records(
+            monkeypatch,
+            _make_skill_record("apple", "imessage", description="Send iMessages",
+                               platforms=["macos"]),
+            _make_skill_record("tools", "web-search", description="Search the web"),
         )
-
-        # Universal skill
-        uni_skill = skills_dir / "web-search"
-        uni_skill.mkdir()
-        (uni_skill / "SKILL.md").write_text(
-            "---\nname: web-search\ndescription: Search the web\n---\n"
-        )
-
         from unittest.mock import patch
 
         with patch("agent.skill_utils.sys") as mock_sys:
@@ -309,13 +348,8 @@ class TestBuildSkillsSystemPrompt:
     def test_includes_matching_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should appear on macOS."""
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skills_dir = tmp_path / "skills" / "apple"
-        mac_skill = skills_dir / "imessage"
-        mac_skill.mkdir(parents=True)
-        (mac_skill / "SKILL.md").write_text(
-            "---\nname: imessage\ndescription: Send iMessages\nplatforms: [macos]\n---\n"
-        )
-
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "apple", "imessage", description="Send iMessages", platforms=["macos"]))
         from unittest.mock import patch
 
         with patch("agent.skill_utils.sys") as mock_sys:
@@ -328,21 +362,11 @@ class TestBuildSkillsSystemPrompt:
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skills_dir = tmp_path / "skills" / "tools"
-        skills_dir.mkdir(parents=True)
-
-        enabled_skill = skills_dir / "web-search"
-        enabled_skill.mkdir()
-        (enabled_skill / "SKILL.md").write_text(
-            "---\nname: web-search\ndescription: Search the web\n---\n"
+        _patch_skill_records(
+            monkeypatch,
+            _make_skill_record("tools", "web-search", description="Search the web"),
+            _make_skill_record("tools", "old-tool", description="Deprecated tool"),
         )
-
-        disabled_skill = skills_dir / "old-tool"
-        disabled_skill.mkdir()
-        (disabled_skill / "SKILL.md").write_text(
-            "---\nname: old-tool\ndescription: Deprecated tool\n---\n"
-        )
-
         from unittest.mock import patch
 
         with patch(
@@ -356,11 +380,8 @@ class TestBuildSkillsSystemPrompt:
 
     def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: cached-skill\ndescription: Cached skill\n---\n"
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "tools", "cached-skill", description="Cached skill"))
 
         first = build_skills_system_prompt()
         assert "cached-skill" in first
@@ -373,23 +394,16 @@ class TestBuildSkillsSystemPrompt:
         assert "cached-skill" not in second
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
+        # A prerequisite env var gates skill_view SETUP, not index visibility —
+        # the skill still appears in the index regardless of the missing key.
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)
-        skills_dir = tmp_path / "skills" / "media"
-
-        gated = skills_dir / "gated-skill"
-        gated.mkdir(parents=True)
-        (gated / "SKILL.md").write_text(
-            "---\nname: gated-skill\ndescription: Needs a key\n"
-            "prerequisites:\n  env_vars: [MISSING_API_KEY_XYZ]\n---\n"
+        _patch_skill_records(
+            monkeypatch,
+            _make_skill_record("media", "gated-skill", description="Needs a key",
+                               frontmatter_extra="prerequisites:\n  env_vars: [MISSING_API_KEY_XYZ]"),
+            _make_skill_record("media", "free-skill", description="No prereqs"),
         )
-
-        available = skills_dir / "free-skill"
-        available.mkdir(parents=True)
-        (available / "SKILL.md").write_text(
-            "---\nname: free-skill\ndescription: No prereqs\n---\n"
-        )
-
         result = build_skills_system_prompt()
         assert "free-skill" in result
         assert "gated-skill" in result
@@ -398,15 +412,9 @@ class TestBuildSkillsSystemPrompt:
         """Skills with satisfied prerequisites should appear normally."""
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
         monkeypatch.setenv("MY_API_KEY", "test_value")
-        skills_dir = tmp_path / "skills" / "media"
-
-        skill = skills_dir / "ready-skill"
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text(
-            "---\nname: ready-skill\ndescription: Has key\n"
-            "prerequisites:\n  env_vars: [MY_API_KEY]\n---\n"
-        )
-
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "media", "ready-skill", description="Has key",
+            frontmatter_extra="prerequisites:\n  env_vars: [MY_API_KEY]"))
         result = build_skills_system_prompt()
         assert "ready-skill" in result
 
@@ -416,15 +424,9 @@ class TestBuildSkillsSystemPrompt:
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.delenv("BACKEND_ONLY_KEY", raising=False)
-        skills_dir = tmp_path / "skills" / "media"
-
-        skill = skills_dir / "backend-skill"
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text(
-            "---\nname: backend-skill\ndescription: Available in backend\n"
-            "prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n---\n"
-        )
-
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "media", "backend-skill", description="Available in backend",
+            frontmatter_extra="prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]"))
         result = build_skills_system_prompt()
         assert "backend-skill" in result
 
@@ -1013,109 +1015,74 @@ class TestBuildSkillsSystemPromptConditional:
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
+    # GRV-009 E6a C3 — conditions are read from the record's inline frontmatter;
+    # _patch_skill_records isolates each case from the real bundle.
+    _FALLBACK = "metadata:\n  hermes:\n    fallback_for_toolsets: [web]"
+    _REQUIRES = "metadata:\n  hermes:\n    requires_toolsets: [terminal]"
+
     def test_fallback_skill_hidden_when_primary_available(self, monkeypatch, tmp_path):
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets={"web"},
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "search", "duckduckgo", description="Free web search",
+            frontmatter_extra=self._FALLBACK))
+        result = build_skills_system_prompt(available_tools=set(), available_toolsets={"web"})
         assert "duckduckgo" not in result
 
     def test_fallback_skill_shown_when_primary_unavailable(self, monkeypatch, tmp_path):
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets=set(),
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "search", "duckduckgo", description="Free web search",
+            frontmatter_extra=self._FALLBACK))
+        result = build_skills_system_prompt(available_tools=set(), available_toolsets=set())
         assert "duckduckgo" in result
 
     def test_requires_skill_hidden_when_toolset_missing(self, monkeypatch, tmp_path):
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "iot" / "openhue"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets=set(),
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "iot", "openhue", description="Hue lights", frontmatter_extra=self._REQUIRES))
+        result = build_skills_system_prompt(available_tools=set(), available_toolsets=set())
         assert "openhue" not in result
 
     def test_requires_skill_shown_when_toolset_available(self, monkeypatch, tmp_path):
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "iot" / "openhue"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets={"terminal"},
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "iot", "openhue", description="Hue lights", frontmatter_extra=self._REQUIRES))
+        result = build_skills_system_prompt(available_tools=set(), available_toolsets={"terminal"})
         assert "openhue" in result
 
     def test_unconditional_skill_always_shown(self, monkeypatch, tmp_path):
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "general" / "notes"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: notes\ndescription: Take notes\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets=set(),
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "general", "notes", description="Take notes"))
+        result = build_skills_system_prompt(available_tools=set(), available_toolsets=set())
         assert "notes" in result
 
     def test_no_args_shows_all_skills(self, monkeypatch, tmp_path):
         """Backward compat: calling with no args shows everything."""
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "search", "duckduckgo", description="Free web search",
+            frontmatter_extra=self._FALLBACK))
         result = build_skills_system_prompt()
         assert "duckduckgo" in result
 
     def test_null_metadata_does_not_crash(self, monkeypatch, tmp_path):
         """Regression: metadata key present but null should not AttributeError."""
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "general" / "safe-skill"
-        skill_dir.mkdir(parents=True)
         # YAML `metadata:` with no value parses as {"metadata": None}
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: safe-skill\ndescription: Survives null metadata\nmetadata:\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets=set(),
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "general", "safe-skill", description="Survives null metadata",
+            frontmatter_extra="metadata:"))
+        result = build_skills_system_prompt(available_tools=set(), available_toolsets=set())
         assert "safe-skill" in result
 
     def test_null_hermes_under_metadata_does_not_crash(self, monkeypatch, tmp_path):
         """Regression: metadata.hermes present but null should not crash."""
         monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "general" / "nested-null"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: nested-null\ndescription: Null hermes key\nmetadata:\n  hermes:\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets=set(),
-        )
+        _patch_skill_records(monkeypatch, _make_skill_record(
+            "general", "nested-null", description="Null hermes key",
+            frontmatter_extra="metadata:\n  hermes:"))
+        result = build_skills_system_prompt(available_tools=set(), available_toolsets=set())
         assert "nested-null" in result
 
 

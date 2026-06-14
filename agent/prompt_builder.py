@@ -903,63 +903,13 @@ def _is_quarantined_path(path: Path) -> bool:
     return ANDON_DIRNAME in path.parts
 
 
-def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files.
-
-    Quarantined (``.andon/``) skills are excluded: the manifest describes
-    the ACTIVE skill set, so a snapshot stays valid across quarantine
-    churn. Editing a quarantined skill invalidates its prompt cache via
-    the explicit ``clear_skills_system_prompt_cache`` call in
-    ``skill_manager``, not through this manifest.
-    """
-    manifest: dict[str, list[int]] = {}
-    for filename in ("SKILL.md", "DESCRIPTION.md"):
-        for path in iter_skill_index_files(skills_dir, filename):
-            if _is_quarantined_path(path):
-                continue
-            try:
-                st = path.stat()
-            except OSError:
-                continue
-            manifest[str(path.relative_to(skills_dir))] = [st.st_mtime_ns, st.st_size]
-    return manifest
-
-
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
-    """Load the disk snapshot if it exists and its manifest still matches."""
-    snapshot_path = _skills_prompt_snapshot_path()
-    if not snapshot_path.exists():
-        return None
-    try:
-        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(snapshot, dict):
-        return None
-    if snapshot.get("version") != _SKILLS_SNAPSHOT_VERSION:
-        return None
-    if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
-        return None
-    return snapshot
-
-
-def _write_skills_snapshot(
-    skills_dir: Path,
-    manifest: dict[str, list[int]],
-    skill_entries: list[dict],
-    category_descriptions: dict[str, str],
-) -> None:
-    """Persist skill metadata to disk for fast cold-start reuse."""
-    payload = {
-        "version": _SKILLS_SNAPSHOT_VERSION,
-        "manifest": manifest,
-        "skills": skill_entries,
-        "category_descriptions": category_descriptions,
-    }
-    try:
-        atomic_json_write(_skills_prompt_snapshot_path(), payload)
-    except Exception as e:
-        logger.debug("Could not write skills prompt snapshot: %s", e)
+# GRV-009 E6a C3 — the bundled-skill disk snapshot is RETIRED. The index is now
+# projected from kind=skill capability records (_bundled_skill_index_from_records),
+# so _build_skills_manifest / _load_skills_snapshot / _write_skills_snapshot had
+# no remaining callers and are deleted. clear_skills_system_prompt_cache above
+# still unlinks any stale snapshot file (cleanup of pre-E6a artifacts) and clears
+# the in-process LRU. _build_snapshot_entry below stays — the retained external-
+# dir scan uses it.
 
 
 def _build_snapshot_entry(
@@ -1046,6 +996,47 @@ def _skill_should_show(
     return True
 
 
+def _bundled_skill_index_from_records(
+    disabled: "set[str]",
+    available_tools: "set[str] | None",
+    available_toolsets: "set[str] | None",
+) -> "tuple[dict[str, list[tuple[str, str]]], dict[str, str]]":
+    """GRV-009 E6a C3 — the bundled skill index, projected from kind=skill
+    capability records (sole-source; the FS scan + snapshot are retired).
+
+    Mirrors the legacy cold-path filtering exactly — platform match, disabled
+    names, conditional ``_skill_should_show`` — reading the SKILL.md frontmatter
+    from each record's inline payload (``context.payload``). The category grouping
+    comes from the record's ``skill.category``; category descriptions from the
+    governance-free side-record. Returns ``(skills_by_category, category_descriptions)``.
+    """
+    from grove.capability import CapabilityKind
+    from grove.capability_registry import load_capabilities
+    from grove.skill_disclosure import load_skill_category_descriptions
+
+    by_cat: dict[str, list[tuple[str, str]]] = {}
+    for rec in load_capabilities().values():
+        if rec.kind is not CapabilityKind.SKILL or rec.skill is None:
+            continue
+        frontmatter, _ = parse_frontmatter(rec.context.payload)
+        if not skill_matches_platform(frontmatter):
+            continue
+        skill_name = rec.id.rsplit(".", 1)[-1]
+        frontmatter_name = str(frontmatter.get("name") or skill_name)
+        if frontmatter_name in disabled or skill_name in disabled:
+            continue
+        if not _skill_should_show(
+            extract_skill_conditions(frontmatter),
+            available_tools,
+            available_toolsets,
+        ):
+            continue
+        by_cat.setdefault(rec.skill.category, []).append(
+            (frontmatter_name, extract_skill_description(frontmatter))
+        )
+    return by_cat, dict(load_skill_category_descriptions())
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
@@ -1067,8 +1058,10 @@ def build_skills_system_prompt(
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
-    if not skills_dir.exists() and not external_dirs:
-        return ""
+    # GRV-009 E6a C3 — the bundled index is sourced from records, not skills_dir,
+    # so a missing skills_dir no longer means "no skills". The empty case is
+    # handled naturally below (an empty skills_by_category yields ""). skills_dir
+    # is still used as a cache-key component and for the retained external scan.
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
@@ -1094,84 +1087,16 @@ def build_skills_system_prompt(
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
-    # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
-
-    skills_by_category: dict[str, list[tuple[str, str]]] = {}
-    category_descriptions: dict[str, str] = {}
-
-    if snapshot is not None:
-        # Fast path: use pre-parsed metadata from disk
-        for entry in snapshot.get("skills", []):
-            if not isinstance(entry, dict):
-                continue
-            skill_name = entry.get("skill_name") or ""
-            category = entry.get("category") or "general"
-            frontmatter_name = entry.get("frontmatter_name") or skill_name
-            platforms = entry.get("platforms") or []
-            if not skill_matches_platform({"platforms": platforms}):
-                continue
-            if frontmatter_name in disabled or skill_name in disabled:
-                continue
-            if not _skill_should_show(
-                entry.get("conditions") or {},
-                available_tools,
-                available_toolsets,
-            ):
-                continue
-            skills_by_category.setdefault(category, []).append(
-                (frontmatter_name, entry.get("description", ""))
-            )
-        category_descriptions = {
-            str(k): str(v)
-            for k, v in (snapshot.get("category_descriptions") or {}).items()
-        }
-    else:
-        # Cold path: full filesystem scan + write snapshot for next time
-        skill_entries: list[dict] = []
-        for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
-            if _is_quarantined_path(skill_file):
-                continue  # Sprint 53.2 — quarantined skills are not active
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
-            skill_entries.append(entry)
-            if not is_compatible:
-                continue
-            skill_name = entry["skill_name"]
-            if entry["frontmatter_name"] in disabled or skill_name in disabled:
-                continue
-            if not _skill_should_show(
-                extract_skill_conditions(frontmatter),
-                available_tools,
-                available_toolsets,
-            ):
-                continue
-            skills_by_category.setdefault(entry["category"], []).append(
-                (entry["frontmatter_name"], entry["description"])
-            )
-
-        # Read category-level DESCRIPTION.md files
-        for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
-            if _is_quarantined_path(desc_file):
-                continue  # Sprint 53.2 — quarantined skills are not active
-            try:
-                content = desc_file.read_text(encoding="utf-8")
-                fm, _ = parse_frontmatter(content)
-                cat_desc = fm.get("description")
-                if not cat_desc:
-                    continue
-                rel = desc_file.relative_to(skills_dir)
-                cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
-                category_descriptions[cat] = str(cat_desc).strip().strip("'\"")
-            except Exception as e:
-                logger.debug("Could not read skill description %s: %s", desc_file, e)
-
-        _write_skills_snapshot(
-            skills_dir,
-            _build_skills_manifest(skills_dir),
-            skill_entries,
-            category_descriptions,
-        )
+    # ── GRV-009 E6a C3 — the BUNDLED skill index is projected from kind=skill
+    # capability records. Records are SOLE-SOURCE for the bundled set; the
+    # filesystem scan + the .skills_prompt_snapshot disk cache are RETIRED. Each
+    # record's inline payload carries the SKILL.md frontmatter, so platform /
+    # conditional / disabled filtering is preserved exactly as the legacy scan
+    # applied it. Operator-configured external dirs (skills.external_dirs) were
+    # never in the migration set and remain a separate retained scan below.
+    skills_by_category, category_descriptions = _bundled_skill_index_from_records(
+        disabled, available_tools, available_toolsets
+    )
 
     # ── External skill directories ─────────────────────────────────────
     # Scan external dirs directly (no snapshot caching — they're read-only

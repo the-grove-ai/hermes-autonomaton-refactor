@@ -75,60 +75,24 @@ def test_every_migrated_skill_appears_in_the_index():
     assert len(entry_lines) == len(_skill_records())
 
 
-def test_projection_format_matches_prompt_builder_byte_for_byte(tmp_path, monkeypatch):
-    """Format fidelity, self-contained and NON-CIRCULAR: drive the REAL
-    build_skills_system_prompt over a controlled temp skills dir, extract its
-    <available_skills> block, and assert build_skill_index_from_records produces
-    the byte-identical block from matching kind=skill records. This guards
-    grove.skill_index's formatter against drift from the prompt_builder template
-    (the frozen golden can't — it's built by the same formatter)."""
-    import agent.prompt_builder as pb
+def test_live_prompt_builder_is_record_driven_and_reproduces_golden():
+    """End-to-end (GRV-009 E6a C3): the LIVE build_skills_system_prompt is now
+    record-driven for the bundled set — its <available_skills> block contains the
+    frozen golden byte-for-byte. (Local/external skills may add extra lines; the
+    bundled golden must be a subset.) This supersedes the C2 FS-vs-record format
+    guard, which is moot now that the prompt builder itself projects from records."""
+    from agent.prompt_builder import build_skills_system_prompt
 
-    skills_dir = tmp_path / "skills"
-    bodies = {}
-    for cat, name, desc in [
-        ("productivity", "alpha-skill", "Alpha does the first thing."),
-        ("productivity", "beta-skill", "Beta does the second thing."),
-        ("creative", "gamma-skill", "Gamma is creative."),
-    ]:
-        d = skills_dir / cat / name
-        d.mkdir(parents=True)
-        text = f"---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n\nBody.\n"
-        (d / "SKILL.md").write_text(text, encoding="utf-8")
-        bodies[(cat, name)] = text
-
-    monkeypatch.setattr(pb, "get_skills_dir", lambda: skills_dir)
-    monkeypatch.setattr(pb, "get_all_skills_dirs", lambda: [skills_dir])
-    monkeypatch.setattr(pb, "_skills_prompt_snapshot_path", lambda: tmp_path / "snap.json")
-    monkeypatch.setattr(pb, "get_disabled_skill_names", lambda: set())
-    pb.clear_skills_system_prompt_cache(clear_snapshot=True)
-
-    live = pb.build_skills_system_prompt(None, None)
-    live_block = live.split("<available_skills>\n", 1)[1].split("\n</available_skills>", 1)[0]
-
-    from grove.capability import (
-        CircuitBreaker, Context, Disclosure, DockComposition, Failure, Lifecycle,
-        LifecycleState, Provenance, SkillPresentation, Telemetry, TierRule,
-        TierValidation, Trigger, TriggerDisclosure, Zone,
+    live = build_skills_system_prompt(None, None)
+    assert "<available_skills>" in live
+    live_lines = set(
+        live.split("<available_skills>\n", 1)[1]
+        .split("\n</available_skills>", 1)[0]
+        .splitlines()
     )
-
-    records = []
-    for (cat, name), text in bodies.items():
-        records.append(Capability(
-            id=f"skill.{cat}.{name}", kind=CapabilityKind.SKILL,
-            trigger=Trigger(always=True, disclosure=TriggerDisclosure.PROACTIVE),
-            tier_rule=TierRule(eligible=[1, 2, 3], preferred=1,
-                               validation=TierValidation(confidence_threshold=0.95, shadow_window=20)),
-            zone=Zone.GREEN, telemetry=Telemetry(feed="intent_feed"),
-            context=Context(disclosure=Disclosure.PULL, payload=text,
-                            dock_composition=DockComposition.NONE),
-            lifecycle=Lifecycle(state=LifecycleState.ACTIVE, provenance=Provenance.MIGRATED),
-            failure=Failure(circuit_breaker=CircuitBreaker(threshold=3, window_seconds=300)),
-            skill=SkillPresentation(category=cat),
-        ))
-
-    projected = build_skill_index_from_records(records, {})
-    assert projected == live_block
+    golden = _GOLDEN.read_text(encoding="utf-8")
+    missing = [ln for ln in golden.splitlines() if ln not in live_lines]
+    assert not missing, f"live record-driven index missing golden lines: {missing[:5]}"
 
 
 # ── helper fidelity (grove replica == agent original) ─────────────────────────

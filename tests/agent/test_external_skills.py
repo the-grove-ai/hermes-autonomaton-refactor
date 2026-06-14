@@ -119,17 +119,35 @@ class TestExternalSkillsInFindAll:
         names = [s["name"] for s in skills]
         assert "my-external-skill" in names
 
-    def test_local_takes_precedence(self, hermes_home, external_skills_dir):
-        """If the same skill name exists locally and externally, local wins."""
-        local_skills = hermes_home / "skills"
-        local_skill = local_skills / "my-external-skill"
-        local_skill.mkdir(parents=True)
-        (local_skill / "SKILL.md").write_text(
-            "---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal.\n"
+    def test_local_takes_precedence(self, monkeypatch, hermes_home, external_skills_dir):
+        """GRV-009 E6a C3 — 'local' is now the kind=skill RECORD set; a migrated
+        record wins the dedup over a same-name external-dir skill."""
+        from grove.capability import (
+            Capability, CapabilityKind, CircuitBreaker, Context, Disclosure,
+            DockComposition, Failure, Lifecycle, LifecycleState, Provenance,
+            SkillPresentation, Telemetry, TierRule, TierValidation, Trigger,
+            TriggerDisclosure, Zone,
+        )
+        rec = Capability(
+            id="skill.general.my-external-skill", kind=CapabilityKind.SKILL,
+            trigger=Trigger(always=True, disclosure=TriggerDisclosure.PROACTIVE),
+            tier_rule=TierRule(eligible=[1, 2, 3], preferred=1,
+                               validation=TierValidation(confidence_threshold=0.95, shadow_window=20)),
+            zone=Zone.GREEN, telemetry=Telemetry(feed="intent_feed"),
+            context=Context(disclosure=Disclosure.PULL,
+                            payload="---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal.\n",
+                            dock_composition=DockComposition.NONE),
+            lifecycle=Lifecycle(state=LifecycleState.ACTIVE, provenance=Provenance.MIGRATED),
+            failure=Failure(circuit_breaker=CircuitBreaker(threshold=3, window_seconds=300)),
+            skill=SkillPresentation(category="general"),
+        )
+        monkeypatch.setattr(
+            "grove.capability_registry.load_capabilities", lambda *a, **k: {rec.id: rec}
         )
         (hermes_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
+        local_skills = hermes_home / "skills"
         with (
             patch.dict(os.environ, {"GROVE_HOME": str(hermes_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),

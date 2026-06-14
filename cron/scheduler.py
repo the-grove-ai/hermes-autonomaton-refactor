@@ -964,7 +964,6 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         return _scan_assembled_cron_prompt(prompt, job)
 
     from tools.skills_tool import skill_view
-    from tools.skill_usage import bump_use
 
     parts = []
     skipped: list[str] = []
@@ -976,11 +975,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             skipped.append(skill_name)
             continue
 
-        # Bump usage so the curator sees this skill as actively used.
-        try:
-            bump_use(skill_name)
-        except Exception:
-            logger.debug("Cron job: failed to bump skill usage for '%s'", skill_name, exc_info=True)
+        # GRV-009 E6a C3 — read-side .usage.json bump RETIRED (records sole-source;
+        # curator stale timer moves onto the record lifecycle in E6b). A7-safe:
+        # the cron skill load/run is unaffected.
 
         content = str(loaded.get("content") or "").strip()
         if parts:

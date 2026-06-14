@@ -429,12 +429,9 @@ def build_skill_invocation_message(
 
     loaded_skill, skill_dir, skill_name = loaded
 
-    # Track active usage for Curator lifecycle management (#17782)
-    try:
-        from tools.skill_usage import bump_use
-        bump_use(skill_name)
-    except Exception:
-        pass  # Non-critical — skill invocation proceeds regardless
+    # GRV-009 E6a C3 — read-side .usage.json bump RETIRED (records sole-source;
+    # curator stale timer moves onto the record lifecycle in E6b). A7: loading
+    # and running the skill is unaffected.
 
     activation_note = (
         f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
@@ -476,12 +473,8 @@ def build_preloaded_skills_prompt(
 
         loaded_skill, skill_dir, skill_name = loaded
 
-        # Track active usage for Curator lifecycle management (#17782)
-        try:
-            from tools.skill_usage import bump_use
-            bump_use(skill_name)
-        except Exception:
-            pass  # Non-critical
+        # GRV-009 E6a C3 — read-side .usage.json bump RETIRED (records sole-source;
+        # curator stale timer moves onto the record lifecycle in E6b). A7-safe.
 
         activation_note = (
             f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '
