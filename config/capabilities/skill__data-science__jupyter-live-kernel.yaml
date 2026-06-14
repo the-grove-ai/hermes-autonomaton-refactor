@@ -1,0 +1,140 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.data-science.jupyter-live-kernel
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: jupyter-live-kernel\n\
+    description: \"Iterative Python via live Jupyter kernel (hamelnb).\"\nversion:\
+    \ 1.0.0\nauthor: Hermes Agent\nlicense: MIT\nplatforms: [linux, macos, windows]\n\
+    metadata:\n  hermes:\n    tags: [jupyter, notebook, repl, data-science, exploration,\
+    \ iterative]\n    category: data-science\n---\n\n# Jupyter Live Kernel (hamelnb)\n\
+    \nGives you a **stateful Python REPL** via a live Jupyter kernel. Variables persist\n\
+    across executions. Use this instead of `execute_code` when you need to build up\n\
+    state incrementally, explore APIs, inspect DataFrames, or iterate on complex code.\n\
+    \n## When to Use This vs Other Tools\n\n| Tool | Use When |\n|------|----------|\n\
+    | **This skill** | Iterative exploration, state across steps, data science, ML,\
+    \ \"let me try this and check\" |\n| `execute_code` | One-shot scripts needing\
+    \ hermes tool access (web_search, file ops). Stateless. |\n| `terminal` | Shell\
+    \ commands, builds, installs, git, process management |\n\n**Rule of thumb:**\
+    \ If you'd want a Jupyter notebook for the task, use this skill.\n\n## Prerequisites\n\
+    \n1. **uv** must be installed (check: `which uv`)\n2. **JupyterLab** must be installed:\
+    \ `uv tool install jupyterlab`\n3. A Jupyter server must be running (see Setup\
+    \ below)\n\n## Setup\n\nThe hamelnb script location:\n```\nSCRIPT=\"$HOME/.agent-skills/hamelnb/skills/jupyter-live-kernel/scripts/jupyter_live_kernel.py\"\
+    \n```\n\nIf not cloned yet:\n```\ngit clone https://github.com/hamelsmu/hamelnb.git\
+    \ ~/.agent-skills/hamelnb\n```\n\n### Starting JupyterLab\n\nCheck if a server\
+    \ is already running:\n```\nuv run \"$SCRIPT\" servers\n```\n\nIf no servers found,\
+    \ start one:\n```\njupyter-lab --no-browser --port=8888 --notebook-dir=$HOME/notebooks\
+    \ \\\n  --IdentityProvider.token='' --ServerApp.password='' > /tmp/jupyter.log\
+    \ 2>&1 &\nsleep 3\n```\n\nNote: Token/password disabled for local agent access.\
+    \ The server runs headless.\n\n### Creating a Notebook for REPL Use\n\nIf you\
+    \ just need a REPL (no existing notebook), create a minimal notebook file:\n```\n\
+    mkdir -p ~/notebooks\n```\nWrite a minimal .ipynb JSON file with one empty code\
+    \ cell, then start a kernel\nsession via the Jupyter REST API:\n```\ncurl -s -X\
+    \ POST http://127.0.0.1:8888/api/sessions \\\n  -H \"Content-Type: application/json\"\
+    \ \\\n  -d '{\"path\":\"scratch.ipynb\",\"type\":\"notebook\",\"name\":\"scratch.ipynb\"\
+    ,\"kernel\":{\"name\":\"python3\"}}'\n```\n\n## Core Workflow\n\nAll commands\
+    \ return structured JSON. Always use `--compact` to save tokens.\n\n### 1. Discover\
+    \ servers and notebooks\n\n```\nuv run \"$SCRIPT\" servers --compact\nuv run \"\
+    $SCRIPT\" notebooks --compact\n```\n\n### 2. Execute code (primary operation)\n\
+    \n```\nuv run \"$SCRIPT\" execute --path <notebook.ipynb> --code '<python code>'\
+    \ --compact\n```\n\nState persists across execute calls. Variables, imports, objects\
+    \ all survive.\n\nMulti-line code works with $'...' quoting:\n```\nuv run \"$SCRIPT\"\
+    \ execute --path scratch.ipynb --code $'import os\\nfiles = os.listdir(\".\")\\\
+    nprint(f\"Found {len(files)} files\")' --compact\n```\n\n### 3. Inspect live variables\n\
+    \n```\nuv run \"$SCRIPT\" variables --path <notebook.ipynb> list --compact\nuv\
+    \ run \"$SCRIPT\" variables --path <notebook.ipynb> preview --name <varname> --compact\n\
+    ```\n\n### 4. Edit notebook cells\n\n```\n# View current cells\nuv run \"$SCRIPT\"\
+    \ contents --path <notebook.ipynb> --compact\n\n# Insert a new cell\nuv run \"\
+    $SCRIPT\" edit --path <notebook.ipynb> insert \\\n  --at-index <N> --cell-type\
+    \ code --source '<code>' --compact\n\n# Replace cell source (use cell-id from\
+    \ contents output)\nuv run \"$SCRIPT\" edit --path <notebook.ipynb> replace-source\
+    \ \\\n  --cell-id <id> --source '<new code>' --compact\n\n# Delete a cell\nuv\
+    \ run \"$SCRIPT\" edit --path <notebook.ipynb> delete --cell-id <id> --compact\n\
+    ```\n\n### 5. Verification (restart + run all)\n\nOnly use when the user asks\
+    \ for a clean verification or you need to confirm\nthe notebook runs top-to-bottom:\n\
+    \n```\nuv run \"$SCRIPT\" restart-run-all --path <notebook.ipynb> --save-outputs\
+    \ --compact\n```\n\n## Practical Tips from Experience\n\n1. **First execution\
+    \ after server start may timeout** \u2014 the kernel needs a moment\n   to initialize.\
+    \ If you get a timeout, just retry.\n\n2. **The kernel Python is JupyterLab's\
+    \ Python** \u2014 packages must be installed in\n   that environment. If you need\
+    \ additional packages, install them into the\n   JupyterLab tool environment first.\n\
+    \n3. **--compact flag saves significant tokens** \u2014 always use it. JSON output\
+    \ can\n   be very verbose without it.\n\n4. **For pure REPL use**, create a scratch.ipynb\
+    \ and don't bother with cell editing.\n   Just use `execute` repeatedly.\n\n5.\
+    \ **Argument order matters** \u2014 subcommand flags like `--path` go BEFORE the\n\
+    \   sub-subcommand. E.g.: `variables --path nb.ipynb list` not `variables list\
+    \ --path nb.ipynb`.\n\n6. **If a session doesn't exist yet**, you need to start\
+    \ one via the REST API\n   (see Setup section). The tool can't execute without\
+    \ a live kernel session.\n\n7. **Errors are returned as JSON** with traceback\
+    \ \u2014 read the `ename` and `evalue`\n   fields to understand what went wrong.\n\
+    \n8. **Occasional websocket timeouts** \u2014 some operations may timeout on first\
+    \ try,\n   especially after a kernel restart. Retry once before escalating.\n\n\
+    ## Timeout Defaults\n\nThe script has a 30-second default timeout per execution.\
+    \ For long-running\noperations, pass `--timeout 120`. Use generous timeouts (60+)\
+    \ for initial\nsetup or heavy computation.\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/data-science/jupyter-live-kernel/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.data-science.jupyter-live-kernel'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: data-science

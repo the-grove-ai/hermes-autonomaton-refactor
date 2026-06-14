@@ -1,0 +1,110 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.research.polymarket
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: polymarket\ndescription:\
+    \ \"Query Polymarket: markets, prices, orderbooks, history.\"\nversion: 1.0.0\n\
+    author: Hermes Agent + Teknium\ntags: [polymarket, prediction-markets, market-data,\
+    \ trading]\nplatforms: [linux, macos, windows]\n---\n\n# Polymarket \u2014 Prediction\
+    \ Market Data\n\nQuery prediction market data from Polymarket using their public\
+    \ REST APIs.\nAll endpoints are read-only and require zero authentication.\n\n\
+    See `references/api-endpoints.md` for the full endpoint reference with curl examples.\n\
+    \n## When to Use\n\n- User asks about prediction markets, betting odds, or event\
+    \ probabilities\n- User wants to know \"what are the odds of X happening?\"\n\
+    - User asks about Polymarket specifically\n- User wants market prices, orderbook\
+    \ data, or price history\n- User asks to monitor or track prediction market movements\n\
+    \n## Key Concepts\n\n- **Events** contain one or more **Markets** (1:many relationship)\n\
+    - **Markets** are binary outcomes with Yes/No prices between 0.00 and 1.00\n-\
+    \ Prices ARE probabilities: price 0.65 means the market thinks 65% likely\n- `outcomePrices`\
+    \ field: JSON-encoded array like `[\"0.80\", \"0.20\"]`\n- `clobTokenIds` field:\
+    \ JSON-encoded array of two token IDs [Yes, No] for price/book queries\n- `conditionId`\
+    \ field: hex string used for price history queries\n- Volume is in USDC (US dollars)\n\
+    \n## Three Public APIs\n\n1. **Gamma API** at `gamma-api.polymarket.com` \u2014\
+    \ Discovery, search, browsing\n2. **CLOB API** at `clob.polymarket.com` \u2014\
+    \ Real-time prices, orderbooks, history\n3. **Data API** at `data-api.polymarket.com`\
+    \ \u2014 Trades, open interest\n\n## Typical Workflow\n\nWhen a user asks about\
+    \ prediction market odds:\n\n1. **Search** using the Gamma API public-search endpoint\
+    \ with their query\n2. **Parse** the response \u2014 extract events and their\
+    \ nested markets\n3. **Present** market question, current prices as percentages,\
+    \ and volume\n4. **Deep dive** if asked \u2014 use clobTokenIds for orderbook,\
+    \ conditionId for history\n\n## Presenting Results\n\nFormat prices as percentages\
+    \ for readability:\n- outcomePrices `[\"0.652\", \"0.348\"]` becomes \"Yes: 65.2%,\
+    \ No: 34.8%\"\n- Always show the market question and probability\n- Include volume\
+    \ when available\n\nExample: `\"Will X happen?\" \u2014 65.2% Yes ($1.2M volume)`\n\
+    \n## Parsing Double-Encoded Fields\n\nThe Gamma API returns `outcomePrices`, `outcomes`,\
+    \ and `clobTokenIds` as JSON strings\ninside JSON responses (double-encoded).\
+    \ When processing with Python, parse them with\n`json.loads(market['outcomePrices'])`\
+    \ to get the actual array.\n\n## Rate Limits\n\nGenerous \u2014 unlikely to hit\
+    \ for normal usage:\n- Gamma: 4,000 requests per 10 seconds (general)\n- CLOB:\
+    \ 9,000 requests per 10 seconds (general)\n- Data: 1,000 requests per 10 seconds\
+    \ (general)\n\n## Limitations\n\n- This skill is read-only \u2014 it does not\
+    \ support placing trades\n- Trading requires wallet-based crypto authentication\
+    \ (EIP-712 signatures)\n- Some new markets may have empty price history\n- Geographic\
+    \ restrictions apply to trading but read-only data is globally accessible\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/research/polymarket/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.research.polymarket'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: research

@@ -1,0 +1,192 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.creative.sketch
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: sketch\ndescription:\
+    \ \"Throwaway HTML mockups: 2-3 design variants to compare.\"\nversion: 1.0.0\n\
+    author: Hermes Agent (adapted from gsd-build/get-shit-done)\nlicense: MIT\nplatforms:\
+    \ [linux, macos, windows]\nmetadata:\n  hermes:\n    tags: [sketch, mockup, design,\
+    \ ui, prototype, html, variants, exploration, wireframe, comparison]\n    related_skills:\
+    \ [spike, claude-design, popular-web-designs, excalidraw]\n---\n\n# Sketch\n\n\
+    Use this skill when the user wants to **see a design direction before committing**\
+    \ to one \u2014 exploring a UI/UX idea as disposable HTML mockups. The point is\
+    \ to generate 2-3 interactive variants so the user can compare visual directions\
+    \ side-by-side, not to produce shippable code.\n\nLoad this when the user says\
+    \ things like \"sketch this screen\", \"show me what X could look like\", \"compare\
+    \ layout A vs B\", \"give me 2-3 takes on this UI\", \"let me see some variants\"\
+    , \"mockup this before I build\".\n\n## When NOT to use this\n\n- User wants a\
+    \ production component \u2014 use `claude-design` or build it properly\n- User\
+    \ wants a polished one-off HTML artifact (landing page, deck) \u2014 `claude-design`\n\
+    - User wants a diagram \u2014 `excalidraw`, `architecture-diagram`\n- The design\
+    \ is already locked \u2014 just build it\n\n## If the user has the full GSD system\
+    \ installed\n\nIf `gsd-sketch` shows up as a sibling skill (installed via `npx\
+    \ get-shit-done-cc --hermes`), prefer **`gsd-sketch`** for the full workflow:\
+    \ persistent `.planning/sketches/` with MANIFEST, frontier mode analysis, consistency\
+    \ audits across past sketches, and integration with the rest of GSD. This skill\
+    \ is the lightweight standalone version \u2014 one-off sketching without the state\
+    \ machinery.\n\n## Core method\n\n```\nintake  \u2192  variants  \u2192  head-to-head\
+    \  \u2192  pick winner (or iterate)\n```\n\n### 1. Intake (skip if the user already\
+    \ gave you enough)\n\nBefore generating variants, get three things \u2014 one\
+    \ question at a time, not all at once:\n\n1. **Feel.** \"What should this feel\
+    \ like? Adjectives, emotions, a vibe.\" \u2014 *\"calm, editorial, like Linear\"\
+    * tells you more than *\"minimal\"*.\n2. **References.** \"What apps, sites, or\
+    \ products capture the feel you're imagining?\" \u2014 actual references beat\
+    \ abstract descriptions.\n3. **Core action.** \"What's the single most important\
+    \ thing a user does on this screen?\" \u2014 the variants should all serve this\
+    \ well; if they don't, they're just decoration.\n\nReflect each answer briefly\
+    \ before the next question. If the user already gave you all three upfront, skip\
+    \ straight to variants.\n\n### 2. Variants (2-3, never 1, rarely 4+)\n\nProduce\
+    \ **2-3 variants** in one go. Each variant is a complete, standalone HTML file.\
+    \ Don't describe variants \u2014 build them. The point is comparison.\n\nEach\
+    \ variant should take a **different design stance**, not different pixel values.\
+    \ Three good variant axes:\n\n- **Density:** compact / airy / ultra-dense (pick\
+    \ two contrasting poles)\n- **Emphasis:** content-first / action-first / tool-first\n\
+    - **Aesthetic:** editorial / utilitarian / playful\n- **Layout:** single-column\
+    \ / sidebar / split-pane\n- **Grounding:** card-based / bare-content / document-style\n\
+    \nPick one axis and pull apart from it. Two variants that differ only in accent\
+    \ color are wasted effort \u2014 the user can't distinguish them.\n\n**Variant\
+    \ naming:** describe the stance, not the number.\n\n```\nsketches/\n\u251C\u2500\
+    \u2500 001-calm-editorial/\n\u2502   \u251C\u2500\u2500 index.html\n\u2502   \u2514\
+    \u2500\u2500 README.md\n\u251C\u2500\u2500 001-utilitarian-dense/\n\u2502   \u251C\
+    \u2500\u2500 index.html\n\u2502   \u2514\u2500\u2500 README.md\n\u2514\u2500\u2500\
+    \ 001-playful-split/\n    \u251C\u2500\u2500 index.html\n    \u2514\u2500\u2500\
+    \ README.md\n```\n\n### 3. Make them real HTML\n\nEach variant is a **single self-contained\
+    \ HTML file**:\n\n- Inline `<style>` \u2014 no build step, no external CSS\n-\
+    \ System fonts or one Google Font via `<link>`\n- Tailwind via CDN (`<script src=\"\
+    https://cdn.tailwindcss.com\"></script>`) is fine\n- Realistic fake content \u2014\
+    \ actual sentences, actual names, not \"Lorem ipsum\"\n- **Interactive**: links\
+    \ clickable, hovers real, at least one state transition (open/close, filter, toggle).\
+    \ A frozen static image is a worse spike than a sloppy animated one.\n\nOpen it\
+    \ in a browser. If it looks broken, fix it before showing the user.\n\n**Verify\
+    \ variants visually \u2014 use Hermes' browser tools.** Don't just write HTML\
+    \ and hope it renders; load each variant and look at it:\n\n```\nbrowser_navigate(url=\"\
+    file:///absolute/path/to/sketches/001-calm-editorial/index.html\")\nbrowser_vision(question=\"\
+    Does this layout look clean and readable? Any visible bugs (overlapping text,\
+    \ unstyled elements, broken images)?\")\n```\n\n`browser_vision` returns an AI\
+    \ description of what's actually on the page plus a screenshot path \u2014 catches\
+    \ layout bugs that pure source inspection misses (e.g. a font import that silently\
+    \ failed, a flex container that collapsed). Fix and re-navigate until each variant\
+    \ looks right.\n\n**Default CSS reset + system font stack** for fast starts:\n\
+    \n```html\n<style>\n  * { box-sizing: border-box; margin: 0; padding: 0; }\n \
+    \ body {\n    font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto,\n\
+    \                 \"Helvetica Neue\", Arial, sans-serif;\n    -webkit-font-smoothing:\
+    \ antialiased;\n    color: #1a1a1a;\n    background: #fafafa;\n    line-height:\
+    \ 1.5;\n  }\n</style>\n```\n\n### 4. Variant README\n\nEach variant's `README.md`\
+    \ answers:\n\n```markdown\n## Variant: {stance name}\n\n### Design stance\nOne\
+    \ sentence on the principle driving this variant.\n\n### Key choices\n- Layout:\
+    \ ...\n- Typography: ...\n- Color: ...\n- Interaction: ...\n\n### Trade-offs\n\
+    - Strong at: ...\n- Weak at: ...\n\n### Best for\n- The kind of user or use case\
+    \ this variant actually serves\n```\n\n### 5. Head-to-head\n\nAfter all variants\
+    \ are built, present them as a comparison. Don't just list \u2014 **opinionate**:\n\
+    \n```markdown\n## Three takes on the home screen\n\n| Dimension | Calm editorial\
+    \ | Utilitarian dense | Playful split |\n|-----------|----------------|-------------------|---------------|\n\
+    | Density   | Low            | High              | Medium        |\n| Primary\
+    \ action visibility | Low | High | Medium |\n| Scan-ability | High | Medium |\
+    \ Low |\n| Feel | Calm, trusted | Sharp, tool-like | Inviting, energetic |\n\n\
+    **My take:** Utilitarian dense for power users, calm editorial for content-forward\
+    \ audiences. Playful split is weakest \u2014 tries to do both and commits to neither.\n\
+    ```\n\nLet the user pick a winner, or combine two into a hybrid, or ask for another\
+    \ round.\n\n## Theming (when the project has a visual identity)\n\nIf the user\
+    \ has an existing theme (colors, fonts, tokens), put shared tokens in `sketches/themes/tokens.css`\
+    \ and `@import` them in each variant. Keep tokens minimal:\n\n```css\n/* sketches/themes/tokens.css\
+    \ */\n:root {\n  --color-bg: #fafafa;\n  --color-fg: #1a1a1a;\n  --color-accent:\
+    \ #0066ff;\n  --color-muted: #666;\n  --radius: 8px;\n  --font-display: \"Inter\"\
+    , sans-serif;\n  --font-body: -apple-system, BlinkMacSystemFont, sans-serif;\n\
+    }\n```\n\nDon't over-tokenize a throwaway sketch \u2014 three colors and one font\
+    \ is usually enough.\n\n## Interactivity bar\n\nA sketch is interactive enough\
+    \ when the user can:\n\n1. **Click a primary action** and something visible happens\
+    \ (state change, modal, toast, navigation feint)\n2. **See one meaningful state\
+    \ transition** (filter a list, toggle a mode, open/close a panel)\n3. **Hover\
+    \ recognizable affordances** (buttons, rows, tabs)\n\nMore than that is over-engineering\
+    \ a throwaway. Less than that is a screenshot.\n\n## Frontier mode (picking what\
+    \ to sketch next)\n\nIf sketches already exist and the user says \"what should\
+    \ I sketch next?\":\n\n- **Consistency gaps** \u2014 two winning variants from\
+    \ different sketches made independent choices that haven't been composed together\
+    \ yet\n- **Unsketched screens** \u2014 referenced but never explored\n- **State\
+    \ coverage** \u2014 happy path sketched, but not empty / loading / error / 1000-items\n\
+    - **Responsive gaps** \u2014 validated at one viewport; does it hold at mobile\
+    \ / ultrawide?\n- **Interaction patterns** \u2014 static layouts exist; transitions,\
+    \ drag, scroll behavior don't\n\nPropose 2-4 named candidates. Let the user pick.\n\
+    \n## Output\n\n- Create `sketches/` (or `.planning/sketches/` if the user is using\
+    \ GSD conventions) in the repo root\n- One subdir per variant: `NNN-stance-name/index.html`\
+    \ + `README.md`\n- Tell the user how to open them: `open sketches/001-calm-editorial/index.html`\
+    \ on macOS, `xdg-open` on Linux, `start` on Windows\n- Keep variants disposable\
+    \ \u2014 a sketch that you felt the need to preserve should be promoted into real\
+    \ project code, not curated as an asset\n\n**Typical tool sequence for one variant:**\n\
+    \n```\nterminal(\"mkdir -p sketches/001-calm-editorial\")\nwrite_file(\"sketches/001-calm-editorial/index.html\"\
+    , \"<!doctype html>...\")\nwrite_file(\"sketches/001-calm-editorial/README.md\"\
+    , \"## Variant: Calm editorial\\n...\")\nbrowser_navigate(url=\"file://$(pwd)/sketches/001-calm-editorial/index.html\"\
+    )\nbrowser_vision(question=\"How does this look? Any obvious layout issues?\"\
+    )\n```\n\nRepeat for each variant, then present the comparison table.\n\n## Attribution\n\
+    \nAdapted from the GSD (Get Shit Done) project's `/gsd-sketch` workflow \u2014\
+    \ MIT \xA9 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)).\
+    \ The full GSD system ships persistent sketch state, theme/variant pattern references,\
+    \ and consistency-audit workflows; install with `npx get-shit-done-cc --hermes\
+    \ --global`.\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/creative/sketch/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.creative.sketch'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: creative

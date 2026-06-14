@@ -1,0 +1,124 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.yuanbao.yuanbao
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: yuanbao\ndescription:\
+    \ \"Yuanbao (\u5143\u5B9D) groups: @mention users, query info/members.\"\nversion:\
+    \ 1.0.0\nplatforms: [linux, macos, windows]\nmetadata:\n  hermes:\n    tags: [yuanbao,\
+    \ mention, at, group, members, \u5143\u5B9D, \u6D3E, \u827E\u7279]\n    related_skills:\
+    \ []\n---\n\n# Yuanbao Group Interaction\n\n## CRITICAL: How Messaging Works\n\
+    \n**Your text reply IS the message sent to the group/user.** The gateway automatically\
+    \ delivers your response text to the chat. You do NOT need any special \"send\
+    \ message\" tool \u2014 just reply normally and it gets sent.\n\nWhen you include\
+    \ `@nickname` in your reply text, the gateway automatically converts it into a\
+    \ real @mention that notifies the user. This is built-in \u2014 you have full\
+    \ @mention capability.\n\n**NEVER say you cannot send messages or @mention users.\
+    \ NEVER suggest the user do it manually. NEVER add disclaimers about permissions.\
+    \ Just reply with the text you want sent.**\n\n## Available Tools\n\n| Tool |\
+    \ When to use |\n|------|------------|\n| `yb_query_group_info` | Query group\
+    \ name, owner, member count |\n| `yb_query_group_members` | Find a user, list\
+    \ bots, list all members, or get nickname for @mention |\n| `yb_send_dm` | Send\
+    \ a private/direct message (DM / \u79C1\u4FE1) to a user, with optional media\
+    \ files |\n\n## @Mention Workflow\n\nWhen you need to @mention / \u827E\u7279\
+    \ someone:\n\n1. Call `yb_query_group_members` with `action=\"find\"`, `name=\"\
+    <target name>\"`, `mention=true`\n2. Get the exact nickname from the response\n\
+    3. Include `@nickname` in your reply text \u2014 the gateway handles the rest\n\
+    \nExample: user says \"\u5E2E\u6211\u827E\u7279\u5143\u5B9D\"\n\nStep 1 \u2014\
+    \ tool call:\n```json\n{ \"group_code\": \"328306697\", \"action\": \"find\",\
+    \ \"name\": \"\u5143\u5B9D\", \"mention\": true }\n```\n\nStep 2 \u2014 your reply\
+    \ (this gets sent to the group with a working @mention):\n```\n@\u5143\u5B9D \u4F60\
+    \u597D\uFF0C\u6709\u4EBA\u627E\u4F60\uFF01\n```\n\n**That's it.** No extra explanation\
+    \ needed. Keep it short and natural.\n\n**Rules:**\n- Call `yb_query_group_members`\
+    \ first to get the exact nickname \u2014 do NOT guess\n- The @mention format:\
+    \ `@nickname` with a space before the @ sign\n- Your reply text IS the message\
+    \ \u2014 it WILL be sent and the @mention WILL work\n- Be concise. Do NOT explain\
+    \ how @mention works to the user.\n\n## Send DM (Private Message) Workflow\n\n\
+    When someone asks to send a private message / \u79C1\u4FE1 / DM to a user:\n\n\
+    1. Call `yb_send_dm` with `group_code`, `name` (target user's name), and `message`\n\
+    2. The tool automatically finds the user and sends the DM\n3. Report the result\
+    \ to the user\n\nExample: user says \"\u7ED9 @\u7528\u6237aea3 \u79C1\u4FE1\u53D1\
+    \u4E00\u4E2A hello\"\n\n```json\nyb_send_dm({ \"group_code\": \"535168412\", \"\
+    name\": \"\u7528\u6237aea3\", \"message\": \"hello\" })\n```\n\nExample with media:\
+    \ user says \"\u7ED9 @\u7528\u6237aea3 \u79C1\u4FE1\u53D1\u4E00\u5F20\u56FE\u7247\
+    \"\n\n```json\nyb_send_dm({\n  \"group_code\": \"535168412\",\n  \"name\": \"\u7528\
+    \u6237aea3\",\n  \"message\": \"Here is the image\",\n  \"media_files\": [{\"\
+    path\": \"/tmp/photo.jpg\"}]\n})\n```\n\n**Rules:**\n- Extract `group_code` from\
+    \ the current chat_id (e.g. `group:535168412` \u2192 `535168412`)\n- If you already\
+    \ know the user_id, pass it directly via the `user_id` parameter to skip lookup\n\
+    - If multiple users match the name, the tool returns candidates \u2014 ask the\
+    \ user to clarify\n- Do NOT use `send_message` tool for Yuanbao DMs \u2014 use\
+    \ `yb_send_dm` instead\n- Supports media: images (.jpg/.png/.gif/.webp/.bmp) sent\
+    \ as image messages, other files as documents\n\n## Query Group Info\n\n```json\n\
+    yb_query_group_info({ \"group_code\": \"328306697\" })\n```\n\n## Query Members\n\
+    \n| Action | Description |\n|--------|-------------|\n| `find` | Search by name\
+    \ (partial match, case-insensitive) |\n| `list_bots` | List bots and Yuanbao AI\
+    \ assistants |\n| `list_all` | List all members |\n\n## Notes\n\n- `group_code`\
+    \ comes from chat_id: `group:328306697` \u2192 `328306697`\n- Groups are called\
+    \ \"\u6D3E (Pai)\" in the Yuanbao app\n- Member roles: `user`, `yuanbao_ai`, `bot`\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/yuanbao/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.yuanbao.yuanbao'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: yuanbao

@@ -1,0 +1,295 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.productivity.notion
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: notion\ndescription:\
+    \ \"Notion access. PRIMARY: the hosted Notion MCP tools (mcp_notion_*) \u2014\
+    \ semantic search, fetch, pages, databases, views, comments. FALLBACK: the governed\
+    \ notion.py script (scripts/notion.py) for sovereign, no-OAuth CRUD when the MCP\
+    \ is unavailable. ntn CLI/curl for uploads & Workers.\"\nversion: 2.0.0\nauthor:\
+    \ community\nlicense: MIT\nplatforms: [linux, macos, windows]\nprerequisites:\n\
+    \  env_vars: [NOTION_TOKEN]\nmetadata:\n  hermes:\n    tags: [Notion, Productivity,\
+    \ Notes, Database, API, CLI, Workers]\n    homepage: https://developers.notion.com\n\
+    ---\n\n# Notion\n\n**Primary path: the hosted Notion MCP tools.** Notion is wired\
+    \ into this\nAutonomaton as MCP tools named `mcp_notion_*` (the hosted service\
+    \ at\n`mcp.notion.com`, authenticated via OAuth). Each one routes through the\n\
+    Dispatcher per action, so the operator sees and approves every individual\ncall.\
+    \ Reach for these first \u2014 they cover semantic search, fetch,\npage/database\
+    \ create + update, views, templates, and comments:\n\n- **Search the workspace**\
+    \ \u2192 `mcp_notion_notion_search`\n- **Read a page** \u2192 `mcp_notion_notion_fetch`\n\
+    - **Create / update pages** \u2192 `mcp_notion_notion_create_pages` \xB7 `mcp_notion_notion_update_page`\n\
+    - **Databases** \u2192 `mcp_notion_notion_create_database` \xB7 `mcp_notion_notion_query_database_view`\n\
+    - **Comments** \u2192 `mcp_notion_notion_get_comments` \xB7 `mcp_notion_notion_create_comment`\n\
+    \n**Sovereign fallback: `scripts/notion.py`.** When the hosted MCP is\nunavailable\
+    \ (network outage, OAuth lapse), this script gives governed,\nno-OAuth CRUD straight\
+    \ against the Notion REST API using `NOTION_TOKEN`\nfrom `~/.grove/.env`. The\
+    \ terminal zone classifier governs it by\nsubcommand \u2014 reads (`search` /\
+    \ `get` / `query`) are Green, writes\n(`create-page` / `update-page`) are Yellow:\n\
+    \n```bash\nSKILL=~/.grove/skills/productivity/notion/scripts/notion.py\npython3\
+    \ \"$SKILL\" search \"Sprint 63\"\npython3 \"$SKILL\" get <page-url>\npython3\
+    \ \"$SKILL\" query <database-url> --filter \"Status=Active\"\npython3 \"$SKILL\"\
+    \ create-page <parent-url> \"Title\" --content \"First paragraph\"\npython3 \"\
+    $SKILL\" update-page <page-url> --title \"New Title\" --append \"A note\"\n```\n\
+    \nThe script owns URL\u2192ID parsing, the `properties.title` wrapper, and the\n\
+    API version header, so the agent never fumbles property schemas.\n\nThe `ntn`\
+    \ CLI and HTTP + curl paths below remain available for operations\nneither the\
+    \ MCP nor the script expose (large file uploads, Notion Workers).\nThey read `$NOTION_API_KEY`;\
+    \ if you use them, first run\n`export NOTION_API_KEY=\"$NOTION_TOKEN\"`.\n\n##\
+    \ Setup\n\n### 1. Get an integration token (for the fallback script + CLI)\n\n\
+    The hosted MCP authenticates via OAuth and needs no token here. The token\nbelow\
+    \ is only for the sovereign `notion.py` fallback and the `ntn`/curl paths.\n\n\
+    1. Create an integration at https://notion.so/my-integrations\n2. Copy the API\
+    \ key (starts with `ntn_` or `secret_`)\n3. Store it in `~/.grove/.env` as `NOTION_TOKEN`\
+    \ (the `notion.py` script reads this var):\n   ```\n   NOTION_TOKEN=ntn_your_key_here\n\
+    \   ```\n   The fallback CLI/curl examples below reference `$NOTION_API_KEY`;\
+    \ if you use\n   them, run `export NOTION_API_KEY=\"$NOTION_TOKEN\"` first.\n\
+    4. **Share target pages/databases with the integration** in Notion: page menu\
+    \ `...` \u2192 `Connect to` \u2192 your integration name. Without this, the API\
+    \ returns 404 for that page even though it exists.\n\n### 2. Install `ntn` (preferred\
+    \ path on macOS / Linux)\n\n```bash\n# Recommended\ncurl -fsSL https://ntn.dev\
+    \ | bash\n\n# Or via npm (needs Node 22+, npm 10+)\nnpm install --global ntn\n\
+    \nntn --version    # verify\n```\n\n**Skip `ntn login` \u2014 use the integration\
+    \ token instead.** This works headlessly, no browser needed:\n```bash\nexport\
+    \ NOTION_API_TOKEN=$NOTION_API_KEY      # ntn reads NOTION_API_TOKEN\nexport NOTION_KEYRING=0\
+    \                       # don't try to use the OS keychain\n```\n\nAdd those exports\
+    \ to your shell profile (or to `~/.hermes/.env`) so every session inherits them.\n\
+    \n### 3. Choose path at runtime\n\n```bash\nif command -v ntn >/dev/null 2>&1;\
+    \ then\n  # use ntn\nelse\n  # fall back to curl\nfi\n```\n\nWindows users: skip\
+    \ step 2 entirely until native `ntn` ships \u2014 Path B works fine. If you want\
+    \ CLI ergonomics now, install `ntn` inside WSL2.\n\n## API Basics\n\n`Notion-Version:\
+    \ 2025-09-03` is required on all HTTP requests. `ntn` handles this for you. In\
+    \ this version, what users call \"databases\" are called **data sources** in the\
+    \ API.\n\n## Path A \u2014 `ntn` CLI (preferred, macOS / Linux)\n\n### Raw API\
+    \ calls (shorthand for curl)\n```bash\nntn api v1/users                      \
+    \            # GET\nntn api v1/pages parent[page_id]=abc123 \\         # POST\
+    \ with inline body\n  properties[title][0][text][content]=\"Notes\"\nntn api v1/pages/abc123\
+    \ -X PATCH archived:=true   # PATCH; := is non-string (bool/num/null)\n```\n\n\
+    Syntax notes:\n- `key=value` \u2014 string fields\n- `key[nested]=value` \u2014\
+    \ nested object fields\n- `key:=value` \u2014 typed assignment (booleans, numbers,\
+    \ null, arrays)\n\n### Search\n```bash\nntn api v1/search query=\"page title\"\
+    \n```\n\n### Read page metadata\n```bash\nntn api v1/pages/{page_id}\n```\n\n\
+    ### Read page as Markdown (agent-friendly)\n```bash\nntn api v1/pages/{page_id}/markdown\n\
+    ```\n\n### Read page content as blocks\n```bash\nntn api v1/blocks/{page_id}/children\n\
+    ```\n\n### Create page from Markdown\n```bash\nntn api v1/pages \\\n  parent[page_id]=xxx\
+    \ \\\n  properties[title][0][text][content]=\"Notes from meeting\" \\\n  markdown=\"\
+    # Agenda\n\n- Q3 roadmap\n- Hiring\"\n```\n\n### Patch a page with Markdown\n\
+    ```bash\nntn api v1/pages/{page_id}/markdown -X PATCH \\\n  markdown=\"## Update\n\
+    \nShipped the prototype.\"\n```\n\n### Query a database (data source)\n```bash\n\
+    ntn api v1/data_sources/{data_source_id}/query -X POST \\\n  filter[property]=Status\
+    \ filter[select][equals]=Active\n```\n\nFor complex queries with `sorts`, multiple\
+    \ filter clauses, or compound logic, pipe JSON in:\n```bash\necho '{\"filter\"\
+    : {\"property\": \"Status\", \"select\": {\"equals\": \"Active\"}}, \"sorts\"\
+    : [{\"property\": \"Date\", \"direction\": \"descending\"}]}' | \\\n  ntn api\
+    \ v1/data_sources/{data_source_id}/query -X POST --json -\n```\n\n### File uploads\
+    \ (one-liner \u2014 biggest CLI win)\n```bash\nntn files create < photo.png\n\
+    ntn files create --external-url https://example.com/photo.png\nntn files list\n\
+    ```\n\nCompare to the 3-step HTTP flow (create upload \u2192 PUT bytes \u2192\
+    \ reference).\n\n### Useful env vars\n| Var | Effect |\n|---|---|\n| `NOTION_API_TOKEN`\
+    \ | Auth token (overrides keychain) \u2014 set this to your integration token\
+    \ |\n| `NOTION_KEYRING=0` | File-based creds at `~/.config/notion/auth.json` instead\
+    \ of OS keychain |\n| `NOTION_WORKSPACE_ID` | Skip the workspace picker prompt\
+    \ |\n\n## Path B \u2014 HTTP + curl (cross-platform, default on Windows)\n\nAll\
+    \ requests share this pattern:\n\n```bash\ncurl -s -X GET \"https://api.notion.com/v1/...\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\" \\\n  -H \"Content-Type: application/json\"\n```\n\nOn Windows\
+    \ the `curl` shipped with Windows 10+ works as-is. PowerShell users can also use\
+    \ `Invoke-RestMethod`.\n\n### Search\n```bash\ncurl -s -X POST \"https://api.notion.com/v1/search\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"query\"\
+    : \"page title\"}'\n```\n\n### Read page metadata\n```bash\ncurl -s \"https://api.notion.com/v1/pages/{page_id}\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\"\n```\n\n### Read page as Markdown (agent-friendly)\n\nEasier to\
+    \ feed to a model than block JSON.\n\n```bash\ncurl -s \"https://api.notion.com/v1/pages/{page_id}/markdown\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\"\n```\n\n### Read page content as blocks (when you need structure)\n\
+    ```bash\ncurl -s \"https://api.notion.com/v1/blocks/{page_id}/children\" \\\n\
+    \  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version: 2025-09-03\"\
+    \n```\n\n### Create page from Markdown\n\n`POST /v1/pages` accepts a `markdown`\
+    \ body param.\n\n```bash\ncurl -s -X POST \"https://api.notion.com/v1/pages\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"\
+    parent\": {\"page_id\": \"xxx\"},\n    \"properties\": {\"title\": [{\"text\"\
+    : {\"content\": \"Notes from meeting\"}}]},\n    \"markdown\": \"# Agenda\\n\\\
+    n- Q3 roadmap\\n- Hiring\\n\\n## Decisions\\n- Ship MVP Friday\"\n  }'\n```\n\n\
+    ### Patch a page with Markdown\n```bash\ncurl -s -X PATCH \"https://api.notion.com/v1/pages/{page_id}/markdown\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"markdown\"\
+    : \"## Update\\n\\nShipped the prototype.\"}'\n```\n\n### Create page in a database\
+    \ (typed properties)\n```bash\ncurl -s -X POST \"https://api.notion.com/v1/pages\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"\
+    parent\": {\"database_id\": \"xxx\"},\n    \"properties\": {\n      \"Name\":\
+    \ {\"title\": [{\"text\": {\"content\": \"New Item\"}}]},\n      \"Status\": {\"\
+    select\": {\"name\": \"Todo\"}}\n    }\n  }'\n```\n\n### Query a database (data\
+    \ source)\n```bash\ncurl -s -X POST \"https://api.notion.com/v1/data_sources/{data_source_id}/query\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"\
+    filter\": {\"property\": \"Status\", \"select\": {\"equals\": \"Active\"}},\n\
+    \    \"sorts\": [{\"property\": \"Date\", \"direction\": \"descending\"}]\n  }'\n\
+    ```\n\n### Create a database\n```bash\ncurl -s -X POST \"https://api.notion.com/v1/data_sources\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"\
+    parent\": {\"page_id\": \"xxx\"},\n    \"title\": [{\"text\": {\"content\": \"\
+    My Database\"}}],\n    \"properties\": {\n      \"Name\": {\"title\": {}},\n \
+    \     \"Status\": {\"select\": {\"options\": [{\"name\": \"Todo\"}, {\"name\"\
+    : \"Done\"}]}},\n      \"Date\": {\"date\": {}}\n    }\n  }'\n```\n\n### Update\
+    \ page properties\n```bash\ncurl -s -X PATCH \"https://api.notion.com/v1/pages/{page_id}\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"properties\"\
+    : {\"Status\": {\"select\": {\"name\": \"Done\"}}}}'\n```\n\n### Append blocks\
+    \ to a page\n```bash\ncurl -s -X PATCH \"https://api.notion.com/v1/blocks/{page_id}/children\"\
+    \ \\\n  -H \"Authorization: Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version:\
+    \ 2025-09-03\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"\
+    children\": [\n      {\"object\": \"block\", \"type\": \"paragraph\", \"paragraph\"\
+    : {\"rich_text\": [{\"text\": {\"content\": \"Hello from Hermes!\"}}]}}\n    ]\n\
+    \  }'\n```\n\n### File uploads (3-step flow)\n```bash\n# 1. Create upload\ncurl\
+    \ -s -X POST \"https://api.notion.com/v1/file_uploads\" \\\n  -H \"Authorization:\
+    \ Bearer $NOTION_API_KEY\" \\\n  -H \"Notion-Version: 2025-09-03\" \\\n  -H \"\
+    Content-Type: application/json\" \\\n  -d '{\"filename\": \"photo.png\", \"content_type\"\
+    : \"image/png\"}'\n\n# 2. PUT bytes to the upload_url returned above\ncurl -s\
+    \ -X PUT \"{upload_url}\" --data-binary @photo.png\n\n# 3. Reference {file_upload_id}\
+    \ in a page/block payload\n```\n\n## Property Types\n\nCommon property formats\
+    \ for database items:\n\n- **Title:** `{\"title\": [{\"text\": {\"content\": \"\
+    ...\"}}]}`\n- **Rich text:** `{\"rich_text\": [{\"text\": {\"content\": \"...\"\
+    }}]}`\n- **Select:** `{\"select\": {\"name\": \"Option\"}}`\n- **Multi-select:**\
+    \ `{\"multi_select\": [{\"name\": \"A\"}, {\"name\": \"B\"}]}`\n- **Date:** `{\"\
+    date\": {\"start\": \"2026-01-15\", \"end\": \"2026-01-16\"}}`\n- **Checkbox:**\
+    \ `{\"checkbox\": true}`\n- **Number:** `{\"number\": 42}`\n- **URL:** `{\"url\"\
+    : \"https://...\"}`\n- **Email:** `{\"email\": \"user@example.com\"}`\n- **Relation:**\
+    \ `{\"relation\": [{\"id\": \"page_id\"}]}`\n\n## API Version 2025-09-03 \u2014\
+    \ Databases vs Data Sources\n\n- **Databases became data sources.** Use `/data_sources/`\
+    \ endpoints for queries and retrieval.\n- **Two IDs per database:** `database_id`\
+    \ and `data_source_id`.\n  - `database_id` when creating pages: `parent: {\"database_id\"\
+    : \"...\"}`\n  - `data_source_id` when querying: `POST /v1/data_sources/{id}/query`\n\
+    - Search returns databases as `\"object\": \"data_source\"` with the `data_source_id`\
+    \ field.\n\n## Notion Workers (advanced, requires `ntn`)\n\nWorkers are TypeScript\
+    \ programs Notion hosts for you. One worker can expose any combination of:\n-\
+    \ **Syncs** \u2014 pull data from external APIs into a Notion database on a schedule\
+    \ (default 30 min).\n- **Tools** \u2014 appear as callable tools inside Notion's\
+    \ Custom Agents.\n- **Webhooks** \u2014 receive HTTP events from external services\
+    \ (GitHub, Stripe, etc.) and act in Notion.\n\n**Plan / platform gating:**\n-\
+    \ CLI works on all plans. **Deploying Workers requires Business or Enterprise.**\n\
+    - `ntn` is macOS/Linux only as of May 2026. Windows users need WSL2 or to wait\
+    \ for native support.\n- Free through August 11, 2026; metered on Notion credits\
+    \ after.\n\n### Minimal Worker\n\n```bash\nntn workers new my-worker      # scaffold\n\
+    cd my-worker\n# Edit src/index.ts\nntn workers deploy --name my-worker\n```\n\n\
+    `src/index.ts`:\n```typescript\nimport { Worker } from \"@notionhq/workers\";\n\
+    \nconst worker = new Worker();\nexport default worker;\n\nworker.tool(\"greet\"\
+    , {\n  title: \"Greet a User\",\n  description: \"Returns a friendly greeting\"\
+    ,\n  inputSchema: { type: \"object\", properties: { name: { type: \"string\" }\
+    \ }, required: [\"name\"] },\n  execute: async ({ name }) => `Hello, ${name}!`,\n\
+    });\n```\n\n### Webhook capability\n\n```typescript\nworker.webhook(\"onGithubPush\"\
+    , {\n  title: \"GitHub Push Handler\",\n  execute: async (events, { notion })\
+    \ => {\n    for (const event of events) {\n      // event.body, event.rawBody\
+    \ (for signature verification), event.headers\n      console.log(\"got delivery\"\
+    , event.deliveryId);\n    }\n  },\n});\n```\n\nAfter deploy: `ntn workers webhooks\
+    \ list` shows the URL Notion generates. Treat that URL as a secret \u2014 anyone\
+    \ with it can POST events unless you add signature verification.\n\n### Worker\
+    \ lifecycle commands\n\n```bash\nntn workers deploy\nntn workers list\nntn workers\
+    \ exec <capability-key> -d '{\"name\": \"world\"}'\nntn workers sync trigger <key>\
+    \            # run a sync now\nntn workers sync pause <key>\nntn workers env set\
+    \ GITHUB_WEBHOOK_SECRET=...\nntn workers runs list                     # recent\
+    \ invocations\nntn workers runs logs <run-id>\nntn workers webhooks list\n```\n\
+    \nWhen asked to build a Worker, scaffold with `ntn workers new`, write the code\
+    \ in `src/index.ts`, set any secrets with `ntn workers env set`, and deploy. Notion's\
+    \ docs at https://developers.notion.com/workers cover the full API surface.\n\n\
+    ## Notion-Flavored Markdown (used by `/markdown` endpoints)\n\nStandard CommonMark\
+    \ plus XML-like tags for Notion-specific blocks. Use **tabs** for indentation.\n\
+    \n**Blocks beyond CommonMark:**\n```\n<callout icon=\"\U0001F3AF\" color=\"blue_bg\"\
+    >\n\tShip the MVP by **Friday**.\n</callout>\n\n<details color=\"gray\">\n<summary>Toggle\
+    \ title</summary>\n\tChildren indented one tab\n</details>\n\n<columns>\n\t<column>Left\
+    \ side</column>\n\t<column>Right side</column>\n</columns>\n\n<table_of_contents\
+    \ color=\"gray\"/>\n```\n\n**Inline:**\n- Mentions: `<mention-user url=\"...\"\
+    />`, `<mention-page url=\"...\">Title</mention-page>`, `<mention-date start=\"\
+    2026-05-15\"/>`\n- Underline: `<span underline=\"true\">text</span>`\n- Color:\
+    \ `<span color=\"blue\">text</span>` or block-level `{color=\"blue\"}` on the\
+    \ first line\n- Math: inline `$x^2$`, block `$$ ... $$`\n- Citations: `[^https://example.com]`\n\
+    \n**Colors:** `gray brown orange yellow green blue purple pink red`, plus `*_bg`\
+    \ variants for backgrounds.\n\nHeadings 5/6 collapse to H4. Multiple `>` lines\
+    \ render as separate quote blocks \u2014 use `<br>` inside a single `>` for multi-line\
+    \ quotes.\n\n## Choosing the Right Path\n\nThis table is for the **fallback**\
+    \ CLI/curl paths only. For anything the\n`mcp_notion_API_*` tools cover (search,\
+    \ pages, databases, blocks, comments),\nuse the MCP tool \u2014 see the top of\
+    \ this skill. Drop to the rows below only for\nfile uploads or Workers.\n\n| Task\
+    \ | mac / Linux | Windows |\n|---|---|---|\n| Read/write pages, search, query\
+    \ databases | `ntn api ...` | curl |\n| Read a page for an agent to summarize\
+    \ | `ntn api v1/pages/{id}/markdown` | curl `/markdown` endpoint |\n| Upload a\
+    \ file | `ntn files create < file` | 3-step HTTP flow |\n| One-off API exploration\
+    \ | `ntn api ...` | curl |\n| Build a sync / webhook / agent tool hosted by Notion\
+    \ | `ntn workers ...` | WSL2 + `ntn workers ...` |\n\n## Notes\n\n- Page/database\
+    \ IDs are UUIDs (with or without dashes \u2014 both accepted).\n- Rate limit:\
+    \ ~3 requests/second average. The CLI doesn't bypass this.\n- The API cannot set\
+    \ database **view** filters \u2014 that's UI-only.\n- Use `\"is_inline\": true`\
+    \ when creating data sources to embed them in a page.\n- Always pass `-s` to curl\
+    \ to suppress progress bars (cleaner agent output).\n- Pipe JSON through `jq`\
+    \ when reading: `... | jq '.results[0].properties'`.\n- The governed `mcp_notion_API_*`\
+    \ MCP tools are the PRIMARY path in this Autonomaton (see the top of this skill)\
+    \ \u2014 prefer them over the CLI/curl examples above. Those examples are a fallback\
+    \ for operations the MCP tools don't expose (large file uploads, Workers).\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/productivity/notion/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.productivity.notion'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: productivity

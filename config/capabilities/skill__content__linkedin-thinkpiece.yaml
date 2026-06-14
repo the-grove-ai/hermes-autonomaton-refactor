@@ -1,0 +1,152 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.content.linkedin-thinkpiece
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\nname: linkedin-thinkpiece\ndescription: Transform source material\
+    \ into Jim Calhoun's strategic tech commentary for LinkedIn. Use when the user\
+    \ says \"write a LinkedIn piece about...\", \"turn this into a LinkedIn thinkpiece\"\
+    , \"LinkedIn draft from...\", \"thinkpiece on...\", or requests LinkedIn long-form\
+    \ content on technology, AI, or infrastructure topics. Produces 800-2,500 word\
+    \ thought leadership with claim-based headers, specific evidence, and reveal-and-reframe\
+    \ architecture. Supports three modes \u2014 standard analysis (1,500-2,500 words),\
+    \ short reaction (800-1,200 words), and thread-seed (150-300 words).\n---\n\n\
+    # LinkedIn Thinkpiece\n\nProduce LinkedIn thought leadership establishing Jim\
+    \ Calhoun as a credible voice on AI infrastructure, concentration risk, and the\
+    \ strategic implications of technical decisions most people treat as routine.\n\
+    \n## The Author\n\nJim Calhoun writes as a software veteran who watched the open\
+    \ internet become platform dependency. His authority comes from **pattern recognition\
+    \ across tech cycles**, not credentials or titles. Journalism training (University\
+    \ of Missouri), Silicon Valley experience during the open internet era, AI experimentation\
+    \ since 2017-2018. Reads research papers, regulatory filings, and technical documentation\
+    \ \u2014 not just headlines.\n\n**He is:** A technologist who's seen this movie\
+    \ before. Specific about mechanisms, not vague about \"dangers.\" Willing to say\
+    \ what the implications are when others stop at description.\n\n**He is not:**\
+    \ A doomsayer, a crypto evangelist, a founder pitching his product, an academic,\
+    \ or a consultant packaging frameworks.\n\n## Voice (Summary)\n\nActive voice.\
+    \ Present tense. Short sentences carrying complex ideas. 8th-grade reading level,\
+    \ graduate-level thinking.\n\n**Lead with the implication, not the event:**\n\
+    - \u274C \"OpenAI announced a new identity system at their developer conference.\"\
+    \n- \u2705 \"OpenAI just made a play for the identity layer of the internet \u2014\
+    \ and almost nobody noticed.\"\n\n**Be specific about mechanisms.** Name the company,\
+    \ the product, the number. \"Significant growth\" is not an observation. \"31%\
+    \ year-over-year on a $4.2B base\" is an observation.\n\nFor the complete rhetorical\
+    \ toolkit, reframe techniques, and anti-patterns list, see [references/voice-rules.md](references/voice-rules.md).\n\
+    \n## Structure: Reveal-and-Reframe Architecture\n\nThe reader arrives thinking\
+    \ they understand a topic. They leave seeing it differently.\n\n### 1. The Hook\
+    \ (1-3 paragraphs)\n\nAnchor in something specific and recent \u2014 a product\
+    \ launch, research paper, earnings call, policy change. Establish credibility\
+    \ and currency in the first sentence. Within three paragraphs, pivot from what\
+    \ happened to what it *means*.\n\n### 2. The Build (3-5 headed sections)\n\nEach\
+    \ section advances the argument one rung. No section repeats another's claim.\n\
+    \n**Section headers must be claims, not topics:**\n- \u274C \"Enterprise Implications\"\
+    \n- \u2705 \"Your Enterprise Agreement Won't Protect You\"\n\n**Evidence layering:**\
+    \ Start specific (one company's decision), expand outward (industry pattern \u2192\
+    \ structural dynamic). Never start abstract.\n\n### 3. The Cascade (1-2 paragraphs,\
+    \ optional)\n\nFan implications across audiences: \"If you're a [role], this means...\"\
+    \ Makes the piece shareable. Skip when the point is universal.\n\n### 4. The Close\
+    \ (1-2 paragraphs)\n\nEnd with urgency, not summary. Never restate the argument.\
+    \ Leave the reader with a question they'll keep thinking about, a window that's\
+    \ closing, or a choice they didn't realize they were making.\n\n**Never end with:**\
+    \ a call to action, a product mention, or \"What do you think?\"\n\n## The Grove\
+    \ Dial\n\nMost pieces sit in Zone 1 or 2. Default to Zone 1 unless source material\
+    \ naturally pulls toward Zone 2.\n\n| Zone | Description | Frequency |\n|------|-------------|-----------|\n\
+    | Zone 1: Pure Analysis | No mention of alternatives or distributed infrastructure.\
+    \ Credibility comes from the analysis itself. | Most common |\n| Zone 2: Thesis-Adjacent\
+    \ | Analysis naturally raises questions about infrastructure ownership or concentration\
+    \ risk. Reader connects dots. May mention \"distributed alternatives\" as a category,\
+    \ never a product. | Frequent |\n| Zone 3: Thesis-Central | Explicitly about centralized\
+    \ vs. distributed infrastructure. Grove mentioned as one approach among several.\
+    \ | Rare (~1 in 10) |\n\n## Process\n\n### Step 1: Identify the Source Signal\n\
+    \nFind the specific, concrete anchor. It should be recent (last 2-4 weeks), specific\
+    \ (named event/paper/announcement), and underanalyzed (the obvious take has been\
+    \ written \u2014 what hasn't?).\n\n- For research papers: the implication the\
+    \ authors didn't emphasize\n- For news events: the second-order effect \u2014\
+    \ what it enables or forecloses\n- For a thesis: the most counterintuitive version\
+    \ that makes people stop scrolling\n\n### Step 2: Find the Angle Nobody's Written\n\
+    \nThe angle that would make a thoughtful CTO nod and say \"I hadn't thought about\
+    \ it that way.\" Must pass two tests: (1) non-obvious \u2014 can't be reached\
+    \ from reading the headline alone, and (2) defensible \u2014 supported by specific\
+    \ evidence, not vibes.\n\n### Step 3: Map the Build\n\nOutline 3-5 sections. Check\
+    \ that no two make the same point, each has specific evidence, and they build\
+    \ in scope (personal \u2192 institutional \u2192 structural, or present \u2192\
+    \ near-term \u2192 systemic).\n\n### Step 4: Draft\n\nWrite the full piece. Target\
+    \ 1,500-2,500 words standard, 800-1,200 words for lighter topics. 150-300 words\
+    \ for thread-seeds (single sharp observation, no headed sections).\n\n### Step\
+    \ 5: Voice Check\n\nVerify against these questions:\n- Does the first sentence\
+    \ earn the second?\n- Could you cut the first paragraph and lose nothing? (If\
+    \ yes, cut it.)\n- Is every section header a claim, not a topic?\n- Did you use\
+    \ the same rhetorical device twice? (Vary one.)\n- Does the close summarize? (Rewrite\
+    \ it.)\n- Does it read like a pitch at any point? (Strip it back to analysis.)\n\
+    \nFor structural examples from published pieces, see [references/examples.md](references/examples.md).\n\
+    \n## Quality Standard\n\nThe finished piece should pass this test: if a CTO, a\
+    \ policy researcher, and a mid-career developer all read it, each should find\
+    \ something that makes them reconsider an assumption. If it only works for one\
+    \ audience, the build sections aren't varied enough. If it works for none, the\
+    \ angle isn't sharp enough.\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/content/linkedin-thinkpiece/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.content.linkedin-thinkpiece'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: content

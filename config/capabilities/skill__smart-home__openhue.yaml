@@ -1,0 +1,108 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.smart-home.openhue
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: openhue\ndescription:\
+    \ \"Control Philips Hue lights, scenes, rooms via OpenHue CLI.\"\nversion: 1.0.0\n\
+    author: community\nlicense: MIT\nplatforms: [linux, macos, windows]\nmetadata:\n\
+    \  hermes:\n    tags: [Smart-Home, Hue, Lights, IoT, Automation]\n    homepage:\
+    \ https://www.openhue.io/cli\nprerequisites:\n  commands: [openhue]\n---\n\n#\
+    \ OpenHue CLI\n\nControl Philips Hue lights and scenes via a Hue Bridge from the\
+    \ terminal.\n\n## Prerequisites\n\n```bash\n# Linux (pre-built binary)\ncurl -sL\
+    \ https://github.com/openhue/openhue-cli/releases/latest/download/openhue-linux-amd64\
+    \ -o ~/.local/bin/openhue && chmod +x ~/.local/bin/openhue\n\n# macOS\nbrew install\
+    \ openhue/cli/openhue-cli\n```\n\nFirst run requires pressing the button on your\
+    \ Hue Bridge to pair. The bridge must be on the same local network.\n\n## When\
+    \ to Use\n\n- \"Turn on/off the lights\"\n- \"Dim the living room lights\"\n-\
+    \ \"Set a scene\" or \"movie mode\"\n- Controlling specific Hue rooms, zones,\
+    \ or individual bulbs\n- Adjusting brightness, color, or color temperature\n\n\
+    ## Common Commands\n\n### List Resources\n\n```bash\nopenhue get light       #\
+    \ List all lights\nopenhue get room        # List all rooms\nopenhue get scene\
+    \       # List all scenes\n```\n\n### Control Lights\n\n```bash\n# Turn on/off\n\
+    openhue set light \"Bedroom Lamp\" --on\nopenhue set light \"Bedroom Lamp\" --off\n\
+    \n# Brightness (0-100)\nopenhue set light \"Bedroom Lamp\" --on --brightness 50\n\
+    \n# Color temperature (warm to cool: 153-500 mirek)\nopenhue set light \"Bedroom\
+    \ Lamp\" --on --temperature 300\n\n# Color (by name or hex)\nopenhue set light\
+    \ \"Bedroom Lamp\" --on --color red\nopenhue set light \"Bedroom Lamp\" --on --rgb\
+    \ \"#FF5500\"\n```\n\n### Control Rooms\n\n```bash\n# Turn off entire room\nopenhue\
+    \ set room \"Bedroom\" --off\n\n# Set room brightness\nopenhue set room \"Bedroom\"\
+    \ --on --brightness 30\n```\n\n### Scenes\n\n```bash\nopenhue set scene \"Relax\"\
+    \ --room \"Bedroom\"\nopenhue set scene \"Concentrate\" --room \"Office\"\n```\n\
+    \n## Quick Presets\n\n```bash\n# Bedtime (dim warm)\nopenhue set room \"Bedroom\"\
+    \ --on --brightness 20 --temperature 450\n\n# Work mode (bright cool)\nopenhue\
+    \ set room \"Office\" --on --brightness 100 --temperature 250\n\n# Movie mode\
+    \ (dim)\nopenhue set room \"Living Room\" --on --brightness 10\n\n# Everything\
+    \ off\nopenhue set room \"Bedroom\" --off\nopenhue set room \"Office\" --off\n\
+    openhue set room \"Living Room\" --off\n```\n\n## Notes\n\n- Bridge must be on\
+    \ the same local network as the machine running Hermes\n- First run requires physically\
+    \ pressing the button on the Hue Bridge to authorize\n- Colors only work on color-capable\
+    \ bulbs (not white-only models)\n- Light and room names are case-sensitive \u2014\
+    \ use `openhue get light` to check exact names\n- Works great with cron jobs for\
+    \ scheduled lighting (e.g. dim at bedtime, bright at wake)\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/smart-home/openhue/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.smart-home.openhue'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: smart-home

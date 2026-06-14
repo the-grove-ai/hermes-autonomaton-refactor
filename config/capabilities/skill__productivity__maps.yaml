@@ -1,0 +1,160 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.productivity.maps
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: maps\ndescription:\
+    \ \"Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.\"\nversion: 1.2.0\n\
+    author: Mibayy\nlicense: MIT\nplatforms: [linux, macos, windows]\nmetadata:\n\
+    \  hermes:\n    tags: [maps, geocoding, places, routing, distance, directions,\
+    \ nearby, location, openstreetmap, nominatim, overpass, osrm]\n    category: productivity\n\
+    \    requires_toolsets: [terminal]\n    supersedes: [find-nearby]\n---\n\n# Maps\
+    \ Skill\n\nLocation intelligence using free, open data sources. 8 commands, 44\
+    \ POI\ncategories, zero dependencies (Python stdlib only), no API key required.\n\
+    \nData sources: OpenStreetMap/Nominatim, Overpass API, OSRM, TimeAPI.io.\n\nThis\
+    \ skill supersedes the old `find-nearby` skill \u2014 all of find-nearby's\nfunctionality\
+    \ is covered by the `nearby` command below, with the same\n`--near \"<place>\"\
+    ` shortcut and multi-category support.\n\n## When to Use\n\n- User sends a Telegram\
+    \ location pin (latitude/longitude in the message) \u2192 `nearby`\n- User wants\
+    \ coordinates for a place name \u2192 `search`\n- User has coordinates and wants\
+    \ the address \u2192 `reverse`\n- User asks for nearby restaurants, hospitals,\
+    \ pharmacies, hotels, etc. \u2192 `nearby`\n- User wants driving/walking/cycling\
+    \ distance or travel time \u2192 `distance`\n- User wants turn-by-turn directions\
+    \ between two places \u2192 `directions`\n- User wants timezone information for\
+    \ a location \u2192 `timezone`\n- User wants to search for POIs within a geographic\
+    \ area \u2192 `area` + `bbox`\n\n## Prerequisites\n\nPython 3.8+ (stdlib only\
+    \ \u2014 no pip installs needed).\n\nScript path: `~/.hermes/skills/maps/scripts/maps_client.py`\n\
+    \n## Commands\n\n```bash\nMAPS=~/.hermes/skills/maps/scripts/maps_client.py\n\
+    ```\n\n### search \u2014 Geocode a place name\n\n```bash\npython3 $MAPS search\
+    \ \"Eiffel Tower\"\npython3 $MAPS search \"1600 Pennsylvania Ave, Washington DC\"\
+    \n```\n\nReturns: lat, lon, display name, type, bounding box, importance score.\n\
+    \n### reverse \u2014 Coordinates to address\n\n```bash\npython3 $MAPS reverse\
+    \ 48.8584 2.2945\n```\n\nReturns: full address breakdown (street, city, state,\
+    \ country, postcode).\n\n### nearby \u2014 Find places by category\n\n```bash\n\
+    # By coordinates (from a Telegram location pin, for example)\npython3 $MAPS nearby\
+    \ 48.8584 2.2945 restaurant --limit 10\npython3 $MAPS nearby 40.7128 -74.0060\
+    \ hospital --radius 2000\n\n# By address / city / zip / landmark \u2014 --near\
+    \ auto-geocodes\npython3 $MAPS nearby --near \"Times Square, New York\" --category\
+    \ cafe\npython3 $MAPS nearby --near \"90210\" --category pharmacy\n\n# Multiple\
+    \ categories merged into one query\npython3 $MAPS nearby --near \"downtown austin\"\
+    \ --category restaurant --category bar --limit 10\n```\n\n46 categories: restaurant,\
+    \ cafe, bar, hospital, pharmacy, hotel, guest_house,\ncamp_site, supermarket,\
+    \ atm, gas_station, parking, museum, park, school,\nuniversity, bank, police,\
+    \ fire_station, library, airport, train_station,\nbus_stop, church, mosque, synagogue,\
+    \ dentist, doctor, cinema, theatre, gym,\nswimming_pool, post_office, convenience_store,\
+    \ bakery, bookshop, laundry,\ncar_wash, car_rental, bicycle_rental, taxi, veterinary,\
+    \ zoo, playground,\nstadium, nightclub.\n\nEach result includes: `name`, `address`,\
+    \ `lat`/`lon`, `distance_m`,\n`maps_url` (clickable Google Maps link), `directions_url`\
+    \ (Google Maps\ndirections from the search point), and promoted tags when available\
+    \ \u2014\n`cuisine`, `hours` (opening_hours), `phone`, `website`.\n\n### distance\
+    \ \u2014 Travel distance and time\n\n```bash\npython3 $MAPS distance \"Paris\"\
+    \ --to \"Lyon\"\npython3 $MAPS distance \"New York\" --to \"Boston\" --mode driving\n\
+    python3 $MAPS distance \"Big Ben\" --to \"Tower Bridge\" --mode walking\n```\n\
+    \nModes: driving (default), walking, cycling. Returns road distance, duration,\n\
+    and straight-line distance for comparison.\n\n### directions \u2014 Turn-by-turn\
+    \ navigation\n\n```bash\npython3 $MAPS directions \"Eiffel Tower\" --to \"Louvre\
+    \ Museum\" --mode walking\npython3 $MAPS directions \"JFK Airport\" --to \"Times\
+    \ Square\" --mode driving\n```\n\nReturns numbered steps with instruction, distance,\
+    \ duration, road name, and\nmaneuver type (turn, depart, arrive, etc.).\n\n###\
+    \ timezone \u2014 Timezone for coordinates\n\n```bash\npython3 $MAPS timezone\
+    \ 48.8584 2.2945\npython3 $MAPS timezone 35.6762 139.6503\n```\n\nReturns timezone\
+    \ name, UTC offset, and current local time.\n\n### area \u2014 Bounding box and\
+    \ area for a place\n\n```bash\npython3 $MAPS area \"Manhattan, New York\"\npython3\
+    \ $MAPS area \"London\"\n```\n\nReturns bounding box coordinates, width/height\
+    \ in km, and approximate area.\nUseful as input for the bbox command.\n\n### bbox\
+    \ \u2014 Search within a bounding box\n\n```bash\npython3 $MAPS bbox 40.75 -74.00\
+    \ 40.77 -73.98 restaurant --limit 20\n```\n\nFinds POIs within a geographic rectangle.\
+    \ Use `area` first to get the\nbounding box coordinates for a named place.\n\n\
+    ## Working With Telegram Location Pins\n\nWhen a user sends a location pin, the\
+    \ message contains `latitude:` and\n`longitude:` fields. Extract those and pass\
+    \ them straight to `nearby`:\n\n```bash\n# User sent a pin at 36.17, -115.14 and\
+    \ asked \"find cafes nearby\"\npython3 $MAPS nearby 36.17 -115.14 cafe --radius\
+    \ 1500\n```\n\nPresent results as a numbered list with names, distances, and the\n\
+    `maps_url` field so the user gets a tap-to-open link in chat. For \"open\nnow?\"\
+    \ questions, check the `hours` field; if missing or unclear, verify\nwith `web_search`\
+    \ since OSM hours are community-maintained and not always\ncurrent.\n\n## Workflow\
+    \ Examples\n\n**\"Find Italian restaurants near the Colosseum\":**\n1. `nearby\
+    \ --near \"Colosseum Rome\" --category restaurant --radius 500`\n   \u2014 one\
+    \ command, auto-geocoded\n\n**\"What's near this location pin they sent?\":**\n\
+    1. Extract lat/lon from the Telegram message\n2. `nearby LAT LON cafe --radius\
+    \ 1500`\n\n**\"How do I walk from hotel to conference center?\":**\n1. `directions\
+    \ \"Hotel Name\" --to \"Conference Center\" --mode walking`\n\n**\"What restaurants\
+    \ are in downtown Seattle?\":**\n1. `area \"Downtown Seattle\"` \u2192 get bounding\
+    \ box\n2. `bbox S W N E restaurant --limit 30`\n\n## Pitfalls\n\n- Nominatim ToS:\
+    \ max 1 req/s (handled automatically by the script)\n- `nearby` requires lat/lon\
+    \ OR `--near \"<address>\"` \u2014 one of the two is needed\n- OSRM routing coverage\
+    \ is best for Europe and North America\n- Overpass API can be slow during peak\
+    \ hours; the script automatically\n  falls back between mirrors (overpass-api.de\
+    \ \u2192 overpass.kumi.systems)\n- `distance` and `directions` use `--to` flag\
+    \ for the destination (not positional)\n- If a zip code alone gives ambiguous\
+    \ results globally, include country/state\n\n## Verification\n\n```bash\npython3\
+    \ ~/.hermes/skills/maps/scripts/maps_client.py search \"Statue of Liberty\"\n\
+    # Should return lat ~40.689, lon ~-74.044\n\npython3 ~/.hermes/skills/maps/scripts/maps_client.py\
+    \ nearby --near \"Times Square\" --category restaurant --limit 3\n# Should return\
+    \ a list of restaurants within ~500m of Times Square\n```\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/productivity/maps/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.productivity.maps'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: productivity

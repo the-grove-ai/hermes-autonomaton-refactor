@@ -1,0 +1,171 @@
+# GRV-009 E6a C2 (skill-migration-v1) — migrated kind=skill record.
+# provenance=migrated, lifecycle=active, WRITE-ONCE (no mutation path in E6a).
+# zone operator-signed (GATE-B2). Body inline + pull disclosure. Source: repo skills/.
+id: skill.software-development.debugging-hermes-tui-commands
+kind: skill
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\ncreated_by: bundled\nzone: green\ntier: T0\nname: debugging-hermes-tui-commands\n\
+    description: \"Debug Hermes TUI slash commands: Python, gateway, Ink UI.\"\nversion:\
+    \ 1.0.0\nauthor: Hermes Agent\nlicense: MIT\nplatforms: [linux, macos, windows]\n\
+    metadata:\n  hermes:\n    tags: [debugging, hermes-agent, tui, slash-commands,\
+    \ typescript, python]\n    related_skills: [python-debugpy, node-inspect-debugger,\
+    \ systematic-debugging]\n---\n\n# Debugging Hermes TUI Slash Commands\n\n## Overview\n\
+    \nHermes slash commands span three layers \u2014 Python command registry, tui_gateway\
+    \ JSON-RPC bridge, and the Ink/TypeScript frontend. When a command misbehaves\
+    \ (missing from autocomplete, works in CLI but not TUI, config persists but UI\
+    \ doesn't update), the bug is almost always one layer being out of sync with another.\n\
+    \nUse this skill when you encounter issues with slash commands in the Hermes TUI,\
+    \ particularly when commands aren't showing in autocomplete, aren't working properly\
+    \ in the TUI, or need to be added/updated.\n\n## When to Use\n\n- A slash command\
+    \ exists in one part of the codebase but doesn't work fully\n- A command needs\
+    \ to be added to both backend and frontend\n- Command autocomplete isn't working\
+    \ for specific commands\n- Command behavior is inconsistent between CLI and TUI\n\
+    - A command persists config but doesn't apply live in the TUI\n\n## Architecture\
+    \ Overview\n\n```\nPython backend (hermes_cli/commands.py)     <- canonical COMMAND_REGISTRY\n\
+    \       \u2502\n       \u25BC\nTUI gateway (tui_gateway/server.py)         <-\
+    \ slash.exec / command.dispatch\n       \u2502\n       \u25BC\nTUI frontend (ui-tui/src/app/slash/)\
+    \        <- local handlers + fallthrough\n```\n\nCommand definitions must be registered\
+    \ consistently across Python and TypeScript to work properly. The Python `COMMAND_REGISTRY`\
+    \ is the source of truth for: CLI dispatch, gateway help, Telegram BotCommand\
+    \ menu, Slack subcommand map, and autocomplete data shipped to Ink.\n\n## Investigation\
+    \ Steps\n\n1. **Check if the command exists in the TUI frontend:**\n   ```bash\n\
+    \   search_files --pattern \"/commandname\" --file_glob \"*.ts\" --path ui-tui/\n\
+    \   search_files --pattern \"/commandname\" --file_glob \"*.tsx\" --path ui-tui/\n\
+    \   ```\n\n2. **Examine the TUI command definition:**\n   ```bash\n   read_file\
+    \ ui-tui/src/app/slash/commands/core.ts\n   # If not there:\n   search_files --pattern\
+    \ \"commandname\" --path ui-tui/src/app/slash/commands --target files\n   ```\n\
+    \n3. **Check if the command exists in the Python backend:**\n   ```bash\n   search_files\
+    \ --pattern \"CommandDef\" --file_glob \"*.py\" --path hermes_cli/\n   search_files\
+    \ --pattern \"commandname\" --path hermes_cli/commands.py --context 3\n   ```\n\
+    \n4. **Examine the gateway implementation:**\n   ```bash\n   search_files --pattern\
+    \ \"complete.slash|slash.exec\" --path tui_gateway/\n   ```\n\n## Fix: Missing\
+    \ Command Autocomplete\n\nIf a command exists in the TUI but doesn't show in autocomplete:\n\
+    \n1. Add a `CommandDef` entry to `COMMAND_REGISTRY` in `hermes_cli/commands.py`:\n\
+    \   ```python\n   CommandDef(\"commandname\", \"Description of the command\",\
+    \ \"Session\",\n              cli_only=True, aliases=(\"alias\",),\n         \
+    \     args_hint=\"[arg1|arg2|arg3]\",\n              subcommands=(\"arg1\", \"\
+    arg2\", \"arg3\")),\n   ```\n\n2. Pick `cli_only` vs gateway availability carefully:\n\
+    \   - `cli_only=True` \u2014 only in the interactive CLI/TUI\n   - `gateway_only=True`\
+    \ \u2014 only in messaging platforms\n   - neither \u2014 available everywhere\n\
+    \   - `gateway_config_gate=\"display.foo\"` \u2014 config-gated availability in\
+    \ the gateway\n\n3. Ensure `subcommands` matches the expected tab-completion options\
+    \ shown by the TUI.\n\n4. If the command runs server-side, add a handler in `HermesCLI.process_command()`\
+    \ in `cli.py`:\n   ```python\n   elif canonical == \"commandname\":\n       self._handle_commandname(cmd_original)\n\
+    \   ```\n\n5. For gateway-available commands, add a handler in `gateway/run.py`:\n\
+    \   ```python\n   if canonical == \"commandname\":\n       return await self._handle_commandname(event)\n\
+    \   ```\n\n## Common Issues\n\n1. **Command shows in TUI but not in autocomplete.**\
+    \ The command is defined in the TUI codebase but missing from `COMMAND_REGISTRY`\
+    \ in `hermes_cli/commands.py`. Autocomplete data ships from Python.\n\n2. **Command\
+    \ shows in autocomplete but doesn't work.** Check the command handler in `tui_gateway/server.py`\
+    \ and the frontend handler in `ui-tui/src/app/createSlashHandler.ts`. If the command\
+    \ is local-only in Ink, it must be handled in `app.tsx` built-in branch; otherwise\
+    \ it falls through to `slash.exec` and must have a Python handler.\n\n3. **Command\
+    \ behavior differs between CLI and TUI.** The command might have different implementations.\
+    \ Check both `cli.py::process_command` and the TUI's local handler. Local TUI\
+    \ handlers take precedence over gateway dispatch.\n\n4. **Command persists config\
+    \ but doesn't apply live.** For TUI-local commands, updating `config.set` is not\
+    \ enough. Also patch the relevant nanostore state immediately (usually `patchUiState(...)`)\
+    \ and pass any new state through rendering components. Example: `/details collapsed`\
+    \ must update live detail visibility, not just save `details_mode`; in-session\
+    \ global `/details <mode>` may need a separate command-override flag so live commands\
+    \ can override built-in section defaults while startup/config sync preserves default-expanded\
+    \ thinking/tools behavior.\n\n5. **Gateway dispatch silently ignores the command.**\
+    \ The gateway only dispatches commands it knows about. Check `GATEWAY_KNOWN_COMMANDS`\
+    \ (derived from `COMMAND_REGISTRY` automatically) includes the canonical name.\
+    \ If the command is `cli_only` with a `gateway_config_gate`, verify the gated\
+    \ config value is truthy.\n\n## Debugging Tactics\n\nWhen surface-level inspection\
+    \ doesn't reveal the bug:\n\n- **Python side hangs or misbehaves:** use the `python-debugpy`\
+    \ skill to break inside `_SlashWorker.exec` or the command handler. `remote-pdb`\
+    \ set at the handler entry is the fastest path.\n- **Ink side not reacting:**\
+    \ use the `node-inspect-debugger` skill to break in `app.tsx`'s slash dispatch\
+    \ or the local command branch. `sb('dist/app.js', <line>)` after `npm run build`.\n\
+    - **Registry mismatch / unclear which side is wrong:** compare the canonical `COMMAND_REGISTRY`\
+    \ entry against the TUI's local command list side-by-side.\n\n## Pitfalls\n\n\
+    - Don't forget to set the appropriate category for the command in `CommandDef`\
+    \ (e.g., \"Session\", \"Configuration\", \"Tools & Skills\", \"Info\", \"Exit\"\
+    )\n- Make sure any aliases are properly registered in the `aliases` tuple \u2014\
+    \ no other file changes are needed, everything downstream (Telegram menu, Slack\
+    \ mapping, autocomplete, help) derives from it\n- For commands with subcommands,\
+    \ ensure the `subcommands` tuple in `CommandDef` matches what's in the TUI code\n\
+    - `cli_only=True` commands won't work in gateway/messaging platforms \u2014 unless\
+    \ you add a `gateway_config_gate` and the gate is truthy\n- After adding live\
+    \ UI state, search every consumer of the old prop/helper and thread the new state\
+    \ through all render paths, not just the active streaming path. TUI detail rendering\
+    \ has at least two important paths: live `StreamingAssistant`/`ToolTrail` and\
+    \ transcript/pending `MessageLine` rows. A `/clean` pass should explicitly check\
+    \ both.\n- Rebuild the TUI (`npm --prefix ui-tui run build`) before testing \u2014\
+    \ tsx watch mode may lag on first launch\n\n## Verification\n\nAfter fixing:\n\
+    \n1. Rebuild the TUI:\n   ```bash\n   cd /home/bb/hermes-agent && npm --prefix\
+    \ ui-tui run build\n   ```\n\n2. Run the TUI and test the command:\n   ```bash\n\
+    \   hermes --tui\n   ```\n\n3. Type `/` and verify the command appears in autocomplete\
+    \ suggestions with the expected description and args hint.\n\n4. Execute the command\
+    \ and confirm:\n   - Expected behavior fires\n   - Any persisted config updates\
+    \ correctly (`read_file ~/.hermes/config.yaml`)\n   - Live UI state reflects the\
+    \ change immediately (not just after restart)\n\n5. If the command is also gateway-available,\
+    \ test it from at least one messaging platform (or run the gateway tests: `scripts/run_tests.sh\
+    \ tests/gateway/`).\n"
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: migrated
+  created_at: '2026-06-14T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-14T00:00:00+00:00'
+    from_state: migrated
+    to_state: active
+    reason: 'E6a C2 skill-migration-v1: existing bundled skill migrated as kind=skill
+      record (provenance=migrated, operator-signed zone, write-once, inline body,
+      pull)'
+    evidence:
+    - skills/software-development/debugging-hermes-tui-commands/SKILL.md
+    - signed zone-manifest GATE-B2
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.software-development.debugging-hermes-tui-commands'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: software-development
