@@ -42,6 +42,7 @@ __all__ = [
     "TierRule",
     "Telemetry",
     "Context",
+    "SkillPresentation",
     "TransitionRecord",
     "Lifecycle",
     "Lineage",
@@ -218,6 +219,26 @@ class Context:
 
 
 @dataclass
+class SkillPresentation:
+    """GRV-009 E6a — skill-scoped presentation grouping (lock 2).
+
+    ``category`` is the prompt-index grouping a skill appears under (today
+    derived from the skill's directory under ``~/.grove/skills``). It exists for
+    ONE reason: to reproduce the legacy index byte-for-byte. It is presentation,
+    NEVER governance — the resolver does not read it for trigger/zone/tier, and
+    overloading a governance field for taxonomy (the tool_groups anti-pattern)
+    is exactly what this dedicated, explicit block exists to prevent. Category
+    *descriptions* live in a separate side-record keyed by category name
+    (``grove.skill_disclosure.load_skill_category_descriptions``), not here —
+    one description serves many skills, so per-record storage would duplicate it.
+
+    Present ONLY on kind=skill records (validate() rejects it elsewhere).
+    """
+
+    category: str = "general"
+
+
+@dataclass
 class TransitionRecord:
     actor: str
     timestamp: str
@@ -275,6 +296,9 @@ class Capability:
     lifecycle: Lifecycle  # governance-bearing (contains state) — no default
     lineage: Lineage = field(default_factory=Lineage)
     failure: Failure = field(default_factory=Failure)
+    # GRV-009 E6a — skill-scoped presentation grouping (lock 2). None for every
+    # non-skill kind; required on kind=skill (see validate()). Governance-free.
+    skill: "SkillPresentation | None" = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -342,6 +366,24 @@ class Capability:
                 "bindings.toolset_key, if set, must be a non-empty string"
             )
 
+        # GRV-009 E6a (lock 2) — the skill presentation block is skill-scoped and
+        # required for index parity. A kind=skill record with no block can't
+        # reproduce the legacy category grouping; a non-skill carrying one is a
+        # category leaking onto a kind that has none — both fail loud.
+        if self.kind is CapabilityKind.SKILL:
+            if self.skill is None:
+                raise ValueError(
+                    "a kind=skill record must carry a skill presentation block "
+                    "(skill.category) — it is load-bearing for index parity"
+                )
+            if not self.skill.category:
+                raise ValueError("skill.category must be non-empty")
+        elif self.skill is not None:
+            raise ValueError(
+                f"skill presentation block is only valid on kind=skill records "
+                f"(this record is kind={self.kind.value})"
+            )
+
         if not self.telemetry.feed:
             raise ValueError("telemetry.feed must be non-empty")
 
@@ -403,8 +445,13 @@ class Capability:
     # ── YAML round-trip (the declarative-config contract) ────────────────────
 
     def to_dict(self) -> dict:
-        """Plain dict; enums as lowercase strings, nested records as dicts."""
-        return {
+        """Plain dict; enums as lowercase strings, nested records as dicts.
+
+        The ``skill`` block is emitted ONLY when present (kind=skill records),
+        so every non-skill record's serialized shape is byte-identical to its
+        pre-E6a form — zero migration churn on the 48 existing verb/mcp records.
+        """
+        d = {
             "id": self.id,
             "kind": self.kind.value,
             "trigger": {
@@ -471,6 +518,9 @@ class Capability:
                 },
             },
         }
+        if self.skill is not None:
+            d["skill"] = {"category": self.skill.category}
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Capability":
@@ -572,6 +622,10 @@ class Capability:
                     for r in ln.get("decision_log", [])
                 ],
             )
+
+        if "skill" in d and d["skill"] is not None:
+            sk = d["skill"]
+            kwargs["skill"] = SkillPresentation(category=sk.get("category", "general"))
 
         if "failure" in d:
             f = d["failure"]
