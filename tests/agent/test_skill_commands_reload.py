@@ -64,10 +64,47 @@ def hermes_home(monkeypatch):
     shutil.rmtree(td, ignore_errors=True)
 
 
+def _make_skill_record(name, description=None, category="general"):
+    """GRV-009 E6a C4 — a synthetic kind=skill record (SKILL.md inlined as the
+    payload) for the now record-driven /skill registry."""
+    from grove.capability import (
+        Capability, CapabilityKind, CircuitBreaker, Context, Disclosure,
+        DockComposition, Failure, Lifecycle, LifecycleState, Provenance,
+        SkillPresentation, Telemetry, TierRule, TierValidation, Trigger,
+        TriggerDisclosure, Zone,
+    )
+    desc = f"{name} skill" if description is None else description
+    payload = f"---\nname: {name}\ndescription: {desc}\n---\nbody\n"
+    return Capability(
+        id=f"skill.{category}.{name}", kind=CapabilityKind.SKILL,
+        trigger=Trigger(always=True, disclosure=TriggerDisclosure.PROACTIVE),
+        tier_rule=TierRule(eligible=[1, 2, 3], preferred=1,
+                           validation=TierValidation(confidence_threshold=0.95, shadow_window=20)),
+        zone=Zone.GREEN, telemetry=Telemetry(feed="intent_feed"),
+        context=Context(disclosure=Disclosure.PULL, payload=payload,
+                        dock_composition=DockComposition.NONE),
+        lifecycle=Lifecycle(state=LifecycleState.ACTIVE, provenance=Provenance.MIGRATED),
+        failure=Failure(circuit_breaker=CircuitBreaker(threshold=3, window_seconds=300)),
+        skill=SkillPresentation(category=category),
+    )
+
+
+@pytest.fixture
+def records(monkeypatch):
+    """GRV-009 E6a C4 — the /skill registry is record-driven. Tests mutate this
+    dict to add/remove skills across reload_skills() calls; load_capabilities
+    returns a fresh copy each call so mutations are picked up."""
+    reg = {}
+    monkeypatch.setattr(
+        "grove.capability_registry.load_capabilities", lambda *a, **k: dict(reg)
+    )
+    return reg
+
+
 class TestReloadSkillsHelper:
     """``agent.skill_commands.reload_skills``."""
 
-    def test_returns_expected_keys(self, hermes_home):
+    def test_returns_expected_keys(self, hermes_home, records):
         from agent.skill_commands import reload_skills
 
         result = reload_skills()
@@ -76,13 +113,14 @@ class TestReloadSkillsHelper:
         assert result["added"] == []
         assert result["removed"] == []
 
-    def test_detects_newly_added_skill_with_description(self, hermes_home):
+    def test_detects_newly_added_skill_with_description(self, hermes_home, records):
         from agent.skill_commands import reload_skills, get_skill_commands
 
-        # Prime the cache so subsequent diff is meaningful
+        # Prime the cache so subsequent diff is meaningful (empty record set)
         get_skill_commands()
 
-        _write_skill(hermes_home / "skills", "demo", "a demo skill")
+        rec = _make_skill_record("demo", "a demo skill")
+        records[rec.id] = rec
         result = reload_skills()
 
         assert result["added"] == [{"name": "demo", "description": "a demo skill"}]
@@ -90,10 +128,11 @@ class TestReloadSkillsHelper:
         assert result["total"] == 1
         assert result["commands"] == 1
 
-    def test_detects_removed_skill_carries_description(self, hermes_home):
+    def test_detects_removed_skill_carries_description(self, hermes_home, records):
         from agent.skill_commands import reload_skills
 
-        skill_dir = _write_skill(hermes_home / "skills", "demo", "soon to be gone")
+        rec = _make_skill_record("demo", "soon to be gone")
+        records[rec.id] = rec
         # First reload: demo present
         first = reload_skills()
         assert first["total"] == 1
@@ -101,14 +140,14 @@ class TestReloadSkillsHelper:
 
         # Remove and reload — the description must survive the removal diff
         # (we cached it from the pre-rescan snapshot).
-        shutil.rmtree(skill_dir)
+        del records[rec.id]
         second = reload_skills()
 
         assert second["removed"] == [{"name": "demo", "description": "soon to be gone"}]
         assert second["added"] == []
         assert second["total"] == 0
 
-    def test_description_passes_through_verbatim(self, hermes_home):
+    def test_description_passes_through_verbatim(self, hermes_home, records):
         """``description`` must be the full SKILL.md frontmatter string — no
         truncation. The system prompt renders skills as
         ``    - name: description`` without a length cap, and the reload
@@ -118,20 +157,22 @@ class TestReloadSkillsHelper:
 
         get_skill_commands()  # prime
         long_desc = "x" * 200
-        _write_skill(hermes_home / "skills", "longdesc", long_desc)
+        rec = _make_skill_record("longdesc", long_desc)
+        records[rec.id] = rec
 
         result = reload_skills()
         assert len(result["added"]) == 1
         assert result["added"][0]["description"] == long_desc
 
-    def test_unchanged_skills_appear_in_unchanged_list(self, hermes_home):
+    def test_unchanged_skills_appear_in_unchanged_list(self, hermes_home, records):
         from agent.skill_commands import reload_skills, get_skill_commands
 
-        _write_skill(hermes_home / "skills", "alpha")
+        rec = _make_skill_record("alpha")
+        records[rec.id] = rec
         # Prime cache
         get_skill_commands()
 
-        # Call reload again with no FS changes
+        # Call reload again with no record changes
         result = reload_skills()
         assert "alpha" in result["unchanged"]
         assert result["added"] == []

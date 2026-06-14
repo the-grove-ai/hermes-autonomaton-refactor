@@ -250,53 +250,70 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from grove.capability import CapabilityKind
+        from grove.capability_registry import load_capabilities
+
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
-        dirs_to_scan = []
-        if SKILLS_DIR.exists():
-            dirs_to_scan.append(SKILLS_DIR)
-        dirs_to_scan.extend(get_external_skills_dirs())
+        def _desc(frontmatter, body):
+            description = frontmatter.get('description', '')
+            if not description:
+                for line in body.strip().split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        description = line[:80]
+                        break
+            return description
 
-        for scan_dir in dirs_to_scan:
+        def _register(name, description, skill_md_path, skill_dir):
+            if name in seen_names or name in disabled:
+                return
+            # Normalize to hyphen-separated slug, stripping non-alnum chars
+            # (e.g. +, /) to avoid invalid Telegram command names downstream.
+            cmd_name = name.lower().replace(' ', '-').replace('_', '-')
+            cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
+            cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
+            if not cmd_name:
+                return
+            seen_names.add(name)
+            _skill_commands[f"/{cmd_name}"] = {
+                "name": name,
+                "description": description or f"Invoke the {name} skill",
+                "skill_md_path": skill_md_path,
+                "skill_dir": skill_dir,
+            }
+
+        # GRV-009 E6a C4 — the BUNDLED set is sole-sourced from kind=skill records
+        # (the bundled filesystem scan is retired). name/description come from the
+        # record's inline payload frontmatter; skill_dir is the canonical on-disk
+        # location (SKILLS_DIR/<category>/<name>) where the synced files (scripts,
+        # linked files) live for invoke-time loading via skill_view.
+        for rec in load_capabilities().values():
+            if rec.kind is not CapabilityKind.SKILL or rec.skill is None:
+                continue
+            frontmatter, body = _parse_frontmatter(rec.context.payload)
+            if not skill_matches_platform(frontmatter):
+                continue
+            skill_name = rec.id.rsplit('.', 1)[-1]
+            name = frontmatter.get('name', skill_name)
+            skill_dir = SKILLS_DIR / rec.skill.category / skill_name
+            _register(name, _desc(frontmatter, body),
+                      str(skill_dir / "SKILL.md"), str(skill_dir))
+
+        # External-dir skills remain a retained FS scan (operator config; never bundled).
+        for scan_dir in get_external_skills_dirs():
             for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
                 if any(part in {'.git', '.github', '.hub', '.archive'} for part in skill_md.parts):
                     continue
                 try:
                     content = skill_md.read_text(encoding='utf-8')
                     frontmatter, body = _parse_frontmatter(content)
-                    # Skip skills incompatible with the current OS platform
                     if not skill_matches_platform(frontmatter):
                         continue
                     name = frontmatter.get('name', skill_md.parent.name)
-                    if name in seen_names:
-                        continue
-                    # Respect user's disabled skills config
-                    if name in disabled:
-                        continue
-                    description = frontmatter.get('description', '')
-                    if not description:
-                        for line in body.strip().split('\n'):
-                            line = line.strip()
-                            if line and not line.startswith('#'):
-                                description = line[:80]
-                                break
-                    seen_names.add(name)
-                    # Normalize to hyphen-separated slug, stripping
-                    # non-alnum chars (e.g. +, /) to avoid invalid
-                    # Telegram command names downstream.
-                    cmd_name = name.lower().replace(' ', '-').replace('_', '-')
-                    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
-                    cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
-                    if not cmd_name:
-                        continue
-                    _skill_commands[f"/{cmd_name}"] = {
-                        "name": name,
-                        "description": description or f"Invoke the {name} skill",
-                        "skill_md_path": str(skill_md),
-                        "skill_dir": str(skill_md.parent),
-                    }
+                    _register(name, _desc(frontmatter, body),
+                              str(skill_md), str(skill_md.parent))
                 except Exception:
                     continue
     except Exception:

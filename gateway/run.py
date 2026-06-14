@@ -822,6 +822,19 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
     return normalized in _CONTROL_INTERRUPT_MESSAGES
 
 
+def _slug_from_declared_name(declared_name: str | None) -> str | None:
+    """The /command slug for a skill's declared frontmatter name. Mirrors the
+    exact normalization in agent.skill_commands.scan_skill_commands so the
+    records path and the FS path resolve identical slugs (GRV-009 E6a C4)."""
+    if not declared_name:
+        return None
+    import re as _re
+    slug = declared_name.lower().replace(" ", "-").replace("_", "-")
+    slug = _re.sub(r"[^a-z0-9-]", "", slug)
+    slug = _re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug or None
+
+
 def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None]:
     """Derive the /command slug and declared frontmatter name from a SKILL.md.
 
@@ -862,11 +875,7 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
             break
     if not declared_name:
         return None, None
-    slug = declared_name.lower().replace(" ", "-").replace("_", "-")
-    # Mirror _SKILL_INVALID_CHARS and _SKILL_MULTI_HYPHEN from skill_commands
-    import re as _re
-    slug = _re.sub(r"[^a-z0-9-]", "", slug)
-    slug = _re.sub(r"-{2,}", "-", slug).strip("-")
+    slug = _slug_from_declared_name(declared_name)
     if not slug:
         return None, declared_name
     return slug, declared_name
@@ -889,23 +898,44 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     # Normalize: command uses hyphens, skill names may use hyphens or underscores
     normalized = command_name.lower().replace("_", "-")
     try:
-        from tools.skills_tool import _get_disabled_skill_names
-        from agent.skill_utils import get_all_skills_dirs
+        from tools.skills_tool import _get_disabled_skill_names, _parse_frontmatter
+        from agent.skill_utils import get_external_skills_dirs
         disabled = _get_disabled_skill_names()
 
-        # Check disabled skills across all dirs (local + external)
-        for skills_dir in get_all_skills_dirs():
+        def _is_disabled_hit(slug, declared_name):
+            # disabled is keyed by the declared frontmatter name (what
+            # skills.disabled / skills.platform_disabled store).
+            return slug and declared_name and slug == normalized and declared_name in disabled
+
+        # GRV-009 E6a C4 — the BUNDLED set is sole-sourced from kind=skill records
+        # (the bundled filesystem scan is retired). The /command slug + declared
+        # name come from each record's inline payload frontmatter, resolving
+        # identically to the legacy FS scan via the shared slug normalization.
+        from grove.capability import CapabilityKind
+        from grove.capability_registry import load_capabilities
+
+        for rec in load_capabilities().values():
+            if rec.kind is not CapabilityKind.SKILL or rec.skill is None:
+                continue
+            frontmatter, _ = _parse_frontmatter(rec.context.payload)
+            declared_name = frontmatter.get("name")
+            declared_name = str(declared_name) if declared_name else None
+            slug = _slug_from_declared_name(declared_name)
+            if _is_disabled_hit(slug, declared_name):
+                return (
+                    f"The **{command_name}** skill is installed but disabled.\n"
+                    f"Enable it with: `hermes skills config`"
+                )
+
+        # External-dir skills remain a retained FS scan (operator config; never bundled).
+        for skills_dir in get_external_skills_dirs():
             if not skills_dir.exists():
                 continue
             for skill_md in skills_dir.rglob("SKILL.md"):
                 if any(part in {'.git', '.github', '.hub', '.archive'} for part in skill_md.parts):
                     continue
                 slug, declared_name = _skill_slug_from_frontmatter(skill_md)
-                if not slug or not declared_name:
-                    continue
-                # disabled is keyed by the declared frontmatter name (what
-                # skills.disabled / skills.platform_disabled store).
-                if slug == normalized and declared_name in disabled:
+                if _is_disabled_hit(slug, declared_name):
                     return (
                         f"The **{command_name}** skill is installed but disabled.\n"
                         f"Enable it with: `hermes skills config`"

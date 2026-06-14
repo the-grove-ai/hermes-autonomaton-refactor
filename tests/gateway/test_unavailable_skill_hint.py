@@ -48,6 +48,31 @@ def _write_skill(skills_dir: Path, rel: str, frontmatter_name: str) -> Path:
     return skill_md
 
 
+def _skill_record(frontmatter_name: str, category: str = "general"):
+    """GRV-009 E6a C4 — a synthetic kind=skill record (the bundled disabled-check
+    is now records-driven; the slug derives from the inline payload frontmatter)."""
+    from grove.capability import (
+        Capability, CapabilityKind, CircuitBreaker, Context, Disclosure,
+        DockComposition, Failure, Lifecycle, LifecycleState, Provenance,
+        SkillPresentation, Telemetry, TierRule, TierValidation, Trigger,
+        TriggerDisclosure, Zone,
+    )
+    payload = f"---\nname: {frontmatter_name}\ndescription: test skill\n---\nBody.\n"
+    slug = frontmatter_name.lower().replace(" ", "-")
+    return Capability(
+        id=f"skill.{category}.{slug}", kind=CapabilityKind.SKILL,
+        trigger=Trigger(always=True, disclosure=TriggerDisclosure.PROACTIVE),
+        tier_rule=TierRule(eligible=[1, 2, 3], preferred=1,
+                           validation=TierValidation(confidence_threshold=0.95, shadow_window=20)),
+        zone=Zone.GREEN, telemetry=Telemetry(feed="intent_feed"),
+        context=Context(disclosure=Disclosure.PULL, payload=payload,
+                        dock_composition=DockComposition.NONE),
+        lifecycle=Lifecycle(state=LifecycleState.ACTIVE, provenance=Provenance.MIGRATED),
+        failure=Failure(circuit_breaker=CircuitBreaker(threshold=3, window_seconds=300)),
+        skill=SkillPresentation(category=category),
+    )
+
+
 def test_frontmatter_slug_matched_even_when_dir_name_differs(
     tmp_skills: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -59,20 +84,15 @@ def test_frontmatter_slug_matched_even_when_dir_name_differs(
     """
     from gateway import run as gateway_run
 
-    _write_skill(tmp_skills, "mlops/stable-diffusion", "Stable Diffusion Image Generation")
+    rec = _skill_record("Stable Diffusion Image Generation", category="mlops")
 
     # Config disables by declared name (matches what `hermes skills config` writes).
-    monkeypatch.setattr(
-        "gateway.run._get_disabled_skill_names",
-        lambda: {"Stable Diffusion Image Generation"},
-        raising=False,
-    )
     with patch(
         "tools.skills_tool._get_disabled_skill_names",
         return_value={"Stable Diffusion Image Generation"},
     ), patch(
-        "agent.skill_utils.get_all_skills_dirs",
-        return_value=[tmp_skills],
+        "grove.capability_registry.load_capabilities",
+        return_value={rec.id: rec},
     ):
         msg = gateway_run._check_unavailable_skill("stable-diffusion-image-generation")
 
@@ -122,13 +142,13 @@ def test_slug_normalization_strips_non_alnum(
     """Frontmatter ``C++ Code Review`` → slug ``c-code-review`` (``+`` stripped)."""
     from gateway import run as gateway_run
 
-    _write_skill(tmp_skills, "software-development/cpp-review", "C++ Code Review")
+    rec = _skill_record("C++ Code Review", category="software-development")
 
     with patch(
         "tools.skills_tool._get_disabled_skill_names",
         return_value={"C++ Code Review"},
     ), patch(
-        "agent.skill_utils.get_all_skills_dirs", return_value=[tmp_skills]
+        "grove.capability_registry.load_capabilities", return_value={rec.id: rec}
     ):
         msg = gateway_run._check_unavailable_skill("c-code-review")
 
