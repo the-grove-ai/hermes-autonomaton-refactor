@@ -430,6 +430,15 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is True
         assert "Endpoint info" in result["content"]
+        # GRV-009 E6a C1 (A8, GATE-B1 linked-file ruling) — linked-file content
+        # is fenced as passive reference data too (the second sanctioned delta).
+        from grove.skill_disclosure import (
+            SKILL_REFERENCE_CLOSE,
+            SKILL_REFERENCE_OPEN,
+        )
+
+        assert result["content"].startswith(SKILL_REFERENCE_OPEN)
+        assert result["content"].rstrip().endswith(SKILL_REFERENCE_CLOSE)
 
     def test_view_nonexistent_file(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -618,7 +627,18 @@ class TestSkillViewSecureSetupOnLoad:
         result = json.loads(raw)
         assert result["success"] is True
         assert result["setup_skipped"] is True
-        assert result["content"].startswith("---")
+        # GRV-009 E6a C1 (A8) — the body is now fenced as passive reference data.
+        # The frontmatter still leads the body verbatim, just inside the wrapper:
+        # content = <open>\n<note>\n\n<body>\n<close>, so the body starts after
+        # the note and begins with the YAML frontmatter fence.
+        from grove.skill_disclosure import (
+            SKILL_REFERENCE_NOTE,
+            SKILL_REFERENCE_OPEN,
+        )
+
+        assert result["content"].startswith(SKILL_REFERENCE_OPEN)
+        body = result["content"].split(SKILL_REFERENCE_NOTE + "\n\n", 1)[1]
+        assert body.startswith("---")
 
 # ---------------------------------------------------------------------------
 # skill_matches_platform

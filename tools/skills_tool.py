@@ -79,6 +79,7 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
 from grove.skills import ANDON_DIRNAME
+from grove.skill_disclosure import wrap_skill_body
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
@@ -1266,12 +1267,19 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
+            # GRV-009 E6a C1 (A8, GATE-B1 linked-file ruling) — a linked file's
+            # text content is the SAME injection surface as the SKILL.md body, so
+            # it is fenced as passive reference data too. This is the SECOND
+            # sanctioned byte-delta (lock 6 amended): both the body and the
+            # linked-file disclosure are wrapped, neither silent. (The binary
+            # branch above discloses no readable content — only a metadata
+            # descriptor — so it is not an injection surface and stays unwrapped.)
             return json.dumps(
                 {
                     "success": True,
                     "name": name,
                     "file": file_path,
-                    "content": content,
+                    "content": wrap_skill_body(content),
                     "file_type": target_file.suffix,
                 },
                 ensure_ascii=False,
@@ -1436,6 +1444,16 @@ def skill_view(
                 logger.debug(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
+
+        # GRV-009 E6a C1 (A8) — the SKILL.md body enters the model context here,
+        # so it is fenced as PASSIVE DATA: a <skill_reference_data> delimiter +
+        # system note marking it informational, never an instruction channel,
+        # never overriding core directives. This is the SOLE sanctioned byte-
+        # delta from pre-E6a behavior (lock 6), applied on every path a skill
+        # body enters context. The raw `content` above still drives the injection
+        # scan and platform/frontmatter checks; only what the model reads is
+        # wrapped.
+        rendered_content = wrap_skill_body(rendered_content)
 
         result = {
             "success": True,
