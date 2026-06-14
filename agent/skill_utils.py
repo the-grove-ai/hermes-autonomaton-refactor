@@ -376,7 +376,34 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
     seen_keys: set = set()
 
     disabled = get_disabled_skill_names()
-    for skills_dir in get_all_skills_dirs():
+
+    def _collect(frontmatter: Dict[str, Any], skill_name: str) -> None:
+        if str(skill_name) in disabled:
+            return
+        if not skill_matches_platform(frontmatter):
+            return
+        for var in extract_skill_config_vars(frontmatter):
+            if var["key"] not in seen_keys:
+                var["skill"] = str(skill_name)
+                all_vars.append(var)
+                seen_keys.add(var["key"])
+
+    # GRV-009 E6a C4 — the BUNDLED set is sole-sourced from kind=skill records
+    # (the bundled filesystem scan is retired). Config-var declarations live in
+    # the record's inline payload frontmatter (metadata.hermes.config), so they
+    # are parsed from there exactly as the legacy scan parsed the SKILL.md.
+    from grove.capability import CapabilityKind
+    from grove.capability_registry import load_capabilities
+
+    for rec in load_capabilities().values():
+        if rec.kind is not CapabilityKind.SKILL or rec.skill is None:
+            continue
+        frontmatter, _ = parse_frontmatter(rec.context.payload)
+        skill_name = frontmatter.get("name") or rec.id.rsplit(".", 1)[-1]
+        _collect(frontmatter, str(skill_name))
+
+    # External-dir skills remain a retained FS scan (operator config; never bundled).
+    for skills_dir in get_external_skills_dirs():
         if not skills_dir.is_dir():
             continue
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
@@ -385,19 +412,8 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
                 frontmatter, _ = parse_frontmatter(raw)
             except Exception:
                 continue
-
             skill_name = frontmatter.get("name") or skill_file.parent.name
-            if str(skill_name) in disabled:
-                continue
-            if not skill_matches_platform(frontmatter):
-                continue
-
-            config_vars = extract_skill_config_vars(frontmatter)
-            for var in config_vars:
-                if var["key"] not in seen_keys:
-                    var["skill"] = str(skill_name)
-                    all_vars.append(var)
-                    seen_keys.add(var["key"])
+            _collect(frontmatter, str(skill_name))
 
     return all_vars
 
