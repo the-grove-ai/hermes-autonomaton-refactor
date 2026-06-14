@@ -79,12 +79,14 @@ class LifecycleState(str, Enum):
     REFINED = "refined"
     DEPRECATED = "deprecated"
     REJECTED = "rejected"  # GRV-009 Amendment A1 — terminal; only from quarantine
+    MANAGED = "managed"  # GRV-009 A5 — installed skills; terminal, curator-exempt
 
 
 class Provenance(str, Enum):
     OPERATOR_AUTHORED = "operator_authored"
     AGENT_PROPOSED = "agent_proposed"
     MIGRATED = "migrated"
+    INSTALLED = "installed"  # GRV-009 A5 — minted by an install path, not authored
 
 
 class Disclosure(str, Enum):
@@ -153,6 +155,7 @@ LEGAL_TRANSITIONS: dict[LifecycleState, frozenset[LifecycleState]] = {
     LifecycleState.REFINED: frozenset({LifecycleState.ACTIVE}),
     LifecycleState.DEPRECATED: frozenset(),
     LifecycleState.REJECTED: frozenset(),
+    LifecycleState.MANAGED: frozenset(),  # GRV-009 A5 — terminal; no legal exits
 }
 
 
@@ -256,6 +259,7 @@ class Lifecycle:
     last_used: str | None = None
     use_count: int = 0
     flywheel_eligible: bool = False
+    pinned: bool = False  # GRV-009 A5 — curator-exempt flag (backfilled from .usage.json)
 
 
 @dataclass
@@ -493,6 +497,7 @@ class Capability:
                 "last_used": self.lifecycle.last_used,
                 "use_count": self.lifecycle.use_count,
                 "flywheel_eligible": self.lifecycle.flywheel_eligible,
+                "pinned": self.lifecycle.pinned,
             },
             "lineage": {
                 "source_patterns": list(self.lineage.source_patterns),
@@ -603,6 +608,7 @@ class Capability:
                 last_used=lc.get("last_used"),
                 use_count=lc.get("use_count", 0),
                 flywheel_eligible=lc.get("flywheel_eligible", False),
+                pinned=lc.get("pinned", False),
             )
 
         if "lineage" in d:

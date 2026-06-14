@@ -2810,6 +2810,29 @@ def install_from_quarantine(
         content_hash(install_dir),
     )
 
+    # GRV-009 E6b C1 — static-registration hook: mint a read-only
+    # provenance:installed / lifecycle:managed record for the newly installed
+    # skill (dedup-guarded; no-op if a record already covers its id).
+    try:
+        installed_md = install_dir / "SKILL.md"
+        if installed_md.exists():
+            from grove.capability_registry import register_installed_skill
+            register_installed_skill(
+                safe_skill_name, safe_category,
+                installed_md.read_text(encoding="utf-8"),
+            )
+    except Exception:
+        # FLAG 2 (operator lock): name the skill_id + absolute body path so the
+        # operator has exact reconcile coordinates, not a bare traceback.
+        from grove.capability_registry import _slug
+        _cat = _slug(safe_category) or _slug(safe_skill_name)
+        logger.warning(
+            "capability-record mint FAILED skill_id=skill.%s.%s body=%s "
+            "— skill installed but record NOT minted; reconcile manually",
+            _cat, _slug(safe_skill_name),
+            (install_dir / "SKILL.md").resolve(), exc_info=True,
+        )
+
     return install_dir
 
 

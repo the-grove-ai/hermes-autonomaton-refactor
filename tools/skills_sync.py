@@ -199,6 +199,44 @@ def sync_skills(quiet: bool = False) -> dict:
     user_modified = []
     skipped = 0
 
+    _known_ids = {"set": None}
+
+    def _mint_record(name: str, src) -> None:
+        """GRV-009 E6b C1 — mint a managed record for a freshly synced bundled
+        skill (dedup-guarded). The 92 migrated records already exist, so this is
+        a no-op for them; it fires only for a new bundled skill that ships
+        without a pre-authored record. Best-effort: a mint failure is logged, it
+        never breaks the sync (the skill body is already on disk).
+
+        The registry id set is loaded ONCE (lazily, on first mint) and reused —
+        a per-skill reload would make a full sync O(skills x registry)."""
+        try:
+            md = src / "SKILL.md"
+            if not md.exists():
+                return
+            from grove.capability_registry import (
+                load_capabilities, register_installed_skill,
+            )
+            if _known_ids["set"] is None:
+                # Full merged registry (repo bundled + GROVE_HOME overlay).
+                _known_ids["set"] = frozenset(load_capabilities().keys())
+            category = src.relative_to(bundled_dir).parent.as_posix()
+            if category == ".":
+                category = ""
+            register_installed_skill(
+                name, category, md.read_text(encoding="utf-8"),
+                existing_ids=_known_ids["set"],
+            )
+        except Exception:
+            # FLAG 2 (operator lock): name skill_id + absolute body path.
+            from grove.capability_registry import _slug
+            _cat = _slug(name)  # bundled top-level convention: category == name
+            logger.warning(
+                "sync capability-record mint FAILED skill_id=skill.%s.%s body=%s "
+                "— skill synced but record NOT minted; reconcile manually",
+                _cat, _slug(name), (src / "SKILL.md").resolve(), exc_info=True,
+            )
+
     for skill_name, skill_src in bundled_skills:
         dest = _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = _dir_hash(skill_src)
@@ -231,6 +269,7 @@ def sync_skills(quiet: bool = False) -> dict:
                     shutil.copytree(skill_src, dest)
                     copied.append(skill_name)
                     manifest[skill_name] = bundled_hash
+                    _mint_record(skill_name, skill_src)
                     if not quiet:
                         print(f"  + {skill_name}")
             except (OSError, IOError) as e:
@@ -271,6 +310,7 @@ def sync_skills(quiet: bool = False) -> dict:
                         shutil.copytree(skill_src, dest)
                         manifest[skill_name] = bundled_hash
                         updated.append(skill_name)
+                        _mint_record(skill_name, skill_src)
                         if not quiet:
                             print(f"  ↑ {skill_name} (updated)")
                         # Remove backup after successful copy

@@ -256,15 +256,44 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
     """Walk every agent-created skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
-    Returns a counter dict describing what changed."""
+    Returns a counter dict describing what changed.
+
+    GRV-009 E6b C1 — DUAL-READ: when a Capability record exists for the skill,
+    the disposition is written through the registry's ``transition_record()`` (the
+    sole record write path); when no record exists — the agent-created skills,
+    which have no records until the C2 faucet — the curator falls back to the
+    ``.usage.json`` STATE store, unchanged. Managed (installed) records are
+    curator-exempt. The ``.usage.json`` store is NOT retired in C1: Option C, the
+    interim bridge, preserves the record-less skills' historical governance state
+    (pinned, active/stale/archived) until C2 carries it onto the records and
+    burns the bridge — the Amnesia Trap avoidance."""
     from tools import skill_usage as _u
+    from grove.capability import CapabilityKind, LifecycleState
+    from grove.capability_registry import (
+        TRANSITION_APPLIED,
+        TRANSITION_DEFERRED,
+        load_capabilities,
+        transition_record,
+    )
 
     if now is None:
         now = datetime.now(timezone.utc)
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
-    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
+    counts = {
+        "marked_stale": 0, "archived": 0, "reactivated": 0,
+        "checked": 0, "deferred": 0,
+    }
+
+    # name -> kind=skill Capability, for the record-backed branch. In C1 the
+    # agent-created population has no records, so this never matches a curator
+    # row — the record-first branch is dead-but-ready until C2 mints them.
+    record_index = {
+        rec.id.rsplit(".", 1)[-1]: rec
+        for rec in load_capabilities().values()
+        if rec.kind is CapabilityKind.SKILL
+    }
 
     for row in _u.agent_created_report():
         counts["checked"] += 1
@@ -279,8 +308,28 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         if anchor.tzinfo is None:
             anchor = anchor.replace(tzinfo=timezone.utc)
 
-        current = row.get("state", _u.STATE_ACTIVE)
+        rec = record_index.get(name)
+        if rec is not None:
+            # ── record-first (the sole record write path) ──
+            if rec.lifecycle.state is LifecycleState.MANAGED:
+                continue  # installed skills are curator-exempt
+            if anchor <= archive_cutoff and rec.lifecycle.state is LifecycleState.ACTIVE:
+                result = transition_record(
+                    rec.id,
+                    LifecycleState.DEPRECATED,
+                    actor="curator",
+                    reason="inactive past archive cutoff",
+                )
+                if result.status == TRANSITION_APPLIED:
+                    counts["archived"] += 1
+                elif result.status == TRANSITION_DEFERRED:
+                    counts["deferred"] += 1
+            # stale/reactivate carry no record lifecycle edge (contract:
+            # stale->ACTIVE is a no-op); recency lives in lifecycle.last_used.
+            continue
 
+        # ── .usage.json fallback (record-less skills; UNCHANGED from pre-E6b) ──
+        current = row.get("state", _u.STATE_ACTIVE)
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
             ok, _msg = _u.archive_skill(name)
             if ok:
