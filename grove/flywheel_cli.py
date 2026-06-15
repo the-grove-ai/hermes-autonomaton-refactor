@@ -24,12 +24,19 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import yaml
 
 from grove.eval.proposal_queue import (
+    PROPOSAL_TYPE_PATTERN_DEMOTION,
+    PROPOSAL_TYPE_PATTERN_PROMOTION,
+    PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
+    PROPOSAL_TYPE_SKILL_PROMOTION,
+    PROPOSAL_TYPE_SKILL_SYNTHESIS,
+    PROPOSAL_TYPE_ZONE_PROMOTION,
     RoutingProposal,
     default_queue_path,
     read,
@@ -37,6 +44,12 @@ from grove.eval.proposal_queue import (
     remove,
 )
 from grove.router_merge import apply_diff_to_machine_config
+
+# The Sprint 47 v0.1 spelling. Honored as an alias for routing_adjustment on
+# read (proposal_queue back-compat) and resolved to the routing_adjustment
+# handler in ONE place — :func:`_handler_for`. B1 GATE-B: keep + flag (the live
+# VM queue could not be verified empty of this spelling at build time).
+_LEGACY_ROUTING_TYPE = "routing_update"
 
 logger = logging.getLogger(__name__)
 
@@ -82,126 +95,146 @@ def _routing_adjustment_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     }
 
 
-def _proposal_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
-    """Translate a proposal payload into a routing-config diff.
+def _diff_pattern_demotion(proposal: RoutingProposal) -> Dict[str, Any]:
+    # Sprint 49 — the pattern is already suspended (auto, on correction).
+    # The "diff" the operator confirms is pulling it from T0 to T1.
+    return {
+        "pattern_demotion": {
+            "intent_class": proposal.payload.get("intent_class", "?"),
+            "tier": "T0 → T1 (drift: corrected after a cache hit)",
+            "trigger": proposal.payload.get("trigger", "correction_drift"),
+            "correction_turn_id": proposal.payload.get("correction_turn_id", "?"),
+            "reverse_with": "autonomaton flywheel reject <id>",
+        },
+    }
 
-    Sprint 32 — dispatch by ``proposal.type``. The Sprint 47 v0.1
-    ``routing_update`` literal is honored as an alias for
-    ``routing_adjustment`` so legacy queue entries continue to render
-    in ``cli_show``.
+
+def _diff_pattern_promotion(proposal: RoutingProposal) -> Dict[str, Any]:
+    # Sprint 48 — the "diff" is retiring a stable pattern to the
+    # deterministic T0 cache (the compiled entry already exists,
+    # suspended, in pattern_cache.db; approve flips it to active).
+    ev = proposal.payload.get("promotion_evidence", {})
+    return {
+        "pattern_promotion": {
+            "intent_class": proposal.payload.get("intent_class", "?"),
+            "cacheable_type": proposal.payload.get("cacheable_type", "?"),
+            "tier": "T1 → T0 (deterministic; no model call)",
+            "evidence": ev,
+            "sample_queries": proposal.payload.get("sample_queries", []),
+        },
+    }
+
+
+def _diff_skill_promotion(proposal: RoutingProposal) -> Dict[str, Any]:
+    # Sprint 53.2 — the "diff" the operator reviews is the promotion
+    # act: move the skill out of quarantine and greenlight its path.
+    name = proposal.payload.get("skill_name", "?")
+    return {
+        "skill_promotion": {
+            "skill_name": name,
+            "from": f"~/.grove/skills/.andon/{name}/",
+            "to": f"~/.grove/skills/{name}/",
+            "zone_rule": {
+                "match_pattern": rf".*\.grove/skills/{name}/.*",
+                "zone": "green",
+            },
+        },
+    }
+
+
+def _diff_zone_promotion(proposal: RoutingProposal) -> Dict[str, Any]:
+    # Zone promotions don't translate to a routing-config diff —
+    # they write directly to zones.schema.yaml via save_zone_rule.
+    # The "diff" displayed to the operator is the YAML-shaped
+    # rule that would be appended.
+    return {
+        "tool_zones": {
+            proposal.payload.get("tool", "?"): {
+                "rules": [
+                    {
+                        "match_pattern": proposal.payload.get("pattern", ""),
+                        "zone": proposal.payload.get("zone", "?"),
+                        "reason": proposal.payload.get("reason", ""),
+                    },
+                ],
+            },
+        },
+    }
+
+
+def _diff_skill_synthesis(proposal: RoutingProposal) -> Dict[str, Any]:
+    # B1 (Fork B) — the "diff" the operator reviews is staging the drafted
+    # SKILL.md into quarantine. Approve materializes it to .andon/ and mints
+    # the proposed (non-executable) record; a follow-on skill_promotion takes
+    # it active. The full SKILL.md text rides in the payload (shown by cli_show).
+    name = proposal.payload.get("skill_name", "?")
+    return {
+        "skill_synthesis": {
+            "skill_name": name,
+            "stages_to": f"~/.grove/skills/.andon/{name}/",
+            "record_state": "proposed (non-executable until promoted)",
+            "when_to_use": proposal.payload.get("when_to_use", ""),
+            "tool_sequence": proposal.payload.get("tool_sequence", []),
+            "next": "promote via `hermes andon promote` or a skill_promotion proposal",
+        },
+    }
+
+
+def _proposal_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """Translate a proposal payload into the diff the operator reviews.
+
+    B1 — single registry dispatch (no if/elif ladder). Unknown type raises
+    via :func:`_handler_for` — never a silent fallback render.
     """
-    from grove.eval.proposal_queue import (
-        PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
-        PROPOSAL_TYPE_ZONE_PROMOTION,
-        PROPOSAL_TYPE_SKILL_PROMOTION,
-        PROPOSAL_TYPE_PATTERN_PROMOTION,
-        PROPOSAL_TYPE_PATTERN_DEMOTION,
-    )
-    if proposal.type in (PROPOSAL_TYPE_ROUTING_ADJUSTMENT, "routing_update"):
-        return _routing_adjustment_to_diff(proposal)
-    if proposal.type == PROPOSAL_TYPE_PATTERN_DEMOTION:
-        # Sprint 49 — the pattern is already suspended (auto, on correction).
-        # The "diff" the operator confirms is pulling it from T0 to T1.
-        return {
-            "pattern_demotion": {
-                "intent_class": proposal.payload.get("intent_class", "?"),
-                "tier": "T0 → T1 (drift: corrected after a cache hit)",
-                "trigger": proposal.payload.get("trigger", "correction_drift"),
-                "correction_turn_id": proposal.payload.get("correction_turn_id", "?"),
-                "reverse_with": "autonomaton flywheel reject <id>",
-            },
-        }
-    if proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
-        # Sprint 48 — the "diff" is retiring a stable pattern to the
-        # deterministic T0 cache (the compiled entry already exists,
-        # suspended, in pattern_cache.db; approve flips it to active).
-        ev = proposal.payload.get("promotion_evidence", {})
-        return {
-            "pattern_promotion": {
-                "intent_class": proposal.payload.get("intent_class", "?"),
-                "cacheable_type": proposal.payload.get("cacheable_type", "?"),
-                "tier": "T1 → T0 (deterministic; no model call)",
-                "evidence": ev,
-                "sample_queries": proposal.payload.get("sample_queries", []),
-            },
-        }
-    if proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
-        # Sprint 53.2 — the "diff" the operator reviews is the promotion
-        # act: move the skill out of quarantine and greenlight its path.
-        name = proposal.payload.get("skill_name", "?")
-        return {
-            "skill_promotion": {
-                "skill_name": name,
-                "from": f"~/.grove/skills/.andon/{name}/",
-                "to": f"~/.grove/skills/{name}/",
-                "zone_rule": {
-                    "match_pattern": rf".*\.grove/skills/{name}/.*",
-                    "zone": "green",
-                },
-            },
-        }
-    if proposal.type == PROPOSAL_TYPE_ZONE_PROMOTION:
-        # Zone promotions don't translate to a routing-config diff —
-        # they write directly to zones.schema.yaml via save_zone_rule.
-        # The "diff" displayed to the operator is the YAML-shaped
-        # rule that would be appended.
-        return {
-            "tool_zones": {
-                proposal.payload.get("tool", "?"): {
-                    "rules": [
-                        {
-                            "match_pattern": proposal.payload.get("pattern", ""),
-                            "zone": proposal.payload.get("zone", "?"),
-                            "reason": proposal.payload.get("reason", ""),
-                        },
-                    ],
-                },
-            },
-        }
-    raise ValueError(
-        f"unsupported proposal type {proposal.type!r}; recognised: "
-        f"routing_adjustment, zone_promotion"
-    )
+    return _handler_for(proposal.type).diff_renderer(proposal)
+
+
+def _summary_routing_adjustment(proposal: RoutingProposal) -> str:
+    rule = proposal.payload.get("rule", "?")
+    intents = ", ".join(proposal.payload.get("add_intents", []))
+    return f"add {intents} to routing.{rule}"
+
+
+def _summary_pattern_promotion(proposal: RoutingProposal) -> str:
+    ic = proposal.payload.get("intent_class", "?")
+    ct = proposal.payload.get("cacheable_type", "?")
+    samples = proposal.payload.get("sample_queries") or []
+    sample = f" “{samples[0][:40]}”" if samples else ""
+    return f"retire {ic} [{ct}] pattern{sample} to T0 cache"
+
+
+def _summary_pattern_demotion(proposal: RoutingProposal) -> str:
+    ic = proposal.payload.get("intent_class", "?")
+    return f"demote {ic} pattern (drift: corrected after a T0 hit)"
+
+
+def _summary_skill_promotion(proposal: RoutingProposal) -> str:
+    name = proposal.payload.get("skill_name", "?")
+    return f"promote quarantined skill {name!r} → trusted"
+
+
+def _summary_zone_promotion(proposal: RoutingProposal) -> str:
+    tool = proposal.payload.get("tool", "?")
+    pattern = proposal.payload.get("pattern", "?")
+    return f"greenlight {tool} pattern={pattern!r}"
+
+
+def _summary_skill_synthesis(proposal: RoutingProposal) -> str:
+    name = proposal.payload.get("skill_name", "?")
+    return f"stage drafted skill {name!r} → quarantine for review"
 
 
 def _format_summary(proposal: RoutingProposal) -> str:
     """One-line operator-facing summary of a proposal.
 
-    Sprint 32 — renders both routing_adjustment and zone_promotion
-    shapes generically. Unknown types fall through to a payload
-    preview so the operator still sees something actionable.
+    B1 — single registry dispatch (no if/elif ladder, no silent payload-
+    preview fallback). The shared framing (id, type, evidence count, created
+    timestamp) lives here; only the per-type body comes from the handler row.
+    Unknown type raises via :func:`_handler_for`.
     """
-    from grove.eval.proposal_queue import (
-        PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
-        PROPOSAL_TYPE_ZONE_PROMOTION,
-        PROPOSAL_TYPE_SKILL_PROMOTION,
-        PROPOSAL_TYPE_PATTERN_PROMOTION,
-        PROPOSAL_TYPE_PATTERN_DEMOTION,
-    )
     short_id = proposal.proposal_id.split(":")[-1][:12]
     n_evidence = len(proposal.evidence)
-    if proposal.type in (PROPOSAL_TYPE_ROUTING_ADJUSTMENT, "routing_update"):
-        rule = proposal.payload.get("rule", "?")
-        intents = ", ".join(proposal.payload.get("add_intents", []))
-        body = f"add {intents} to routing.{rule}"
-    elif proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
-        ic = proposal.payload.get("intent_class", "?")
-        ct = proposal.payload.get("cacheable_type", "?")
-        samples = proposal.payload.get("sample_queries") or []
-        sample = f" “{samples[0][:40]}”" if samples else ""
-        body = f"retire {ic} [{ct}] pattern{sample} to T0 cache"
-    elif proposal.type == PROPOSAL_TYPE_PATTERN_DEMOTION:
-        ic = proposal.payload.get("intent_class", "?")
-        body = f"demote {ic} pattern (drift: corrected after a T0 hit)"
-    elif proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
-        name = proposal.payload.get("skill_name", "?")
-        body = f"promote quarantined skill {name!r} → trusted"
-    elif proposal.type == PROPOSAL_TYPE_ZONE_PROMOTION:
-        tool = proposal.payload.get("tool", "?")
-        pattern = proposal.payload.get("pattern", "?")
-        body = f"greenlight {tool} pattern={pattern!r}"
-    else:
-        body = f"payload={proposal.payload!r}"
+    body = _handler_for(proposal.type).summary_renderer(proposal)
     return (
         f"{short_id}  {proposal.type:<22}  "
         f"{body}  "
@@ -646,6 +679,8 @@ def _approve_routing_adjustment(
 
 def _approve_zone_promotion(
     proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,  # uniform registry signature; unused
 ) -> Tuple[str, Dict[str, Any]]:
     """Apply a zone_promotion proposal to zones.schema.yaml.
 
@@ -683,6 +718,8 @@ def _approve_zone_promotion(
 
 def _approve_skill_promotion(
     proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,  # uniform registry signature; unused
 ) -> Tuple[str, Dict[str, Any]]:
     """Apply a skill_promotion proposal (Sprint 53.2).
 
@@ -800,6 +837,8 @@ def _enforce_strict_skill_promotion(proposal: RoutingProposal) -> bool:
 
 def _approve_pattern_promotion(
     proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,  # uniform registry signature; unused
 ) -> Tuple[str, Dict[str, Any]]:
     """Activate a compiled T0 pattern (Sprint 48 Phase 3).
 
@@ -863,6 +902,8 @@ def _approve_pattern_promotion(
 
 def _approve_pattern_demotion(
     proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,  # uniform registry signature; unused
 ) -> Tuple[str, Dict[str, Any]]:
     """Confirm a drift-triggered demotion (Sprint 49 Phase 2).
 
@@ -902,6 +943,77 @@ def _approve_pattern_demotion(
     return f"{intent_class} pattern", applied
 
 
+def _approve_skill_synthesis(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,  # uniform registry signature; unused
+) -> Tuple[str, Dict[str, Any]]:
+    """Materialize a drafted skill into quarantine (B1 Fork B — unify).
+
+    This is the SINGLE door by which a ``skill_synthesis`` draft becomes a
+    proposed (non-executable) record on disk. It performs the EXACT two writes
+    the retired ``Dispatcher._maybe_materialize_synthesized_skills`` did:
+    ``write_proposal`` (the SKILL.md into ``.andon/<name>/``) + the best-effort
+    ``register_proposed_skill`` record mint. It does NOT chain promotion — the
+    skill stays ``proposed`` and a follow-on ``skill_promotion`` (or
+    ``hermes andon promote``) takes it active, exactly as before.
+
+    Idempotent: a skill already on disk (active or quarantined) is a no-op
+    staging — the proposal is still consumed (removed) by the caller.
+    """
+    from grove.skills import active_path, proposal_path, write_proposal
+
+    name = proposal.payload.get("skill_name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(
+            f"skill_synthesis payload missing 'skill_name': {proposal.payload!r}"
+        )
+    name = name.strip()
+
+    if active_path(name).exists() or proposal_path(name).exists():
+        applied = {
+            "skill_name": name,
+            "staged_to": f"~/.grove/skills/.andon/{name}/",
+            "note": "already on disk — staging is a no-op",
+        }
+        return f"skill {name!r} (already staged)", applied
+
+    skill_md = proposal.payload.get("skill_md")
+    if not isinstance(skill_md, str) or not skill_md.strip():
+        raise ValueError(
+            f"skill_synthesis payload missing 'skill_md': {proposal.payload!r}"
+        )
+
+    write_proposal(name, skill_md)
+    # GRV-009 E6b C2 — mint the state:proposed record alongside the .andon body
+    # (proposed is the sole review lock; non-executable behind the 4.1
+    # checkpoint). Best-effort: a mint failure leaves the body staged and the
+    # quarantine gate still fires; it is flagged LOUD, never silently swallowed.
+    record_minted = True
+    try:
+        from grove.capability_registry import (
+            _frontmatter_value,
+            register_proposed_skill,
+        )
+        _cat = _frontmatter_value(skill_md, "category") or ""
+        register_proposed_skill(name, _cat, skill_md)
+    except Exception:  # noqa: BLE001
+        record_minted = False
+        logger.warning(
+            "[flywheel] proposed-record mint failed for %r (proposal staged to "
+            ".andon/, record not minted — reconcile manually)", name,
+            exc_info=True,
+        )
+    applied = {
+        "skill_name": name,
+        "staged_to": f"~/.grove/skills/.andon/{name}/",
+        "record_state": "proposed (non-executable until promoted)",
+        "record_minted": record_minted,
+        "next": "promote via `hermes andon promote` or a skill_promotion proposal",
+    }
+    return f"skill {name!r} (.andon/ + proposed record)", applied
+
+
 def cli_approve(
     partial_id: str,
     *,
@@ -911,27 +1023,15 @@ def cli_approve(
 ) -> int:
     """Apply the proposal; remove from queue.
 
-    Sprint 32 — dispatch by ``proposal.type``:
+    B1 — the approved-write gate. Dispatch is a single :data:`PROPOSAL_HANDLERS`
+    registry lookup (:func:`_handler_for`): the row's ``apply_callback`` performs
+    the write and the row's ``apply_label_prefix`` labels the result. Adding a
+    new approved-write class is a new row, not a new branch here. ``--strict``
+    runs only the row's optional ``strict_gate`` (today: skill_promotion).
 
-    * ``routing_adjustment`` (and the Sprint 47 legacy
-      ``routing_update``) → :func:`_approve_routing_adjustment`,
-      which writes to ``routing.autonomaton.yaml``.
-    * ``zone_promotion`` → :func:`_approve_zone_promotion`, which
-      writes to ``zones.schema.yaml`` via
-      :func:`grove.zone_rules.save_zone_rule`.
-
-    Per GRV-008 § III, neither path EVER opens
-    ``routing.config.yaml`` for writing — operator-authored
-    configuration is inviolate.
+    Per GRV-008 § III the routing path NEVER opens ``routing.config.yaml`` for
+    writing — operator-authored configuration is inviolate.
     """
-    from grove.eval.proposal_queue import (
-        PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
-        PROPOSAL_TYPE_ZONE_PROMOTION,
-        PROPOSAL_TYPE_SKILL_PROMOTION,
-        PROPOSAL_TYPE_PATTERN_PROMOTION,
-        PROPOSAL_TYPE_PATTERN_DEMOTION,
-    )
-
     proposal = _resolve_proposal(partial_id, queue_path=queue_path)
     if proposal is None:
         print(
@@ -939,36 +1039,28 @@ def cli_approve(
         )
         return 1
 
-    if proposal.type in (PROPOSAL_TYPE_ROUTING_ADJUSTMENT, "routing_update"):
-        target, applied = _approve_routing_adjustment(
-            proposal, machine_path=machine_path,
-        )
-        applied_label = f"Applied to: {target}"
-    elif proposal.type == PROPOSAL_TYPE_ZONE_PROMOTION:
-        target_label, applied = _approve_zone_promotion(proposal)
-        applied_label = f"Applied to: {target_label}"
-    elif proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
-        target_label, applied = _approve_pattern_promotion(proposal)
-        applied_label = f"Promoted to T0: {target_label}"
-    elif proposal.type == PROPOSAL_TYPE_PATTERN_DEMOTION:
-        target_label, applied = _approve_pattern_demotion(proposal)
-        applied_label = f"Demoted from T0: {target_label}"
-    elif proposal.type == PROPOSAL_TYPE_SKILL_PROMOTION:
-        # Phase 4 — strict mode gates the promotion (diff + logged
-        # execution + confirmation) before applying. Normal approve is
-        # unchanged (Sprint 47 behavior); --strict only affects this type.
-        if strict and not _enforce_strict_skill_promotion(proposal):
-            return 1
-        target_label, applied = _approve_skill_promotion(proposal)
-        applied_label = f"Promoted: {target_label}"
-    else:
+    # B1 — single registry dispatch. Unknown type is a loud, NON-destructive
+    # failure at the CLI boundary: stderr message + rc=1, and the proposal
+    # stays in the queue for the operator to handle (Sprint 32 contract).
+    try:
+        handler = _handler_for(proposal.type)
+    except ValueError:
         print(
             f"Cannot approve proposal type {proposal.type!r}. Supported: "
             f"routing_adjustment, zone_promotion, skill_promotion, "
-            f"pattern_promotion, pattern_demotion.",
+            f"pattern_promotion, pattern_demotion, skill_synthesis.",
             file=sys.stderr,
         )
         return 1
+
+    # Phase 4 — strict mode gates only the types that declare a strict_gate
+    # (skill_promotion: diff + logged execution + confirmation). Normal approve
+    # is unchanged; --strict is a no-op for every other type.
+    if strict and handler.strict_gate is not None and not handler.strict_gate(proposal):
+        return 1
+
+    target, applied = handler.apply_callback(proposal, machine_path=machine_path)
+    applied_label = f"{handler.apply_label_prefix}{target}"
 
     removed = remove(
         proposal.proposal_id,
@@ -991,6 +1083,47 @@ def cli_approve(
 # ── reject ───────────────────────────────────────────────────────────
 
 
+def _reject_pattern_promotion(proposal: RoutingProposal) -> None:
+    # Sprint 48 — a rejected pattern is marked rejected in pattern_cache.db so
+    # the scanner NEVER re-proposes the same pattern (3e). The compiled entry
+    # stays as a tombstone; the proposer skips any pattern already in the store.
+    pattern_id = proposal.payload.get("pattern_id")
+    if isinstance(pattern_id, str) and pattern_id:
+        try:
+            from grove.pattern_cache import PatternCacheStore, STATUS_REJECTED
+            PatternCacheStore().set_status(pattern_id, STATUS_REJECTED)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[flywheel] could not mark pattern %s rejected: %r",
+                pattern_id, exc,
+            )
+
+
+def _reject_pattern_demotion(proposal: RoutingProposal) -> None:
+    # Sprint 49 — rejecting a drift-triggered demotion REVERSES it: the
+    # pattern was auto-suspended when the operator corrected a T0 hit, and
+    # rejecting the demotion proposal means "keep it active" — re-activate so
+    # it serves again. The operator overrules the drift signal.
+    pattern_id = proposal.payload.get("pattern_id")
+    if isinstance(pattern_id, str) and pattern_id:
+        try:
+            from grove.pattern_cache import PatternCacheStore, STATUS_ACTIVE
+            from datetime import datetime, timezone
+            PatternCacheStore().set_status(
+                pattern_id, STATUS_ACTIVE,
+                promoted_at=datetime.now(timezone.utc).isoformat(),
+            )
+            print(
+                f"Reversed: pattern {pattern_id.split(':')[-1][:12]} "
+                f"re-activated (drift signal overruled).",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[flywheel] could not re-activate pattern %s: %r",
+                pattern_id, exc,
+            )
+
+
 def cli_reject(
     partial_id: str,
     *,
@@ -1011,47 +1144,19 @@ def cli_reject(
         )
         return 1
 
-    # Sprint 48 — a rejected pattern is marked rejected in pattern_cache.db so
-    # the scanner NEVER re-proposes the same pattern (3e). The compiled entry
-    # stays as a tombstone; the proposer skips any pattern already in the store.
-    from grove.eval.proposal_queue import (
-        PROPOSAL_TYPE_PATTERN_PROMOTION,
-        PROPOSAL_TYPE_PATTERN_DEMOTION,
-    )
-    if proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
-        pattern_id = proposal.payload.get("pattern_id")
-        if isinstance(pattern_id, str) and pattern_id:
-            try:
-                from grove.pattern_cache import PatternCacheStore, STATUS_REJECTED
-                PatternCacheStore().set_status(pattern_id, STATUS_REJECTED)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[flywheel] could not mark pattern %s rejected: %r",
-                    pattern_id, exc,
-                )
-    # Sprint 49 — rejecting a drift-triggered demotion REVERSES it: the
-    # pattern was auto-suspended when the operator corrected a T0 hit, and
-    # rejecting the demotion proposal means "keep it active" — re-activate so
-    # it serves again. The operator overrules the drift signal.
-    elif proposal.type == PROPOSAL_TYPE_PATTERN_DEMOTION:
-        pattern_id = proposal.payload.get("pattern_id")
-        if isinstance(pattern_id, str) and pattern_id:
-            try:
-                from grove.pattern_cache import PatternCacheStore, STATUS_ACTIVE
-                from datetime import datetime, timezone
-                PatternCacheStore().set_status(
-                    pattern_id, STATUS_ACTIVE,
-                    promoted_at=datetime.now(timezone.utc).isoformat(),
-                )
-                print(
-                    f"Reversed: pattern {pattern_id.split(':')[-1][:12]} "
-                    f"re-activated (drift signal overruled).",
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[flywheel] could not re-activate pattern %s: %r",
-                    pattern_id, exc,
-                )
+    # B1 — single registry dispatch for the OPTIONAL pre-removal cleanup
+    # (pattern_promotion → tombstone; pattern_demotion → reverse). Reject is
+    # "remove from the queue" for every type; the cleanup is type-specific and
+    # most types declare none. An unrecognised type has no handler and is still
+    # removable — the operator must always be able to dismiss a queued item, so
+    # this lookup is deliberately tolerant (no raise) where approve/render are
+    # strict.
+    try:
+        handler: Optional[ProposalHandler] = _handler_for(proposal.type)
+    except ValueError:
+        handler = None
+    if handler is not None and handler.reject_callback is not None:
+        handler.reject_callback(proposal)
 
     target = queue_path or default_queue_path()
     removed = remove(proposal.proposal_id, path=target)
@@ -1071,3 +1176,103 @@ def cli_reject(
     if reason:
         print(f"Reason:   {reason}")
     return 0
+
+
+# ── proposal handler registry (B1 Fork A, FULL) ──────────────────────
+#
+# One row per proposal type. Adding a new approved-write class is a new row in
+# this table — never a new branch in four if/elif ladders (anti-cruft #1). The
+# four operator surfaces (_proposal_to_diff, _format_summary, cli_approve,
+# cli_reject) all dispatch through :func:`_handler_for`; none of them branch on
+# ``proposal.type`` directly.
+
+
+@dataclass(frozen=True)
+class ProposalHandler:
+    """The per-type behavior for one proposal class.
+
+    * ``summary_renderer`` — the per-type BODY of the one-line list summary
+      (shared framing lives in :func:`_format_summary`).
+    * ``diff_renderer`` — the YAML diff ``cli_show`` displays.
+    * ``apply_callback`` — the approved write. Signature
+      ``(proposal, *, machine_path=None) -> (target_label, applied_dict)``;
+      ``machine_path`` is consumed only by routing_adjustment.
+    * ``apply_label_prefix`` — prepended to the apply target for the
+      ``cli_approve`` "Applied/Promoted/Demoted/Staged" line.
+    * ``reject_callback`` — OPTIONAL pre-removal cleanup on reject (None for
+      types whose reject is a plain queue removal).
+    * ``strict_gate`` — OPTIONAL ``--strict`` gate; return False to abort the
+      approve (only skill_promotion declares one).
+    """
+
+    summary_renderer: Callable[[RoutingProposal], str]
+    diff_renderer: Callable[[RoutingProposal], Dict[str, Any]]
+    apply_callback: Callable[..., Tuple[Any, Dict[str, Any]]]
+    apply_label_prefix: str
+    reject_callback: Optional[Callable[[RoutingProposal], None]] = None
+    strict_gate: Optional[Callable[[RoutingProposal], bool]] = None
+
+
+PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
+    PROPOSAL_TYPE_ROUTING_ADJUSTMENT: ProposalHandler(
+        summary_renderer=_summary_routing_adjustment,
+        diff_renderer=_routing_adjustment_to_diff,
+        apply_callback=_approve_routing_adjustment,
+        apply_label_prefix="Applied to: ",
+    ),
+    PROPOSAL_TYPE_ZONE_PROMOTION: ProposalHandler(
+        summary_renderer=_summary_zone_promotion,
+        diff_renderer=_diff_zone_promotion,
+        apply_callback=_approve_zone_promotion,
+        apply_label_prefix="Applied to: ",
+    ),
+    PROPOSAL_TYPE_SKILL_PROMOTION: ProposalHandler(
+        summary_renderer=_summary_skill_promotion,
+        diff_renderer=_diff_skill_promotion,
+        apply_callback=_approve_skill_promotion,
+        apply_label_prefix="Promoted: ",
+        strict_gate=_enforce_strict_skill_promotion,
+    ),
+    PROPOSAL_TYPE_PATTERN_PROMOTION: ProposalHandler(
+        summary_renderer=_summary_pattern_promotion,
+        diff_renderer=_diff_pattern_promotion,
+        apply_callback=_approve_pattern_promotion,
+        apply_label_prefix="Promoted to T0: ",
+        reject_callback=_reject_pattern_promotion,
+    ),
+    PROPOSAL_TYPE_PATTERN_DEMOTION: ProposalHandler(
+        summary_renderer=_summary_pattern_demotion,
+        diff_renderer=_diff_pattern_demotion,
+        apply_callback=_approve_pattern_demotion,
+        apply_label_prefix="Demoted from T0: ",
+        reject_callback=_reject_pattern_demotion,
+    ),
+    PROPOSAL_TYPE_SKILL_SYNTHESIS: ProposalHandler(
+        summary_renderer=_summary_skill_synthesis,
+        diff_renderer=_diff_skill_synthesis,
+        apply_callback=_approve_skill_synthesis,
+        apply_label_prefix="Staged: ",
+    ),
+}
+
+
+def _handler_for(proposal_type: str) -> ProposalHandler:
+    """Resolve a proposal type to its handler row.
+
+    Resolves the legacy ``routing_update`` spelling to the routing_adjustment
+    row in this ONE place (the alias no longer leaks into every surface).
+    Raises ``ValueError`` on an unrecognised type — there is no silent
+    fallback handler (fail loud, GRV operating principle #1).
+    """
+    canonical = (
+        PROPOSAL_TYPE_ROUTING_ADJUSTMENT
+        if proposal_type == _LEGACY_ROUTING_TYPE
+        else proposal_type
+    )
+    try:
+        return PROPOSAL_HANDLERS[canonical]
+    except KeyError:
+        raise ValueError(
+            f"unsupported proposal type {proposal_type!r}; recognised: "
+            f"{', '.join(sorted(PROPOSAL_HANDLERS))}"
+        )

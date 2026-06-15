@@ -379,31 +379,38 @@ class TestDispatcherInvokeSkillHooks:
         flag = d._quarantine_skill_executed_this_turn
         assert flag is not None and flag["skill_name"] == "promo-me"
 
-    def test_materialize_accepted_synthesized_skill(self):
-        from grove.dispatcher import Dispatcher
-        from grove.intents import ToolIntent
-        from grove.skills import proposal_path
+    def test_skill_synthesis_materializes_through_flywheel_approve(self):
+        """B1 (Fork B) — the ONE door. A staged skill_synthesis draft becomes a
+        proposed (.andon/) record + a minted capability record ONLY by the
+        operator approving its proposal through the flywheel gate. The retired
+        invoke_skill-triggered dispatcher materialization no longer exists."""
+        from grove import flywheel_cli
+        from grove.capability_registry import skill_record_id_for_name
+        from grove.eval.proposal_queue import read_all
         from grove.kaizen.synthesizer import stage_proposal
+        from grove.skills import proposal_path
 
         # Stage a synthesized proposal whose skill is NOT yet on disk.
-        stage_proposal(
+        pid = stage_proposal(
             {"tool_sequence": ("a", "b"), "evidence_turns": ["t#1"]},
             _VALID_SKILL_MD,
         )
         skill_name = "prep-meeting-brief"
         assert not proposal_path(skill_name).exists()
 
-        d = Dispatcher()
-        intent = ToolIntent(
-            tool_name="invoke_skill", arguments={"name": skill_name},
-            call_id="c1",
-        )
-        d._maybe_materialize_synthesized_skills([intent])
-        # Now it's in the quarantine, so the Yellow gate will fire on classify.
+        # The one door: flywheel approve.
+        rc = flywheel_cli.cli_approve(pid)
+        assert rc == 0
+
+        # Materialized into quarantine with the exact draft body.
         assert proposal_path(skill_name).exists()
         assert (proposal_path(skill_name) / "SKILL.md").read_text(
             encoding="utf-8"
         ) == _VALID_SKILL_MD
+        # The state:proposed (non-executable) record was minted.
+        assert skill_record_id_for_name(skill_name) is not None
+        # The proposal is consumed from the queue — one approval, one effect.
+        assert read_all() == []
 
 
 # ── §3 quiet append ──────────────────────────────────────────────────────

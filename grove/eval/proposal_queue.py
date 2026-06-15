@@ -91,14 +91,17 @@ PROPOSAL_TYPE_PATTERN_DEMOTION = "pattern_demotion"
 # Sprint 63 — the Kaizen pattern synthesizer observed a recurring multi-tool
 # sequence across sessions and drafted a parametrized SKILL.md for it. Unlike
 # skill_promotion (an already-quarantined skill the operator ran), this stages
-# a Noff-disk draft for the operator to accept. Payload shape:
+# an off-disk draft for the operator to accept. Payload shape:
 #   {"skill_name": str, "skill_md": str (full SKILL.md text),
 #    "when_to_use": str, "goal": str (concierge one-liner for the quiet append),
 #    "tool_sequence": [str, ...]}
-# Acceptance: the quiet append surfaces it; on operator agreement the model
-# calls invoke_skill(skill_name); the Dispatcher materializes skill_md into
-# .andon/ (see Dispatcher._maybe_materialize_synthesized_skills) and the
-# normal quarantine gate + promotion prompt take over.
+# Acceptance (B1 — unified): the operator approves through the flywheel gate
+# (``flywheel approve <id>`` → grove.flywheel_cli._approve_skill_synthesis),
+# which materializes skill_md into .andon/ and mints the proposed record. The
+# skill stays proposed (non-executable); a follow-on skill_promotion (or
+# ``hermes andon promote``) takes it active. This is the SOLE door a synthesis
+# draft becomes a proposed record — the old invoke_skill-triggered chat
+# materialization path was retired in B1.
 PROPOSAL_TYPE_SKILL_SYNTHESIS = "skill_synthesis"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
@@ -125,6 +128,15 @@ class RoutingProposal:
     * ``eval_hash``: SHA-256 over the EvalReport projection that
       gated this proposal (see :func:`compute_eval_hash`).
     * ``created_at``: ISO 8601 UTC.
+    * ``source_patterns`` (B1 Fork D): the pattern-cluster ids this
+      proposal derives from — the first-class slot for GRV Invariant 3
+      ("no pattern cluster, no proposal"). Distinct from ``evidence``
+      (turn ids): clusters are the *what-recurred*, turns are the
+      *where-observed*. Defaults to ``()`` so every existing producer
+      stays valid unchanged, and — critically — it is EXCLUDED from
+      :func:`compute_proposal_id` so adding cluster lineage never
+      changes a proposal's identity. B2 populates it; the empty-cluster
+      gate stays OFF until B2 ships.
     """
 
     proposal_id: str
@@ -133,10 +145,12 @@ class RoutingProposal:
     evidence: Tuple[str, ...]
     eval_hash: str
     created_at: str
+    source_patterns: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         data["evidence"] = list(data["evidence"])
+        data["source_patterns"] = list(data["source_patterns"])
         return data
 
 
@@ -154,6 +168,11 @@ def compute_proposal_id(
     Deterministic across runs: sorted JSON for the payload, sorted CSV
     for evidence. The same logical proposal — same id — even when the
     detector reruns or evidence accumulates from new sessions.
+
+    B1 Fork D — ``source_patterns`` is intentionally NOT a parameter here
+    and never enters the seed: cluster lineage can accrete on a proposal
+    without changing its identity, so an existing proposal's id is stable
+    whether or not B2 has attached its clusters.
     """
     payload_json = json.dumps(payload, sort_keys=True, default=str)
     evidence_csv = ",".join(sorted(evidence))
@@ -224,6 +243,11 @@ def _read_records(path: Path) -> List[RoutingProposal]:
                 continue
             if isinstance(data.get("evidence"), list):
                 data["evidence"] = tuple(data["evidence"])
+            # B1 Fork D — source_patterns is optional; records written before
+            # the field existed simply omit it and fall back to the dataclass
+            # default ``()``. JSON carries it as a list; coerce to tuple.
+            if isinstance(data.get("source_patterns"), list):
+                data["source_patterns"] = tuple(data["source_patterns"])
             # Sprint 32 2a — backward compat for queue entries that
             # predate the ``type`` field. The Sprint 47 legacy spelling
             # ``routing_update`` round-trips as-is; the CLI dispatch
