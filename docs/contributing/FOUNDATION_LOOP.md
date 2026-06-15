@@ -37,6 +37,11 @@ The executor reads the codebase, maps the relevant surfaces, and reports finding
 
 **Why this matters:** Most sprint failures happen because the executor starts writing before understanding the codebase. GATE-A forces the understanding to happen first, in the open, where the operator can catch wrong assumptions before they become wrong code.
 
+**Trace discipline — grep is not a trace.** A claim about a perimeter, a write path, a reader/caller set, or dead code must cite the **actual call site** — function + line, confirmed to perform the operation — not a grep hit on a symbol name. A name match proves a token exists; it does not prove the code reads, writes, or calls. Two non-negotiables:
+
+- **Counts include tests, with a runtime-vs-test split.** "Zero importers" computed by filtering out `tests/` is a false negative — test importers are importers (they break on delete). Report total, then split.
+- **The gating proof for any retirement or removal is a POST-action re-trace, not the pre-trace.** The pre-removal sweep is ~99%; the tail-reader hides (a CLI `list-archived` reading a field the rest of the port already moved off; a doc citing a deleted file). Re-run the trace method *after* the change and prove zero dangling references across runtime + tests + out-of-app (shell/systemd/yaml/Makefile/docs).
+
 ### GATE-B: Design Lock (read-only, no writes)
 
 The executor presents the exact implementation design: before/after for every change, file-by-file plan, new function signatures, test assertions, and any SPEC amendments surfaced by GATE-A findings.
@@ -73,6 +78,7 @@ An Andon trigger is a condition that halts sprint execution. The executor stops,
 ### When to fire Andon
 
 - **SPEC assumption violation.** The SPEC says X, but the codebase shows Y.
+- **Locked-graph violation.** A SPEC that names a **state-transition target** (e.g. a lifecycle promote/reject/revoke edge) must be checked against the locked transition graph (`grove/capability.py::LEGAL_TRANSITIONS`) *before the SPEC is locked* — and again by the executor at GATE-A. A target that is not a legal edge (or needs an undocumented multi-hop walk) is a locked-graph violation: halt and surface it, do not silently walk an illegal edge or quietly amend the graph. Either the SPEC's targets change or the graph is amended (a ratified amendment with a patch log) — never an implicit deviation.
 - **Missing dependency.** A required module, tool, or API doesn't exist.
 - **Scope expansion.** Implementing the SPEC requires changing files or systems outside the stated scope.
 - **Competing instructions.** Two authoritative sources (e.g., a tool description and an identity directive) contradict each other.
