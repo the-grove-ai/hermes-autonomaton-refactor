@@ -36,7 +36,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Whitelist — exactly the operator-owned declarative artifacts.
-WHITELIST=( dock soul.md constitution.md affordances.md operator.md zones.schema.yaml )
+# curator-voice.md (GRV-009): the operator-sovereign override for the curator
+# review voice preamble — same operator-owned *.md treatment as soul/operator.
+WHITELIST=( dock soul.md constitution.md affordances.md operator.md zones.schema.yaml curator-voice.md )
 
 # Blocklist — defense in depth. These must NEVER cross instances even if one
 # somehow appears inside a whitelisted directory.

@@ -482,8 +482,63 @@ CURATOR_REVIEW_PROMPT = (
     "no absorption — truly stale, irrelevant, or obsolete — X goes under "
     "`prunings`. Leave a list empty (`consolidations: []`) if none. Do "
     "not omit the block. The block comes AFTER your human-readable "
-    "summary of clusters processed, patches made, and decisions left alone."
+    "summary of clusters processed, patches made, and decisions left alone.\n\n"
+    "OUTPUT DISCIPLINE (hard, GRV-009 soul-aligned-curator-review): the "
+    "structured ```yaml``` block must be EXACTLY the schema above — the "
+    "consolidations/prunings keys and nothing else. Do NOT wrap it in "
+    "conversational framing, do NOT add fields, and do NOT let any "
+    "voice/phrasing guidance alter its shape. Any voice guidance you were given "
+    "shapes the prose summary's PHRASING only; this machine-read block owns its "
+    "own format and is never the place for register, preamble, or commentary."
 )
+
+
+# ---------------------------------------------------------------------------
+# Voice preamble (GRV-009 soul-aligned-curator-review) — VOICE shaping only.
+# A static, professional ADVISORY register: it instructs the reviewer to PHRASE
+# its proposals as a composed advisor would, and changes nothing about which
+# skills to consolidate or the structured block's schema. No soul/goals/identity-
+# layer content. Operator-tunable via the synced ~/.grove/curator-voice.md
+# override (sync-operator.sh whitelist); the agent never writes that file.
+# ---------------------------------------------------------------------------
+
+CURATOR_VOICE_PREAMBLE = (
+    "VOICE — how to phrase, not what to decide. Write the human-readable summary "
+    "as a composed senior advisor briefing a principal: dry, precise, in the "
+    "register of professional counsel. Put each consolidation as a considered "
+    "recommendation, not a breathless discovery — \"I'd fold these four under a "
+    "single umbrella\" reads better than \"these are SO similar!\". No filler, no "
+    "enthusiasm theater, no apology, no hedging; lead with the recommendation and "
+    "let one clause of reasoning follow. This shapes PHRASING ONLY — it changes "
+    "nothing about which skills to consolidate, and nothing about the structured "
+    "block below."
+)
+
+CURATOR_VOICE_OVERRIDE_FILENAME = "curator-voice.md"
+
+
+def _curator_voice_preamble() -> str:
+    """The voice preamble for the curator review prompt (GRV-009).
+
+    Operator-sovereign override precedence: ``~/.grove/curator-voice.md`` (synced
+    via sync-operator.sh) wins when present and non-empty; otherwise the vetted
+    static :data:`CURATOR_VOICE_PREAMBLE` constant. When BOTH are empty the
+    result is ``""`` — the curator review stays identity-blind (today's behavior),
+    never a crash. The agent NEVER writes the override file; it is operator-direct
+    edit only (an agent-proposed edit gate is a future sprint, out of scope here).
+    """
+    try:
+        override = get_hermes_home() / CURATOR_VOICE_OVERRIDE_FILENAME
+        if override.is_file():
+            text = override.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+    except Exception:
+        logger.debug(
+            "curator-voice override read failed; falling back to the constant",
+            exc_info=True,
+        )
+    return CURATOR_VOICE_PREAMBLE.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1512,14 +1567,19 @@ def run_curator_review(
                     "error": None,
                 }
             else:
+                # GRV-009 — prepend the voice preamble to BOTH branches. Empty
+                # (no override + empty constant) -> "" -> identity-blind, no slot.
+                _voice = _curator_voice_preamble()
+                _voice_prefix = f"{_voice}\n\n" if _voice else ""
                 if dry_run:
                     prompt = (
                         f"{CURATOR_DRY_RUN_BANNER}\n\n"
+                        f"{_voice_prefix}"
                         f"{CURATOR_REVIEW_PROMPT}\n\n"
                         f"{candidate_list}"
                     )
                 else:
-                    prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+                    prompt = f"{_voice_prefix}{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
                 llm_meta = _run_llm_review(prompt)
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
