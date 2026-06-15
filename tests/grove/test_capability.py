@@ -207,13 +207,15 @@ def test_mutable_defaults_do_not_share_state():
 
 def test_every_legal_transition_and_decision_log_append():
     cap = make_valid()  # state proposed
+    # GRV-009 A6 collapsed graph: proposed is the review lock; promote/revoke/
+    # edit/delete are single edges.
     chain = [
-        (LifecycleState.QUARANTINE, "proposed", "quarantine"),
-        (LifecycleState.APPROVED, "quarantine", "approved"),
-        (LifecycleState.ACTIVE, "approved", "active"),
-        (LifecycleState.REFINED, "active", "refined"),
-        (LifecycleState.ACTIVE, "refined", "active"),
-        (LifecycleState.DEPRECATED, "active", "deprecated"),
+        (LifecycleState.ACTIVE, "proposed", "active"),       # promote
+        (LifecycleState.REFINED, "active", "refined"),        # edit
+        (LifecycleState.ACTIVE, "refined", "active"),         # refine complete
+        (LifecycleState.PROPOSED, "active", "proposed"),      # revoke
+        (LifecycleState.ACTIVE, "proposed", "active"),        # re-promote
+        (LifecycleState.DEPRECATED, "active", "deprecated"),  # delete
     ]
     for i, (to_state, frm, to) in enumerate(chain, start=1):
         rec = cap.transition(to_state, actor="operator", reason=f"step {i}")
@@ -229,15 +231,19 @@ def test_every_legal_transition_and_decision_log_append():
 
 
 def test_illegal_transition_skip_raises():
+    # A6: proposed -> active (promote) and proposed -> rejected (reject) are the
+    # ONLY legal exits from proposed; proposed -> deprecated is illegal.
     cap = make_valid()  # proposed
-    with pytest.raises(IllegalTransitionError, match="proposed -> active"):
-        cap.transition(LifecycleState.ACTIVE, actor="operator", reason="skip")
+    with pytest.raises(IllegalTransitionError, match="proposed -> deprecated"):
+        cap.transition(LifecycleState.DEPRECATED, actor="operator", reason="skip")
 
 
 def test_illegal_transition_backwards_raises():
-    cap = make_valid(lifecycle=Lifecycle(state=LifecycleState.ACTIVE))
+    # A6: active -> proposed (revoke) IS legal; refined exits only to active, so
+    # refined -> deprecated is the illegal backwards/skip edge.
+    cap = make_valid(lifecycle=Lifecycle(state=LifecycleState.REFINED))
     with pytest.raises(IllegalTransitionError):
-        cap.transition(LifecycleState.PROPOSED, actor="operator", reason="rewind")
+        cap.transition(LifecycleState.DEPRECATED, actor="operator", reason="wrong exit")
 
 
 def test_no_transition_out_of_deprecated():
@@ -247,17 +253,18 @@ def test_no_transition_out_of_deprecated():
             cap.transition(target, actor="operator", reason="terminal")
 
 
-# ── GRV-009 Amendment A1 — rejected state + quarantine rejection edge ─────────
+# ── GRV-009 Amendment A1/A6 — rejected state + proposed rejection edge ────────
 
 
-def test_quarantine_to_rejected_succeeds_and_logs():
-    cap = make_valid(lifecycle=Lifecycle(state=LifecycleState.QUARANTINE))
+def test_proposed_to_rejected_succeeds_and_logs():
+    # A6: reject is proposed -> rejected (proposed is the sole review lock).
+    cap = make_valid(lifecycle=Lifecycle(state=LifecycleState.PROPOSED))
     rec = cap.transition(
-        LifecycleState.REJECTED, actor="operator", reason="failed quarantine validation"
+        LifecycleState.REJECTED, actor="operator", reason="failed review"
     )
     assert cap.lifecycle.state is LifecycleState.REJECTED
     assert len(cap.lineage.decision_log) == 1
-    assert rec.from_state == "quarantine"
+    assert rec.from_state == "proposed"
     assert rec.to_state == "rejected"
 
 
@@ -268,9 +275,10 @@ def test_rejected_is_terminal():
             cap.transition(target, actor="operator", reason="terminal")
 
 
-def test_quarantine_cannot_reach_deprecated():
-    # Amendment A1: deprecated is reserved for exits from active, never quarantine.
-    cap = make_valid(lifecycle=Lifecycle(state=LifecycleState.QUARANTINE))
+def test_proposed_cannot_reach_deprecated():
+    # A6: deprecated is reserved for graceful exits from active, never proposed
+    # (proposed exits only to active/rejected).
+    cap = make_valid(lifecycle=Lifecycle(state=LifecycleState.PROPOSED))
     with pytest.raises(IllegalTransitionError):
         cap.transition(LifecycleState.DEPRECATED, actor="operator", reason="wrong exit")
 
@@ -289,11 +297,11 @@ def test_yaml_round_trip_equality_with_decision_log():
         lineage=Lineage(source_patterns=["pat.a", "pat.b"], parent_id="cap.parent"),
     )
     # populate decision_log via real transitions (nested + enum casting proof)
-    cap.transition(LifecycleState.QUARANTINE, actor="operator", reason="review")
+    cap.transition(LifecycleState.ACTIVE, actor="operator", reason="promote")
     cap.transition(
-        LifecycleState.APPROVED,
+        LifecycleState.REFINED,
         actor="operator",
-        reason="approved",
+        reason="refine",
         evidence=["shadow_pass=12"],
     )
     assert len(cap.lineage.decision_log) == 2
@@ -303,7 +311,7 @@ def test_yaml_round_trip_equality_with_decision_log():
     # spot-check nested enum + record fidelity
     assert restored.context.disclosure is Disclosure.EAGER
     assert restored.lineage.decision_log[1].evidence == ["shadow_pass=12"]
-    assert restored.lifecycle.state is LifecycleState.APPROVED
+    assert restored.lifecycle.state is LifecycleState.REFINED
 
 
 def test_from_yaml_missing_governance_field_fails_loud():

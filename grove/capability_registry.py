@@ -47,7 +47,10 @@ __all__ = [
     "TRANSITION_DEFERRED",
     "TRANSITION_SKIPPED",
     "register_installed_skill",
+    "register_proposed_skill",
     "register_skills_in_tree",
+    "ingest_pre_faucet_skill",
+    "skill_record_id_for_name",
 ]
 
 logger = logging.getLogger(__name__)
@@ -363,11 +366,24 @@ def transition_record(
     if not isinstance(to_state, LifecycleState):
         to_state = LifecycleState(to_state)
 
-    target = Path(directory) if directory is not None else default_capabilities_dir()
-    path = _record_path_for_id(cap_id, target)
+    # Resolve the record's file. With no explicit directory, search BOTH the repo
+    # bundled dir AND the machine-local GROVE_HOME overlay — agent records
+    # (proposed/active, installed/managed) live in the overlay, bundled records
+    # in the repo. The write lands in whichever dir holds the record.
+    if directory is not None:
+        search_dirs = [Path(directory)]
+    else:
+        search_dirs = [default_capabilities_dir(), grove_home_capabilities_dir()]
+    path = None
+    for d in search_dirs:
+        if d.is_dir():
+            path = _record_path_for_id(cap_id, d)
+            if path is not None:
+                break
     if path is None:
         raise CapabilityLoadError(
-            f"transition_record: no capability record with id {cap_id!r} in {target}"
+            f"transition_record: no capability record with id {cap_id!r} in "
+            f"{[str(d) for d in search_dirs]}"
         )
 
     if fcntl is None:  # pragma: no cover - non-POSIX best-effort
@@ -414,6 +430,45 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
 
 
+def skill_record_id_for_name(name: str) -> Optional[str]:
+    """The kind=skill record id whose name-slug matches *name*, or None.
+
+    GRV-009 E6b C2 — the faucet (edit/patch/delete) and sovereignty
+    (promote/reject/revoke) use this to find the record governing an on-disk
+    skill, matching the trailing id segment (the slug). Returns None when no
+    record governs the skill (external skills, pre-C2 legacy .andon proposals).
+    """
+    from grove.capability import CapabilityKind
+
+    slug = _slug(name.rsplit("/", 1)[-1].rsplit(":", 1)[-1])
+    if not slug:
+        return None
+    try:
+        for cid, cap in load_capabilities().items():
+            if cap.kind is CapabilityKind.SKILL and cid.rsplit(".", 1)[-1] == slug:
+                return cid
+    except CapabilityLoadError:
+        return None
+    return None
+
+
+def _frontmatter_value(payload: str, key: str) -> Optional[str]:
+    """A single string value from a SKILL.md frontmatter block, or None."""
+    if not payload.startswith("---"):
+        return None
+    parts = payload.split("---", 2)
+    if len(parts) < 3:
+        return None
+    try:
+        front = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(front, dict):
+        return None
+    val = front.get(key)
+    return str(val).strip() if val else None
+
+
 def _frontmatter_zone(payload: str) -> Optional[str]:
     """The lowercased ``zone:`` from a SKILL.md frontmatter block, or None."""
     if not payload.startswith("---"):
@@ -444,24 +499,34 @@ def _resolve_minted_zone(payload: str):
     return Zone.YELLOW
 
 
-def register_installed_skill(
+def _body_hash(content: str) -> str:
+    """sha256 body hash for ``lifecycle.body_hash``. Mirrors
+    ``grove.sovereignty._sha256_short`` exactly so a future wake-match compares
+    like-for-like (GRV-009 E6b C2 — populate only; reactivation DEFERRED)."""
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+def _mint_skill_record(
     name: str,
     category: str,
     payload: str,
     *,
+    provenance,
+    state,
+    filename_tag: str,
+    use_count: int = 0,
     directory: Optional[Path] = None,
     existing_ids: Optional[FrozenSet[str]] = None,
 ) -> Optional[Path]:
-    """Mint a read-only ``provenance:installed`` / ``lifecycle:managed`` skill
-    record for a freshly installed skill — IF none exists (dedup guard).
+    """Shared minter: build + dedup-guard + atomically write a kind=skill record.
 
-    Returns the written record path, or ``None`` when the skill already has a
-    record (idempotent) or the inputs are unusable (empty name/payload).
-
-    ``existing_ids`` lets a batch caller (the profile-clone tree walk, the sync
-    loop) pre-load the registry's ids ONCE and pass them in, avoiding an
-    O(skills x registry) reload per skill (which otherwise makes a profile
-    create that clones the full skill set time out).
+    Returns the written path, or ``None`` (dedup hit or unusable input). The
+    record mints to the machine-local ``<GROVE_HOME>/capabilities`` overlay
+    (ruling A); an explicit *directory* (tests) wins. ``body_hash`` is always
+    populated. ``filename_tag`` marks provenance in the filename
+    (``skill__<tag>__<cat>__<name>.yaml``); the record *id* is unchanged.
     """
     from grove.capability import (
         Capability,
@@ -472,8 +537,6 @@ def register_installed_skill(
         DockComposition,
         Failure,
         Lifecycle,
-        LifecycleState,
-        Provenance,
         SkillPresentation,
         Telemetry,
         TierRule,
@@ -491,8 +554,6 @@ def register_installed_skill(
     cat_slug = _slug(category) or name_slug
     cap_id = f"skill.{cat_slug}.{name_slug}"
 
-    # Installed records mint to the machine-local GROVE_HOME overlay, not the
-    # repo tree (GRV-009 E6b C1 ruling A). An explicit directory (tests) wins.
     target = Path(directory) if directory is not None else grove_home_capabilities_dir()
     target.mkdir(parents=True, exist_ok=True)
 
@@ -526,20 +587,105 @@ def register_installed_skill(
             dock_composition=DockComposition.NONE,
         ),
         lifecycle=Lifecycle(
-            state=LifecycleState.MANAGED,
-            provenance=Provenance.INSTALLED,
+            state=state,
+            provenance=provenance,
+            body_hash=_body_hash(payload),
+            use_count=use_count,
         ),
         failure=Failure(circuit_breaker=CircuitBreaker(threshold=3, window_seconds=300)),
         skill=SkillPresentation(category=cat_slug),
     )
 
-    # FLAG 4 (operator lock): installed records carry the skill__installed__
-    # filename prefix so the machine-local boundary is explicit (.gitignore'd),
-    # not reliant on untracked-survives-reset. The record *id* is unchanged
-    # (skill.<cat>.<name>); only the filename marks provenance.
-    path = target / f"skill__installed__{cat_slug}__{name_slug}.yaml"
+    path = target / f"skill__{filename_tag}__{cat_slug}__{name_slug}.yaml"
     _atomic_write_yaml(path, cap.to_yaml())
     return path
+
+
+def register_installed_skill(
+    name: str,
+    category: str,
+    payload: str,
+    *,
+    directory: Optional[Path] = None,
+    existing_ids: Optional[FrozenSet[str]] = None,
+) -> Optional[Path]:
+    """Mint a read-only ``provenance:installed`` / ``lifecycle:managed`` skill
+    record for a freshly installed skill — IF none exists (dedup guard).
+
+    Returns the written record path, or ``None`` when the skill already has a
+    record (idempotent) or the inputs are unusable (empty name/payload).
+
+    ``existing_ids`` lets a batch caller (the profile-clone tree walk, the sync
+    loop) pre-load the registry's ids ONCE and pass them in, avoiding an
+    O(skills x registry) reload per skill.
+    """
+    from grove.capability import LifecycleState, Provenance
+
+    return _mint_skill_record(
+        name, category, payload,
+        provenance=Provenance.INSTALLED,
+        state=LifecycleState.MANAGED,
+        filename_tag="installed",
+        directory=directory,
+        existing_ids=existing_ids,
+    )
+
+
+def ingest_pre_faucet_skill(
+    name: str,
+    category: str,
+    payload: str,
+    *,
+    use_count: int = 0,
+    directory: Optional[Path] = None,
+) -> Optional[Path]:
+    """One-time ingest of a pre-faucet agent-created skill (GRV-009 E6b C2 4.4).
+
+    A live on-disk agent skill that predates the faucet (e.g.
+    ``debugging-mcp-credentials``) is minted as an **ACTIVE, immediately
+    executable** record carrying its prior ``use_count`` — NOT routed through the
+    proposed quarantine gate (it is already a live, reviewed skill). Provenance is
+    ``agent_proposed`` (it was agent-created pre-faucet). Dedup-guarded.
+    """
+    from grove.capability import LifecycleState, Provenance
+
+    return _mint_skill_record(
+        name, category, payload,
+        provenance=Provenance.AGENT_PROPOSED,
+        state=LifecycleState.ACTIVE,
+        filename_tag="ingested",
+        use_count=use_count,
+        directory=directory,
+    )
+
+
+def register_proposed_skill(
+    name: str,
+    category: str,
+    payload: str,
+    *,
+    directory: Optional[Path] = None,
+    existing_ids: Optional[FrozenSet[str]] = None,
+) -> Optional[Path]:
+    """Mint a ``provenance:agent_proposed`` / ``lifecycle:proposed`` record for an
+    agent-generated skill — the C2 faucet (dedup-guarded).
+
+    ``proposed`` is the SOLE authoritative quarantine state (GRV-009 E6b C2
+    .andon fork ruling a): the record is **non-executable** until promoted — the
+    dispatch checkpoint refuses ``state:proposed`` even though the record loads
+    and the body is readable in ``.andon/`` for operator review. ``body_hash`` is
+    populated for future wake-match (reactivation DEFERRED).
+    """
+    from grove.capability import LifecycleState, Provenance
+
+    return _mint_skill_record(
+        name, category, payload,
+        provenance=Provenance.AGENT_PROPOSED,
+        state=LifecycleState.PROPOSED,
+        filename_tag="proposed",
+        directory=directory,
+        existing_ids=existing_ids,
+    )
 
 
 def register_skills_in_tree(

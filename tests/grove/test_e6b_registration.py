@@ -257,6 +257,73 @@ def test_load_capabilities_collision_raises_loud(monkeypatch, tmp_path):
         reg.load_capabilities()
 
 
+# ── C2: PROPOSED MINTER + NON-EXECUTABLE CHECKPOINT ───────────────────────────
+
+
+def test_register_proposed_mints_proposed_agent_proposed_with_body_hash(tmp_path):
+    from grove.capability_registry import register_proposed_skill, _body_hash
+
+    payload = "---\nname: My Idea\nzone: red\n---\nbody\n"
+    p = register_proposed_skill("My Idea", "creative", payload, directory=tmp_path / "c")
+    assert p is not None and p.name == "skill__proposed__creative__my-idea.yaml"
+    cap = Capability.from_yaml(p.read_text(encoding="utf-8"))
+    assert cap.lifecycle.state is LifecycleState.PROPOSED
+    assert cap.lifecycle.provenance is Provenance.AGENT_PROPOSED
+    assert cap.lifecycle.body_hash == _body_hash(payload)
+    assert Capability.from_yaml(cap.to_yaml()).lifecycle.body_hash == cap.lifecycle.body_hash
+
+
+def test_resolve_refuses_proposed_but_body_stays_readable(tmp_path):
+    """The hardest-scrutinized proof: state:proposed -> resolve refused; body
+    readable for operator review."""
+    from grove.capability_registry import register_proposed_skill
+    from grove.skill_disclosure import (
+        SkillNotExecutableError, resolve_skill_record, wrap_skill_body,
+    )
+
+    payload = "---\nname: Secret\ndescription: x\n---\nrm -rf /\n"
+    p = register_proposed_skill("Secret", "creative", payload, directory=tmp_path / "c")
+    prop = Capability.from_yaml(p.read_text(encoding="utf-8"))
+
+    with pytest.raises(SkillNotExecutableError):
+        resolve_skill_record(prop)
+    # body still readable for review (the record loaded; payload intact)
+    assert "rm -rf /" in prop.context.payload
+    # a managed (executable) record resolves normally
+    inst = _skill_cap("skill.creative.ok", state=LifecycleState.MANAGED, payload=payload)
+    assert resolve_skill_record(inst) == wrap_skill_body(payload)
+
+
+def test_index_hides_proposed_offers_executable():
+    from grove.skill_index import build_skill_index_from_records
+
+    prop = _skill_cap("skill.creative.secret", state=LifecycleState.PROPOSED,
+                      payload="---\nname: Secret\ndescription: x\n---\nb\n")
+    active = _skill_cap("skill.creative.good", state=LifecycleState.ACTIVE,
+                        payload="---\nname: Good\ndescription: y\n---\nb\n")
+    idx = build_skill_index_from_records([prop, active], {})
+    assert "Good" in idx
+    assert "Secret" not in idx
+
+
+def test_skill_view_guard_refuses_proposed(monkeypatch):
+    """The agent-facing view path refuses a proposed skill by record state."""
+    import tools.skills_tool as st
+    from grove import capability_registry as reg
+
+    prop = _skill_cap("skill.creative.secret", state=LifecycleState.PROPOSED,
+                      payload="---\nname: Secret\n---\nb\n")
+    monkeypatch.setattr(reg, "load_capabilities", lambda *a, **k: {prop.id: prop})
+    out = st._nonexecutable_skill_refusal("secret")
+    assert out is not None and "non-executable" in out
+    # an executable skill (or unknown) is not refused
+    active = _skill_cap("skill.creative.good", state=LifecycleState.ACTIVE,
+                        payload="---\nname: Good\n---\nb\n")
+    monkeypatch.setattr(reg, "load_capabilities", lambda *a, **k: {active.id: active})
+    assert st._nonexecutable_skill_refusal("good") is None
+    assert st._nonexecutable_skill_refusal("no-such-skill") is None
+
+
 def test_mint_targets_grove_home_not_repo(monkeypatch, tmp_path):
     """Isolation: with a tmp GROVE_HOME overlay, a default mint lands there and
     the repo config/capabilities is never written (no pollution, no cleanup)."""

@@ -25,7 +25,7 @@ from typing import Dict, Iterable, List, Tuple
 
 import yaml
 
-from grove.capability import Capability, CapabilityKind
+from grove.capability import EXECUTABLE_STATES, Capability, CapabilityKind
 
 __all__ = [
     "parse_skill_frontmatter",
@@ -90,6 +90,11 @@ def project_skill_records(
     by_category: Dict[str, List[Tuple[str, str]]] = {}
     for rec in records:
         if rec.kind is not CapabilityKind.SKILL:
+            continue
+        # GRV-009 E6b C2 — the index offers only executable skills. A proposed
+        # (quarantined) or retired record is never surfaced in <available_skills>,
+        # so the agent cannot pull a skill that is under review or deprecated.
+        if rec.lifecycle.state not in EXECUTABLE_STATES:
             continue
         if rec.skill is None or not rec.skill.category:
             raise ValueError(

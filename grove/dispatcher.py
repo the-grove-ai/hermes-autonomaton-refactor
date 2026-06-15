@@ -3926,6 +3926,21 @@ class Dispatcher:
                 if not isinstance(skill_md, str) or not skill_md.strip():
                     continue
                 write_proposal(skill_name, skill_md)
+                # GRV-009 E6b C2 — mint the state:proposed record alongside the
+                # .andon body (A6: proposed is the sole review lock; the record
+                # is non-executable behind the 4.1 checkpoint). Best-effort.
+                try:
+                    from grove.capability_registry import (
+                        _frontmatter_value, register_proposed_skill,
+                    )
+                    _cat = _frontmatter_value(skill_md, "category") or ""
+                    register_proposed_skill(skill_name, _cat, skill_md)
+                except Exception:
+                    logger.warning(
+                        "[grove.dispatcher] proposed-record mint failed for %r "
+                        "(proposal written, record not minted)", skill_name,
+                        exc_info=True,
+                    )
                 logger.info(
                     "[grove.dispatcher] Materialized accepted synthesized "
                     "skill %r into quarantine for governed invoke_skill.",
