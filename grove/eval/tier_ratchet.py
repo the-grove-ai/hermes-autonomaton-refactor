@@ -38,6 +38,7 @@ review.
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -56,6 +57,7 @@ __all__ = [
     "MIN_SIMPLE_FRACTION_DOWNWARD",
     "MIN_SUCCESS_RATE_DOWNWARD",
     "MIN_CORRECTION_RATE_UPWARD",
+    "compute_cluster_id",
     "propose_routing_adjustments",
 ]
 
@@ -68,15 +70,37 @@ MIN_SUCCESS_RATE_DOWNWARD = 0.90
 MIN_CORRECTION_RATE_UPWARD = 0.30
 
 
+def compute_cluster_id(
+    intent_class: str, member_pattern_hashes: Tuple[str, ...],
+) -> str:
+    """Stateless, content-addressable id for a detected pattern cluster (B2).
+
+    Fork 4 — stateless, NO persistence. A SHA-256 over the ``intent_class``
+    plus the cluster's DISTINCT member ``pattern_hash`` set in sorted order.
+    The id is self-describing and reproducible: two detection runs over the
+    SAME cluster members compute the SAME id. Because the same cluster also
+    carries the same ``evidence_turn_ids`` (and ``compute_proposal_id`` folds
+    type+payload+evidence — never ``source_patterns``), the resulting
+    ``proposal_id`` is also stable → a re-run dedups in the queue instead of
+    stacking. The id changes ONLY when the cluster's member-pattern set changes
+    (a genuinely different signal).
+
+    ``member_pattern_hashes`` must already be the sorted distinct set; callers
+    build it in :func:`_aggregate_by_intent`.
+    """
+    seed = intent_class + "|" + ",".join(member_pattern_hashes)
+    return "cluster:sha256:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
 def _aggregate_by_intent(
     records: Iterable[IntentRecord],
 ) -> Dict[str, Dict[str, Any]]:
     """Group records by intent_class and compute per-class statistics.
 
     Returns a mapping ``intent_class → {n, success_rate, correction_rate,
-    avg_confidence, simple_frac, tier_distribution, evidence_turn_ids}``.
-    Intents with ``intent_class == "unknown"`` are skipped — they carry
-    no routing-rule placement decision.
+    avg_confidence, simple_frac, tier_distribution, evidence_turn_ids,
+    member_pattern_hashes}``. Intents with ``intent_class == "unknown"`` are
+    skipped — they carry no routing-rule placement decision.
     """
     by_intent: Dict[str, List[IntentRecord]] = defaultdict(list)
     for record in records:
@@ -106,6 +130,7 @@ def _aggregate_by_intent(
             "simple_fraction": simple / n,
             "tier_distribution": dict(tier_dist),
             "evidence_turn_ids": tuple(sorted(r.turn_id for r in recs)),
+            "member_pattern_hashes": tuple(sorted({r.pattern_hash for r in recs})),
         }
     return out
 
@@ -163,6 +188,9 @@ def _maybe_downward(
         "add_intents": [intent_class],
     }
     evidence = stats["evidence_turn_ids"]
+    cluster_id = compute_cluster_id(
+        intent_class, stats["member_pattern_hashes"],
+    )
     return RoutingProposal(
         proposal_id=compute_proposal_id(
             type=PROPOSAL_TYPE_ROUTING_ADJUSTMENT, payload=payload, evidence=evidence,
@@ -172,6 +200,7 @@ def _maybe_downward(
         evidence=evidence,
         eval_hash="",  # set by gate_proposal after the suite passes
         created_at=_now_iso(),
+        source_patterns=(cluster_id,),
     )
 
 
@@ -197,6 +226,9 @@ def _maybe_upward(
         "add_intents": [intent_class],
     }
     evidence = stats["evidence_turn_ids"]
+    cluster_id = compute_cluster_id(
+        intent_class, stats["member_pattern_hashes"],
+    )
     return RoutingProposal(
         proposal_id=compute_proposal_id(
             type=PROPOSAL_TYPE_ROUTING_ADJUSTMENT, payload=payload, evidence=evidence,
@@ -206,6 +238,7 @@ def _maybe_upward(
         evidence=evidence,
         eval_hash="",
         created_at=_now_iso(),
+        source_patterns=(cluster_id,),
     )
 
 
