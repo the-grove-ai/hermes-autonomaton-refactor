@@ -142,13 +142,16 @@ def _pinned_guard(name: str) -> Optional[str]:
     agent can still patch/edit pinned skills; pin only guards against
     irrecoverable loss, not against content evolution.
 
-    Best-effort: if the sidecar is unreadable we let the delete through
-    rather than block on a broken telemetry file.
+    Best-effort: if the record is unreadable we let the delete through rather
+    than block on a registry hiccup.
+
+    GRV-009 E6b C2-bridge — pin is read from the record (lifecycle.pinned), not
+    the .usage.json sidecar.
     """
     try:
-        from tools import skill_usage
-        rec = skill_usage.get_record(name)
-        if rec.get("pinned"):
+        from grove.capability_registry import skill_record_for_name
+        rec = skill_record_for_name(name)
+        if rec is not None and rec.lifecycle.pinned:
             return (
                 f"Skill '{name}' is pinned and cannot be deleted by "
                 f"skill_manage. Ask the user to run "

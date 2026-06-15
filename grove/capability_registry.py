@@ -51,6 +51,9 @@ __all__ = [
     "register_skills_in_tree",
     "ingest_pre_faucet_skill",
     "skill_record_id_for_name",
+    "skill_record_for_name",
+    "set_skill_pinned",
+    "update_lifecycle_fields",
 ]
 
 logger = logging.getLogger(__name__)
@@ -411,6 +414,67 @@ def transition_record(
         fd.close()
 
 
+def update_lifecycle_fields(
+    cap_id: str,
+    *,
+    directory: Optional[Path] = None,
+    **fields: Any,
+) -> bool:
+    """Write NON-state lifecycle fields (e.g. ``pinned``) to a record without a
+    state transition — the registry write path for the CLI pin toggle and any
+    telemetry-on-record (GRV-009 E6b C2-bridge).
+
+    Same per-record advisory lock + atomic replace as ``transition_record``.
+    Returns True when written, False on lock contention (caller may retry).
+    Raises :class:`CapabilityLoadError` when no record carries *cap_id* or an
+    unknown lifecycle field is given.
+    """
+    if directory is not None:
+        search_dirs = [Path(directory)]
+    else:
+        search_dirs = [default_capabilities_dir(), grove_home_capabilities_dir()]
+    path = None
+    for d in search_dirs:
+        if d.is_dir():
+            path = _record_path_for_id(cap_id, d)
+            if path is not None:
+                break
+    if path is None:
+        raise CapabilityLoadError(
+            f"update_lifecycle_fields: no capability record with id {cap_id!r} in "
+            f"{[str(d) for d in search_dirs]}"
+        )
+
+    def _apply() -> bool:
+        cap = Capability.from_yaml(path.read_text(encoding="utf-8"))
+        for key, value in fields.items():
+            if not hasattr(cap.lifecycle, key):
+                raise CapabilityLoadError(
+                    f"update_lifecycle_fields: unknown lifecycle field {key!r}"
+                )
+            setattr(cap.lifecycle, key, value)
+        _atomic_write_yaml(path, cap.to_yaml())
+        return True
+
+    if fcntl is None:  # pragma: no cover - non-POSIX best-effort
+        return _apply()
+
+    lock_path = path.with_suffix(".yaml.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = open(lock_path, "a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            return False  # contended — caller may retry
+        try:
+            return _apply()
+        finally:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+    finally:
+        fd.close()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GRV-009 E6b C1 — static-registration hook: mint read-only installed/managed
 # records at the install perimeter. INFRASTRUCTURE, not faucet — these records
@@ -450,6 +514,33 @@ def skill_record_id_for_name(name: str) -> Optional[str]:
     except CapabilityLoadError:
         return None
     return None
+
+
+def skill_record_for_name(name: str):
+    """The kind=skill :class:`Capability` whose name-slug matches *name*, or None
+    (GRV-009 E6b C2-bridge — the CLI reads state/pinned from the record)."""
+    from grove.capability import CapabilityKind
+
+    slug = _slug(name.rsplit("/", 1)[-1].rsplit(":", 1)[-1])
+    if not slug:
+        return None
+    try:
+        for cid, cap in load_capabilities().items():
+            if cap.kind is CapabilityKind.SKILL and cid.rsplit(".", 1)[-1] == slug:
+                return cap
+    except CapabilityLoadError:
+        return None
+    return None
+
+
+def set_skill_pinned(name: str, pinned: bool) -> bool:
+    """Set ``lifecycle.pinned`` on the record governing *name* (GRV-009 E6b
+    C2-bridge — the CLI pin toggle, record-backed). Returns True when written,
+    False when no record governs the skill (caller informs the operator)."""
+    cap_id = skill_record_id_for_name(name)
+    if cap_id is None:
+        return False
+    return update_lifecycle_fields(cap_id, pinned=bool(pinned))
 
 
 def _frontmatter_value(payload: str, key: str) -> Optional[str]:
