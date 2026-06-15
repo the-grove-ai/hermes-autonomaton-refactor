@@ -83,9 +83,10 @@ def test_get_record_missing_returns_empty_record(skills_home):
     rec = get_record("nonexistent")
     assert rec["use_count"] == 0
     assert rec["view_count"] == 0
-    assert rec["state"] == "active"
     assert rec["pinned"] is False
-    assert rec["archived_at"] is None
+    # GRV-009 E6b C2-bridge — state/archived_at retired (records own state).
+    assert "state" not in rec
+    assert "archived_at" not in rec
 
 
 def test_get_record_backfills_missing_keys(skills_home):
@@ -93,8 +94,8 @@ def test_get_record_backfills_missing_keys(skills_home):
     save_usage({"legacy": {"use_count": 5}})  # old-format record
     rec = get_record("legacy")
     assert rec["use_count"] == 5
-    assert "view_count" in rec  # backfilled
-    assert "state" in rec
+    assert "view_count" in rec  # backfilled telemetry
+    assert "state" not in rec   # STATE field retired
 
 
 def test_load_usage_handles_corrupt_file(skills_home):
@@ -173,38 +174,10 @@ def test_concurrent_bump_view_preserves_all_updates(skills_home):
 
 
 # ---------------------------------------------------------------------------
-# State transitions
+# State transitions — RETIRED (GRV-009 E6b C2-bridge). set_state and the
+# state/archived_at fields are gone; capability records own lifecycle state.
+# The former test_set_state_* / test_restoring_from_archive tests are removed.
 # ---------------------------------------------------------------------------
-
-def test_set_state_active(skills_home):
-    from tools.skill_usage import set_state, get_record, STATE_ACTIVE
-    set_state("x", STATE_ACTIVE)
-    assert get_record("x")["state"] == "active"
-
-
-def test_set_state_archived_records_timestamp(skills_home):
-    from tools.skill_usage import set_state, get_record, STATE_ARCHIVED
-    set_state("x", STATE_ARCHIVED)
-    rec = get_record("x")
-    assert rec["state"] == "archived"
-    assert rec["archived_at"] is not None
-
-
-def test_set_state_invalid_is_noop(skills_home):
-    from tools.skill_usage import set_state, get_record
-    set_state("x", "bogus")
-    # No record created for invalid state
-    rec = get_record("x")
-    assert rec["state"] == "active"  # default
-
-
-def test_restoring_from_archive_clears_timestamp(skills_home):
-    from tools.skill_usage import set_state, get_record, STATE_ARCHIVED, STATE_ACTIVE
-    set_state("x", STATE_ARCHIVED)
-    assert get_record("x")["archived_at"] is not None
-    set_state("x", STATE_ACTIVE)
-    assert get_record("x")["archived_at"] is None
-
 
 def test_set_pinned(skills_home):
     from tools.skill_usage import set_pinned, get_record
@@ -339,7 +312,9 @@ def test_agent_created_skips_archive_and_hub_dirs(skills_home):
 # ---------------------------------------------------------------------------
 
 def test_archive_skill_moves_directory(skills_home):
-    from tools.skill_usage import archive_skill, get_record, STATE_ARCHIVED
+    # GRV-009 E6b C2-bridge — archive_skill is the directory move only; lifecycle
+    # state lives on the record (set via transition_record by the CLI/curator).
+    from tools.skill_usage import archive_skill
     skills_dir = skills_home / "skills"
     skill_dir = _write_skill(skills_dir, "old-skill")
     assert skill_dir.exists()
@@ -348,8 +323,6 @@ def test_archive_skill_moves_directory(skills_home):
     assert ok, msg
     assert not skill_dir.exists()
     assert (skills_dir / ".archive" / "old-skill" / "SKILL.md").exists()
-    assert get_record("old-skill")["state"] == "archived"
-    assert get_record("old-skill")["archived_at"] is not None
 
 
 def test_archive_refuses_bundled_skill(skills_home):
@@ -394,7 +367,7 @@ def test_restore_skill_moves_back(skills_home):
     ok, msg = restore_skill("temp-skill")
     assert ok, msg
     assert (skills_dir / "temp-skill" / "SKILL.md").exists()
-    assert get_record("temp-skill")["state"] == "active"
+    # state lives on the record now; restore is the dir move only.
 
 
 def test_restore_skill_finds_nested_archive_subdir(skills_home):
@@ -413,7 +386,6 @@ def test_restore_skill_finds_nested_archive_subdir(skills_home):
     assert ok, msg
     assert (skills_dir / "nested-skill" / "SKILL.md").exists()
     assert not nested.exists()
-    assert get_record("nested-skill")["state"] == "active"
 
 
 def test_restore_skill_finds_nested_timestamped_prefix(skills_home):
@@ -464,7 +436,8 @@ def test_agent_created_report_includes_marked_skills_with_defaults(skills_home):
     assert by_name["a"]["view_count"] == 1
     # b has only the provenance marker — activity fields still default.
     assert by_name["b"]["view_count"] == 0
-    assert by_name["b"]["state"] == "active"
+    # GRV-009 E6b C2-bridge — rows no longer carry a STATE field (telemetry only).
+    assert "state" not in by_name["b"]
 
 
 def test_manual_skill_with_usage_is_not_curator_managed(skills_home):
@@ -564,15 +537,9 @@ def test_bump_use_no_op_for_hub_skill(skills_home):
     assert "from-hub" not in load_usage()
 
 
-def test_set_state_no_op_for_bundled_skill(skills_home):
-    """State transitions on bundled skills must not land in the sidecar."""
-    from tools.skill_usage import set_state, load_usage, STATE_ARCHIVED
-    skills_dir = skills_home / "skills"
-    (skills_dir / ".bundled_manifest").write_text(
-        "locked:abc\n", encoding="utf-8",
-    )
-    set_state("locked", STATE_ARCHIVED)
-    assert "locked" not in load_usage()
+# GRV-009 E6b C2-bridge — test_set_state_no_op_for_bundled_skill removed
+# (set_state is retired; bundled skills never get records, so no STATE write
+# path can touch them).
 
 
 def test_restore_refuses_to_shadow_bundled_skill(skills_home):
@@ -597,8 +564,8 @@ def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
     """The combined guarantee: no curator code path can archive, mark stale,
     set-state, or persist telemetry for a bundled or hub-installed skill."""
     from tools.skill_usage import (
-        bump_view, bump_use, bump_patch, set_state, set_pinned,
-        archive_skill, load_usage, STATE_STALE, STATE_ARCHIVED,
+        bump_view, bump_use, bump_patch, set_pinned,
+        archive_skill, load_usage,
     )
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "bundled-one")
@@ -619,8 +586,6 @@ def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
         bump_view(name)
         bump_use(name)
         bump_patch(name)
-        set_state(name, STATE_STALE)
-        set_state(name, STATE_ARCHIVED)
         set_pinned(name, True)
         ok, _msg = archive_skill(name)
         assert not ok, f"archive_skill(\"{name}\") should refuse"

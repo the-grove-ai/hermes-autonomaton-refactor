@@ -243,33 +243,31 @@ def test_report_captures_llm_error_and_continues(curator_env):
     assert payload["llm_error"] == "HTTP 400: No models provided"
 
 
-def test_state_transitions_captured_in_report(curator_env):
-    """When a skill moves active → stale or stale → archived between
-    before/after snapshots, the report records it."""
+def test_state_transitions_retired_from_report(curator_env):
+    """GRV-009 E6b C2-bridge — the .usage.json STATE-diff is RETIRED. Capability
+    records own lifecycle state, and the .usage.json rows no longer carry a
+    `state` field, so the run report captures no state transitions and renders
+    without crashing (telemetry lines remain)."""
     curator = curator_env["curator"]
     start = datetime.now(timezone.utc)
 
-    before = [{"name": "getting-old", "state": "active", "pinned": False}]
-    after = [{"name": "getting-old", "state": "stale", "pinned": False}]
+    before = [{"name": "getting-old", "pinned": False, "use_count": 3}]
+    after = [{"name": "getting-old", "pinned": False, "use_count": 3}]
 
     run_dir = curator._write_run_report(
         started_at=start,
         elapsed_seconds=1.0,
-        auto_counts={"checked": 1, "marked_stale": 1, "archived": 0, "reactivated": 0},
-        auto_summary="1 marked stale",
+        auto_counts={"checked": 1, "archived": 0, "deferred": 0},
+        auto_summary="0 changes",
         before_report=before,
         before_names={r["name"] for r in before},
         after_report=after,
         llm_meta=_make_llm_meta(),
     )
     payload = json.loads((run_dir / "run.json").read_text())
-    assert payload["state_transitions"] == [
-        {"name": "getting-old", "from": "active", "to": "stale"}
-    ]
-    md = (run_dir / "REPORT.md").read_text()
-    assert "State transitions" in md
-    assert "getting-old" in md
-    assert "active → stale" in md
+    assert payload["state_transitions"] == []  # retired — no row-state delta
+    # The report still generates (no crash, no KeyError on the removed field).
+    assert (run_dir / "REPORT.md").read_text()
 
 
 # ---------------------------------------------------------------------------

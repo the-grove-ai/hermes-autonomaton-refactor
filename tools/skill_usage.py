@@ -311,9 +311,9 @@ def _empty_record() -> Dict[str, Any]:
         "patch_count": 0,
         "last_patched_at": None,
         "created_at": _now_iso(),
-        "state": STATE_ACTIVE,
+        # GRV-009 E6b C2-bridge — the `state`/`archived_at` STATE fields are
+        # retired (records are sole-source for lifecycle state). Telemetry only.
         "pinned": False,
-        "archived_at": None,
     }
 
 
@@ -438,18 +438,9 @@ def mark_agent_created(skill_name: str) -> None:
     _mutate(skill_name, _apply)
 
 
-def set_state(skill_name: str, state: str) -> None:
-    """Set lifecycle state. No-op if *state* is invalid."""
-    if state not in _VALID_STATES:
-        logger.debug("set_state: invalid state %r for %s", state, skill_name)
-        return
-    def _apply(rec: Dict[str, Any]) -> None:
-        rec["state"] = state
-        if state == STATE_ARCHIVED:
-            rec["archived_at"] = _now_iso()
-        elif state == STATE_ACTIVE:
-            rec["archived_at"] = None
-    _mutate(skill_name, _apply)
+# GRV-009 E6b C2-bridge (the burn) — set_state is RETIRED. Capability records
+# are sole-source for skill lifecycle state; the .usage.json sidecar no longer
+# carries a `state`/`archived_at` field. All TELEMETRY writers below survive.
 
 
 def set_pinned(skill_name: str, pinned: bool) -> None:
@@ -511,7 +502,8 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
         except Exception as e2:
             return False, f"failed to archive: {e2}"
 
-    set_state(skill_name, STATE_ARCHIVED)
+    # GRV-009 E6b C2-bridge — the STATE write is retired; archive is now the
+    # directory move only (the record carries lifecycle state via DEPRECATED).
     return True, f"archived to {dest}"
 
 
@@ -560,7 +552,7 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
         except Exception as e:
             return False, f"failed to restore: {e}"
 
-    set_state(skill_name, STATE_ACTIVE)
+    # GRV-009 E6b C2-bridge — STATE write retired; restore is the dir move only.
     return True, f"restored to {dest}"
 
 

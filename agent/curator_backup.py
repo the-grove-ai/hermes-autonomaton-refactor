@@ -15,7 +15,9 @@ The snapshot does NOT include:
 It DOES include:
   - all SKILL.md files + their directories (``scripts/``, ``references/``,
     ``templates/``, ``assets/``)
-  - ``.usage.json`` (usage telemetry — needed to rehydrate state cleanly)
+  - ``.usage.json`` (usage telemetry only — use_count/last_used/view_count/
+    patch counts; GRV-009 E6b C2-bridge retired its STATE field, records own
+    skill lifecycle state now)
   - ``.archive/`` (so rollback restores previously-archived skills too)
   - ``.curator_state`` (so rolling back also restores the last-run-at
     pointer — otherwise the curator would immediately re-fire on the next
