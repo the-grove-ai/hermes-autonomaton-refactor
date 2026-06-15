@@ -78,21 +78,33 @@ def _cmd_status(args) -> int:
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
 
-    rows = skill_usage.agent_created_report()
+    rows = skill_usage.agent_created_report()  # names + TELEMETRY (survives)
     if not rows:
         print("\nno agent-created skills")
         return 0
 
-    by_state = {"active": [], "stale": [], "archived": []}
+    # GRV-009 E6b C2-bridge — state + pinned now come from the record (A6: no
+    # 'stale' state; proposed records are under review). Telemetry stays in the
+    # .usage.json rows (joined by name).
+    from grove.capability import LifecycleState
+    from grove.capability_registry import skill_record_for_name
+    by_state = {"active": [], "review": [], "archived": []}
     pinned = []
     for r in rows:
-        state_name = r.get("state", "active")
-        by_state.setdefault(state_name, []).append(r)
-        if r.get("pinned"):
+        rec = skill_record_for_name(r["name"])
+        st = rec.lifecycle.state if rec is not None else None
+        if st is LifecycleState.PROPOSED:
+            bucket = "review"
+        elif st is LifecycleState.DEPRECATED:
+            bucket = "archived"
+        else:  # active / refined / record-less -> active
+            bucket = "active"
+        by_state[bucket].append(r)
+        if rec is not None and rec.lifecycle.pinned:
             pinned.append(r["name"])
 
     print(f"\nagent-created skills: {len(rows)} total")
-    for state_name in ("active", "stale", "archived"):
+    for state_name in ("active", "review", "archived"):
         bucket = by_state.get(state_name, [])
         print(f"  {state_name:10s} {len(bucket)}")
 
@@ -232,32 +244,55 @@ def _cmd_resume(args) -> int:
 
 
 def _cmd_pin(args) -> int:
+    # GRV-009 E6b C2-bridge — pin writes lifecycle.pinned on the record.
     from tools import skill_usage
+    from grove.capability_registry import set_skill_pinned
     if not skill_usage.is_agent_created(args.skill):
         print(
             f"curator: '{args.skill}' is bundled or hub-installed — cannot pin "
             "(only agent-created skills participate in curation)"
         )
         return 1
-    skill_usage.set_pinned(args.skill, True)
+    if not set_skill_pinned(args.skill, True):
+        print(
+            f"curator: no capability record for '{args.skill}' — nothing to pin "
+            "(run or re-create the skill so it has a record)"
+        )
+        return 1
     print(f"curator: pinned '{args.skill}' (will bypass auto-transitions)")
     return 0
 
 
 def _cmd_unpin(args) -> int:
     from tools import skill_usage
+    from grove.capability_registry import set_skill_pinned
     if not skill_usage.is_agent_created(args.skill):
         print(
             f"curator: '{args.skill}' is bundled or hub-installed — "
             "there's nothing to unpin (curator only tracks agent-created skills)"
         )
         return 1
-    skill_usage.set_pinned(args.skill, False)
+    if not set_skill_pinned(args.skill, False):
+        print(f"curator: no capability record for '{args.skill}' — nothing to unpin")
+        return 1
     print(f"curator: unpinned '{args.skill}'")
     return 0
 
 
 def _cmd_restore(args) -> int:
+    # GRV-009 E6b C2-bridge — archive maps to DEPRECATED, which is terminal (A6):
+    # a record-backed archived skill is NOT restorable in place. Recreate it.
+    from grove.capability import LifecycleState
+    from grove.capability_registry import skill_record_for_name
+    rec = skill_record_for_name(args.skill)
+    if rec is not None and rec.lifecycle.state is LifecycleState.DEPRECATED:
+        print(
+            f"curator: '{args.skill}' was archived (record deprecated) — "
+            "deprecated is terminal (A6). Recreate the skill to bring it back "
+            "rather than un-archiving in place."
+        )
+        return 1
+    # Legacy record-less archived skill: fall back to the file restore.
     from tools import skill_usage
     ok, msg = skill_usage.restore_skill(args.skill)
     print(f"curator: {msg}")
@@ -267,19 +302,39 @@ def _cmd_restore(args) -> int:
 def _cmd_archive(args) -> int:
     """Manually archive an agent-created skill. Refuses if pinned.
 
-    The auto-curator archives stale skills on its own schedule; this verb is
-    for the user who wants to archive *now* without waiting for a run.
+    GRV-009 E6b C2-bridge — archive is now a record transition to DEPRECATED
+    (terminal-graceful, hidden from the index, non-executable). The skill body
+    stays on disk; the record makes it archived.
     """
-    from tools import skill_usage
-    if skill_usage.get_record(args.skill).get("pinned"):
+    from grove.capability import LifecycleState
+    from grove.capability_registry import (
+        TRANSITION_APPLIED, TRANSITION_DEFERRED,
+        skill_record_for_name, transition_record,
+    )
+    rec = skill_record_for_name(args.skill)
+    if rec is None:
+        print(f"curator: no capability record for '{args.skill}' — nothing to archive")
+        return 1
+    if rec.lifecycle.pinned:
         print(
             f"curator: '{args.skill}' is pinned — unpin first with "
             f"`hermes curator unpin {args.skill}`"
         )
         return 1
-    ok, msg = skill_usage.archive_skill(args.skill)
-    print(f"curator: {msg}")
-    return 0 if ok else 1
+    result = transition_record(
+        rec.id, LifecycleState.DEPRECATED, actor="operator", reason="curator archive",
+    )
+    if result.status == TRANSITION_APPLIED:
+        print(f"curator: archived '{args.skill}' (record deprecated)")
+        return 0
+    if result.status == TRANSITION_DEFERRED:
+        print(f"curator: '{args.skill}' record is locked by a concurrent write — retry")
+        return 1
+    print(
+        f"curator: '{args.skill}' is not in an archivable (active) state "
+        f"(record state:{rec.lifecycle.state.value})"
+    )
+    return 1
 
 
 def _idle_days(record: dict) -> Optional[int]:
@@ -317,12 +372,19 @@ def _cmd_prune(args) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     skip_confirm = bool(getattr(args, "yes", False))
 
+    # GRV-009 E6b C2-bridge — pinned + already-archived checks read the record
+    # (lifecycle.pinned / state:deprecated); idle is telemetry from the row.
+    from grove.capability import LifecycleState
+    from grove.capability_registry import skill_record_for_name
     candidates = []
     for r in skill_usage.agent_created_report():
-        if r.get("pinned"):
+        rec = skill_record_for_name(r["name"])
+        if rec is None:
+            continue  # record-less skills aren't curator-managed
+        if rec.lifecycle.pinned:
             continue
-        if r.get("state") == skill_usage.STATE_ARCHIVED:
-            continue
+        if rec.lifecycle.state is LifecycleState.DEPRECATED:
+            continue  # already archived
         idle = _idle_days(r)
         if idle is None or idle < days:
             continue
@@ -351,14 +413,22 @@ def _cmd_prune(args) -> int:
             print("curator: aborted")
             return 1
 
+    from grove.capability_registry import TRANSITION_APPLIED, transition_record
     archived = 0
     failures = []
     for name, _ in candidates:
-        ok, msg = skill_usage.archive_skill(name)
-        if ok:
+        rec = skill_record_for_name(name)
+        if rec is None:
+            failures.append((name, "no record"))
+            continue
+        result = transition_record(
+            rec.id, LifecycleState.DEPRECATED, actor="operator",
+            reason="curator prune (idle)",
+        )
+        if result.status == TRANSITION_APPLIED:
             archived += 1
         else:
-            failures.append((name, msg))
+            failures.append((name, f"record {result.status}"))
 
     print(f"\ncurator: archived {archived}/{len(candidates)}")
     if failures:
@@ -462,9 +532,15 @@ def _cmd_rollback(args) -> int:
 
 
 def _cmd_list_archived(args) -> int:
-    """List archived (recoverable) skills."""
-    from tools import skill_usage
-    names = skill_usage.list_archived_skill_names()
+    """List archived skills — GRV-009 E6b C2-bridge: record state:deprecated."""
+    from grove.capability import CapabilityKind, LifecycleState
+    from grove.capability_registry import load_capabilities
+    names = sorted(
+        cid.rsplit(".", 1)[-1]
+        for cid, cap in load_capabilities().items()
+        if cap.kind is CapabilityKind.SKILL
+        and cap.lifecycle.state is LifecycleState.DEPRECATED
+    )
     if not names:
         print("curator: no archived skills")
         return 0

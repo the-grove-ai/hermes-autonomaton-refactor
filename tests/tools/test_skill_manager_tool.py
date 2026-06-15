@@ -933,10 +933,18 @@ class TestPinnedGuard:
 
     @staticmethod
     def _pin(name: str):
-        """Return a patch context that marks *name* as pinned in skill_usage."""
-        def _fake_get_record(skill_name, _name=name):
-            return {"pinned": True} if skill_name == _name else {"pinned": False}
-        return patch("tools.skill_usage.get_record", side_effect=_fake_get_record)
+        """Patch the record lookup to mark *name* pinned (GRV-009 E6b C2-bridge —
+        the pin guard reads lifecycle.pinned from the record, not .usage.json)."""
+        from types import SimpleNamespace
+
+        def _fake(skill_name, _name=name):
+            if skill_name == _name:
+                return SimpleNamespace(
+                    id=f"skill.test.{skill_name}",
+                    lifecycle=SimpleNamespace(pinned=True),
+                )
+            return None
+        return patch("grove.capability_registry.skill_record_for_name", side_effect=_fake)
 
     def test_edit_allowed_when_pinned(self, tmp_path):
         """Pin does NOT block edit — agent can still improve pinned skills."""
@@ -1017,14 +1025,15 @@ class TestPinnedGuard:
         assert allowed["success"] is True
 
     def test_broken_sidecar_fails_open(self, tmp_path):
-        """If skill_usage.get_record raises, we allow delete through.
+        """If the record lookup raises, we allow delete through.
 
-        Rationale: a corrupted telemetry file shouldn't lock the agent out
-        of skills it would otherwise be allowed to touch.
+        Rationale: a registry hiccup shouldn't lock the agent out of skills it
+        would otherwise be allowed to touch (GRV-009 E6b C2-bridge — the guard
+        reads the record; a broken lookup fails open).
         """
         with _skill_dir(tmp_path):
             _create_skill_active("my-skill", VALID_SKILL_CONTENT)
-            with patch("tools.skill_usage.get_record",
-                       side_effect=RuntimeError("sidecar broken")):
+            with patch("grove.capability_registry.skill_record_for_name",
+                       side_effect=RuntimeError("registry broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
