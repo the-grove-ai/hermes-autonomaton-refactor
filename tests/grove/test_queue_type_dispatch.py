@@ -45,6 +45,8 @@ def _routing_proposal(rule="downward", intents=("conversation",)):
         evidence=evidence,
         eval_hash="sha256:eval",
         created_at="2026-05-30T11:00:00+00:00",
+        # B2 — routing_adjustment must cite a cluster to approve.
+        source_patterns=("cluster:sha256:test",),
     )
 
 
@@ -177,6 +179,8 @@ class TestApproveDispatch:
             evidence=("t_a",),
             eval_hash="",
             created_at="2026-05-30T00:00:00+00:00",
+            # B2 — even the legacy spelling must cite a cluster to approve.
+            source_patterns=("cluster:sha256:test",),
         )
         append(legacy_prop, path=queue)
         rc = flywheel_cli.cli_approve(

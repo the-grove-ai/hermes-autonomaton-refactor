@@ -21,7 +21,12 @@ def _make_proposal(
     rule: str = "downward",
     intents=("conversation",),
     evidence=("t_a", "t_b", "t_c"),
+    source_patterns=("cluster:sha256:test",),
 ) -> RoutingProposal:
+    # B2 — routing_adjustment/routing_update now requires a non-empty
+    # source_patterns to approve (the no-cluster-no-proposal gate), so the
+    # default carries a cluster id. Approve tests rely on this default; the
+    # empty-cluster refusal is asserted explicitly in test_flywheel_b2.py.
     payload = {"rule": rule, "add_intents": list(intents)}
     return RoutingProposal(
         proposal_id=compute_proposal_id(
@@ -34,6 +39,7 @@ def _make_proposal(
         evidence=tuple(evidence),
         eval_hash="sha256:gated",
         created_at="2026-05-30T00:00:00+00:00",
+        source_patterns=tuple(source_patterns),
     )
 
 

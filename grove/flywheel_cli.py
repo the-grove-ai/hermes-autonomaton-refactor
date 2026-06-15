@@ -59,6 +59,7 @@ __all__ = [
     "cli_show",
     "cli_approve",
     "cli_reject",
+    "run_tier_ratchet_scan",
 ]
 
 
@@ -272,6 +273,76 @@ def cli_list(*, queue_path: Optional[Path] = None) -> int:
     return 0
 
 
+# ── TierRatchet routing scan (B2 — wire the dark detector) ───────────
+
+
+def _load_current_routing_rules() -> Optional[Dict[str, Any]]:
+    """Best-effort merged ``routing.routing_rules`` for the TierRatchet detector.
+
+    Operator ``routing.config.yaml`` (precedence) deep-merged with the machine
+    ``routing.autonomaton.yaml``; returns the ``routing.routing_rules`` block so
+    the detector skips intents already listed. None on any failure (a fresh
+    install with no operator config) — the detector then treats every relevant
+    intent as a fresh addition. Read-only — never writes routing.config.yaml.
+    """
+    try:
+        from grove.router_merge import load_merged_routing_config
+
+        op = Path.home() / ".grove" / "routing.config.yaml"
+        if not op.exists():
+            return None
+        merged = load_merged_routing_config(op, _machine_config_path())
+        return (merged.get("routing") or {}).get("routing_rules") or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[flywheel] could not load routing rules for the ratchet scan "
+            "(treating all intents as fresh): %r", exc,
+        )
+        return None
+
+
+def run_tier_ratchet_scan(
+    *,
+    store: Optional[Any] = None,
+    current_routing_rules: Optional[Dict[str, Any]] = None,
+    queue_path: Optional[Path] = None,
+) -> Tuple[int, int]:
+    """Run the TierRatchet detector over the intent store; queue its
+    ``routing_adjustment`` proposals. B2 — the cadence the dark detector lacked.
+
+    Mirrors ``pattern_compiler.propose_pattern_promotions``: read the intent
+    store (collapsed latest-by-turn view), detect, append directly to the
+    proposal queue (no hero-suite gate on the production propose path, same as
+    the pattern compiler). Idempotent — ``proposal_id`` is stable for the same
+    detected cluster (``source_patterns`` is hash-excluded; evidence turn-ids
+    fold in), so a re-run over unchanged store state DEDUPS via
+    ``proposal_queue.append`` returning False rather than stacking duplicates.
+
+    Returns ``(queued_new, deduped)``.
+    """
+    from grove.eval.proposal_queue import append as _append
+    from grove.eval.tier_ratchet import propose_routing_adjustments
+
+    if store is None:
+        from grove.intent_store import get_store
+        store = get_store()
+    if current_routing_rules is None:
+        current_routing_rules = _load_current_routing_rules()
+
+    records = list(store.latest_by_turn())
+    proposals = propose_routing_adjustments(
+        records, current_routing_rules=current_routing_rules,
+    )
+    target = queue_path or default_queue_path()
+    queued_new = deduped = 0
+    for proposal in proposals:
+        if _append(proposal, path=target):
+            queued_new += 1
+        else:
+            deduped += 1
+    return queued_new, deduped
+
+
 # ── scan (T0 pattern cache — Sprint 48) ──────────────────────────────
 
 
@@ -287,7 +358,25 @@ def cli_scan(
     normalized key and prints the patterns that meet the configured
     thresholds. With ``propose=True`` it also compiles each safely-compilable
     candidate and queues a ``pattern_promotion`` proposal for operator
-    approval (skipping patterns already known/rejected)."""
+    approval (skipping patterns already known/rejected).
+
+    B2 — the same ``--propose`` invocation also runs the TierRatchet routing
+    scan, an INDEPENDENT signal: it queues ``routing_adjustment`` proposals
+    regardless of ``pattern_cache.enabled`` or whether any T0 candidate exists,
+    so the two flywheel detectors share one operator cadence without coupling
+    their enable flags."""
+    if propose:
+        rq_new, rq_dup = run_tier_ratchet_scan(store=store, queue_path=queue_path)
+        if rq_new or rq_dup:
+            print(
+                f"TierRatchet: queued {rq_new} routing_adjustment proposal(s)"
+                + (f", {rq_dup} already pending (deduped)" if rq_dup else "")
+                + "."
+            )
+        else:
+            print("TierRatchet: no routing adjustments meet the threshold.")
+        print()
+
     from grove.eval.pattern_compiler import (
         scan_candidates, load_pattern_cache_config,
     )
@@ -1053,6 +1142,19 @@ def cli_approve(
         )
         return 1
 
+    # B2 no-cluster-no-proposal gate — ALWAYS ON (not behind --strict), scoped
+    # to rows that declare requires_source_patterns (today: routing_adjustment).
+    # A proposal with empty source_patterns is refused loud + non-destructive
+    # (rc=1, proposal retained) — matching the unknown-type contract above.
+    if handler.requires_source_patterns and not proposal.source_patterns:
+        print(
+            f"Cannot approve {proposal.type} proposal {proposal.proposal_id}: "
+            f"no source_patterns — a {proposal.type} must cite the evidence "
+            f"cluster it derives from (B2 no-cluster-no-proposal gate).",
+            file=sys.stderr,
+        )
+        return 1
+
     # Phase 4 — strict mode gates only the types that declare a strict_gate
     # (skill_promotion: diff + logged execution + confirmation). Normal approve
     # is unchanged; --strict is a no-op for every other type.
@@ -1203,6 +1305,11 @@ class ProposalHandler:
       types whose reject is a plain queue removal).
     * ``strict_gate`` — OPTIONAL ``--strict`` gate; return False to abort the
       approve (only skill_promotion declares one).
+    * ``requires_source_patterns`` — B2 no-cluster-no-proposal gate. When True,
+      a proposal of this type with EMPTY ``source_patterns`` is refused at
+      approve time, ALWAYS (not behind ``--strict``). Scoped per row: only
+      routing_adjustment carries it, so legacy producers of every other type
+      keep approving with empty ``source_patterns`` (no retrofit required).
     """
 
     summary_renderer: Callable[[RoutingProposal], str]
@@ -1211,6 +1318,7 @@ class ProposalHandler:
     apply_label_prefix: str
     reject_callback: Optional[Callable[[RoutingProposal], None]] = None
     strict_gate: Optional[Callable[[RoutingProposal], bool]] = None
+    requires_source_patterns: bool = False
 
 
 PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
@@ -1219,6 +1327,9 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         diff_renderer=_routing_adjustment_to_diff,
         apply_callback=_approve_routing_adjustment,
         apply_label_prefix="Applied to: ",
+        # B2 — a routing_adjustment MUST cite the evidence cluster it derives
+        # from (TierRatchet populates source_patterns). No-cluster-no-proposal.
+        requires_source_patterns=True,
     ),
     PROPOSAL_TYPE_ZONE_PROMOTION: ProposalHandler(
         summary_renderer=_summary_zone_promotion,
