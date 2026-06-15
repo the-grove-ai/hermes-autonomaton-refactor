@@ -11,9 +11,6 @@ Sprint 06b (kaizen-foundation-v1) establishes this package. It brings the
 existing Curator into the Kaizen namespace and creates three stub
 submodules that later sprints will implement against the Skill Flywheel:
 
-    curator   — skill maintenance orchestrator (verbatim copy of
-                agent.curator; the original stays canonical for existing
-                consumers until a later sprint renames their imports)
     detector  — IntentPatternDetector (stub). Watches the
                 sovereignty_decision telemetry stream for recurring intent
                 patterns and surfaces promotion candidates.

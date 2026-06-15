@@ -10,7 +10,6 @@ import pytest
 
 import grove.identity
 from grove.identity import IdentityComposition
-from grove.kaizen.curator import _compose_identity_preamble
 from grove.skills import (
     _alignment_keywords,
     _normalize_soul_alignment,
@@ -72,47 +71,10 @@ def _raise_identity_error():
     raise grove.identity.IdentityError("no constitution")
 
 
-# ----- _compose_identity_preamble (Phase 1) ----------------------------------
-
-
-def test_preamble_composes_all_identity_layers(mock_identity):
-    mock_identity()
-    preamble = _compose_identity_preamble()
-    assert "<constitution>" in preamble and "<soul>" in preamble
-    assert "<operator_context>" in preamble and "<current_goals>" in preamble
-    assert "OPERATOR IDENTITY" in preamble
-    assert preamble.endswith("\n\n")
-
-
-def test_preamble_includes_register_instruction(mock_identity):
-    mock_identity(register="strategic-concise")
-    assert 'register: "strategic-concise"' in _compose_identity_preamble()
-
-
-def test_preamble_falls_back_when_register_absent(mock_identity):
-    mock_identity(register=None)
-    assert "declared voice" in _compose_identity_preamble()
-
-
-def test_preamble_lists_declared_refusals(mock_identity):
-    mock_identity(refusals=["never touch production databases"])
-    assert "never touch production databases" in _compose_identity_preamble()
-
-
-def test_preamble_carries_soul_alignment_instructions(mock_identity):
-    mock_identity()
-    preamble = _compose_identity_preamble()
-    for token in ("soul_alignment", "tension_note", "goals_served",
-                  "aligned", "neutral", "tension"):
-        assert token in preamble
-
-
-def test_preamble_empty_on_identity_failure(monkeypatch, caplog):
-    monkeypatch.setattr(grove.identity, "load_identity", _raise_identity_error)
-    with caplog.at_level(logging.WARNING, logger="grove.kaizen.curator"):
-        result = _compose_identity_preamble()
-    assert result == ""  # PC6: curator runs without identity
-    assert "identity unavailable" in caplog.text
+# GRV-009 E7 — the _compose_identity_preamble (Phase 1) tests are removed with
+# the dormant grove/kaizen/curator.py duplicate. The soul-aligned curator review
+# is re-scoped to a forward sprint; the grove.skills / sovereignty soul-alignment
+# tests below are unaffected and remain.
 
 
 # ----- assess_soul_alignment (Phase 1.5) -------------------------------------

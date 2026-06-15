@@ -49,10 +49,9 @@ except ImportError:  # pragma: no cover - platform-specific fallback
         pass
 
 
-STATE_ACTIVE = "active"
-STATE_STALE = "stale"
-STATE_ARCHIVED = "archived"
-_VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
+# GRV-009 E7 — the STATE_ACTIVE/STALE/ARCHIVED constants + _VALID_STATES are
+# removed: the .usage.json STATE field was retired in C2-bridge, and their sole
+# remaining referencer (the dormant grove/kaizen/curator.py) is deleted.
 
 
 def _skills_dir() -> Path:
@@ -250,17 +249,8 @@ def list_agent_created_skill_names() -> List[str]:
     return sorted(set(names))
 
 
-def list_archived_skill_names() -> List[str]:
-    """Enumerate skills in ``~/.grove/skills/.archive/``.
-
-    Archive layout is flat (``.archive/<skill>/``) as set by ``archive_skill``,
-    so the directory name is the skill name. Used by ``hermes curator
-    list-archived`` to help users pass a name to ``hermes curator restore``.
-    """
-    archive_root = _archive_dir()
-    if not archive_root.exists():
-        return []
-    return sorted({p.name for p in archive_root.iterdir() if p.is_dir()})
+# GRV-009 E7 — list_archived_skill_names removed (zero callers; `hermes curator
+# list-archived` now queries state:deprecated records via the registry).
 
 
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
@@ -443,10 +433,8 @@ def mark_agent_created(skill_name: str) -> None:
 # carries a `state`/`archived_at` field. All TELEMETRY writers below survive.
 
 
-def set_pinned(skill_name: str, pinned: bool) -> None:
-    def _apply(rec: Dict[str, Any]) -> None:
-        rec["pinned"] = bool(pinned)
-    _mutate(skill_name, _apply)
+# GRV-009 E7 — set_pinned removed (zero runtime callers; pin is record-backed
+# via grove.capability_registry.set_skill_pinned -> lifecycle.pinned).
 
 
 def forget(skill_name: str) -> None:

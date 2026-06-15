@@ -179,12 +179,8 @@ def test_concurrent_bump_view_preserves_all_updates(skills_home):
 # The former test_set_state_* / test_restoring_from_archive tests are removed.
 # ---------------------------------------------------------------------------
 
-def test_set_pinned(skills_home):
-    from tools.skill_usage import set_pinned, get_record
-    set_pinned("x", True)
-    assert get_record("x")["pinned"] is True
-    set_pinned("x", False)
-    assert get_record("x")["pinned"] is False
+# GRV-009 E7 — test_set_pinned removed (set_pinned deleted; pin is record-backed
+# via lifecycle.pinned, covered by the curator CLI + capability_registry tests).
 
 
 def test_forget_removes_record(skills_home):
@@ -564,7 +560,7 @@ def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
     """The combined guarantee: no curator code path can archive, mark stale,
     set-state, or persist telemetry for a bundled or hub-installed skill."""
     from tools.skill_usage import (
-        bump_view, bump_use, bump_patch, set_pinned,
+        bump_view, bump_use, bump_patch,
         archive_skill, load_usage,
     )
     skills_dir = skills_home / "skills"
@@ -586,7 +582,6 @@ def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
         bump_view(name)
         bump_use(name)
         bump_patch(name)
-        set_pinned(name, True)
         ok, _msg = archive_skill(name)
         assert not ok, f"archive_skill(\"{name}\") should refuse"
 

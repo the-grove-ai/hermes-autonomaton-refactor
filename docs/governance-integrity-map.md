@@ -40,7 +40,7 @@ they break when someone wires a shortcut.
 | **P10** | Cron scheduler | `cron/scheduler.py:1497` (via thread executor) | no | no | yes |
 | **P11** | Batch runner | `batch_runner.py:349` | no | no | yes |
 | **P12** | Delegate tool / sub-agents | `tools/delegate_tool.py:1502` | no | no | yes |
-| **P13** | Curator review fork (Kaizen / agent) | `grove/kaizen/curator.py:1842`, `agent/curator.py:1720` | no | no | yes |
+| **P13** | Curator review fork | `agent/curator.py:1720` | no | no | yes |
 
 The convergence point on the agent layer is
 `AIAgent._maybe_route_for_turn` (`run_agent.py`), called at the top of
