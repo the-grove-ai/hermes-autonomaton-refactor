@@ -298,8 +298,6 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
-        if row.get("pinned"):
-            continue
 
         last_activity = _parse_iso(row.get("last_activity_at"))
         # If never active, treat created_at as the anchor so new skills don't
@@ -309,38 +307,32 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             anchor = anchor.replace(tzinfo=timezone.utc)
 
         rec = record_index.get(name)
-        if rec is not None:
-            # ── record-first (the sole record write path) ──
-            if rec.lifecycle.state is LifecycleState.MANAGED:
-                continue  # installed skills are curator-exempt
-            if anchor <= archive_cutoff and rec.lifecycle.state is LifecycleState.ACTIVE:
-                result = transition_record(
-                    rec.id,
-                    LifecycleState.DEPRECATED,
-                    actor="curator",
-                    reason="inactive past archive cutoff",
-                )
-                if result.status == TRANSITION_APPLIED:
-                    counts["archived"] += 1
-                elif result.status == TRANSITION_DEFERRED:
-                    counts["deferred"] += 1
-            # stale/reactivate carry no record lifecycle edge (contract:
-            # stale->ACTIVE is a no-op); recency lives in lifecycle.last_used.
+        if rec is None:
+            # GRV-009 E6b C2-bridge (the burn) — the .usage.json STATE fallback
+            # is RETIRED. Capability records are sole-source for skill lifecycle
+            # state; a skill with no record is not curator-managed.
             continue
 
-        # ── .usage.json fallback (record-less skills; UNCHANGED from pre-E6b) ──
-        current = row.get("state", _u.STATE_ACTIVE)
-        if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
-            ok, _msg = _u.archive_skill(name)
-            if ok:
+        # ── record-only (the sole write path) ──
+        # GRV-009 E6b C2-bridge — pin is read from the record (lifecycle.pinned),
+        # not the .usage.json row.
+        if rec.lifecycle.pinned:
+            continue
+        if rec.lifecycle.state is LifecycleState.MANAGED:
+            continue  # installed skills are curator-exempt
+        if anchor <= archive_cutoff and rec.lifecycle.state is LifecycleState.ACTIVE:
+            result = transition_record(
+                rec.id,
+                LifecycleState.DEPRECATED,
+                actor="curator",
+                reason="inactive past archive cutoff",
+            )
+            if result.status == TRANSITION_APPLIED:
                 counts["archived"] += 1
-        elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:
-            _u.set_state(name, _u.STATE_STALE)
-            counts["marked_stale"] += 1
-        elif anchor > stale_cutoff and current == _u.STATE_STALE:
-            # Skill got used again after being marked stale — reactivate.
-            _u.set_state(name, _u.STATE_ACTIVE)
-            counts["reactivated"] += 1
+            elif result.status == TRANSITION_DEFERRED:
+                counts["deferred"] += 1
+        # Recency/staleness is not a record lifecycle state (A6); idle skills go
+        # straight active->deprecated past the archive cutoff.
 
     return counts
 
@@ -1059,13 +1051,10 @@ def _write_run_report(
     added = sorted(after_names - before_names)     # new skills this run
     before_by_name = {r.get("name"): r for r in before_report if isinstance(r, dict)}
 
-    # State transitions between the two snapshots (e.g. active -> stale)
+    # GRV-009 E6b C2-bridge (the burn) — the .usage.json STATE-diff is RETIRED.
+    # Records are sole-source for skill lifecycle state, and the .usage.json rows
+    # no longer carry a `state` field, so there is no row-state delta to report.
     transitions: List[Dict[str, str]] = []
-    for name in sorted(after_names & before_names):
-        s_before = (before_by_name.get(name) or {}).get("state")
-        s_after = (after_by_name.get(name) or {}).get("state")
-        if s_before and s_after and s_before != s_after:
-            transitions.append({"name": name, "from": s_before, "to": s_after})
 
     # Classify LLM tool calls
     tc_counts: Dict[str, int] = {}
@@ -1247,8 +1236,8 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     lines.append(f"- consolidated into umbrellas: **{counts.get('consolidated_this_run', 0)}**")
     lines.append(f"- pruned (archived for staleness): **{counts.get('pruned_this_run', 0)}**")
     lines.append(f"- new skills this run: **{counts.get('added_this_run', 0)}**")
-    lines.append(f"- state transitions (active ↔ stale ↔ archived): "
-                 f"**{counts.get('state_transitions', 0)}**")
+    # GRV-009 E6b C2-bridge — the .usage.json state-transition line is retired
+    # (records are sole-source for lifecycle state).
     lines.append("")
 
     # Consolidated list — content absorbed into an umbrella. The directory
@@ -1396,16 +1385,25 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_candidate_list() -> str:
-    """Human/agent-readable list of agent-created skills with usage stats."""
+    """Human/agent-readable list of agent-created skills with usage stats.
+
+    GRV-009 E6b C2-bridge — state + pinned come from the capability record
+    (records are sole-source for lifecycle state); telemetry from the row.
+    """
+    from grove.capability_registry import skill_record_for_name
+
     rows = skill_usage.agent_created_report()
     if not rows:
         return "No agent-created skills to review."
     lines = [f"Agent-created skills ({len(rows)}):\n"]
     for r in rows:
+        rec = skill_record_for_name(r["name"])
+        state = rec.lifecycle.state.value if rec is not None else "no-record"
+        pinned = "yes" if (rec is not None and rec.lifecycle.pinned) else "no"
         lines.append(
             f"- {r['name']}  "
-            f"state={r['state']}  "
-            f"pinned={'yes' if r.get('pinned') else 'no'}  "
+            f"state={state}  "
+            f"pinned={pinned}  "
             f"activity={r.get('activity_count', 0)}  "
             f"use={r.get('use_count', 0)}  "
             f"view={r.get('view_count', 0)}  "

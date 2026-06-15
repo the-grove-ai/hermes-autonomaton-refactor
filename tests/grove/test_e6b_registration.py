@@ -122,11 +122,13 @@ def test_transition_record_skips_terminal_managed(tmp_path):
     assert result.record is None
 
 
-# ── DUAL-READ ─────────────────────────────────────────────────────────────────
+# ── CURATOR RECORDS-ONLY (post-burn) ──────────────────────────────────────────
 
 
-def test_curator_dual_read_record_first_and_fallback(monkeypatch):
-    """One skill has a record (-> transition_record); one does not (-> .usage.json)."""
+def test_curator_is_records_only_after_burn(monkeypatch):
+    """GRV-009 E6b C2-bridge — the .usage.json STATE fallback is RETIRED. A
+    record-backed idle skill goes through transition_record; a record-less skill
+    is NOT curator-managed (no .usage.json STATE write)."""
     from agent import curator
     from tools import skill_usage
 
@@ -136,9 +138,9 @@ def test_curator_dual_read_record_first_and_fallback(monkeypatch):
     long_ago = (datetime.now(timezone.utc) - timedelta(days=9999)).isoformat()
     rows = [
         {"name": "has-record", "pinned": False, "last_activity_at": long_ago,
-         "created_at": long_ago, "state": "active"},
+         "created_at": long_ago},
         {"name": "no-record", "pinned": False, "last_activity_at": long_ago,
-         "created_at": long_ago, "state": "active"},
+         "created_at": long_ago},
     ]
     monkeypatch.setattr(skill_usage, "agent_created_report", lambda: rows)
 
@@ -151,25 +153,12 @@ def test_curator_dual_read_record_first_and_fallback(monkeypatch):
         )[1],
     )
 
-    usage_writes = []
-    monkeypatch.setattr(
-        skill_usage, "archive_skill",
-        lambda n: (usage_writes.append(("archive", n)), (True, "ok"))[1],
-    )
-    monkeypatch.setattr(
-        skill_usage, "set_state",
-        lambda n, s: usage_writes.append(("set_state", n, s)),
-    )
-
     counts = curator.apply_automatic_transitions()
 
-    # record-first: the record-backed skill went through transition_record.
-    assert (rec.id, LifecycleState.DEPRECATED) in transitions
-    # fallback: the record-less skill went through the .usage.json archive path.
-    assert ("archive", "no-record") in usage_writes
-    # the record-backed skill never touched .usage.json.
-    assert all("has-record" not in w for w in usage_writes)
-    assert counts["archived"] == 2  # one via record, one via fallback
+    # record-backed skill → transition_record(DEPRECATED).
+    assert transitions == [(rec.id, LifecycleState.DEPRECATED)]
+    # record-less skill → NOT managed (only the one record-backed archive).
+    assert counts["archived"] == 1
 
 
 # ── ZONE RESOLUTION ───────────────────────────────────────────────────────────

@@ -144,88 +144,68 @@ def test_set_paused_roundtrip(curator_env):
 # Automatic state transitions
 # ---------------------------------------------------------------------------
 
-def test_unused_skill_transitions_to_stale(curator_env):
-    c = curator_env["curator"]
-    u = curator_env["usage"]
-    skills_dir = curator_env["home"] / "skills"
-    _write_skill(skills_dir, "old-skill")
+# GRV-009 E6b C2-bridge (the burn) — the curator is RECORDS-ONLY: the
+# .usage.json STATE fallback is retired, and A6 has no 'stale' state. An idle
+# ACTIVE record goes straight active->deprecated; deprecation is record-only
+# (no .archive dir move); pinned records and record-less skills are untouched.
 
-    # Record last-use well past stale_after_days (30 default)
-    long_ago = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+
+def _idle_row(u, name, *, days, pinned_telemetry=False):
+    """Seed the .usage.json telemetry row (names + idle timing only)."""
+    ts = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     data = u.load_usage()
-    data["old-skill"] = u._empty_record()
-    data["old-skill"]["created_by"] = "agent"
-    data["old-skill"]["last_used_at"] = long_ago
-    data["old-skill"]["created_at"] = long_ago
+    data[name] = u._empty_record()
+    data[name]["created_by"] = "agent"
+    data[name]["last_used_at"] = ts
+    data[name]["created_at"] = ts
     u.save_usage(data)
 
-    counts = c.apply_automatic_transitions()
-    assert counts["marked_stale"] == 1
-    assert u.get_record("old-skill")["state"] == "stale"
 
+def test_idle_active_record_deprecates(curator_env):
+    from grove.capability import LifecycleState
+    from grove.capability_registry import ingest_pre_faucet_skill, skill_record_for_name
 
-def test_very_old_skill_gets_archived(curator_env):
     c = curator_env["curator"]
     u = curator_env["usage"]
-    skills_dir = curator_env["home"] / "skills"
-    skill_dir = _write_skill(skills_dir, "ancient")
-
-    super_old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
-    data = u.load_usage()
-    data["ancient"] = u._empty_record()
-    data["ancient"]["created_by"] = "agent"
-    data["ancient"]["last_used_at"] = super_old
-    data["ancient"]["created_at"] = super_old
-    u.save_usage(data)
+    _write_skill(curator_env["home"] / "skills", "ancient")
+    ingest_pre_faucet_skill("ancient", "ancient", "---\nname: ancient\ndescription: x\n---\nb\n")
+    _idle_row(u, "ancient", days=120)
 
     counts = c.apply_automatic_transitions()
     assert counts["archived"] == 1
-    assert not skill_dir.exists()
-    assert (skills_dir / ".archive" / "ancient" / "SKILL.md").exists()
-    assert u.get_record("ancient")["state"] == "archived"
+    assert skill_record_for_name("ancient").lifecycle.state is LifecycleState.DEPRECATED
 
 
-def test_pinned_skill_is_never_touched(curator_env):
+def test_pinned_record_is_never_touched(curator_env):
+    from grove.capability import LifecycleState
+    from grove.capability_registry import (
+        ingest_pre_faucet_skill, set_skill_pinned, skill_record_for_name,
+    )
+
     c = curator_env["curator"]
     u = curator_env["usage"]
-    skills_dir = curator_env["home"] / "skills"
-    _write_skill(skills_dir, "precious")
-
-    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
-    data = u.load_usage()
-    data["precious"] = u._empty_record()
-    data["precious"]["created_by"] = "agent"
-    data["precious"]["last_used_at"] = super_old
-    data["precious"]["created_at"] = super_old
-    data["precious"]["pinned"] = True
-    u.save_usage(data)
+    _write_skill(curator_env["home"] / "skills", "precious")
+    ingest_pre_faucet_skill("precious", "precious", "---\nname: precious\ndescription: x\n---\nb\n")
+    set_skill_pinned("precious", True)
+    _idle_row(u, "precious", days=365)
 
     counts = c.apply_automatic_transitions()
     assert counts["archived"] == 0
-    assert counts["marked_stale"] == 0
-    rec = u.get_record("precious")
-    assert rec["state"] == "active"  # untouched
-    assert rec["pinned"] is True
+    rec = skill_record_for_name("precious")
+    assert rec.lifecycle.state is LifecycleState.ACTIVE  # untouched
+    assert rec.lifecycle.pinned is True
 
 
-def test_stale_skill_reactivates_on_recent_use(curator_env):
+def test_record_less_skill_is_not_curator_managed(curator_env):
+    """Post-burn: a skill with no record is no longer curator-managed (the
+    .usage.json STATE fallback is retired)."""
     c = curator_env["curator"]
     u = curator_env["usage"]
-    skills_dir = curator_env["home"] / "skills"
-    _write_skill(skills_dir, "revived")
-
-    recent = datetime.now(timezone.utc).isoformat()
-    data = u.load_usage()
-    data["revived"] = u._empty_record()
-    data["revived"]["created_by"] = "agent"
-    data["revived"]["state"] = "stale"
-    data["revived"]["last_used_at"] = recent
-    data["revived"]["created_at"] = recent
-    u.save_usage(data)
+    _write_skill(curator_env["home"] / "skills", "orphan")
+    _idle_row(u, "orphan", days=365)  # idle, but no record
 
     counts = c.apply_automatic_transitions()
-    assert counts["reactivated"] == 1
-    assert u.get_record("revived")["state"] == "active"
+    assert counts["archived"] == 0  # nothing happens — no record to transition
 
 
 def test_new_skill_without_last_used_not_immediately_archived(curator_env):
