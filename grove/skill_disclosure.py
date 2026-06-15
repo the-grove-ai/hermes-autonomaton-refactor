@@ -35,7 +35,12 @@ from typing import Dict, Optional
 
 import yaml
 
-from grove.capability import Capability, CapabilityKind, Disclosure
+from grove.capability import (
+    EXECUTABLE_STATES,
+    Capability,
+    CapabilityKind,
+    Disclosure,
+)
 
 __all__ = [
     "SKILL_REFERENCE_OPEN",
@@ -43,9 +48,21 @@ __all__ = [
     "SKILL_REFERENCE_NOTE",
     "wrap_skill_body",
     "resolve_skill_record",
+    "SkillNotExecutableError",
     "default_skill_categories_path",
     "load_skill_category_descriptions",
 ]
+
+
+class SkillNotExecutableError(ValueError):
+    """A skill record may not be resolved into context because its lifecycle
+    state is non-executable (GRV-009 E6b C2 proposed-window checkpoint).
+
+    The record loaded and its body is readable for operator review (e.g. an
+    .andon/ proposal via ``hermes andon diff``) — but it must not run until it
+    reaches an executable state (active / managed / refined). Distinct subclass
+    so callers and tests can assert the quarantine refusal specifically.
+    """
 
 
 # ── The passive-data wrapper (A8) ────────────────────────────────────────────
@@ -105,6 +122,17 @@ def resolve_skill_record(record: Capability) -> str:
         raise ValueError(
             f"resolve_skill_record: record {record.id!r} is kind="
             f"{record.kind.value!r}, not 'skill' — this resolver is skill-only"
+        )
+    # GRV-009 E6b C2 — proposed-window non-executable checkpoint. A quarantined
+    # (proposed) or otherwise non-executable record loads and its body is
+    # readable for operator review, but it MUST NOT resolve into the model
+    # context. Refuse loudly; the body stays reviewable via the .andon/ path.
+    if record.lifecycle.state not in EXECUTABLE_STATES:
+        raise SkillNotExecutableError(
+            f"resolve_skill_record: skill {record.id!r} is state="
+            f"{record.lifecycle.state.value!r} (non-executable) — it will not "
+            f"resolve into context until promoted to an executable state. The "
+            f"body remains readable for review (e.g. `hermes andon diff`)."
         )
     if record.context.disclosure is not Disclosure.PULL:
         raise ValueError(

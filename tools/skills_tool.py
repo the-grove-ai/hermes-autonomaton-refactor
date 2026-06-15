@@ -960,6 +960,52 @@ def _serve_plugin_skill(
     )
 
 
+def _nonexecutable_skill_refusal(name: str) -> "str | None":
+    """GRV-009 E6b C2 — proposed-window checkpoint at the agent-facing view path.
+
+    If a kind=skill record exists for *name* and its lifecycle state is
+    non-executable (proposed/quarantine/approved/deprecated/rejected), return a
+    refusal JSON so the agent cannot load a quarantined or retired skill into
+    context. Returns None when the skill is executable or has no record (external
+    skills, the bundled active set). Defense-in-depth: the index already omits
+    non-executable records and resolve_skill_record refuses them; this closes the
+    direct-by-name view path. The .andon/ body stays readable for operator review
+    via `hermes andon diff`.
+    """
+    try:
+        from grove.capability import EXECUTABLE_STATES, CapabilityKind
+        from grove.capability_registry import load_capabilities
+
+        slug = name.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+        for rec in load_capabilities().values():
+            if rec.kind is CapabilityKind.SKILL and rec.id.rsplit(".", 1)[-1] == slug:
+                if rec.lifecycle.state not in EXECUTABLE_STATES:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                f"Skill '{name}' is state:"
+                                f"{rec.lifecycle.state.value} (non-executable — "
+                                f"under review or retired) and cannot be loaded "
+                                f"until promoted. Operator review: "
+                                f"`hermes andon diff {slug}`."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                return None
+    except Exception:
+        logger.warning(
+            "skill_view executability guard failed for %r — failing closed",
+            name, exc_info=True,
+        )
+        # Fail CLOSED on a security guard would block all skills on a registry
+        # hiccup; the index + resolve_skill_record gates remain authoritative, so
+        # here we let the view proceed (the guard is defense-in-depth).
+        return None
+    return None
+
+
 def skill_view(
     name: str,
     file_path: str = None,
@@ -981,6 +1027,10 @@ def skill_view(
     Returns:
         JSON string with skill content or error message
     """
+    # GRV-009 E6b C2 — proposed-window non-executable checkpoint (agent-facing).
+    _guard = _nonexecutable_skill_refusal(name)
+    if _guard is not None:
+        return _guard
     try:
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────

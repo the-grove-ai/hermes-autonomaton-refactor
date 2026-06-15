@@ -41,6 +41,44 @@ def _sha256_short(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
+def _record_for_proposal(skill_name: str) -> Optional[str]:
+    """The capability-record id governing *skill_name*, or None — a legacy pre-C2
+    .andon proposal / external skill with no record (GRV-009 E6b C2)."""
+    from grove.capability_registry import skill_record_id_for_name
+
+    return skill_record_id_for_name(skill_name)
+
+
+def _govern_transition(cap_id: Optional[str], to_state, *, actor: str, reason: str, verb: str) -> None:
+    """GRV-009 E6b C2 (A6) — STATE-FIRST gate for a sovereignty file move.
+
+    The record transition executes FIRST; the caller performs the physical
+    ``.andon/`` move ONLY after this returns (i.e. on APPLIED). DEFERRED (lock
+    contended by a concurrent write) and SKIPPED (illegal edge) both RAISE, so
+    nothing moves and no partial state is left. A record-less legacy proposal
+    (``cap_id is None``) is a no-op here — the caller falls back to a file move.
+    """
+    if cap_id is None:
+        return
+    from grove.capability_registry import (
+        TRANSITION_APPLIED,
+        TRANSITION_DEFERRED,
+        transition_record,
+    )
+
+    result = transition_record(cap_id, to_state, actor=actor, reason=reason)
+    if result.status == TRANSITION_DEFERRED:
+        raise RuntimeError(
+            f"andon {verb}: record {cap_id!r} is locked by a concurrent write "
+            f"(DEFERRED) — retry. NOTHING moved."
+        )
+    if result.status != TRANSITION_APPLIED:
+        raise RuntimeError(
+            f"andon {verb}: record {cap_id!r} is not in a {verb}-able state "
+            f"(transition {result.status}). NOTHING moved."
+        )
+
+
 def _read_skill_md(skill_dir) -> tuple[str, dict, str]:
     """Return (raw_content, frontmatter_dict, scan_verdict) for a skill directory.
 
@@ -183,10 +221,28 @@ def promote(skill_name: str, replace: bool = False) -> dict[str, Any]:
             reason="superseded by promotion --replace",
         )
 
-    # Stamp promotion frontmatter on the proposal's SKILL.md before the move.
     operator = operator_email()
     skill_md = source / "SKILL.md"
     content = skill_md.read_text(encoding="utf-8")
+
+    # GRV-009 E6b C2 (A6) — STATE-FIRST. Transition the record proposed→active
+    # BEFORE any file move. A legacy pre-C2 proposal has no record: mint one
+    # (proposed) from the .andon body first, so it joins the record world and
+    # reaches executable ACTIVE rather than stranding.
+    cap_id = _record_for_proposal(skill_name)
+    if cap_id is None:
+        from grove.capability_registry import _frontmatter_value, register_proposed_skill
+
+        register_proposed_skill(skill_name, _frontmatter_value(content, "category") or "", content)
+        cap_id = _record_for_proposal(skill_name)
+    from grove.capability import LifecycleState
+
+    _govern_transition(
+        cap_id, LifecycleState.ACTIVE, actor=operator,
+        reason="andon promote", verb="promote",
+    )  # raises on DEFERRED/SKIPPED — nothing moves below
+
+    # Record is now truth (ACTIVE). Stamp + move the body as a consequence.
     promoted = stamp_promotion_frontmatter(content, operator=operator)
     promoted = append_promotion_history(
         promoted, action="promote", operator=operator
@@ -198,7 +254,24 @@ def promote(skill_name: str, replace: bool = False) -> dict[str, Any]:
     skill_hash = _sha256_short(promoted)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(dest))
+    try:
+        shutil.move(str(source), str(dest))
+    except OSError as move_exc:
+        # RECOVERY: the record is ACTIVE (truth) and carries the body inline, so
+        # the skill is live regardless. The .andon file is stray — flag LOUD with
+        # skill_id + path; no crash, reconcilable.
+        logger.error(
+            "andon promote: record APPLIED (skill_id=%s -> active) but the file "
+            "move FAILED — the record is truth and the skill is live. Stray "
+            ".andon body at %s (reconcile: move to %s). Cause: %r",
+            cap_id, source, dest, move_exc,
+        )
+        return log_sovereignty_decision(
+            action="promote", skill_name=skill_name, skill_hash=skill_hash,
+            scan_verdict=verdict, operator=operator, source_path=str(source),
+            dest_path=str(dest),
+            reason="record APPLIED; file move failed — record is truth, stray file flagged",
+        )
 
     return log_sovereignty_decision(
         action="promote",
@@ -226,7 +299,27 @@ def reject(skill_name: str, reason: Optional[str] = None) -> dict[str, Any]:
     skill_hash = _sha256_short(content) if content else ""
     operator = operator_email()
 
-    shutil.rmtree(source)
+    # GRV-009 E6b C2 (A6) — STATE-FIRST. Transition proposed→rejected BEFORE
+    # deleting the file. DEFERRED/SKIPPED raise → nothing deleted. Legacy
+    # record-less proposals fall through to a plain file delete.
+    from grove.capability import LifecycleState
+
+    cap_id = _record_for_proposal(skill_name)
+    _govern_transition(
+        cap_id, LifecycleState.REJECTED, actor=operator,
+        reason=reason or "andon reject", verb="reject",
+    )
+
+    try:
+        shutil.rmtree(source)
+    except OSError as exc:
+        # RECOVERY: the record is REJECTED (truth, terminal). Stray .andon file
+        # flagged LOUD; no crash.
+        logger.error(
+            "andon reject: record APPLIED (skill_id=%s -> rejected) but the file "
+            "delete FAILED — the record is truth. Stray .andon body at %s. "
+            "Cause: %r", cap_id, source, exc,
+        )
 
     return log_sovereignty_decision(
         action="reject",
@@ -260,6 +353,19 @@ def revoke(skill_name: str) -> dict[str, Any]:
         )
 
     operator = operator_email()
+
+    # GRV-009 E6b C2 (A6) — STATE-FIRST. Transition active→proposed BEFORE moving
+    # the body back to .andon. After APPLIED the skill is non-executable (the 4.1
+    # checkpoint refuses a proposed record), so the move is a consequence.
+    # DEFERRED/SKIPPED raise → nothing moves.
+    from grove.capability import LifecycleState
+
+    cap_id = _record_for_proposal(skill_name)
+    _govern_transition(
+        cap_id, LifecycleState.PROPOSED, actor=operator,
+        reason="andon revoke", verb="revoke",
+    )
+
     skill_md = source / "SKILL.md"
     if skill_md.exists():
         content = skill_md.read_text(encoding="utf-8")
@@ -278,7 +384,22 @@ def revoke(skill_name: str) -> dict[str, Any]:
     skill_hash = _sha256_short(content) if content else ""
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(dest))
+    try:
+        shutil.move(str(source), str(dest))
+    except OSError as exc:
+        # RECOVERY: the record is PROPOSED (truth, non-executable). The active
+        # file is stray — flag LOUD; no crash.
+        logger.error(
+            "andon revoke: record APPLIED (skill_id=%s -> proposed, "
+            "non-executable) but the file move FAILED — the record is truth. "
+            "Stray active body at %s. Cause: %r", cap_id, source, exc,
+        )
+        return log_sovereignty_decision(
+            action="revoke", skill_name=skill_name, skill_hash=skill_hash,
+            scan_verdict=verdict, operator=operator, source_path=str(source),
+            dest_path=str(dest),
+            reason="record APPLIED; file move failed — record is truth, stray file flagged",
+        )
 
     return log_sovereignty_decision(
         action="revoke",

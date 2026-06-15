@@ -506,6 +506,26 @@ def _create_skill(
     )
     _atomic_write_text(skill_md, stamped)
 
+    # GRV-009 E6b C2 — mint a state:proposed capability record for the new agent
+    # skill. The record is the authoritative review lock (A6: proposed is the
+    # sole quarantine state) and is NON-EXECUTABLE behind the 4.1 checkpoint; the
+    # .andon/ file remains the reviewable body. Best-effort: a mint failure logs
+    # loudly but never blocks the proposal (the body is already on disk).
+    _category = ""
+    try:
+        from grove.capability_registry import (
+            _frontmatter_value, register_proposed_skill,
+        )
+        _category = _frontmatter_value(stamped, "category") or ""
+        register_proposed_skill(name, _category, stamped)
+    except Exception:
+        from grove.capability_registry import _slug as _s
+        logger.warning(
+            "proposed-record mint FAILED skill_id=skill.%s.%s body=%s — proposal "
+            "written but record NOT minted; reconcile manually",
+            _s(_category) or _s(name), _s(name), skill_md, exc_info=True,
+        )
+
     message = (
         f"Proposed skill '{name}' to your review queue. "
         f"Run `hermes andon list` to see all pending proposals, "
@@ -531,11 +551,74 @@ def _create_skill(
     }
 
 
+def _managed_edit_refusal(name: str) -> Optional[Dict[str, Any]]:
+    """GRV-009 E6b C2 — refuse to edit a MANAGED (installed) skill cleanly.
+
+    A managed record is terminal (no REFINED exit) and the skill is upstream-
+    managed, so editing it via skill_manage would silently drift from upstream
+    and strand the record on an illegal transition. Returns an error dict to
+    return to the caller, or None to proceed. Best-effort: any lookup failure
+    proceeds (the edit's own validation still applies)."""
+    try:
+        from grove.capability import CapabilityKind, LifecycleState
+        from grove.capability_registry import _slug, load_capabilities
+
+        slug = _slug(name)
+        for cid, cap in load_capabilities().items():
+            if cap.kind is CapabilityKind.SKILL and cid.rsplit(".", 1)[-1] == slug:
+                if cap.lifecycle.state is LifecycleState.MANAGED:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Skill '{name}' is an installed/managed skill "
+                            f"(record state:managed) — it is upstream-managed and "
+                            f"cannot be edited via skill_manage. Re-install or "
+                            f"fork it under a new name instead."
+                        ),
+                    }
+                return None
+    except Exception:
+        return None
+    return None
+
+
+def _refine_record_after_edit(name: str, new_body: str) -> None:
+    """GRV-009 E6b C2 — after a successful edit/patch, transition the skill's
+    record ACTIVE->REFINED and re-populate body_hash (the body changed).
+
+    Best-effort: fires only when a record exists and is ACTIVE (transition_record
+    SKIPS other states without writing). External/legacy record-less skills are a
+    no-op. A failure logs loudly but never undoes the body edit."""
+    try:
+        from grove.capability import LifecycleState
+        from grove.capability_registry import (
+            _body_hash, skill_record_id_for_name, transition_record,
+        )
+
+        cap_id = skill_record_id_for_name(name)
+        if cap_id is None:
+            return
+        transition_record(
+            cap_id, LifecycleState.REFINED, actor="agent",
+            reason="skill body edited", body_hash=_body_hash(new_body),
+        )
+    except Exception:
+        logger.warning(
+            "refine-transition failed for skill %r (body edit kept)", name,
+            exc_info=True,
+        )
+
+
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
     err = _validate_frontmatter(content)
     if err:
         return {"success": False, "error": err}
+
+    # GRV-009 E6b C2 — managed (installed) skills are not editable here.
+    managed_refusal = _managed_edit_refusal(name)
+    if managed_refusal is not None:
+        return managed_refusal
 
     err = _validate_content_size(content)
     if err:
@@ -557,6 +640,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
+    _refine_record_after_edit(name, content)
     return {
         "success": True,
         "message": f"Skill '{name}' updated.",
@@ -584,6 +668,11 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
+
+    # GRV-009 E6b C2 — managed (installed) skills are not editable here.
+    managed_refusal = _managed_edit_refusal(name)
+    if managed_refusal is not None:
+        return managed_refusal
 
     skill_dir = existing["path"]
 
@@ -652,6 +741,10 @@ def _patch_skill(
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
+    # GRV-009 E6b C2 — a SKILL.md body change refines the record + re-hashes.
+    # Supporting-file patches (file_path set) don't change the skill body.
+    if not file_path:
+        _refine_record_after_edit(name, new_content)
     return {
         "success": True,
         "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
@@ -704,6 +797,27 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     parent = skill_dir.parent
     if parent != skills_root and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
+
+    # GRV-009 E6b C2 — deprecate the record (terminal-graceful; the record
+    # persists with its inline body, hidden from the index). Do NOT hard-remove
+    # it. Best-effort; only fires for record-backed ACTIVE skills.
+    try:
+        from grove.capability import LifecycleState
+        from grove.capability_registry import (
+            skill_record_id_for_name, transition_record,
+        )
+
+        cap_id = skill_record_id_for_name(name)
+        if cap_id is not None:
+            transition_record(
+                cap_id, LifecycleState.DEPRECATED, actor="agent",
+                reason="skill deleted",
+            )
+    except Exception:
+        logger.warning(
+            "deprecate-transition failed for skill %r (body removed)", name,
+            exc_info=True,
+        )
 
     message = f"Skill '{name}' deleted."
     if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():

@@ -72,13 +72,12 @@ class Zone(str, Enum):
 
 
 class LifecycleState(str, Enum):
-    PROPOSED = "proposed"
-    QUARANTINE = "quarantine"
-    APPROVED = "approved"
+    PROPOSED = "proposed"  # GRV-009 A6 — the SOLE review/quarantine lock (.andon)
+    APPROVED = "approved"  # vestigial post-A6 (no graph edges); retained for round-trip
     ACTIVE = "active"
     REFINED = "refined"
     DEPRECATED = "deprecated"
-    REJECTED = "rejected"  # GRV-009 Amendment A1 — terminal; only from quarantine
+    REJECTED = "rejected"  # GRV-009 A1/A6 — terminal; only from proposed
     MANAGED = "managed"  # GRV-009 A5 — installed skills; terminal, curator-exempt
 
 
@@ -142,21 +141,38 @@ class IllegalTransitionError(ValueError):
 
 
 # ── State machine — the ONLY legal transitions ───────────────────────────────
-# GRV-009 Amendment A1: ``rejected`` is reachable ONLY from ``quarantine`` — a
-# capability rejected/failed during quarantine never lived. ``deprecated`` is
-# reserved exclusively for graceful exits from ``active``. Both are terminal; no
-# other edges out of them.
+# GRV-009 Amendment A6: ``quarantine`` is collapsed into ``proposed`` — the
+# .andon review window IS state:proposed (the sole review/quarantine lock). The
+# sovereignty governance edges are now single transitions:
+#   * promote: proposed → active        * reject:  proposed → rejected (A1)
+#   * revoke:  active   → proposed       * edit:    active   → refined
+#   * delete:  active   → deprecated
+# ``rejected`` (A1) is reachable only from ``proposed`` and is terminal.
+# ``deprecated`` is the graceful exit from ``active`` and is terminal.
 
 LEGAL_TRANSITIONS: dict[LifecycleState, frozenset[LifecycleState]] = {
-    LifecycleState.PROPOSED: frozenset({LifecycleState.QUARANTINE}),
-    LifecycleState.QUARANTINE: frozenset({LifecycleState.APPROVED, LifecycleState.REJECTED}),
-    LifecycleState.APPROVED: frozenset({LifecycleState.ACTIVE}),
-    LifecycleState.ACTIVE: frozenset({LifecycleState.REFINED, LifecycleState.DEPRECATED}),
+    LifecycleState.PROPOSED: frozenset({LifecycleState.ACTIVE, LifecycleState.REJECTED}),
+    LifecycleState.ACTIVE: frozenset(
+        {LifecycleState.REFINED, LifecycleState.DEPRECATED, LifecycleState.PROPOSED}
+    ),
     LifecycleState.REFINED: frozenset({LifecycleState.ACTIVE}),
     LifecycleState.DEPRECATED: frozenset(),
     LifecycleState.REJECTED: frozenset(),
     LifecycleState.MANAGED: frozenset(),  # GRV-009 A5 — terminal; no legal exits
 }
+
+
+# GRV-009 E6b C2 — the executable lifecycle states. A skill record outside this
+# set MUST NOT be offered in the <available_skills> index nor resolved into the
+# model context: ``proposed``/``quarantine`` are under operator review (the
+# proposed-window non-executable checkpoint); ``approved`` is a transient
+# pre-activation state; ``deprecated``/``rejected`` are retired/dead. Only an
+# active (incl. installed-managed and mid-refine) skill may run.
+EXECUTABLE_STATES: frozenset[LifecycleState] = frozenset({
+    LifecycleState.ACTIVE,
+    LifecycleState.MANAGED,
+    LifecycleState.REFINED,
+})
 
 
 # ── Nested records (composition mirrors the GRV-009 YAML) ────────────────────
@@ -260,6 +276,7 @@ class Lifecycle:
     use_count: int = 0
     flywheel_eligible: bool = False
     pinned: bool = False  # GRV-009 A5 — curator-exempt flag (backfilled from .usage.json)
+    body_hash: str | None = None  # GRV-009 E6b C2 — sha256 of the skill body at mint (wake-match DEFERRED; populate only)
 
 
 @dataclass
@@ -498,6 +515,7 @@ class Capability:
                 "use_count": self.lifecycle.use_count,
                 "flywheel_eligible": self.lifecycle.flywheel_eligible,
                 "pinned": self.lifecycle.pinned,
+                "body_hash": self.lifecycle.body_hash,
             },
             "lineage": {
                 "source_patterns": list(self.lineage.source_patterns),
@@ -609,6 +627,7 @@ class Capability:
                 use_count=lc.get("use_count", 0),
                 flywheel_eligible=lc.get("flywheel_eligible", False),
                 pinned=lc.get("pinned", False),
+                body_hash=lc.get("body_hash"),
             )
 
         if "lineage" in d:
