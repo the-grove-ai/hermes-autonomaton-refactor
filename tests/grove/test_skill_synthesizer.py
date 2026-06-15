@@ -427,7 +427,10 @@ class TestQuietAppend:
         )
         fake_self = SimpleNamespace()
         first = AIAgent._append_pending_skill_proposal(fake_self, "Done.")
-        assert "want to try it?" in first
+        # B3 repoint: the offer points at the review/approve loop (no dead
+        # invoke_skill "want to try it?" path).
+        assert "stage it for your review" in first
+        assert "flywheel approve" in first
         assert first.startswith("Done.")
         # Same proposal is not re-offered within the session.
         second = AIAgent._append_pending_skill_proposal(fake_self, "Done.")

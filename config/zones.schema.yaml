@@ -411,6 +411,17 @@ tool_zones:
   spotify_queue:                             yellow
   spotify_search:                            yellow
 
+  # ── GRV-009 B3 — Flywheel review/approve loop (flywheel_review_tool) ──
+  # The surface-agnostic operator review/approve tools. review_proposals is
+  # read-only → green. approve_proposal / reject_proposal apply (or dismiss)
+  # operator-approved self-modification → yellow, so the Sovereign Prompt
+  # governs the act: the agent cannot self-approve a proposal without the
+  # operator's mechanical tap (declarative-over-implicit; yellow is also the
+  # classifier default, but stated explicitly here per the E5 convention).
+  review_proposals:                          green
+  approve_proposal:                          yellow
+  reject_proposal:                           yellow
+
   # ── Native tools: SECURITY / SYSTEM → RED ──
   # OS-level UI automation; keystroke-injection territory.
   computer_use:                              red
