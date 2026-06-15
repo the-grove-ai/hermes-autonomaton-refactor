@@ -5239,9 +5239,13 @@ class AIAgent:
         most one proposal per response, never repeated within a session.
         Best-effort: a queue read failure leaves the response untouched.
 
-        Acceptance is conversational: if the operator agrees, the model calls
-        ``invoke_skill(name)``; the Dispatcher materializes the staged SKILL.md
-        into the quarantine and the normal Yellow gate + promotion prompt run.
+        Acceptance is conversational and surface-agnostic (GRV-009 B3): if the
+        operator agrees, the model calls ``approve_proposal(proposal_id)`` — the
+        Flywheel review/approve tool — which routes through the governed gate
+        (``flywheel_cli.cli_approve`` → ``_approve_skill_synthesis``) to stage
+        the draft into the quarantine + mint its proposed record. (The old
+        ``invoke_skill``-triggered in-chat materialization was retired in B1;
+        there is no dead path here.)
         """
         if not final_response:
             return final_response
@@ -5264,9 +5268,12 @@ class AIAgent:
             proposal = pending[0]
             surfaced.add(proposal.proposal_id)
             goal = (proposal.payload or {}).get("goal") or "do this"
+            short_id = proposal.proposal_id.split(":")[-1][:12]
             offer = (
                 f"I noticed you regularly {goal}. I drafted a skill to speed "
-                f"this up — want to try it?"
+                f"this up — want me to stage it for your review? Just say the "
+                f"word and I'll approve it (or run `flywheel approve "
+                f"{short_id}`)."
             )
             return final_response.rstrip() + "\n\n" + offer
         except Exception as exc:  # noqa: BLE001
