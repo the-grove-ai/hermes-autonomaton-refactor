@@ -520,21 +520,25 @@ class TestClassifyOneIntentHierarchicalBridge:
         from grove import dispatch as _grove_dispatch
         from grove.dispatcher import Dispatcher
         from grove.intents import ToolIntent
+        from hermes_constants import get_hermes_home
 
+        # C1a — the AST classifier resolves the script path against the active
+        # GROVE_HOME, so build the path from get_hermes_home() (a conftest may
+        # redirect it) rather than hard-coding the operator's home.
+        script = (
+            get_hermes_home() / "skills" / "productivity"
+            / "google-workspace" / "scripts" / "calendar_read.py"
+        )
         intent = ToolIntent(
             tool_name="terminal",
-            arguments={
-                "command": (
-                    "GAPI=/tmp/key.json python3 "
-                    "/Users/jimcalhoun/.grove/skills/productivity/"
-                    "google-workspace/scripts/calendar_read.py"
-                )
-            },
+            arguments={"command": f"GAPI=/tmp/key.json python3 {script}"},
         )
         result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
+        # GRV-010 C1a — classification is now by AST effect (grove/shell_effects.py),
+        # not the regex hierarchical rule. A script under ~/.grove/skills/ (a
+        # promoted skill) still classifies GREEN, by effect.
         assert result.zone == "green"
-        assert result.source.startswith("tool_zones.terminal.rules")
-        assert "google-workspace" in result.matched_rule
+        assert result.source == "shell_effect"
 
     def test_sudo_command_classifies_red_via_hierarchical_rule(self):
         # The terminal hierarchical entry encodes sudo/su/doas as red
@@ -550,8 +554,10 @@ class TestClassifyOneIntentHierarchicalBridge:
             arguments={"command": "sudo apt install vim"},
         )
         result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
+        # GRV-010 C1a — privilege escalation still classifies RED, by AST effect.
         assert result.zone == "red"
-        assert result.source.startswith("tool_zones.terminal.rules")
+        assert result.source == "shell_effect"
+        assert "priv:sudo" in (result.pattern_key or "")
 
     def test_unmatched_terminal_command_falls_to_default_zone_yellow(self):
         # A plain command that matches no hierarchical rule must take

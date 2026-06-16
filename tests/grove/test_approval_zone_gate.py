@@ -56,13 +56,22 @@ def fake_classifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     gdispatch.reset_classifier()
 
 
-def test_green_zone_short_circuits(fake_classifier) -> None:
+def test_green_zone_short_circuits(fake_classifier, tmp_path, monkeypatch) -> None:
     from tools.approval import check_all_command_guards
 
-    result = check_all_command_guards("echo hello world", env_type="local")
+    # GRV-010 C1a — GREEN is now EFFECT-based (grove/shell_effects.py): a generic
+    # command like "echo ..." is YELLOW (operator-gated); GREEN is reserved for a
+    # promoted-skill invocation under ~/.grove/skills/ (not .andon). Stand up such
+    # a skill and invoke it to exercise the green short-circuit.
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    skill = tmp_path / "skills" / "demo" / "run.py"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("print('hi')\n")
+
+    result = check_all_command_guards(f"python3 {skill}", env_type="local")
     assert result["approved"] is True
     assert result.get("zone_classified") == "green"
-    assert result.get("matched_rule") == "command.execute.echo"
+    assert result.get("matched_rule") == "shell.effect.green"
 
 
 def test_red_zone_hard_blocks_non_interactive(fake_classifier) -> None:

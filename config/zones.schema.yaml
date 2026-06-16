@@ -232,92 +232,18 @@ tool_zones:
   # duplicate copy of the read entries that lived here triggered a
   # ruamel DuplicateKeyError on reload — removed; the section below is
   # the single source of truth.)
-  terminal:
-    default_zone: yellow
-    rules:
-      # ── Privilege escalation: explicit RED ─────────────────────────
-      # Hierarchical entries do NOT inherit sovereign patterns from the
-      # zones.red.sovereign list — encode them here explicitly.
-      - match_pattern: '^sudo\s+.*'
-        zone: red
-        reason: "Privilege escalation requires sovereign approval."
-      - match_pattern: '^su\s+.*|^su$'
-        zone: red
-        reason: "User-switch requires sovereign approval."
-      - match_pattern: '^doas\s+.*'
-        zone: red
-        reason: "doas privilege escalation requires sovereign approval."
-      # ── Catastrophic delete: explicit RED (INV-9) ──────────────────
-      # Targets the catastrophic family ONLY — root (/, //, /*), home
-      # (~, ~/), and the --no-preserve-root override. Target guards are
-      # anchored (re.fullmatch), so safe deletes like `rm -rf /tmp/foo`
-      # or `rm -rf ~/Documents` do NOT match — they stay Yellow. Combined
-      # recursive/force flags (-rf/-fr/-rfv) match; separate-token or
-      # exotic orderings fall through to Yellow (still gated), never Green.
-      - match_pattern: '^rm\s+-[a-zA-Z]*[rRfF][a-zA-Z]*\s+/+\*?\s*'
-        zone: red
-        reason: "Catastrophic recursive delete of the root filesystem (rm -rf / or /*). INV-9."
-      - match_pattern: '^rm\s+-[a-zA-Z]*[rRfF][a-zA-Z]*\s+~/?\s*'
-        zone: red
-        reason: "Catastrophic recursive delete of the home directory (rm -rf ~). INV-9."
-      - match_pattern: '^rm\s+.*--no-preserve-root.*'
-        zone: red
-        reason: "rm --no-preserve-root: explicit override of the root-deletion guard. INV-9."
-      # ── Google Workspace: governed by SUBCOMMAND (BLOCKER refactor) ──
-      # google_api.py is the Workspace entrypoint (Gmail/Calendar/Drive/
-      # Sheets/Docs). Its path lives under ~/.grove/skills/, so without
-      # these rules the broad promoted-skills green rule below would
-      # auto-approve every subcommand — including writes (the BLOCKER:
-      # Workspace authority lived in memory prose, not the zone layer).
-      # Explicit subcommand rules here (first-match-wins, ABOVE the broad
-      # rule) split read from write: the read allow-list is Green; every
-      # mutation OR unrecognized subcommand falls through to the Yellow
-      # default. Per GRV-001 Principle IV + Zone Model.
-      #
-      # The external `gws` CLI's subcommand grammar is not enumerated from
-      # this repo, so the bare `gws` path is Yellow in full (reads
-      # included) — fail-closed friction over silent over-grant. Locked
-      # GATE-B decision (workspace-zone-authority-refactor).
-      - match_pattern: '.*\bgoogle_api\.py\s+(gmail\s+(search|get|labels)|calendar\s+list|drive\s+(search|get|download)|contacts\s+list|sheets\s+get|docs\s+get)\b.*'
-        zone: green
-        reason: "Google Workspace READ via google_api.py (gmail search/get/labels, calendar list, drive search/get/download, contacts list, sheets get, docs get) — auto-approved Green (BLOCKER refactor)."
-      - match_pattern: '.*\b(google_api\.py|gws)\b.*'
-        zone: yellow
-        reason: "Google Workspace mutation or unrecognized google_api.py subcommand, or any gws-CLI invocation — Yellow-zone approval; writes and unknowns fail closed (BLOCKER refactor)."
-      # ── Quarantined skills: path-prefix YELLOW (Sprint 53.2) ───────
-      # Skills the Autonomaton authored land in ~/.grove/skills/.andon/
-      # (the quarantine) and are NOT yet operator-approved. Executing one
-      # must halt for a four-choice Kaizen disposition ("allow once" to
-      # try it) — the "try before you buy" gate that precedes promotion.
-      # This rule MUST precede the broad `.grove/skills/.*` green rule
-      # below: first-match-wins means quarantined paths halt while
-      # promoted paths (already moved OUT of .andon/) pass green.
-      - match_pattern: '.*\.grove/skills/\.andon/.*'
-        zone: yellow
-        reason: "Quarantined skill — not yet promoted. Execution requires operator disposition (Sprint 53.2 quarantine pipeline)."
-      # ── Notion fallback skill: governed by SUBCOMMAND (Sprint 69) ──
-      # scripts/notion.py is the sovereign no-OAuth fallback to the hosted
-      # Notion MCP. Its path lives under ~/.grove/skills/, so without these
-      # rules the broad promoted-skills green rule below would auto-approve
-      # every subcommand — including writes. Explicit subcommand rules here
-      # (first-match-wins, ABOVE the broad rule) split read from write:
-      # search/get/query are Green, create-page/update-page are Yellow.
-      - match_pattern: '.*\bnotion\.py\s+(create-page|update-page)\b.*'
-        zone: yellow
-        reason: "Notion write (page create/update) via the fallback skill — Yellow-zone approval (Sprint 69)."
-      - match_pattern: '.*\bnotion\.py\s+(search|get|query)\b.*'
-        zone: green
-        reason: "Notion read (search/get/query) via the fallback skill — auto-approved Green (Sprint 69)."
-      # ── Promoted skills: path-prefix GREEN ─────────────────────────
-      # Any terminal command whose argument references a path under
-      # ~/.grove/skills/ executes a skill the operator already approved
-      # via the Andon quarantine pipeline. Re-halting on every invocation
-      # is governance theater — the promotion act IS the trust grant.
-      # First-match-wins keeps the specific GAPI rule above in place so
-      # google-workspace invocations still surface their precise reason.
-      - match_pattern: '.*\.grove/skills/.*'
-        zone: green
-        reason: "Promoted skills have passed Andon quarantine. Execution of operator-approved skills does not require re-disposition."
+  # GRV-010 C1a (conformance-shell-containment-v1) — terminal / execute_code
+  # commands are classified by the bashlex-AST EFFECT classifier
+  # (grove/shell_effects.py), invoked via grove.dispatch.classify_command at
+  # the Dispatcher admission site. The former regex rule list was REMOVED:
+  # substring matching over a shell string is unsound — a comment suffix (B1)
+  # or a leading .* (B2) smuggled arbitrary commands to GREEN, and command
+  # chaining slipped past. The AST sees real command nodes; opacity
+  # (sh -c / eval / $(...) / pipe-into-shell), privilege, catastrophic rm,
+  # writes into ~/.grove (is_governed_path), and external-agent spawn all
+  # classify RED; promoted-skill execution stays GREEN by effect. The bare
+  # entry below is only the fallback for a bare classify("terminal") action.
+  terminal:                  yellow
   skill_manage.create:       yellow
   skill_manage.promote:      red
   file_operations.write:     yellow

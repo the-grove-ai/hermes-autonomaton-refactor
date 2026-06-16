@@ -86,16 +86,19 @@ def test_descope_command(command: str, expected) -> None:
 # ----- classify_command ------------------------------------------------------
 
 def test_classify_command_red_sudo(fake_classifier) -> None:
+    # GRV-010 C1a — classify_command routes shell commands to the bashlex-AST
+    # effect classifier (grove/shell_effects.py), not the regex schema rules.
+    # Privilege escalation still classifies RED, by effect.
     zr = gdispatch.classify_command("sudo apt install foo")
     assert zr.zone == "red"
-    assert zr.matched_rule == "command.execute.sudo"
-    assert zr.source == "sovereign"
+    assert zr.source == "shell_effect"
+    assert "priv:sudo" in (zr.pattern_key or "")
 
 
 def test_classify_command_default_yellow(fake_classifier) -> None:
     zr = gdispatch.classify_command("ls -la")
     assert zr.zone == "yellow"
-    assert zr.source == "default"
+    assert zr.source == "shell_effect"
 
 
 def test_classify_command_tool_zones_green(fake_classifier) -> None:

@@ -39,7 +39,10 @@ REPO_SCHEMA = Path(__file__).resolve().parents[2] / "config" / "zones.schema.yam
 
 @pytest.fixture
 def tmp_home(monkeypatch, tmp_path: Path) -> SimpleNamespace:
-    home = tmp_path / "grove"
+    # ".grove" (not "grove") so the quarantine path ``<home>/skills/.andon/``
+    # satisfies BOTH the AST classifier (resolves under get_hermes_home) and the
+    # Dispatcher's _ANDON_SKILL_RE, which keys on the literal ``.grove/skills/.andon``.
+    home = tmp_path / ".grove"
     (home / "skills").mkdir(parents=True)
 
     import grove.skills as gskills
@@ -99,10 +102,10 @@ def _dispatcher(monkeypatch, *, sovereign="once", post=None, strict=False) -> Di
 
 
 def _classify(cmd: str) -> str:
-    cls = ZoneClassifier(REPO_SCHEMA)
-    return cls.classify_command_string(
-        cmd, "command.execute.python3", tool_id="terminal",
-    ).zone
+    # GRV-010 C1a — terminal commands classify by AST effect
+    # (grove/shell_effects.py); the regex tool_zones.terminal.rules were removed.
+    from grove.shell_effects import classify_shell_effect
+    return classify_shell_effect(cmd).zone
 
 
 def _flag(name: str, andon: Path, turn="sess#1", cache_key="ck") -> dict:
@@ -123,8 +126,10 @@ def test_T16_full_lifecycle(monkeypatch, tmp_home) -> None:
     andon = _make_quarantined_skill(home, name)
     assert (andon / "SKILL.md").exists()
 
-    andon_cmd = f"python3 /op/.grove/skills/.andon/{name}/scripts/run.py"
-    promoted_cmd = f"python3 /op/.grove/skills/{name}/scripts/run.py"
+    # C1a — the AST classifier resolves the script path against GROVE_HOME
+    # (patched to `home` by tmp_home), so build the commands from `home`.
+    andon_cmd = f"python3 {home}/skills/.andon/{name}/scripts/run.py"
+    promoted_cmd = f"python3 {home}/skills/{name}/scripts/run.py"
 
     # Execute the quarantined skill → yellow (the four-choice Kaizen fires).
     assert _classify(andon_cmd) == "yellow"
