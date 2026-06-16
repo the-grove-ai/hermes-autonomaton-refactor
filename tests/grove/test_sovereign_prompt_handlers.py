@@ -9,9 +9,11 @@ Test categories:
 
 * The Kaizen-register TTY prompt (``tty_sovereign_prompt``) —
   four-choice rendering and the four return values.
-* Non-interactive handlers — ``batch_auto_allow_handler``,
-  ``gateway_auto_allow_handler``, ``silent_allow_handler``,
-  ``silent_deny_handler``, ``silent_promote_handler``.
+* Non-interactive handler — ``non_interactive_deny_handler`` (C0
+  fail-closed; replaced the deleted ``gateway_auto_allow_handler`` /
+  ``batch_auto_allow_handler`` auto-once instruments) — plus the test
+  fixtures ``silent_allow_handler``, ``silent_deny_handler``,
+  ``silent_promote_handler``.
 * The Kaizen template (``describe_action_kaizen``) — the four
   template rows + the skill-name extraction.
 """
@@ -25,9 +27,8 @@ import pytest
 from grove.dispatcher import AndonHalt
 from grove.intents import ToolIntent
 from grove.sovereign_prompt_handlers import (
-    batch_auto_allow_handler,
     describe_action_kaizen,
-    gateway_auto_allow_handler,
+    non_interactive_deny_handler,
     normalize_command,
     peek,
     silent_allow_handler,
@@ -386,40 +387,47 @@ class TestTtySovereignPromptV11:
 # ── v1.1 non-interactive handlers ────────────────────────────────────
 
 
-class TestBatchAutoAllowHandler:
-    def test_returns_once(self):
-        assert batch_auto_allow_handler(_build_halt()) == "once"
+class TestNonInteractiveDenyHandler:
+    """C0 (conformance-disarm-seal-v1) — the fail-closed handler that
+    replaced the deleted ``gateway_auto_allow_handler`` /
+    ``batch_auto_allow_handler`` auto-``once`` instruments. A raised Andon
+    on a surface with no interactive Stage-04 channel must DENY (fail
+    loud), never silently execute."""
 
-    def test_logs_kaizen_description(self, caplog: pytest.LogCaptureFixture):
+    def test_returns_deny(self):
+        assert non_interactive_deny_handler(_build_halt()) == "deny"
+
+    def test_red_also_denies(self):
+        # Yellow OR Red — both deny on a non-interactive surface.
+        assert non_interactive_deny_handler(
+            _build_halt(zone="red")
+        ) == "deny"
+        assert non_interactive_deny_handler(
+            _build_halt(zone="yellow")
+        ) == "deny"
+
+    def test_logs_loud_warning_naming_the_denied_action(
+        self, caplog: pytest.LogCaptureFixture
+    ):
         halt = _build_halt(
             tool_name="terminal",
             zone="red",
             arguments={"command": "python3 /Users/x/.grove/skills/cal/run.py"},
         )
-        with caplog.at_level(logging.INFO, logger="grove.sovereign_prompt_handlers"):
-            batch_auto_allow_handler(halt)
-        messages = [r.getMessage() for r in caplog.records]
-        assert any("Kaizen auto-allow (batch)" in m for m in messages)
+        with caplog.at_level(logging.WARNING, logger="grove.sovereign_prompt_handlers"):
+            non_interactive_deny_handler(halt)
+        records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        messages = [r.getMessage() for r in records]
+        # Fails loud (WARNING), names the tool + the plain-language action.
+        assert any("Andon denied" in m for m in messages)
         assert any("tool=terminal" in m for m in messages)
         assert any("run the cal skill" in m for m in messages)
 
-
-class TestGatewayAutoAllowHandler:
-    def test_returns_once(self):
-        assert gateway_auto_allow_handler(_build_halt()) == "once"
-
-    def test_logs_with_gateway_label(self, caplog: pytest.LogCaptureFixture):
-        halt = _build_halt(
-            tool_name="mcp_notion_API_post_page",
-            arguments={"page": "test"},
-        )
-        with caplog.at_level(logging.INFO, logger="grove.sovereign_prompt_handlers"):
-            gateway_auto_allow_handler(halt)
-        messages = [r.getMessage() for r in caplog.records]
-        assert any("Kaizen auto-allow (gateway)" in m for m in messages)
-
-    def test_is_distinct_callable_from_batch_handler(self):
-        assert gateway_auto_allow_handler is not batch_auto_allow_handler
+    def test_deleted_auto_allow_handlers_are_gone(self):
+        # Regression guard: the disarm instruments must not be reintroduced.
+        import grove.sovereign_prompt_handlers as sph
+        assert not hasattr(sph, "gateway_auto_allow_handler")
+        assert not hasattr(sph, "batch_auto_allow_handler")
 
 
 class TestSilentAllowHandler:

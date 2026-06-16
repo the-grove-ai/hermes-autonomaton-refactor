@@ -28,7 +28,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from grove.dispatcher import Dispatcher
-from grove.sovereign_prompt_handlers import gateway_auto_allow_handler
+from grove.sovereign_prompt_handlers import non_interactive_deny_handler
 
 logger = logging.getLogger(__name__)
 
@@ -1086,9 +1086,10 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
             skip_memory=True,
             max_iterations=15,
             enabled_toolsets=["feishu_doc", "feishu_drive"],
-            # Sprint 27 Phase 3 — Feishu doc-comment thread agent: no TTY
-            # surface. Andon halts auto-skip with Kaizen Ledger record.
-            sovereign_prompt_handler=gateway_auto_allow_handler,
+            # Sprint 27 Phase 3 / C0 — Feishu doc-comment thread agent: no
+            # interactive Stage-04 channel. Andon halts FAIL CLOSED (deny)
+            # with a WARNING + Kaizen Ledger record, never silent auto-once.
+            sovereign_prompt_handler=non_interactive_deny_handler,
         )).agent
         logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)",
                     len(prompt), len(history))

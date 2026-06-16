@@ -247,25 +247,28 @@ class TestHardDenialTelemetry:
 # ── Gateway hard-block (Phase 3c) ────────────────────────────────────
 
 
-class TestGatewayHardBlock:
-    def test_gateway_handler_still_hits_strike_counter(
+class TestHardBlockIgnoresHandlerIdentity:
+    def test_once_returning_handler_still_hits_strike_counter(
         self, dispatcher: Dispatcher,
     ):
-        """A gateway handler that returns ``once`` still triggers the
-        strike counter on red halts — the gateway code path does NOT
-        bypass the structural counter. At the strike limit the
-        dispatcher emits ``deny_hard`` regardless of handler identity."""
-        from grove.sovereign_prompt_handlers import gateway_auto_allow_handler
-        dispatcher._sovereign_prompt_handler = gateway_auto_allow_handler
+        """A handler that returns ``once`` still triggers the strike
+        counter on red halts — the structural counter is NOT bypassed by
+        handler identity. At the strike limit the dispatcher emits
+        ``deny_hard`` regardless of what the handler would have returned.
+        (Uses ``silent_allow_handler``, the explicit test fixture, since
+        C0 deleted the auto-allow handlers — never reintroduce a global
+        disarm to drive a test.)"""
+        from grove.sovereign_prompt_handlers import silent_allow_handler
+        dispatcher._sovereign_prompt_handler = silent_allow_handler
 
         # Pre-saturate strikes minus one to set up the limit-trigger.
         for i in range(_RED_ZONE_STRIKE_LIMIT - 1):
             dispatcher._handle_andon_halt(
                 agent=MagicMock(),
-                halt=_halt(arguments={"command": f"gateway-{i}"}),
+                halt=_halt(arguments={"command": f"once-{i}"}),
             )
 
-        # Limit trigger: gateway handler MUST be bypassed; deny_hard.
+        # Limit trigger: the handler MUST be bypassed; deny_hard.
         result = dispatcher._handle_andon_halt(
             agent=MagicMock(),
             halt=_halt(arguments={"command": "boom"}),

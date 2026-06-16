@@ -3673,26 +3673,28 @@ class Dispatcher:
 
         Flow:
 
-        1. Shadow mode short-circuit: ``GROVE_ZONE_SHADOW=1`` returns
-           ``"once"`` without writing the marker or prompting (the
-           Green-path executor runs the tool; the would-have-been halt
-           remains in the ledger for calibration review).
-        2. Red-zone strike check (Phase 3a) — increments the per-turn
+        1. Red-zone strike check (Phase 3a) — increments the per-turn
            per-tool counter; at threshold returns ``"deny_hard"``
            silently.
-        3. Cache check — keyed by ``(tool_name, sha256(arguments))``:
+        2. Cache check — keyed by ``(tool_name, sha256(arguments))``:
            * Deny cache hit → log telemetry, return ``"deny"`` silently.
            * Allow cache hit → log telemetry, return ``"once"`` silently.
-        4. Write the pending_andon marker (recoverable trail).
-        5. Invoke the operator handler.
-        6. Mutate caches by disposition:
+        3. Write the pending_andon marker (recoverable trail).
+        4. Invoke the operator handler.
+        5. Mutate caches by disposition:
            * ``"deny"`` → add to deny cache.
            * ``"session"`` / ``"always"`` → add to allow cache.
            * ``"once"`` → no cache mutation.
-        7. ``"always"`` applies a zone rule immediately (Sprint 67):
+        6. ``"always"`` applies a zone rule immediately (Sprint 67):
            operator-initiated "always" is self-approving, so the rule
            is written to zones.schema.yaml rather than queued.
-        8. Clear the pending_andon marker in ``finally``.
+        7. Clear the pending_andon marker in ``finally``.
+
+        C0 (conformance-disarm-seal-v1): the ``GROVE_ZONE_SHADOW=1``
+        short-circuit that previously forced ``"once"`` here is removed.
+        There is no longer any environment-flag global disposition
+        disarm — a raised Andon is resolved only by an operator handler
+        verdict or the structural strike/deny path.
 
         Per D3 lock: pending_andon is a structural persistent marker —
         not a serialization of the generator state (which contains
@@ -3700,15 +3702,6 @@ class Dispatcher:
         process restart, ``check_pending_andon()`` surfaces the marker
         so the operator can acknowledge the lost turn.
         """
-        if os.environ.get("GROVE_ZONE_SHADOW") == "1":
-            triggering = halt.intents[halt.triggering_index].tool_name
-            print(
-                f"[shadow] would halt: {triggering} "
-                f"({halt.zone}, {halt.matched_rule})",
-                file=_sys.stderr,
-            )
-            return "once"
-
         triggering_intent = halt.intents[halt.triggering_index]
         cache_key = self._kaizen_cache_key(
             triggering_intent.tool_name, triggering_intent.arguments,

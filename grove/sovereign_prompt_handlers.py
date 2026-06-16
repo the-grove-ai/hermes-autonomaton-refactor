@@ -1,8 +1,7 @@
 """Sovereign Prompt handler implementations — GRV-005 § VI v1.1.
 
 The Dispatcher accepts a ``sovereign_prompt_handler: Callable[[AndonHalt], str]``
-at construction and calls it when ``_handle_andon_halt`` fires — unless
-shadow mode (``GROVE_ZONE_SHADOW=1``) short-circuits the call.
+at construction and calls it when ``_handle_andon_halt`` fires.
 
 Per GRV-005 § VI v1.1, the operator-facing Sovereign Prompt is a
 Kaizen-register four-choice menu. The operator never sees zone names,
@@ -34,13 +33,17 @@ This module ships handler implementations for each caller context:
 
 * :func:`tty_sovereign_prompt` — the canonical operator-facing TTY
   prompt. Renders the Kaizen four-choice menu.
-* :func:`batch_auto_allow_handler` — non-interactive auto-``once`` for
-  batch callers (cron, eval, hygiene, compression). Returns ``"once"``
-  with an INFO log.
-* :func:`gateway_auto_allow_handler` — non-interactive auto-``once``
-  for gateway callers (Telegram, Discord, API). Returns ``"once"``
-  with an INFO log. Gateway callers MUST NOT return ``"always"`` —
-  the operator has no CLI access for approval from a mobile surface.
+* :func:`non_interactive_deny_handler` — fail-closed handler for
+  callers with no interactive Stage-04 channel (background / batch
+  tasks, non-keyboard gateway adapters, ``/v1/runs`` + ``/v1/responses``,
+  and transport-delivery failures). Returns ``"deny"`` with a WARNING
+  log naming the denied action. C0 (conformance-disarm-seal-v1)
+  replaced the prior ``gateway_auto_allow_handler`` /
+  ``batch_auto_allow_handler`` auto-``once`` instruments with this: a
+  raised Andon on a surface that cannot reach the operator now fails
+  loud and never silently executes. Surfaces that CAN reach the
+  operator (TTY four-choice prompt; Telegram inline keyboards; the
+  web store-and-resume governance handler) keep their own handlers.
 * :func:`silent_allow_handler` — test fixture; returns ``"once"`` with
   no I/O.
 * :func:`silent_deny_handler` — test fixture; returns ``"deny"`` with
@@ -62,8 +65,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "tty_sovereign_prompt",
-    "batch_auto_allow_handler",
-    "gateway_auto_allow_handler",
+    "non_interactive_deny_handler",
     "silent_allow_handler",
     "silent_deny_handler",
     "silent_promote_handler",
@@ -592,53 +594,42 @@ def tty_post_execution_prompt(payload: Any, *, out=None) -> str:
 # ── Non-interactive handlers ─────────────────────────────────────────
 
 
-def batch_auto_allow_handler(halt: "AndonHalt") -> str:
-    """Non-interactive auto-``once`` for batch callers.
+def non_interactive_deny_handler(halt: "AndonHalt") -> str:
+    """Fail-closed Sovereign-Prompt handler for non-interactive surfaces.
 
-    Used by callers with no live operator surface (cron jobs, eval
-    runs, compression hygiene). Returns ``"once"`` so the Agent
-    receives the action's result and continues. The halt's full
-    detail is already captured in the Kaizen Ledger via the
-    Dispatcher's upstream ``andon_halt`` record.
+    C0 (conformance-disarm-seal-v1) — replaces the deleted
+    ``gateway_auto_allow_handler`` / ``batch_auto_allow_handler``
+    auto-``once`` instruments. Used by callers that have NO channel to
+    reach the operator for a Stage-04 verdict: background / batch tasks
+    (cron, eval, hygiene), non-keyboard gateway adapters, the
+    ``/v1/runs`` + ``/v1/responses`` API endpoints, and the
+    transport-delivery-failure path of the interactive Kaizen handler.
 
-    v1.0 → v1.1 behavior change: previously auto-denied (returned
-    ``"skip"``). Sprint 32 inverts to auto-allow-once on the
-    rationale that batch callers are themselves operator-initiated
-    and the four-choice prompt cannot reach the operator from a
-    background context. Operators who want batch contexts to
-    auto-deny use :func:`silent_deny_handler`.
+    Returns ``"deny"`` so the Dispatcher injects a denial Observation —
+    the Agent may recover, re-reason, or pivot — and the action does NOT
+    execute. Logs at WARNING (fail loud per the Architectural Prime
+    Directive): a Yellow/Red action that could not be governed must be
+    visible, not silently swallowed. The halt's full detail is already
+    captured in the Kaizen Ledger via the Dispatcher's upstream
+    ``andon_halt`` record.
+
+    Rationale for the inversion (Sprint 32 auto-once → C0 deny): an
+    auto-``once`` on an unreachable surface resolved a raised Andon to
+    EXECUTION without an operator verdict — a disposition-layer bypass.
+    Conformance requires that no path resolve a raised Andon to
+    execution without a logged, operator-approved Stage-04 verdict.
+    Non-interactive surfaces therefore run Green-zone only; Yellow and
+    Red fail loud here.
     """
     triggering = halt.intents[halt.triggering_index]
-    logger.info(
-        "Kaizen auto-allow (batch): tool=%s description=%r",
+    logger.warning(
+        "Andon denied (no interactive Stage-04 channel): tool=%s zone=%s "
+        "description=%r — action NOT executed (C0 fail-closed).",
         triggering.tool_name,
+        getattr(halt, "zone", "unknown"),
         describe_action_kaizen(triggering.tool_name, triggering.arguments or {}),
     )
-    return "once"
-
-
-def gateway_auto_allow_handler(halt: "AndonHalt") -> str:
-    """Non-interactive auto-``once`` for gateway turns.
-
-    Used by platform-driven callers (Telegram, Discord, Feishu, HTTP
-    API) where the operator is reachable via the platform but not
-    via TTY. Returns ``"once"`` with an INFO log.
-
-    Sprint 32 A4 lock: gateway callers MUST NOT queue zone-promotion
-    proposals from a non-TTY surface. The operator has no
-    ``autonomaton flywheel approve`` access from a mobile messaging
-    client. The Dispatcher's promotion path is gated on the handler
-    identity — gateway handlers map any ``"always"`` semantic at the
-    Dispatcher layer to ``"session"`` silently. This handler itself
-    never returns ``"always"``.
-    """
-    triggering = halt.intents[halt.triggering_index]
-    logger.info(
-        "Kaizen auto-allow (gateway): tool=%s description=%r",
-        triggering.tool_name,
-        describe_action_kaizen(triggering.tool_name, triggering.arguments or {}),
-    )
-    return "once"
+    return "deny"
 
 
 def silent_allow_handler(halt: "AndonHalt") -> str:
