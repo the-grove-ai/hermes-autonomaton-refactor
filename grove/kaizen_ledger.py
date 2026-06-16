@@ -118,6 +118,11 @@ class KaizenLedger:
         "skill_promotion_queued",
         "skill_promotion_denied",
         "skill_promoted",
+        # GRV-010 C1b — a governance-config change written through the
+        # propose_governance_change Stage-04 door (rationale + diff hashes +
+        # disposition). The paired andon_disposition entry carries the precise
+        # once/session/always verdict.
+        "governance_change",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:

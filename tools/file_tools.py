@@ -174,6 +174,26 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
+def _reject_governed_path(filepath: str, task_id: str = "default") -> None:
+    """Raise ``PermissionError`` if *filepath* resolves into the ``~/.grove``
+    governance tree (outside the ``.andon`` quarantine).
+
+    GRV-010 C1b (Option A, sole-path): generic file tools are structurally
+    blinded to the governance boundary. The path is resolved per-task FIRST
+    (so a relative path lands where the tool would write it), then matched by
+    ``is_governed_path`` (which realpath-canonicalizes). ``PermissionError`` is
+    already classified expected by ``_is_expected_write_exception`` below, so
+    the caller's ``except`` turns it into a clean tool-error for the model.
+    """
+    from grove.utils.fs_utils import GOVERNED_PATH_MESSAGE, is_governed_path
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except Exception:
+        resolved = filepath
+    if is_governed_path(resolved):
+        raise PermissionError(GOVERNED_PATH_MESSAGE)
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -801,6 +821,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             "Re-read the file or reconstruct the intended file contents before writing."
         )
     try:
+        # GRV-010 C1b — governed-path wall (before any resolution/write).
+        _reject_governed_path(path, task_id)
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness
         # check below still runs.
@@ -864,6 +886,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if sensitive_err:
             return tool_error(sensitive_err)
     try:
+        # GRV-010 C1b — governed-path wall on every target (replace path + each
+        # V4A Update/Add/Delete path) before any resolution/write.
+        for _p in _paths_to_check:
+            _reject_governed_path(_p, task_id)
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
         # multi-file V4A patches.

@@ -73,6 +73,34 @@ INVOKE_SKILL_SCHEMA = {
 }
 
 
+def _skill_record_state(skill_name: str):
+    """Return the ``LifecycleState`` of the capability record whose frontmatter
+    name matches *skill_name*, or ``None`` if no kind=skill record matches.
+
+    GRV-010 C1b (B14) — mirrors the projection in ``grove.skill_index`` (which
+    keeps non-executable records out of the offered index). ``None`` means
+    "no record" (legacy/no-record skill), which the caller treats as "do not
+    block" — the guard only refuses a record that EXISTS and is non-executable.
+    """
+    try:
+        from grove.capability import CapabilityKind
+        from grove.capability_registry import load_capabilities
+        from grove.skill_index import parse_skill_frontmatter
+        records = load_capabilities()
+    except Exception:
+        return None
+    for rec in records.values():
+        if getattr(rec, "kind", None) is not CapabilityKind.SKILL:
+            continue
+        try:
+            fm, _ = parse_skill_frontmatter(rec.context.payload)
+        except Exception:
+            continue
+        if str(fm.get("name") or "").strip() == skill_name:
+            return rec.lifecycle.state
+    return None
+
+
 def invoke_skill(
     name: str,
     args: Optional[Dict[str, Any]] = None,
@@ -120,6 +148,29 @@ def invoke_skill(
             },
             ensure_ascii=False,
         )
+
+    # GRV-010 C1b (B14) — the green/active path executes silently, so a record
+    # whose lifecycle state is outside EXECUTABLE_STATES (a deprecated/rejected
+    # skill whose active directory lingers on disk) must NOT run here. The
+    # .andon/yellow path is the Dispatcher-gated try-before-promote and is
+    # exempt — Stage 04 already fired on it via the quarantine zone rule.
+    if zone == "green":
+        from grove.capability import EXECUTABLE_STATES
+        _rec_state = _skill_record_state(skill_name)
+        if _rec_state is not None and _rec_state not in EXECUTABLE_STATES:
+            _state_label = getattr(_rec_state, "value", str(_rec_state))
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Skill '{skill_name}' has a non-executable lifecycle "
+                        f"state ({_state_label}); refusing to run. Only "
+                        f"active / managed / refined skills execute "
+                        f"(EXECUTABLE_STATES @ grove/capability.py)."
+                    ),
+                },
+                ensure_ascii=False,
+            )
 
     target = base / (file_path.strip() if isinstance(file_path, str) and file_path.strip() else "SKILL.md")
     # Confine reads to the skill directory — a file_path must not escape it.

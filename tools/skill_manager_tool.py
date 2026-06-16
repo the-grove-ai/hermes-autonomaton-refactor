@@ -554,6 +554,44 @@ def _create_skill(
     }
 
 
+def _require_andon_target(existing: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """GRV-010 C1b Phase 2 — skill_manage is bound to the ``.andon`` quarantine.
+
+    Returns a refusal dict when the resolved skill directory is a GOVERNED grove
+    skill — i.e. it resolves inside ``~/.grove/skills/`` and OUTSIDE the
+    allowlisted ``.andon/`` quarantine — else ``None``. Delegates to the shared
+    ``is_governed_path`` (realpath-canonicalized; ``.andon`` allowlisted), so:
+
+      * a live grove skill (``~/.grove/skills/<name>``) → refused (B10 closure);
+      * a quarantined skill (``~/.grove/skills/.andon/<name>``) → allowed (the
+        agent authors here);
+      * an EXTERNAL skill (a user vault outside ``~/.grove``) → allowed — it is
+        not the governance tree, and editing it in place is deliberate
+        (#4759/#4381); C1b does not touch that.
+
+    The live grove tree is immutable from the agent's side: author to ``.andon``
+    (action='create') and promote via the operator-approved mechanism. (The
+    promotion-to-live path is C2 — until it lands this is fail-closed: authoring
+    works, promotion is stranded. Accepted interlock.)
+    """
+    from grove.utils.fs_utils import is_governed_path
+    try:
+        target = existing["path"]
+    except (KeyError, TypeError):
+        target = None
+    if target is None or is_governed_path(target):
+        return {
+            "success": False,
+            "error": (
+                "skill_manage cannot write the live ~/.grove/skills tree; this "
+                "targets a governed (active) skill. Author the skill to "
+                "~/.grove/skills/.andon/ (action='create') and promote it via the "
+                "operator-approved mechanism. (GRV-010 C1b Option A.)"
+            ),
+        }
+    return None
+
+
 def _managed_edit_refusal(name: str) -> Optional[Dict[str, Any]]:
     """GRV-009 E6b C2 — refuse to edit a MANAGED (installed) skill cleanly.
 
@@ -631,6 +669,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
+    andon_refusal = _require_andon_target(existing)
+    if andon_refusal is not None:
+        return andon_refusal
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -676,6 +718,10 @@ def _patch_skill(
     managed_refusal = _managed_edit_refusal(name)
     if managed_refusal is not None:
         return managed_refusal
+
+    andon_refusal = _require_andon_target(existing)
+    if andon_refusal is not None:
+        return andon_refusal
 
     skill_dir = existing["path"]
 
@@ -770,6 +816,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
+    andon_refusal = _require_andon_target(existing)
+    if andon_refusal is not None:
+        return andon_refusal
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -860,6 +910,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
+    andon_refusal = _require_andon_target(existing)
+    if andon_refusal is not None:
+        return andon_refusal
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -893,6 +947,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
+
+    andon_refusal = _require_andon_target(existing)
+    if andon_refusal is not None:
+        return andon_refusal
 
     skill_dir = existing["path"]
 

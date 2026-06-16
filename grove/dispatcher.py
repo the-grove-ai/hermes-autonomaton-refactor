@@ -3586,6 +3586,25 @@ class Dispatcher:
                 return _grove_dispatch.classify_command(
                     command, tool_id=tool_name,
                 )
+        # GRV-010 C1b — the governance-write door is classified by TARGET FILE:
+        # .env → RED (operator-only, §V); recognized YAML governance configs and
+        # routing profiles → YELLOW (store-and-resume). This is the realization
+        # of GovernanceChangeIntent — a target-classified ToolIntent traversing
+        # the existing Stage-04 path (no base-loop refactor).
+        if tool_name == "propose_governance_change" and isinstance(args, dict):
+            from grove.zones import ZoneResult
+            from tools.governance_tool import classify_governance_target
+            if classify_governance_target(args.get("target_file")) == "red":
+                return ZoneResult(
+                    zone="red",
+                    matched_rule="governance_write:.env",
+                    source="governance_change",
+                )
+            return ZoneResult(
+                zone="yellow",
+                matched_rule="governance_write",
+                source="governance_change",
+            )
         # Sprint 62 — procedural skill "try it" gate. Loading a quarantined
         # (.andon) skill via skill_view is the operator's try-before-promote
         # moment, so classify it yellow → the existing Andon halt + S1/S4
