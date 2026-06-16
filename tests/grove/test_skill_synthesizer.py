@@ -418,6 +418,7 @@ class TestDispatcherInvokeSkillHooks:
 
 class TestQuietAppend:
     def test_appends_offer_once_per_session(self):
+        from datetime import datetime, timedelta
         from run_agent import AIAgent
         from grove.kaizen.synthesizer import stage_proposal
 
@@ -425,18 +426,20 @@ class TestQuietAppend:
             {"tool_sequence": ("a", "b"), "evidence_turns": ["t#1"]},
             _VALID_SKILL_MD,
         )
-        fake_self = SimpleNamespace()
-        first = AIAgent._append_pending_skill_proposal(fake_self, "Done.")
-        # B3 repoint: the offer points at the review/approve loop (no dead
-        # invoke_skill "want to try it?" path).
+        # kaizen-offerings: session_start must precede the staged proposal's
+        # created_at for it to be current-session push-eligible.
+        fake_self = SimpleNamespace(session_start=datetime.now() - timedelta(hours=1))
+        first = AIAgent._append_pending_offer(fake_self, "Done.")
+        # The push offer points at the review/approve loop, in-register.
         assert "stage it for your review" in first
         assert "flywheel approve" in first
         assert first.startswith("Done.")
-        # Same proposal is not re-offered within the session.
-        second = AIAgent._append_pending_skill_proposal(fake_self, "Done.")
+        # Same proposal is not re-offered within the session (ephemeral guard).
+        second = AIAgent._append_pending_offer(fake_self, "Done.")
         assert second == "Done."
 
     def test_no_pending_leaves_response_untouched(self):
+        from datetime import datetime
         from run_agent import AIAgent
-        fake_self = SimpleNamespace()
-        assert AIAgent._append_pending_skill_proposal(fake_self, "Hi.") == "Hi."
+        fake_self = SimpleNamespace(session_start=datetime.now())
+        assert AIAgent._append_pending_offer(fake_self, "Hi.") == "Hi."
