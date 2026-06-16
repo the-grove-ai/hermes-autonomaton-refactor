@@ -153,9 +153,26 @@ def apply(
             message=f"openai_runtime already set to {current}",
         )
 
-    # If switching ON, verify codex CLI is installed before persisting —
-    # an opt-in toggle that silently fails on the first turn is the
-    # worst possible UX. Block here with a clear install hint.
+    # GRV-010 C1c-ii — the codex_app_server runtime is DISABLED (Option c).
+    # Read-exfiltration is unconfinable at codex's read-blind approval callback
+    # (ANDON-EXFIL), so the runtime cannot be made conformant. Refuse to enable
+    # it here — this covers BOTH the CLI and gateway /codex-runtime toggles
+    # (both call apply()); config cannot persist the runtime. Governed one-shot
+    # ``codex exec`` (B5) is unaffected.
+    if new_value == "codex_app_server":
+        return CodexRuntimeStatus(
+            success=False,
+            new_value=None,
+            old_value=current,
+            message=(
+                "codex_app_server runtime disabled — GRV-010 C1c-ii: "
+                "read-exfiltration unconfinable at the callback; use governed "
+                "`codex exec` or the future isolated-runtime sprint."
+            ),
+        )
+
+    # (Dead for codex_app_server — refused above. Retained for any future
+    # write-capable runtime value.) Verify codex CLI is installed before persist.
     if new_value == "codex_app_server":
         ok, ver_or_msg = _check_binary_cached()
         if not ok:

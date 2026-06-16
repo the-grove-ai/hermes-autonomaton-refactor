@@ -96,41 +96,43 @@ class TestApply:
         assert r.success
         assert r.message == "openai_runtime already set to auto"
 
-    def test_enable_blocked_when_codex_missing(self):
+    def test_enable_refused_runtime_disabled(self):
+        """GRV-010 C1c-ii (Option c): enabling codex_app_server is refused —
+        read-exfiltration is unconfinable at codex's read-blind approval
+        callback (ANDON-EXFIL). The refusal does not depend on whether the
+        codex binary is present; config never mutates."""
         cfg = {}
-        with patch.object(crs, "check_codex_binary_ok",
-                          return_value=(False, "codex not found")):
+        # Binary check must NOT be reached — refusal precedes the gate.
+        with patch.object(crs, "check_codex_binary_ok") as bin_check:
             r = crs.apply(cfg, "codex_app_server")
         assert r.success is False
-        assert "Cannot enable" in r.message
-        assert "npm i -g @openai/codex" in r.message
-        # Config NOT mutated on failure
+        assert r.new_value is None
+        assert "disabled" in r.message
+        assert "C1c-ii" in r.message
+        assert bin_check.call_count == 0
+        # Config NOT mutated on refusal
         assert cfg.get("model", {}).get("openai_runtime") in (None, "")
 
-    def test_enable_succeeds_when_codex_present(self):
+    def test_enable_refused_does_not_persist(self):
+        """The refusal must short-circuit before any persist or migration —
+        a config that requested codex_app_server stays unwritten."""
         cfg = {}
         persisted = {}
 
         def persist(c):
             persisted.update(c)
 
-        # Patch migrate so this test doesn't reach into the user's real
-        # ~/.codex/config.toml. See issue #26250 Bug C — without this patch,
-        # crs.apply() invokes the real migrate() which writes to
-        # Path.home() / ".codex" using whatever GROVE_HOME the running pytest
-        # session has set, leaking pytest tempdir paths into the user's
-        # codex config.
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")), \
-             patch("hermes_cli.codex_runtime_plugin_migration.migrate"):
+             patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
             r = crs.apply(cfg, "codex_app_server", persist_callback=persist)
-        assert r.success
-        assert r.new_value == "codex_app_server"
-        assert r.old_value == "auto"
-        assert r.requires_new_session is True
-        assert "via MCP" in r.message  # hermes-tools callback message
-        assert cfg["model"]["openai_runtime"] == "codex_app_server"
-        assert persisted["model"]["openai_runtime"] == "codex_app_server"
+        assert r.success is False
+        assert r.new_value is None
+        assert "disabled" in r.message
+        # Neither persist nor migration ran.
+        assert persisted == {}
+        assert not mig.called
+        assert cfg.get("model", {}).get("openai_runtime") in (None, "")
 
     def test_disable_does_not_check_binary(self):
         cfg = {"model": {"openai_runtime": "codex_app_server"}}
@@ -142,7 +144,9 @@ class TestApply:
         assert r.new_value == "auto"
         assert r.old_value == "codex_app_server"
 
-    def test_persist_callback_failure_reported(self):
+    def test_enable_refusal_precedes_persist_failure(self):
+        """Even a persist_callback that would raise is never reached — the
+        runtime is refused before any persist attempt."""
         cfg = {}
 
         def persist_boom(c):
@@ -152,12 +156,13 @@ class TestApply:
                           return_value=(True, "0.130.0")):
             r = crs.apply(cfg, "codex_app_server", persist_callback=persist_boom)
         assert r.success is False
-        assert "persist failed" in r.message
-        assert "disk full" in r.message
+        assert "disabled" in r.message
+        # The persist boom never fired, so its message is absent.
+        assert "disk full" not in r.message
 
-    def test_enable_triggers_mcp_migration(self):
-        """Enabling codex_app_server should auto-migrate Hermes mcp_servers
-        to ~/.codex/config.toml so the spawned subprocess sees them."""
+    def test_enable_refused_does_not_trigger_mcp_migration(self):
+        """GRV-010 C1c-ii: the disabled runtime must never reach MCP
+        migration — refusal short-circuits before ~/.codex/ is touched."""
         cfg = {
             "mcp_servers": {
                 "filesystem": {"command": "npx", "args": ["-y", "fs-server"]},
@@ -167,22 +172,10 @@ class TestApply:
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")), \
              patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
-            mig.return_value.migrated = ["filesystem", "hermes-tools"]
-            mig.return_value.migrated_plugins = []
-            mig.return_value.plugin_query_error = None
-            mig.return_value.wrote_permissions_default = ":workspace"
-            mig.return_value.errors = []
-            mig.return_value.target_path = "/fake/.codex/config.toml"
             r = crs.apply(cfg, "codex_app_server")
-        assert r.success
-        assert mig.called  # migration was triggered
-        # User MCP servers are reported (excluding internal hermes-tools)
-        assert "Migrated 1 MCP server" in r.message
-        assert "filesystem" in r.message
-        # Permissions default surfaces
-        assert "Default sandbox: :workspace" in r.message
-        # Hermes tool callback announcement
-        assert "via MCP" in r.message
+        assert r.success is False
+        assert "disabled" in r.message
+        assert not mig.called  # refusal precedes migration
 
     def test_disable_does_not_trigger_migration(self):
         """Switching back to auto must not write to ~/.codex/."""
@@ -195,37 +188,38 @@ class TestApply:
         assert r.success
         assert not mig.called  # disabling does not migrate
 
-    def test_migration_failure_does_not_block_enable(self):
-        """If MCP migration raises, the runtime change still proceeds —
-        users can manually re-run migration later."""
+    def test_enable_refused_never_reaches_migration(self):
+        """GRV-010 C1c-ii: a migration that would raise is irrelevant — the
+        disabled runtime is refused before migration is ever invoked, so the
+        side-effecting branch is unreachable."""
         cfg = {"mcp_servers": {"x": {"command": "y"}}}
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")), \
              patch("hermes_cli.codex_runtime_plugin_migration.migrate",
-                   side_effect=RuntimeError("disk full")):
+                   side_effect=RuntimeError("disk full")) as mig:
             r = crs.apply(cfg, "codex_app_server")
-        assert r.success  # change still applied
-        assert r.new_value == "codex_app_server"
-        assert "MCP migration skipped" in r.message
-        assert "disk full" in r.message
+        assert r.success is False
+        assert "disabled" in r.message
+        assert not mig.called
+        # The migration's RuntimeError never surfaced.
+        assert "disk full" not in r.message
 
-    def test_binary_check_cached_within_apply(self):
-        """check_codex_binary_ok is invoked at most once per apply() call.
-
-        The enable path has three sites that need the version (state report,
-        enable gate, success message). Without caching, a single
-        /codex-runtime invocation spawns `codex --version` three times.
-        Regression guard against a refactor that drops the cache.
+    def test_enable_refusal_skips_binary_check(self):
+        """GRV-010 C1c-ii: the disabled runtime is refused before the codex
+        binary gate, so ``codex --version`` is never spawned on the enable
+        path. (Previously the enable path cached one binary check; the refusal
+        elides it entirely.)
         """
         cfg = {}
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")) as bin_check, \
              patch("hermes_cli.codex_runtime_plugin_migration.migrate"):
             r = crs.apply(cfg, "codex_app_server")
-        assert r.success
-        assert bin_check.call_count == 1, (
+        assert r.success is False
+        assert "disabled" in r.message
+        assert bin_check.call_count == 0, (
             f"check_codex_binary_ok was called {bin_check.call_count} time(s); "
-            "should be cached and called exactly once per apply()"
+            "the disabled-runtime refusal must precede the binary gate"
         )
 
     def test_binary_check_cached_on_read_only_call(self):

@@ -1434,12 +1434,25 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # against an ad-hoc registry was a silent fallback for the
         # missing-Dispatcher case; it has been removed.
 
+        # GRV-010 C1c-ii — the codex_app_server runtime is disabled (Option c;
+        # ANDON-EXFIL: read-exfiltration unconfinable at codex's read-blind
+        # approval callback). An unattended cron job cannot start it — fall back
+        # to the provider default api_mode and log loudly. (The run_conversation
+        # entry refuses too; this makes the cron enable path refuse explicitly.)
+        # Governed one-shot `codex exec` (B5) is unaffected.
+        _cron_api_mode = runtime.get("api_mode")
+        if _cron_api_mode == "codex_app_server":
+            logger.warning(
+                "[GRV-010 C1c-ii] cron job requests the disabled codex_app_server "
+                "runtime; ignoring (using provider default api_mode)."
+            )
+            _cron_api_mode = None
         agent = Dispatcher(session_db=_session_db, agent_kwargs=dict(
             model=model,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
-            api_mode=runtime.get("api_mode"),
+            api_mode=_cron_api_mode,
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,

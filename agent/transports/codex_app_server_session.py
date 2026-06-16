@@ -1,5 +1,19 @@
 """Session adapter for codex app-server runtime.
 
+DORMANT — GRV-010 C1c-ii (Option c): the codex_app_server runtime is DISABLED.
+Discovery fired ANDON-EXFIL: codex's approval callback is read-blind (no
+read-approval event), and the subprocess cannot be filesystem-isolated from
+~/.grove/.env within the callback's scope, so the runtime cannot be made
+conformant at the callback. Nothing constructs this adapter — the three enable
+paths refuse (hermes_cli.codex_runtime_switch.apply,
+runtime_provider._maybe_apply_codex_app_server_runtime, cron) and the in-turn
+backstop in run_agent.AIAgent.run_conversation refuses even a config that
+already set api_mode=codex_app_server. The code is retained, not deleted, for a
+future `codex-runtime-isolated` sprint that isolates the subprocess at the OS
+level (dedicated restricted UID / container with ~/.grove unmounted). Governed
+one-shot ``codex exec`` (B5) is unaffected — it runs through the terminal tool
+under classify_shell_effect (external:codex → RED, operator-approved).
+
 Owns one Codex thread per Hermes session. Drives `turn/start`, consumes
 streaming notifications via CodexEventProjector, handles server-initiated
 approval requests (apply_patch, exec command), translates cancellation,

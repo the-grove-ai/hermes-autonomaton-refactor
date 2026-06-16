@@ -13759,19 +13759,43 @@ class AIAgent:
                     # Component 5 conflict-resolution momentum tiebreak.
                     self._dock_goal_history = (_dock_hist + [_tgc.goal_id])[-3:]
 
-        # Optional opt-in runtime: if api_mode == codex_app_server, hand the
-        # turn to the codex app-server subprocess (terminal/file ops/patching
-        # all run inside Codex). Default Hermes path is bypassed entirely.
-        # See agent/transports/codex_app_server_session.py for the adapter
-        # and references/codex-app-server-runtime.md for the rationale.
+        # GRV-010 C1c-ii — the codex_app_server RUNTIME is DISABLED (Option c).
+        # Discovery fired ANDON-EXFIL: codex's approval_callback is read-blind
+        # (codex has no read-approval event — it reads files internally with no
+        # callback), and the subprocess cannot be filesystem-isolated from
+        # ~/.grove/.env within the callback's scope (Hermes passes codex no
+        # sandbox/read-confinement and codex runs as the same OS user), so the
+        # runtime cannot be made conformant at the callback. The enable paths
+        # refuse structurally (hermes_cli.codex_runtime_switch.apply,
+        # runtime_provider._maybe_apply_codex_app_server_runtime, cron). This is
+        # the in-turn backstop: even a config that already set
+        # api_mode=codex_app_server cannot start the runtime — config cannot
+        # re-enable it.
+        #
+        # The adapter is left DORMANT (not deleted) for a future
+        # `codex-runtime-isolated` sprint that isolates the subprocess at the OS
+        # level (dedicated restricted UID / container with ~/.grove unmounted).
+        # See agent/transports/codex_app_server_session.py.
+        #
+        # Governed one-shot ``codex exec`` (B5) is UNAFFECTED — it runs via the
+        # terminal tool under classify_shell_effect (external-agent spawn → RED,
+        # operator-approved). Only this in-process runtime is disabled.
         if self.api_mode == "codex_app_server":
-            return self._run_codex_app_server_turn(
-                user_message=user_message,
-                original_user_message=original_user_message,
-                messages=messages,
-                effective_task_id=effective_task_id,
-                should_review_memory=_should_review_memory,
+            _c1cii_msg = (
+                "codex_app_server runtime disabled — GRV-010 C1c-ii: "
+                "read-exfiltration unconfinable at the callback; use governed "
+                "`codex exec` or the future isolated-runtime sprint."
             )
+            logger.warning("[GRV-010 C1c-ii] %s", _c1cii_msg)
+            return {
+                "final_response": _c1cii_msg,
+                "messages": messages,
+                "api_calls": 0,
+                "completed": True,
+                "partial": False,
+                "failed": True,
+                "error": "codex_app_server runtime disabled (GRV-010 C1c-ii)",
+            }
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
@@ -17542,7 +17566,14 @@ class AIAgent:
         app-server` subprocess and projects its events back into Hermes'
         messages list so memory/skill review keep working.
 
-        Called from run_conversation() when self.api_mode == "codex_app_server".
+        DORMANT — GRV-010 C1c-ii (Option c): this method has NO live caller.
+        run_conversation() refuses api_mode=codex_app_server before reaching the
+        dispatch loop (ANDON-EXFIL: read-exfiltration unconfinable at codex's
+        read-blind approval callback), so the runtime never starts. Retained,
+        not deleted, for a future `codex-runtime-isolated` sprint. See the
+        disable block in run_conversation() and
+        agent/transports/codex_app_server_session.py.
+
         Returns the same dict shape as the chat_completions path.
         """
         from agent.transports.codex_app_server_session import CodexAppServerSession
