@@ -440,6 +440,25 @@ class ToolRegistry:
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
         """
+        # GRV-010 C1c-i — dispatch-primitive lock (dumb cryptographic gate). When
+        # a governed turn is in flight, an effecting dispatch MUST carry a valid
+        # single-use Stage-04 token for its exact realpath-canonical effect
+        # signature — minted by classify-and-mint at the call site (executor on
+        # disposition; sandbox RPC / plugin via Dispatcher.classify_and_mint; T0
+        # / internal housekeeping via a verified internal mint). A call that
+        # reaches here with no consumable token never originated from classify;
+        # refuse fail-closed (closes the in-process classifier-skip paths). No
+        # classification or prompt happens here — Stage-04 mint precedes Stage-05
+        # consume; the primitive only verifies.
+        _gate = getattr(self, "_approval_gate", None)
+        if _gate is not None and _gate.active:
+            from grove.effect_signature import canonical_effect_signature
+            if not _gate.consume(canonical_effect_signature(name, args)):
+                from grove.errors import GovernanceError
+                raise GovernanceError(
+                    f"unapproved tool dispatch '{name}': no valid Stage-04 "
+                    f"approval token (in-process classifier-skip refused, C1c-i)."
+                )
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})

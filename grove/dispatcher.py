@@ -278,6 +278,14 @@ from grove.operator_input import OperatorInputRequired
 _RED_ZONE_STRIKE_LIMIT = 3
 
 
+class _T0SignatureMismatch(Exception):
+    """GRV-010 C1c-i — raised inside ``_execute_t0_invocation`` when a cached
+    executable pattern's live realpath-canonical effect signature no longer
+    matches its promotion-time signature (symlink swap / stale args / pre-C1c
+    pattern). Caught at the T0 serve site, which aborts the cache hit and falls
+    through to the normal classified path. Never escapes the Dispatcher."""
+
+
 # ── Andon halt exception (Sprint 26 Phase 4) ──────────────────────────────
 
 
@@ -432,6 +440,17 @@ class Dispatcher:
         from tools.registry import ToolRegistry, register_builtin_tools
         self.registry: ToolRegistry = ToolRegistry()
         register_builtin_tools(self.registry)
+        # GRV-010 C1c-i — install the dispatch-primitive approval gate on the
+        # Dispatcher-owned registry. The gate is armed only during a governed
+        # dispatch_turn; tokens are minted by classify-and-mint at the call
+        # sites and consumed once at registry.dispatch (the dumb crypto lock).
+        from grove.effect_signature import ApprovalGate
+        self._approval_gate = ApprovalGate()
+        self.registry._approval_gate = self._approval_gate
+        # Back-ref so the parent-side sandbox RPC handler and the plugin manager
+        # can reach classify_and_mint (C1c-i). Held on the Dispatcher-owned
+        # registry; unreachable from the subprocess sandbox by construction.
+        self.registry._dispatcher = self
         # Discover user / project / pip plugins.  Idempotent — multiple
         # Dispatchers in one process replay registrations against each
         # owned registry. Plugin discovery failures (manifest errors,
@@ -1493,11 +1512,27 @@ class Dispatcher:
                                 _batch, _batch_effective_task_id, yielded.api_call_count,
                             )
                             _execute_fn = agent._tool_executor.execute_batch_sequential
+                        # GRV-010 C1c-i — arm the dispatch-primitive gate and mint
+                        # one single-use token per approved intent in the batch.
+                        # The executor's registry.dispatch calls consume these;
+                        # any UNMINTED dispatch reaching the primitive during this
+                        # window (an in-process classifier-skip) is refused. The
+                        # window also covers nested dispatches (sandbox RPC /
+                        # plugin), which mint via classify_and_mint.
+                        from grove.effect_signature import (
+                            canonical_effect_signature as _c1c_sig,
+                        )
+                        self._approval_gate.activate()
+                        for _it in _batch:
+                            self._approval_gate.mint(
+                                _c1c_sig(_it.tool_name, _it.arguments or {})
+                            )
                         agent._executing_tools = True
                         try:
                             _exec_results = _execute_fn(_ctx_for_batch)
                         finally:
                             agent._executing_tools = False
+                            self._approval_gate.flush()
                         # Orchestration: append tool messages, drain
                         # per-tool /steer, enforce per-turn budget.
                         # Lives on the agent because it touches Agent-
@@ -2373,7 +2408,18 @@ class Dispatcher:
         if pattern.cacheable_type == "static":
             response_text = pattern.cached_response or ""
         else:
-            response_text = self._execute_t0_invocation(agent, pattern)
+            try:
+                response_text = self._execute_t0_invocation(agent, pattern)
+            except _T0SignatureMismatch as _mismatch:
+                # C1c-i — the cached effect no longer matches its promotion
+                # signature. Do NOT serve T0; fall through to the normal
+                # classified path so the action re-traverses Stage 04.
+                logger.warning(
+                    "[grove.dispatcher] T0 bind-and-verify mismatch for "
+                    "pattern %s — falling through to classified path.",
+                    _mismatch,
+                )
+                return None
 
         elapsed_ms = 0.0
         if self._current_turn_start is not None:
@@ -2419,6 +2465,67 @@ class Dispatcher:
 
         return self._t0_result_dict(agent, response_text)
 
+    def classify_and_mint(
+        self, tool_name: str, arguments: Any, *, yellow_covered: bool = False,
+    ) -> Tuple[bool, Optional[str]]:
+        """Per-site classify-or-verify for a NON-executor dispatch (sandbox RPC,
+        plugin) — GRV-010 C1c-i.
+
+        Classifies ``(tool_name, arguments)`` through the normal Stage-04 path
+        (the same ``_classify_one_intent`` + Andon disposition the executor
+        flow uses). On an allowed disposition it mints a single-use token so the
+        subsequent ``registry.dispatch`` consume succeeds; on deny it mints
+        nothing (the primitive then refuses the dispatch fail-closed).
+
+        ``yellow_covered`` (sandbox path): the enclosing ``execute_code`` already
+        carries an operator Yellow grant for this turn, so routine in-sandbox
+        Yellow effects are auto-minted (no re-prompt per in-sandbox call); RED /
+        governed effects still halt with a disposition. Plugins pass it False
+        (every effect classifies independently).
+
+        Returns ``(allowed, message)``. Runs on the caller's thread (the RPC
+        listener thread for the sandbox; the plugin thread for plugins) WITHIN
+        the executor's armed window — the gate is already active.
+        """
+        from grove.effect_signature import canonical_effect_signature
+        from grove.intents import ToolIntent
+        from grove import dispatch as _grove_dispatch
+
+        intent = ToolIntent(
+            tool_name=tool_name, arguments=dict(arguments or {}), call_id="c1c_rpc",
+        )
+        zr = self._classify_one_intent(intent, _grove_dispatch)
+        if zr.zone == "green" or (zr.zone == "yellow" and yellow_covered):
+            self._approval_gate.mint(canonical_effect_signature(tool_name, arguments))
+            return True, None
+        # Yellow (not covered) / Red — run the existing Andon disposition
+        # machinery (operator prompt, red-strike, caches, ledger). Approval
+        # mints; deny does not.
+        halt = AndonHalt(intents=[intent], zone_results=[zr], triggering_index=0)
+        try:
+            ledger = self._get_or_create_ledger(agent=getattr(self, "agent", None))
+        except Exception:
+            ledger = None
+        disposition = self._handle_andon_halt(
+            getattr(self, "agent", None), halt, ledger=ledger,
+        )
+        if disposition in ("once", "session", "always"):
+            self._approval_gate.mint(canonical_effect_signature(tool_name, arguments))
+            return True, None
+        return False, (
+            f"Stage-04 denied '{tool_name}' (disposition={disposition})."
+        )
+
+    def _mint_verified_internal(self, tool_name: str, arguments: Any) -> None:
+        """Mint a token for a dispatch the Dispatcher has ALREADY verified /
+        authorized itself — the T0 bind-and-verify hit and the internal kanban
+        housekeeping call. NOT an unauthenticated bypass: the caller has done the
+        Stage-04-equivalent check before minting, and the primitive still
+        verifies the realpath-canonical signature on consume.
+        """
+        from grove.effect_signature import canonical_effect_signature
+        self._approval_gate.mint(canonical_effect_signature(tool_name, arguments))
+
     def _execute_t0_invocation(self, agent: Any, pattern: Any) -> str:
         """Fire an EXECUTABLE pattern's compiled tool invocation, model-free.
 
@@ -2451,9 +2558,26 @@ class Dispatcher:
             raise ValueError(
                 f"T0 executable pattern {pattern.pattern_id} names no tool: {inv!r}"
             )
-        result = agent._invoke_tool(
-            tool_name, tool_args, self._current_turn_id or "",
-        )
+        # GRV-010 C1c-i — bind-and-verify. The promotion-time realpath-canonical
+        # effect signature is stored in the compiled invocation. Re-derive it NOW
+        # from {tool, args} (realpath RE-RESOLVES, so a symlink swapped under the
+        # target since promotion yields a different signature). A mismatch (swap,
+        # stale args, or a pre-C1c pattern with no stored signature) raises and
+        # aborts the T0 serve → the action re-traverses Stage 04. On a match we
+        # mint a verified-internal token so the dispatch-primitive lock passes.
+        from grove.effect_signature import canonical_effect_signature as _c1c_sig
+        stored_sig = inv.get("approved_signature")
+        live_sig = _c1c_sig(tool_name, tool_args)
+        if not stored_sig or stored_sig != live_sig:
+            raise _T0SignatureMismatch(getattr(pattern, "pattern_id", "?"))
+        self._approval_gate.activate()
+        self._approval_gate.mint(live_sig)
+        try:
+            result = agent._invoke_tool(
+                tool_name, tool_args, self._current_turn_id or "",
+            )
+        finally:
+            self._approval_gate.flush()
         return result if isinstance(result, str) else str(result)
 
     def _persist_t0_turn(self, user_message: str, response_text: str) -> None:

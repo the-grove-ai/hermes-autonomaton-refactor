@@ -502,6 +502,21 @@ class PluginContext:
             if agent is not None:
                 kwargs["parent_agent"] = agent
 
+        # GRV-010 C1c-i — a plugin's call_tool reaches the dispatch primitive
+        # directly. During a governed turn, classify-and-mint first so the
+        # primitive lock passes for a Stage-04-approved effect; a denied or
+        # unminted effect is refused fail-closed at registry.dispatch. (Latent:
+        # no plugins are enabled in the default deployment.)
+        _disp = getattr(registry, "_dispatcher", None)
+        _gate = getattr(_disp, "_approval_gate", None) if _disp is not None else None
+        # ``is True`` — only a genuinely-armed real ApprovalGate qualifies; a
+        # MagicMock registry's auto-attributes (test doubles) never do.
+        if getattr(_gate, "active", False) is True:
+            _ok, _why = _disp.classify_and_mint(tool_name, args)
+            if not _ok:
+                import json as _json
+                return _json.dumps({"error": _why or "denied by Stage 04 (C1c-i)"})
+
         return registry.dispatch(tool_name, args, **kwargs)
 
     # -- context engine registration -----------------------------------------

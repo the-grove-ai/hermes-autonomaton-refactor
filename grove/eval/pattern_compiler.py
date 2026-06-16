@@ -242,6 +242,20 @@ def compile_candidate(
         if len(tools) != 1 or None in tools:
             return None   # tool varies / unparseable → not a clean executable
         compiled_invocation = invocations[-1]
+        # GRV-010 C1c-i — store the promotion-time realpath-canonical effect
+        # signature alongside the invocation. The T0 hit site re-derives it
+        # (realpath re-resolves) and binds-and-verifies; a symlink swapped under
+        # the target since promotion, or stale args, fail the check and fall to
+        # the classified path. Unsignable → leave unsigned (hit-site fail-safe).
+        try:
+            from grove.effect_signature import canonical_effect_signature
+            _inv_obj = json.loads(compiled_invocation)
+            _inv_obj["approved_signature"] = canonical_effect_signature(
+                _inv_obj.get("tool"), _inv_obj.get("args") or {},
+            )
+            compiled_invocation = json.dumps(_inv_obj, sort_keys=True)
+        except Exception:
+            pass
 
     promotion_evidence = json.dumps({
         "repetition_count": candidate.repetition_count,

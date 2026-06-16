@@ -30,6 +30,20 @@ class ProviderDetectionError(GroveError):
     """
 
 
+class GovernanceError(GroveError):
+    """Raised by the dispatch-primitive lock (``ToolRegistry.dispatch``) when a
+    tool dispatch arrives WITHOUT a valid single-use Stage-04 approval token.
+
+    GRV-010 C1c-i — the primitive is a dumb cryptographic lock: every effecting
+    dispatch during a governed turn must be preceded by a classify-and-mint at
+    its call site (executor on disposition; sandbox RPC / plugin via
+    ``Dispatcher.classify_and_mint``; T0 / internal housekeeping via a verified
+    internal mint). A call that reaches the primitive with no consumable token
+    never originated from classify and is refused fail-closed — closing the
+    in-process classifier-skip paths (B6 T0 / B-NEW sandbox / B7 plugin).
+    """
+
+
 class SchemaConfigurationError(GroveError):
     """A schema file the runtime depends on contains a structural fault.
 

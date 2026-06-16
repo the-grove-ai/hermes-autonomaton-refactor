@@ -518,6 +518,21 @@ def _rpc_server_loop(
                     for param in _TERMINAL_BLOCKED_PARAMS:
                         tool_args.pop(param, None)
 
+                # GRV-010 C1c-i — classify-and-mint the in-sandbox tool call
+                # PARENT-SIDE before dispatch. The enclosing execute_code Yellow
+                # grant covers routine in-sandbox Yellow; RED/governed halts with
+                # a disposition. On deny, refuse the RPC (fail-closed) — the
+                # subprocess never reaches the substrate.
+                _c1c_disp = getattr(registry, "_dispatcher", None)
+                if _c1c_disp is not None:
+                    _c1c_ok, _c1c_why = _c1c_disp.classify_and_mint(
+                        tool_name, tool_args, yellow_covered=True,
+                    )
+                    if not _c1c_ok:
+                        resp = json.dumps({"error": _c1c_why or "denied by Stage 04 (C1c-i)"})
+                        conn.sendall((resp + "\n").encode())
+                        continue
+
                 # Dispatch through the standard tool handler.
                 # Suppress stdout/stderr from internal tool handlers so
                 # their status prints don't leak into the CLI spinner.
@@ -794,23 +809,36 @@ def _rpc_poll_loop(
                         for param in _TERMINAL_BLOCKED_PARAMS:
                             tool_args.pop(param, None)
 
-                    # Dispatch through the standard tool handler
-                    try:
-                        _real_stdout, _real_stderr = sys.stdout, sys.stderr
-                        devnull = open(os.devnull, "w", encoding="utf-8")
+                    # GRV-010 C1c-i — classify-and-mint parent-side (remote
+                    # sandbox backend) before dispatch. Yellow covered by the
+                    # enclosing execute_code grant; RED/governed halts; deny →
+                    # refuse fail-closed.
+                    _c1c_disp = getattr(registry, "_dispatcher", None)
+                    _c1c_ok, _c1c_why = (True, None)
+                    if _c1c_disp is not None:
+                        _c1c_ok, _c1c_why = _c1c_disp.classify_and_mint(
+                            tool_name, tool_args, yellow_covered=True,
+                        )
+                    if not _c1c_ok:
+                        tool_result = tool_error(_c1c_why or "denied by Stage 04 (C1c-i)")
+                    else:
+                        # Dispatch through the standard tool handler
                         try:
-                            sys.stdout = devnull
-                            sys.stderr = devnull
-                            tool_result = handle_function_call(
-                                registry, tool_name, tool_args, task_id=task_id
-                            )
-                        finally:
-                            sys.stdout, sys.stderr = _real_stdout, _real_stderr
-                            devnull.close()
-                    except Exception as exc:
-                        logger.error("Tool call failed in remote sandbox: %s",
-                                     exc, exc_info=True)
-                        tool_result = tool_error(str(exc))
+                            _real_stdout, _real_stderr = sys.stdout, sys.stderr
+                            devnull = open(os.devnull, "w", encoding="utf-8")
+                            try:
+                                sys.stdout = devnull
+                                sys.stderr = devnull
+                                tool_result = handle_function_call(
+                                    registry, tool_name, tool_args, task_id=task_id
+                                )
+                            finally:
+                                sys.stdout, sys.stderr = _real_stdout, _real_stderr
+                                devnull.close()
+                        except Exception as exc:
+                            logger.error("Tool call failed in remote sandbox: %s",
+                                         exc, exc_info=True)
+                            tool_result = tool_error(str(exc))
 
                     tool_call_counter[0] += 1
                     call_duration = time.monotonic() - call_start
