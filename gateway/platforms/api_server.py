@@ -53,6 +53,7 @@ from gateway.platforms.base import (
 from grove.dispatcher import Dispatcher
 from grove.sovereign_prompt_handlers import non_interactive_deny_handler
 from grove.operator_input import OperatorInputRequired
+from grove.governance_halt import TerminalGovernanceHalt
 
 logger = logging.getLogger(__name__)
 
@@ -2950,6 +2951,24 @@ class APIServerAdapter(BasePlatformAdapter):
                     "partial": False,
                     "failed": False,
                 }
+                if isinstance(_eff_sid, str) and _eff_sid:
+                    result["session_id"] = _eff_sid
+                usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+                return result, usage
+            except TerminalGovernanceHalt as tgh:
+                # GRV-010 C2a (B15 fail-loud) — a STRUCTURAL governed denial
+                # terminated the turn. Terminal, NOT resumable: unlike
+                # OperatorInputRequired above, persist NO pending request — the
+                # operator's next message starts a fresh turn, never a blind
+                # resume. Surface the Kaizen disposition as this turn's response.
+                from grove.governance_halt import terminal_halt_result
+                if stream_delta_callback is not None:
+                    try:
+                        stream_delta_callback(tgh.surface_text())
+                    except Exception:
+                        pass
+                result = terminal_halt_result(tgh)
+                _eff_sid = getattr(agent, "session_id", session_id)
                 if isinstance(_eff_sid, str) and _eff_sid:
                     result["session_id"] = _eff_sid
                 usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}

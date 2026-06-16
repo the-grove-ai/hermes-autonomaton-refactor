@@ -53,6 +53,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from grove.dispatcher import Dispatcher
+from grove.governance_halt import TerminalGovernanceHalt
 from grove.sovereign_prompt_handlers import (
     describe_action_kaizen,
     non_interactive_deny_handler,
@@ -10915,6 +10916,12 @@ class GatewayRunner:
                         user_message=enriched_prompt,
                         task_id=task_id,
                     )
+                except TerminalGovernanceHalt as _tgh:
+                    # GRV-010 C2a — structural governed denial in a background/
+                    # non-interactive run. Terminate-and-surface as a clean
+                    # result dict (no resume) so the caller renders it normally.
+                    from grove.governance_halt import terminal_halt_result
+                    return terminal_halt_result(_tgh)
                 finally:
                     self._cleanup_agent_resources(agent)
 
@@ -16001,6 +16008,14 @@ class GatewayRunner:
                     _run_message = message
 
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+            except TerminalGovernanceHalt as _tgh:
+                # GRV-010 C2a (B15 fail-loud) — a STRUCTURAL governed denial
+                # terminated the autonomous turn. End-and-surface: convert to a
+                # normal result dict so the downstream rendering path delivers
+                # the Kaizen disposition as this turn's response. Terminal, NOT
+                # resumable — the operator's next message starts a fresh turn.
+                from grove.governance_halt import terminal_halt_result
+                result = terminal_halt_result(_tgh)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent

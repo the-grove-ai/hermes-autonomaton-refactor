@@ -1093,7 +1093,17 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         )).agent
         logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)",
                     len(prompt), len(history))
-        result = agent.run_conversation(prompt, conversation_history=history or None)
+        from grove.governance_halt import (
+            TerminalGovernanceHalt as _TGH,
+            terminal_halt_result as _terminal_halt_result,
+        )
+        try:
+            result = agent.run_conversation(prompt, conversation_history=history or None)
+        except _TGH as _tgh:
+            # GRV-010 C2a — structural governed denial in the Feishu comment
+            # agent (non-interactive: Andon halts fail closed). End-and-surface
+            # a clean terminal result (no resume).
+            result = _terminal_halt_result(_tgh)
         response = (result.get("final_response") or "").strip()
         api_calls = result.get("api_calls", 0)
         logger.info("[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d response=%s",

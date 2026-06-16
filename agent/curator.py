@@ -1822,10 +1822,20 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # terminal. The background-thread runner also hides it; this
         # belt-and-suspenders path matters when a caller invokes
         # run_curator_review(synchronous=True) from the CLI.
+        from grove.governance_halt import (
+            TerminalGovernanceHalt as _TerminalGovernanceHalt,
+            terminal_halt_result as _terminal_halt_result,
+        )
         with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
              contextlib.redirect_stderr(_devnull):
-            conv_result = review_agent.run_conversation(user_message=prompt)
+            try:
+                conv_result = review_agent.run_conversation(user_message=prompt)
+            except _TerminalGovernanceHalt as _tgh:
+                # GRV-010 C2a — the curator review fork hit a STRUCTURAL governed
+                # denial. End-and-surface a clean terminal result so the report
+                # extraction below reads valid keys; the review pass stops here.
+                conv_result = _terminal_halt_result(_tgh)
 
         final = ""
         if isinstance(conv_result, dict):

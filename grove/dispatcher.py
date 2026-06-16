@@ -265,6 +265,7 @@ from grove.sovereign_prompt_handlers import (
     tty_sovereign_prompt as _default_sovereign_prompt,
 )
 from grove.operator_input import OperatorInputRequired
+from grove.governance_halt import TerminalGovernanceHalt
 
 
 # ── Sprint 32 Phase 3a — red-zone strike threshold ────────────────────
@@ -1305,6 +1306,17 @@ class Dispatcher:
             # the deferral is not mislabeled as a failure in the ledger.
             self._write_intent_record(agent, outcome="awaiting_operator")
             raise
+        except TerminalGovernanceHalt:
+            # GRV-010 C2a — a STRUCTURAL governed denial terminated the turn
+            # (RED-sovereign / deny_hard / quarantined-.andon / GovernanceError).
+            # Record a distinct, non-"error" outcome — the halt is the governance
+            # layer working as designed, not a fault — then re-raise so the
+            # surface's terminal catch ends the turn and surfaces the Kaizen
+            # disposition. This guard sits ABOVE the BaseException catch so the
+            # terminal halt is not mislabeled "error" in the ledger (mirrors the
+            # OperatorInputRequired guard above).
+            self._write_intent_record(agent, outcome="governance_terminated")
+            raise
         except BaseException:
             # Sprint 28 Phase 3 — error terminal. Any exception escaping
             # the drive loop (generator raise, internal error, KeyboardInterrupt)
@@ -1456,9 +1468,56 @@ class Dispatcher:
                         # by the Dispatcher's strike counter, never
                         # returned by a handler.)
                         if disposition in ("deny", "deny_hard"):
+                            # GRV-010 C2a (B15 fail-loud) — distinguish a
+                            # STRUCTURAL denial (terminate the autonomous turn)
+                            # from an ordinary Yellow operator decline ("not
+                            # now", which stays collaborative). Structural set:
+                            #   * deny_hard          — red-zone strike limit.
+                            #   * deny + zone==red   — a RED sovereign-approval
+                            #                          action the operator
+                            #                          declined.
+                            #   * deny + .andon rule — a quarantined skill
+                            #                          invocation declined
+                            #                          (any zone).
+                            # A structural denial raises TerminalGovernanceHalt
+                            # (terminal, NOT resumable) so the outer surface loop
+                            # ends the turn and surfaces the Kaizen disposition,
+                            # instead of feeding the model the "Continue with an
+                            # alternative approach" observation it would
+                            # improvise around. Ordinary Yellow declines keep the
+                            # unchanged soft-observation path below.
+                            _matched = getattr(halt, "matched_rule", "") or ""
+                            _is_quarantine = ".andon" in _matched
+                            if (
+                                disposition == "deny_hard"
+                                or halt.zone == "red"
+                                or _is_quarantine
+                            ):
+                                from grove.governance_halt import (
+                                    GovernanceHaltContext,
+                                    TerminalGovernanceHalt,
+                                )
+                                if disposition == "deny_hard":
+                                    _trigger = "deny_hard"
+                                elif _is_quarantine:
+                                    _trigger = "quarantine"
+                                else:
+                                    _trigger = "red_sovereign"
+                                _trig_intent = halt.intents[halt.triggering_index]
+                                raise TerminalGovernanceHalt(
+                                    GovernanceHaltContext(
+                                        trigger=_trigger,
+                                        tool_name=getattr(
+                                            _trig_intent, "tool_name", None,
+                                        ),
+                                        zone=halt.zone,
+                                        matched_rule=_matched or None,
+                                        reason=getattr(halt, "reason", None),
+                                    )
+                                )
+                            # Ordinary Yellow decline — unchanged soft path.
                             observations = self._build_skip_observations(
-                                agent, halt.intents,
-                                hard=(disposition == "deny_hard"),
+                                agent, halt.intents, hard=False,
                             )
                             yielded = gen.send(observations)
                             continue

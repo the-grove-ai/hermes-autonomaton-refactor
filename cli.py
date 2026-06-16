@@ -705,6 +705,7 @@ import fire
 # Import the agent and tool systems
 from run_agent import AIAgent
 from grove.dispatcher import Dispatcher
+from grove.governance_halt import TerminalGovernanceHalt, terminal_halt_result
 from model_tools import get_tool_definitions, get_toolset_for_tool
 
 # Extracted CLI modules (Phase 3)
@@ -8786,10 +8787,15 @@ class HermesCLI:
 
                 bg_agent.thinking_callback = _bg_thinking
 
-                result = bg_agent.run_conversation(
-                    user_message=prompt,
-                    task_id=task_id,
-                )
+                try:
+                    result = bg_agent.run_conversation(
+                        user_message=prompt,
+                        task_id=task_id,
+                    )
+                except TerminalGovernanceHalt as _tgh:
+                    # GRV-010 C2a — structural governed denial in the CLI
+                    # background agent. End-and-surface a clean terminal result.
+                    result = terminal_halt_result(_tgh)
 
                 response = result.get("final_response", "") if result else ""
                 if not response and result and result.get("error"):
@@ -11825,6 +11831,14 @@ class HermesCLI:
                         # T-telemetry fires exactly once per turn.
                         already_routed=True,
                     )
+                except TerminalGovernanceHalt as _tgh:
+                    # GRV-010 C2a (B15 fail-loud) — a STRUCTURAL governed denial
+                    # terminated the turn. TerminalGovernanceHalt is a
+                    # BaseException, so it would slip past the `except Exception`
+                    # below and crash the REPL; catch it here and end-and-surface
+                    # the Kaizen disposition as a clean result. Terminal, NOT
+                    # resumable — the operator's next prompt is a fresh turn.
+                    result = terminal_halt_result(_tgh)
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
                     _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
@@ -15030,14 +15044,19 @@ def main(
                     # status lines).  The response is printed once below.
                     cli.agent.stream_delta_callback = None
                     cli.agent.tool_gen_callback = None
-                    result = cli.agent.run_conversation(
-                        user_message=effective_query,
-                        conversation_history=cli.conversation_history,
-                        # cli._resolve_turn_agent_config already routed
-                        # this turn just above; skip self-route in
-                        # run_conversation so T-telemetry fires once.
-                        already_routed=True,
-                    )
+                    try:
+                        result = cli.agent.run_conversation(
+                            user_message=effective_query,
+                            conversation_history=cli.conversation_history,
+                            # cli._resolve_turn_agent_config already routed
+                            # this turn just above; skip self-route in
+                            # run_conversation so T-telemetry fires once.
+                            already_routed=True,
+                        )
+                    except TerminalGovernanceHalt as _tgh:
+                        # GRV-010 C2a — structural governed denial in oneshot/
+                        # quiet mode. End-and-surface a clean terminal result.
+                        result = terminal_halt_result(_tgh)
                     # Sync session_id if mid-run compression created a
                     # continuation session. The exit line below reports
                     # session_id to stderr for automation wrappers; without
