@@ -34,7 +34,14 @@ class TestApiModeRegistration:
 
 
 class TestMaybeApplyCodexAppServerRuntime:
-    """The opt-in helper that rewrites api_mode → codex_app_server."""
+    """GRV-010 C1c-ii (Option c): the codex_app_server runtime is DISABLED.
+
+    The helper that used to rewrite api_mode → codex_app_server now never
+    rewrites: read-exfiltration is unconfinable at codex's read-blind approval
+    callback (ANDON-EXFIL), so config cannot re-enable the runtime. A config
+    that still carries ``openai_runtime: codex_app_server`` falls through to the
+    original api_mode unchanged.
+    """
 
     @pytest.mark.parametrize(
         "model_cfg",
@@ -54,29 +61,32 @@ class TestMaybeApplyCodexAppServerRuntime:
         )
         assert got == "chat_completions"
 
-    def test_opt_in_rewrites_openai(self) -> None:
+    def test_opt_in_no_longer_rewrites_openai(self) -> None:
+        """Disabled: even with the flag set, api_mode is NOT rewritten."""
         got = _maybe_apply_codex_app_server_runtime(
             provider="openai",
             api_mode="chat_completions",
             model_cfg={"openai_runtime": "codex_app_server"},
         )
-        assert got == "codex_app_server"
+        assert got == "chat_completions"
 
-    def test_opt_in_rewrites_openai_codex(self) -> None:
+    def test_opt_in_no_longer_rewrites_openai_codex(self) -> None:
+        """Disabled: openai-codex provider also falls through unchanged."""
         got = _maybe_apply_codex_app_server_runtime(
             provider="openai-codex",
             api_mode="codex_responses",
             model_cfg={"openai_runtime": "codex_app_server"},
         )
-        assert got == "codex_app_server"
+        assert got == "codex_responses"
 
-    def test_case_insensitive(self) -> None:
+    def test_case_insensitive_still_disabled(self) -> None:
+        """Disabled regardless of casing on the persisted runtime value."""
         got = _maybe_apply_codex_app_server_runtime(
             provider="openai",
             api_mode="chat_completions",
             model_cfg={"openai_runtime": "Codex_App_Server"},
         )
-        assert got == "codex_app_server"
+        assert got == "chat_completions"
 
     @pytest.mark.parametrize(
         "provider",

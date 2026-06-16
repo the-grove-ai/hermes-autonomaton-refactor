@@ -213,7 +213,19 @@ def _maybe_apply_codex_app_server_runtime(
         return api_mode
     runtime = str(model_cfg.get("openai_runtime") or "").strip().lower()
     if runtime == "codex_app_server":
-        return "codex_app_server"
+        # GRV-010 C1c-ii — the codex_app_server runtime is DISABLED (Option c):
+        # read-exfiltration is unconfinable at codex's read-blind approval
+        # callback (ANDON-EXFIL). A config that still carries
+        # ``openai_runtime: codex_app_server`` (persisted before the disable, or
+        # hand-edited) does NOT resolve to the runtime — config cannot re-enable
+        # it. Fall back to the normal api_mode and log loudly. Governed one-shot
+        # ``codex exec`` (B5) is unaffected.
+        logger.warning(
+            "[GRV-010 C1c-ii] config requests the disabled codex_app_server "
+            "runtime; ignoring and using api_mode=%r. Use governed `codex exec` "
+            "or the future isolated-runtime sprint.", api_mode,
+        )
+        return api_mode
     return api_mode
 
 
