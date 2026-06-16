@@ -122,9 +122,12 @@ class TestPatchSkillSizeLimit:
         assert result["success"] is False
         assert "100,000" in result["error"]
 
-    def test_patch_that_reduces_size_on_oversized_skill(self, isolate_skills, tmp_path):
-        """Patches that shrink an already-oversized skill should succeed."""
-        # Manually create an oversized skill (simulating hand-placed)
+    def test_patch_of_hand_placed_live_skill_is_refused(self, isolate_skills, tmp_path):
+        """GRV-010 C1b-i — a hand-placed skill in the LIVE ~/.grove/skills tree is
+        governed; skill_manage(patch) refuses it (B10 closure), regardless of the
+        size mechanics. (GROVE_HOME is the tmp root here, so tmp/skills is the
+        governed live tree.) Authoring happens in .andon; the live tree is
+        immutable from the agent's side until the C2 promotion path lands."""
         skill_dir = tmp_path / "skills" / "bloated"
         skill_dir.mkdir(parents=True)
         oversized = _make_skill_content(MAX_SKILL_CONTENT_CHARS + 5000)
@@ -132,8 +135,6 @@ class TestPatchSkillSizeLimit:
         (skill_dir / "SKILL.md").write_text(oversized, encoding="utf-8")
         assert len(oversized) > MAX_SKILL_CONTENT_CHARS
 
-        # Patch that removes content to bring it under the limit.
-        # Use replace_all to replace the repeated x's with a shorter string.
         result = json.loads(skill_manage(
             action="patch",
             name="bloated",
@@ -141,8 +142,8 @@ class TestPatchSkillSizeLimit:
             new_string="y",
             replace_all=True,
         ))
-        # Should succeed because the result is well within limits
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "live ~/.grove/skills tree" in result["error"]
 
     def test_patch_supporting_file_size_limit(self, isolate_skills):
         """Patch on a supporting file also checks size."""
