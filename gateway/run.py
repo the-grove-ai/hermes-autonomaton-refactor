@@ -54,9 +54,8 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from grove.dispatcher import Dispatcher
 from grove.sovereign_prompt_handlers import (
-    batch_auto_allow_handler,
     describe_action_kaizen,
-    gateway_auto_allow_handler,
+    non_interactive_deny_handler,
 )
 from hermes_cli.config import cfg_get
 
@@ -1038,8 +1037,10 @@ def _build_kaizen_prompt_handler(
     proposal exactly as the TTY path does.
 
     Any failure (no triggering intent, send scheduling unavailable, send
-    error) degrades to ``gateway_auto_allow_handler`` (silent auto-once) so a
-    halt never hard-blocks the turn on a transport problem.
+    error) degrades to ``non_interactive_deny_handler`` (fail-closed deny,
+    C0) — a halt that cannot be delivered to the operator denies rather
+    than silently executing. (The unanswered-prompt timeout path below
+    likewise returns ``"deny"``.)
 
     ``timeout`` overrides the config-derived wait window (tests inject a small
     value; production passes None → ``gateway.kaizen_timeout_seconds``)."""
@@ -1053,7 +1054,7 @@ def _build_kaizen_prompt_handler(
                 triggering.tool_name, triggering.arguments or {},
             )
         except Exception:
-            return gateway_auto_allow_handler(halt)
+            return non_interactive_deny_handler(halt)
 
         kid, entry = adapter.register_kaizen_pending(session_key)
         send_fut = safe_schedule_threadsafe(
@@ -1066,7 +1067,7 @@ def _build_kaizen_prompt_handler(
         )
         if send_fut is None:
             adapter.cancel_kaizen_pending(kid)
-            return gateway_auto_allow_handler(halt)
+            return non_interactive_deny_handler(halt)
         # Confirm the keyboard actually went out (mirrors the dangerous-command
         # bridge's _approval_fut.result(timeout=15)); fall back fast if it
         # didn't, rather than blocking the full Kaizen timeout on a dead send.
@@ -1074,10 +1075,10 @@ def _build_kaizen_prompt_handler(
             send_res = send_fut.result(timeout=20)
             if send_res is not None and not getattr(send_res, "success", True):
                 adapter.cancel_kaizen_pending(kid)
-                return gateway_auto_allow_handler(halt)
+                return non_interactive_deny_handler(halt)
         except Exception:
             adapter.cancel_kaizen_pending(kid)
-            return gateway_auto_allow_handler(halt)
+            return non_interactive_deny_handler(halt)
 
         if entry["event"].wait(timeout=timeout):
             return entry.get("disposition") or "deny"
@@ -10903,9 +10904,11 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     fallback_model=self._fallback_model,
-                    # Sprint 27 Phase 3 — background task: no live operator
-                    # surface. Andon halts auto-skip with Kaizen Ledger record.
-                    sovereign_prompt_handler=batch_auto_allow_handler,
+                    # Sprint 27 Phase 3 / C0 — background task: no live
+                    # operator surface. Andon halts FAIL CLOSED (deny) with a
+                    # WARNING + Kaizen Ledger record. Background/batch runs
+                    # Green-zone only; Yellow/Red deny rather than auto-execute.
+                    sovereign_prompt_handler=non_interactive_deny_handler,
                 )).agent
                 try:
                     return agent.run_conversation(
@@ -15535,10 +15538,12 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
                     fallback_model=self._fallback_model,
-                    # Sprint 27 Phase 3 — live gateway turn (Telegram/Discord/etc).
-                    # Andon halts auto-skip; future work routes Sovereign Prompts
-                    # back through the platform adapter (Sprint 28).
-                    sovereign_prompt_handler=gateway_auto_allow_handler,
+                    # Sprint 27 Phase 3 / C0 — construction-time default for a
+                    # live gateway turn. Fail-closed (deny). Keyboard-capable
+                    # adapters (Telegram) rebind to the interactive Kaizen
+                    # handler per-turn below (:_build_kaizen_prompt_handler);
+                    # adapters with no interactive channel keep this deny.
+                    sovereign_prompt_handler=non_interactive_deny_handler,
                 )).agent
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -15561,7 +15566,7 @@ class GatewayRunner:
             # render inline keyboards (Telegram). The agent is cached but the
             # sovereign-prompt handler needs THIS turn's adapter / chat / loop,
             # so it is rebound here per-turn (like the callbacks above). Adapters
-            # without send_kaizen_prompt keep the silent auto-once handler.
+            # without send_kaizen_prompt fail closed (deny) per C0.
             _disp_singleton = getattr(agent, "_dispatcher_singleton", None)
             if _disp_singleton is not None:
                 if (
@@ -15585,9 +15590,10 @@ class GatewayRunner:
                         session_key=session_key or "",
                     )
                 else:
-                    _disp_singleton._sovereign_prompt_handler = gateway_auto_allow_handler
-                    # No inline keyboards on this adapter → keep the Dispatcher's
-                    # own non-TTY auto-log path for post-execution promotion.
+                    # C0 — no inline keyboards on this adapter → no interactive
+                    # Stage-04 channel. Fail closed: Yellow/Red deny (WARNING +
+                    # ledger), never silent auto-once.
+                    _disp_singleton._sovereign_prompt_handler = non_interactive_deny_handler
                     _disp_singleton._post_execution_prompt_handler = None
 
             _bg_review_release = threading.Event()

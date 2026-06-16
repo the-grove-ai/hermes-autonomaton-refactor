@@ -51,7 +51,7 @@ from gateway.platforms.base import (
     is_network_accessible,
 )
 from grove.dispatcher import Dispatcher
-from grove.sovereign_prompt_handlers import gateway_auto_allow_handler
+from grove.sovereign_prompt_handlers import non_interactive_deny_handler
 from grove.operator_input import OperatorInputRequired
 
 logger = logging.getLogger(__name__)
@@ -967,10 +967,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # too so forked sub-agents inherit it (dispatcher.py:1936).
         #
         # Sprint 67: chat/completions passes a web store-and-resume governance
-        # handler (text-based governance) instead of the silent auto-allow.
-        # Other surfaces (/v1/runs, /v1/responses) pass None and keep the
-        # auto-allow default — their governance is out of scope here.
-        _sph = sovereign_prompt_handler or gateway_auto_allow_handler
+        # handler (text-based governance) — see _make_web_governance_handler.
+        # C0 (conformance-disarm-seal-v1): surfaces that pass None
+        # (/v1/runs, /v1/responses) now FAIL CLOSED to deny instead of the
+        # former silent auto-allow. They run Green-zone only; a Yellow/Red
+        # halt denies (WARNING + ledger) until they grow their own governance
+        # channel. chat/completions is unaffected — it passes its handler.
+        _sph = sovereign_prompt_handler or non_interactive_deny_handler
         # INV-7: wire the intent store so API/webui turns are recorded
         # (mirrors cli.py / run_agent.py / the messaging Dispatchers).
         from grove.intent_store import get_store as _get_intent_store
@@ -2988,6 +2991,17 @@ class APIServerAdapter(BasePlatformAdapter):
         def _handler(halt):
             intent = halt.intents[halt.triggering_index]
             args = dict(getattr(intent, "arguments", None) or {})
+            # C0 (conformance-disarm-seal-v1) — Red is sovereign: a Red-zone
+            # action is never grantable over a non-interactive web surface,
+            # regardless of the Yellow store-and-resume path. The operator must
+            # act on it directly (zone model). Deny outright; never prime or
+            # consume a grant for Red. (Yellow falls through to store-and-resume.)
+            if getattr(halt, "zone", None) == "red":
+                logger.warning(
+                    "[api_server] red-zone action denied on web surface "
+                    "(sovereign; no web grant path): tool=%s", intent.tool_name,
+                )
+                return "deny"
             db = self._ensure_session_db()
             if db is not None:
                 grant_raw = db.get_meta(governance_grant_key(session_id))

@@ -980,6 +980,41 @@ class TestPhase6KaizenLedgerWiring:
         assert "final_response" in types
         assert ledger.events_by_type("andon_disposition")[0]["disposition"] == "deny"
 
+    def test_approved_disposition_records_provenance_ledger_entry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # C0 (conformance-disarm-seal-v1) — provenance acceptance. An
+        # operator-APPROVED disposition ("once" — exactly what the web
+        # store-and-resume handler returns on the replay turn once the
+        # operator's grant is consumed) MUST be recorded as a durable,
+        # timestamped andon_disposition ledger entry. No execution proceeds
+        # past Stage 04 without a logged, operator-approved verdict.
+        from grove import zones as _zones
+        from grove.zones import ZoneResult
+        monkeypatch.setattr(
+            _zones, "classify",
+            lambda action: ZoneResult(zone="yellow", matched_rule="y", source="test"),
+        )
+        msgs: List[Dict] = []
+        agent = self._bare_agent(msgs)
+        _phase2_executor_stub(agent)  # yellow→once falls through to execute
+        intents = [ToolIntent(tool_name="memory", arguments={}, call_id="c1")]
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(intents, {"final_response": "done"})
+        )
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "once")
+        d.dispatch_turn(agent, user_message="hi")
+
+        ledger = d.ledger_for(agent)
+        disp = ledger.events_by_type("andon_disposition")
+        assert len(disp) == 1
+        entry = disp[0]
+        assert entry["disposition"] == "once"         # the operator's grant
+        assert entry["triggering_tool"] == "memory"   # under which action
+        assert entry["timestamp"]                      # when (UTC, durable)
+        # The approved action then executed (Green-path fall-through).
+        assert agent._exec_called is True
+
     def test_ledger_persists_across_turns_in_same_session(
         self, monkeypatch: pytest.MonkeyPatch
     ):

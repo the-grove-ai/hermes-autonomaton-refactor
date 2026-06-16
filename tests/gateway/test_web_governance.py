@@ -254,6 +254,72 @@ class TestResolvePendingGovernance:
         assert out["effective_user_message"] == "hello"
 
 
+class TestC0NonInteractiveSeal:
+    """C0 (conformance-disarm-seal-v1) — the web store-and-resume surface
+    is the one non-interactive path that CAN allow (Yellow, via operator
+    text approval). Two C0 invariants apply to it:
+
+      * Red is sovereign — never grantable over a non-interactive surface
+        (step 5: Red on a non-keyboard/non-interactive surface → deny).
+      * The pending state is PERSISTED and time-bounded, never an
+        indefinitely-open connection (store-and-resume).
+    """
+
+    def _red_halt(self, tool="terminal", args=None):
+        return AndonHalt(
+            intents=[ToolIntent(
+                tool_name=tool,
+                arguments=args or {"command": "sudo rm -rf /"},
+                call_id="c1",
+            )],
+            zone_results=[ZoneResult(
+                zone="red", matched_rule="sovereign", source="rules",
+            )],
+            triggering_index=0,
+        )
+
+    def test_red_zone_denied_outright_no_pending_no_grant(self):
+        # Step 5 — a Red action denies immediately: no OperatorInputRequired
+        # (no butler prompt, no pending state), no grant ever primed. The
+        # operator must act on a sovereign action directly.
+        fake = _FakeDB()
+        adapter = _adapter(fake)
+        handler = adapter._make_web_governance_handler("s1", "rm the tree")
+        assert handler(self._red_halt()) == "deny"
+        assert not fake.get_meta(governance_grant_key("s1"))
+        assert not fake.get_meta(state_key("s1"))
+
+    def test_red_denied_even_with_a_primed_grant(self):
+        # Belt-and-suspenders: even if a grant somehow exists for the tool,
+        # a Red verdict is denied before the grant is consulted.
+        fake = _FakeDB()
+        adapter = _adapter(fake)
+        fake.set_meta(governance_grant_key("s1"), json.dumps({
+            "disposition": "always", "tool_name": "terminal",
+        }))
+        handler = adapter._make_web_governance_handler("s1", "rm the tree")
+        assert handler(self._red_halt(tool="terminal")) == "deny"
+        # Grant NOT consumed — Red never reaches the grant path.
+        assert fake.get_meta(governance_grant_key("s1"))
+
+    def test_pending_state_is_persistable_and_time_bounded(self):
+        # Non-blocking acceptance — the first Yellow encounter yields a
+        # PERSISTED, JSON-serializable, timeout-bounded pending request
+        # (which _run_agent stores to state_meta and returns as a 200
+        # awaiting_operator response, releasing the HTTP connection), never
+        # an indefinitely-open connection.
+        adapter = _adapter(_FakeDB())
+        handler = adapter._make_web_governance_handler("s1", "search notion")
+        with pytest.raises(OperatorInputRequired) as ei:
+            handler(_halt())
+        pending = ei.value.pending
+        # Serializable → stored, not held open.
+        round_trip = PendingOperatorRequest.from_json(pending.to_json())
+        assert round_trip.tool_name == pending.tool_name
+        # Time-bounded → never indefinite.
+        assert pending.timeout_at - pending.created_at == TIMEOUT_SECONDS
+
+
 class TestResolvePendingClarify:
     def test_clarify_seeds_answer_and_replays(self):
         fake = _FakeDB()
