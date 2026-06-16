@@ -77,8 +77,11 @@ class TestCliShow:
         out = capsys.readouterr().out
         assert rc == 0
         assert p.proposal_id in out
-        # Sprint 60 — concierge recommendation register.
-        assert "Here's a routing change I'd recommend" in out
+        # kaizen-offerings — the lead is the composer's bare pull form (the
+        # per-type _LEAD dict folded into compose_offering), not the old generic.
+        assert flywheel_cli.compose_offering(p, is_push=False) in out
+        assert "Here's a routing change I'd recommend" not in out
+        assert "your review before anything changes" in out
         assert "Here's what I'd put in place:" in out
         assert "What changes if you approve" in out
         # The substantive payload/diff content is preserved verbatim.

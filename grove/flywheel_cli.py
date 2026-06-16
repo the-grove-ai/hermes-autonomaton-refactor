@@ -60,6 +60,7 @@ __all__ = [
     "cli_approve",
     "cli_reject",
     "run_tier_ratchet_scan",
+    "compose_offering",
 ]
 
 
@@ -225,17 +226,63 @@ def _summary_skill_synthesis(proposal: RoutingProposal) -> str:
     return f"stage drafted skill {name!r} → quarantine for review"
 
 
-def _format_summary(proposal: RoutingProposal) -> str:
-    """One-line operator-facing summary of a proposal.
+# ── offering composer (kaizen-offerings Cut B — one voice chokepoint) ─
+#
+# C1 — deterministic on-register prefixes, hardcoded in Python. NO markdown
+# file, NO sync-operator.sh, curator-voice.md UNTOUCHED (that governs the LLM
+# curator review only). The composer is self-contained: it adds NO per-offering
+# model call and NO per-SURFACE branch — only the sanctioned push/pull split.
+_OFFERING_PUSH_PREFIX = "Shop floor note —"          # the conversational interrupt lead
+_OFFERING_PUSH_ASK = "want me to stage it for your review?"  # the foreman's offer
 
-    B1 — single registry dispatch (no if/elif ladder, no silent payload-
-    preview fallback). The shared framing (id, type, evidence count, created
-    timestamp) lives here; only the per-type body comes from the handler row.
-    Unknown type raises via :func:`_handler_for`.
+# C3 — fixed type-priority for the post-turn push (NOT a learned ranker). Lower
+# = surfaced first. A drafted capability outranks a tier nudge outranks a
+# zone/skill grant outranks a pattern-cache tweak. Unknown types sort last.
+_PUSH_PRIORITY = {
+    PROPOSAL_TYPE_SKILL_SYNTHESIS: 0,
+    PROPOSAL_TYPE_ROUTING_ADJUSTMENT: 1,
+    PROPOSAL_TYPE_ZONE_PROMOTION: 2,
+    PROPOSAL_TYPE_SKILL_PROMOTION: 2,
+    PROPOSAL_TYPE_PATTERN_PROMOTION: 3,
+    PROPOSAL_TYPE_PATTERN_DEMOTION: 3,
+}
+
+
+def compose_offering(proposal: RoutingProposal, *, is_push: bool) -> str:
+    """The ONE in-register renderer for an offering (kaizen-offerings Cut B).
+
+    Deterministic — no model call. The factual core is the per-type ``_summary_*``
+    body (identical for push and pull); only the framing differs:
+
+    * ``is_push=True`` — a conversational interrupt for the post-turn push: the
+      foreman raising one item ("Shop floor note — I noticed I could …").
+    * ``is_push=False`` — the BARE inventory body (no interrupt wrapper), so a
+      pull queue reads as a list, not stacked interruptions. This is exactly the
+      per-type body, so :func:`_format_summary` and ``cli_show`` route their
+      human clause through here without changing the structured line.
+    """
+    core = _handler_for(proposal.type).summary_renderer(proposal)
+    if not is_push:
+        return core
+    short_id = proposal.proposal_id.split(":")[-1][:12]
+    return (
+        f"{_OFFERING_PUSH_PREFIX} I noticed I could {core} — {_OFFERING_PUSH_ASK} "
+        f"Just say the word and I'll approve it (or run `flywheel approve "
+        f"{short_id}`)."
+    )
+
+
+def _format_summary(proposal: RoutingProposal) -> str:
+    """One-line operator-facing summary of a proposal (the structured index).
+
+    B1 — single registry dispatch. kaizen-offerings — the human clause is the
+    composer's bare pull form (``compose_offering(is_push=False)``), so the
+    voiced and structured surfaces share one source; the id/evidence/timestamp
+    framing stays here for the index the agent and CLI need.
     """
     short_id = proposal.proposal_id.split(":")[-1][:12]
     n_evidence = len(proposal.evidence)
-    body = _handler_for(proposal.type).summary_renderer(proposal)
+    body = compose_offering(proposal, is_push=False)
     return (
         f"{short_id}  {proposal.type:<22}  "
         f"{body}  "
@@ -716,17 +763,12 @@ def cli_show(
         )
         return 1
 
-    # Sprint 60 — concierge recommendation register. Lead with a plain
-    # sentence keyed to the proposal type, keep the verbatim payload and
-    # diff (the operator approves the REAL change, never a paraphrase),
-    # and demote the id / hash / evidence to a reference footer.
-    _LEAD = {
-        "skill_promotion": "Here's a skill I'd like to promote",
-        "zone_promotion": "Here's a zone rule I'd like to add",
-        "routing_adjustment": "Here's a routing change I'd recommend",
-        "routing_update": "Here's a routing change I'd recommend",
-    }
-    lead = _LEAD.get(proposal.type, "Here's a change I'd recommend")
+    # Sprint 60 / kaizen-offerings — concierge recommendation register. The
+    # lead is the composer's bare pull form (one voice chokepoint; the per-type
+    # _LEAD dict folded in), keeping the verbatim payload + diff (the operator
+    # approves the REAL change, never a paraphrase) and the id/hash/evidence
+    # reference footer.
+    lead = compose_offering(proposal, is_push=False)
     short_id = proposal.proposal_id.split(":")[-1][:12]
 
     print(f"{lead} — your review before anything changes.")
