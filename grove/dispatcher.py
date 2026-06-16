@@ -3661,6 +3661,7 @@ class Dispatcher:
 
     def _kaizen_cache_key(
         self, tool_name: str, arguments: Any,
+        effect_signature: Optional[str] = None,
     ) -> Tuple[str, str]:
         """Compute the session-cache key for a halted intent.
 
@@ -3668,8 +3669,21 @@ class Dispatcher:
         arguments))``. Canonical JSON: ``json.dumps(args, sort_keys=
         True, default=str)``. Non-JSON-serializable values stringify
         safely so the hash never crashes on an unusual argument type.
+
+        GRV-010 C1a — when *effect_signature* is supplied (shell intents:
+        the AST-derived effect signature from the ZoneResult), the key is
+        the EFFECT, not the raw command string. A re-approved entry then
+        cannot smuggle a different effect (B3): an "always" on one shell
+        effect covers only commands that parse to that same effect; a
+        different effect re-prompts. Comments/whitespace/quoting that do
+        not change the parsed argv collapse to the same key.
         """
         import hashlib
+        if effect_signature:
+            digest = hashlib.sha256(
+                ("effect:" + effect_signature).encode("utf-8")
+            ).hexdigest()
+            return (tool_name, digest)
         try:
             payload = _json_mod.dumps(
                 arguments or {}, sort_keys=True, default=str,
@@ -3722,8 +3736,21 @@ class Dispatcher:
         so the operator can acknowledge the lost turn.
         """
         triggering_intent = halt.intents[halt.triggering_index]
+        # GRV-010 C1a — shell intents key the approval cache on the AST-derived
+        # effect signature (carried on the ZoneResult.pattern_key), not the raw
+        # command string, so a re-approved entry cannot smuggle a different
+        # effect (B3).
+        _effect_sig = None
+        if triggering_intent.tool_name in {"terminal", "execute_code"}:
+            try:
+                _trig_zr = halt.zone_results[halt.triggering_index]
+                if getattr(_trig_zr, "source", None) == "shell_effect":
+                    _effect_sig = getattr(_trig_zr, "pattern_key", None)
+            except (IndexError, AttributeError):
+                _effect_sig = None
         cache_key = self._kaizen_cache_key(
             triggering_intent.tool_name, triggering_intent.arguments,
+            effect_signature=_effect_sig,
         )
 
         # ── Sprint 32 Phase 3a — red-zone strike counter ─────────────

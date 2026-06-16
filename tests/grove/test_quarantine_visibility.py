@@ -27,46 +27,44 @@ REPO_SCHEMA = Path(__file__).resolve().parents[2] / "config" / "zones.schema.yam
 # ── Phase 1b: zone rule ordering ──────────────────────────────────────
 
 
+@pytest.fixture
+def grove_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    return tmp_path
+
+
 def _classify(command: str):
-    cls = ZoneClassifier(REPO_SCHEMA)
-    return cls.classify_command_string(
-        command, "command.execute.python3", tool_id="terminal",
-    )
+    # GRV-010 C1a — terminal commands are classified by the bashlex-AST effect
+    # classifier (grove/shell_effects.py); the regex tool_zones.terminal.rules
+    # were removed. The Phase-1b quarantine guarantees are now AST properties.
+    from grove.shell_effects import classify_shell_effect
+    return classify_shell_effect(command)
 
 
-def test_quarantined_skill_path_is_yellow() -> None:
-    """A terminal command running a script under .andon/ halts (yellow)."""
+def test_quarantined_skill_path_is_yellow(grove_home) -> None:
+    """A terminal command running a script under .andon/ halts (yellow): a
+    quarantined draft is NOT a promoted skill, so it is not auto-approved."""
     result = _classify(
-        "python3 /Users/op/.grove/skills/.andon/my-skill/scripts/run.py"
+        f"python3 {grove_home}/skills/.andon/my-skill/scripts/run.py"
     )
     assert result.zone == "yellow"
-    assert ".andon" in result.matched_rule
 
 
-def test_promoted_skill_path_is_green() -> None:
-    """A promoted skill path (outside .andon/) passes green."""
+def test_promoted_skill_path_is_green(grove_home) -> None:
+    """A promoted skill path (under ~/.grove/skills, outside .andon/) is green."""
     result = _classify(
-        "python3 /Users/op/.grove/skills/productivity/my-skill/scripts/run.py"
+        f"python3 {grove_home}/skills/productivity/my-skill/scripts/run.py"
     )
     assert result.zone == "green"
-    assert ".andon" not in result.matched_rule
 
 
-def test_andon_rule_precedes_promoted_rule() -> None:
-    """First-match-wins: the .andon yellow rule must sit ABOVE the broad
-    .grove/skills/.* green rule, else quarantined skills would pass green."""
-    import yaml
-
-    schema = yaml.safe_load(REPO_SCHEMA.read_text(encoding="utf-8"))
-    rules = schema["tool_zones"]["terminal"]["rules"]
-    patterns = [r["match_pattern"] for r in rules]
-    andon_idx = next(i for i, p in enumerate(patterns) if r".andon" in p)
-    promoted_idx = next(
-        i for i, p in enumerate(patterns)
-        if p == r".*\.grove/skills/.*"
-    )
-    assert andon_idx < promoted_idx
-    assert rules[andon_idx]["zone"] == "yellow"
+def test_andon_rule_precedes_promoted_rule(grove_home) -> None:
+    """Quarantine precedence: a script under skills/.andon/ classifies YELLOW
+    even though it is under the skills tree, so a quarantined draft can never
+    ride the promoted-skill green path (the .andon check precedes the
+    promoted-skill green in grove/shell_effects.py)."""
+    result = _classify(f"python3 {grove_home}/skills/.andon/draft/run.py")
+    assert result.zone == "yellow"
 
 
 # ── Phase 1c: active-section + manifest exclusion ─────────────────────

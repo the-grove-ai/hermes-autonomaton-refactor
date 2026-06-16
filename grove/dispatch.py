@@ -140,10 +140,17 @@ def classify_command(
         for legacy (dot-notation) classifications and populated for
         hierarchical rule matches.
     """
-    action = command_to_action(command, env_type)
-    return get_classifier().classify_command_string(
-        command, action, tool_id=tool_id,
-    )
+    # GRV-010 C1a (conformance-shell-containment-v1) — the regex
+    # ``tool_zones.terminal.rules`` path is replaced by a bashlex-AST EFFECT
+    # classifier. It parses the command and classifies by real command nodes,
+    # verbs, targets, and redirects — structurally defeating the substring
+    # evasions (B1 comment-suffix, B2 leading-.* prefix) and command chaining
+    # that a string matcher cannot. ``env_type`` / ``tool_id`` are retained on
+    # the signature for backward compatibility but no longer drive a per-tool
+    # regex list. ``command_to_action`` / ``classify_command_string`` remain for
+    # the de-scope path and any non-shell caller.
+    from grove.shell_effects import classify_shell_effect
+    return classify_shell_effect(command)
 
 
 # ----- de-scoping (Kaizen's third option) ------------------------------------
