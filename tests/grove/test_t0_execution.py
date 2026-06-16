@@ -140,9 +140,15 @@ def test_t0_static_hit_records_hit_and_intent_class(_grove_home, monkeypatch):
 
 def test_t0_executable_hit_fires_tool(_grove_home, monkeypatch):
     store = PatternCacheStore(_grove_home / "pattern_cache.db")
+    # GRV-010 C1c-i — executable patterns carry a promotion-time realpath-
+    # canonical effect signature; the T0 hit binds-and-verifies it. Seed it as
+    # pattern_compiler would (the bare {tool,args} alone now fails verify).
+    from grove.effect_signature import canonical_effect_signature
+    _inv = {"tool": "clock", "args": {"tz": "UTC"}}
+    _inv["approved_signature"] = canonical_effect_signature("clock", {"tz": "UTC"})
     _seed(store, "what time is it", "scheduling",
           cacheable_type="executable", cached_response=None,
-          compiled_invocation=json.dumps({"tool": "clock", "args": {"tz": "UTC"}}))
+          compiled_invocation=json.dumps(_inv))
     agent = _agent(monkeypatch)
     calls: List[Any] = []
 

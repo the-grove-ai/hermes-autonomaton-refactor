@@ -17071,20 +17071,32 @@ class AIAgent:
             _kanban_task = self._env_or("GROVE_KANBAN_TASK")
             if _kanban_task:
                 try:
-                    handle_function_call(
-                        self._dispatcher_singleton.registry,
-                        "kanban_block",
-                        {
-                            "task_id": _kanban_task,
-                            "reason": (
-                                f"Iteration budget exhausted "
-                                f"({api_call_count}/{self.max_iterations}) — "
-                                "task could not complete within the allowed "
-                                "iterations"
-                            ),
-                        },
-                        task_id=effective_task_id,
-                    )
+                    _kanban_args = {
+                        "task_id": _kanban_task,
+                        "reason": (
+                            f"Iteration budget exhausted "
+                            f"({api_call_count}/{self.max_iterations}) — "
+                            "task could not complete within the allowed "
+                            "iterations"
+                        ),
+                    }
+                    # GRV-010 C1c-i — internal housekeeping the Dispatcher does on
+                    # the agent's behalf (the model can't call kanban_block here).
+                    # Arm + mint a verified-internal token so the dispatch-
+                    # primitive lock passes; NOT an unauthenticated bypass.
+                    _kdisp = self._dispatcher_singleton
+                    _kgate = getattr(_kdisp, "_approval_gate", None)
+                    if _kgate is not None:
+                        _kgate.activate()
+                        _kdisp._mint_verified_internal("kanban_block", _kanban_args)
+                    try:
+                        handle_function_call(
+                            _kdisp.registry, "kanban_block", _kanban_args,
+                            task_id=effective_task_id,
+                        )
+                    finally:
+                        if _kgate is not None:
+                            _kgate.flush()
                     logger.info(
                         "kanban_block called for task %s after iteration "
                         "exhaustion (%d/%d)",
