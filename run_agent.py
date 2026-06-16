@@ -5512,6 +5512,9 @@ class AIAgent:
                             "{tool_name}. Only memory/skill tools are allowed."
                         ),
                     )
+                    from grove.governance_halt import (
+                        TerminalGovernanceHalt as _TerminalGovernanceHalt,
+                    )
                     try:
                         review_agent.run_conversation(
                             user_message=(
@@ -5521,6 +5524,19 @@ class AIAgent:
                                 "at runtime — do not attempt them."
                             ),
                             conversation_history=messages_snapshot,
+                        )
+                    except _TerminalGovernanceHalt as _tgh:
+                        # GRV-010 C2a — the background self-review hit a
+                        # STRUCTURAL governed denial (its auto-deny callback
+                        # declined a RED / quarantined action). The review turn
+                        # ends here. This is a fire-and-forget self-improvement
+                        # pass, so log and fall through to the normal teardown
+                        # below rather than let a BaseException crash the
+                        # background thread.
+                        logger.info(
+                            "[background-review] terminated by governance halt "
+                            "(%s); ending review pass.",
+                            getattr(getattr(_tgh, "context", None), "trigger", "?"),
                         )
                     finally:
                         clear_thread_tool_whitelist()

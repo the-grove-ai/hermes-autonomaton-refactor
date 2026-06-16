@@ -3255,11 +3255,20 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
 
-            result = agent.run_conversation(
-                run_message,
-                conversation_history=list(history),
-                stream_callback=_stream,
+            from grove.governance_halt import (
+                TerminalGovernanceHalt as _TGH,
+                terminal_halt_result as _terminal_halt_result,
             )
+            try:
+                result = agent.run_conversation(
+                    run_message,
+                    conversation_history=list(history),
+                    stream_callback=_stream,
+                )
+            except _TGH as _tgh:
+                # GRV-010 C2a — structural governed denial terminated the turn.
+                # End-and-surface a clean terminal result (no resume).
+                result = _terminal_halt_result(_tgh)
 
             last_reasoning = None
             status_note = None
@@ -3674,12 +3683,21 @@ def _(rid, params: dict) -> dict:
         try:
             from run_agent import AIAgent
 
-            result = Dispatcher(agent_kwargs=dict(
-                **_background_agent_kwargs(session["agent"], task_id)
-            )).agent.run_conversation(
-                user_message=text,
-                task_id=task_id,
+            from grove.governance_halt import (
+                TerminalGovernanceHalt as _TGH,
+                terminal_halt_result as _terminal_halt_result,
             )
+            try:
+                result = Dispatcher(agent_kwargs=dict(
+                    **_background_agent_kwargs(session["agent"], task_id)
+                )).agent.run_conversation(
+                    user_message=text,
+                    task_id=task_id,
+                )
+            except _TGH as _tgh:
+                # GRV-010 C2a — structural governed denial in the TUI background
+                # task. End-and-surface a clean terminal result (no resume).
+                result = _terminal_halt_result(_tgh)
             _emit(
                 "background.complete",
                 parent,

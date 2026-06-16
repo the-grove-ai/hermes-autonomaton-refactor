@@ -268,9 +268,14 @@ class TestPhase7RunConversationDelegation:
     def test_run_conversation_routes_through_dispatcher_classification(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        # Phase 7 verification: the wrapper now goes through the
-        # Dispatcher's classification gate, so a Red-zoned tool halts
-        # the turn (where the pre-Phase-7 wrapper would have executed).
+        # Phase 7 verification: the wrapper goes through the Dispatcher's
+        # classification gate, so a Red-zoned tool halts the turn (where the
+        # pre-Phase-7 wrapper would have executed).
+        # GRV-010 C2a: a RED operator decline is now a STRUCTURAL halt — it
+        # terminates the autonomous turn via TerminalGovernanceHalt rather than
+        # injecting a "continue with an alternative" observation. The terminal
+        # signal propagates uncaught through run_conversation to the surface.
+        from grove.governance_halt import TerminalGovernanceHalt
         _force_red(monkeypatch)
         msgs: List[Dict] = []
         agent = self._bare_agent_with_state(msgs)
@@ -278,18 +283,15 @@ class TestPhase7RunConversationDelegation:
         agent._run_turn_generator = (
             lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
         )
-        # Inject a Drop disposition so the default TTY prompt doesn't block
         agent._dispatcher_singleton = Dispatcher(
             sovereign_prompt_handler=lambda halt: "deny",
         )
         import run_agent
-        result = run_agent.AIAgent.run_conversation(agent, user_message="hi")
-        # Classification fired and halted the turn — the pre-Phase-7
-        # wrapper would have returned the executed result instead.
-        # Under v1.1 deny semantics the dispatcher continues the turn
-        # after injecting the denial Observation, so the result is the
-        # generator's final response (not a drop-shaped result).
-        assert result["final_response"] == "u"
+        with pytest.raises(TerminalGovernanceHalt) as exc_info:
+            run_agent.AIAgent.run_conversation(agent, user_message="hi")
+        assert exc_info.value.context.trigger == "red_sovereign"
+        # Executor was never reached — the turn terminated, no improvisation.
+        assert agent._exec_called is False
 
 
 # ── Dispatcher.dispatch_turn ──────────────────────────────────────────────
@@ -550,8 +552,13 @@ class TestPhase4ZoneClassification:
             captured_halt["halt"] = halt
             return "deny"
 
+        # GRV-010 C2a — a RED batch decline is a STRUCTURAL halt: the prompt
+        # still runs (capturing the halt) but the deny then terminates the turn
+        # via TerminalGovernanceHalt rather than continuing.
+        from grove.governance_halt import TerminalGovernanceHalt
         d = Dispatcher(sovereign_prompt_handler=_capturing_prompt)
-        d.dispatch_turn(agent, user_message="hi")
+        with pytest.raises(TerminalGovernanceHalt):
+            d.dispatch_turn(agent, user_message="hi")
         # The halt the prompt saw carried both zone results so Phase 5
         # UX can show the full batch context.
         halt = captured_halt["halt"]
@@ -647,6 +654,25 @@ def _force_red(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _force_yellow(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force every classify() call to return Yellow.
+
+    GRV-010 C2a — a Yellow operator decline stays collaborative: the soft
+    denial Observation is injected and the turn continues. (A RED decline now
+    terminates the turn via TerminalGovernanceHalt — see test_c2a_fail_loud.py.)
+    The soft-deny-path tests below use Yellow to exercise the collaborative
+    branch that survives C2a.
+    """
+    from grove import zones as _zones
+    from grove.zones import ZoneResult
+    monkeypatch.setattr(
+        _zones, "classify",
+        lambda action: ZoneResult(
+            zone="yellow", matched_rule="forced_yellow", source="test",
+        ),
+    )
+
+
 class TestPhase5SkipDisposition:
     """Skip disposition: Dispatcher injects denial Observations and appends
     paired denial tool messages so the LLM context stays consistent. The
@@ -666,8 +692,9 @@ class TestPhase5SkipDisposition:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         # Capture the Observations that get sent back to the generator;
-        # Skip flow must yield denial Observations with success=False.
-        _force_red(monkeypatch)
+        # a Yellow soft-deny must yield denial Observations with success=False
+        # and continue the turn (GRV-010 C2a: collaborative Yellow path).
+        _force_yellow(monkeypatch)
         # Redirect pending_andon dir to tmp so we don't pollute ~/.grove.
         import hermes_constants
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
@@ -706,9 +733,9 @@ class TestPhase5SkipDisposition:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         # Every assistant tool_call needs a paired tool message in the
-        # context; otherwise the next LLM call errors. Skip must
-        # append denial tool messages with the right tool_call_ids.
-        _force_red(monkeypatch)
+        # context; otherwise the next LLM call errors. A Yellow soft-deny must
+        # append denial tool messages with the right tool_call_ids and continue.
+        _force_yellow(monkeypatch)
         import hermes_constants
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
 
@@ -744,7 +771,10 @@ class TestPhase5PendingAndonMarker:
     def test_marker_written_before_prompt_and_cleared_after(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
-        _force_red(monkeypatch)
+        # GRV-010 C2a — use Yellow so the turn completes normally (a RED decline
+        # now terminates via TerminalGovernanceHalt). The pending_andon marker
+        # is zone-agnostic; this test covers its write/clear lifecycle.
+        _force_yellow(monkeypatch)
         import hermes_constants
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
 
@@ -777,7 +807,7 @@ class TestPhase5PendingAndonMarker:
             )
             payload = json.loads(marker_path.read_text(encoding="utf-8"))
             assert payload["session_id"] == "marker_test_session_123"
-            assert payload["halt"]["zone"] == "red"
+            assert payload["halt"]["zone"] == "yellow"
             assert len(payload["intents"]) == 1
             return "deny"
 
@@ -957,9 +987,11 @@ class TestPhase6KaizenLedgerWiring:
     def test_andon_halt_skip_records_disposition_then_executes(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        # Red + Skip produces: andon_halt, andon_disposition(skip),
-        # final_response (since the generator continues past the skip).
-        _force_red(monkeypatch)
+        # Yellow + soft-deny produces: andon_halt, andon_disposition(deny),
+        # final_response (the generator continues past the collaborative deny).
+        # GRV-010 C2a: a RED deny would instead terminate the turn — this test
+        # covers the surviving Yellow recover-and-continue path.
+        _force_yellow(monkeypatch)
         msgs: List[Dict] = []
         agent = self._bare_agent(msgs)
         intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]

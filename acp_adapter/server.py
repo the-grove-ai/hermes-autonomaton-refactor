@@ -1244,6 +1244,10 @@ class HermesACPAgent(acp.Agent):
             # and the non-interactive auto-approve path must not fire.
             previous_interactive = os.environ.get("GROVE_INTERACTIVE")
             os.environ["GROVE_INTERACTIVE"] = "1"
+            from grove.governance_halt import (
+                TerminalGovernanceHalt as _TGH,
+                terminal_halt_result as _terminal_halt_result,
+            )
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -1252,6 +1256,12 @@ class HermesACPAgent(acp.Agent):
                     persist_user_message=user_text or "[Image attachment]",
                 )
                 return result
+            except _TGH as _tgh:
+                # GRV-010 C2a (B15 fail-loud) — a STRUCTURAL governed denial
+                # terminated the turn. TerminalGovernanceHalt is a BaseException
+                # and would slip past the `except Exception` below; catch it here
+                # and end-and-surface a clean terminal result (no resume).
+                return _terminal_halt_result(_tgh)
             except Exception as e:
                 logger.exception("Agent error in session %s", session_id)
                 return {"final_response": f"Error: {e}", "messages": state.history}

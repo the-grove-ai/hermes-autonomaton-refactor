@@ -48,6 +48,7 @@ import fire
 
 from run_agent import AIAgent
 from grove.dispatcher import Dispatcher
+from grove.governance_halt import TerminalGovernanceHalt
 from toolset_distributions import (
     list_distributions, 
     sample_toolsets_from_distribution,
@@ -365,8 +366,16 @@ def _process_single_prompt(
         )).agent
 
         # Run the agent with task_id to ensure each task gets its own isolated VM
-        result = agent.run_conversation(prompt, task_id=task_id)
-        
+        try:
+            result = agent.run_conversation(prompt, task_id=task_id)
+        except TerminalGovernanceHalt as _tgh:
+            # GRV-010 C2a (B15 fail-loud) — a STRUCTURAL governed denial
+            # terminated this batch turn (batch runs non-interactively and deny
+            # RED structurally). End-and-surface a clean terminal result so the
+            # trajectory extraction below reads valid keys; no improvisation.
+            from grove.governance_halt import terminal_halt_result
+            result = terminal_halt_result(_tgh)
+
         # Extract tool usage statistics
         tool_stats = _extract_tool_stats(result["messages"])
         

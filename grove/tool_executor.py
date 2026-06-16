@@ -40,6 +40,11 @@ import threading
 import time
 
 from grove.operator_input import OperatorInputRequired
+from grove.errors import GovernanceError, GroveError
+from grove.governance_halt import (
+    GovernanceHaltContext,
+    TerminalGovernanceHalt,
+)
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional, Protocol
 
@@ -441,6 +446,13 @@ class ToolExecutor:
         # NOTE: the per-slot tuple shape mirrors the prior implementation
         # so the post-execution loop translates cleanly.
         results_slots: List[Optional[tuple]] = [None] * num_tools
+        # GRV-010 C2a Level-2 — worker threads cannot propagate a
+        # TerminalGovernanceHalt directly: the pool never calls ``f.result()``,
+        # so an exception raised inside ``_run_tool`` would be swallowed by its
+        # Future. A structural GroveError caught in a worker is captured here and
+        # re-raised ON THE MAIN THREAD after the pool joins, before result
+        # assembly, so it reaches the surface's terminal catch.
+        _terminal_halt_holder: List[TerminalGovernanceHalt] = []
         for i, (intent, args, block_result, blocked_by_guardrail) in enumerate(parsed):
             if block_result is not None:
                 results_slots[i] = (intent.tool_name, args, block_result, 0.0, True, True)
@@ -487,6 +499,27 @@ class ToolExecutor:
                     ctx.effective_task_id,
                     tool_call_id=intent.call_id,
                     pre_tool_block_checked=True,
+                )
+            except GroveError as gov_error:
+                # GRV-010 C2a Level-2 (B15 fail-loud) — a STRUCTURAL governance
+                # fault (in practice the dispatch primitive's GovernanceError)
+                # surfaced inside this worker. It CANNOT be raised here (the pool
+                # would swallow it). Capture it; the main thread re-raises it as
+                # the turn-terminating TerminalGovernanceHalt after the join. The
+                # slot gets an error placeholder that is never surfaced (the
+                # main-thread raise happens before result assembly).
+                _terminal_halt_holder.append(
+                    TerminalGovernanceHalt(
+                        GovernanceHaltContext(
+                            trigger="governance_error",
+                            tool_name=intent.tool_name,
+                            detail=str(gov_error),
+                        )
+                    )
+                )
+                result = (
+                    f"Error executing tool '{intent.tool_name}': "
+                    "governed turn terminated"
                 )
             except Exception as tool_error:
                 result = f"Error executing tool '{intent.tool_name}': {tool_error}"
@@ -608,6 +641,13 @@ class ToolExecutor:
                     cb.batch_completed(completed_count, num_tools, total_dur)
                 except Exception:
                     pass
+
+        # GRV-010 C2a Level-2 — if any worker hit a structural governance fault,
+        # re-raise it ON THE MAIN THREAD now (pool has joined), before result
+        # assembly, so it propagates as the turn-terminating TerminalGovernanceHalt
+        # to the surface instead of degrading to a recoverable observation.
+        if _terminal_halt_holder:
+            raise _terminal_halt_holder[0]
 
         # ── Post-execution: format ToolResults + fire post hooks ─
         results: List[ToolResult] = []
@@ -901,6 +941,32 @@ class ToolExecutor:
                     # contract is visible at the tool boundary — see
                     # grove/operator_input.py.)
                     raise
+                except TerminalGovernanceHalt:
+                    # GRV-010 C2a — already a terminal governance halt (e.g.
+                    # propagating up from a delegated child turn). BaseException,
+                    # so the catch below would miss it anyway; kept explicit so
+                    # the terminal-not-degraded contract is visible here.
+                    raise
+                except GroveError as gov_error:
+                    # GRV-010 C2a Level-2 (B15 fail-loud) — a STRUCTURAL
+                    # governance fault reached the executor: in practice the
+                    # dispatch primitive's GovernanceError (an effecting dispatch
+                    # arrived at the crypto-lock with no Stage-04 token — a
+                    # classifier-skip). It bypassed the pre-execution deny fork.
+                    # Re-raise it AS TerminalGovernanceHalt so it propagates past
+                    # the `except Exception` below to the surface's terminal
+                    # catch — instead of degrading to a recoverable "Error
+                    # executing tool..." observation the model routes around.
+                    # GroveError's three subclasses are all structural-terminal
+                    # (grove/errors.py); the other two are construction/load-time
+                    # and never surface here, so catching the base is precise.
+                    raise TerminalGovernanceHalt(
+                        GovernanceHaltContext(
+                            trigger="governance_error",
+                            tool_name=function_name,
+                            detail=str(gov_error),
+                        )
+                    ) from gov_error
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error(
