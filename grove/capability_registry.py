@@ -49,7 +49,6 @@ __all__ = [
     "register_installed_skill",
     "register_proposed_skill",
     "register_skills_in_tree",
-    "ingest_pre_faucet_skill",
     "skill_record_id_for_name",
     "skill_record_for_name",
     "set_skill_pinned",
@@ -712,7 +711,7 @@ def register_installed_skill(
     """
     from grove.capability import LifecycleState, Provenance
 
-    return _mint_skill_record(
+    written = _mint_skill_record(
         name, category, payload,
         provenance=Provenance.INSTALLED,
         state=LifecycleState.MANAGED,
@@ -720,34 +719,48 @@ def register_installed_skill(
         directory=directory,
         existing_ids=existing_ids,
     )
+    # GRV-010 C2b — minter provenance. This minter is operator-only (CLI /
+    # boot-sync / profile-clone; no agent-loop path — GATE-A thread 3 ruling).
+    # Record a stateless sovereignty_decision so every minted record has an
+    # audit trail. ``log_sovereignty_decision`` writes to the telemetry logger
+    # with no session/turn context, so it is safe from a bare CLI execution.
+    if written is not None:
+        _log_minter_provenance(
+            action="skill_record_minted", skill_name=name,
+            dest_path=str(written),
+        )
+    return written
 
 
-def ingest_pre_faucet_skill(
-    name: str,
-    category: str,
-    payload: str,
-    *,
-    use_count: int = 0,
-    directory: Optional[Path] = None,
-) -> Optional[Path]:
-    """One-time ingest of a pre-faucet agent-created skill (GRV-009 E6b C2 4.4).
+def _log_minter_provenance(
+    *, action: str, skill_name: str, dest_path: Optional[str] = None,
+    scan_verdict: str = "n/a", reason: Optional[str] = None,
+) -> None:
+    """Emit an operator/CLI-attributed provenance record for a minter.
 
-    A live on-disk agent skill that predates the faucet (e.g.
-    ``debugging-mcp-credentials``) is minted as an **ACTIVE, immediately
-    executable** record carrying its prior ``use_count`` — NOT routed through the
-    proposed quarantine gate (it is already a live, reviewed skill). Provenance is
-    ``agent_proposed`` (it was agent-created pre-faucet). Dedup-guarded.
+    Bare-CLI-context safe: ``log_sovereignty_decision`` is a stateless telemetry
+    write (no SessionDB, no active turn). Failures never block the mint.
     """
-    from grove.capability import LifecycleState, Provenance
+    try:
+        from grove.telemetry import log_sovereignty_decision
+        log_sovereignty_decision(
+            action=action,
+            skill_name=skill_name,
+            operator="operator/CLI",
+            scan_verdict=scan_verdict,
+            dest_path=dest_path,
+            reason=reason,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "[capability_registry] minter provenance log failed "
+            "(non-fatal): %r", exc,
+        )
 
-    return _mint_skill_record(
-        name, category, payload,
-        provenance=Provenance.AGENT_PROPOSED,
-        state=LifecycleState.ACTIVE,
-        filename_tag="ingested",
-        use_count=use_count,
-        directory=directory,
-    )
+
+# GRV-010 C2b — ``ingest_pre_faucet_skill`` deleted: it was a dead, un-audited
+# minter (zero production callers; it minted an ACTIVE/executable record outside
+# the proposed-quarantine gate). The pre-faucet ingest it served is long past.
 
 
 def register_proposed_skill(

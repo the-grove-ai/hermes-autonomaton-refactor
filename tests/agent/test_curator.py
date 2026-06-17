@@ -14,6 +14,22 @@ from pathlib import Path
 import pytest
 
 
+def _mint_active_record(name: str, category: str, body: str):
+    """Mint an ACTIVE skill record directly.
+
+    GRV-010 C2b deleted ``ingest_pre_faucet_skill``; these tests used it only to
+    plant an ACTIVE record. This calls the same internal it wrapped.
+    """
+    from grove.capability import LifecycleState, Provenance
+    from grove import capability_registry as reg
+    return reg._mint_skill_record(
+        name, category, body,
+        provenance=Provenance.AGENT_PROPOSED,
+        state=LifecycleState.ACTIVE,
+        filename_tag="ingested",
+    )
+
+
 @pytest.fixture
 def curator_env(tmp_path, monkeypatch):
     """Isolated GROVE_HOME + freshly reloaded curator + skill_usage modules."""
@@ -163,12 +179,12 @@ def _idle_row(u, name, *, days, pinned_telemetry=False):
 
 def test_idle_active_record_deprecates(curator_env):
     from grove.capability import LifecycleState
-    from grove.capability_registry import ingest_pre_faucet_skill, skill_record_for_name
+    from grove.capability_registry import skill_record_for_name
 
     c = curator_env["curator"]
     u = curator_env["usage"]
     _write_skill(curator_env["home"] / "skills", "ancient")
-    ingest_pre_faucet_skill("ancient", "ancient", "---\nname: ancient\ndescription: x\n---\nb\n")
+    _mint_active_record("ancient", "ancient", "---\nname: ancient\ndescription: x\n---\nb\n")
     _idle_row(u, "ancient", days=120)
 
     counts = c.apply_automatic_transitions()
@@ -179,13 +195,13 @@ def test_idle_active_record_deprecates(curator_env):
 def test_pinned_record_is_never_touched(curator_env):
     from grove.capability import LifecycleState
     from grove.capability_registry import (
-        ingest_pre_faucet_skill, set_skill_pinned, skill_record_for_name,
+        set_skill_pinned, skill_record_for_name,
     )
 
     c = curator_env["curator"]
     u = curator_env["usage"]
     _write_skill(curator_env["home"] / "skills", "precious")
-    ingest_pre_faucet_skill("precious", "precious", "---\nname: precious\ndescription: x\n---\nb\n")
+    _mint_active_record("precious", "precious", "---\nname: precious\ndescription: x\n---\nb\n")
     set_skill_pinned("precious", True)
     _idle_row(u, "precious", days=365)
 

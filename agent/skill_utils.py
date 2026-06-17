@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_config_path, get_skills_dir
+from grove.skills import ANDON_DIRNAME, ARCHIVE_DIRNAME
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,9 @@ PLATFORM_MAP = {
     "windows": "win32",
 }
 
-EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive", ".andon"))
+# GRV-010 C2b — the quarantine / archive names come from the single source of
+# truth in ``grove.skills`` rather than re-spelled literals.
+EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ARCHIVE_DIRNAME, ANDON_DIRNAME))
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 

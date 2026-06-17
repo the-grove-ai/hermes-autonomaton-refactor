@@ -408,10 +408,12 @@ def _load_promoted_skills(
             skills_root = os.path.join(os.path.expanduser("~"), ".grove", "skills")
 
     results: List[Tuple[str, str]] = []
+    from grove.skills import ANDON_DIRNAME
     try:
         for dirpath, dirnames, filenames in os.walk(skills_root):
-            # Prune .andon/ (quarantine) in-place so os.walk skips it entirely.
-            dirnames[:] = [d for d in dirnames if d != ".andon"]
+            # Prune the quarantine dir in-place so os.walk skips it entirely —
+            # quarantined skills are never offered in the composed context.
+            dirnames[:] = [d for d in dirnames if d != ANDON_DIRNAME]
             if "SKILL.md" not in filenames:
                 continue
             skill_path = os.path.join(dirpath, "SKILL.md")
