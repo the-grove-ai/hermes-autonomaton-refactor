@@ -141,6 +141,27 @@ def current_tier() -> Optional[str]:
     return _last_routed_tier
 
 
+def tier_fallback_for(tier: Optional[str]) -> Optional[str]:
+    """The governed downshift target declared for ``tier`` in routing.config.yaml.
+
+    GRV-010 C2d — returns the tier's ``fallback_tier`` string, or None when the
+    tier is unknown, declares no fallback, or the router is uninitialized. A
+    None result means the tier opts OUT of the governed tier-unavailable path,
+    so the legacy in-loop fallback chain handles its failures (C2d-1 gating).
+    Best-effort: never raises — a config/router problem must not convert a
+    network failure into an unrelated crash.
+    """
+    if not tier:
+        return None
+    try:
+        from grove.router import get_tier_config
+        cfg = get_tier_config(tier)
+    except Exception:
+        return None
+    fb = getattr(cfg, "fallback_tier", None)
+    return fb or None
+
+
 def current_classification() -> Optional[ClassificationResult]:
     """The T-telemetry classification the most recent route_for_agent()
     call produced.

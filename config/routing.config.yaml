@@ -50,6 +50,24 @@ routing:
   #     red: T3
   zone_overrides: {}
 
+  # GRV-010 C2d — GOVERNED FALLBACK (optional, per tier)
+  #
+  #   fallback_tier: "<tier>"
+  #
+  # Declare this on any inference tier to opt that tier into governed downshift.
+  # When the tier's bound model becomes unavailable — a connection drop, a
+  # timeout, a 429, or an exhausted credential pool — the Cognitive Router
+  # re-routes the turn through itself at the named fallback tier (it re-classifies
+  # and re-binds; it does NOT blindly swap the model). The downshift is recorded
+  # as a tier_fallback event in the session's Kaizen ledger. If the fallback tier
+  # is also unavailable (or none is declared), the turn fails loud rather than
+  # silently substituting an undeclared model. Example: route T2 down to T1 on
+  # failure —
+  #   T2:
+  #     ...
+  #     fallback_tier: "T1"
+  # Absent (the default) keeps the tier on the legacy in-loop fallback behavior.
+  #
   # Price figures below are May 2026 list prices. The "per average
   # interaction" estimates are rough — real cost scales with how much
   # context a request carries.

@@ -62,6 +62,12 @@ class TierConfig:
     description: str
     cost_per_mtok_input: Optional[float] = None
     cost_per_mtok_output: Optional[float] = None
+    # GRV-010 C2d — optional governed downshift target. When this tier's bound
+    # model becomes unavailable (connection/timeout/429/exhausted pool), the
+    # Dispatcher re-routes the turn through the Cognitive Router at this tier
+    # instead of the ungoverned silent fallback_model swap. Absent (None) =
+    # legacy behavior (the old in-loop fallback chain handles failures).
+    fallback_tier: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -389,6 +395,11 @@ class CognitiveRouter:
                 ),
                 cost_per_mtok_output=(
                     float(cost_output_raw) if cost_output_raw is not None else None
+                ),
+                fallback_tier=(
+                    str(spec["fallback_tier"]).strip()
+                    if spec.get("fallback_tier")
+                    else None
                 ),
             )
 

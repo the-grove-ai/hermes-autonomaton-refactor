@@ -69,8 +69,10 @@ class TestTerminalSignal:
         assert propagated is True
 
     def test_terminal_triggers_set(self):
+        # GRV-010 C2d added "tier_unavailable" — a model-availability halt.
         assert set(TERMINAL_TRIGGERS) == {
             "red_sovereign", "deny_hard", "quarantine", "governance_error",
+            "tier_unavailable",
         }
 
     def test_terminal_halt_result_shape(self):

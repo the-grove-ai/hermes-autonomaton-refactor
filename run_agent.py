@@ -9935,6 +9935,41 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
+    def _maybe_raise_tier_unavailable(self, *, reason: str) -> None:
+        """GRV-010 C2d-1 (DETECT LOW, GATED) — governed tier-unavailable gate.
+
+        Called at a network-execution failure point, immediately BEFORE the
+        legacy ``_try_activate_fallback`` chain. If the current cognitive tier
+        declares a ``fallback_tier`` in routing.config.yaml, raise
+        :class:`grove.errors.TierUnavailableError` so it bubbles past the retry
+        loop to the Dispatcher (DECIDE HIGH), which owns the governed downshift
+        — bypassing the silent in-loop model swap entirely.
+
+        When NO ``fallback_tier`` is declared (the default), this is a NO-OP and
+        the caller falls through to the unchanged legacy fallback chain. That
+        gate keeps every existing config on the old path (old tests stay green);
+        the new governed path activates only when an operator opts in by
+        declaring a fallback_tier. The legacy chain is severed in C2d-2.
+        """
+        # Detection is best-effort: a config/router problem must never mask the
+        # underlying network failure. Compute the gate inside the try; raise
+        # OUTSIDE it so the typed error is not swallowed by this guard.
+        try:
+            from grove.providers import current_tier, tier_fallback_for
+            _tier = current_tier()
+            _fb = tier_fallback_for(_tier)
+        except Exception:
+            return
+        if not _fb:
+            return  # undeclared → legacy path, unchanged
+        from grove.errors import TierUnavailableError
+        raise TierUnavailableError(
+            tier=_tier,
+            provider=getattr(self, "provider", None),
+            model=getattr(self, "model", None),
+            reason=reason,
+        )
+
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
@@ -14176,6 +14211,10 @@ class AIAgent:
                                 force=True,
                             )
                             self._emit_status(f"⏳ {_nous_msg}")
+                            # GRV-010 C2d-1 — governed tier-unavailable gate
+                            # (exhausted pool). Raise + bypass when a
+                            # fallback_tier is declared; else legacy path.
+                            self._maybe_raise_tier_unavailable(reason="pool_exhausted")
                             if self._try_activate_fallback():
                                 retry_count = 0
                                 compression_attempts = 0
@@ -15960,6 +15999,12 @@ class AIAgent:
                             primary_recovery_attempted = True
                             retry_count = 0
                             continue
+                        # GRV-010 C2d-1 — governed tier-unavailable gate. When
+                        # the current tier declares a fallback_tier, raise
+                        # TierUnavailableError (bubbles to the Dispatcher) and
+                        # BYPASS the legacy chain below. No-op (legacy path
+                        # unchanged) when no fallback_tier is declared.
+                        self._maybe_raise_tier_unavailable(reason="network_exhausted")
                         # Try fallback before giving up entirely
                         self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                         if self._try_activate_fallback():

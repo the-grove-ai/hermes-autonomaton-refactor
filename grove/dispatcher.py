@@ -266,6 +266,7 @@ from grove.sovereign_prompt_handlers import (
 )
 from grove.operator_input import OperatorInputRequired
 from grove.governance_halt import TerminalGovernanceHalt
+from grove.errors import TierUnavailableError
 from grove.skills import ANDON_DIRNAME
 
 
@@ -1296,48 +1297,70 @@ class Dispatcher:
             # correction lands — its text misses the cache, so the classifier
             # ran and ``is_correction`` is readable.
             self._maybe_demote_on_correction(previous_turn_t0_pattern_id)
-        gen = agent._run_turn_generator(user_message=user_message, **kwargs)
-        try:
-            return self._drive_generator(agent, gen, ledger)
-        except OperatorInputRequired:
-            # Sprint 67 — NOT an error terminal. A store-and-resume surface
-            # (web /v1/chat/completions) deliberately yielded control to
-            # await operator input. Record a deferral outcome — never
-            # "error" — then re-raise so the surface's terminal catch
-            # persists the PendingOperatorRequest and surfaces the prompt.
-            # This guard sits ABOVE the BaseException catch precisely so
-            # the deferral is not mislabeled as a failure in the ledger.
-            self._write_intent_record(agent, outcome="awaiting_operator")
-            raise
-        except TerminalGovernanceHalt:
-            # GRV-010 C2a — a STRUCTURAL governed denial terminated the turn
-            # (RED-sovereign / deny_hard / quarantined-.andon / GovernanceError).
-            # Record a distinct, non-"error" outcome — the halt is the governance
-            # layer working as designed, not a fault — then re-raise so the
-            # surface's terminal catch ends the turn and surfaces the Kaizen
-            # disposition. This guard sits ABOVE the BaseException catch so the
-            # terminal halt is not mislabeled "error" in the ledger (mirrors the
-            # OperatorInputRequired guard above).
-            self._write_intent_record(agent, outcome="governance_terminated")
-            raise
-        except BaseException:
-            # Sprint 28 Phase 3 — error terminal. Any exception escaping
-            # the drive loop (generator raise, internal error, KeyboardInterrupt)
-            # writes an IntentRecord with outcome="error" before
-            # propagating. ``_write_intent_record`` is idempotent per
-            # turn via the outcome_written flag, so an exception after a
-            # FinalResponse already wrote "pending" does NOT double-write.
-            self._write_intent_record(agent, outcome="error")
-            raise
-        finally:
-            # Ensure the generator is closed even if _drive_generator
-            # raised an unexpected exception. gen.close() is idempotent;
-            # if Drop disposition already closed it, this is a no-op.
-            # Python 3 raises GeneratorExit at the yield point, which
-            # propagates cleanly through this codebase's `except
-            # Exception` blocks (A6 audit confirmed zero bare-except /
-            # except-BaseException sites in _run_turn_generator body).
-            gen.close()
+        # GRV-010 C2d-1 — DECIDE HIGH. The turn is driven inside a re-entry loop
+        # so a governed tier downshift can re-route and re-drive without leaving
+        # the Dispatcher's authority. Tiers already attempted as a fallback this
+        # turn are tracked so a fallback that also fails cannot loop forever.
+        _tier_fallbacks_used: Set[str] = set()
+        while True:
+            gen = agent._run_turn_generator(user_message=user_message, **kwargs)
+            try:
+                return self._drive_generator(agent, gen, ledger)
+            except OperatorInputRequired:
+                # Sprint 67 — NOT an error terminal. A store-and-resume surface
+                # (web /v1/chat/completions) deliberately yielded control to
+                # await operator input. Record a deferral outcome — never
+                # "error" — then re-raise so the surface's terminal catch
+                # persists the PendingOperatorRequest and surfaces the prompt.
+                # This guard sits ABOVE the BaseException catch precisely so
+                # the deferral is not mislabeled as a failure in the ledger.
+                self._write_intent_record(agent, outcome="awaiting_operator")
+                raise
+            except TerminalGovernanceHalt:
+                # GRV-010 C2a — a STRUCTURAL governed denial terminated the turn
+                # (RED-sovereign / deny_hard / quarantined-.andon / GovernanceError).
+                # Record a distinct, non-"error" outcome — the halt is the governance
+                # layer working as designed, not a fault — then re-raise so the
+                # surface's terminal catch ends the turn and surfaces the Kaizen
+                # disposition. This guard sits ABOVE the BaseException catch so the
+                # terminal halt is not mislabeled "error" in the ledger (mirrors the
+                # OperatorInputRequired guard above).
+                self._write_intent_record(agent, outcome="governance_terminated")
+                raise
+            except TierUnavailableError as _tue:
+                # GRV-010 C2d-1 — the current tier's model is unreachable and the
+                # tier opted into governed downshift (declared a fallback_tier).
+                # Apply policy: re-route THROUGH the Cognitive Router at the
+                # declared fallback tier and re-drive; or, when no valid fallback
+                # remains, fail loud via TerminalGovernanceHalt (which
+                # _handle_tier_unavailable raises AFTER writing the
+                # governance_terminated intent record). This sits ABOVE the
+                # BaseException catch so the typed error is not mislabeled a
+                # generic "error". (TierUnavailableError is a GroveError.)
+                _fb_tier = self._handle_tier_unavailable(
+                    agent, _tue, user_message, ledger,
+                    used=_tier_fallbacks_used,
+                )
+                _tier_fallbacks_used.add(_fb_tier)
+                continue  # re-enter the turn at the fallback tier
+            except BaseException:
+                # Sprint 28 Phase 3 — error terminal. Any exception escaping
+                # the drive loop (generator raise, internal error, KeyboardInterrupt)
+                # writes an IntentRecord with outcome="error" before
+                # propagating. ``_write_intent_record`` is idempotent per
+                # turn via the outcome_written flag, so an exception after a
+                # FinalResponse already wrote "pending" does NOT double-write.
+                self._write_intent_record(agent, outcome="error")
+                raise
+            finally:
+                # Ensure the generator is closed even if _drive_generator
+                # raised an unexpected exception. gen.close() is idempotent;
+                # if Drop disposition already closed it, this is a no-op.
+                # Python 3 raises GeneratorExit at the yield point, which
+                # propagates cleanly through this codebase's `except
+                # Exception` blocks (A6 audit confirmed zero bare-except /
+                # except-BaseException sites in _run_turn_generator body).
+                gen.close()
 
     def _drive_generator(
         self, agent: Any, gen: Any, ledger: Any,
@@ -2823,6 +2846,110 @@ class Dispatcher:
         )
         if decision.tier_config.max_tokens is not None:
             agent.max_tokens = decision.tier_config.max_tokens
+
+    # ── GRV-010 C2d-1 — tier-unavailable policy (DECIDE HIGH) ──────────────
+
+    def _handle_tier_unavailable(
+        self,
+        agent: Any,
+        tue: "TierUnavailableError",
+        user_message: Any,
+        ledger: Any,
+        *,
+        used: Set[str],
+    ) -> str:
+        """Apply the governed tier-unavailable policy and return the fallback tier.
+
+        On a valid fallback (declared in routing.config.yaml, not the failed
+        tier, not already attempted this turn, and resolvable by the router):
+        log a ``tier_fallback`` ledger event, re-route the agent THROUGH the
+        Cognitive Router at the fallback tier, and return its id so the caller
+        re-drives the turn.
+
+        Otherwise FAIL LOUD: record the ``governance_terminated`` intent outcome
+        and raise :class:`TerminalGovernanceHalt` (C2a). Default is Andon — the
+        system never silently swaps to an undeclared model.
+        """
+        from grove.providers import current_tier, tier_fallback_for
+
+        failed_tier = tue.tier or current_tier()
+        fb_tier = tier_fallback_for(failed_tier)
+        valid = bool(fb_tier) and fb_tier != failed_tier and fb_tier not in used
+        if valid:
+            rebound = self._reroute_through_router(agent, user_message, fb_tier)
+            if rebound is not None:
+                try:
+                    ledger.record(
+                        "tier_fallback",
+                        failed_tier=failed_tier,
+                        fallback_tier=fb_tier,
+                        provider=tue.provider,
+                        model=tue.model,
+                        reason=tue.reason,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "[dispatcher] tier_fallback ledger write failed "
+                        "(non-fatal): %r", exc,
+                    )
+                logger.warning(
+                    "[GRV-010 C2d] tier %s unavailable (provider=%s model=%s); "
+                    "governed downshift to %s via the Cognitive Router.",
+                    failed_tier, tue.provider, tue.model, rebound,
+                )
+                return rebound
+
+        # No valid governed fallback — fail loud.
+        from grove.governance_halt import GovernanceHaltContext
+        self._write_intent_record(agent, outcome="governance_terminated")
+        raise TerminalGovernanceHalt(
+            GovernanceHaltContext(
+                trigger="tier_unavailable",
+                tool_name=None,
+                reason=(
+                    f"cognitive tier {failed_tier!r} is unavailable and no "
+                    "further governed fallback is declared or available"
+                ),
+                detail=str(tue),
+            )
+        )
+
+    def _reroute_through_router(
+        self, agent: Any, user_message: Any, fb_tier: str,
+    ) -> Optional[str]:
+        """Re-route the turn THROUGH the Cognitive Router at ``fb_tier`` and bind.
+
+        Uses ``route_for_agent(explicit_tier=fb_tier)`` — a full router decision
+        pinned to the fallback tier (re-classified for telemetry), NOT a blind
+        model swap. Binds the agent via ``_bind_agent_to_tier`` (the same path
+        the initial turn-bind uses) and refreshes the tier budget. Returns the
+        bound tier id, or None when the router cannot resolve a decision
+        (vanilla install / unknown tier) — the caller then fails loud.
+        """
+        from grove.providers import (
+            current_classification,
+            resolve_tier_to_runtime,
+            route_for_agent,
+        )
+
+        try:
+            decision = route_for_agent(
+                message=user_message if isinstance(user_message, str) else "",
+                explicit_model=None,
+                explicit_tier=fb_tier,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[dispatcher] fallback re-route through router failed: %r", exc,
+            )
+            return None
+        if decision is None:
+            return None
+        self._current_turn_classification = current_classification()
+        self._current_turn_routing_decision = decision
+        self._bind_agent_to_tier(agent, decision, resolve_tier_to_runtime)
+        self._apply_tier_budget(agent, decision.tier)
+        return decision.tier
 
     @staticmethod
     def broadcast_session_id(session_id: str) -> None:

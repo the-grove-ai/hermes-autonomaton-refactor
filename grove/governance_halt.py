@@ -42,7 +42,16 @@ from grove.capability import FailureFallback
 
 # The structural triggers that terminalize a turn. Ordinary Yellow declines are
 # NOT in this set — they remain collaborative.
-TERMINAL_TRIGGERS = ("red_sovereign", "deny_hard", "quarantine", "governance_error")
+TERMINAL_TRIGGERS = (
+    "red_sovereign",
+    "deny_hard",
+    "quarantine",
+    "governance_error",
+    # GRV-010 C2d — the current cognitive tier's model is unreachable and no
+    # governed fallback tier is declared/available; the turn fails loud rather
+    # than silently swapping to an undeclared model.
+    "tier_unavailable",
+)
 
 
 @dataclass
@@ -106,6 +115,15 @@ class TerminalGovernanceHalt(BaseException):
             what = (
                 f"This action{tool} could not be verified as governed and was "
                 "refused before it could run."
+            )
+        elif ctx.trigger == "tier_unavailable":
+            # Model-availability failure — no tool, no operator decline. State
+            # what happened plainly; no governance internals.
+            return (
+                "I couldn't reach the model for this work, and no backup is "
+                "configured to take over. I've stopped here rather than guess. "
+                "Your options: try again in a moment, cancel this request, or "
+                "configure a fallback model and retry."
             )
         else:  # red_sovereign / deny_hard
             what = (

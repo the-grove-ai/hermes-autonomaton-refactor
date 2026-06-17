@@ -123,6 +123,11 @@ class KaizenLedger:
         # disposition). The paired andon_disposition entry carries the precise
         # once/session/always verdict.
         "governance_change",
+        # GRV-010 C2d — governed tier downshift. The current tier's model was
+        # unreachable and the tier declared a fallback_tier; the Dispatcher
+        # re-routed the turn through the Cognitive Router at the fallback tier.
+        # Carries failed_tier / fallback_tier / provider / model / reason.
+        "tier_fallback",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:
