@@ -59,3 +59,42 @@ class SchemaConfigurationError(GroveError):
     tool, the rule pattern, and the specific safety check that
     failed so the operator can locate and fix without reading code.
     """
+
+
+class TierUnavailableError(GroveError):
+    """The model bound to the current cognitive tier could not be reached.
+
+    GRV-010 C2d — raised at the network-execution boundary (run_agent's retry
+    loop) when the tier's bound model fails with a connection drop, timeout,
+    429, or exhausted credential pool AND the tier declares a ``fallback_tier``
+    in ``routing.config.yaml``. It carries the failed tier + provider/model so
+    the Dispatcher (DECIDE HIGH) can apply the governed downshift policy:
+    re-route through the Cognitive Router at the declared fallback tier, or —
+    when none is declared/valid — fail loud via ``TerminalGovernanceHalt``.
+
+    This replaces the ungoverned, silent ``fallback_model`` substitution: tier
+    substitution is the Cognitive Router's decision, made through the router,
+    never a blind in-loop model swap. (C2d-1 gates this on a declared
+    ``fallback_tier``; the legacy chain stays live for undeclared configs and
+    is severed in C2d-2.)
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        tier: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        self.tier = tier
+        self.provider = provider
+        self.model = model
+        self.reason = reason
+        if not message:
+            message = (
+                f"tier {tier!r} unavailable "
+                f"(provider={provider!r}, model={model!r}, reason={reason!r})"
+            )
+        super().__init__(message)

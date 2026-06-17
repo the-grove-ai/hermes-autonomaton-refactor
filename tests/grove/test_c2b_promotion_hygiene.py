@@ -139,6 +139,10 @@ class TestMinterProvenance:
         body = "---\nname: dedupt\ndescription: x\n---\nbody\n"
         reg.register_installed_skill("dedupt", "misc", body)
         with caplog.at_level(logging.INFO, logger="grove.telemetry"):
+            # Drop any records captured from the first mint (order-robust: a
+            # prior test may have left the telemetry logger at INFO so the first
+            # call's record leaks into caplog). Only the second call matters.
+            caplog.clear()
             second = reg.register_installed_skill("dedupt", "misc", body)
         # Idempotent: a dedup no-op returns None and writes no new provenance.
         assert second is None
