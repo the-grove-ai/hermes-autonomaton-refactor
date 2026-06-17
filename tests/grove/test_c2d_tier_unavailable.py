@@ -151,38 +151,35 @@ class TestTierFallbackFor:
 # ══════════════════════════════════════════════════════════════════════
 
 
-class TestMaybeRaiseGate:
-    def test_noop_when_no_fallback_declared(self, monkeypatch):
-        """Undeclared tier → no raise (legacy chain runs unchanged)."""
-        agent = _bare_agent()
-        monkeypatch.setattr("grove.providers.current_tier", lambda: "T2")
-        monkeypatch.setattr("grove.providers.tier_fallback_for", lambda t: None)
-        # Must NOT raise.
-        agent._maybe_raise_tier_unavailable(reason="network_exhausted")
+class TestRaiseTierUnavailable:
+    """C2d-2 — the gate is dropped: _raise_tier_unavailable raises
+    UNCONDITIONALLY on a network-execution failure (declared or not). The
+    Dispatcher owns the downshift-vs-halt decision for ALL tiers."""
 
-    def test_raises_when_fallback_declared(self, monkeypatch):
-        """Declared fallback_tier → raise TierUnavailableError (bypass legacy)."""
+    def test_raises_regardless_of_declared_fallback(self, monkeypatch):
         agent = _bare_agent()
         agent.provider = "anthropic"
         agent.model = "claude-sonnet-4-6"
         monkeypatch.setattr("grove.providers.current_tier", lambda: "T2")
-        monkeypatch.setattr("grove.providers.tier_fallback_for", lambda t: "T1")
         with pytest.raises(TierUnavailableError) as exc_info:
-            agent._maybe_raise_tier_unavailable(reason="network_exhausted")
+            agent._raise_tier_unavailable(reason="network_exhausted")
         assert exc_info.value.tier == "T2"
         assert exc_info.value.provider == "anthropic"
         assert exc_info.value.reason == "network_exhausted"
 
-    def test_detection_failure_is_noop(self, monkeypatch):
-        """A config/router problem must not mask the underlying failure."""
+    def test_raises_even_when_current_tier_unreadable(self, monkeypatch):
+        """A config/router problem must not mask the failure — still raise
+        (tier=None), just without the tier label."""
         agent = _bare_agent()
 
         def _boom():
             raise RuntimeError("providers broke")
 
         monkeypatch.setattr("grove.providers.current_tier", _boom)
-        # Best-effort: swallow the detection error, do not raise.
-        agent._maybe_raise_tier_unavailable(reason="network_exhausted")
+        with pytest.raises(TierUnavailableError) as exc_info:
+            agent._raise_tier_unavailable(reason="network_exhausted")
+        assert exc_info.value.tier is None
+        assert exc_info.value.reason == "network_exhausted"
 
 
 # ══════════════════════════════════════════════════════════════════════

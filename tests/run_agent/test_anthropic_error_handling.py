@@ -262,18 +262,22 @@ def test_529_overloaded_is_retried_and_recovers(monkeypatch):
     assert result["final_response"] == "Recovered"
 
 
-def test_429_exhausts_all_retries_before_raising(monkeypatch):
-    """429 must retry max_retries times, then return a failed result.
+def test_429_exhausts_all_retries_then_fails_loud(monkeypatch):
+    """429 must retry max_retries times, then fail loud.
 
-    The agent no longer re-raises after exhausting retries — it returns a
-    result dict with the error in final_response.  This changed when the
-    fallback-provider feature was added (the agent tries a fallback before
-    giving up, and returns a result dict either way).
+    GRV-010 C2d-2: exhausted retries on a 429 is a tier-unavailable condition.
+    With no governed fallback_tier declared, the turn terminates loud. Run
+    through the gateway, which (C2a) converts the TerminalGovernanceHalt into a
+    governed terminal result dict. The old silent fallback-provider substitution
+    is removed — model substitution is the Cognitive Router's governed decision,
+    never an in-loop swap.
     """
     agent_cls = _make_agent_cls(_RateLimitError)  # always fails
     result = _run_with_agent(monkeypatch, agent_cls)
-    resp = str(result.get("final_response", ""))
-    assert "429" in resp or "retries" in resp.lower()
+    # The gateway reshapes the terminal-halt result; its error string carries
+    # the governed tier-unavailable termination.
+    assert "tier_unavailable" in str(result.get("error", ""))
+    assert "fail-loud" in str(result.get("error", ""))
 
 
 def test_400_bad_request_is_non_retryable(monkeypatch):
