@@ -85,12 +85,22 @@ def finalize_record(
 # ``success`` / ``correction`` finalize at the start of the next turn;
 # ``drop`` / ``error`` are terminal states the Dispatcher writes directly
 # when the turn cannot reach a normal end.
+#
+# GRV-010 C2a/C2d — ``governance_terminated`` is the terminal outcome the
+# Dispatcher writes when a STRUCTURAL governed denial ends the turn via
+# TerminalGovernanceHalt: a RED-sovereign / deny_hard / quarantined-.andon
+# refusal (C2a), a mid-execution GovernanceError, or a tier-unavailable halt
+# (C2d). It is distinct from ``error`` (a fault) — the halt is the governance
+# layer working as designed, and the Flywheel must SEE these structural stops
+# to learn from them. Without this entry the write is rejected and the stop is
+# invisible to the loop (the C2d-2 telemetry gap this closes).
 VALID_OUTCOMES: frozenset[str] = frozenset({
     "pending",
     "success",
     "drop",
     "error",
     "correction",
+    "governance_terminated",
 })
 
 
