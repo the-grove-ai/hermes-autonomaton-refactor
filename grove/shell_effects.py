@@ -11,7 +11,14 @@ Classification (most-restrictive-wins across all command nodes in a chain/pipe):
 * RED (opacity — fail closed): the AST cannot statically resolve the payload —
   ``sh -c`` / ``bash -c``, ``eval``/``source``, ``python -c`` / ``perl -e`` …,
   command substitution ``$(...)`` / backticks, any pipe INTO a shell/interpreter
-  (``curl x | bash``, ``base64 -d | sh``), or a command that will not parse.
+  (``curl x | bash``, ``base64 -d | sh``), an input feed to stdin (``<`` / ``<<``
+  / ``<<<`` — herestring or file, opaque regardless of receiver), an
+  execution-modifier wrapper whose leaf cannot be resolved (depth>10, unknown
+  flag, variable/`$()` command word — C3a ANDON-WRAPPER), or a command that
+  will not parse. Execution-modifier wrappers (``env``/``nice``/``timeout``/
+  ``nohup``/``setsid``/``stdbuf``/``ionice``/``chrt``/``xargs``) are recursed
+  THROUGH to the real leaf and classified there; process substitution ``<(...)``
+  is recursed INTO and classified by its real effect.
 * RED (privilege): ``sudo`` / ``su`` / ``doas``.
 * RED (catastrophic): ``rm`` of ``/`` or ``~`` (or ``--no-preserve-root``). INV-9.
 * RED (governed write): a write/delete/move/redirect whose target resolves into
@@ -90,9 +97,23 @@ class _Ctx:
 
 def _walk(node: object, ctx: _Ctx, pipe_stage: int = 0) -> None:
     kind = getattr(node, "kind", None)
-    if kind == "commandsubstitution" or kind == "processsubstitution":
+    if kind == "commandsubstitution":
+        # $(...) / backticks — output becomes data/argv; the ultimate effect is
+        # not statically resolvable. Fail closed (RED), do not descend.
         ctx.cmdsub = True
-        return  # opaque payload — do not descend for effect collection
+        return
+    if kind == "processsubstitution":
+        # <(...) / >(...) — bashlex surfaces the contained command as a
+        # traversable sub-AST (.command). C3a: RECURSE and classify its real
+        # effect, rather than blanket-RED. The inner commands join ctx.commands
+        # and are classified by the normal loop (a fresh pipe context).
+        inner = getattr(node, "command", None)
+        if inner is not None:
+            _walk(inner, ctx, pipe_stage=0)
+        else:
+            # Can't see the inner AST → fail closed.
+            ctx.cmdsub = True
+        return
     if kind == "command":
         ctx.commands.append((node, pipe_stage))
         for part in getattr(node, "parts", []) or []:
@@ -114,20 +135,36 @@ def _walk(node: object, ctx: _Ctx, pipe_stage: int = 0) -> None:
         _walk(out, ctx, pipe_stage)
 
 
-def _extract_command(node: object) -> Tuple[List[str], List[str]]:
-    """Return (argv words, redirect-output targets) for one CommandNode."""
+# Input-feed redirect types: the fed content is invisible to static analysis.
+_INPUT_FEED_REDIRECTS = frozenset({"<", "<<", "<<<"})
+
+
+def _extract_command(node: object) -> Tuple[List[str], List[str], bool]:
+    """Return (argv words, output-redirect targets, has_input_feed) for one
+    CommandNode.
+
+    Output redirects (``>`` / ``>>`` / ``&>`` …) yield target words for the
+    governed-write check. Input-feed redirects (``<`` / ``<<`` / ``<<<``) set
+    *has_input_feed* — a herestring or file fed to stdin is opaque (C3a),
+    classified RED regardless of receiver (no allowlist).
+    """
     argv: List[str] = []
     redirects: List[str] = []
+    has_input_feed = False
     for part in getattr(node, "parts", []) or []:
         pkind = getattr(part, "kind", None)
         if pkind == "word":
             argv.append(part.word)
         elif pkind == "redirect":
+            rtype = getattr(part, "type", None)
+            if rtype in _INPUT_FEED_REDIRECTS:
+                has_input_feed = True
+                continue
             out = getattr(part, "output", None)
             word = getattr(out, "word", None) if out is not None else None
             if word:
                 redirects.append(word)
-    return argv, redirects
+    return argv, redirects, has_input_feed
 
 
 def _is_assignment(token: str) -> bool:
@@ -153,6 +190,166 @@ def _basename(token: str) -> str:
 
 def _positionals(args: List[str]) -> List[str]:
     return [a for a in args if not a.startswith("-")]
+
+
+# ── Execution-modifier wrappers (C3a) ────────────────────────────────────────
+# A wrapper word is not itself the effecting command — it launches a leaf. The
+# classifier MUST recurse to the leaf and classify THERE; bubbling a wrapper's
+# own (benign) classification silently passes the leaf's effect. Privilege
+# wrappers (sudo/su/doas/pkexec) stay terminal-RED via _PRIV — not recursable.
+#
+# Strict fail-closed arity (operator-ruled): only each wrapper's KNOWN flags are
+# handled. Any unrecognized flag, missing operand, or non-literal command word
+# → RED opacity + ANDON-WRAPPER. No generic skip-flags loop.
+MAX_WRAPPER_DEPTH = 10
+
+# Per-wrapper flag spec:
+#   bool      : flags taking no argument
+#   arg_short : short flags taking an argument (attachable, e.g. -n10 / -uNAME)
+#   arg_long  : long flags taking an argument (space- or =-separated)
+#   red       : flags that force RED (semantics we will not statically model)
+#   pos       : count of leading wrapper-positionals BEFORE the command
+#               (timeout DURATION, chrt PRIORITY)
+#   neg_int   : wrapper accepts a bare -NUM adjustment (nice)
+#   no_operand_ok : a missing command operand is benign (xargs → echo)
+_WRAPPER_SPEC = {
+    "env": {
+        "bool": {"-i", "--ignore-environment", "-0", "--null", "-v", "--debug"},
+        "arg_short": {"-u", "-C"}, "arg_long": {"--unset", "--chdir"},
+        "red": {"-S", "--split-string", "-P", "--argv0", "-a"},
+        "pos": 0,
+    },
+    "nice": {
+        "bool": set(), "arg_short": {"-n"}, "arg_long": {"--adjustment"},
+        "red": set(), "pos": 0, "neg_int": True,
+    },
+    "timeout": {
+        "bool": {"--preserve-status", "--foreground", "-v", "--verbose"},
+        "arg_short": {"-s", "-k"}, "arg_long": {"--signal", "--kill-after"},
+        "red": set(), "pos": 1,
+    },
+    "nohup": {"bool": set(), "arg_short": set(), "arg_long": set(), "red": set(), "pos": 0},
+    "setsid": {
+        "bool": {"-f", "--fork", "-w", "--wait", "-c", "--ctty"},
+        "arg_short": set(), "arg_long": set(), "red": set(), "pos": 0,
+    },
+    "stdbuf": {
+        "bool": set(), "arg_short": {"-i", "-o", "-e"},
+        "arg_long": {"--input", "--output", "--error"}, "red": set(), "pos": 0,
+    },
+    "ionice": {
+        "bool": {"-t"}, "arg_short": {"-c", "-n"}, "arg_long": {"--class", "--classdata"},
+        "red": {"-p", "--pid", "-P", "-u", "--uid"}, "pos": 0,
+    },
+    "chrt": {
+        "bool": {"-b", "-f", "-i", "-o", "-r", "-R", "-d", "-m"},
+        "arg_short": set(), "arg_long": set(),
+        "red": {"-p", "--pid", "-a", "--all-tasks", "-v", "--verbose"}, "pos": 1,
+    },
+    "xargs": {
+        "bool": {
+            "-0", "--null", "-r", "--no-run-if-empty", "-t", "--verbose",
+            "-x", "--exit", "-p", "--interactive", "-o", "--open-tty",
+        },
+        "arg_short": {"-n", "-P", "-I", "-i", "-d", "-s", "-L", "-l", "-E", "-e", "-a"},
+        "arg_long": {
+            "--max-args", "--max-procs", "--replace", "--delimiter",
+            "--max-chars", "--max-lines", "--eof", "--arg-file",
+        },
+        "red": set(), "pos": 0, "no_operand_ok": True,
+    },
+}
+_WRAPPERS = frozenset(_WRAPPER_SPEC)
+
+
+def _is_literal_command_word(tok: str) -> bool:
+    """True iff *tok* is a concrete command word — not a variable / substitution
+    / computed target the AST cannot resolve to a leaf."""
+    return bool(tok) and "$" not in tok and "`" not in tok and not tok.startswith(("<(", ">("))
+
+
+def _strip_wrapper(exe: str, rest: List[str]) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Strip *exe*'s KNOWN flags (+ leading wrapper-positionals) from *rest* and
+    return (operand_argv, None), or (None, red_signature) on strict-arity
+    failure. Operand is the leaf command to recurse into."""
+    spec = _WRAPPER_SPEC[exe]
+    i, n = 0, len(rest)
+    while i < n:
+        tok = rest[i]
+        if tok == "--":
+            i += 1
+            break
+        if not tok.startswith("-") or tok == "-":
+            if exe == "env" and tok == "-":  # env: "-" == --ignore-environment
+                i += 1
+                continue
+            break  # positional region begins
+        if spec.get("neg_int") and len(tok) > 1 and tok[1:].lstrip("-").isdigit():
+            i += 1  # nice -10
+            continue
+        if tok in spec["red"]:
+            return None, f"opacity:wrapper-flag:{exe}"
+        if tok.startswith("--") and "=" in tok:
+            base = tok.split("=", 1)[0]
+            if base in spec["arg_long"]:
+                i += 1
+                continue
+            return None, f"opacity:wrapper-flag:{exe}"
+        if tok in spec["arg_long"]:
+            i += 2
+            continue
+        if tok in spec["bool"]:
+            i += 1
+            continue
+        short = tok[:2]
+        if short in spec["arg_short"]:
+            i += 1 if len(tok) > 2 else 2  # attached -n10 vs separate -n 10
+            continue
+        return None, f"opacity:wrapper-flag:{exe}"
+    if exe == "env":
+        while i < n and _is_assignment(rest[i]):
+            i += 1
+    for _ in range(spec["pos"]):  # consume DURATION / PRIORITY
+        if i >= n:
+            return None, f"opacity:wrapper-no-operand:{exe}"
+        i += 1
+    operand = rest[i:]
+    if not operand:
+        if spec.get("no_operand_ok"):
+            return ["echo"], None  # xargs with no command → echo (benign)
+        return None, f"opacity:wrapper-no-operand:{exe}"
+    return operand, None
+
+
+def _resolve_leaf(
+    argv: List[str], depth: int = 0, dynamic: bool = False,
+) -> Tuple[Optional[List[str]], Optional[str], bool]:
+    """Recurse execution-modifier wrappers to the ultimate leaf argv.
+
+    Returns (leaf_argv, None, dynamic) or (None, red_signature, dynamic). The
+    *dynamic* flag rides along — set once an ``xargs`` is crossed (the leaf's
+    operands then come from stdin, not statically bounded). NEVER returns the
+    wrapper's own classification.
+    """
+    if depth > MAX_WRAPPER_DEPTH:
+        return None, "opacity:wrapper-depth", dynamic
+    if not argv:
+        return None, "opacity:wrapper-empty", dynamic
+    exe = _basename(argv[0])
+    if exe not in _WRAPPERS:
+        return argv, None, dynamic  # leaf reached
+    operand, err = _strip_wrapper(exe, argv[1:])
+    if err is not None:
+        return None, err, dynamic
+    if exe == "xargs":
+        dynamic = True
+    if not _is_literal_command_word(operand[0]):
+        return None, "opacity:wrapper-dynamic", dynamic
+    return _resolve_leaf(operand, depth + 1, dynamic)
+
+
+def _is_andon_wrapper_sig(sig: str) -> bool:
+    return sig.startswith("opacity:wrapper-")
 
 
 # ── Governed / catastrophic / skills helpers ─────────────────────────────────
@@ -226,12 +423,92 @@ def _promoted_skill_subzone(script_token: str, rest: List[str]) -> Optional[Tupl
 # ── Per-node classification ──────────────────────────────────────────────────
 
 
+def _classify_find(rest: List[str]) -> Tuple[str, str]:
+    """Classify a ``find`` invocation by its REAL effect (C3a).
+
+    Action-flag-keyed: ``-delete`` → fs-mutation (catastrophic + governed check
+    on the search roots, like ``rm``); ``-exec``/``-execdir``/``-ok``/``-okdir``
+    → recurse into the executed command AND check the search roots; pure filters
+    (``-name``/``-print``/``-type`` …) → read (not RED).
+    """
+    # Search roots are the leading non-flag operands; the expression follows.
+    paths: List[str] = []
+    i = 0
+    while i < len(rest) and not rest[i].startswith("-"):
+        paths.append(rest[i])
+        i += 1
+    expr = rest[i:]
+
+    mutating = False
+    exec_red: Optional[str] = None
+    j = 0
+    while j < len(expr):
+        tok = expr[j]
+        if tok in ("-exec", "-execdir", "-ok", "-okdir"):
+            mutating = True
+            j += 1
+            cmd: List[str] = []
+            while j < len(expr) and expr[j] not in (";", "+", "\\;"):
+                cmd.append(expr[j])
+                j += 1
+            j += 1  # skip the ';' / '+' terminator
+            if cmd:
+                z, s = _classify_argv(cmd, 0, [])
+                if z == _RED and exec_red is None:
+                    exec_red = s
+            continue
+        if tok == "-delete":
+            mutating = True
+        j += 1
+
+    if mutating:
+        if _is_catastrophic_rm(paths):
+            return (_RED, "rm:catastrophic")
+        for p in paths:
+            if _is_governed(p):
+                return (_RED, "govwrite:find")
+        if exec_red is not None:
+            return (_RED, exec_red)
+        # Bounded mutation on non-governed paths → operator-gated, like rm file.
+        sig = "argv:" + hashlib.sha1(
+            json.dumps(["find"] + rest, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        return (_YELLOW, f"cmd:find:{sig}")
+
+    # Filters only → read.
+    sig = "argv:" + hashlib.sha1(
+        json.dumps(["find"] + rest, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    return (_YELLOW, f"cmd:find:{sig}")
+
+
 def _classify_node(node: object, pipe_stage: int) -> Tuple[str, str]:
     """Classify ONE command node → (zone, effect-signature)."""
-    argv_raw, redirects = _extract_command(node)
+    argv_raw, redirects, has_input_feed = _extract_command(node)
+    # Input-stream opacity: a herestring / file fed to stdin is invisible to
+    # static analysis → RED, regardless of receiver (no allowlist — awk
+    # system(), sed `e` would re-open the bypass on the receiving side).
+    if has_input_feed:
+        return (_RED, "opacity:input-redirect")
+    return _classify_argv(argv_raw, pipe_stage, redirects)
+
+
+def _classify_argv(
+    argv_raw: List[str], pipe_stage: int, redirects: List[str],
+    dynamic_targets: bool = False,
+) -> Tuple[str, str]:
+    """Classify a leaf argv (post-extraction). Recurses execution-modifier
+    wrappers to the real leaf before classifying. *dynamic_targets* is True when
+    the operands arrive from stdin (xargs) and so are not statically bounded."""
     argv = _strip_env(argv_raw)
     if not argv:
         return (_YELLOW, "empty")
+
+    # Wrapper recursion → resolve to the ultimate leaf (env/nice/timeout/xargs …).
+    leaf, red_sig, dynamic_targets = _resolve_leaf(argv, dynamic=dynamic_targets)
+    if red_sig is not None:
+        return (_RED, red_sig)  # ANDON-WRAPPER (depth / flag / dynamic / no-operand)
+    argv = leaf
 
     full0 = argv[0]
     exe = _basename(full0)
@@ -267,12 +544,20 @@ def _classify_node(node: object, pipe_stage: int) -> Tuple[str, str]:
         if pipe_stage > 0:
             return (_RED, f"opacity:pipe-into-{exe}")
 
+    # find — classify by its action flags (real effect), not blanket-mutator.
+    if exe == "find":
+        return _classify_find(rest)
+
     # Catastrophic delete.
     if exe == "rm" and _is_catastrophic_rm(rest):
         return (_RED, "rm:catastrophic")
 
-    # Filesystem mutators into a governed tree.
+    # Filesystem mutators.
     if exe in _FS_MUTATORS:
+        # Targets fed from stdin (xargs rm / xargs mv) are unbounded and not
+        # statically resolvable → fail closed (RED). xargs echo stays benign.
+        if dynamic_targets:
+            return (_RED, f"mutation:dynamic:{exe}")
         for t in _positionals(rest):
             if _is_governed(t):
                 return (_RED, f"govwrite:{exe}")
@@ -328,8 +613,9 @@ def classify_shell_effect(command: str) -> ZoneResult:
     if ctx.cmdsub:
         return _result(
             _RED, "shell.opacity.substitution",
-            "Command/process substitution ($(...), backticks, <(...)) — the "
-            "ultimate payload is not statically resolvable; refusing (RED).",
+            "Command substitution ($(...) / backticks) — the ultimate payload "
+            "is not statically resolvable; refusing (RED). (Process substitution "
+            "<(...) is recursed into and classified by its real effect.)",
             "opacity:substitution",
         )
 
@@ -349,9 +635,12 @@ def classify_shell_effect(command: str) -> ZoneResult:
     signature = "||".join(sorted(sigs))
 
     if worst == _RED:
+        # Surface ANDON-WRAPPER when the RED came from an unresolvable wrapper
+        # operand or exceeded recursion depth (discovery-gate condition).
+        andon = " [ANDON-WRAPPER]" if red_reason and _is_andon_wrapper_sig(red_reason) else ""
         return _result(
-            _RED, f"shell.effect.red ({red_reason})",
-            f"A command effect requires sovereign approval: {red_reason}.",
+            _RED, f"shell.effect.red ({red_reason}){andon}",
+            f"A command effect requires sovereign approval: {red_reason}.{andon}",
             signature,
         )
     # GREEN only for a SINGLE simple promoted-skill/read command with no other
