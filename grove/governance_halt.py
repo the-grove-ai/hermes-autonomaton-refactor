@@ -93,48 +93,16 @@ class TerminalGovernanceHalt(BaseException):
         terms (Andon / zone / sovereignty) the agent would parrot back — it
         states what happened and the operator's options, no judgment.
         """
-        ctx = self.context
-        tool = f" ({ctx.tool_name})" if ctx.tool_name else ""
-        if ctx.trigger == "quarantine":
-            named = f" '{ctx.skill_name}'" if ctx.skill_name else ""
-            what = (
-                f"This action would run an unapproved (quarantined) skill{named}. "
-                "It was not executed."
-            )
-            # §V ratchet — the operator may promote the named skill to live with
-            # a single approval (the operator's tap IS the act; the agent has no
-            # path to it). Offered alongside the standard three options.
-            if ctx.skill_name:
-                return (
-                    f"{what} I've stopped here rather than work around it. "
-                    f"Your options: promote '{ctx.skill_name}' to your live "
-                    "skills, cancel this request, handle it yourself, or tell me "
-                    "a different approach to take."
-                )
-        elif ctx.trigger == "governance_error":
-            what = (
-                f"This action{tool} could not be verified as governed and was "
-                "refused before it could run."
-            )
-        elif ctx.trigger == "tier_unavailable":
-            # Model-availability failure — no tool, no operator decline. State
-            # what happened plainly; no governance internals.
-            return (
-                "I couldn't reach the model for this work, and no backup is "
-                "configured to take over. I've stopped here rather than guess. "
-                "Your options: try again in a moment, cancel this request, or "
-                "configure a fallback model and retry."
-            )
-        else:  # red_sovereign / deny_hard
-            what = (
-                f"This action{tool} requires your approval and was declined. "
-                "It did not execute."
-            )
-        return (
-            f"{what} I've stopped here rather than work around it. "
-            "Your options: cancel this request, handle the action yourself, or "
-            "tell me a different approach to take."
-        )
+        # Sprint A (kaizen-voice) — this surface is now produced by the unified
+        # HaltEvent renderer. The wording is preserved byte-for-byte (wiring,
+        # not copy): the renderer reproduces exactly the per-trigger text this
+        # method used to inline. Imports are function-local because
+        # ``grove.halt_event`` imports THIS module for its boundary adapter — a
+        # module-level import here would be a cycle.
+        from grove.halt_event import halt_event_from_governance_context
+        from grove.halt_renderer import render_halt_event
+
+        return render_halt_event(halt_event_from_governance_context(self.context))
 
 
 def terminal_halt_result(
