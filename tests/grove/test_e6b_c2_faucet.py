@@ -26,6 +26,22 @@ from grove.capability import (
 )
 
 
+def _mint_active(name: str, category: str, body: str, use_count: int = 0):
+    """Mint an ACTIVE, executable skill record directly.
+
+    GRV-010 C2b deleted ``ingest_pre_faucet_skill`` (dead, un-audited minter);
+    these tests used it only as a setup helper to plant an ACTIVE record. This
+    exercises the same internal it wrapped (``_mint_skill_record``).
+    """
+    return reg._mint_skill_record(
+        name, category, body,
+        provenance=Provenance.AGENT_PROPOSED,
+        state=LifecycleState.ACTIVE,
+        filename_tag="ingested",
+        use_count=use_count,
+    )
+
+
 @pytest.fixture
 def grove_home(tmp_path, monkeypatch):
     """Isolate GROVE_HOME so mints, .andon, and skills land in tmp (no repo or
@@ -168,8 +184,8 @@ def test_revoke_active_to_proposed_non_executable(grove_home):
 
     name = "revoke-skill"
     body = _proposed_body(name)
-    # An active skill: ingest as ACTIVE + place the active body on disk.
-    reg.ingest_pre_faucet_skill(name, "creative", body)
+    # An active skill: mint an ACTIVE record + place the active body on disk.
+    _mint_active(name, "creative", body)
     active_dir = skills.active_path(name)
     active_dir.mkdir(parents=True, exist_ok=True)
     (active_dir / "SKILL.md").write_text(body, encoding="utf-8")
@@ -183,19 +199,22 @@ def test_revoke_active_to_proposed_non_executable(grove_home):
         resolve_skill_record(rec)  # non-executable again
 
 
-# ── ingest (4.4) ──────────────────────────────────────────────────────────────
+# ── ACTIVE record minting (formerly the 4.4 ingest) ───────────────────────────
 
 
-def test_ingest_pre_faucet_active_executable_with_use_count(grove_home):
+def test_mint_active_record_is_executable_with_use_count(grove_home):
+    # GRV-010 C2b — ingest_pre_faucet_skill was deleted; this proves the
+    # underlying ACTIVE-record mint still yields an executable record carrying
+    # use_count (the behavior the deleted wrapper relied on).
     from grove.skill_disclosure import resolve_skill_record
 
     name = "debugging-mcp-credentials"
     body = _proposed_body(name)
-    path = reg.ingest_pre_faucet_skill(name, "", body, use_count=2)
+    path = _mint_active(name, "", body, use_count=2)
     assert path is not None and path.name.startswith("skill__ingested__")
     cap = Capability.from_yaml(path.read_text(encoding="utf-8"))
     assert cap.lifecycle.state is LifecycleState.ACTIVE          # executable now
-    assert cap.lifecycle.provenance is Provenance.AGENT_PROPOSED  # pre-faucet
+    assert cap.lifecycle.provenance is Provenance.AGENT_PROPOSED
     assert cap.lifecycle.use_count == 2                           # carried
     assert resolve_skill_record(cap).startswith("<skill_reference_data>")
 
@@ -208,7 +227,7 @@ def _plant_active_skill(home: Path, name: str, body: str) -> str:
     d = home / "skills" / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "SKILL.md").write_text(body, encoding="utf-8")
-    reg.ingest_pre_faucet_skill(name, name, body)  # state=ACTIVE
+    _mint_active(name, name, body)  # state=ACTIVE
     return reg.skill_record_id_for_name(name)
 
 

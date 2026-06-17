@@ -2810,6 +2810,24 @@ def install_from_quarantine(
         content_hash(install_dir),
     )
 
+    # GRV-010 C2b — minter provenance. install_from_quarantine is operator-only
+    # (the ``hermes skills`` CLI / operator ``/skills`` slash / TUI-client RPC;
+    # no agent-loop path — GATE-A thread 3 ruling). Record a stateless
+    # sovereignty_decision (no SessionDB / active turn) so the hub install has an
+    # operator/CLI-attributed audit trail alongside the .hub lock + audit log.
+    try:
+        from grove.telemetry import log_sovereignty_decision
+        log_sovereignty_decision(
+            action="hub_install",
+            skill_name=safe_skill_name,
+            operator="operator/CLI",
+            scan_verdict=str(scan_result.verdict),
+            source_path=str(bundle.source),
+            dest_path=str(install_dir),
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("[skills_hub] hub_install provenance log failed (non-fatal)")
+
     # GRV-009 E6b C1 — static-registration hook: mint a read-only
     # provenance:installed / lifecycle:managed record for the newly installed
     # skill (dedup-guarded; no-op if a record already covers its id).

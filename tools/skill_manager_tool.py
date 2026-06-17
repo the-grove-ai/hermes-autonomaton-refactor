@@ -278,20 +278,54 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
     return SKILLS_DIR / name
 
 
-def _find_skill(name: str) -> Optional[Dict[str, Any]]:
+def _find_skill(
+    name: str, *, include_quarantine: bool = True,
+) -> Optional[Dict[str, Any]]:
     """
     Find a skill by name across all skill directories.
 
-    Searches the local skills dir (~/.grove/skills/) first, then any
-    external dirs configured via skills.external_dirs.  Returns
-    {"path": Path} or None.
+    GRV-010 C2b — STRICT TWO-PASS PRECEDENCE. The live active tree is searched
+    completely first and a hit returns immediately, so a quarantined (.andon)
+    copy being edited during Kaizen can NEVER shadow the live executable of the
+    same name. Only when the active search misses is the quarantine tree
+    consulted — making a quarantined skill resolvable-but-non-executable (the
+    invoke_skill EXECUTABLE_STATES guard remains the sole execution gate; this
+    resolution is for authoring + the §V operator-approved promotion path).
+
+    ``include_quarantine=False`` runs pass 1 ONLY (active tree). The collision
+    check in ``_create_skill`` uses this: a re-proposal must overwrite the prior
+    ``.andon`` proposal, so it must NOT see the quarantine copy as a collision —
+    only a live ACTIVE skill of the same name blocks a new proposal.
+
+    Searches the local skills dir (~/.grove/skills/) plus any external dirs
+    configured via skills.external_dirs. Returns {"path": Path} or None.
     """
     from agent.skill_utils import EXCLUDED_SKILL_DIRS, get_all_skills_dirs
-    for skills_dir in get_all_skills_dirs():
-        if not skills_dir.exists():
-            continue
+    from grove.skills import ANDON_DIRNAME
+
+    skills_dirs = [d for d in get_all_skills_dirs() if d.exists()]
+
+    # Pass 1 — the live active tree only (quarantine + other excluded dirs
+    # pruned). Return on the first hit: the active executable wins outright.
+    for skills_dir in skills_dirs:
         for skill_md in skills_dir.rglob("SKILL.md"):
             if any(part in EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
+            if skill_md.parent.name == name:
+                return {"path": skill_md.parent}
+
+    if not include_quarantine:
+        return None
+
+    # Pass 2 — quarantine ONLY (the active tree missed). Still exclude
+    # .git/.github/.hub/.archive; require the .andon segment to be present.
+    andon_excluded = EXCLUDED_SKILL_DIRS - {ANDON_DIRNAME}
+    for skills_dir in skills_dirs:
+        for skill_md in skills_dir.rglob("SKILL.md"):
+            parts = skill_md.parts
+            if ANDON_DIRNAME not in parts:
+                continue
+            if any(part in andon_excluded for part in parts):
                 continue
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
@@ -411,9 +445,11 @@ def _create_skill(
         return {"success": False, "error": err}
 
     # Collision check: ACTIVE skills only. A re-proposal in .andon/ overwrites
-    # the prior proposal — promotion is the irreversible step. ``.andon`` is
-    # listed in EXCLUDED_SKILL_DIRS so _find_skill naturally skips it.
-    existing = _find_skill(name)
+    # the prior proposal — promotion is the irreversible step. GRV-010 C2b:
+    # _find_skill now resolves .andon copies via two-pass, so this check passes
+    # include_quarantine=False to stay active-only (a quarantine copy is NOT a
+    # collision — re-proposal overwrites it).
+    existing = _find_skill(name, include_quarantine=False)
     if existing:
         return {
             "success": False,
@@ -570,9 +606,12 @@ def _require_andon_target(existing: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         (#4759/#4381); C1b does not touch that.
 
     The live grove tree is immutable from the agent's side: author to ``.andon``
-    (action='create') and promote via the operator-approved mechanism. (The
-    promotion-to-live path is C2 — until it lands this is fail-closed: authoring
-    works, promotion is stranded. Accepted interlock.)
+    (action='create') and promote via the operator-approved mechanism. Promotion
+    is NOT stranded — ``grove.sovereignty.promote()`` moves an approved skill
+    from ``.andon`` to the live tree with a ledgered ``sovereignty_decision``
+    record, surfaced as the operator-only 1-tap at the quarantine Andon halt
+    (GRV-010 C2b §V ratchet) and via ``hermes andon promote``. The agent has no
+    path to trigger it — the operator's tap IS the Stage-04 act.
     """
     from grove.utils.fs_utils import is_governed_path
     try:

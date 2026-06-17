@@ -266,6 +266,7 @@ from grove.sovereign_prompt_handlers import (
 )
 from grove.operator_input import OperatorInputRequired
 from grove.governance_halt import TerminalGovernanceHalt
+from grove.skills import ANDON_DIRNAME
 
 
 # ── Sprint 32 Phase 3a — red-zone strike threshold ────────────────────
@@ -344,7 +345,9 @@ _T0_RESPONSE_CONTENT_CAP = 4000
 # terminal command that references ``~/.grove/skills/.andon/<name>/``.
 # ``path`` captures the quarantine directory; ``name`` the skill folder.
 _ANDON_SKILL_RE = re.compile(
-    r"(?P<path>[^\s'\"]*\.grove/skills/\.andon/(?P<name>[^/\s'\"]+))"
+    r"(?P<path>[^\s'\"]*\.grove/skills/"
+    + re.escape(ANDON_DIRNAME)
+    + r"/(?P<name>[^/\s'\"]+))"
 )
 
 
@@ -1487,7 +1490,7 @@ class Dispatcher:
                             # improvise around. Ordinary Yellow declines keep the
                             # unchanged soft-observation path below.
                             _matched = getattr(halt, "matched_rule", "") or ""
-                            _is_quarantine = ".andon" in _matched
+                            _is_quarantine = ANDON_DIRNAME in _matched
                             if (
                                 disposition == "deny_hard"
                                 or halt.zone == "red"
@@ -1504,6 +1507,15 @@ class Dispatcher:
                                 else:
                                     _trigger = "red_sovereign"
                                 _trig_intent = halt.intents[halt.triggering_index]
+                                # GRV-010 C2b §V — for a quarantine halt, resolve
+                                # the promote target (skill name + .andon path)
+                                # off the triggering intent so the surface can
+                                # offer the operator-only 1-tap promote.
+                                _skill_name = _skill_path = None
+                                if _trigger == "quarantine":
+                                    _skill_name, _skill_path = (
+                                        self._extract_quarantine_target(_trig_intent)
+                                    )
                                 raise TerminalGovernanceHalt(
                                     GovernanceHaltContext(
                                         trigger=_trigger,
@@ -1513,6 +1525,8 @@ class Dispatcher:
                                         zone=halt.zone,
                                         matched_rule=_matched or None,
                                         reason=getattr(halt, "reason", None),
+                                        skill_name=_skill_name,
+                                        skill_path=_skill_path,
                                     )
                                 )
                             # Ordinary Yellow decline — unchanged soft path.
@@ -4095,6 +4109,36 @@ class Dispatcher:
 
     # ── Sprint 53.2 — post-execution skill promotion ────────────────────
 
+    def _extract_quarantine_target(
+        self, intent: Any,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Resolve ``(skill_name, skill_path)`` for a quarantined-skill
+        invocation off the triggering intent — the GRV-010 C2b §V promote
+        target. Mirrors ``_maybe_flag_quarantine_execution``'s resolution: a
+        ``terminal`` command matches ``_ANDON_SKILL_RE``; ``skill_view`` /
+        ``invoke_skill`` carry the name in arguments (path = its .andon dir).
+        Returns ``(None, None)`` when no quarantine target resolves.
+        """
+        tool_name = getattr(intent, "tool_name", None)
+        arguments = getattr(intent, "arguments", None)
+        arguments = arguments if isinstance(arguments, dict) else {}
+        if tool_name == "terminal":
+            command = arguments.get("command")
+            if not command:
+                return None, None
+            match = _ANDON_SKILL_RE.search(command)
+            if match is None:
+                return None, None
+            return match.group("name"), match.group("path")
+        if tool_name in ("skill_view", "invoke_skill"):
+            name = arguments.get("name")
+            if not isinstance(name, str) or not name.strip():
+                return None, None
+            from grove.skills import proposal_path
+            _n = name.strip()
+            return _n, str(proposal_path(_n))
+        return None, None
+
     def _maybe_flag_quarantine_execution(
         self,
         intent: Any,
@@ -4117,7 +4161,7 @@ class Dispatcher:
         """
         if disposition != "once":
             return
-        if ".andon" not in (getattr(halt, "matched_rule", "") or ""):
+        if ANDON_DIRNAME not in (getattr(halt, "matched_rule", "") or ""):
             return
         tool_name = getattr(intent, "tool_name", None)
         arguments = getattr(intent, "arguments", None)

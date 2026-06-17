@@ -60,6 +60,12 @@ class GovernanceHaltContext:
     reason: Optional[str] = None
     detail: Optional[str] = None
     fallback: FailureFallback = FailureFallback.HALT_AND_SURFACE
+    # GRV-010 C2b §V ratchet — the promote target for a ``quarantine`` halt: the
+    # quarantined skill's name (capability id) and its .andon path. Populated at
+    # the Level-1 quarantine raise site so the surface can offer the operator-only
+    # 1-tap promote. None for non-quarantine triggers.
+    skill_name: Optional[str] = None
+    skill_path: Optional[str] = None
 
 
 class TerminalGovernanceHalt(BaseException):
@@ -81,10 +87,21 @@ class TerminalGovernanceHalt(BaseException):
         ctx = self.context
         tool = f" ({ctx.tool_name})" if ctx.tool_name else ""
         if ctx.trigger == "quarantine":
+            named = f" '{ctx.skill_name}'" if ctx.skill_name else ""
             what = (
-                f"This action would run an unapproved (quarantined) skill{tool}. "
+                f"This action would run an unapproved (quarantined) skill{named}. "
                 "It was not executed."
             )
+            # §V ratchet — the operator may promote the named skill to live with
+            # a single approval (the operator's tap IS the act; the agent has no
+            # path to it). Offered alongside the standard three options.
+            if ctx.skill_name:
+                return (
+                    f"{what} I've stopped here rather than work around it. "
+                    f"Your options: promote '{ctx.skill_name}' to your live "
+                    "skills, cancel this request, handle it yourself, or tell me "
+                    "a different approach to take."
+                )
         elif ctx.trigger == "governance_error":
             what = (
                 f"This action{tool} could not be verified as governed and was "
@@ -130,4 +147,24 @@ def terminal_halt_result(
         "failure_fallback": ctx.fallback.value,
         "error": f"governed turn terminated ({ctx.trigger}) — fail-loud, no improvisation",
     }
+    # §V ratchet — surface the operator-only 1-tap promote target for a
+    # quarantine halt. The surface renders this as an actionable option; the tap
+    # invokes :func:`operator_promote_quarantined` (operator action, never agent).
+    if ctx.trigger == "quarantine" and ctx.skill_name:
+        result["governance_promote_target"] = ctx.skill_name
     return result
+
+
+def operator_promote_quarantined(skill_name: str, *, replace: bool = False) -> Dict[str, Any]:
+    """OPERATOR-ONLY §V ratchet — promote a quarantined skill to the live tree.
+
+    This is the action behind the 1-tap offered at a ``quarantine`` halt. It is
+    a thin wrapper over the existing operator-approved, ledgered
+    :func:`grove.sovereignty.promote` (which writes a ``sovereignty_decision``
+    provenance record). §V invariant: the system cannot promote itself — only an
+    operator, by tapping/typing the promotion at the surface, may invoke this.
+    The agent's autonomous turn has already TERMINATED at the halt and has no
+    path here; the tap IS the Stage-04 operator act.
+    """
+    from grove.sovereignty import promote
+    return promote(skill_name, replace=replace)
