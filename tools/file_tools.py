@@ -8,7 +8,7 @@ import os
 import threading
 from pathlib import Path
 
-from agent.file_safety import get_read_block_error
+from agent.file_safety import get_read_block_error, reject_governed_agent_read
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations,
@@ -499,6 +499,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         if block_error:
             return json.dumps({"error": block_error})
 
+        # ── Governed-tree read guard (GRV-010 C3b) ────────────────────
+        # Blind the generic read_file tool to the ~/.grove governance tree
+        # (config, operator secrets like .env, the live skills tree) — the
+        # read counterpart to the write/move/delete chokepoint. The .andon
+        # authoring quarantine stays readable. Checked on the resolved path
+        # so symlinks and ../ traversal are canonicalized. Internal readers
+        # (skill_view/prompt_builder, which use Path.read_text directly) are
+        # unaffected — this guard is scoped to the agent read_file tool.
+        governed_read_error = reject_governed_agent_read(str(_resolved))
+        if governed_read_error:
+            return json.dumps({"error": governed_read_error})
+
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
         # file hasn't been modified since, return a lightweight stub
@@ -881,6 +893,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         import re as _re
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
             _paths_to_check.append(_m.group(1).strip())
+        # GRV-010 C3b — also extract BOTH endpoints of a Move verb. Belt-and-
+        # suspenders: the load-bearing Move closure is the ShellFileOperations
+        # chokepoint, but surfacing the Move paths here lets the governed-path
+        # and sensitive-path walls refuse them early too.
+        for _m in _re.finditer(r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE):
+            _paths_to_check.append(_m.group(1).strip())
+            _paths_to_check.append(_m.group(2).strip())
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:

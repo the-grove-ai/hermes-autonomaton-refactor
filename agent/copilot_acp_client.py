@@ -21,7 +21,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent.file_safety import get_read_block_error, is_write_denied
+from agent.file_safety import (
+    get_read_block_error,
+    is_write_denied,
+    reject_governed_agent_read,
+    reject_governed_agent_write,
+)
 from agent.redact import redact_sensitive_text
 
 ACP_MARKER_BASE_URL = "acp://copilot"
@@ -636,6 +641,10 @@ class CopilotACPClient:
                 block_error = get_read_block_error(str(path))
                 if block_error:
                     raise PermissionError(block_error)
+                # GRV-010 C3b — blind the ACP read surface to the governed tree.
+                governed_read_error = reject_governed_agent_read(str(path))
+                if governed_read_error:
+                    raise PermissionError(governed_read_error)
                 content = path.read_text() if path.exists() else ""
                 line = params.get("line")
                 limit = params.get("limit")
@@ -662,6 +671,9 @@ class CopilotACPClient:
                     raise PermissionError(
                         f"Write denied: '{path}' is a protected system/credential file."
                     )
+                # GRV-010 C3b — governed-tree wall on the ACP write surface,
+                # before the raw write_text (realpath-resolved, .andon allowed).
+                reject_governed_agent_write(str(path))
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(str(params.get("content") or ""))
                 response = {
