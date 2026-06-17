@@ -14,11 +14,13 @@ Classification (most-restrictive-wins across all command nodes in a chain/pipe):
   (``curl x | bash``, ``base64 -d | sh``), an input feed to stdin (``<`` / ``<<``
   / ``<<<`` — herestring or file, opaque regardless of receiver), an
   execution-modifier wrapper whose leaf cannot be resolved (depth>10, unknown
-  flag, variable/`$()` command word — C3a ANDON-WRAPPER), or a command that
-  will not parse. Execution-modifier wrappers (``env``/``nice``/``timeout``/
-  ``nohup``/``setsid``/``stdbuf``/``ionice``/``chrt``/``xargs``) are recursed
-  THROUGH to the real leaf and classified there; process substitution ``<(...)``
-  is recursed INTO and classified by its real effect.
+  flag, variable/`$()` command word, ``--``-as-leaf, unresolvable ``env -S`` —
+  ANDON-WRAPPER), or a command that will not parse. Execution-modifier wrappers
+  (``env``/``nice``/``timeout``/``nohup``/``setsid``/``stdbuf``/``ionice``/
+  ``chrt``/``xargs``) are recursed THROUGH to the real leaf and classified
+  there (``env -S`` split-string is tokenized and recursed). Process
+  substitution ``<(...)`` / ``>(...)`` is blanket-RED opacity (a consumer may
+  execute the FIFO content; C3a-fix v1.1 reverted the unsound recursion).
 * RED (privilege): ``sudo`` / ``su`` / ``doas``.
 * RED (catastrophic): ``rm`` of ``/`` or ``~`` (or ``--no-preserve-root``). INV-9.
 * RED (governed write): a write/delete/move/redirect whose target resolves into
@@ -103,16 +105,16 @@ def _walk(node: object, ctx: _Ctx, pipe_stage: int = 0) -> None:
         ctx.cmdsub = True
         return
     if kind == "processsubstitution":
-        # <(...) / >(...) — bashlex surfaces the contained command as a
-        # traversable sub-AST (.command). C3a: RECURSE and classify its real
-        # effect, rather than blanket-RED. The inner commands join ctx.commands
-        # and are classified by the normal loop (a fresh pipe context).
-        inner = getattr(node, "command", None)
-        if inner is not None:
-            _walk(inner, ctx, pipe_stage=0)
-        else:
-            # Can't see the inner AST → fail closed.
-            ctx.cmdsub = True
+        # <(...) / >(...) — blanket RED opacity (C3a-fix revert).
+        #
+        # C3a recursed into .command and classified the INNER command's static
+        # effect. That is UNSOUND when the consumer EXECUTES the FIFO: the
+        # runtime payload is the inner command's *stdout*, not its
+        # classification — bash <(echo "rm -rf ~") runs "rm -rf ~" though
+        # `echo` is benign; tee >(sh) feeds sh whatever is teed. Fail closed.
+        # (A fail-closed data-only-consumer allowlist — diff/comm/paste/join,
+        # exec-capable consumers excluded — is deferred, not in v1.1.)
+        ctx.cmdsub = True
         return
     if kind == "command":
         ctx.commands.append((node, pipe_stage))
@@ -214,9 +216,12 @@ MAX_WRAPPER_DEPTH = 10
 #   no_operand_ok : a missing command operand is benign (xargs → echo)
 _WRAPPER_SPEC = {
     "env": {
+        # -S / --split-string is NOT red here — it is tokenized and recursed
+        # in _strip_wrapper (env -S is an execution vector; its split-string IS
+        # the command). Unresolvable split-string → RED + ANDON-WRAPPER there.
         "bool": {"-i", "--ignore-environment", "-0", "--null", "-v", "--debug"},
         "arg_short": {"-u", "-C"}, "arg_long": {"--unset", "--chdir"},
-        "red": {"-S", "--split-string", "-P", "--argv0", "-a"},
+        "red": {"-P", "--argv0", "-a"},
         "pos": 0,
     },
     "nice": {
@@ -287,6 +292,28 @@ def _strip_wrapper(exe: str, rest: List[str]) -> Tuple[Optional[List[str]], Opti
         if spec.get("neg_int") and len(tok) > 1 and tok[1:].lstrip("-").isdigit():
             i += 1  # nice -10
             continue
+        # env -S "<string>" — the split-string IS the command. Tokenize it and
+        # return as the operand to recurse. Any failure → RED + ANDON-WRAPPER.
+        if exe == "env" and (
+            tok == "-S" or tok == "--split-string"
+            or tok.startswith("-S") or tok.startswith("--split-string=")
+        ):
+            import shlex
+            if tok.startswith("--split-string="):
+                val = tok.split("=", 1)[1]
+            elif tok in ("-S", "--split-string"):
+                if i + 1 >= n:
+                    return None, "opacity:wrapper-no-operand:env"
+                val = rest[i + 1]
+            else:  # attached short form: -S<string>
+                val = tok[2:]
+            try:
+                split = shlex.split(val)
+            except ValueError:
+                return None, "opacity:wrapper-flag:env"  # unresolvable split-string
+            if not split:
+                return None, "opacity:wrapper-no-operand:env"
+            return split, None
         if tok in spec["red"]:
             return None, f"opacity:wrapper-flag:{exe}"
         if tok.startswith("--") and "=" in tok:
@@ -312,6 +339,14 @@ def _strip_wrapper(exe: str, rest: List[str]) -> Tuple[Optional[List[str]], Opti
     for _ in range(spec["pos"]):  # consume DURATION / PRIORITY
         if i >= n:
             return None, f"opacity:wrapper-no-operand:{exe}"
+        i += 1
+    # POSIX end-of-options `--` can appear AFTER assignments / the duration /
+    # priority — not only inside the flag loop. Strip one here (position-
+    # independent) so it is never mistaken for the leaf command word
+    # (env A=1 -- sh -c …, timeout 5 -- sh -c …). Each wrapper level strips its
+    # own single `--`; a `--` that is a genuine arg to the resolved leaf is not
+    # at the operand head and is left intact.
+    if i < n and rest[i] == "--":
         i += 1
     operand = rest[i:]
     if not operand:
@@ -453,7 +488,12 @@ def _classify_find(rest: List[str]) -> Tuple[str, str]:
                 j += 1
             j += 1  # skip the ';' / '+' terminator
             if cmd:
-                z, s = _classify_argv(cmd, 0, [])
+                # The executed command runs once per matched file — a dynamic,
+                # stdin-equivalent fileset. dynamic_targets=True so an fs-mutator
+                # leaf (rm/mv/…) → RED (mutation:dynamic), while echo/grep/cat →
+                # benign. -ok/-okdir execute like -exec (with a prompt) — same
+                # hostility, same recursion.
+                z, s = _classify_argv(cmd, 0, [], dynamic_targets=True)
                 if z == _RED and exec_red is None:
                     exec_red = s
             continue
@@ -613,9 +653,9 @@ def classify_shell_effect(command: str) -> ZoneResult:
     if ctx.cmdsub:
         return _result(
             _RED, "shell.opacity.substitution",
-            "Command substitution ($(...) / backticks) — the ultimate payload "
-            "is not statically resolvable; refusing (RED). (Process substitution "
-            "<(...) is recursed into and classified by its real effect.)",
+            "Command or process substitution ($(...) / backticks / <(...) / "
+            ">(...)) — the ultimate payload is not statically resolvable (a "
+            "consumer may EXECUTE the FIFO content); refusing (RED).",
             "opacity:substitution",
         )
 
