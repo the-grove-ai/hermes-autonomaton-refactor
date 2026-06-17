@@ -109,3 +109,58 @@ def get_read_block_error(path: str) -> Optional[str]:
             "Use the skills_list or skill_view tools instead."
         )
     return None
+
+
+# ---------------------------------------------------------------------------
+# GRV-010 C3b — substrate-altitude agent FS guard.
+#
+# The single source of truth for "may a GENERIC AGENT file operation touch this
+# path?" — kept here so ALL agent FS policy lives in one module. Both helpers
+# delegate the boundary decision to ``grove.utils.fs_utils.is_governed_path``,
+# which realpath-canonicalizes (collapsing symlinks AND ``..``) before matching
+# and allowlists the ``~/.grove/skills/.andon/`` authoring quarantine.
+#
+# These guards apply ONLY to the agent file-op surface (the ShellFileOperations
+# write/move/delete chokepoint, the read_file tool, and the Copilot ACP shim).
+# Internal system loaders and the sanctioned governance/skill doors call the raw
+# Python primitives directly and are NOT routed through here — by design.
+# ---------------------------------------------------------------------------
+
+GOVERNED_READ_MESSAGE = (
+    "Governed path: generic file tools cannot read inside ~/.grove "
+    "(governance config, operator secrets, or the live skills tree). Use "
+    "skill_view / skills_list for skill content; governance config and secrets "
+    "are operator-only. The ~/.grove/skills/.andon/ authoring quarantine "
+    "remains readable."
+)
+
+
+def reject_governed_agent_write(path: object) -> None:
+    """Raise ``PermissionError`` when an agent file-op targets the governed
+    ``~/.grove`` tree (``.andon`` quarantine allowlisted).
+
+    Realpath-resolved at consume — call this immediately before the raw FS
+    write/move/delete so a symlinked or ``..``-traversed destination is
+    canonicalized before the check. The raised ``PermissionError`` is already
+    classified as an expected write denial by the file tools, so callers turn
+    it into a clean tool error.
+    """
+    from grove.utils.fs_utils import GOVERNED_PATH_MESSAGE, is_governed_path
+
+    if is_governed_path(path):
+        raise PermissionError(GOVERNED_PATH_MESSAGE)
+
+
+def reject_governed_agent_read(path: object) -> Optional[str]:
+    """Return an error message when a generic agent read targets the governed
+    ``~/.grove`` tree (``.andon`` quarantine allowlisted), else ``None``.
+
+    Mirrors :func:`get_read_block_error`'s return-string contract so the
+    read_file tool can surface it as a tool error. Realpath-resolved via
+    ``is_governed_path``.
+    """
+    from grove.utils.fs_utils import is_governed_path
+
+    if is_governed_path(path):
+        return GOVERNED_READ_MESSAGE
+    return None

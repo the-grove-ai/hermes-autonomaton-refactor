@@ -39,6 +39,7 @@ from agent.file_safety import (
     build_write_denied_prefixes,
     get_safe_write_root as _shared_get_safe_write_root,
     is_write_denied as _shared_is_write_denied,
+    reject_governed_agent_write,
 )
 
 
@@ -854,6 +855,10 @@ class ShellFileOperations(FileOperations):
 
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file via rm."""
+        # GRV-010 C3b — agent-FS chokepoint: realpath-resolved governed-path
+        # wall before the raw rm. Raises PermissionError on the governed tree
+        # (.andon allowlisted), regardless of how this method was reached.
+        reject_governed_agent_write(path)
         path = self._expand_path(path)
         if _is_write_denied(path):
             return WriteResult(error=f"Delete denied: {path} is a protected path")
@@ -864,6 +869,12 @@ class ShellFileOperations(FileOperations):
 
     def move_file(self, src: str, dst: str) -> WriteResult:
         """Move a file via mv."""
+        # GRV-010 C3b — agent-FS chokepoint: check BOTH endpoints against the
+        # governed-path wall before the raw mv. This is the load-bearing closure
+        # for the V4A Move verb, which never surfaced a path to the file_tools
+        # governed-path extraction. Realpath-resolved (.andon allowlisted).
+        reject_governed_agent_write(src)
+        reject_governed_agent_write(dst)
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
@@ -902,6 +913,12 @@ class ShellFileOperations(FileOperations):
         Returns:
             WriteResult with bytes written, lint summary, or error.
         """
+        # GRV-010 C3b — agent-FS chokepoint: realpath-resolved governed-path
+        # wall before any write. Raises PermissionError on the governed tree
+        # (.andon allowlisted), regardless of how this method was reached
+        # (write_file tool, patch_replace, every V4A verb).
+        reject_governed_agent_write(path)
+
         # Expand ~ and other shell paths
         path = self._expand_path(path)
 
