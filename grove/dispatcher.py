@@ -4688,6 +4688,18 @@ class Dispatcher:
         directive prevents the agent from looping within the turn.
         """
         from grove.intents import Observation
+        # Sprint A (kaizen-voice) — these RAW deny observations are now produced
+        # by the unified HaltEvent renderer (wiring, not copy: wording preserved
+        # byte-for-byte).
+        from grove.halt_event import (
+            HaltCapabilities,
+            HaltEvent,
+            HaltSeverity,
+            HaltTrigger,
+            OriginatingLayer,
+            WhatHalted,
+        )
+        from grove.halt_renderer import render_halt_event
 
         # CAREFUL: `or []` here would replace the agent's empty messages
         # list with a fresh detached list; mutations would not propagate
@@ -4698,11 +4710,18 @@ class Dispatcher:
         observations: List[Any] = []
         for intent in intents:
             if hard:
-                denial = (
-                    f"HARD DENIAL: This action is prohibited. "
-                    f"Do not attempt this tool with these arguments again. "
-                    f"(tool: {intent.tool_name})"
-                )
+                # A flat prohibition: TERMINAL, and — unlike the C2a deny_hard
+                # surface — NO operator-run path (this is the "do not retry"
+                # directive, not "handle it yourself"). Capabilities are the
+                # producer's structural fact; the wording is unchanged.
+                denial = render_halt_event(HaltEvent(
+                    trigger=HaltTrigger.DENY_HARD,
+                    what_halted=WhatHalted(tool_name=intent.tool_name),
+                    zone=None,
+                    severity=HaltSeverity.TERMINAL,
+                    originating_layer=OriginatingLayer.TOOL_BOUNDARY,
+                    capabilities=HaltCapabilities(can_operator_run=False),
+                ))
                 metadata = {
                     "disposition": "deny_hard",
                     "reason": "andon_hard_denial",
@@ -4713,11 +4732,21 @@ class Dispatcher:
                 # The agent reads this Observation value; it must NOT carry
                 # governance implementation terms (Andon / zone / sovereignty)
                 # it would then parrot to the operator.
-                denial = (
-                    f"This action was paused and the operator declined to run "
-                    f"it ('{intent.tool_name}'). It did not execute. Continue "
-                    f"with an alternative approach."
-                )
+                #
+                # This OPERATOR_DECLINE observation is the AGENT'S re-plan signal.
+                # It is NON_TERMINAL and non-feed-worthy (Orchestration Bus, off
+                # the operator's permanent feed) — but it MUST still reach the
+                # model. It does: the renderer only changes how the text is
+                # produced; the ``msgs.append`` and ``Observation`` below still
+                # deliver it to the model verbatim.
+                denial = render_halt_event(HaltEvent(
+                    trigger=HaltTrigger.OPERATOR_DECLINE,
+                    what_halted=WhatHalted(tool_name=intent.tool_name),
+                    zone=None,
+                    severity=HaltSeverity.NON_TERMINAL,
+                    originating_layer=OriginatingLayer.TOOL_BOUNDARY,
+                    capabilities=HaltCapabilities(),
+                ))
                 metadata = {
                     "disposition": "deny",
                     "reason": "andon_deny",

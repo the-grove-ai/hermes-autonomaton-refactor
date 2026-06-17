@@ -237,23 +237,31 @@ def render_red_surface(command: str, zone_result) -> str:
     ``check_all_command_guards`` in ``tools/approval.py`` — can place it in
     the dispatch return dict alongside ``approved: False``.
     """
-    snippet = command if len(command) <= 120 else command[:117] + "…"
-
-    # Sprint 60 — butler register, tightened to <=6 lines, implementation
-    # jargon ("tool dispatch") stripped, and the raw rule id kept OUT of
-    # operator text (it lives in the Kaizen Ledger, not here). What stays:
-    # name the command, name the file to edit, name the reload.
-    return (
-        "That's in your direct control — here's how.\n"
-        "\n"
-        f"The command `{snippet}` needs privileges I deliberately don't "
-        f"hold — sudo / su / doas stay with you, never with me. Run it "
-        f"yourself in a terminal that has your credentials, then paste back "
-        f"anything I need to keep going.\n"
-        "\n"
-        "To move this line, edit `~/.grove/zones.schema.yaml` (the "
-        "`red.sovereign` list) and restart me."
+    # Sprint A (kaizen-voice) — this red-zone privilege surface is now produced
+    # by the unified HaltEvent renderer (wiring, not copy: the Sprint 60 butler
+    # wording, including the <=120-char snippet truncation, is preserved
+    # byte-for-byte; the renderer owns the truncation). The halt is NON_TERMINAL
+    # (the caller in ``tools/approval.py`` returns ``approved: False`` and the
+    # agent may re-plan) and steering-capable (``can_operator_run`` — "run it
+    # yourself"), so the Feed Invariant routes it TO the operator feed.
+    from grove.halt_event import (
+        HaltCapabilities,
+        HaltEvent,
+        HaltSeverity,
+        HaltTrigger,
+        OriginatingLayer,
+        WhatHalted,
     )
+    from grove.halt_renderer import render_halt_event
+
+    return render_halt_event(HaltEvent(
+        trigger=HaltTrigger.PRIVILEGE_REQUIRED,
+        what_halted=WhatHalted(summary=command),
+        zone=getattr(zone_result, "zone", None),
+        severity=HaltSeverity.NON_TERMINAL,
+        originating_layer=OriginatingLayer.TOOL_BOUNDARY,
+        capabilities=HaltCapabilities(can_cancel=True, can_operator_run=True),
+    ))
 
 
 # ----- Kaizen sovereign prompt -----------------------------------------------
