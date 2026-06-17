@@ -2033,30 +2033,15 @@ class AIAgent:
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
-        # Provider fallback chain — ordered list of backup providers tried
-        # when the primary is exhausted (rate-limit, overload, connection
-        # failure).  Supports both legacy single-dict ``fallback_model`` and
-        # new list ``fallback_providers`` format.
-        if isinstance(fallback_model, list):
-            self._fallback_chain = [
-                f for f in fallback_model
-                if isinstance(f, dict) and f.get("provider") and f.get("model")
-            ]
-        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-            self._fallback_chain = [fallback_model]
-        else:
-            self._fallback_chain = []
-        self._fallback_index = 0
+        # GRV-010 C2d-2 — the ungoverned mid-turn fallback chain is removed.
+        # Model substitution on failure is now the Cognitive Router's governed
+        # decision (routing.config.yaml ``fallback_tier`` → re-route through the
+        # router, ledger-logged; else fail loud). The ``fallback_model`` kwarg
+        # is still accepted (init-time startup provider resolution above can use
+        # it when the primary provider is unconfigured) but no longer seeds an
+        # in-loop retry-substitution chain. ``_fallback_activated`` is retained
+        # as init-time-only state (read by _try_recover_primary_transport).
         self._fallback_activated = getattr(self, "_fallback_activated", False)
-        # Legacy attribute kept for backward compat (tests, external callers)
-        self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
-        if self._fallback_chain and not self.quiet_mode:
-            if len(self._fallback_chain) == 1:
-                fb = self._fallback_chain[0]
-                print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
-            else:
-                print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
-                      " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering.
         # Sprint 53 — the Dispatcher supplies a capability provider
@@ -2685,7 +2670,7 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
-            # Context engine state that _try_activate_fallback() overwrites.
+            # Context engine state snapshot for primary-transport recovery.
             # Use getattr for model/base_url/api_key/provider since plugin
             # engines may not have these (they're ContextCompressor-specific).
             "compressor_model": getattr(_cc, "model", self.model),
@@ -3519,10 +3504,11 @@ class AIAgent:
         swap: rebuilding clients, updating caching flags, and refreshing
         the context compressor.
 
-        The implementation mirrors ``_try_activate_fallback()`` for the
-        client-swap logic but also updates ``_primary_runtime`` so the
-        change persists across turns (unlike fallback which is
-        turn-scoped).
+        The implementation performs the in-place client swap and updates
+        ``_primary_runtime`` so the change persists across turns. This is the
+        shared bind path the Cognitive Router's governed downshift
+        (``Dispatcher._bind_agent_to_tier``) uses — it is NOT the deleted
+        ungoverned fallback chain.
         """
         from hermes_cli.providers import determine_api_mode
 
@@ -3678,27 +3664,10 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
-        # ── Reset fallback state ──
+        # ── Reset init-time fallback state ──
+        # GRV-010 C2d-2 — a deliberate provider swap clears the init-time
+        # startup-fallback flag; the in-loop fallback chain no longer exists.
         self._fallback_activated = False
-        self._fallback_index = 0
-
-        # When the user deliberately swaps primary providers (e.g. openrouter
-        # → anthropic), drop any fallback entries that target the OLD primary
-        # or the NEW one.  The chain was seeded from config at agent init for
-        # the original provider — without pruning, a failed turn on the new
-        # primary silently re-activates the provider the user just rejected,
-        # which is exactly what was reported during TUI v2 blitz testing
-        # ("switched to anthropic, tui keeps trying openrouter").
-        old_norm = (old_provider or "").strip().lower()
-        new_norm = (new_provider or "").strip().lower()
-        fallback_chain = list(getattr(self, "_fallback_chain", []) or [])
-        if old_norm and new_norm and old_norm != new_norm:
-            fallback_chain = [
-                entry for entry in fallback_chain
-                if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
-            ]
-        self._fallback_chain = fallback_chain
-        self._fallback_model = fallback_chain[0] if fallback_chain else None
 
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",
@@ -9933,35 +9902,29 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
-    # ── Provider fallback ──────────────────────────────────────────────────
+    # ── Tier-unavailable boundary (GRV-010 C2d) ─────────────────────────────
 
-    def _maybe_raise_tier_unavailable(self, *, reason: str) -> None:
-        """GRV-010 C2d-1 (DETECT LOW, GATED) — governed tier-unavailable gate.
+    def _raise_tier_unavailable(self, *, reason: str) -> None:
+        """GRV-010 C2d-2 (DETECT LOW) — fail loud at a network-execution failure.
 
-        Called at a network-execution failure point, immediately BEFORE the
-        legacy ``_try_activate_fallback`` chain. If the current cognitive tier
-        declares a ``fallback_tier`` in routing.config.yaml, raise
-        :class:`grove.errors.TierUnavailableError` so it bubbles past the retry
-        loop to the Dispatcher (DECIDE HIGH), which owns the governed downshift
-        — bypassing the silent in-loop model swap entirely.
-
-        When NO ``fallback_tier`` is declared (the default), this is a NO-OP and
-        the caller falls through to the unchanged legacy fallback chain. That
-        gate keeps every existing config on the old path (old tests stay green);
-        the new governed path activates only when an operator opts in by
-        declaring a fallback_tier. The legacy chain is severed in C2d-2.
+        Called at a network-execution failure point (connection drop, timeout,
+        429, exhausted pool) after the in-band retries are spent. Raises
+        :class:`grove.errors.TierUnavailableError` UNCONDITIONALLY — it bubbles
+        past the retry loop to the Dispatcher (DECIDE HIGH), which owns the
+        decision for ALL tiers: a tier that declares a ``fallback_tier`` in
+        routing.config.yaml is re-routed THROUGH the Cognitive Router at the
+        fallback tier; a tier that declares none fails loud via
+        TerminalGovernanceHalt. There is no longer any in-loop silent model
+        substitution — the C2d-1 gate is dropped and the legacy fallback chain
+        is gone (C2d-2).
         """
-        # Detection is best-effort: a config/router problem must never mask the
-        # underlying network failure. Compute the gate inside the try; raise
-        # OUTSIDE it so the typed error is not swallowed by this guard.
+        # Best-effort current-tier read; never let a config/router problem mask
+        # the underlying network failure.
         try:
-            from grove.providers import current_tier, tier_fallback_for
-            _tier = current_tier()
-            _fb = tier_fallback_for(_tier)
+            from grove.providers import current_tier as _current_tier
+            _tier = _current_tier()
         except Exception:
-            return
-        if not _fb:
-            return  # undeclared → legacy path, unchanged
+            _tier = None
         from grove.errors import TierUnavailableError
         raise TierUnavailableError(
             tier=_tier,
@@ -9969,314 +9932,6 @@ class AIAgent:
             model=getattr(self, "model", None),
             reason=reason,
         )
-
-    def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
-        """Switch to the next fallback model/provider in the chain.
-
-        Called when the current model is failing after retries.  Swaps the
-        OpenAI client, model slug, and provider in-place so the retry loop
-        can continue with the new backend.  Advances through the chain on
-        each call; returns False when exhausted.
-
-        Uses the centralized provider router (resolve_provider_client) for
-        auth resolution and client construction — no duplicated provider→key
-        mappings.
-        """
-        if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
-            # Only start cooldown when leaving the primary provider.  If we're
-            # already on a fallback and chain-switching, the primary wasn't the
-            # source of the 429 so the cooldown should not be reset/extended.
-            fallback_already_active = bool(getattr(self, "_fallback_activated", False))
-            current_provider = (getattr(self, "provider", "") or "").strip().lower()
-            primary_provider = ((self._primary_runtime or {}).get("provider") or "").strip().lower()
-            if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-                self._rate_limited_until = time.monotonic() + 60
-        if self._fallback_index >= len(self._fallback_chain):
-            return False
-
-        fb = self._fallback_chain[self._fallback_index]
-        self._fallback_index += 1
-        fb_provider = (fb.get("provider") or "").strip().lower()
-        fb_model = (fb.get("model") or "").strip()
-        if not fb_provider or not fb_model:
-            return self._try_activate_fallback()  # skip invalid, try next
-
-        # Skip entries that resolve to the current (provider, model) — falling
-        # back to the same backend that just failed loops the failure. Compare
-        # base_url too so two distinct custom_providers entries pointing at the
-        # same shim/proxy URL also dedup. See issue #22548.
-        current_provider = (getattr(self, "provider", "") or "").strip().lower()
-        current_model = (getattr(self, "model", "") or "").strip()
-        current_base_url = str(getattr(self, "base_url", "") or "").rstrip("/").lower()
-        fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
-        if fb_provider == current_provider and fb_model == current_model:
-            logging.warning(
-                "Fallback skip: chain entry %s/%s matches current provider/model",
-                fb_provider, fb_model,
-            )
-            return self._try_activate_fallback()
-        if (
-            fb_base_url_for_dedup
-            and current_base_url
-            and fb_base_url_for_dedup == current_base_url
-            and fb_model == current_model
-        ):
-            logging.warning(
-                "Fallback skip: chain entry base_url %s matches current backend",
-                fb_base_url_for_dedup,
-            )
-            return self._try_activate_fallback()
-
-        # Use centralized router for client construction.
-        # raw_codex=True because the main agent needs direct responses.stream()
-        # access for Codex providers.
-        try:
-            from agent.auxiliary_client import resolve_provider_client
-            # Pass base_url and api_key from fallback config so custom
-            # endpoints (e.g. Ollama Cloud) resolve correctly instead of
-            # falling through to OpenRouter defaults.
-            fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-            fb_api_key_hint = (fb.get("api_key") or "").strip() or None
-            if not fb_api_key_hint:
-                # key_env and api_key_env are both documented aliases (see
-                # _normalize_custom_provider_entry in hermes_cli/config.py).
-                fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
-                if fb_key_env:
-                    fb_api_key_hint = self._env_or(fb_key_env, "").strip() or None
-            # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
-            # when no explicit key is in the fallback config. Host match
-            # (not substring) — see GHSA-76xc-57q6-vm5m.
-            if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
-                fb_api_key_hint = self._env_or("OLLAMA_API_KEY") or None
-            fb_client, _resolved_fb_model = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True,
-                explicit_base_url=fb_base_url_hint,
-                explicit_api_key=fb_api_key_hint)
-            if fb_client is None:
-                logging.warning(
-                    "Fallback to %s failed: provider not configured",
-                    fb_provider)
-                return self._try_activate_fallback()  # try next in chain
-            try:
-                from hermes_cli.model_normalize import normalize_model_for_provider
-
-                fb_model = normalize_model_for_provider(fb_model, fb_provider)
-            except Exception:
-                pass
-
-            # Determine api_mode from provider / base URL / model
-            fb_api_mode = "chat_completions"
-            fb_base_url = str(fb_client.base_url)
-            _fb_is_azure = self._is_azure_openai_url(fb_base_url)
-            if fb_provider == "openai-codex":
-                fb_api_mode = "codex_responses"
-            elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
-                fb_api_mode = "anthropic_messages"
-            elif _fb_is_azure:
-                # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
-                # support the Responses API. Stay on chat_completions.
-                fb_api_mode = "chat_completions"
-            elif self._is_direct_openai_url(fb_base_url):
-                fb_api_mode = "codex_responses"
-            elif self._provider_model_requires_responses_api(
-                fb_model,
-                provider=fb_provider,
-            ):
-                # GPT-5.x models usually need Responses API, but keep
-                # provider-specific exceptions like Copilot gpt-5-mini on
-                # chat completions.
-                fb_api_mode = "codex_responses"
-            elif fb_provider == "bedrock" or (
-                base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
-                and base_url_host_matches(fb_base_url, "amazonaws.com")
-            ):
-                fb_api_mode = "bedrock_converse"
-
-            old_model = self.model
-
-            # Clear the per-config context_length override so the fallback
-            # model's actual context window is resolved instead of inheriting
-            # the stale value from the previous model.  See #22387.
-            self._config_context_length = None
-            self.model = fb_model
-            self.provider = fb_provider
-            self.base_url = fb_base_url
-            self.api_mode = fb_api_mode
-            if hasattr(self, "_transport_cache"):
-                self._transport_cache.clear()
-            self._fallback_activated = True
-
-            # Honor per-provider / per-model request_timeout_seconds for the
-            # fallback target (same knob the primary client uses).  None = use
-            # SDK default.
-            _fb_timeout = get_provider_request_timeout(fb_provider, fb_model)
-
-            if fb_api_mode == "anthropic_messages":
-                # Build native Anthropic client instead of using OpenAI client
-                from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-                effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
-                self.api_key = effective_key
-                self._anthropic_api_key = effective_key
-                self._anthropic_base_url = fb_base_url
-                self._anthropic_client = build_anthropic_client(
-                    effective_key, self._anthropic_base_url, timeout=_fb_timeout,
-                )
-                self._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
-                self.client = None
-                self._client_kwargs = {}
-            else:
-                # Swap OpenAI client and config in-place
-                self.api_key = fb_client.api_key
-                self.client = fb_client
-                # Preserve provider-specific headers that
-                # resolve_provider_client() may have baked into
-                # fb_client via the default_headers kwarg.  The OpenAI
-                # SDK stores these in _custom_headers.  Without this,
-                # subsequent request-client rebuilds (via
-                # _create_request_openai_client) drop the headers,
-                # causing 403s from providers like Kimi Coding that
-                # require a User-Agent sentinel.
-                fb_headers = getattr(fb_client, "_custom_headers", None)
-                if not fb_headers:
-                    fb_headers = getattr(fb_client, "default_headers", None)
-                self._client_kwargs = {
-                    "api_key": fb_client.api_key,
-                    "base_url": fb_base_url,
-                    **({"default_headers": dict(fb_headers)} if fb_headers else {}),
-                }
-                if _fb_timeout is not None:
-                    self._client_kwargs["timeout"] = _fb_timeout
-                    # Rebuild the shared OpenAI client so the configured
-                    # timeout takes effect on the very next fallback request,
-                    # not only after a later credential-rotation rebuild.
-                    self._replace_primary_openai_client(reason="fallback_timeout_apply")
-
-            # Re-evaluate prompt caching for the new provider/model
-            self._use_prompt_caching, self._use_native_cache_layout = (
-                self._anthropic_prompt_cache_policy(
-                    provider=fb_provider,
-                    base_url=fb_base_url,
-                    api_mode=fb_api_mode,
-                    model=fb_model,
-                )
-            )
-
-            # LM Studio: preload before probing the fallback's context length.
-            self._ensure_lmstudio_runtime_loaded()
-
-            # Update context compressor limits for the fallback model.
-            # Without this, compression decisions use the primary model's
-            # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
-            # causing oversized sessions to overflow the fallback.
-            # Also pass _config_context_length so the explicit config override
-            # (model.context_length in config.yaml) is respected — without this,
-            # the fallback activation drops to 128K even when config says 204800.
-            if hasattr(self, 'context_compressor') and self.context_compressor:
-                from agent.model_metadata import get_model_context_length
-                fb_context_length = get_model_context_length(
-                    self.model, base_url=self.base_url,
-                    api_key=self.api_key, provider=self.provider,
-                    config_context_length=getattr(self, "_config_context_length", None),
-                )
-                self.context_compressor.update_model(
-                    model=self.model,
-                    context_length=fb_context_length,
-                    base_url=self.base_url,
-                    api_key=getattr(self, "api_key", ""),
-                    provider=self.provider,
-                )
-
-            self._emit_status(
-                f"🔄 Primary model failed — switching to fallback: "
-                f"{fb_model} via {fb_provider}"
-            )
-            logging.info(
-                "Fallback activated: %s → %s (%s)",
-                old_model, fb_model, fb_provider,
-            )
-            return True
-        except Exception as e:
-            logging.error("Failed to activate fallback %s: %s", fb_model, e)
-            return self._try_activate_fallback()  # try next in chain
-
-    # ── Per-turn primary restoration ─────────────────────────────────────
-
-    def _restore_primary_runtime(self) -> bool:
-        """Restore the primary runtime at the start of a new turn.
-
-        In long-lived CLI sessions a single AIAgent instance spans multiple
-        turns.  Without restoration, one transient failure pins the session
-        to the fallback provider for every subsequent turn.  Calling this at
-        the top of ``run_conversation()`` makes fallback turn-scoped.
-
-        The gateway caches agents across messages (``_agent_cache`` in
-        ``gateway/run.py``), so this restoration IS needed there too.
-        """
-        if not self._fallback_activated:
-            return False
-
-        if getattr(self, "_rate_limited_until", 0) > time.monotonic():
-            return False  # primary still in rate-limit cooldown, stay on fallback
-
-        rt = self._primary_runtime
-        try:
-            # ── Core runtime state ──
-            self.model = rt["model"]
-            self.provider = rt["provider"]
-            self.base_url = rt["base_url"]           # setter updates _base_url_lower
-            self.api_mode = rt["api_mode"]
-            if hasattr(self, "_transport_cache"):
-                self._transport_cache.clear()
-            self.api_key = rt["api_key"]
-            self._client_kwargs = dict(rt["client_kwargs"])
-            self._use_prompt_caching = rt["use_prompt_caching"]
-            # Default to native layout when the restored snapshot predates the
-            # native-vs-proxy split (older sessions saved before this PR).
-            self._use_native_cache_layout = rt.get(
-                "use_native_cache_layout",
-                self.api_mode == "anthropic_messages" and self.provider == "anthropic",
-            )
-
-            # ── Rebuild client for the primary provider ──
-            if self.api_mode == "anthropic_messages":
-                from agent.anthropic_adapter import build_anthropic_client
-                self._anthropic_api_key = rt["anthropic_api_key"]
-                self._anthropic_base_url = rt["anthropic_base_url"]
-                self._anthropic_client = build_anthropic_client(
-                    rt["anthropic_api_key"], rt["anthropic_base_url"],
-                    timeout=get_provider_request_timeout(self.provider, self.model),
-                )
-                self._is_anthropic_oauth = rt["is_anthropic_oauth"]
-                self.client = None
-            else:
-                self.client = self._create_openai_client(
-                    dict(rt["client_kwargs"]),
-                    reason="restore_primary",
-                    shared=True,
-                )
-
-            # ── Restore context engine state ──
-            cc = self.context_compressor
-            cc.update_model(
-                model=rt["compressor_model"],
-                context_length=rt["compressor_context_length"],
-                base_url=rt["compressor_base_url"],
-                api_key=rt["compressor_api_key"],
-                provider=rt["compressor_provider"],
-            )
-
-            # ── Reset fallback chain for the new turn ──
-            self._fallback_activated = False
-            self._fallback_index = 0
-
-            logging.info(
-                "Primary runtime restored for new turn: %s (%s)",
-                self.model, self.provider,
-            )
-            return True
-        except Exception as e:
-            logging.warning("Failed to restore primary runtime: %s", e)
-            return False
 
     # Which error types indicate a transient transport failure worth
     # one more attempt with a rebuilt client / connection pool.
@@ -13212,10 +12867,9 @@ class AIAgent:
         from tools.skill_provenance import set_current_write_origin
         set_current_write_origin(getattr(self, "_memory_write_origin", "assistant_tool"))
 
-        # If the previous turn activated fallback, restore the primary
-        # runtime so this turn gets a fresh attempt with the preferred model.
-        # No-op when _fallback_activated is False (gateway, first turn, etc.).
-        self._restore_primary_runtime()
+        # GRV-010 C2d-2 — the per-turn primary-runtime restore is gone with the
+        # ungoverned fallback chain: the agent no longer silently pins itself to
+        # a substitute model, so there is nothing to restore at turn start.
 
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
@@ -14211,30 +13865,11 @@ class AIAgent:
                                 force=True,
                             )
                             self._emit_status(f"⏳ {_nous_msg}")
-                            # GRV-010 C2d-1 — governed tier-unavailable gate
-                            # (exhausted pool). Raise + bypass when a
-                            # fallback_tier is declared; else legacy path.
-                            self._maybe_raise_tier_unavailable(reason="pool_exhausted")
-                            if self._try_activate_fallback():
-                                retry_count = 0
-                                compression_attempts = 0
-                                primary_recovery_attempted = False
-                                continue
-                            # No fallback available — return with clear message
-                            self._persist_session(messages, conversation_history)
-                            return {
-                                "final_response": (
-                                    f"⏳ {_nous_msg}\n\n"
-                                    "No fallback provider available. "
-                                    "Try again after the reset, or add a "
-                                    "fallback provider in config.yaml."
-                                ),
-                                "messages": messages,
-                                "api_calls": api_call_count,
-                                "completed": False,
-                                "failed": True,
-                                "error": _nous_msg,
-                            }
+                            # GRV-010 C2d-2 — exhausted pool is a tier-unavailable
+                            # condition. Raise UNCONDITIONALLY; the Dispatcher
+                            # owns the decision (governed downshift via a declared
+                            # fallback_tier, or fail loud). No in-loop swap.
+                            self._raise_tier_unavailable(reason="pool_exhausted")
                     except ImportError:
                         pass
                     except Exception:
@@ -14445,17 +14080,9 @@ class AIAgent:
                         # Invalid response — could be rate limiting, provider timeout,
                         # upstream server error, or malformed response.
                         retry_count += 1
-                        
-                        # Eager fallback: empty/malformed responses are a common
-                        # rate-limit symptom.  Switch to fallback immediately
-                        # rather than retrying with extended backoff.
-                        if self._fallback_index < len(self._fallback_chain):
-                            self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            compression_attempts = 0
-                            primary_recovery_attempted = False
-                            continue
+                        # GRV-010 C2d-2 — the silent model swap on an
+                        # empty/malformed response is removed; retry the same
+                        # model with backoff (the retry loop continues below).
 
                         # Check for error field in response (some providers include this)
                         error_msg = "Unknown"
@@ -14519,13 +14146,8 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}   ⏱️  {_failure_hint}", force=True)
                         
                         if retry_count >= max_retries:
-                            # Try fallback before giving up
-                            self._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
-                            if self._try_activate_fallback():
-                                retry_count = 0
-                                compression_attempts = 0
-                                primary_recovery_attempted = False
-                                continue
+                            # GRV-010 C2d-2 — no silent fallback swap; surface the
+                            # invalid-response failure after retries are spent.
                             self._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
@@ -15585,23 +15207,11 @@ class AIAgent:
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
                     }
-                    if is_rate_limited and self._fallback_index < len(self._fallback_chain):
-                        # Don't eagerly fallback if credential pool rotation may
-                        # still recover.  See _pool_may_recover_from_rate_limit
-                        # for the single-credential-pool and CloudCode-quota
-                        # exceptions.  Fixes #11314 and #13636.
-                        pool_may_recover = _pool_may_recover_from_rate_limit(
-                            self._credential_pool,
-                            provider=self.provider,
-                            base_url=getattr(self, "base_url", None),
-                        )
-                        if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                            if self._try_activate_fallback(reason=classified.reason):
-                                retry_count = 0
-                                compression_attempts = 0
-                                primary_recovery_attempted = False
-                                continue
+                    # GRV-010 C2d-2 — the eager silent model swap on rate-limit
+                    # is removed. A 429 retries in-band (credential-pool rotation
+                    # / backoff); if retries are spent it reaches the
+                    # max-retries boundary below, which raises
+                    # TierUnavailableError for the Dispatcher to govern.
 
                     # ── Nous Portal: record rate limit & skip retries ─────
                     # When Nous returns a 429 that is a genuine account-
@@ -15927,14 +15537,10 @@ class AIAgent:
                     ) and not is_context_length_error
 
                     if is_client_error:
-                        # Try fallback before aborting — a different provider
-                        # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            compression_attempts = 0
-                            primary_recovery_attempted = False
-                            continue
+                        # GRV-010 C2d-2 — a non-retryable client error (auth,
+                        # billing, malformed request) is NOT a transient tier
+                        # outage and never warranted a silent model swap. Abort
+                        # and surface it directly.
                         if api_kwargs is not None:
                             self._dump_api_request_debug(
                                 api_kwargs, reason="non_retryable_client_error", error=api_error,
@@ -15999,55 +15605,20 @@ class AIAgent:
                             primary_recovery_attempted = True
                             retry_count = 0
                             continue
-                        # GRV-010 C2d-1 — governed tier-unavailable gate. When
-                        # the current tier declares a fallback_tier, raise
-                        # TierUnavailableError (bubbles to the Dispatcher) and
-                        # BYPASS the legacy chain below. No-op (legacy path
-                        # unchanged) when no fallback_tier is declared.
-                        self._maybe_raise_tier_unavailable(reason="network_exhausted")
-                        # Try fallback before giving up entirely
-                        self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            compression_attempts = 0
-                            primary_recovery_attempted = False
-                            continue
+                        # GRV-010 C2d-2 — retries on this tier's model are spent
+                        # for a transient/retryable network failure (connection
+                        # drop, timeout, 429, overload). Fail loud: raise
+                        # TierUnavailableError UNCONDITIONALLY. It bubbles to the
+                        # Dispatcher, which owns the decision for ALL tiers — a
+                        # declared fallback_tier re-routes through the Cognitive
+                        # Router; none fails loud via TerminalGovernanceHalt.
+                        # There is no in-loop silent model substitution.
                         _final_summary = self._summarize_api_error(api_error)
                         if is_rate_limited:
                             self._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
                         else:
                             self._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
                         self._vprint(f"{self.log_prefix}   💀 Final error: {_final_summary}", force=True)
-
-                        # Detect SSE stream-drop pattern (e.g. "Network
-                        # connection lost") and surface actionable guidance.
-                        # This typically happens when the model generates a
-                        # very large tool call (write_file with huge content)
-                        # and the proxy/CDN drops the stream mid-response.
-                        _is_stream_drop = (
-                            not getattr(api_error, "status_code", None)
-                            and any(p in error_msg for p in (
-                                "connection lost", "connection reset",
-                                "connection closed", "network connection",
-                                "network error", "terminated",
-                            ))
-                        )
-                        if _is_stream_drop:
-                            self._vprint(
-                                f"{self.log_prefix}   💡 The provider's stream "
-                                f"connection keeps dropping. This often happens "
-                                f"when the model tries to write a very large "
-                                f"file in a single tool call.",
-                                force=True,
-                            )
-                            self._vprint(
-                                f"{self.log_prefix}      Try asking the model "
-                                f"to use execute_code with Python's open() for "
-                                f"large files, or to write the file in smaller "
-                                f"sections.",
-                                force=True,
-                            )
-
                         logging.error(
                             "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
                             self.log_prefix, max_retries, _final_summary,
@@ -16058,24 +15629,7 @@ class AIAgent:
                                 api_kwargs, reason="max_retries_exhausted", error=api_error,
                             )
                         self._persist_session(messages, conversation_history)
-                        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
-                        if _is_stream_drop:
-                            _final_response += (
-                                "\n\nThe provider's stream connection keeps "
-                                "dropping — this often happens when generating "
-                                "very large tool call responses (e.g. write_file "
-                                "with long content). Try asking me to use "
-                                "execute_code with Python's open() for large "
-                                "files, or to write in smaller sections."
-                            )
-                        return {
-                            "final_response": _final_response,
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "failed": True,
-                            "error": _final_summary,
-                        }
+                        self._raise_tier_unavailable(reason="network_exhausted")
 
                     # For rate limits, respect the Retry-After header if present
                     _retry_after = None
@@ -16940,39 +16494,9 @@ class AIAgent:
                             )
                             continue
 
-                        # ── Exhausted retries — try fallback provider ──
-                        # Before giving up with "(empty)", attempt to
-                        # switch to the next provider in the fallback
-                        # chain.  This covers the case where a model
-                        # (e.g. GLM-4.5-Air) consistently returns empty
-                        # due to context degradation or provider issues.
-                        if _truly_empty and self._fallback_chain:
-                            logger.warning(
-                                "Empty response after %d retries — "
-                                "attempting fallback (model=%s, provider=%s)",
-                                self._empty_content_retries, self.model,
-                                self.provider,
-                            )
-                            self._emit_status(
-                                "⚠️ Model returning empty responses — "
-                                "switching to fallback provider..."
-                            )
-                            if self._try_activate_fallback():
-                                self._empty_content_retries = 0
-                                self._emit_status(
-                                    f"↻ Switched to fallback: {self.model} "
-                                    f"({self.provider})"
-                                )
-                                logger.info(
-                                    "Fallback activated after empty responses: "
-                                    "now using %s on %s",
-                                    self.model, self.provider,
-                                )
-                                continue
-
-                        # Exhausted retries and fallback chain (or no
-                        # fallback configured).  Fall through to the
-                        # "(empty)" terminal.
+                        # GRV-010 C2d-2 — the silent model swap on persistent
+                        # empty responses is removed; exhausted retries fall
+                        # through to the "(empty)" terminal.
                         _turn_exit_reason = "empty_response_exhausted"
                         reasoning_text = self._extract_reasoning(assistant_message)
                         self._drop_trailing_empty_response_scaffolding(messages)
@@ -17006,9 +16530,7 @@ class AIAgent:
                                 self.provider,
                             )
                             self._emit_status(
-                                "❌ Model returned no content after all retries"
-                                + (" and fallback attempts." if self._fallback_chain else
-                                   ". No fallback providers configured.")
+                                "❌ Model returned no content after all retries."
                             )
 
                         final_response = "(empty)"

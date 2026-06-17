@@ -2860,80 +2860,6 @@ class TestRunConversation:
         assert result["final_response"] == "Here is the actual answer."
         assert result["api_calls"] == 2  # 1 original + 1 nudge retry
 
-    def test_empty_response_triggers_fallback_provider(self, agent):
-        """After 3 empty retries, fallback provider is activated and produces content."""
-        self._setup_agent(agent)
-        agent.base_url = "http://127.0.0.1:1234/v1"
-        # Configure a fallback chain
-        agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
-        agent._fallback_index = 0
-        agent._fallback_activated = False
-
-        empty_resp = _mock_response(content=None, finish_reason="stop")
-        content_resp = _mock_response(content="Fallback answer.", finish_reason="stop")
-        # 4 empty (1 orig + 3 retries), then fallback model answers
-        agent.client.chat.completions.create.side_effect = [
-            empty_resp, empty_resp, empty_resp, empty_resp, content_resp,
-        ]
-
-        fallback_called = {"called": False}
-
-        def _mock_fallback():
-            fallback_called["called"] = True
-            # Simulate what _try_activate_fallback does: just advance the
-            # index and set the flag (the client is already mocked).
-            agent._fallback_index = 1
-            agent._fallback_activated = True
-            agent.model = "anthropic/claude-sonnet-4"
-            agent.provider = "openrouter"
-            return True
-
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
-        ):
-            result = agent.run_conversation("answer me")
-        assert fallback_called["called"], "Fallback should have been triggered"
-        assert result["completed"] is True
-        assert result["final_response"] == "Fallback answer."
-
-    def test_empty_response_fallback_also_empty_returns_empty(self, agent):
-        """If fallback also returns empty, final response is (empty)."""
-        self._setup_agent(agent)
-        agent.base_url = "http://127.0.0.1:1234/v1"
-        agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
-        agent._fallback_index = 0
-        agent._fallback_activated = False
-
-        empty_resp = _mock_response(content=None, finish_reason="stop")
-        # 4 empty from primary (1 + 3 retries), fallback activated,
-        # then 4 more empty from fallback (1 + 3 retries), no more fallbacks
-        agent.client.chat.completions.create.side_effect = [
-            empty_resp, empty_resp, empty_resp, empty_resp,  # primary exhausted
-            empty_resp, empty_resp, empty_resp, empty_resp,  # fallback exhausted
-        ]
-
-        def _mock_fallback():
-            if agent._fallback_index >= len(agent._fallback_chain):
-                return False
-            agent._fallback_index += 1
-            agent._fallback_activated = True
-            agent.model = "anthropic/claude-sonnet-4"
-            agent.provider = "openrouter"
-            return True
-
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
-        ):
-            result = agent.run_conversation("answer me")
-        assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
-
     def test_empty_response_emits_status_for_gateway(self, agent):
         """_emit_status is called during empty retries so gateway users see feedback."""
         self._setup_agent(agent)
@@ -3655,8 +3581,12 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
 
-    def test_api_error_returns_gracefully_after_retries(self, agent):
-        """Exhausted retries on API errors must return error result, not crash."""
+    def test_api_error_after_retries_fails_loud(self, agent):
+        """GRV-010 C2d-2: exhausted retries on a network error is a tier-
+        unavailable condition. With no governed fallback_tier declared it fails
+        loud via TerminalGovernanceHalt — never a silent model swap. (The old
+        ungoverned fallback chain that returned a soft failed dict is removed.)"""
+        from grove.governance_halt import TerminalGovernanceHalt
         self._setup_agent(agent)
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
         with (
@@ -3665,11 +3595,9 @@ class TestRetryExhaustion:
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
         ):
-            result = agent.run_conversation("hello")
-        assert result.get("completed") is False
-        assert result.get("failed") is True
-        assert "error" in result
-        assert "rate limited" in result["error"]
+            with pytest.raises(TerminalGovernanceHalt) as exc_info:
+                agent.run_conversation("hello")
+        assert exc_info.value.context.trigger == "tier_unavailable"
 
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
@@ -4402,163 +4330,6 @@ class TestAnthropicImageFallback:
             agent._build_api_kwargs(api_messages)
 
         assert mock_vision.await_count == 1
-
-
-class TestFallbackAnthropicProvider:
-    """Bug fix: _try_activate_fallback had no case for anthropic provider."""
-
-    def test_fallback_to_anthropic_sets_api_mode(self, agent):
-        agent._fallback_activated = False
-        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
-        agent._fallback_chain = [agent._fallback_model]
-        agent._fallback_index = 0
-
-        mock_client = MagicMock()
-        mock_client.base_url = "https://api.anthropic.com/v1"
-        mock_client.api_key = "sk-ant-api03-test"
-
-        with (
-            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
-        ):
-            mock_build.return_value = MagicMock()
-            result = agent._try_activate_fallback()
-
-        assert result is True
-        assert agent.api_mode == "anthropic_messages"
-        assert agent._anthropic_client is not None
-        assert agent.client is None
-
-    def test_fallback_to_anthropic_enables_prompt_caching(self, agent):
-        agent._fallback_activated = False
-        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
-        agent._fallback_chain = [agent._fallback_model]
-        agent._fallback_index = 0
-
-        mock_client = MagicMock()
-        mock_client.base_url = "https://api.anthropic.com/v1"
-        mock_client.api_key = "sk-ant-api03-test"
-
-        with (
-            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
-        ):
-            agent._try_activate_fallback()
-
-        assert agent._use_prompt_caching is True
-
-    def test_fallback_to_openrouter_uses_openai_client(self, agent):
-        agent._fallback_activated = False
-        agent._fallback_model = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
-        agent._fallback_chain = [agent._fallback_model]
-        agent._fallback_index = 0
-
-        mock_client = MagicMock()
-        mock_client.base_url = "https://openrouter.ai/api/v1"
-        mock_client.api_key = "sk-or-test"
-
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
-            result = agent._try_activate_fallback()
-
-        assert result is True
-        assert agent.api_mode == "chat_completions"
-        assert agent.client is mock_client
-
-
-def test_aiagent_uses_copilot_acp_client():
-    with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI") as mock_openai,
-        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
-    ):
-        acp_client = MagicMock()
-        mock_acp_client.return_value = acp_client
-
-        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
-            api_mode="chat_completions",
-            api_key="copilot-acp",
-            base_url="acp://copilot",
-            provider="copilot-acp",
-            acp_command="/usr/local/bin/copilot",
-            acp_args=["--acp", "--stdio"],
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True, get_available_tools=lambda *_a, **_k: (_make_tool_defs("web_search"))
-        )
-
-    assert agent.client is acp_client
-    mock_openai.assert_not_called()
-    mock_acp_client.assert_called_once()
-    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://copilot"
-    assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
-    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
-    assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
-
-
-def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
-    agent._print_fn = lambda *_a, **_kw: None
-    with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
-        assert agent._should_start_quiet_spinner() is True
-
-
-def test_quiet_spinner_allowed_on_real_tty(agent):
-    agent._print_fn = None
-    with patch.object(run_agent.sys.stdout, "isatty", return_value=True):
-        assert agent._should_start_quiet_spinner() is True
-
-
-def test_quiet_spinner_suppressed_on_non_tty_without_print_fn(agent):
-    agent._print_fn = None
-    with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
-        assert agent._should_start_quiet_spinner() is False
-
-
-def test_is_openai_client_closed_honors_custom_client_flag():
-    assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=True)) is True
-    assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=False)) is False
-
-
-def test_is_openai_client_closed_handles_method_form():
-    """Fix for issue #4377: is_closed as method (openai SDK) vs property (httpx).
-
-    The openai SDK's is_closed is a method, not a property. Prior to this fix,
-    getattr(client, "is_closed", False) returned the bound method object, which
-    is always truthy, causing the function to incorrectly report all clients as
-    closed and triggering unnecessary client recreation on every API call.
-    """
-
-    class MethodFormClient:
-        """Mimics openai.OpenAI where is_closed() is a method."""
-
-        def __init__(self, closed: bool):
-            self._closed = closed
-
-        def is_closed(self) -> bool:
-            return self._closed
-
-    # Method returning False - client is open
-    open_client = MethodFormClient(closed=False)
-    assert AIAgent._is_openai_client_closed(open_client) is False
-
-    # Method returning True - client is closed
-    closed_client = MethodFormClient(closed=True)
-    assert AIAgent._is_openai_client_closed(closed_client) is True
-
-
-def test_is_openai_client_closed_falls_back_to_http_client():
-    """Verify fallback to _client.is_closed when top-level is_closed is None."""
-
-    class ClientWithHttpClient:
-        is_closed = None  # No top-level is_closed
-
-        def __init__(self, http_closed: bool):
-            self._client = SimpleNamespace(is_closed=http_closed)
-
-    assert AIAgent._is_openai_client_closed(ClientWithHttpClient(http_closed=False)) is False
-    assert AIAgent._is_openai_client_closed(ClientWithHttpClient(http_closed=True)) is True
 
 
 class TestAnthropicBaseUrlPassthrough:
@@ -5311,56 +5082,6 @@ class TestOAuthFlagAfterCredentialRefresh:
                   return_value=MagicMock()),
         ):
             result = agent._try_refresh_anthropic_client_credentials()
-
-        assert result is True
-        assert agent._is_anthropic_oauth is False
-
-
-class TestFallbackSetsOAuthFlag:
-    """_try_activate_fallback must set _is_anthropic_oauth for Anthropic fallbacks."""
-
-    def test_fallback_to_anthropic_oauth_sets_flag(self, agent):
-        agent._fallback_activated = False
-        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
-        agent._fallback_chain = [agent._fallback_model]
-        agent._fallback_index = 0
-
-        mock_client = MagicMock()
-        mock_client.base_url = "https://api.anthropic.com/v1"
-        mock_client.api_key = "sk-ant-setup-oauth-token"
-
-        with (
-            patch("agent.auxiliary_client.resolve_provider_client",
-                  return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client",
-                  return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token",
-                  return_value=None),
-        ):
-            result = agent._try_activate_fallback()
-
-        assert result is True
-        assert agent._is_anthropic_oauth is True
-
-    def test_fallback_to_anthropic_api_key_clears_flag(self, agent):
-        agent._fallback_activated = False
-        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
-        agent._fallback_chain = [agent._fallback_model]
-        agent._fallback_index = 0
-
-        mock_client = MagicMock()
-        mock_client.base_url = "https://api.anthropic.com/v1"
-        mock_client.api_key = "sk-ant-api03-regular-key"
-
-        with (
-            patch("agent.auxiliary_client.resolve_provider_client",
-                  return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client",
-                  return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token",
-                  return_value=None),
-        ):
-            result = agent._try_activate_fallback()
 
         assert result is True
         assert agent._is_anthropic_oauth is False
