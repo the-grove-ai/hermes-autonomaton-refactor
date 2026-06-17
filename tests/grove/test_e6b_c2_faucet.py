@@ -8,7 +8,9 @@ Proves:
   record is truth, no crash (the scrutinize-hardest proof);
 * transition DEFERRED (lock contended) → nothing moves;
 * revoke active→proposed → non-executable;
-* edit→REFINED+body_hash; managed-edit refusal; delete→DEPRECATED;
+* in-place edit of an ACTIVE skill REFUSED (immutable, C1b-i wall);
+  managed-edit refusal; delete deprecates a deletable record (not hard-
+  removed) and is refused in place on a live governed skill;
 * the 4.4 ingest mints an ACTIVE, executable record carrying use_count.
 """
 from __future__ import annotations
@@ -231,19 +233,30 @@ def _plant_active_skill(home: Path, name: str, body: str) -> str:
     return reg.skill_record_id_for_name(name)
 
 
-def test_edit_active_skill_refines_and_rehashes(grove_home):
+def test_edit_active_skill_is_refused_in_place(grove_home):
+    """In-place edits of ACTIVE skills are structurally prohibited (GRV-010 C1b-i).
+
+    The ``is_governed_path`` / ``_require_andon_target`` wall refuses any write
+    into the live ``~/.grove/skills`` tree, preserving provenance: an ACTIVE
+    skill is immutable in place. Revision is NOT an edit — it is propose-a-
+    successor + deprecate-the-predecessor (the operator-governed supersede
+    path). A rejected edit must therefore leave the active record's state AND
+    body_hash unchanged.
+    """
     import tools.skill_manager_tool as smt
 
     name = "editable"
-    cap_id = _plant_active_skill(grove_home, name, _proposed_body(name))
+    old_body = _proposed_body(name)
+    cap_id = _plant_active_skill(grove_home, name, old_body)
     new_body = f"---\nname: {name}\ndescription: revised\n---\nRevised steps.\n"
 
     out = smt._edit_skill(name, new_body)
-    assert out["success"] is True
+    assert out["success"] is False                          # wall fires — no in-place edit
+    assert "live ~/.grove/skills" in out["error"]           # the governed-tree refusal
 
     rec = next(c for c in reg.load_capabilities().values() if c.id == cap_id)
-    assert rec.lifecycle.state is LifecycleState.REFINED            # ACTIVE->REFINED
-    assert rec.lifecycle.body_hash == reg._body_hash(new_body)      # hash follows body
+    assert rec.lifecycle.state is LifecycleState.ACTIVE              # unchanged (not REFINED)
+    assert rec.lifecycle.body_hash == reg._body_hash(old_body)      # body_hash unchanged
 
 
 def test_managed_skill_edit_is_refused(grove_home):
@@ -261,16 +274,43 @@ def test_managed_skill_edit_is_refused(grove_home):
     assert "managed" in out["error"].lower()
 
 
-def test_delete_deprecates_record_not_hard_removed(grove_home):
+def test_delete_deprecates_record_not_hard_removed(grove_home, tmp_path, monkeypatch):
+    """Delete physics under the C1b-i wall (ACTIVE skills are immutable in place).
+
+    (a) On an agent-DELETABLE (non-governed) target, delete is terminal-graceful:
+        the record PERSISTS as DEPRECATED, never hard-removed.
+    (b) In-place delete of a LIVE ACTIVE governed skill is REFUSED by the
+        ``is_governed_path`` wall — provenance is preserved; retirement of a
+        live skill is the operator-governed supersede path, not an agent rmtree.
+    """
+    import agent.skill_utils as skill_utils
     import tools.skill_manager_tool as smt
 
-    name = "deletable"
-    cap_id = _plant_active_skill(grove_home, name, _proposed_body(name))
+    # (a) deletable, NON-governed target (an external vault outside ~/.grove).
+    ext_root = tmp_path / "external_vault"
+    ext_dir = ext_root / "extskill"
+    ext_dir.mkdir(parents=True)
+    ext_body = _proposed_body("extskill")
+    (ext_dir / "SKILL.md").write_text(ext_body, encoding="utf-8")
+    _mint_active("extskill", "extskill", ext_body)  # ACTIVE record for the external skill
+    ext_id = reg.skill_record_id_for_name("extskill")
+    # Make the external vault discoverable alongside the (empty) local tree so
+    # the real _find_skill resolves it; the wall passes because it is not in
+    # ~/.grove.
+    local = grove_home / "skills"
+    monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [local, ext_root])
 
-    out = smt._delete_skill(name, absorbed_into="")
+    out = smt._delete_skill("extskill", absorbed_into="")
     assert out["success"] is True
-
-    # The record PERSISTS as DEPRECATED (terminal-graceful), not hard-removed.
-    rec = next((c for c in reg.load_capabilities().values() if c.id == cap_id), None)
+    assert not ext_dir.exists()                                     # body removed from the vault
+    rec = next((c for c in reg.load_capabilities().values() if c.id == ext_id), None)
     assert rec is not None
-    assert rec.lifecycle.state is LifecycleState.DEPRECATED
+    assert rec.lifecycle.state is LifecycleState.DEPRECATED         # persists, not hard-removed
+
+    # (b) LIVE ACTIVE governed skill → in-place delete REFUSED by the wall.
+    cap_id = _plant_active_skill(grove_home, "deletable", _proposed_body("deletable"))
+    refused = smt._delete_skill("deletable", absorbed_into="")
+    assert refused["success"] is False
+    assert "live ~/.grove/skills" in refused["error"]
+    rec = next(c for c in reg.load_capabilities().values() if c.id == cap_id)
+    assert rec.lifecycle.state is LifecycleState.ACTIVE             # unchanged; still live
