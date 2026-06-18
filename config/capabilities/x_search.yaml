@@ -1,5 +1,5 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=x_search  zone=green  tiers=[3]  disclosure=proactive  trigger=research
+# family=x_search  zone=green  tiers=[1, 2, 3]  disclosure=proactive  trigger=research
 id: x_search
 kind: verb
 trigger:
@@ -16,6 +16,8 @@ bindings:
   toolset_key: x_search
 tier_rule:
   eligible:
+  - 1
+  - 2
   - 3
   preferred: 3
   promotion_criteria: {}

@@ -24,6 +24,7 @@
     "gmail_send",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "sheets_append",
     "sheets_create",
@@ -33,7 +34,9 @@
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "write_file",
+    "x_search"
   ],
   "T1|__unknown__|moderate": [
     "calendar_create",
@@ -60,6 +63,7 @@
     "gmail_send",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "sheets_append",
     "sheets_create",
@@ -69,7 +73,9 @@
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "write_file",
+    "x_search"
   ],
   "T1|__unknown__|novel": [
     "calendar_create",
@@ -96,6 +102,7 @@
     "gmail_send",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "sheets_append",
     "sheets_create",
@@ -105,7 +112,9 @@
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "write_file",
+    "x_search"
   ],
   "T1|__unknown__|simple": [
     "calendar_create",
@@ -132,6 +141,7 @@
     "gmail_send",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "sheets_append",
     "sheets_create",
@@ -141,13 +151,16 @@
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "write_file",
+    "x_search"
   ],
   "T1|analysis|complex": [
     "clarify",
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "skill_view",
     "skills_list",
@@ -160,6 +173,7 @@
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "skill_view",
     "skills_list",
@@ -172,6 +186,7 @@
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "skill_view",
     "skills_list",
@@ -184,6 +199,7 @@
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "skill_view",
     "skills_list",
@@ -196,36 +212,44 @@
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "skill_view",
     "skills_list",
-    "terminal"
+    "terminal",
+    "write_file"
   ],
   "T1|code_generation|moderate": [
     "clarify",
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "skill_view",
     "skills_list",
-    "terminal"
+    "terminal",
+    "write_file"
   ],
   "T1|code_generation|novel": [
     "clarify",
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "skill_view",
     "skills_list",
-    "terminal"
+    "terminal",
+    "write_file"
   ],
   "T1|code_generation|simple": [
     "clarify",
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "skill_view",
     "skills_list",
-    "terminal"
+    "terminal",
+    "write_file"
   ],
   "T1|conversation|complex": [
     "clarify",
@@ -270,7 +294,8 @@
     "read_file",
     "skill_view",
     "skills_list",
-    "terminal"
+    "terminal",
+    "write_file"
   ],
   "T1|creative_writing|moderate": [
     "clarify",
@@ -279,7 +304,8 @@
     "read_file",
     "skill_view",
     "skills_list",
-    "terminal"
+    "terminal",
+    "write_file"
   ],
   "T1|creative_writing|novel": [
     "clarify",
@@ -288,7 +314,8 @@
     "read_file",
     "skill_view",
     "skills_list",
-    "terminal"
+    "terminal",
+    "write_file"
   ],
   "T1|creative_writing|simple": [
     "clarify",
@@ -297,13 +324,15 @@
     "read_file",
     "skill_view",
     "skills_list",
-    "terminal"
+    "terminal",
+    "write_file"
   ],
   "T1|debugging|complex": [
     "clarify",
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "skill_view",
     "skills_list",
     "terminal"
@@ -313,6 +342,7 @@
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "skill_view",
     "skills_list",
     "terminal"
@@ -322,6 +352,7 @@
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "skill_view",
     "skills_list",
     "terminal"
@@ -331,6 +362,7 @@
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "skill_view",
     "skills_list",
     "terminal"
@@ -664,6 +696,7 @@
     "gmail_send",
     "memory",
     "read_file",
+    "search_files",
     "sheets_append",
     "sheets_create",
     "sheets_get",
@@ -671,7 +704,8 @@
     "skill_view",
     "skills_list",
     "terminal",
-    "web_search"
+    "web_search",
+    "write_file"
   ],
   "T1|planning|moderate": [
     "calendar_create",
@@ -698,6 +732,7 @@
     "gmail_send",
     "memory",
     "read_file",
+    "search_files",
     "sheets_append",
     "sheets_create",
     "sheets_get",
@@ -705,7 +740,8 @@
     "skill_view",
     "skills_list",
     "terminal",
-    "web_search"
+    "web_search",
+    "write_file"
   ],
   "T1|planning|novel": [
     "calendar_create",
@@ -732,6 +768,7 @@
     "gmail_send",
     "memory",
     "read_file",
+    "search_files",
     "sheets_append",
     "sheets_create",
     "sheets_get",
@@ -739,7 +776,8 @@
     "skill_view",
     "skills_list",
     "terminal",
-    "web_search"
+    "web_search",
+    "write_file"
   ],
   "T1|planning|simple": [
     "calendar_create",
@@ -766,6 +804,7 @@
     "gmail_send",
     "memory",
     "read_file",
+    "search_files",
     "sheets_append",
     "sheets_create",
     "sheets_get",
@@ -773,55 +812,64 @@
     "skill_view",
     "skills_list",
     "terminal",
-    "web_search"
+    "web_search",
+    "write_file"
   ],
   "T1|research|complex": [
     "clarify",
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "skill_view",
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "x_search"
   ],
   "T1|research|moderate": [
     "clarify",
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "skill_view",
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "x_search"
   ],
   "T1|research|novel": [
     "clarify",
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "skill_view",
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "x_search"
   ],
   "T1|research|simple": [
     "clarify",
     "escalate",
     "memory",
     "read_file",
+    "search_files",
     "session_search",
     "skill_view",
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "x_search"
   ],
   "T1|retrieval|complex": [
     "calendar_create",
@@ -1344,7 +1392,8 @@
     "terminal",
     "web_extract",
     "web_search",
-    "write_file"
+    "write_file",
+    "x_search"
   ],
   "T2|__unknown__|moderate": [
     "calendar_create",
@@ -1387,7 +1436,8 @@
     "terminal",
     "web_extract",
     "web_search",
-    "write_file"
+    "write_file",
+    "x_search"
   ],
   "T2|__unknown__|novel": [
     "calendar_create",
@@ -1430,7 +1480,8 @@
     "terminal",
     "web_extract",
     "web_search",
-    "write_file"
+    "write_file",
+    "x_search"
   ],
   "T2|__unknown__|simple": [
     "calendar_create",
@@ -1473,7 +1524,8 @@
     "terminal",
     "web_extract",
     "web_search",
-    "write_file"
+    "write_file",
+    "x_search"
   ],
   "T2|analysis|complex": [
     "clarify",
@@ -2166,7 +2218,8 @@
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "x_search"
   ],
   "T2|research|moderate": [
     "clarify",
@@ -2179,7 +2232,8 @@
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "x_search"
   ],
   "T2|research|novel": [
     "clarify",
@@ -2192,7 +2246,8 @@
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "x_search"
   ],
   "T2|research|simple": [
     "clarify",
@@ -2205,7 +2260,8 @@
     "skills_list",
     "terminal",
     "web_extract",
-    "web_search"
+    "web_search",
+    "x_search"
   ],
   "T2|retrieval|complex": [
     "calendar_create",

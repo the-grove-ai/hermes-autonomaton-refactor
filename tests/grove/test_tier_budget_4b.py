@@ -184,20 +184,19 @@ def test_budgeted_serves_intent_and_excludes_mcp(monkeypatch):
     assert sel["tier"] == "T2"
 
 
-def test_budgeted_strip_surfaces_for_d8(monkeypatch):
-    # research @ T2: x_search (eligible [3]) is the intent-selected capability the
-    # tier makes ineligible — the generator reads _tool_resolution
-    # .stripped_capabilities to fire the D8 escalation. web_search/session_search
-    # (eligible [1,2,3]) are served at T2, so the orphan is closed.
+def test_research_at_t2_strips_nothing_no_d8(monkeypatch):
+    # research-tier-widen: after widening x_search [3]->[1,2,3], a research turn at
+    # T2 strips NOTHING — stripped_capabilities is empty, so the generator's D8
+    # block raises no EscalationRequest (the eager escalation is dissolved at the
+    # root). web_search/session_search/x_search are all served at T2.
     _setup(monkeypatch, "research", "simple")
     agent = _bare_agent(ALL_TOOLS, tier_budget=T2)
     agent._maybe_apply_tool_filter()
-    assert "x_search" in _stripped_ids(agent._tool_resolution)
-    assert dict(agent._tool_resolution.stripped_capabilities)["x_search"] == (3,)
-    assert "x_search" in agent._last_tool_selection["stripped_capabilities"]
-    # the victim verbs ARE served at T2 (closes C-SEAM5 web-verb orphan)
+    assert agent._tool_resolution.stripped_capabilities == frozenset()
+    assert agent._last_tool_selection["stripped_capabilities"] == []
     assert "web_search" in agent._tool_resolution.allowed_names
     assert "session_search" in agent._tool_resolution.allowed_names
+    assert "x_search" in agent._tool_resolution.allowed_names
     assert agent._last_tool_selection["tier"] == "T2"
 
 
