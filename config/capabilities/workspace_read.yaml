@@ -30,7 +30,7 @@ bindings:
   credentials: google
   toolset_key: google-workspace
 tier_rule:
-  eligible: [1, 2, 3]   # D6 parity: allow_groups admits these intents at T1/T2/T3
+  eligible: [1, 2, 3]   # the sole tier gate (Option B): admitted at T1/T2/T3
   preferred: 1          # T1-native daily driver (default_tier T1)
   promotion_criteria: {}
   validation:           # inert placeholders — validation fires only on promotion (epic out-of-scope)

@@ -88,11 +88,6 @@ def test_split_parity_matches_golden_byte_for_byte():
     assert not mism, f"split-parity byte mismatch in {len(mism)} cell(s): {dict(list(mism.items())[:5])}"
 
 
-def test_valid_group_names_is_constant_catalog():
-    from grove.tier_budget import _valid_group_names
-    cat = _valid_group_names()  # no args — no tool_groups read
-    assert cat == frozenset({"core", "exploratory"} | set(INTENT_CLASSES))
-    # accepts real allow_groups names, rejects unknown
-    for real in ("core", "retrieval", "code_generation", "exploratory"):
-        assert real in cat
-    assert "bogus_group" not in cat
+# test_valid_group_names_is_constant_catalog retired: _valid_group_names was the
+# allow_groups (D2) cross-check catalog, deleted with allow_groups in
+# web-surface-admission-fix (Option B — tier_rule.eligible is the sole tier gate).

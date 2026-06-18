@@ -37,17 +37,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Mirrors grove.tier_budget.WILDCARD. Kept local so this lower-level Sprint 29
-# module carries no runtime import dependency on the budget loader (which
-# lazily imports load_taxonomy from here).
-_WILDCARD = "*"
-
 __all__ = [
     "CO_LOCATED_TOOLS",
     "ToolResolution",
     "load_taxonomy",
     "resolve_tool_set",
     "resolve_tools_for_tier",
+    "min_covering_tier",
     "filter_tools_by_name",
     "reset_taxonomy_cache",
     "reset_caps_index_cache",
@@ -234,9 +230,10 @@ def resolve_tool_set(
     the Kaizen Ledger so the operator can audit how often the
     classifier failed to give the optimizer enough to work with.
 
-    The tier-unaware surface; the tier-aware cap lives in
-    :func:`resolve_tools_for_tier`. Both share :func:`_selected_group_names` so
-    neither can drift from the group-selection rule.
+    The tier-unaware surface; the tier-aware gate lives in
+    :func:`resolve_tools_for_tier`. Both derive the native surface from the same
+    :func:`_registry_allowed_names` admission (this path passes ``current_tier=None``
+    — the eligibility gate bypassed), so neither can drift from the selection rule.
 
     Args:
         intent_class: one of the Sprint 12 INTENT_CLASSES, or
@@ -264,8 +261,10 @@ def resolve_tool_set(
     # Tier-unaware == the wildcard case of the registry resolver (every group
     # admitted; only the intent/complexity/disclosure gate applies). MCP tools
     # (mcp_*) are not enumerated here — the per-turn filter governs MCP exposure.
-    selected = _registry_allowed_names(
-        intent_class, complexity_signal, allow=set(), wildcard=True
+    # Tier-unaware == ``current_tier=None`` (the eligibility gate bypassed): every
+    # intent-selected record admitted, no tier cap, nothing stripped.
+    selected, _ = _registry_allowed_names(
+        intent_class, complexity_signal, current_tier=None
     )
     _validate_co_location(selected, intent_class)
     return selected
@@ -404,30 +403,32 @@ class ToolResolution:
     ``/context`` + ledger telemetry (D10) need:
 
     * ``tools`` — the filtered tool list the agent receives.
-    * ``allowed_names`` — non-MCP names admitted by the group cap.
-    * ``stripped_groups`` — intent groups the tier's ``allow_groups`` removed.
+    * ``allowed_names`` — non-MCP names admitted by the tier-eligibility gate.
+    * ``stripped_capabilities`` — the capabilities the turn's intent SELECTED that
+      the tier made ineligible (``current_tier ∉ tier_rule.eligible``), each as
+      ``(cap_id, eligible_tuple)`` (Option B — re-sourced off ``stripped_groups``).
       Non-empty ⇒ the tier cannot serve the intent's full tool need; Phase 4
-      escalates via the Sprint 30 contract (D8) — NEVER a silent strip.
+      escalates ONCE to the minimum covering tier (D8) — NEVER a silent strip.
     * ``excluded_mcp`` — MCP servers the tier excluded (e.g. ``notion``).
     * ``unparseable_mcp`` — MCP names that could not be parsed; admitted by
       default and surfaced here (logged, never silently swallowed).
     * ``fallback`` — the classifier yielded no usable intent; the budget was
-      still honored (capped to ``allow_groups``), loudly.
+      still honored (gated by ``tier_rule.eligible``), loudly.
     """
 
     tools: Tuple[dict, ...]
     allowed_names: FrozenSet[str]
-    stripped_groups: FrozenSet[str]
+    stripped_capabilities: FrozenSet[Tuple[str, Tuple[int, ...]]]
     excluded_mcp: FrozenSet[str]
     unparseable_mcp: Tuple[str, ...]
     fallback: bool
 
 
 # ── GRV-009 E5 C-RESOLVE — registry-driven native admission ──────────────────
-# The native offered surface now derives from the capability registry (each
-# record's disclosure mode + intents + bindings.tools) intersected with the
-# tier's allow_groups budget (A8 ruling: allow_groups STAYS as the tier->intent
-# admission policy; the records subsume the tool_groups.yaml tool->group taxonomy).
+# The native offered surface derives from the capability registry (each record's
+# disclosure mode + intents + bindings.tools) gated by ONE tier rule:
+# ``current_tier in tier_rule.eligible`` (web-surface-admission-fix, Option B —
+# allow_groups retired; the records subsume the tool_groups.yaml taxonomy).
 # Cached: load_capabilities() does file I/O and the resolver runs per turn.
 
 _caps_index_cache: Optional[List[tuple]] = None
@@ -436,9 +437,14 @@ _caps_index_cache: Optional[List[tuple]] = None
 def _caps_index() -> List[tuple]:
     """Cached projection of the registry for native admission.
 
-    Each entry is ``(disclosure, always, intents_frozenset, native_tools_tuple)``
-    for records that govern at least one native (non-MCP) tool. MCP tools are
-    gated separately by ``mcp_allow`` (E4) and excluded here.
+    Each entry is ``(cap_id, disclosure, always, intents_frozenset,
+    eligible_frozenset, native_tools_tuple)`` for records that govern at least one
+    native (non-MCP) tool. ``eligible_frozenset`` is the record's
+    ``tier_rule.eligible`` — the SOLE tier gate (Option B, ``allow_groups``
+    retired): a record's tools load on tier ``T`` iff ``T`` is in this set (or no
+    tier is routed). ``cap_id`` rides so the D8 escalation net can name the
+    capabilities a tier stripped, not just their groups. MCP tools are gated
+    separately by ``mcp_allow`` (E4) and excluded here.
     """
     global _caps_index_cache
     if _caps_index_cache is None:
@@ -451,9 +457,11 @@ def _caps_index() -> List[tuple]:
                 continue
             index.append(
                 (
+                    c.id,
                     c.trigger.disclosure.value,
                     bool(c.trigger.always),
                     frozenset(c.trigger.intents),
+                    frozenset(c.tier_rule.eligible),
                     native,
                 )
             )
@@ -470,44 +478,56 @@ def reset_caps_index_cache() -> None:
 def _registry_allowed_names(
     intent_class: Optional[str],
     complexity_signal: Optional[str],
-    allow: Set[str],
-    wildcard: bool,
-) -> Set[str]:
-    """The native tool-name surface admitted this turn (C-RESOLVE).
+    current_tier: Optional[int],
+) -> Tuple[Set[str], List[Tuple[str, Tuple[int, ...]]]]:
+    """The native tool-name surface admitted this turn, plus the capabilities the
+    tier stripped (C-RESOLVE / D8 — Option B: ``tier_rule.eligible`` is the SOLE
+    tier gate; ``allow_groups`` is retired).
 
-    Reproduces the legacy group-level AND — a record's tools are admitted iff its
-    declared group is BOTH selected by the turn AND in the tier's allow_groups:
+    Admission is two predicates per capability:
 
-    * ``fallback`` — never proactive; admitted only on the maximal unknown-intent
-      fallback, and only when the tier admits everything (``allow_groups: '*'``),
-      because fallback tools carry no group to match a budgeted tier.
-    * ``complexity`` — the exploratory group; admitted on complex/novel turns (or
-      the unknown fallback) when ``exploratory`` is in allow_groups (i.e. ``'*'``).
-    * ``proactive`` + ``always`` — the ``core`` group; admitted when ``core`` is in
-      allow_groups (every tier) — i.e. always.
-    * ``proactive`` + ``intents`` — admitted iff the turn's intent is one of the
-      record's intents AND that intent is in allow_groups(T). On the unknown
-      fallback, admitted iff any of its intents is in allow_groups(T).
+    ``intent_match`` (tier-independent) — does this turn SELECT the record?
+      * ``fallback`` disclosure — selected only on the unknown maximal fallback.
+      * ``complexity`` disclosure — the exploratory surface; selected on a
+        complex/novel turn (or the unknown fallback).
+      * ``proactive`` + ``always`` — the core surface; always selected.
+      * ``proactive`` + ``intents`` — selected iff the turn's intent is one of the
+        record's; on the unknown fallback every proactive record is selected.
+
+    ``tier_ok`` — ``current_tier in tier_rule.eligible``. ``current_tier is None``
+    (cloud / vanilla — no tier routed) BYPASSES the gate and admits, exactly as
+    ``_seam5_tier_refusal`` admits on the no-tier path. An EMPTY ``eligible``
+    admits at NO tier — mirroring the seam refusing it everywhere; a core record
+    with too-narrow ``eligible`` therefore surfaces as a stripped capability (a
+    RECORD bug), never a hidden branch special-case.
+
+    A record the turn SELECTED but the tier makes ineligible is STRIPPED —
+    returned as ``(cap_id, eligible_tuple)`` for the D8 escalation net, never
+    silently dropped. Stripping is meaningful only on a CLASSIFIED turn: the
+    unknown maximal fallback strips nothing (it could not name an intent to
+    cover). Returns ``(admitted_names, stripped_capabilities)``.
     """
     unknown = intent_class is None or intent_class == "unknown"
     cx_high = complexity_signal in ("complex", "novel")
     names: Set[str] = set()
-    for disclosure, always, intents, native_tools in _caps_index():
+    stripped: List[Tuple[str, Tuple[int, ...]]] = []
+    for cap_id, disclosure, always, intents, eligible, native_tools in _caps_index():
         if disclosure == "fallback":
-            admit = unknown and wildcard
+            intent_match = unknown
         elif disclosure == "complexity":
-            grp_ok = wildcard or ("exploratory" in allow)
-            admit = grp_ok if unknown else (cx_high and grp_ok)
+            intent_match = True if unknown else cx_high
         elif always:  # proactive core
-            admit = wildcard or ("core" in allow)
+            intent_match = True
         else:  # proactive intent
-            if unknown:
-                admit = wildcard or any(g in allow for g in intents)
-            else:
-                admit = (intent_class in intents) and (wildcard or intent_class in allow)
-        if admit:
+            intent_match = True if unknown else (intent_class in intents)
+        if not intent_match:
+            continue
+        tier_ok = current_tier is None or current_tier in eligible
+        if tier_ok:
             names.update(native_tools)
-    return names
+        elif not unknown:
+            stripped.append((cap_id, tuple(sorted(eligible))))
+    return names, stripped
 
 
 def resolve_tools_for_tier(
@@ -515,59 +535,50 @@ def resolve_tools_for_tier(
     intent_class: Optional[str],
     complexity_signal: Optional[str],
     taxonomy: dict,
-    tier_budget: "TierBudget",
+    tier_budget: Optional["TierBudget"] = None,
     *,
     mcp_allow: Optional[Set[str]] = None,
+    current_tier: Optional[int] = None,
 ) -> ToolResolution:
-    """Resolve the per-turn tool surface under a tier budget (R1 + D4 + D8).
+    """Resolve the per-turn tool surface under a tier (R1 + D4 + D8 — Option B).
 
-    Composition is R1 — intersection: the intent selects groups (Sprint 29),
-    the tier's ``allow_groups`` caps which of them survive (``"*"`` = no cap, so
-    the intent selection passes through unchanged — the T3 "unchanged / full
-    load" case). A group the intent needs but the tier forbids is reported in
-    ``stripped_groups`` for the escalation net (D8); it is never silently
-    dropped. MCP exposure is gated solely by ``mcp_allow`` (GRV-009 E4 C4 — the
-    ``exclude_mcp`` ceiling is retired): a server is admitted only if it is in
-    the matched set (``run_agent._compute_mcp_allow`` from the kind=mcp records:
-    tier_rule.eligible + trigger). ``mcp_allow=None`` ⇒ no records, allow-by-
-    default.
+    The native surface derives from the capability registry gated by ONE rule:
+    ``current_tier in tier_rule.eligible`` (``allow_groups`` retired). ``current_tier``
+    is the int tier (1/2/3) bound from ``run_agent._current_tier_int()`` — the SAME
+    authoritative source ``_seam5_tier_refusal`` admits on, so the builder and the
+    seam cannot disagree (and escalation re-runs this builder at the new tier).
+    ``current_tier is None`` (cloud / vanilla — no tier routed) bypasses the gate,
+    mirroring the seam's no-tier admit. A capability the intent selected but the
+    tier makes ineligible is reported in ``stripped_capabilities`` for the D8
+    escalation net; it is never silently dropped. MCP exposure is gated solely by
+    ``mcp_allow`` (GRV-009 E4 C4): a server is admitted only if it is in the
+    matched set. ``mcp_allow=None`` ⇒ no records, allow-by-default.
 
-    On an unknown intent (maximal fallback) the budget is STILL honored — the
-    surface is capped to ``allow_groups`` (or left full when the tier allows
-    ``"*"``) and marked ``fallback`` loudly, rather than loading the whole
-    registry past the tier's prefill ceiling. Phase 4 decides whether an
-    unknown-intent turn on a budgeted tier escalates.
+    On an unknown intent (maximal fallback) the surface is the full registry
+    capped by ``tier_rule.eligible`` and marked ``fallback`` loudly; the unknown
+    fallback strips nothing (it could not name an intent to cover). The
+    ``taxonomy`` and ``tier_budget`` args are vestigial back-compat positionals —
+    the resolver reads neither (no ``tool_groups.yaml``, no ``allow_groups``);
+    ``tier_budget`` rides only to ``_partition_tools``, which ignores it.
     """
-    allow: Set[str] = set(tier_budget.tools.allow_groups)
-    wildcard_groups = _WILDCARD in allow
+    fallback = intent_class is None or intent_class == "unknown"
 
-    # Provenance (D8 escalation net): the group-name selection is unchanged — the
-    # intent still selects {core, <intent>, exploratory?}; ``stripped`` is the
-    # groups the tier's allow_groups forbids. GRV-009 E5 C-RETIRE — group-name
-    # logic only, taxonomy-free; the ``taxonomy`` arg is accepted for back-compat
-    # and IGNORED (the resolver path reads no tool_groups.yaml).
-    groups = _selected_group_names(intent_class, complexity_signal)
-    if groups is None:
-        fallback = True
-        stripped: Set[str] = set()
-    else:
-        fallback = False
-        stripped = set() if wildcard_groups else (groups - allow)
-
-    # C-RESOLVE: the native admitted surface now comes from the capability
-    # registry intersected with allow_groups — NOT _materialize over tool_groups.
-    allowed: Set[str] = _registry_allowed_names(
-        intent_class, complexity_signal, allow, wildcard_groups
+    # C-RESOLVE / Option B: the native admitted surface and the stripped set both
+    # come from the capability registry gated by tier_rule.eligible — NOT
+    # allow_groups, NOT _materialize over tool_groups.
+    allowed, stripped_caps = _registry_allowed_names(
+        intent_class, complexity_signal, current_tier
     )
     if not fallback and allowed:
         _validate_co_location(allowed, intent_class or "")
     if fallback:
         logger.info(
             "[grove.context_budget] maximal fallback under tier budget "
-            "(intent_class=%r) — registry-driven surface capped to allow_groups=%s, "
-            "MCP gated by the registry mcp_allow",
+            "(intent_class=%r) — registry-driven surface gated by "
+            "tier_rule.eligible (current_tier=%r), MCP gated by the registry "
+            "mcp_allow",
             intent_class,
-            "*" if wildcard_groups else sorted(allow),
+            current_tier,
         )
 
     kept, excluded_mcp, unparseable = _partition_tools(
@@ -576,11 +587,39 @@ def resolve_tools_for_tier(
     return ToolResolution(
         tools=tuple(kept),
         allowed_names=frozenset(allowed or ()),
-        stripped_groups=frozenset(stripped),
+        stripped_capabilities=frozenset(stripped_caps),
         excluded_mcp=frozenset(excluded_mcp),
         unparseable_mcp=tuple(unparseable),
         fallback=fallback,
     )
+
+
+def min_covering_tier(
+    stripped_capabilities: "FrozenSet[Tuple[str, Tuple[int, ...]]]",
+    current_tier: Optional[int],
+) -> Optional[int]:
+    """The minimum tier ``>= current_tier`` at which EVERY stripped capability is
+    eligible — the single-jump D8 escalation target (Option B).
+
+    ``target = min{ T >= current_tier : for all cap in stripped, T in
+    eligible(cap) }`` — a strict intersection of the stripped caps'
+    ``tier_rule.eligible`` sets, floored at the current tier. Returns ``None`` when
+    no single tier covers the whole set (a null intersection: e.g. a ``[2]``-only
+    cap co-stripped with a ``[3]``-only cap, or a cap eligible only BELOW the
+    current tier). The caller FAILS LOUD on ``None`` — never silently picks a tier
+    and strands a capability. Returns ``current_tier`` unchanged when nothing is
+    stripped.
+
+    Loop invariant (guaranteed by construction): a non-``None`` result is drawn
+    from the intersection, so at that tier ``stripped_capabilities`` re-evaluates
+    to empty.
+    """
+    if not stripped_capabilities:
+        return current_tier
+    eligible_sets = [set(elig) for (_cid, elig) in stripped_capabilities]
+    common = set.intersection(*eligible_sets)
+    candidates = [t for t in common if current_tier is None or t >= current_tier]
+    return min(candidates) if candidates else None
 
 
 def reset_taxonomy_cache() -> None:

@@ -1973,14 +1973,24 @@ class Dispatcher:
         }
         # Sprint 73 Phase 4b (D8/D10) — tool-budget-strip escalations carry the
         # provenance that makes over-escalation OBSERVABLE: tier + stripped
-        # groups + intent. A high rate is the signal to widen allow_groups in
-        # config (config-over-code), not a hidden cost. Logged to BOTH the
-        # ledger event and the IntentRecord-bound events list below.
+        # capabilities + intent (web-surface-admission-fix, Option B — the named
+        # capabilities the tier's tier_rule.eligible stripped, not group names). A
+        # high rate is the signal to widen a record's eligible set (config-over-
+        # code), not a hidden cost. Logged to BOTH the ledger event and the
+        # IntentRecord-bound events list below.
         _esc_source = request.get("source")
         if _esc_source:
             event_payload["source"] = _esc_source
-        if request.get("stripped_groups") is not None:
-            event_payload["stripped_groups"] = request.get("stripped_groups")
+        if request.get("stripped_capabilities") is not None:
+            event_payload["stripped_capabilities"] = request.get(
+                "stripped_capabilities"
+            )
+        if request.get("capability_tier_demands") is not None:
+            event_payload["capability_tier_demands"] = request.get(
+                "capability_tier_demands"
+            )
+        if request.get("target_tier") is not None:
+            event_payload["target_tier"] = request.get("target_tier")
         if request.get("intent_class") is not None:
             event_payload["intent_class"] = request.get("intent_class")
         try:

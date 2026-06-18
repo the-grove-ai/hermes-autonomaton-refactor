@@ -1,10 +1,11 @@
 """GRV-009 E5 — offer-parity snapshot gate (D7).
 
 The committed golden (``fixtures/offer_parity_snapshot.json``) is the native
-offered surface from ``resolve_tools_for_tier`` across tier x intent x complexity,
-captured at C-VERBS before the C-RESOLVE swap. C-VERBS records are inert, so this
-asserts today's behavior. At C-RESOLVE the registry-driven resolver must reproduce
-this byte-for-byte — any divergence is a parity violation and fails here.
+offered surface from ``resolve_tools_for_tier`` across tier x intent x complexity.
+Regenerated for web-surface-admission-fix (Option B): the tier is bound via
+``current_tier`` and the SOLE tier gate is each record's ``tier_rule.eligible``
+(``allow_groups`` retired). The resolver must reproduce this surface byte-for-byte
+— any divergence is a parity violation and fails here.
 """
 
 from __future__ import annotations
@@ -14,9 +15,7 @@ from pathlib import Path
 
 from grove.classify import COMPLEXITY_SIGNALS, INTENT_CLASSES
 from grove.context_budget import resolve_tools_for_tier
-from grove.tier_budget import load_tier_budgets
 
-_REPO = Path(__file__).resolve().parents[2]
 _GOLDEN = Path(__file__).parent / "fixtures" / "offer_parity_snapshot.json"
 
 
@@ -26,17 +25,15 @@ def _live_surface():
     reg = _cli_registry()
     native = sorted(n for n in {e.name for e in reg._tools.values()} if not n.startswith("mcp_"))
     tools = [{"type": "function", "function": {"name": n}} for n in native]
-    budgets = load_tier_budgets(_REPO / "config" / "routing.config.yaml",
-                                taxonomy_path=_REPO / "config" / "tool_groups.yaml")
-    tax = None  # GRV-009 E5b C2 — tool_groups.yaml retired; resolver ignores taxonomy
     intents = list(INTENT_CLASSES) + ["__unknown__"]
     out = {}
     for tier in ("T1", "T2", "T3"):
-        b = budgets[tier]
+        tier_int = int(tier[1])
         for intent in intents:
             ic = None if intent == "__unknown__" else intent
             for cx in COMPLEXITY_SIGNALS:
-                res = resolve_tools_for_tier(tools, ic, cx, tax, b, mcp_allow=None)
+                res = resolve_tools_for_tier(tools, ic, cx, None,
+                                             current_tier=tier_int, mcp_allow=None)
                 out[f"{tier}|{intent}|{cx}"] = sorted(t["function"]["name"] for t in res.tools)
     return out
 

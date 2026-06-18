@@ -11,19 +11,13 @@ proof: the disclosure-mode invariants asserted directly against the resolver.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from grove.classify import COMPLEXITY_SIGNALS, INTENT_CLASSES
 from grove.context_budget import resolve_tools_for_tier
-from grove.tier_budget import load_tier_budgets
 
-_REPO = Path(__file__).resolve().parents[2]
-_CFG = _REPO / "config" / "routing.config.yaml"
-
-BUDGETS = load_tier_budgets(_CFG)
-T3 = BUDGETS["T3"]
+# web-surface-admission-fix (Option B): the tier is bound via ``current_tier``
+# (tier_rule.eligible is the sole gate); no per-tier ToolBudget is threaded.
 
 
 def _native_surface():
@@ -46,27 +40,29 @@ def _names(res):
 
 
 def test_complexity_record_absent_on_simple_t3_present_on_complex():
-    simple = _names(resolve_tools_for_tier(TOOLS, "conversation", "simple", None, T3, mcp_allow=None))
-    complex_ = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", None, T3, mcp_allow=None))
+    # web-surface-admission-fix (Option B) — the tier is bound via current_tier
+    # (tier_rule.eligible is the sole gate); browser_navigate is a complexity
+    # record eligible=[3], so it rides only a complex turn AT T3.
+    simple = _names(resolve_tools_for_tier(TOOLS, "conversation", "simple", None, current_tier=3, mcp_allow=None))
+    complex_ = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", None, current_tier=3, mcp_allow=None))
     assert "browser_navigate" not in simple, "complexity record leaked onto a low-complexity T3 turn"
     assert "browser_navigate" in complex_, "complexity record missing on a complex T3 turn"
-    t1c = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", None, BUDGETS["T1"], mcp_allow=None))
-    assert "browser_navigate" not in t1c
+    t1c = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", None, current_tier=1, mcp_allow=None))
+    assert "browser_navigate" not in t1c   # eligible=[3] → stripped at T1
 
 
 @pytest.mark.parametrize("fb_tool", ["spotify_search", "kanban_list", "discord", "computer_use"])
 def test_fallback_record_absent_on_every_known_intent_present_only_in_fallback(fb_tool):
-    for tname in ("T1", "T2", "T3"):
-        b = BUDGETS[tname]
+    for tier_int in (1, 2, 3):
         for intent in INTENT_CLASSES:
             for cx in COMPLEXITY_SIGNALS:
-                got = _names(resolve_tools_for_tier(TOOLS, intent, cx, None, b, mcp_allow=None))
-                assert fb_tool not in got, f"fallback record {fb_tool} leaked onto known cell {tname}|{intent}|{cx}"
-    t3_unknown = _names(resolve_tools_for_tier(TOOLS, None, "simple", None, T3, mcp_allow=None))
+                got = _names(resolve_tools_for_tier(TOOLS, intent, cx, None, current_tier=tier_int, mcp_allow=None))
+                assert fb_tool not in got, f"fallback record {fb_tool} leaked onto known cell T{tier_int}|{intent}|{cx}"
+    t3_unknown = _names(resolve_tools_for_tier(TOOLS, None, "simple", None, current_tier=3, mcp_allow=None))
     assert fb_tool in t3_unknown, f"fallback record {fb_tool} missing from maximal unknown fallback"
 
 
 def test_fallback_explicitly_t3_research_complex():
-    got = _names(resolve_tools_for_tier(TOOLS, "research", "complex", None, T3, mcp_allow=None))
+    got = _names(resolve_tools_for_tier(TOOLS, "research", "complex", None, current_tier=3, mcp_allow=None))
     for fb in ("spotify_search", "kanban_list", "computer_use", "todo", "invoke_skill"):
         assert fb not in got, f"{fb} (fallback) must be absent on T3|research|complex"
