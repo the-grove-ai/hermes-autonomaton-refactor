@@ -1,22 +1,21 @@
-"""Sprint 32 Phase 3 — red-zone hardening tests.
+"""Sprint 32 Phase 3 — red-zone hardening tests (kaizen-voice B2 trim).
 
 Covers:
 
-* Strike counter increments per-tool per-turn on red-zone halts.
-* At ``_RED_ZONE_STRIKE_LIMIT`` strikes the dispatcher forces
-  ``deny_hard`` WITHOUT invoking the operator handler.
-* Hard-denial Observation carries the GATE-A directive text:
-  "HARD DENIAL: This action is prohibited. Do not attempt this
-  tool with these arguments again."
-* Yellow-zone halts do NOT count toward strikes (the counter is
-  red-only by design).
-* Strikes reset at turn boundary (cross-turn enforcement remains
-  architectural — the zone rule persists).
-* Gateway path: a gateway handler's ``once`` return on a red-zone
-  halt still hits the strike counter at the dispatcher (the
-  hard-block path is the same code regardless of handler source).
+* The hard-denial Observation shape produced by
+  ``_build_skip_observations(hard=True)`` — the GATE-A directive text plus
+  the ``is_hard_denial`` / ``disposition`` metadata.
+* The soft-deny Observation keeps its original decline-to-run wording.
 * Phase 3b: malformed regex in ``zones.schema.yaml`` raises
   ``SchemaConfigurationError`` at load time — agent does not start.
+
+kaizen-voice Sprint B2 removed the red-zone STRIKE COUNTER and its tests:
+post-§VI a RED halt is an ``AndonResolutionHalt`` resolved upstream by
+``_resolve_red_halt`` (the §VI fork), so it never reaches
+``_handle_andon_halt`` — the per-turn strike counter that lived there was
+inert dead code. RED drive-loop / classify_and_mint behavior is covered by
+``test_kaizen_voice_red_fork_b1.py``; the operator-facing RED menu by
+``test_kaizen_voice_red_menu_b2.py``.
 """
 
 from __future__ import annotations
@@ -26,28 +25,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from grove.dispatcher import (
-    AndonHalt,
-    Dispatcher,
-    _RED_ZONE_STRIKE_LIMIT,
-)
+from grove.dispatcher import Dispatcher
 from grove.errors import SchemaConfigurationError
 from grove.intents import ToolIntent
-from grove.zones import ZoneClassifier, ZoneResult
-
-
-def _halt(
-    tool: str = "terminal",
-    zone: str = "red",
-    arguments=None,
-) -> AndonHalt:
-    intents = [ToolIntent(
-        tool_name=tool,
-        arguments=arguments or {"command": "sudo rm -rf /"},
-        call_id="c1",
-    )]
-    zr = [ZoneResult(zone=zone, matched_rule="r", source="rules")]
-    return AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
+from grove.zones import ZoneClassifier
 
 
 @pytest.fixture
@@ -57,88 +38,6 @@ def dispatcher() -> Dispatcher:
     d._clear_pending_andon = lambda agent, marker: None  # type: ignore[method-assign]
     d._current_turn_id = "s_t#1"
     return d
-
-
-# ── Strike counter accrues ───────────────────────────────────────────
-
-
-class TestStrikeCounter:
-    def test_first_two_red_halts_invoke_handler(
-        self, dispatcher: Dispatcher,
-    ):
-        """Within the strike limit the handler is invoked normally."""
-        invocations = []
-        def _h(halt):
-            invocations.append(halt)
-            return "deny"
-        dispatcher._sovereign_prompt_handler = _h
-
-        for _ in range(_RED_ZONE_STRIKE_LIMIT - 1):
-            disposition = dispatcher._handle_andon_halt(
-                agent=MagicMock(),
-                halt=_halt(arguments={"command": f"c-{len(invocations)}"}),
-            )
-            assert disposition == "deny"
-        assert len(invocations) == _RED_ZONE_STRIKE_LIMIT - 1
-
-    def test_strike_limit_forces_deny_hard_silently(
-        self, dispatcher: Dispatcher,
-    ):
-        """At limit the handler is bypassed; deny_hard returned."""
-        def _explode(_h):
-            raise AssertionError(
-                "handler MUST NOT be invoked at strike limit"
-            )
-        # First (LIMIT - 1) calls invoke handler:
-        dispatcher._sovereign_prompt_handler = lambda h: "deny"
-        for i in range(_RED_ZONE_STRIKE_LIMIT - 1):
-            dispatcher._handle_andon_halt(
-                agent=MagicMock(),
-                halt=_halt(arguments={"command": f"c-{i}"}),
-            )
-        # Now swap to the tripwire — the next call MUST bypass it.
-        dispatcher._sovereign_prompt_handler = _explode
-        disposition = dispatcher._handle_andon_halt(
-            agent=MagicMock(),
-            halt=_halt(arguments={"command": "limit-trigger"}),
-        )
-        assert disposition == "deny_hard"
-
-    def test_per_tool_strikes_are_independent(
-        self, dispatcher: Dispatcher,
-    ):
-        """sudo strikes ≠ rm strikes — different tools have separate
-        counters within a turn."""
-        dispatcher._sovereign_prompt_handler = lambda h: "deny"
-        # 2 strikes on "terminal" tool.
-        for i in range(_RED_ZONE_STRIKE_LIMIT - 1):
-            dispatcher._handle_andon_halt(
-                agent=MagicMock(),
-                halt=_halt(tool="terminal", arguments={"command": f"c-{i}"}),
-            )
-        # 1 strike on "execute_code" — independent counter.
-        dispatcher._handle_andon_halt(
-            agent=MagicMock(),
-            halt=_halt(tool="execute_code", arguments={"code": "x"}),
-        )
-        assert dispatcher._current_turn_andon_strikes == {
-            "terminal": _RED_ZONE_STRIKE_LIMIT - 1,
-            "execute_code": 1,
-        }
-
-    def test_yellow_zone_does_not_count_strikes(
-        self, dispatcher: Dispatcher,
-    ):
-        """Yellow halts MUST NOT increment the red-zone strike
-        counter — operator-supervised yellow lacks the structural
-        bite that mandates the hard-denial path."""
-        dispatcher._sovereign_prompt_handler = lambda h: "once"
-        for _ in range(_RED_ZONE_STRIKE_LIMIT + 5):
-            dispatcher._handle_andon_halt(
-                agent=MagicMock(),
-                halt=_halt(zone="yellow", arguments={"command": "ok"}),
-            )
-        assert dispatcher._current_turn_andon_strikes == {}
 
 
 # ── Hard-denial Observation shape ────────────────────────────────────
@@ -187,93 +86,6 @@ class TestHardDenialObservation:
         assert "Andon" not in obs.value
         assert obs.metadata.get("disposition") == "deny"
         assert obs.metadata.get("is_hard_denial", False) is False
-
-
-# ── Turn-boundary reset ──────────────────────────────────────────────
-
-
-class TestTurnBoundaryReset:
-    def test_strikes_reset_on_per_turn_state_block(self):
-        """The strike counter is part of the per-turn reset block at
-        ``dispatch_turn`` entry. Cross-turn enforcement remains
-        architectural — the zone rule itself blocks every turn."""
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
-        d._write_pending_andon = lambda agent, halt: None
-        d._clear_pending_andon = lambda agent, marker: None
-        # Seed the per-turn dict as if mid-turn.
-        d._current_turn_andon_strikes = {
-            "terminal": 2, "execute_code": 1,
-        }
-        # The Phase 1 init's reset semantics: dispatch_turn re-assigns
-        # the dict to ``{}`` at entry. Simulate that minimally:
-        d._current_turn_andon_strikes = {}
-        assert d._current_turn_andon_strikes == {}
-
-
-# ── Telemetry on hard denial ─────────────────────────────────────────
-
-
-class TestHardDenialTelemetry:
-    def test_hard_denial_writes_andon_hard_denial_ledger_event(
-        self, dispatcher: Dispatcher,
-    ):
-        ledger = MagicMock()
-        dispatcher._sovereign_prompt_handler = lambda h: "deny"
-        # Build up to the limit-trigger call.
-        for i in range(_RED_ZONE_STRIKE_LIMIT - 1):
-            dispatcher._handle_andon_halt(
-                agent=MagicMock(),
-                halt=_halt(arguments={"command": f"c-{i}"}),
-                ledger=ledger,
-            )
-        ledger.reset_mock()
-        # Trigger the hard denial.
-        result = dispatcher._handle_andon_halt(
-            agent=MagicMock(),
-            halt=_halt(arguments={"command": "boom"}),
-            ledger=ledger,
-        )
-        assert result == "deny_hard"
-        # ledger.record called with andon_hard_denial event.
-        record_calls = [c for c in ledger.record.call_args_list
-                        if c.args and c.args[0] == "andon_hard_denial"]
-        assert len(record_calls) == 1
-        kwargs = record_calls[0].kwargs
-        assert kwargs["tool"] == "terminal"
-        assert kwargs["strikes"] == _RED_ZONE_STRIKE_LIMIT
-        assert kwargs["zone"] == "red"
-
-
-# ── Gateway hard-block (Phase 3c) ────────────────────────────────────
-
-
-class TestHardBlockIgnoresHandlerIdentity:
-    def test_once_returning_handler_still_hits_strike_counter(
-        self, dispatcher: Dispatcher,
-    ):
-        """A handler that returns ``once`` still triggers the strike
-        counter on red halts — the structural counter is NOT bypassed by
-        handler identity. At the strike limit the dispatcher emits
-        ``deny_hard`` regardless of what the handler would have returned.
-        (Uses ``silent_allow_handler``, the explicit test fixture, since
-        C0 deleted the auto-allow handlers — never reintroduce a global
-        disarm to drive a test.)"""
-        from grove.sovereign_prompt_handlers import silent_allow_handler
-        dispatcher._sovereign_prompt_handler = silent_allow_handler
-
-        # Pre-saturate strikes minus one to set up the limit-trigger.
-        for i in range(_RED_ZONE_STRIKE_LIMIT - 1):
-            dispatcher._handle_andon_halt(
-                agent=MagicMock(),
-                halt=_halt(arguments={"command": f"once-{i}"}),
-            )
-
-        # Limit trigger: the handler MUST be bypassed; deny_hard.
-        result = dispatcher._handle_andon_halt(
-            agent=MagicMock(),
-            halt=_halt(arguments={"command": "boom"}),
-        )
-        assert result == "deny_hard"
 
 
 # ── Phase 3b — regex fail-hard at schema load ────────────────────────

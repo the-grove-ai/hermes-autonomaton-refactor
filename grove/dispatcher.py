@@ -270,17 +270,6 @@ from grove.errors import TierUnavailableError
 from grove.skills import ANDON_DIRNAME
 
 
-# ── Sprint 32 Phase 3a — red-zone strike threshold ────────────────────
-#
-# Three red-zone halts on the same tool within a single turn force a
-# hard-denial Observation that explicitly directs the LLM not to
-# attempt the tool with the same arguments again. The counter resets
-# at the turn boundary; cross-turn red-zone enforcement is
-# architectural (the zone rule persists), so a reset-per-turn pattern
-# prevents intra-turn loops without weakening cross-turn discipline.
-_RED_ZONE_STRIKE_LIMIT = 3
-
-
 class _T0SignatureMismatch(Exception):
     """GRV-010 C1c-i — raised inside ``_execute_t0_invocation`` when a cached
     executable pattern's live realpath-canonical effect signature no longer
@@ -689,17 +678,6 @@ class Dispatcher:
         # starts a new session (new Dispatcher = empty caches).
         self._session_deny_cache: Set[Tuple[str, str]] = set()
         self._session_allow_cache: Set[Tuple[str, str]] = set()
-        # ── Sprint 32 Phase 3a — red-zone strike counter ─────────────
-        # Per-turn, per-tool. Increments on each red-zone halt. At
-        # ``_RED_ZONE_STRIKE_LIMIT`` strikes the Dispatcher forces a
-        # hard-denial Observation containing the directive
-        # "HARD DENIAL: ... Do not attempt this tool with these
-        # arguments again." per the operator's Trap-B lock — making
-        # the denial structurally terminal for that specific vector
-        # within the turn. Resets at every ``dispatch_turn`` entry
-        # so cross-turn enforcement remains architectural (the zone
-        # rule itself persists across turns).
-        self._current_turn_andon_strikes: Dict[str, int] = {}
         if self._intent_store is not None:
             # Sprint 28 Phase 3 — Implicit Success Sweep on Dispatcher
             # construction. Stale ``pending`` records from previous
@@ -1297,11 +1275,6 @@ class Dispatcher:
         # Sprint 30 — reset per-turn escalation counter + events list.
         self._current_turn_escalations = 0
         self._current_turn_escalation_events = []
-        # Sprint 32 Phase 3a — reset per-turn red-zone strike counter.
-        # Cross-turn enforcement remains architectural (the zone rule
-        # itself blocks every turn); per-turn counter prevents the
-        # agent from looping within a single turn.
-        self._current_turn_andon_strikes = {}
         # Sprint 73 Phase 4a — wipe the tier-budget carriers every turn. They
         # are repopulated below by _classify_and_bind_turn (or the
         # already_routed branch) from the turn's resolved tier. No carryover
@@ -1581,64 +1554,36 @@ class Dispatcher:
                             triggering_tool=halt.intents[halt.triggering_index].tool_name,
                         )
                         # ── Deny branch ──────────────────────────────
-                        # ``deny`` injects a denial Observation and
-                        # lets the agent recover. ``deny_hard`` is the
-                        # Sprint 32 Phase 3a red-zone strike-limit
-                        # forced denial; same Observation pipeline with
-                        # explicit directive text so the LLM does not
-                        # re-attempt this tool with these arguments on
-                        # the turn. (``deny_hard`` is set internally
-                        # by the Dispatcher's strike counter, never
-                        # returned by a handler.)
-                        if disposition in ("deny", "deny_hard"):
-                            # GRV-010 C2a (B15 fail-loud) — distinguish a
-                            # STRUCTURAL denial (terminate the autonomous turn)
-                            # from an ordinary Yellow operator decline ("not
-                            # now", which stays collaborative). Structural set:
-                            #   * deny_hard          — red-zone strike limit.
-                            #   * deny + zone==red   — a RED sovereign-approval
-                            #                          action the operator
-                            #                          declined.
-                            #   * deny + .andon rule — a quarantined skill
-                            #                          invocation declined
-                            #                          (any zone).
-                            # A structural denial raises TerminalGovernanceHalt
-                            # (terminal, NOT resumable) so the outer surface loop
-                            # ends the turn and surfaces the Kaizen disposition,
-                            # instead of feeding the model the "Continue with an
-                            # alternative approach" observation it would
-                            # improvise around. Ordinary Yellow declines keep the
-                            # unchanged soft-observation path below.
+                        # ``deny`` injects a denial Observation and lets the
+                        # agent recover. The one STRUCTURAL exception is a
+                        # declined quarantined (.andon) skill invocation: it
+                        # raises TerminalGovernanceHalt (terminal, NOT resumable)
+                        # so the outer surface loop ends the turn and surfaces the
+                        # Kaizen disposition, instead of feeding the model the
+                        # "Continue with an alternative approach" observation it
+                        # would improvise around. RED never reaches here — the
+                        # §VI fork routes AndonResolutionHalt to _resolve_red_halt
+                        # upstream, so this is a YELLOW-only path. Ordinary Yellow
+                        # declines keep the unchanged soft-observation path below.
+                        if disposition == "deny":
                             _matched = getattr(halt, "matched_rule", "") or ""
                             _is_quarantine = ANDON_DIRNAME in _matched
-                            if (
-                                disposition == "deny_hard"
-                                or halt.zone == "red"
-                                or _is_quarantine
-                            ):
+                            if _is_quarantine:
                                 from grove.governance_halt import (
                                     GovernanceHaltContext,
                                     TerminalGovernanceHalt,
                                 )
-                                if disposition == "deny_hard":
-                                    _trigger = "deny_hard"
-                                elif _is_quarantine:
-                                    _trigger = "quarantine"
-                                else:
-                                    _trigger = "red_sovereign"
                                 _trig_intent = halt.intents[halt.triggering_index]
-                                # GRV-010 C2b §V — for a quarantine halt, resolve
-                                # the promote target (skill name + .andon path)
-                                # off the triggering intent so the surface can
-                                # offer the operator-only 1-tap promote.
-                                _skill_name = _skill_path = None
-                                if _trigger == "quarantine":
-                                    _skill_name, _skill_path = (
-                                        self._extract_quarantine_target(_trig_intent)
-                                    )
+                                # GRV-010 C2b §V — resolve the promote target
+                                # (skill name + .andon path) off the triggering
+                                # intent so the surface can offer the operator-only
+                                # 1-tap promote.
+                                _skill_name, _skill_path = (
+                                    self._extract_quarantine_target(_trig_intent)
+                                )
                                 raise TerminalGovernanceHalt(
                                     GovernanceHaltContext(
-                                        trigger=_trigger,
+                                        trigger="quarantine",
                                         tool_name=getattr(
                                             _trig_intent, "tool_name", None,
                                         ),
@@ -4300,35 +4245,33 @@ class Dispatcher:
         """Write the pending marker, check caches, prompt, clear marker.
 
         Returns one of the GRV-005 § VI v1.1 disposition strings:
-        ``"once"``, ``"session"``, ``"always"``, or ``"deny"``. The
-        Dispatcher itself may also set ``"deny_hard"`` internally
-        when the red-zone strike counter overflows (the handler is
-        bypassed on that path).
+        ``"once"``, ``"session"``, ``"always"``, or ``"deny"``.
+
+        This is a YELLOW-only path post-§VI: RED halts are workflow
+        resolutions routed to ``_resolve_red_halt`` upstream (the fork at
+        the drive loop), so they never reach this handler.
 
         Flow:
 
-        1. Red-zone strike check (Phase 3a) — increments the per-turn
-           per-tool counter; at threshold returns ``"deny_hard"``
-           silently.
-        2. Cache check — keyed by ``(tool_name, sha256(arguments))``:
+        1. Cache check — keyed by ``(tool_name, sha256(arguments))``:
            * Deny cache hit → log telemetry, return ``"deny"`` silently.
            * Allow cache hit → log telemetry, return ``"once"`` silently.
-        3. Write the pending_andon marker (recoverable trail).
-        4. Invoke the operator handler.
-        5. Mutate caches by disposition:
+        2. Write the pending_andon marker (recoverable trail).
+        3. Invoke the operator handler.
+        4. Mutate caches by disposition:
            * ``"deny"`` → add to deny cache.
            * ``"session"`` / ``"always"`` → add to allow cache.
            * ``"once"`` → no cache mutation.
-        6. ``"always"`` applies a zone rule immediately (Sprint 67):
+        5. ``"always"`` applies a zone rule immediately (Sprint 67):
            operator-initiated "always" is self-approving, so the rule
            is written to zones.schema.yaml rather than queued.
-        7. Clear the pending_andon marker in ``finally``.
+        6. Clear the pending_andon marker in ``finally``.
 
         C0 (conformance-disarm-seal-v1): the ``GROVE_ZONE_SHADOW=1``
         short-circuit that previously forced ``"once"`` here is removed.
         There is no longer any environment-flag global disposition
         disarm — a raised Andon is resolved only by an operator handler
-        verdict or the structural strike/deny path.
+        verdict or the deny/cache path.
 
         Per D3 lock: pending_andon is a structural persistent marker —
         not a serialization of the generator state (which contains
@@ -4353,44 +4296,6 @@ class Dispatcher:
             triggering_intent.tool_name, triggering_intent.arguments,
             effect_signature=_effect_sig,
         )
-
-        # ── Sprint 32 Phase 3a — red-zone strike counter ─────────────
-        # Red halts count strikes per-tool per-turn. At threshold the
-        # Dispatcher forces a hard-denial Observation whose text
-        # explicitly directs the LLM not to attempt the same tool
-        # with the same arguments again — making the denial
-        # structurally terminal for that specific vector within the
-        # turn (Trap-B mitigation locked at GATE-A clarification).
-        # The hard-denial Observation is wired into the
-        # ``_build_skip_observations`` path with a sentinel disposition
-        # ``"deny_hard"`` so the LLM-visible denial text differs from
-        # the soft-deny case.
-        if halt.zone == "red":
-            tool_name = triggering_intent.tool_name
-            strikes_now = self._current_turn_andon_strikes.get(tool_name, 0) + 1
-            self._current_turn_andon_strikes[tool_name] = strikes_now
-            if strikes_now >= _RED_ZONE_STRIKE_LIMIT:
-                logger.warning(
-                    "[grove.dispatcher] Red-zone strike limit reached "
-                    "for tool=%s this turn (strikes=%d, limit=%d) — "
-                    "forcing hard denial; handler bypassed.",
-                    tool_name, strikes_now, _RED_ZONE_STRIKE_LIMIT,
-                )
-                if ledger is not None:
-                    try:
-                        ledger.record(
-                            "andon_hard_denial",
-                            tool=tool_name,
-                            strikes=strikes_now,
-                            limit=_RED_ZONE_STRIKE_LIMIT,
-                            zone="red",
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.debug(
-                            "[grove.dispatcher] andon_hard_denial ledger "
-                            "write failed (non-fatal): %r", exc,
-                        )
-                return "deny_hard"
 
         # Cache check — silent auto-apply on hit.
         if cache_key in self._session_deny_cache:
