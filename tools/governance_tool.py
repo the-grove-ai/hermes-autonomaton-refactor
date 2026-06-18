@@ -8,7 +8,8 @@ It is a *target-classified intent*: the Dispatcher classifies a
 ``propose_governance_change`` call by its ``target_file`` at Stage 04 —
 ``.env`` → RED (operator-only, GRV-001 §V); the YAML configs
 (``zones.schema.yaml`` / ``routing.config.yaml`` / ``routing.autonomaton.yaml`` /
-routing profiles) → YELLOW (store-and-resume). The handler runs ONLY after an
+routing profiles) and the Dock tree (``~/.grove/dock/``) → YELLOW
+(store-and-resume). The handler runs ONLY after an
 approved disposition (the Green-path executor runs it post-Stage-04), at which
 point it writes the change AND appends a ``governance_change`` Kaizen-ledger
 entry (rationale + diff hashes + disposition).
@@ -40,6 +41,14 @@ GOVERNANCE_YAML_NAMES = frozenset({
     "routing.autonomaton.yaml",
 })
 
+# The Dock (``~/.grove/dock/``) is the operator's strategic command center —
+# governed config the agent legitimately edits (goal manifests + context).
+# Admit ONLY the suffixes the Dock loader actually reads (grove/dock.py: the
+# ``dock.yaml`` manifest + goal ``context_sources``, declared as
+# ``goals/*.{yaml,md}``). Derived from the loader's read set, not invented —
+# widening beyond it would over-admit (ANDON-OVER-ADMIT).
+DOCK_LOADABLE_SUFFIXES = frozenset({".yaml", ".md"})
+
 
 def classify_governance_target(target_file: object) -> Optional[str]:
     """Return ``"red"`` for ``.env``, ``"yellow"`` for a recognized governance
@@ -70,6 +79,21 @@ def classify_governance_target(target_file: object) -> Optional[str]:
     if target.name in GOVERNANCE_YAML_NAMES:
         return "yellow"
     if "routing-profiles" in target.parts and target.suffix in (".yaml", ".yml"):
+        return "yellow"
+    # GRV-010 GOV-WRITE — admit the Dock tree (``~/.grove/dock/``) at YELLOW.
+    # The Dock is operator-governed strategic config the agent edits through
+    # this door (not via the substrate-blinded generic file tools). Containment
+    # is anchored to the RESOLVED Dock root via ``is_relative_to`` — NOT
+    # ``str.startswith`` or parts-membership, either of which a sibling
+    # ``dock-evil/`` or a stray ``dock`` path component would defeat;
+    # ``is_relative_to`` immunizes both the substring collision and the ``..``
+    # escape (``target`` is already realpath-resolved above). Evaluated AFTER
+    # the ``.env``→RED and YAML-name / routing-profile→YELLOW checks, and below
+    # the ``inside_grove`` gate, so a stricter zone always wins the waterfall (a
+    # ``.env`` or governance YAML that ever sits under dock/ keeps its zone) and
+    # a Dock symlinked outside ``~/.grove`` is rejected before reaching here.
+    dock_root = Path(os.path.realpath(grove_home / "dock"))
+    if target.is_relative_to(dock_root) and target.suffix in DOCK_LOADABLE_SUFFIXES:
         return "yellow"
     return None
 
@@ -132,7 +156,8 @@ def propose_governance_change(
         return _err(
             "propose_governance_change writes only recognized governance config "
             "(.env → operator-only; zones.schema.yaml / routing.config.yaml / "
-            "routing.autonomaton.yaml / routing profiles). Unrecognized target: "
+            "routing.autonomaton.yaml / routing profiles; or a .yaml/.md file in "
+            "the Dock tree ~/.grove/dock/). Unrecognized target: "
             f"{target_file!r}."
         )
     if body is None:
@@ -173,8 +198,10 @@ GOVERNANCE_CHANGE_SCHEMA = {
         "~/.grove governance configuration (generic file tools cannot write "
         "there). Targets: .env (operator-only — sovereign/RED), or the YAML "
         "configs zones.schema.yaml / routing.config.yaml / "
-        "routing.autonomaton.yaml / routing profiles (operator-approved — "
-        "YELLOW). The change is classified by target at Stage 04 and applied "
+        "routing.autonomaton.yaml / routing profiles, or a .yaml/.md file in "
+        "the Dock tree ~/.grove/dock/ (e.g. dock.yaml or goals/*.md) "
+        "(operator-approved — YELLOW). Use THIS tool — not write_file/patch — "
+        "to edit the Dock. The change is classified by target at Stage 04 and applied "
         "only after the operator approves; the write and its rationale are "
         "logged. Provide the FULL new file content."
     ),

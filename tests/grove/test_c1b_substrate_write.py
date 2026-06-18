@@ -158,6 +158,14 @@ class TestGovernanceDispatcherClassification:
         )
         assert zr.zone == "yellow"
 
+    def test_dock_target_classifies_yellow(self, grove_home):
+        from grove import dispatch as _gd
+        from grove.dispatcher import Dispatcher
+        zr = Dispatcher._classify_one_intent(
+            self._intent(str(grove_home / "dock" / "dock.yaml")), _gd,
+        )
+        assert zr.zone == "yellow"
+
 
 class TestGovernanceWriteAndLedger:
     def test_approved_write_persists_change_and_ledger(self, grove_home, monkeypatch):
@@ -203,6 +211,181 @@ class TestGovernanceWriteAndLedger:
             target_file=str(grove_home / "zones.schema.yaml"), content="x", rationale="",
         )
         assert json.loads(raw)["success"] is False
+
+
+# ── GRV-010 GOV-WRITE — Dock admission to the governed door ──────────────────
+#
+# The bypass strings below are permanent regression assertions: each rejected
+# case is a path that MUST NOT be admitted to the write door.
+
+
+class TestDockAdmission:
+    def test_dock_yaml_is_yellow(self, grove_home):
+        from tools.governance_tool import classify_governance_target
+        assert classify_governance_target(
+            str(grove_home / "dock" / "dock.yaml")
+        ) == "yellow"
+
+    def test_nested_dock_goal_md_is_yellow(self, grove_home):
+        from tools.governance_tool import classify_governance_target
+        assert classify_governance_target(
+            str(grove_home / "dock" / "goals" / "q3" / "interview.md")
+        ) == "yellow"
+
+    def test_nested_dock_goal_yaml_is_yellow(self, grove_home):
+        # .yaml is a loadable Dock suffix (manifest + goal context sources).
+        from tools.governance_tool import classify_governance_target
+        assert classify_governance_target(
+            str(grove_home / "dock" / "goals" / "q3" / "context.yaml")
+        ) == "yellow"
+
+    # ── OVER-ADMISSION REJECTED ──────────────────────────────────────────────
+
+    def test_sibling_dock_evil_is_rejected(self, grove_home):
+        # is_relative_to anchors to the dock tree; a sibling whose name merely
+        # starts with "dock" is NOT contained. (str.startswith would mis-admit.)
+        from tools.governance_tool import classify_governance_target
+        assert classify_governance_target(
+            str(grove_home / "dock-evil" / "x.yaml")
+        ) is None
+
+    def test_non_loadable_suffix_under_dock_is_rejected(self, grove_home):
+        from tools.governance_tool import classify_governance_target
+        assert classify_governance_target(
+            str(grove_home / "dock" / "notes.txt")
+        ) is None
+
+    # ── TRAVERSAL / SYMLINK REJECTED ─────────────────────────────────────────
+
+    def test_dotdot_escape_to_governance_yaml_stays_yellow_via_name(self, grove_home):
+        # ~/.grove/dock/../zones.schema.yaml collapses (realpath) to
+        # ~/.grove/zones.schema.yaml → YELLOW via the NAME check, NOT the Dock
+        # rule (the collapse removed dock containment).
+        from tools.governance_tool import classify_governance_target
+        assert classify_governance_target(
+            str(grove_home / "dock" / ".." / "zones.schema.yaml")
+        ) == "yellow"
+
+    def test_dotdot_escape_to_non_governance_yaml_is_rejected(self, grove_home):
+        # Proves the prior YELLOW came from the name rule, not dock containment:
+        # the same ../ escape to a non-governance yaml is NOT admitted.
+        from tools.governance_tool import classify_governance_target
+        assert classify_governance_target(
+            str(grove_home / "dock" / ".." / "random.yaml")
+        ) is None
+
+    def test_dotdot_escape_to_env_is_red(self, grove_home):
+        from tools.governance_tool import classify_governance_target
+        assert classify_governance_target(
+            str(grove_home / "dock" / ".." / ".env")
+        ) == "red"
+
+    def test_symlinked_dock_outside_grove_not_admitted(self, grove_home, tmp_path):
+        # A Dock whose root symlinks OUTSIDE ~/.grove resolves outside the
+        # governance tree → rejected by the inside_grove gate before the Dock
+        # rule is ever consulted.
+        from tools.governance_tool import classify_governance_target
+        outside = tmp_path.parent / "dock_external_target"
+        outside.mkdir(exist_ok=True)
+        (grove_home / "dock").symlink_to(outside, target_is_directory=True)
+        assert classify_governance_target(
+            str(grove_home / "dock" / "dock.yaml")
+        ) is None
+
+    # ── WATERFALL ORDERING ───────────────────────────────────────────────────
+
+    def test_env_under_dock_classifies_red_not_yellow(self, grove_home):
+        # The strict .env→RED check fires first; a .env that sits under dock/
+        # keeps RED, never the Dock YELLOW.
+        from tools.governance_tool import classify_governance_target
+        assert classify_governance_target(
+            str(grove_home / "dock" / ".env")
+        ) == "red"
+
+
+class TestDockWriteAndLedger:
+    def test_dock_write_persists_change_and_ledger(self, grove_home, monkeypatch):
+        monkeypatch.setenv("GROVE_SESSION_ID", "dock_write_session")
+        from tools.governance_tool import propose_governance_change
+        from grove.kaizen_ledger import KaizenLedger
+
+        target = grove_home / "dock" / "goals" / "growth.md"
+        raw = propose_governance_change(
+            target_file=str(target),
+            content="# Growth goal\n\nShip the thing.\n",
+            rationale="Dock test: record the growth goal",
+        )
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["zone"] == "yellow"
+        # Write-replace landed through the door (parent dirs created).
+        assert target.read_text() == "# Growth goal\n\nShip the thing.\n"
+        # Provenance preserved: the governance_change ledger entry was appended.
+        ledger = KaizenLedger("dock_write_session")
+        events = ledger.events_by_type("governance_change")
+        assert len(events) == 1
+        assert events[0]["zone"] == "yellow"
+        assert events[0]["rationale"].startswith("Dock test")
+        assert events[0]["content_sha256"]
+
+
+class TestDockBlockPreserved:
+    """is_governed_path is UNCHANGED: the substrate block still walls the Dock
+    from the generic file tools and shell. Only the governed door widened."""
+
+    @pytest.fixture(autouse=True)
+    def _neutralize_sensitive_check(self, monkeypatch):
+        # See TestFileToolGovernedLock: macOS tmp dirs trip _check_sensitive_path
+        # first; neutralize it so the governed-path lock is the operative gate.
+        monkeypatch.setattr(
+            "tools.file_tools._check_sensitive_path", lambda *a, **k: None,
+        )
+
+    def test_dock_path_is_governed(self, grove_home):
+        from grove.utils.fs_utils import is_governed_path
+        assert is_governed_path(grove_home / "dock" / "dock.yaml") is True
+
+    def test_write_file_refuses_dock_path(self, grove_home):
+        from tools.file_tools import write_file_tool
+        raw = write_file_tool(
+            str(grove_home / "dock" / "dock.yaml"), "version: '1.0'\n",
+        )
+        result = json.loads(raw)
+        assert result.get("error")
+        assert "Governed path" in result["error"]
+
+    def test_shell_write_into_dock_classifies_red(self, grove_home):
+        from grove.shell_effects import classify_shell_effect
+        zr = classify_shell_effect(
+            f"echo x > {grove_home / 'dock' / 'dock.yaml'}"
+        )
+        assert zr.zone == "red"
+
+
+class TestDockOfferNotTheater:
+    """T0b — a YELLOW Dock proposal raises the four-choice Sovereign Prompt
+    halt (AndonPermissionHalt) at classification, BEFORE the write-replace
+    handler can run. The offer precedes the effect; it is not theater."""
+
+    def test_dock_proposal_halts_before_write(self, grove_home):
+        from grove.dispatcher import AndonPermissionHalt, Dispatcher
+        from grove.intents import ToolIntent
+
+        target = grove_home / "dock" / "dock.yaml"
+        intent = ToolIntent(
+            tool_name="propose_governance_change",
+            arguments={
+                "target_file": str(target),
+                "content": "version: '1.0'\n",
+                "rationale": "attempt a dock write",
+            },
+            call_id="dock1",
+        )
+        d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
+        with pytest.raises(AndonPermissionHalt):
+            d._classify_intents_batch_and_halt_or_raise([intent])
+        # The synchronous halt fired during classification — no write occurred.
+        assert not target.exists()
 
 
 # ── Phase 4 — invoke_skill EXECUTABLE_STATES guard ───────────────────────────
