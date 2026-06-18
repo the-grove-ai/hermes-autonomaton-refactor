@@ -51,6 +51,22 @@ class HaltTrigger(str, Enum):
     # A command needs privileges the agent deliberately does not hold
     # (sudo / su / doas) — the red-zone "you run it yourself" surface.
     PRIVILEGE_REQUIRED = "privilege_required"
+    # ── GRV-005 §VI RED workflow-resolution triggers (kaizen-voice Sprint B1) ──
+    # A RED halt post-§VI is resolved (not disposed): the operator's structurally
+    # blocked workflow is either aborted or de-scoped. These two name the RED
+    # resolution provenance; they are NOT dispositions and never mint a token.
+    #
+    # Cancel — the operator aborts a structurally-blocked workflow. Distinct from
+    # RED_SOVEREIGN (a declined sovereign-approval action): same terminal
+    # mechanism, different ledger provenance. Listed in
+    # ``grove.governance_halt.TERMINAL_TRIGGERS`` so the C2a boundary adapter
+    # resolves it.
+    RED_WORKFLOW_CANCEL = "red_workflow_cancel"
+    # De-scoped — the operator drops the privileged action and the agent re-plans
+    # on a within-authority alternative. FEED-WORTHY (a genuine steering
+    # decision, surfaced via ``can_descope``); distinct from the non-feed-worthy
+    # OPERATOR_DECLINE soft auto-decline. NON_TERMINAL — the turn continues.
+    OPERATOR_DESCOPED = "operator_descoped"
 
 
 class HaltSeverity(str, Enum):

@@ -333,6 +333,62 @@ class AndonHalt(RuntimeError):
         )
 
 
+# ── GRV-005 §VI zone-typed Andon halts (kaizen-voice Sprint B1) ─────────────
+#
+# §VI forks the halt at the zone boundary: YELLOW is a permission grant (keeps
+# the disposition ledger + token mint); RED is a workflow resolution (no
+# disposition, no mint — token minting STOPS at RED). The base ``AndonHalt`` is
+# unchanged, so every existing ``except AndonHalt`` still catches both; handlers
+# discriminate by TYPE. The raise sites construct the zone-correct subclass off
+# the triggering intent's classified zone.
+
+
+class AndonPermissionHalt(AndonHalt):
+    """A YELLOW-zone Andon halt — a PERMISSION grant (GRV-005 §VI).
+
+    Resolved by the existing four-choice Sovereign Prompt
+    (``once`` / ``session`` / ``always`` / ``deny``) through
+    ``_handle_andon_halt``; records ``andon_disposition`` and may mint a token.
+    The YELLOW path is unchanged from pre-§VI — this type only labels it so the
+    fork can route RED elsewhere.
+    """
+
+
+class AndonResolutionHalt(AndonHalt):
+    """A RED-zone Andon halt — a workflow RESOLUTION (GRV-005 §VI).
+
+    RED severs the temporal dispositions: it is never ``once`` / ``session`` /
+    ``always`` / ``deny`` and never mints a token. It is resolved by the
+    Dispatcher's ``_red_resolution_handler`` into a :data:`RED_RESOLUTIONS`
+    value — Cancel (abort the structurally-blocked workflow) or De-scoped (drop
+    and re-plan within authority). B1 ships the resolution LOGIC; the
+    operator-facing RED menu is B2.
+    """
+
+
+# The only strings a RED resolution handler MAY return (GRV-005 §VI). NOT
+# dispositions: a RED resolution never records ``andon_disposition`` and never
+# reaches a token-mint gate. Cross-contamination with a YELLOW disposition is a
+# fail-loud ``ValueError`` at the disposition switch.
+RED_RESOLUTION_CANCEL = "cancel"
+RED_RESOLUTION_DESCOPED = "descoped"
+RED_RESOLUTIONS = (RED_RESOLUTION_CANCEL, RED_RESOLUTION_DESCOPED)
+
+
+def headless_red_resolution(halt: "AndonResolutionHalt") -> str:
+    """Default RED-resolution handler — the headless fail-safe Cancel (B1).
+
+    GATE-DARK: Sprint B1 builds RED PLUMBING ONLY. There is no operator-facing
+    RED menu or input loop yet (that is B2). Absent an injected handler, every
+    RED halt resolves here to Cancel — the workflow is aborted and the turn
+    terminates via ``TerminalGovernanceHalt(red_workflow_cancel)``. De-scoped is
+    reachable only by injecting a hook that returns ``"descoped"`` (exercised
+    headless in tests). Operator-facing selection of Cancel vs De-scoped, and
+    the Operator-Runs-It branch, ship in B2.
+    """
+    return RED_RESOLUTION_CANCEL
+
+
 # ── Dispatcher ────────────────────────────────────────────────────────────
 
 
@@ -398,6 +454,9 @@ class Dispatcher:
         *,
         runtime_ctx: Optional[RuntimeContext] = None,
         sovereign_prompt_handler: Optional[Callable[["AndonHalt"], str]] = None,
+        red_resolution_handler: Optional[
+            Callable[["AndonResolutionHalt"], str]
+        ] = None,
         post_execution_prompt_handler: Optional[Callable[[Any], str]] = None,
         kaizen_ledger_dir: Optional[Path] = None,
         intent_store: Optional[Any] = None,
@@ -496,6 +555,15 @@ class Dispatcher:
             )
         self._sovereign_prompt_handler: Callable[["AndonHalt"], str] = (
             sovereign_prompt_handler or _default_sovereign_prompt
+        )
+        # ── GRV-005 §VI RED resolution handler (kaizen-voice Sprint B1) ──
+        # RED halts are workflow RESOLUTIONS, not dispositions: a distinct
+        # handler with a distinct return space (``cancel`` / ``descoped``).
+        # GATE-DARK — B1 ships PLUMBING ONLY: the default is the headless
+        # fail-safe Cancel, and NO operator-facing RED menu exists (B2). A test
+        # injects a hook returning ``"descoped"`` to exercise the De-scope path.
+        self._red_resolution_handler: Callable[["AndonResolutionHalt"], str] = (
+            red_resolution_handler or headless_red_resolution
         )
         # Sprint 53.2 — post-execution Kaizen promotion prompt handler.
         # Distinct from the four-choice Sovereign Prompt above (different
@@ -1471,11 +1539,40 @@ class Dispatcher:
                                 for zr in halt.zone_results
                             ],
                         )
+                        # ── GRV-005 §VI fork: RED resolution vs YELLOW disposition ──
+                        # RED is a workflow RESOLUTION (no disposition, no mint —
+                        # token minting STOPS at RED); YELLOW is a permission grant
+                        # (the unchanged four-choice path below). The fork keys
+                        # solely on the halt TYPE the raise site set from the
+                        # triggering zone — YELLOW falls through verbatim.
+                        if isinstance(halt, AndonResolutionHalt):
+                            # RED — resolve into {cancel, descoped}. Cancel raises
+                            # TerminalGovernanceHalt inside; descoped drops + re-plans
+                            # and returns the generator's next yield. NEITHER records
+                            # andon_disposition NOR reaches a token-mint gate.
+                            yielded = self._resolve_red_halt(
+                                agent, gen, halt, ledger=ledger,
+                            )
+                            continue
+                        # YELLOW permission grant — verbatim Sprint 32 path. A
+                        # non-RED AndonHalt is an AndonPermissionHalt by
+                        # construction (fork-early at the raise site).
                         # Sprint 32 — Kaizen Sovereign Prompt + disposition.
                         # The handler may now return v1.1 vocabulary
                         # (once / session / always / deny) or v1.0
                         # legacy values (skip / drop / shadow_approve).
                         disposition = self._handle_andon_halt(agent, halt, ledger=ledger)
+                        # Strict zone-disposition coupling (fail-loud): a YELLOW
+                        # permission halt must NEVER yield a RED resolution value.
+                        # Cross-contamination is a structural defect, not a
+                        # recoverable input (GRV-005 §VI).
+                        if disposition in RED_RESOLUTIONS:
+                            raise ValueError(
+                                f"YELLOW AndonPermissionHalt resolved to RED "
+                                f"resolution {disposition!r}; RED resolutions "
+                                f"{RED_RESOLUTIONS!r} are admissible only on an "
+                                f"AndonResolutionHalt (GRV-005 §VI strict coupling)."
+                            )
                         ledger.record(
                             "andon_disposition",
                             disposition=disposition,
@@ -2594,14 +2691,48 @@ class Dispatcher:
         if zr.zone == "green" or (zr.zone == "yellow" and yellow_covered):
             self._approval_gate.mint(canonical_effect_signature(tool_name, arguments))
             return True, None
-        # Yellow (not covered) / Red — run the existing Andon disposition
-        # machinery (operator prompt, red-strike, caches, ledger). Approval
-        # mints; deny does not.
-        halt = AndonHalt(intents=[intent], zone_results=[zr], triggering_index=0)
         try:
             ledger = self._get_or_create_ledger(agent=getattr(self, "agent", None))
         except Exception:
             ledger = None
+        # ── GRV-005 §VI fork (kaizen-voice Sprint B1) ──────────────────────
+        # RED is a workflow RESOLUTION, never a disposition. This non-generator
+        # RPC/plugin path cannot re-plan a generator, so a RED effect resolves
+        # fail-closed: route through the red-resolution handler for provenance +
+        # parallel red_resolution telemetry, then DENY without minting. This is
+        # the SECOND consumer the §VI fork must cover — leaving it on the base
+        # disposition path is the shadow mint route §VI forbids. The mint gate
+        # below (disposition in once/session/always) is therefore structurally
+        # unreachable for RED on BOTH this path and the drive loop.
+        if zr.zone == "red":
+            red_halt = AndonResolutionHalt(
+                intents=[intent], zone_results=[zr], triggering_index=0,
+            )
+            resolution = self._red_resolution_handler(red_halt)
+            if resolution not in RED_RESOLUTIONS:
+                raise ValueError(
+                    f"RED AndonResolutionHalt resolved to {resolution!r}; "
+                    f"admissible RED resolutions are {RED_RESOLUTIONS!r} "
+                    f"(GRV-005 §VI strict coupling). Minting STOPS at RED."
+                )
+            if ledger is not None:
+                ledger.record(
+                    "red_resolution",
+                    resolution=resolution,
+                    zone=red_halt.zone,
+                    matched_rule=red_halt.matched_rule,
+                    triggering_tool=tool_name,
+                )
+            return False, (
+                f"Stage-04 RED resolution '{resolution}' for '{tool_name}' — no "
+                f"token minted (GRV-005 §VI; minting stops at RED)."
+            )
+        # Yellow (not covered) — the existing permission-grant disposition
+        # machinery (operator prompt, caches, ledger). Approval mints; deny does
+        # not. A non-RED halt here is an AndonPermissionHalt by construction.
+        halt = AndonPermissionHalt(
+            intents=[intent], zone_results=[zr], triggering_index=0,
+        )
         disposition = self._handle_andon_halt(
             getattr(self, "agent", None), halt, ledger=ledger,
         )
@@ -3880,7 +4011,18 @@ class Dispatcher:
                 triggering_index = idx
                 break
         if triggering_index is not None:
-            raise AndonHalt(
+            # GRV-005 §VI fork-early — raise the zone-correct subclass. RED is a
+            # workflow resolution (AndonResolutionHalt); YELLOW is a permission
+            # grant (AndonPermissionHalt). Both subclass AndonHalt, so the sole
+            # ``except AndonHalt`` catch site (drive loop) catches both and
+            # discriminates by type. The triggering intent's classified zone is
+            # authoritative here.
+            halt_cls = (
+                AndonResolutionHalt
+                if zone_results[triggering_index].zone == "red"
+                else AndonPermissionHalt
+            )
+            raise halt_cls(
                 intents=intents,
                 zone_results=zone_results,
                 triggering_index=triggering_index,
@@ -4016,6 +4158,141 @@ class Dispatcher:
             payload = str(arguments)
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         return (tool_name, digest)
+
+    def _resolve_red_halt(
+        self,
+        agent: Any,
+        gen: Any,
+        halt: "AndonResolutionHalt",
+        *,
+        ledger: Optional[Any] = None,
+    ) -> Any:
+        """Resolve a RED ``AndonResolutionHalt`` — GRV-005 §VI (kaizen-voice B1).
+
+        RED severs the temporal dispositions: this routes the halt through the
+        red-resolution handler into a :data:`RED_RESOLUTIONS` value and applies
+        it. NEITHER branch records ``andon_disposition`` NOR reaches a token-mint
+        gate (RED minting STOPS at §VI). A parallel ``red_resolution`` ledger
+        event preserves the telemetry volume the dropped ``andon_disposition``
+        carried for RED — a vocabulary change, not a reduction.
+
+          * Cancel    → raise ``TerminalGovernanceHalt(red_workflow_cancel)``: the
+                        operator aborted a structurally-blocked workflow. Distinct
+                        provenance from ``red_sovereign``; terminal, no mint.
+          * De-scoped → drop the action + re-plan within authority; emit a
+                        feed-worthy OPERATOR_DESCOPED event. Returns the
+                        generator's next yield so the caller resumes the loop.
+
+        GATE-DARK: B1 routes RED via the headless handler / default fallback —
+        there is NO operator-facing RED menu (B2). The Operator-Runs-It branch
+        and the resumable bridge are B2.
+        """
+        resolution = self._red_resolution_handler(halt)
+        # Strict zone-disposition coupling (fail-loud): a RED halt admits ONLY a
+        # RED resolution. A YELLOW disposition reaching here is cross-contamination.
+        if resolution not in RED_RESOLUTIONS:
+            raise ValueError(
+                f"RED AndonResolutionHalt resolved to {resolution!r}; admissible "
+                f"RED resolutions are {RED_RESOLUTIONS!r} (GRV-005 §VI strict "
+                f"coupling). Dispositions never apply to RED — minting STOPS here."
+            )
+        _trig = halt.intents[halt.triggering_index]
+        # Parallel telemetry — replaces the andon_disposition volume RED no longer
+        # records (vocabulary change, not reduction). NOT andon_disposition.
+        if ledger is not None:
+            ledger.record(
+                "red_resolution",
+                resolution=resolution,
+                zone=halt.zone,
+                matched_rule=halt.matched_rule,
+                triggering_tool=getattr(_trig, "tool_name", None),
+            )
+        if resolution == RED_RESOLUTION_CANCEL:
+            # Cancel — reuse the terminal mechanism with DISTINCT provenance
+            # (red_workflow_cancel, not red_sovereign): "operator aborted a
+            # structurally-blocked workflow". Terminal, not resumable; no mint.
+            from grove.governance_halt import (
+                GovernanceHaltContext,
+                TerminalGovernanceHalt,
+            )
+            raise TerminalGovernanceHalt(
+                GovernanceHaltContext(
+                    trigger="red_workflow_cancel",
+                    tool_name=getattr(_trig, "tool_name", None),
+                    zone=halt.zone,
+                    matched_rule=(getattr(halt, "matched_rule", None) or None),
+                    reason=getattr(halt, "reason", None),
+                )
+            )
+        # De-scoped — drop the structurally-blocked action + re-plan within
+        # authority; feed-worthy OPERATOR_DESCOPED. The re-plan reuses the soft
+        # drop+observation send the ordinary Yellow decline uses.
+        observations = self._build_descope_observations(agent, halt)
+        return gen.send(observations)
+
+    def _build_descope_observations(
+        self, agent: Any, halt: "AndonResolutionHalt",
+    ) -> List[Any]:
+        """De-scope a RED-blocked batch — GRV-005 §VI (kaizen-voice B1, PLUMBING).
+
+        The operator dropped the structurally-blocked action and let the agent
+        re-plan within authority. This is a genuine steering decision, so it is
+        FEED-WORTHY: the OPERATOR_DESCOPED ``HaltEvent`` carries
+        ``can_descope=True``, which the Sprint-A :func:`grove.halt_event.is_feed_worthy`
+        rule surfaces on the operator's permanent feed — distinct from the
+        non-feed-worthy OPERATOR_DECLINE soft auto-decline. Where the blocked
+        action wraps a privilege escalation, :func:`grove.dispatch.descope_command`
+        computes the within-authority alternative the agent is steered toward; the
+        operator-facing De-scoped copy + Cancel-vs-De-scoped selection ship in B2.
+
+        The agent-visible re-plan reuses the soft drop+observation send — byte-
+        identical to the ordinary Yellow decline path, no new rendered copy.
+        """
+        from grove.dispatch import descope_command
+        from grove.halt_event import (
+            HaltCapabilities,
+            HaltDetail,
+            HaltEvent,
+            HaltSeverity,
+            HaltTrigger,
+            OriginatingLayer,
+            WhatHalted,
+            is_feed_worthy,
+        )
+
+        _trig = halt.intents[halt.triggering_index]
+        _args = getattr(_trig, "arguments", None) or {}
+        _command = _args.get("command") if isinstance(_args, dict) else None
+        _within_authority = (
+            descope_command(_command) if isinstance(_command, str) else None
+        )
+        # The feed-worthy structural fact. can_descope=True ⇒ is_feed_worthy True.
+        descope_event = HaltEvent(
+            trigger=HaltTrigger.OPERATOR_DESCOPED,
+            what_halted=WhatHalted(
+                tool_name=getattr(_trig, "tool_name", None),
+                summary=_within_authority,
+            ),
+            zone=halt.zone,
+            severity=HaltSeverity.NON_TERMINAL,
+            originating_layer=OriginatingLayer.TOOL_BOUNDARY,
+            reason=getattr(halt, "reason", None),
+            detail=HaltDetail(matched_rule=getattr(halt, "matched_rule", None)),
+            capabilities=HaltCapabilities(can_descope=True),
+        )
+        # Fail-loud invariant: De-scoped MUST be feed-worthy (a steering
+        # decision). If the flag were lost, the feed would silently drop it.
+        if not is_feed_worthy(descope_event):
+            raise ValueError(
+                "OPERATOR_DESCOPED event is not feed-worthy — the can_descope "
+                "steering flag was lost (GRV-005 §VI invariant)."
+            )
+        # Surfaced for the (Sprint-A) Feed-Commit Enforcement Point and for
+        # headless test introspection. The feed SINK itself is wired later; B1
+        # produces the feed-worthy structural fact.
+        self._last_descope_event = descope_event
+        # Re-plan: reuse the soft drop+observation send (the 1556-1560 mechanism).
+        return self._build_skip_observations(agent, halt.intents, hard=False)
 
     def _handle_andon_halt(
         self, agent: Any, halt: "AndonHalt", ledger: Optional[Any] = None,

@@ -27,8 +27,8 @@ leading ``~/``) is now handled before the substring match.  The
 A7 limitation that punted this to v0.2 is closed for the three
 common forms; arbitrary shell evaluation remains out of scope.
 The normalization itself lives in
-``grove.sovereign_prompt_handlers.normalize_command`` so the
-template matcher and this generator see the same expanded path.
+``grove.action_facts.normalize_command`` (the shared action-fact layer)
+so the template matcher and this generator see the same expanded path.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from grove.eval.proposal_queue import (
     _now_iso,
     compute_proposal_id,
 )
-from grove.sovereign_prompt_handlers import (
+from grove.action_facts import (
     _extract_skill_name,
     normalize_command,
 )

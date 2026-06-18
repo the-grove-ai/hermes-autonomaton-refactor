@@ -70,9 +70,12 @@ class TestTerminalSignal:
 
     def test_terminal_triggers_set(self):
         # GRV-010 C2d added "tier_unavailable" — a model-availability halt.
+        # GRV-005 §VI (kaizen-voice B1) added "red_workflow_cancel" — the
+        # operator aborting a structurally-blocked RED workflow (distinct
+        # provenance from red_sovereign).
         assert set(TERMINAL_TRIGGERS) == {
             "red_sovereign", "deny_hard", "quarantine", "governance_error",
-            "tier_unavailable",
+            "tier_unavailable", "red_workflow_cancel",
         }
 
     def test_terminal_halt_result_shape(self):
@@ -284,18 +287,29 @@ def _force_classify(monkeypatch, *, zone, matched_rule):
 
 class TestLevel1DenyFork:
     def test_red_deny_terminates(self, monkeypatch):
+        # GRV-005 §VI (kaizen-voice B1) supersedes the C2a red-deny path: a RED
+        # halt is now a workflow RESOLUTION, not a disposition — it never consults
+        # the four-choice sovereign prompt. With no operator-facing RED menu in
+        # B1 (GATE-DARK), the default headless resolution is Cancel, terminating
+        # the turn via the DISTINCT provenance trigger ``red_workflow_cancel``
+        # (not ``red_sovereign``). The structural-termination guarantee is intact.
         _force_classify(monkeypatch, zone="red", matched_rule="forced_red")
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="terminal", arguments={}, call_id="c1")]
         agent._run_turn_generator = lambda **kw: _gen_one_batch(intents)
+        # The sovereign handler is injected to prove RED does NOT consult it.
         d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
         with pytest.raises(TerminalGovernanceHalt) as exc_info:
             d.dispatch_turn(agent, user_message="hi")
-        assert exc_info.value.context.trigger == "red_sovereign"
+        assert exc_info.value.context.trigger == "red_workflow_cancel"
         assert agent._exec_called is False
 
     def test_deny_hard_terminates(self, monkeypatch):
-        _force_classify(monkeypatch, zone="red", matched_rule="forced_red")
+        # The deny_hard structural-fork branch is YELLOW-path machinery (the
+        # red-zone strike limit fed it pre-§VI; post-§VI a RED halt bypasses
+        # _handle_andon_halt entirely, so deny_hard is exercised here on a YELLOW
+        # permission halt whose handler returns the strike verdict).
+        _force_classify(monkeypatch, zone="yellow", matched_rule="forced_yellow")
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="terminal", arguments={}, call_id="c1")]
         agent._run_turn_generator = lambda **kw: _gen_one_batch(intents)

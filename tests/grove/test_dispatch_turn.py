@@ -271,10 +271,13 @@ class TestPhase7RunConversationDelegation:
         # Phase 7 verification: the wrapper goes through the Dispatcher's
         # classification gate, so a Red-zoned tool halts the turn (where the
         # pre-Phase-7 wrapper would have executed).
-        # GRV-010 C2a: a RED operator decline is now a STRUCTURAL halt — it
-        # terminates the autonomous turn via TerminalGovernanceHalt rather than
-        # injecting a "continue with an alternative" observation. The terminal
-        # signal propagates uncaught through run_conversation to the surface.
+        # GRV-005 §VI (kaizen-voice B1): a RED halt is a workflow RESOLUTION, not
+        # a disposition — it never consults the four-choice sovereign prompt. With
+        # no operator-facing RED menu in B1 (GATE-DARK), the default headless
+        # resolution is Cancel, which terminates the turn via
+        # TerminalGovernanceHalt with the DISTINCT provenance trigger
+        # ``red_workflow_cancel`` (not ``red_sovereign``). The terminal signal
+        # propagates uncaught through run_conversation to the surface.
         from grove.governance_halt import TerminalGovernanceHalt
         _force_red(monkeypatch)
         msgs: List[Dict] = []
@@ -283,13 +286,16 @@ class TestPhase7RunConversationDelegation:
         agent._run_turn_generator = (
             lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
         )
+        # The sovereign_prompt_handler is deliberately injected to prove RED does
+        # NOT consult it — the red_resolution_handler default (headless Cancel)
+        # governs instead.
         agent._dispatcher_singleton = Dispatcher(
             sovereign_prompt_handler=lambda halt: "deny",
         )
         import run_agent
         with pytest.raises(TerminalGovernanceHalt) as exc_info:
             run_agent.AIAgent.run_conversation(agent, user_message="hi")
-        assert exc_info.value.context.trigger == "red_sovereign"
+        assert exc_info.value.context.trigger == "red_workflow_cancel"
         # Executor was never reached — the turn terminated, no improvisation.
         assert agent._exec_called is False
 
@@ -544,19 +550,20 @@ class TestPhase4ZoneClassification:
         agent._run_turn_generator = (
             lambda **kw: _synthetic_generator(intents, {"final_response": "unreachable"})
         )
-        # Capture the AndonHalt to verify per-batch context. Inject a
-        # disposition handler that records the halt then returns "drop".
+        # Capture the AndonResolutionHalt to verify per-batch context. GRV-005
+        # §VI: a RED batch is resolved via the red_resolution_handler (NOT the
+        # four-choice sovereign prompt). Inject a handler that records the halt
+        # then resolves to Cancel.
         captured_halt = {}
 
-        def _capturing_prompt(halt):
+        def _capturing_resolution(halt):
             captured_halt["halt"] = halt
-            return "deny"
+            return "cancel"
 
-        # GRV-010 C2a — a RED batch decline is a STRUCTURAL halt: the prompt
-        # still runs (capturing the halt) but the deny then terminates the turn
-        # via TerminalGovernanceHalt rather than continuing.
+        # §VI — Cancel resolves the structurally-blocked RED batch by terminating
+        # the turn via TerminalGovernanceHalt(red_workflow_cancel).
         from grove.governance_halt import TerminalGovernanceHalt
-        d = Dispatcher(sovereign_prompt_handler=_capturing_prompt)
+        d = Dispatcher(red_resolution_handler=_capturing_resolution)
         with pytest.raises(TerminalGovernanceHalt):
             d.dispatch_turn(agent, user_message="hi")
         # The halt the prompt saw carried both zone results so Phase 5
@@ -822,8 +829,11 @@ class TestPhase5PendingAndonMarker:
     ):
         # The clear runs in a finally — if the prompt handler raises,
         # the marker should still be cleared so a buggy handler doesn't
-        # leave a stale trail.
-        _force_red(monkeypatch)
+        # leave a stale trail. GRV-005 §VI: the pending_andon marker is a
+        # YELLOW disposition-path concern (written/cleared inside
+        # _handle_andon_halt); a RED halt is now a workflow resolution that
+        # never reaches that path, so this finally-clear test exercises YELLOW.
+        _force_yellow(monkeypatch)
         import hermes_constants
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
 

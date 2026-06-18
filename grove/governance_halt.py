@@ -51,6 +51,14 @@ TERMINAL_TRIGGERS = (
     # governed fallback tier is declared/available; the turn fails loud rather
     # than silently swapping to an undeclared model.
     "tier_unavailable",
+    # GRV-005 §VI (kaizen-voice Sprint B1) — the operator aborted a structurally
+    # RED-blocked workflow (Cancel). Reuses the terminal mechanism with distinct
+    # provenance from ``red_sovereign``: "operator aborted a structurally-blocked
+    # workflow", not "a sovereign-approval action was declined". The RED operator
+    # menu that surfaces this choice ships in Sprint B2; B1 wires the trigger so
+    # the resolution logic + C2a boundary adapter (HaltTrigger(ctx.trigger))
+    # resolve it.
+    "red_workflow_cancel",
 )
 
 

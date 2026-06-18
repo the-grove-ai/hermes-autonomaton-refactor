@@ -128,6 +128,13 @@ class KaizenLedger:
         # re-routed the turn through the Cognitive Router at the fallback tier.
         # Carries failed_tier / fallback_tier / provider / model / reason.
         "tier_fallback",
+        # GRV-005 §VI (kaizen-voice Sprint B1) — a RED workflow RESOLUTION. RED
+        # severs the temporal dispositions, so it records here instead of
+        # andon_disposition: resolution (cancel / descoped) + zone + matched_rule
+        # + triggering_tool. The vocabulary moves; the volume is preserved — every
+        # RED halt that formerly emitted one andon_disposition now emits one
+        # red_resolution.
+        "red_resolution",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:
