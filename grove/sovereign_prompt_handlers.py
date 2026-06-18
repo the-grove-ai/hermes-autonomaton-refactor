@@ -65,6 +65,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "tty_sovereign_prompt",
+    "tty_red_resolution",
     "non_interactive_deny_handler",
     "silent_allow_handler",
     "silent_deny_handler",
@@ -172,6 +173,65 @@ def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
             return "deny"
         print(
             f"Unknown choice {choice!r}; pick 1, 2, 3, or 4.",
+            file=out,
+        )
+
+
+def tty_red_resolution(halt: "AndonHalt", *, out=None) -> str:
+    """The §VI RED workflow-resolution menu (kaizen-voice Sprint B2).
+
+    RED is a STRUCTURAL block, NOT a permission grant: the four-choice
+    disposition menu (once / session / always / deny) does not apply and minting
+    STOPS at RED. This operator-facing surface offers the two RED resolutions —
+    Cancel (abort the structurally-blocked workflow) and De-scope (drop the
+    blocked action; let the autonomaton re-plan within authority):
+
+        <RED interrupt header carrying describe_action_kaizen>
+
+          [1] Cancel — stop here
+          [2] De-scope — drop it and let me re-plan within bounds
+
+    Returns one of ``"cancel"`` / ``"descoped"`` — the
+    ``grove.dispatcher.RED_RESOLUTIONS`` values (returned as literals to avoid a
+    module import cycle, exactly as :func:`tty_sovereign_prompt` returns literal
+    dispositions). Defaults to ``"cancel"`` on EOF / KeyboardInterrupt — the
+    fail-safe SAFE direction is to abort the blocked workflow, matching
+    :func:`grove.dispatcher.headless_red_resolution`. There is NO
+    once/session/always/deny branch here, and NO Operator-Runs-It (the resumable
+    bridge is a deferred track).
+
+    The fact (WHAT the agent wanted to do) comes from the shared
+    :mod:`grove.action_facts` layer via
+    :func:`grove.halt_renderer.render_red_resolution_prompt`; the TONE (RED
+    hard-boundary interrupt) is owned by the renderer and shared with no other
+    surface (§VI ANDON-tone isolation). ``out`` mirrors
+    :func:`tty_sovereign_prompt`: defaults to ``sys.stderr``; the CLI bridge
+    overrides with ``sys.__stderr__`` to bypass prompt_toolkit buffering.
+    """
+    if out is None:
+        out = sys.stderr
+    from grove.halt_renderer import render_red_resolution_prompt
+
+    triggering = halt.intents[halt.triggering_index]
+    print(
+        render_red_resolution_prompt(
+            triggering.tool_name, triggering.arguments or {},
+        ),
+        file=out,
+    )
+
+    while True:
+        try:
+            choice = input("Choose [1-2]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("(no input — cancelling the action)", file=out)
+            return "cancel"
+        if choice in ("1", "cancel", "stop", "c"):
+            return "cancel"
+        if choice in ("2", "descope", "de-scope", "descoped", "d"):
+            return "descoped"
+        print(
+            f"Unknown choice {choice!r}; pick 1 or 2.",
             file=out,
         )
 

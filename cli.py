@@ -4835,6 +4835,7 @@ class HermesCLI:
             self.agent = Dispatcher(
                 session_db=self._session_db,
                 sovereign_prompt_handler=self._sovereign_prompt_callback,
+                red_resolution_handler=self._red_resolution_callback,
                 post_execution_prompt_handler=self._post_execution_kaizen_callback,
                 intent_store=_get_intent_store(),
                 agent_kwargs=dict(
@@ -11087,6 +11088,30 @@ class HermesCLI:
             timeout=300,
             fallback="not_yet",
             label="post-execution prompt",
+        )
+
+    def _red_resolution_callback(self, halt) -> str:
+        """§VI (kaizen-voice Sprint B2) — TTY bridge for the RED workflow-
+        resolution menu.
+
+        Called by the Dispatcher (agent thread) when an ``AndonResolutionHalt``
+        fires (a RED-zone structural block). Renders the two-choice
+        {Cancel, De-scope} menu via the same cross-thread ``run_in_terminal``
+        bridge as the Sovereign Prompt. RED is a workflow RESOLUTION, never a
+        disposition: this returns a ``grove.dispatcher.RED_RESOLUTIONS`` value
+        (``"cancel"`` / ``"descoped"``), never once/session/always/deny, and
+        never mints a token. Fail-safe default is ``"cancel"`` — the SAFE
+        direction is to abort the structurally-blocked workflow, matching
+        ``grove.dispatcher.headless_red_resolution``.
+        """
+        from grove.sovereign_prompt_handlers import tty_red_resolution
+
+        return self._run_terminal_prompt_bridge(
+            in_terminal=lambda out: tty_red_resolution(halt, out=out),
+            direct=lambda: tty_red_resolution(halt),
+            timeout=300,
+            fallback="cancel",
+            label="red resolution prompt",
         )
 
     def _clarify_callback(self, question, choices):

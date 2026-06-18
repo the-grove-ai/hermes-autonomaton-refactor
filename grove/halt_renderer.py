@@ -62,6 +62,16 @@ def _render_c2a(event: HaltEvent) -> str:
             "Your options: try again in a moment, cancel this request, or "
             "configure a fallback model and retry."
         )
+    elif trigger is HaltTrigger.RED_WORKFLOW_CANCEL:
+        # §VI (kaizen-voice Sprint B2) — the operator chose Cancel at the RED
+        # workflow-resolution menu: abort the structurally-blocked workflow.
+        # Distinct from the red_sovereign/deny_hard "requires your approval"
+        # copy below — RED is a hard structural boundary, not a grantable
+        # action. Factual RED register; no alternatives footer.
+        return (
+            "Action is structurally prohibited by the autonomaton. "
+            "Workflow cancelled."
+        )
     else:  # red_sovereign / deny_hard
         what = (
             f"This action{tool} requires your approval and was declined. "
@@ -168,5 +178,40 @@ def render_yellow_sovereign_prompt(tool_name: str, arguments: dict) -> str:
         "  [2] For the rest of this session",
         "  [3] Always — I'll remember it",
         "  [4] Not this time",
+    )
+    return "\n".join(lines) + "\n"
+
+
+def render_red_resolution_prompt(tool_name: str, arguments: dict) -> str:
+    """The §VI RED workflow-resolution menu TEXT (kaizen-voice Sprint B2).
+
+    GRV-005 §VI: RED is a STRUCTURAL block, not a permission grant. Where the
+    YELLOW four-choice prompt (:func:`render_yellow_sovereign_prompt`) asks the
+    operator to GRANT a disposition, this surface asks the operator to RESOLVE a
+    structurally-blocked workflow — Cancel (abort) or De-scope (drop the blocked
+    action and let the autonomaton re-plan within authority). These are the only
+    two RED resolutions; there is no once/session/always/deny here, and no
+    Operator-Runs-It (the resumable bridge is a deferred track — GATE-A leg-b
+    re-yield NOT-PROVEN).
+
+    Mirrors the YELLOW fold's SHAPE: a leading blank line, a first-person header
+    carrying :func:`describe_action_kaizen`, a blank line, the numbered choices,
+    and a trailing newline. The caller emits it with one ``print(block, file=out)``.
+
+    The fact (WHAT the agent wanted to do) comes from the shared
+    :mod:`grove.action_facts` layer — byte-identical to every other surface. The
+    TONE (this RED hard-boundary-interrupt framing) is owned here and shared with
+    no other surface (§VI ANDON-tone isolation). This is the INTERRUPT register,
+    NOT the proposal register: the action is blocked and will not proceed without
+    the operator's resolution.
+    """
+    description = describe_action_kaizen(tool_name, arguments or {})
+    lines = (
+        "",
+        f"This crosses a hard boundary and won't run on my authority: "
+        f"{description}. Your call on how we proceed.",
+        "",
+        "  [1] Cancel — stop here",
+        "  [2] De-scope — drop it and let me re-plan within bounds",
     )
     return "\n".join(lines) + "\n"
