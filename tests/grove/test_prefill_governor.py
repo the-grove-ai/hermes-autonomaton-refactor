@@ -21,33 +21,30 @@ from grove.tier_budget import (
     _parse_tier_budget,
 )
 
-_VALID_GROUPS = frozenset({"core", "exploratory", "analysis"})
-
-
 def _spec(**over):
-    base = {"context": [], "tools": {"allow_groups": ["core"]}}
+    # A leftover tools block is silently ignored (Option B); context is the only
+    # governed tool-independent key besides the ceiling.
+    base = {"context": []}
     base.update(over)
     return base
 
 
 def test_ceiling_positive_int_parses():
-    tb = _parse_tier_budget(
-        "T2", _spec(prefill_ceiling_tokens=8000), Path("x"), _VALID_GROUPS
-    )
+    tb = _parse_tier_budget("T2", _spec(prefill_ceiling_tokens=8000), Path("x"))
     assert tb.prefill_ceiling_tokens == 8000
 
 
 def test_ceiling_absent_is_none_cloud_noop():
     # No prefill_ceiling_tokens key — the governor no-ops for this tier
     # (every cloud tier: an unbounded window).
-    tb = _parse_tier_budget("T3", _spec(), Path("x"), _VALID_GROUPS)
+    tb = _parse_tier_budget("T3", _spec(), Path("x"))
     assert tb.prefill_ceiling_tokens is None
 
 
 def test_tierbudget_default_ceiling_is_none():
-    # Direct construction (PERMISSIVE_TIER_BUDGET path, tests, legacy callers)
-    # defaults to None — no governor unless explicitly configured.
-    tb = TierBudget(context=(), tools=None)  # type: ignore[arg-type]
+    # Direct construction (tests, legacy callers) defaults to None — no governor
+    # unless explicitly configured.
+    tb = TierBudget(context=())
     assert tb.prefill_ceiling_tokens is None
 
 
@@ -56,9 +53,7 @@ def test_ceiling_malformed_fails_loud(bad):
     # D7 / Prime Directive: a present-but-malformed ceiling raises at load —
     # never silently ignored. ``bool`` is rejected though isinstance(True, int).
     with pytest.raises(ValueError):
-        _parse_tier_budget(
-            "T2", _spec(prefill_ceiling_tokens=bad), Path("x"), _VALID_GROUPS
-        )
+        _parse_tier_budget("T2", _spec(prefill_ceiling_tokens=bad), Path("x"))
 
 
 def test_prefill_ceiling_exceeded_is_fail_loud_runtimeerror():

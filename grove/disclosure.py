@@ -66,7 +66,7 @@ def build_disclosure_units(registry):
             # tiers is unused by the disclosure split (build_pull_tool_defs /
             # resolve_pull read only id/kind/oneline) — a neutral non-empty
             # placeholder satisfies DisclosableUnit's >=1-tier invariant. The
-            # eligible-tier truth lives in the resolver (tier_rule + allow_groups).
+            # eligible-tier truth lives in the resolver (tier_rule.eligible).
             tiers=("T1", "T2", "T3"),
             trigger=UnitTrigger(intents=(), keywords=(), dock_goal=None),
         ))

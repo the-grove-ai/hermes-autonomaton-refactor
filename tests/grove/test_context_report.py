@@ -382,7 +382,8 @@ class TestPersistContextReport:
             "tier_budget",
         }
         assert set(payload["tier_budget"].keys()) == {
-            "applied_tier", "excluded_context_blocks", "excluded_mcp", "stripped_groups",
+            "applied_tier", "excluded_context_blocks", "excluded_mcp",
+            "stripped_capabilities",
         }
         # Sections sub-keys per D4 schema.
         assert set(payload["sections"].keys()) == {
@@ -505,7 +506,8 @@ class TestComposedPromptRetentionSmoke:
 
         agent = self._bare_agent(
             composed,
-            {"tier": "T2", "excluded_mcp": ["notion"], "stripped_groups": ["retrieval"]},
+            {"tier": "T2", "excluded_mcp": ["notion"],
+             "stripped_capabilities": ["x_search"]},
         )
         report = build_context_report(agent, conversation_history=[], snapshot_base_dir=tmp_path)
 
@@ -520,7 +522,7 @@ class TestComposedPromptRetentionSmoke:
         assert report.applied_tier == "T2"
         assert report.excluded_context_blocks == ["claude_contract", "skills_index"]
         assert report.excluded_mcp == ["notion"]
-        assert report.stripped_groups == ["retrieval"]
+        assert report.stripped_capabilities == ["x_search"]
 
         rendered = format_context_report(report)
         assert "Tier budget: T2" in rendered
@@ -530,7 +532,7 @@ class TestComposedPromptRetentionSmoke:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["tier_budget"]["applied_tier"] == "T2"
         assert payload["tier_budget"]["excluded_context_blocks"] == ["claude_contract", "skills_index"]
-        assert payload["tier_budget"]["stripped_groups"] == ["retrieval"]
+        assert payload["tier_budget"]["stripped_capabilities"] == ["x_search"]
 
     def test_no_budget_turn_has_empty_provenance(self, tmp_path):
         from grove.prompt.composer import PromptComposer, SectionResult
@@ -547,7 +549,7 @@ class TestComposedPromptRetentionSmoke:
         assert report.applied_tier is None
         assert report.excluded_context_blocks == []
         assert report.excluded_mcp == []
-        assert report.stripped_groups == []
+        assert report.stripped_capabilities == []
         assert "identity" in report.system_prompt_sections
 
 

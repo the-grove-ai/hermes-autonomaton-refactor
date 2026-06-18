@@ -54,7 +54,7 @@ def _res(tools):
     return ToolResolution(
         tools=tuple(tools),
         allowed_names=frozenset(),
-        stripped_groups=frozenset(),
+        stripped_capabilities=frozenset(),
         excluded_mcp=frozenset(),
         unparseable_mcp=(),
         fallback=False,

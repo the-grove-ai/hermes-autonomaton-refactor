@@ -77,8 +77,9 @@ class ContextReport:
       ``applied_tier`` (the routed tier), ``excluded_context_blocks`` (the
       gateable blocks the tier gated OFF, from the retained
       ``ComposedPrompt.gated_context_blocks``), ``excluded_mcp`` (MCP servers
-      the tier excluded) and ``stripped_groups`` (intent groups the tier
-      capped). Empty on a non-budgeted turn.
+      the tier excluded) and ``stripped_capabilities`` (the capabilities the
+      tier made ineligible via ``tier_rule.eligible`` — Option B, web-surface-
+      admission-fix). Empty on a non-budgeted turn.
     """
 
     session_id: str
@@ -94,7 +95,7 @@ class ContextReport:
     applied_tier: Optional[str] = None
     excluded_context_blocks: List[str] = field(default_factory=list)
     excluded_mcp: List[str] = field(default_factory=list)
-    stripped_groups: List[str] = field(default_factory=list)
+    stripped_capabilities: List[str] = field(default_factory=list)
     # Sprint 74 Phase 4 — disclosure observability.
     #  * ``always_loaded`` — the itemized always-loaded FLOOR (the Sprint 75
     #    scoreboard): identity sub-parts, the Dock goal-index, the disclosure
@@ -366,7 +367,9 @@ def build_context_report(
     sel = getattr(agent, "_last_tool_selection", None) or {}
     applied_tier = sel.get("tier")
     excluded_mcp = sorted(str(s) for s in (sel.get("excluded_mcp") or []))
-    stripped_groups = sorted(str(s) for s in (sel.get("stripped_groups") or []))
+    stripped_capabilities = sorted(
+        str(s) for s in (sel.get("stripped_capabilities") or [])
+    )
     excluded_context_blocks = sorted(str(b) for b in gated_blocks)
 
     # Sprint 74 Phase 4 — the floor scoreboard + the disclosure ledger.
@@ -398,7 +401,7 @@ def build_context_report(
         applied_tier=applied_tier,
         excluded_context_blocks=excluded_context_blocks,
         excluded_mcp=excluded_mcp,
-        stripped_groups=stripped_groups,
+        stripped_capabilities=stripped_capabilities,
         always_loaded=always_loaded,
         disclosed_payloads=disclosed_payloads,
         disclosure_tier_mode=disclosure_tier_mode,
@@ -487,7 +490,7 @@ def format_context_report(report: ContextReport) -> str:
         report.applied_tier
         or report.excluded_context_blocks
         or report.excluded_mcp
-        or report.stripped_groups
+        or report.stripped_capabilities
     ):
         out.append("")
         out.append(f"Tier budget: {report.applied_tier or '(none)'}")
@@ -499,9 +502,10 @@ def format_context_report(report: ContextReport) -> str:
             out.append(
                 f"  MCP servers excluded     : {', '.join(report.excluded_mcp)}"
             )
-        if report.stripped_groups:
+        if report.stripped_capabilities:
             out.append(
-                f"  tool groups stripped     : {', '.join(report.stripped_groups)} "
+                f"  capabilities stripped    : "
+                f"{', '.join(report.stripped_capabilities)} "
                 f"(escalation requested — see ledger)"
             )
 
@@ -585,7 +589,7 @@ def persist_context_report(
             "applied_tier": report.applied_tier,
             "excluded_context_blocks": report.excluded_context_blocks,
             "excluded_mcp": report.excluded_mcp,
-            "stripped_groups": report.stripped_groups,
+            "stripped_capabilities": report.stripped_capabilities,
         },
     }
     with open(target, "w", encoding="utf-8") as fh:

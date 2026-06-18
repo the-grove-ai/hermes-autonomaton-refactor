@@ -2,10 +2,14 @@
 
 Loader + fail-loud validator for the ``tier_budgets`` block in
 ``routing.config.yaml``. The budget is the per-tier prefill governor: for each
-cognition tier it declares which gateable context blocks compose and which
-tool groups + MCP servers are exposed. Policy lives here (D1, in
-``routing.config.yaml``); the tool-group taxonomy stays in
-``tool_groups.yaml`` (D2) — this module never restates what is *in* a group.
+cognition tier it declares which gateable context blocks compose. Policy lives
+here (D1, in ``routing.config.yaml``).
+
+Per-tier TOOL exposure is no longer a budget concern: the ``allow_groups``
+dual-gate is retired (web-surface-admission-fix, Option B). ``tier_rule.eligible``
+on each Capability record is the SOLE tier gate for the offered surface, applied
+by ``grove.context_budget.resolve_tools_for_tier`` and enforced by
+``run_agent._seam5_tier_refusal``.
 
 This is the parse-and-validate surface ONLY (Phase 1). It performs NO
 enforcement and is wired to neither the PromptComposer nor the Sprint 29 tool
@@ -35,14 +39,11 @@ import yaml
 
 __all__ = [
     "GATEABLE_CONTEXT_BLOCKS",
-    "WILDCARD",
     "TierBudgetMissing",
     "PrefillCeilingExceeded",
-    "ToolBudget",
     "TierBudget",
     "load_tier_budgets",
     "tier_admits_context_block",
-    "PERMISSIVE_TIER_BUDGET",
 ]
 
 
@@ -76,27 +77,6 @@ GATEABLE_CONTEXT_BLOCKS: frozenset = frozenset(
     {"claude_contract", "goal_record", "skills_index"}
 )
 
-# Wildcard token. ``allow_groups: ["*"]`` = the full tool registry.
-WILDCARD = "*"
-
-
-@dataclass(frozen=True)
-class ToolBudget:
-    """The ``tools`` half of a tier budget (D4).
-
-    ``allow_groups`` — tool-group names (from ``tool_groups.yaml``) whose tools
-    may load on this tier; ``("*",)`` admits the full registry. Stored in
-    declared order.
-
-    GRV-009 E4 C4 — ``exclude_mcp`` retired: per-tier MCP exposure is now
-    governed solely by the ``kind=mcp`` Capability records (``tier_rule.eligible``
-    is the tier ceiling, ``trigger`` the per-turn allow). See
-    ``grove.capability_registry`` and ``run_agent._compute_mcp_allow``.
-    """
-
-    allow_groups: Tuple[str, ...]
-
-
 @dataclass(frozen=True)
 class TierBudget:
     """One tier's prefill governor: gateable context + tool exposure + an
@@ -114,20 +94,7 @@ class TierBudget:
     """
 
     context: Tuple[str, ...]
-    tools: ToolBudget
     prefill_ceiling_tokens: Optional[int] = None
-
-
-# Sprint 73 Phase 4b — a permissive budget: no group cap, no MCP exclusion.
-# The legacy / non-routed tool-filter path resolves through
-# ``grove.context_budget.resolve_tools_for_tier`` with THIS budget so there is
-# ONE resolution surface (the twin is retired). It reproduces the pre-Sprint-73
-# Sprint 29 behavior exactly — the intent selection passes through unchanged and
-# every MCP passes — so stripped_groups is always empty and no escalation fires.
-PERMISSIVE_TIER_BUDGET = TierBudget(
-    context=(),
-    tools=ToolBudget(allow_groups=(WILDCARD,)),
-)
 
 
 def tier_admits_context_block(
@@ -160,12 +127,10 @@ def load_tier_budgets(
         config_path: explicit ``routing.config.yaml`` path (tests pass this).
             When ``None``, resolves the runtime sovereign copy
             (``$GROVE_HOME/routing.config.yaml``) then the repo template.
-        taxonomy: a pre-loaded tool-group taxonomy dict (tests inject this to
-            stay hermetic). When ``None``, the taxonomy is loaded via
-            ``grove.context_budget.load_taxonomy(taxonomy_path)`` for the
-            ``allow_groups`` cross-check (D2).
-        taxonomy_path: explicit ``tool_groups.yaml`` path, used only when
-            ``taxonomy`` is ``None``.
+        taxonomy: accepted for back-compatibility and IGNORED. The
+            ``allow_groups`` cross-check (D2) that consumed it is retired with
+            ``allow_groups`` (web-surface-admission-fix, Option B).
+        taxonomy_path: accepted for back-compatibility and IGNORED.
 
     Returns:
         A mapping of tier name → :class:`TierBudget`, one entry per
@@ -173,8 +138,8 @@ def load_tier_budgets(
 
     Raises:
         ValueError: the budget is absent, malformed, names an unknown context
-            block or tool group, or fails to cover (exactly) the configured
-            provider-backed tiers. Fail-loud per D7 — no silent full-load.
+            block, or fails to cover (exactly) the configured provider-backed
+            tiers. Fail-loud per D7 — no silent full-load.
     """
     target = (
         Path(config_path) if config_path is not None else _resolve_routing_config_path()
@@ -210,13 +175,9 @@ def load_tier_budgets(
             f"(got {type(budgets_raw).__name__})"
         )
 
-    valid_groups = _valid_group_names(taxonomy, taxonomy_path)
-
     budgets: Dict[str, TierBudget] = {}
     for tier_name, spec in budgets_raw.items():
-        budgets[str(tier_name)] = _parse_tier_budget(
-            str(tier_name), spec, target, valid_groups
-        )
+        budgets[str(tier_name)] = _parse_tier_budget(str(tier_name), spec, target)
 
     # Exact cover: every provider-backed tier has a budget; no budget names a
     # non-inference or unknown tier. Both halves are fail-loud (D7).
@@ -280,27 +241,10 @@ def _inference_tiers(routing: Dict[str, Any], target: Path) -> Set[str]:
     return tiers
 
 
-def _valid_group_names(
-    taxonomy: Optional[Dict[str, Any]] = None, taxonomy_path: Optional[Path] = None
-) -> frozenset:
-    """The set of tool-group names ``allow_groups`` may reference (besides ``*``).
-
-    GRV-009 E5b C1 — a CLOSED CONSTANT catalog: the ``core`` and ``exploratory``
-    pseudo-groups plus the intent-class group names (``INTENT_CLASSES``, which is
-    exactly ``domain_chunks.keys()`` today). No ``tool_groups.yaml`` read — the
-    catalog source moves off the retired file. The ``taxonomy`` / ``taxonomy_path``
-    args are accepted for back-compatibility and IGNORED.
-    """
-    from grove.classify import INTENT_CLASSES
-
-    return frozenset({"core", "exploratory"} | set(INTENT_CLASSES))
-
-
 def _parse_tier_budget(
     tier_name: str,
     spec: Any,
     target: Path,
-    valid_groups: frozenset,
 ) -> TierBudget:
     """Validate one ``tier_budgets[<tier>]`` entry and build a TierBudget."""
     if not isinstance(spec, dict):
@@ -337,33 +281,11 @@ def _parse_tier_budget(
             )
         context.append(item)
 
-    # ── tools: allow_groups (D4). GRV-009 E4 C4 — exclude_mcp retired; an
-    # ``exclude_mcp`` key in an old config is now silently ignored (MCP is
-    # registry-governed). ────────────────────────────────────────────────
-    tools_raw = spec.get("tools")
-    if not isinstance(tools_raw, dict):
-        raise ValueError(
-            f"routing config at {target}: tier_budgets[{tier_name!r}].tools must "
-            f"be a mapping with 'allow_groups' (got "
-            f"{type(tools_raw).__name__})"
-        )
-    allow_groups = _parse_str_list(
-        tools_raw.get("allow_groups"), tier_name, "tools.allow_groups", target
-    )
-
-    # allow_groups cross-check against the taxonomy (D2). '*' is the wildcard;
-    # any other name must be a real group, or it silently strips every tool —
-    # exactly the file_ops/terminal defect this catches at load.
-    for group in allow_groups:
-        if group == WILDCARD:
-            continue
-        if group not in valid_groups:
-            raise ValueError(
-                f"routing config at {target}: tier_budgets[{tier_name!r}]."
-                f"tools.allow_groups names unknown group {group!r}; valid groups "
-                f"are '*' plus {sorted(valid_groups)} (defined in "
-                f"tool_groups.yaml, D2)."
-            )
+    # ── tools: retired. Per-tier tool exposure is now governed solely by each
+    # Capability record's ``tier_rule.eligible`` (web-surface-admission-fix,
+    # Option B); the ``tools.allow_groups`` budget key is gone. A leftover
+    # ``tools:`` block in an old/sovereign config is silently ignored (not read,
+    # not required) so the loader never crashes on a stale operator copy. ──────
 
     # ── prefill_ceiling_tokens: optional memory governor (Sprint 77.0a) ───
     # Absent ⇒ None ⇒ the pre-flight governor no-ops for this tier (every
@@ -383,33 +305,5 @@ def _parse_tier_budget(
 
     return TierBudget(
         context=tuple(context),
-        tools=ToolBudget(
-            allow_groups=tuple(allow_groups),
-        ),
         prefill_ceiling_tokens=prefill_ceiling_tokens,
     )
-
-
-def _parse_str_list(
-    value: Any, tier_name: str, field: str, target: Path
-) -> List[str]:
-    """Validate a required list-of-strings budget field. Fail-loud."""
-    if value is None:
-        raise ValueError(
-            f"routing config at {target}: tier_budgets[{tier_name!r}].{field} is "
-            f"required (use [] for empty, ['*'] for wildcard)"
-        )
-    if not isinstance(value, list):
-        raise ValueError(
-            f"routing config at {target}: tier_budgets[{tier_name!r}].{field} "
-            f"must be a list (got {type(value).__name__})"
-        )
-    out: List[str] = []
-    for item in value:
-        if not isinstance(item, str):
-            raise ValueError(
-                f"routing config at {target}: tier_budgets[{tier_name!r}].{field} "
-                f"entries must be strings (got {item!r})"
-            )
-        out.append(item)
-    return out

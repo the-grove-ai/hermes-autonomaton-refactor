@@ -63,10 +63,11 @@ def test_read_record_is_green_write_record_is_yellow(caps):
 
 def test_records_are_the_sole_mcp_gate_after_c4(caps):
     # C1 wrote this as a "nothing consumes them yet" guardrail; C2/C4 flipped
-    # authority to the registry and retired the legacy keys. The exclude_mcp
-    # field is gone from the tier budget, and the registry gating helpers exist.
-    from grove.tier_budget import ToolBudget
+    # authority to the registry and retired the legacy keys. The whole tool-budget
+    # surface (ToolBudget incl. the old exclude_mcp / allow_groups keys) is gone
+    # with web-surface-admission-fix (Option B); the registry gating helpers exist.
+    import grove.tier_budget as tb
     import run_agent
-    assert "exclude_mcp" not in ToolBudget.__dataclass_fields__
+    assert not hasattr(tb, "ToolBudget")
     assert hasattr(run_agent.AIAgent, "_compute_mcp_allow")
     assert hasattr(run_agent.AIAgent, "_mcp_server_of_record")

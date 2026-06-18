@@ -1408,8 +1408,8 @@ class AIAgent:
         self._tools_for_turn: Optional[List[Dict[str, Any]]] = None
         self._last_tool_selection: Optional[Dict[str, Any]] = None
         # Sprint 73 Phase 4b — the tier-aware ToolResolution stashed by
-        # _maybe_apply_tool_filter; the generator reads its stripped_groups to
-        # fire the D8 escalation. None until the first per-turn filter runs.
+        # _maybe_apply_tool_filter; the generator reads its stripped_capabilities
+        # to fire the D8 escalation. None until the first per-turn filter runs.
         self._tool_resolution: Optional[Any] = None
 
         self.model = model
@@ -3180,11 +3180,12 @@ class AIAgent:
 
         Sprint 73 Phase 4b — consolidated onto the single resolution surface
         ``grove.context_budget.resolve_tools_for_tier`` (the legacy twin is
-        retired). When this turn routed to an inference tier, ``self._tier_budget``
-        (set pre-construction by the Dispatcher in Phase 4a) caps the intent
-        selection and may exclude MCP servers; otherwise the
-        ``PERMISSIVE_TIER_BUDGET`` reproduces the pre-Sprint-73 Sprint 29
-        behavior exactly (intent selection through, every MCP passes).
+        retired). The SOLE tier gate is each capability's ``tier_rule.eligible``
+        evaluated against ``current_tier`` (web-surface-admission-fix, Option B —
+        ``allow_groups`` retired). ``current_tier`` is bound from
+        ``self._current_tier_int()``, the SAME source ``_seam5_tier_refusal``
+        admits on, so the offered surface and the execution seam cannot disagree.
+        ``None`` (cloud / no tier routed) bypasses the gate, mirroring the seam.
 
         Fires inside ``_run_turn_generator`` after classification, so
         ``grove.providers.current_classification()`` is set.
@@ -3202,7 +3203,6 @@ class AIAgent:
 
         from grove.providers import current_classification
         from grove.context_budget import resolve_tools_for_tier
-        from grove.tier_budget import PERMISSIVE_TIER_BUDGET
 
         classification = current_classification()
         intent_class = classification.intent_class if classification else None
@@ -3217,13 +3217,21 @@ class AIAgent:
             # GRV-009 E5 C-RETIRE — the resolver path reads no tool_groups.yaml
             # taxonomy (native selection is registry-driven); the positional
             # taxonomy arg is back-compat-only and ignored, so pass None.
+            # web-surface-admission-fix (Option B) — the SOLE tier gate is
+            # tier_rule.eligible, bound to the SAME ``current_tier`` the
+            # ``_seam5_tier_refusal`` admits on (``_current_tier_int()``), so the
+            # builder and the seam cannot desync. None (cloud / no tier routed)
+            # bypasses the gate, mirroring the seam. ``allow_groups`` (and the
+            # PERMISSIVE wildcard budget) are retired — non-budgeted turns pass
+            # ``tier_budget=None``; the resolver no longer reads it.
             return resolve_tools_for_tier(
                 self.tools,
                 intent_class,
                 complexity,
                 None,
-                tier_budget if budgeted else PERMISSIVE_TIER_BUDGET,
+                tier_budget,
                 mcp_allow=self._compute_mcp_allow(intent_class, goal_alignment),
+                current_tier=self._current_tier_int(),
             )
 
         if budgeted:
@@ -3291,7 +3299,11 @@ class AIAgent:
             "full_count": len(self.tools),
             # Sprint 73 Phase 4b — provenance (D10): why this payload.
             "tier": _tier_now,
-            "stripped_groups": sorted(res.stripped_groups),
+            # web-surface-admission-fix (Option B) — the capability NAMES the tier
+            # stripped (tier_rule.eligible miss), not group names.
+            "stripped_capabilities": sorted(
+                cid for (cid, _elig) in res.stripped_capabilities
+            ),
             "excluded_mcp": sorted(res.excluded_mcp),
             "unparseable_mcp": list(res.unparseable_mcp),
             # GRV-009 spike C1 — the selected tool NAMES, not just the count.
@@ -12895,36 +12907,91 @@ class AIAgent:
         # on unknown intent or any failure — never crashes the turn.
         self._maybe_apply_tool_filter()
 
-        # Sprint 73 Phase 4b (D8) — strip-driven escalation. The tier tool cap
-        # may remove a group the intent SELECTED (allow_groups too tight for
-        # this intent on this tier). Never strip silently: request escalation to
-        # a covering tier via the Sprint 30 contract BEFORE the first LLM call.
-        # Grant → the Dispatcher hot-swaps to the covering tier and THIS
-        # generator is replaced; deny → the request is logged and the turn
-        # proceeds with the capped set (so over-escalation surfaces as a config
-        # signal — widen allow_groups — not a hidden cost). The escalation
-        # event carries tier + stripped_groups + intent_class for observability.
+        # Sprint 73 Phase 4b (D8) — strip-driven escalation, re-sourced onto
+        # tier_rule.eligible (web-surface-admission-fix, Option B; allow_groups
+        # retired). The tier may make a capability the intent SELECTED ineligible
+        # (current_tier ∉ tier_rule.eligible). Never strip silently: escalate ONCE
+        # to the MINIMUM tier covering the WHOLE stripped set, BEFORE the first
+        # LLM call. Grant → the Dispatcher hot-swaps to the covering tier and THIS
+        # generator is replaced (re-running the builder, so builder ≡ seam at the
+        # new tier); deny → logged, the turn proceeds with the capped set. No
+        # single covering tier (null intersection — a cap eligible only below the
+        # current tier, or two caps with disjoint eligible sets) → FAIL LOUD, the
+        # request naming each cap + its incompatible tier demands; never silently
+        # pick a tier and strand a cap. The event carries the capability NAMES
+        # (not groups) for observability.
         _tres = self._tool_resolution
-        if _tres is not None and _tres.stripped_groups:
+        if _tres is not None and _tres.stripped_capabilities:
             from grove.intents import EscalationRequest
-            _stripped = sorted(_tres.stripped_groups)
+            from grove.context_budget import min_covering_tier
             _sel = self._last_tool_selection or {}
             _esc_intent_class = _sel.get("intent_class")
             _esc_tier = _sel.get("tier")
-            yield EscalationRequest(
-                reason=(
-                    f"tier {_esc_tier or '?'} tool budget strips group(s) "
-                    f"{_stripped} that intent {_esc_intent_class!r} selected; "
-                    f"escalating to a tier that covers them"
-                ),
-                request={
-                    "reasoning_depth": "deep",
-                    "source": "tool_budget_strip",
-                    "stripped_groups": _stripped,
-                    "intent_class": _esc_intent_class,
-                    "current_tier": _esc_tier,
-                },
+            _cur_tier_int = self._current_tier_int()
+            _stripped_names = sorted(
+                cid for (cid, _elig) in _tres.stripped_capabilities
             )
+            _demands = {
+                cid: list(elig)
+                for (cid, elig) in sorted(_tres.stripped_capabilities)
+            }
+            _target = min_covering_tier(
+                _tres.stripped_capabilities, _cur_tier_int
+            )
+            if _target is None:
+                # Null intersection — no single tier serves the whole stripped
+                # set. Surface the unsatisfiable conflict naming each cap + its
+                # eligible tiers (a RECORD bug to reconcile); never strand a cap.
+                yield EscalationRequest(
+                    reason=(
+                        f"tier {_esc_tier or '?'} cannot serve capabilities "
+                        f"{_stripped_names}: no single tier covers their combined "
+                        f"tier_rule.eligible demands {_demands} — unsatisfiable "
+                        f"tier conflict (reconcile the eligible sets)"
+                    ),
+                    request={
+                        "reasoning_depth": "deep",
+                        "source": "tool_budget_strip_conflict",
+                        "stripped_capabilities": _stripped_names,
+                        "capability_tier_demands": _demands,
+                        "intent_class": _esc_intent_class,
+                        "current_tier": _esc_tier,
+                    },
+                )
+            else:
+                # LOOP INVARIANT (Gemini) — must hold BEFORE the LLM is invoked:
+                # at the target tier the stripped set re-evaluates to EMPTY (every
+                # stripped cap is eligible there). min_covering_tier draws the
+                # target from the intersection of the eligible sets, so this holds
+                # by construction; a hard guard (not a -O-strippable assert) makes
+                # a violated invariant fail loud rather than escalate to a tier
+                # that still strips.
+                if not all(
+                    _target in set(elig)
+                    for (_cid, elig) in _tres.stripped_capabilities
+                ):
+                    raise RuntimeError(
+                        "[run_agent] D8 min-covering-tier invariant violated: "
+                        f"target tier {_target} does not cover all stripped "
+                        f"capabilities {_demands}"
+                    )
+                yield EscalationRequest(
+                    reason=(
+                        f"tier {_esc_tier or '?'} strips capabilit"
+                        f"{'y' if len(_stripped_names) == 1 else 'ies'} "
+                        f"{_stripped_names} that intent {_esc_intent_class!r} "
+                        f"selected; escalating to T{_target} (the minimum tier "
+                        f"covering them)"
+                    ),
+                    request={
+                        "reasoning_depth": "deep",
+                        "source": "tool_budget_strip",
+                        "stripped_capabilities": _stripped_names,
+                        "target_tier": _target,
+                        "intent_class": _esc_intent_class,
+                        "current_tier": _esc_tier,
+                    },
+                )
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
@@ -13269,7 +13336,7 @@ class AIAgent:
                     _prov = {
                         k: _sel.get(k)
                         for k in ("selected_count", "full_count", "fallback",
-                                  "stripped_groups", "excluded_mcp")
+                                  "stripped_capabilities", "excluded_mcp")
                     }
                     logger.info(
                         "[prefill-components] tier=%s total~%s system~%s "

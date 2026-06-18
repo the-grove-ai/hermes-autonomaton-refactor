@@ -1,10 +1,11 @@
-"""Tool-filter consolidation + D8 strip provenance — Sprint 73 (Phase 4b).
+"""Tool-filter consolidation + D8 strip provenance — web-surface-admission-fix.
 
-Covers: the permissive budget reproduces legacy Sprint 29 byte-for-byte (the
-consolidation onto one resolution surface), and _maybe_apply_tool_filter's
-tier-aware behavior + the stripped_groups provenance the generator's D8
-escalation fires on. The live strip→escalate→ledger flow is Phase 6; the
-escalation-event enrichment is exercised by the dispatcher escalation suite.
+Covers: the no-tier (cloud) path reproduces the tier-unaware Sprint 29 surface
+byte-for-byte, and _maybe_apply_tool_filter's tier-aware behavior + the
+stripped_capabilities provenance the generator's D8 escalation fires on (Option
+B — the SOLE tier gate is tier_rule.eligible; allow_groups retired). These agent
+tests run against the LIVE record corpus: web_search/session_search are eligible
+at every tier; x_search is eligible at T3 only.
 """
 
 from __future__ import annotations
@@ -16,26 +17,13 @@ from grove.context_budget import (
     resolve_tool_set,
     resolve_tools_for_tier,
 )
-from grove.tier_budget import PERMISSIVE_TIER_BUDGET, TierBudget, ToolBudget
+from grove.tier_budget import TierBudget
 
-TAXONOMY = {
-    "version": 1,
-    "core": ["clarify", "memory", "terminal", "read_file", "skill_view"],
-    "domain_chunks": {
-        "code_generation": ["write_file", "patch", "search_files", "terminal", "execute_code"],
-        "debugging": ["search_files", "terminal", "process"],
-        "analysis": ["search_files", "session_search", "web_search"],
-        "retrieval": ["session_search", "web_search"],
-    },
-    "exploratory": ["delegate_task", "browser_navigate"],
-}
+TAXONOMY = {"version": 1, "core": [], "domain_chunks": {}, "exploratory": []}
 
-T2 = TierBudget(
-    context=("goal_record",),
-    tools=ToolBudget(
-        allow_groups=("core", "code_generation", "debugging", "analysis"),
-    ),
-)
+# A budget carrier with no tool key (tools retired) — its presence is what makes
+# the turn "budgeted"; the routed tier (current_tier) does the gating.
+T2 = TierBudget(context=("goal_record",))
 
 
 def _mk(*names):
@@ -46,15 +34,19 @@ def _names(tools):
     return [t["function"]["name"] for t in tools]
 
 
+def _stripped_ids(res):
+    return {cid for (cid, _elig) in res.stripped_capabilities}
+
+
 ALL_TOOLS = _mk(
     "clarify", "memory", "terminal", "read_file", "skill_view",
     "write_file", "patch", "execute_code", "search_files",
-    "session_search", "web_search", "delegate_task",
+    "session_search", "web_search", "x_search", "delegate_task",
     "mcp_notion_API_post_page", "mcp_other_do_thing",
 )
 
 
-# ── the consolidation: permissive == legacy Sprint 29 ──────────────────────
+# ── the consolidation: no-tier (cloud) == tier-unaware Sprint 29 ────────────
 
 
 @pytest.mark.parametrize(
@@ -67,21 +59,16 @@ ALL_TOOLS = _mk(
         (None, None),
     ],
 )
-def test_permissive_budget_reproduces_legacy(intent, complexity):
+def test_no_tier_reproduces_tier_unaware(intent, complexity):
     legacy = filter_tools_by_name(
         ALL_TOOLS, resolve_tool_set(intent, complexity, TAXONOMY)
     )
     res = resolve_tools_for_tier(
-        ALL_TOOLS, intent, complexity, TAXONOMY, PERMISSIVE_TIER_BUDGET
+        ALL_TOOLS, intent, complexity, TAXONOMY, None, current_tier=None
     )
     assert _names(res.tools) == _names(legacy)
-    assert res.stripped_groups == frozenset()    # permissive never strips
-    assert res.excluded_mcp == frozenset()        # permissive excludes no MCP
-
-
-def test_permissive_budget_is_wildcard():
-    assert PERMISSIVE_TIER_BUDGET.tools.allow_groups == ("*",)
-    assert PERMISSIVE_TIER_BUDGET.context == ()
+    assert res.stripped_capabilities == frozenset()   # no tier -> nothing stripped
+    assert res.excluded_mcp == frozenset()
 
 
 # ── _maybe_apply_tool_filter consolidation (bare AIAgent) ──────────────────
@@ -166,7 +153,7 @@ def test_no_budget_native_matches_legacy_mcp_disclose_on_match(monkeypatch):
     assert [n for n in got if not n.startswith("mcp_")] == legacy_native
     assert not any(n.startswith("mcp_") for n in got)   # no MCP matched -> withheld
     assert agent._last_tool_selection["fallback"] is False
-    assert agent._last_tool_selection["stripped_groups"] == []   # permissive
+    assert agent._last_tool_selection["stripped_capabilities"] == []  # no tier strip
     assert agent._tool_resolution is not None
 
 
@@ -179,31 +166,38 @@ def test_no_budget_unknown_intent_full_registry(monkeypatch):
     assert agent._last_tool_selection["fallback"] is True
 
 
-def test_budgeted_caps_and_excludes_mcp(monkeypatch):
+def test_budgeted_serves_intent_and_excludes_mcp(monkeypatch):
+    # code_generation @ T2: every code_generation cap is eligible at T2 (eligible
+    # [2,3]) so the intent is fully served and nothing is stripped.
     _setup(monkeypatch, "code_generation", "moderate")
     agent = _bare_agent(ALL_TOOLS, tier_budget=T2)
     agent._maybe_apply_tool_filter()
     got = _names(agent._tools_for_api)
-    assert "write_file" in got                       # code_generation allowed
-    # GRV-009 E4 C4 — both notion (not eligible on T2 per tier_rule.eligible)
-    # and 'other' (no record) are withheld by the registry-driven mcp_allow; the
-    # exclude_mcp ceiling is gone, so excluded_mcp is always empty now.
+    assert "write_file" in got                       # code_generation eligible@T2
+    # GRV-009 E4 C4 — notion (not eligible on T2 per its kind=mcp record) and
+    # 'other' (no record) are withheld by the registry-driven mcp_allow.
     assert "mcp_notion_API_post_page" not in got
     assert "mcp_other_do_thing" not in got
     sel = agent._last_tool_selection
     assert sel["excluded_mcp"] == []
-    assert sel["stripped_groups"] == []               # code_generation in allow
+    assert sel["stripped_capabilities"] == []         # code caps all eligible@T2
     assert sel["tier"] == "T2"
 
 
 def test_budgeted_strip_surfaces_for_d8(monkeypatch):
-    # retrieval is not in T2.allow_groups → its group is stripped; the
-    # generator reads _tool_resolution.stripped_groups to fire the escalation.
-    _setup(monkeypatch, "retrieval", "simple")
+    # research @ T2: x_search (eligible [3]) is the intent-selected capability the
+    # tier makes ineligible — the generator reads _tool_resolution
+    # .stripped_capabilities to fire the D8 escalation. web_search/session_search
+    # (eligible [1,2,3]) are served at T2, so the orphan is closed.
+    _setup(monkeypatch, "research", "simple")
     agent = _bare_agent(ALL_TOOLS, tier_budget=T2)
     agent._maybe_apply_tool_filter()
-    assert agent._tool_resolution.stripped_groups == frozenset({"retrieval"})
-    assert agent._last_tool_selection["stripped_groups"] == ["retrieval"]
+    assert "x_search" in _stripped_ids(agent._tool_resolution)
+    assert dict(agent._tool_resolution.stripped_capabilities)["x_search"] == (3,)
+    assert "x_search" in agent._last_tool_selection["stripped_capabilities"]
+    # the victim verbs ARE served at T2 (closes C-SEAM5 web-verb orphan)
+    assert "web_search" in agent._tool_resolution.allowed_names
+    assert "session_search" in agent._tool_resolution.allowed_names
     assert agent._last_tool_selection["tier"] == "T2"
 
 

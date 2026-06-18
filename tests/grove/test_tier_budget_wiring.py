@@ -18,20 +18,17 @@ import types
 import pytest
 
 from grove.dispatcher import Dispatcher
-from grove.tier_budget import TierBudget, TierBudgetMissing, ToolBudget
+from grove.tier_budget import TierBudget, TierBudgetMissing
 
 
-def _budget(context, allow=("core",)):
-    return TierBudget(
-        context=tuple(context),
-        tools=ToolBudget(allow_groups=tuple(allow)),
-    )
+def _budget(context):
+    return TierBudget(context=tuple(context))
 
 
 BUDGETS = {
-    "T1": _budget([], allow=("core",)),
-    "T2": _budget(["goal_record"], allow=("core", "code_generation")),
-    "T3": _budget(["claude_contract", "goal_record", "skills_index"], allow=("*",)),
+    "T1": _budget([]),
+    "T2": _budget(["goal_record"]),
+    "T3": _budget(["claude_contract", "goal_record", "skills_index"]),
 }
 
 
