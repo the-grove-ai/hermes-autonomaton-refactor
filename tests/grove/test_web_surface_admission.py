@@ -104,14 +104,31 @@ def _a_triggering_intent(tool_name):
     return "research"
 
 
-def test_x_search_not_offered_at_t2_relocation_trap_closed():
-    # x_search (eligible [3]) is NOT offered at T2 on a research turn.
+def test_research_at_t2_strips_nothing_after_widen():
+    # research-tier-widen: x_search/search_files/session_search/web_search are all
+    # eligible at T2 now (x_search widened [3]->[1,2,3] — restricted by accident),
+    # so a research turn at T2 strips NOTHING → stripped_capabilities is empty →
+    # the D8 strip-escalation never raises (dissolved at the root, not handled).
     res = resolve_tools_for_tier(
         _all_native_tools(), "research", "moderate", TAXONOMY, None, current_tier=2
     )
-    assert "x_search" not in res.allowed_names
-    # and it surfaces as the stripped capability driving D8.
-    assert "x_search" in {cid for (cid, _e) in res.stripped_capabilities}
+    assert res.stripped_capabilities == frozenset(), (
+        "research @ T2 must strip nothing after the widen (no D8 escalation)"
+    )
+    assert "x_search" in res.allowed_names      # now served at T2
+    assert "web_search" in res.allowed_names
+    assert "session_search" in res.allowed_names
+
+
+def test_research_at_t1_strips_nothing_after_widen():
+    # The widen also covers T1: every research-family native verb is eligible at
+    # T1, so a T1 research turn strips nothing either.
+    res = resolve_tools_for_tier(
+        _all_native_tools(), "research", "moderate", TAXONOMY, None, current_tier=1
+    )
+    assert res.stripped_capabilities == frozenset()
+    assert "x_search" in res.allowed_names
+    assert "search_files" in res.allowed_names
 
 
 def test_none_tier_admits_all_intent_matched_like_the_seam():
