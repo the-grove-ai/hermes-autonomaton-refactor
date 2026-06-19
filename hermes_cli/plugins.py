@@ -760,6 +760,23 @@ class PluginContext:
 # PluginManager
 # ---------------------------------------------------------------------------
 
+# mcp-plugin-discovery-cache-v1 — module-level discovery lock. The plugin
+# manifest SCAN (filesystem walk + entry-point resolution) is process-stable,
+# so it is cached on the PluginManager (``self._cached_winners``) and amortized
+# across the fresh Dispatcher built per request on the api_server/bg/feishu
+# routes — those all share the one ``get_plugin_manager()`` singleton, so the
+# instance cache persists process-wide while staying isolated per manager (the
+# test suite builds a fresh ``PluginManager()`` per case). Only registration
+# replays into each fresh ToolRegistry; the load/skip DECISION is never cached
+# (it re-reads plugins.enabled/disabled fresh each replay). ``_discovery_lock``
+# is a threading.Lock — discover_and_load is called from the synchronous
+# Dispatcher.__init__, so an asyncio.Lock is not usable — and serializes the
+# clear→set-registry→decide→load critical section so concurrent fresh-registry
+# replays cannot race on ``PluginManager._registry``. Mirrors the proven MCP
+# fast-path lock at tools/mcp_tool.py:2039.
+_discovery_lock = threading.Lock()
+
+
 class PluginManager:
     """Central manager that discovers, loads, and invokes plugins."""
 
@@ -778,6 +795,12 @@ class PluginManager:
         # Sprint 53 — the Dispatcher-owned ToolRegistry plugin tool
         # registrations land in.  Populated by ``discover_and_load``.
         self._registry: Any = None
+        # mcp-plugin-discovery-cache-v1 — cached SCAN output (winners dedup).
+        # Process-stable on the get_plugin_manager() singleton so the per-
+        # request scan amortizes; None until the first full discovery, dropped
+        # on an explicit force=True reload. The load/skip DECISION is NOT
+        # cached — it re-runs per replay off fresh config.
+        self._cached_winners: "Optional[Dict[str, PluginManifest]]" = None
 
     # -----------------------------------------------------------------------
     # Public
@@ -793,34 +816,71 @@ class PluginManager:
         when called with a new registry, so multiple Dispatchers in one
         process each receive plugin tools in their owned registry.
 
+        mcp-plugin-discovery-cache-v1 — the filesystem SCAN (manifest walk
+        + entry-point resolution) is amortized to once per process via the
+        module-level ``_cached_winners`` cache; only the per-manifest
+        load/skip DECISION and the registration replay re-run per call, so
+        each fresh per-turn ToolRegistry is fully populated (no starvation)
+        and ``plugins.enabled``/``disabled`` edits still take effect on the
+        next fresh-build-route request. The whole clear→set→decide→load
+        runs under ``_discovery_lock`` (a threading.Lock, mirroring the MCP
+        fast-path at tools/mcp_tool.py) so concurrent fresh-registry replays
+        cannot race on ``self._registry``.
+
+        PURITY CONTRACT: a plugin's ``register(ctx)`` MUST be a pure
+        schema/hook/command/platform declaration — no network, no I/O, no
+        stateful init at register time (defer to execution). Registration is
+        replayed into every fresh registry, so a register-time side effect
+        would re-fire per request.
+
         When ``force`` is true OR the supplied *registry* differs from
         the one used on the prior discovery pass, clears cached
-        discovery state first.
+        discovery state first. An explicit ``force=True`` (an operator
+        reload) additionally drops the cached scan so the filesystem is
+        re-walked; a new-registry replay keeps the warm scan.
         """
-        if registry is not None and registry is not self._registry:
-            # New registry — replay registrations against it.
-            force = True
-            self._registry = registry
-        elif registry is None and self._registry is None:
-            # Sprint 53 — no prior registry and none supplied.
-            # Surface this loud rather than silently no-op against
-            # an ad-hoc registry that no Dispatcher will see.
-            raise TypeError(
-                "PluginManager.discover_and_load requires a Sprint 53 "
-                "Dispatcher-owned registry; pass registry=dispatcher.registry"
-            )
-        if self._discovered and not force:
-            return
-        if force:
-            self._plugins.clear()
-            self._hooks.clear()
-            self._plugin_tool_names.clear()
-            self._cli_commands.clear()
-            self._plugin_commands.clear()
-            self._plugin_skills.clear()
-            self._context_engine = None
-        self._discovered = True
+        explicit_force = force
+        with _discovery_lock:
+            if registry is not None and registry is not self._registry:
+                # New registry — replay registrations against it.
+                force = True
+                self._registry = registry
+            elif registry is None and self._registry is None:
+                # Sprint 53 — no prior registry and none supplied.
+                # Surface this loud rather than silently no-op against
+                # an ad-hoc registry that no Dispatcher will see.
+                raise TypeError(
+                    "PluginManager.discover_and_load requires a Sprint 53 "
+                    "Dispatcher-owned registry; pass registry=dispatcher.registry"
+                )
+            if self._discovered and not force:
+                return
+            if explicit_force:
+                # An explicit operator reload invalidates the cached scan so
+                # the filesystem is re-walked. A new-registry replay does not.
+                self._cached_winners = None
+            if force:
+                self._plugins.clear()
+                self._hooks.clear()
+                self._plugin_tool_names.clear()
+                self._cli_commands.clear()
+                self._plugin_commands.clear()
+                self._plugin_skills.clear()
+                self._context_engine = None
+            self._discovered = True
+            # SCAN once per process (cold cache / explicit reload); DECIDE +
+            # LOAD every call so config + the fresh registry are honored.
+            if self._cached_winners is None:
+                self._cached_winners = self._scan_and_resolve_winners()
+            self._load_winners(self._cached_winners)
 
+    def _scan_and_resolve_winners(self) -> "Dict[str, PluginManifest]":
+        """SCAN phase (process-stable): walk every plugin source and dedup to
+        the winning manifest per key. Pure filesystem + entry-point I/O — no
+        registry writes and no ``plugins.enabled``/``disabled`` decisions
+        (those live in :meth:`_load_winners` so they re-evaluate per replay).
+        Cached module-level in ``_cached_winners`` so this scan runs once per
+        process across the fresh-build routes (api_server/bg/feishu)."""
         manifests: List[PluginManifest] = []
 
         # 1. Bundled plugins (<repo>/plugins/<name>/)
@@ -875,18 +935,27 @@ class PluginManager:
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
 
-        # Load each manifest (skip user-disabled plugins).
-        # Later sources override earlier ones on key collision — user
+        # Dedup: later sources override earlier ones on key collision — user
         # plugins take precedence over bundled, project plugins take
-        # precedence over user. Dedup here so we only load the final
-        # winner. Keys are path-derived (``image_gen/openai``,
+        # precedence over user. Keys are path-derived (``image_gen/openai``,
         # ``disk-cleanup``) so ``tts/openai`` and ``image_gen/openai``
         # don't collide even when both manifests say ``name: openai``.
-        disabled = _get_disabled_plugins()
-        enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.key or manifest.name] = manifest
+        return winners
+
+    def _load_winners(self, winners: "Dict[str, PluginManifest]") -> None:
+        """DECIDE + LOAD phase (per replay): re-read ``plugins.enabled``/
+        ``disabled`` fresh, branch load/skip per winning manifest, and replay
+        each enabled plugin's ``register(ctx)`` into ``self._registry`` (the
+        fresh per-turn registry). The caller holds ``_discovery_lock``.
+        Re-reading config here — not at scan time — is what keeps a
+        ``plugins.enabled`` edit taking effect on the next fresh-build-route
+        request even though the scan is cached."""
+        # Skip user-disabled plugins; honor the opt-in allow-list.
+        disabled = _get_disabled_plugins()
+        enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
 
@@ -962,7 +1031,7 @@ class PluginManager:
                 continue
             self._load_plugin(manifest)
 
-        if manifests:
+        if winners:
             logger.info(
                 "Plugin discovery complete: %d found, %d enabled",
                 len(self._plugins),
