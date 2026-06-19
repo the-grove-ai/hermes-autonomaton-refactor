@@ -174,9 +174,9 @@ class CognitiveRouter:
         1. operator_tier (--tier / GROVE_TIER) — forces a tier.
         2. operator_model (--model / GROVE_INFERENCE_MODEL) — resolved to
            a tier, or carried as-is on the default tier's provider.
-        3. Declarative routing_rules — downward, upward, escalation, in
-           that order. The first enabled rule whose match criteria all
-           hold against the classification decides the tier.
+        3. Declarative routing_rules — every rule in config-key
+           (insertion) order. The first enabled rule whose match criteria
+           all hold against the classification decides the tier.
         4. zone_overrides — a tier pinned for a classified zone.
         5. default_tier.
 
@@ -248,8 +248,8 @@ class CognitiveRouter:
                 pattern_cache_hit=False,
             )
 
-        # 3. Declarative routing rules — downward, upward, escalation in
-        #    config order. The first enabled rule that matches wins.
+        # 3. Declarative routing rules — every enabled rule in config-key
+        #    (insertion) order, first match wins. No rule name is special.
         for rule in self._routing_rules:
             if not rule.enabled:
                 continue
@@ -511,37 +511,118 @@ def _as_float(value, label: str) -> Optional[float]:
     return float(value)
 
 
+# declarative-routing-rules-v1 (GRV-001 Invariant I) — the allowed key sets
+# per rule kind. A key outside these sets is a malformed rule: raise loud
+# naming the offender rather than silently ignore it. The rule NAME is NOT
+# locked here — any name parses; only the SHAPE is constrained.
+_SET_TIER_RULE_KEYS = frozenset({"enabled", "target_tier", "match"})
+_SET_TIER_MATCH_KEYS = frozenset(
+    {"complexity", "intents", "min_confidence", "max_confidence"}
+)
+_ESCALATION_RULE_KEYS = frozenset({"enabled", "action", "match"})
+_ESCALATION_MATCH_KEYS = frozenset({"intents", "max_confidence"})
+
+
+def _reject_unknown_keys(present, allowed: frozenset, label: str) -> None:
+    """Raise naming the unknown key(s) when *present* is not a subset of
+    *allowed*. The loud half of Invariant I: an unknown key is a malformed
+    rule, never a silent no-op (the silent-ignore gap this closes)."""
+    unknown = sorted(set(present) - allowed)
+    if unknown:
+        raise ValueError(
+            f"{label} has unknown key(s) {unknown}; allowed keys are "
+            f"{sorted(allowed)}"
+        )
+
+
 def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
-    """Build the ordered routing-rule list.
+    """Build the ordered routing-rule list — one rule per ``routing_rules``
+    key, in config (insertion) order, first-enabled-match-wins.
 
-    Recognized rule names (config order, first match wins):
-      * ``downward`` (Sprint 12) — kept for backward compatibility with
-        configs predating the Sprint 54 inversion; pre-v2 configs may
-        still declare it.
-      * ``upward_moderate`` (Sprint 54) — moderate-complexity
-        knowledge-work + planning escalates to T2 from the T1 floor.
-        Planning is included so its FLOOR is T2, never T1.
-      * ``upward`` — complex/novel work escalates to T3.
-      * ``escalation`` — low-confidence step_up; always present (a
-        config predating routing_rules synthesizes it with the
-        top-level ``escalation.threshold`` as ``max_confidence``).
+    declarative-routing-rules-v1 (GRV-001 Invariant I): EVERY key is parsed
+    as a rule; the rule NAME is not locked in code. A well-formed novel name
+    (e.g. ``premium_coding``) parses and evaluates at its config-key
+    position. A malformed rule — or an unknown rule-level / match-level key —
+    fails loud naming the offender (no silent drop, no silent ignore). Eval
+    order equals config-key order by construction, not by incident.
 
-    The escalation rule's ``match`` block accepts an ``intents:`` filter
-    (Sprint 54) so the operator can narrow the step_up to a subset of
-    intents — T1-native intents stay on T1 even at low confidence.
+    Rule kinds:
+      * any key != ``escalation`` → a ``target_tier`` (set-tier) rule:
+        requires a string ``target_tier``; matches on
+        complexity / intents / min_confidence / max_confidence. (The legacy
+        ``downward`` / ``upward_moderate`` / ``upward`` names are now just
+        ordinary set-tier rules — no special-casing.)
+      * ``escalation`` → the low-confidence ``step_up`` rule, parsed AND
+        evaluated at its config-key position (fully positional — no
+        evaluate-last pinning). Its match accepts ``intents`` +
+        ``max_confidence``; ``action`` defaults to and must be ``step_up``.
+
+    Backward-compat: a config with NO ``escalation`` key still gets a
+    step_up synthesized from the top-level ``escalation.threshold``,
+    appended LAST (it has no declared position).
     """
     raw = routing.get("routing_rules") or {}
     if not isinstance(raw, dict):
         raise ValueError("'routing_rules' must be a mapping")
 
     rules: list = []
+    saw_escalation = False
 
-    for name in ("downward", "upward_moderate", "upward"):
-        spec = raw.get(name)
-        if spec is None:
-            continue
+    for name, spec in raw.items():
         if not isinstance(spec, dict):
             raise ValueError(f"routing_rules.{name} must be a mapping")
+
+        if name == "escalation":
+            saw_escalation = True
+            _reject_unknown_keys(
+                spec.keys(), _ESCALATION_RULE_KEYS, f"routing_rules.{name}"
+            )
+            esc_action = spec.get("action") or "step_up"
+            if esc_action != "step_up":
+                raise ValueError(
+                    f"routing_rules.escalation.action must be 'step_up', got"
+                    f" {esc_action!r}"
+                )
+            esc_match = spec.get("match") or {}
+            if not isinstance(esc_match, dict):
+                raise ValueError(
+                    "routing_rules.escalation.match must be a mapping"
+                )
+            _reject_unknown_keys(
+                esc_match.keys(), _ESCALATION_MATCH_KEYS,
+                f"routing_rules.{name}.match",
+            )
+            raw_max = esc_match.get("max_confidence")
+            max_confidence = (
+                default_threshold
+                if raw_max is None
+                else _as_float(
+                    raw_max, "routing_rules.escalation.match.max_confidence"
+                )
+            )
+            rules.append(
+                RoutingRule(
+                    name="escalation",
+                    enabled=bool(spec.get("enabled", True)),
+                    target_tier=None,
+                    action="step_up",
+                    # Sprint 54 — accept an ``intents:`` filter so the
+                    # operator can narrow step_up to specific intent
+                    # classes. Omitted/empty → fires on any intent
+                    # (Sprint 12 behaviour).
+                    complexity=frozenset(),
+                    intents=_as_frozenset(esc_match.get("intents")),
+                    min_confidence=None,
+                    max_confidence=max_confidence,
+                )
+            )
+            continue
+
+        # set-tier rule (any non-escalation name, including the legacy
+        # downward / upward_moderate / upward).
+        _reject_unknown_keys(
+            spec.keys(), _SET_TIER_RULE_KEYS, f"routing_rules.{name}"
+        )
         target = spec.get("target_tier")
         if not isinstance(target, str) or not target:
             raise ValueError(
@@ -550,6 +631,9 @@ def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
         match = spec.get("match") or {}
         if not isinstance(match, dict):
             raise ValueError(f"routing_rules.{name}.match must be a mapping")
+        _reject_unknown_keys(
+            match.keys(), _SET_TIER_MATCH_KEYS, f"routing_rules.{name}.match"
+        )
         rules.append(
             RoutingRule(
                 name=name,
@@ -569,8 +653,10 @@ def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
             )
         )
 
-    esc = raw.get("escalation")
-    if esc is None:
+    # Backward-compat: no DECLARED escalation key → synthesize the step_up
+    # from the top-level escalation.threshold and append LAST (it has no
+    # config position to evaluate at).
+    if not saw_escalation:
         rules.append(
             RoutingRule(
                 name="escalation",
@@ -581,42 +667,6 @@ def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
                 intents=frozenset(),
                 min_confidence=None,
                 max_confidence=default_threshold,
-            )
-        )
-    else:
-        if not isinstance(esc, dict):
-            raise ValueError("routing_rules.escalation must be a mapping")
-        esc_action = esc.get("action") or "step_up"
-        if esc_action != "step_up":
-            raise ValueError(
-                f"routing_rules.escalation.action must be 'step_up', got"
-                f" {esc_action!r}"
-            )
-        esc_match = esc.get("match") or {}
-        if not isinstance(esc_match, dict):
-            raise ValueError("routing_rules.escalation.match must be a mapping")
-        raw_max = esc_match.get("max_confidence")
-        max_confidence = (
-            default_threshold
-            if raw_max is None
-            else _as_float(
-                raw_max, "routing_rules.escalation.match.max_confidence"
-            )
-        )
-        rules.append(
-            RoutingRule(
-                name="escalation",
-                enabled=bool(esc.get("enabled", True)),
-                target_tier=None,
-                action="step_up",
-                # Sprint 54 — accept an ``intents:`` filter so the
-                # operator can narrow step_up to specific intent
-                # classes. Omitted/empty → fires on any intent
-                # (Sprint 12 behaviour).
-                complexity=frozenset(),
-                intents=_as_frozenset(esc_match.get("intents")),
-                min_confidence=None,
-                max_confidence=max_confidence,
             )
         )
 
