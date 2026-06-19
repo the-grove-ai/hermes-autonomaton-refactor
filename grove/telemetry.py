@@ -94,6 +94,40 @@ def log_routing_decision(
     return event
 
 
+def log_routing_config_load(
+    *,
+    outcome: str,
+    operator_hash: str,
+    machine_hash: str,
+    changed_file: str,
+    error: Optional[str] = None,
+) -> dict[str, Any]:
+    """Emit a ``routing_config_load`` event and return the event dict.
+
+    One event per merged-config load attempt in the live router (Sprint
+    router-merge-wiring-v1). ``outcome`` is ``"loaded"`` on a successful
+    merge→validate→swap, or ``"kept_last_known_good"`` when a reload
+    failed and the prior merged config was retained. ``operator_hash`` /
+    ``machine_hash`` are sha256 hexdigests of the two source files at the
+    point the event is emitted (the machine hash carries a fixed sentinel
+    when no machine file exists). ``changed_file`` attributes the load to
+    the file whose hash diverged — ``"operator"`` / ``"machine"`` /
+    ``"both"`` / ``"none"``. ``error`` carries the ``repr`` of the
+    exception on a kept-last-known-good outcome, and is null on success.
+    """
+    event: dict[str, Any] = {
+        "event_type": "routing_config_load",
+        "outcome": outcome,
+        "operator_hash": operator_hash,
+        "machine_hash": machine_hash,
+        "changed_file": changed_file,
+        "error": error,
+        "timestamp": utc_now_iso(),
+    }
+    logger.info("routing_config_load %s", json.dumps(event, sort_keys=True))
+    return event
+
+
 def log_ratchet_candidate(
     *,
     tier: str,

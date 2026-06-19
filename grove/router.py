@@ -18,6 +18,7 @@ last known good config and logs the error loudly.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 from dataclasses import dataclass, replace
@@ -31,8 +32,15 @@ from grove.escalation_policy import (
     load_escalation_policy,
     pre_route_check,
 )
+from grove.router_merge import load_merged_routing_config
+from grove.telemetry import log_routing_config_load
 
 logger = logging.getLogger(__name__)
+
+# Fault-attribution sentinel: the machine hash carries this fixed value
+# when no machine routing file exists, so a load can be attributed to the
+# operator file alone without conflating "absent" with any real digest.
+_MACHINE_ABSENT_SENTINEL = "machine-config-absent"
 
 
 @dataclass(frozen=True)
@@ -111,8 +119,17 @@ class RoutingRule:
 class CognitiveRouter:
     """Loads, queries, and routes against a routing.config.yaml file."""
 
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, machine_path: Optional[Path] = None):
         self._config_path = Path(config_path)
+        # The machine routing file (Skill Flywheel additions) merges on top
+        # of the operator root. When unspecified, resolve the live hermes_home
+        # path via the same resolver the flywheel CLI uses — imported lazily
+        # to avoid pulling the CLI import chain into router load order.
+        if machine_path is None:
+            from grove.flywheel_cli import _machine_config_path
+
+            machine_path = _machine_config_path()
+        self._machine_path = Path(machine_path)
         self._tiers: dict[str, TierConfig] = {}
         self._zone_overrides: dict[str, str] = {}
         self._routing_rules: list[RoutingRule] = []
@@ -123,6 +140,11 @@ class CognitiveRouter:
         # Default disabled — vanilla installs see the legacy step_up path
         # only. Parsed from routing.escalation_policy in _load_into_self.
         self._escalation_policy: EscalationPolicy = EscalationPolicy()
+        # Fault attribution (router-merge-wiring-v1): sha256 of the source
+        # files at the last successful load. Empty until the first load;
+        # used by reload() to attribute a kept-last-known-good outcome.
+        self._last_operator_hash: str = ""
+        self._last_machine_hash: str = ""
         self._load_into_self()
 
     # ----- public query API ---------------------------------------------------
@@ -337,13 +359,45 @@ class CognitiveRouter:
                 self._telemetry_tier,
                 self._escalation_policy,
             ) = snapshot
+            # Fault attribution (router-merge-wiring-v1): the retained hashes
+            # are unchanged (we kept last known good); attribute the failed
+            # load to whichever source file on disk diverged from them.
+            changed_file = self._classify_changed(
+                self._hash_file(self._config_path),
+                self._hash_file(self._machine_path),
+            )
+            log_routing_config_load(
+                outcome="kept_last_known_good",
+                operator_hash=self._last_operator_hash,
+                machine_hash=self._last_machine_hash,
+                changed_file=changed_file,
+                error=repr(exc),
+            )
 
     # ----- internals ----------------------------------------------------------
 
+    @staticmethod
+    def _hash_file(path: Optional[Path]) -> str:
+        """sha256 hexdigest of ``path``'s bytes, or the absent sentinel."""
+        if path is None or not Path(path).exists():
+            return _MACHINE_ABSENT_SENTINEL
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    def _classify_changed(self, cur_operator: str, cur_machine: str) -> str:
+        """Attribute a load to the file(s) diverging from the retained hash."""
+        operator_changed = cur_operator != self._last_operator_hash
+        machine_changed = cur_machine != self._last_machine_hash
+        if operator_changed and machine_changed:
+            return "both"
+        if operator_changed:
+            return "operator"
+        if machine_changed:
+            return "machine"
+        return "none"
+
     def _load_into_self(self) -> None:
         """Read, parse, validate; mutate self atomically on success."""
-        with open(self._config_path) as fh:
-            raw = yaml.safe_load(fh)
+        raw = load_merged_routing_config(self._config_path, self._machine_path)
 
         if not isinstance(raw, dict):
             raise ValueError(
@@ -453,6 +507,25 @@ class CognitiveRouter:
         self._escalation_threshold = float(threshold)
         self._telemetry_tier = telemetry_tier
         self._escalation_policy = escalation_policy
+
+        # Fault attribution (router-merge-wiring-v1): record the source-file
+        # hashes that produced this merged state and emit a loaded event,
+        # attributing the load to whichever file diverged from the prior
+        # retained hashes (both, on the first load). Emitted only after the
+        # swap succeeds, so a loaded event always reflects live state.
+        current_operator_hash = self._hash_file(self._config_path)
+        current_machine_hash = self._hash_file(self._machine_path)
+        changed_file = self._classify_changed(
+            current_operator_hash, current_machine_hash
+        )
+        self._last_operator_hash = current_operator_hash
+        self._last_machine_hash = current_machine_hash
+        log_routing_config_load(
+            outcome="loaded",
+            operator_hash=current_operator_hash,
+            machine_hash=current_machine_hash,
+            changed_file=changed_file,
+        )
 
 
 # ----- module-level singleton + helpers ---------------------------------------
