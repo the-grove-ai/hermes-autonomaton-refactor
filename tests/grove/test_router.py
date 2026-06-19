@@ -694,23 +694,61 @@ def test_eval_order_is_config_key_order(tmp_path):
     assert (rb.route(**turn).reason, rb.route(**turn).tier) == ("rule_b", "T3")
 
 
-def test_real_repo_config_routes_unchanged(tmp_path):
-    """Regression: the live repo config (upward_moderate, upward, escalation)
-    parses and routes identically under the generalized parser."""
+def _repo_router() -> CognitiveRouter:
     repo_cfg = Path(__file__).resolve().parents[2] / "config" / "routing.config.yaml"
-    router = CognitiveRouter(repo_cfg)
-    # upward_moderate: moderate knowledge work → T2
-    assert router.route(
-        complexity_signal="moderate", intent="research", confidence=0.9
-    ).tier == "T2"
-    # upward: complex/novel knowledge work → T3
-    assert router.route(
-        complexity_signal="complex", intent="planning", confidence=0.9
-    ).tier == "T3"
-    # daily driver → default T1
-    assert router.route(
-        complexity_signal="simple", intent="conversation", confidence=0.95
+    return CognitiveRouter(repo_cfg)
+
+
+@pytest.mark.parametrize(
+    "intent,complexity,expected",
+    [
+        # routing-favor-t2-v1 — coding is conservative: Premium (T2) through
+        # complex, Apex (T3) only at novel.
+        ("code_generation", "simple", "T2"),
+        ("code_generation", "moderate", "T2"),
+        ("code_generation", "complex", "T2"),
+        ("code_generation", "novel", "T3"),
+        ("debugging", "complex", "T2"),
+        ("debugging", "novel", "T3"),
+        # Other knowledge work — Premium (T2) at simple/moderate; Apex (T3) at
+        # complex/novel.
+        ("research", "moderate", "T2"),
+        ("research", "complex", "T3"),
+        ("analysis", "simple", "T2"),
+        ("analysis", "novel", "T3"),
+        ("creative_writing", "complex", "T3"),
+        ("planning", "moderate", "T2"),
+        ("system_admin", "moderate", "T2"),
+        ("system_admin", "complex", "T3"),
+        # Daily drivers — named in no rule → default T1 floor.
+        ("conversation", "simple", "T1"),
+        ("factual_lookup", "moderate", "T1"),
+        ("retrieval", "complex", "T1"),
+    ],
+)
+def test_real_repo_config_favor_t2_partition(intent, complexity, expected):
+    """routing-favor-t2-v1: the live repo config routes by the coding-
+    conservative partition. Asserted against config/routing.config.yaml
+    directly — a drift in the shipped partition fails here."""
+    assert _repo_router().route(
+        intent=intent, complexity_signal=complexity, confidence=0.9
+    ).tier == expected
+
+
+def test_real_repo_config_unknown_intent_defaults_t1():
+    assert _repo_router().route(
+        intent="unknown", complexity_signal="complex", confidence=0.9
     ).tier == "T1"
+
+
+def test_real_repo_config_escalation_disabled_low_conf_coding_holds():
+    """escalation is disabled in the partition: a low-confidence coding turn
+    routes by premium_coding (T2), NOT a step_up."""
+    d = _repo_router().route(
+        intent="code_generation", complexity_signal="moderate", confidence=0.2
+    )
+    assert d.tier == "T2"
+    assert d.reason == "premium_coding"  # not "escalation"
 
 
 def test_malformed_rule_reload_keeps_prior_config(tmp_path, caplog):

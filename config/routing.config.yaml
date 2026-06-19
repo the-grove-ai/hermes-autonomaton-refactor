@@ -177,67 +177,68 @@ routing:
 
   # ----------------------------------------------------------------------
   # Declarative routing rules. After operator overrides (--tier / --model)
-  # are checked, each enabled rule below is tested in order —
-  # upward_moderate, then upward, then escalation — against the telemetry
-  # classifier's read of the request. The first rule that matches decides
-  # the tier; if none match, the request runs on default_tier (T1).
+  # are checked, each ENABLED rule below is tested in FILE ORDER — first
+  # match wins — against the telemetry classifier's read of the request
+  # (intent_class + complexity_signal). If none match, the request runs on
+  # default_tier (T1). Order rules most-specific-first when they overlap;
+  # the four rules below are DISJOINT (each covered intent×complexity cell
+  # maps to exactly one rule), so their order is immaterial.
   #
-  # Sprint 54 (intent-taxonomy-v2): the floor inverted from T2 to T1.
-  # The legacy ``downward`` block is gone — T1 is the default, so there
-  # is no tier to descend to.  Two upward rules replace it:
+  # routing-favor-t2-v1 (operator-authored): favor Premium Cognition
+  # (T2 / Sonnet) as the home of knowledge work; reserve Apex (T3 / Opus)
+  # for the hardest cases. Coding is CONSERVATIVE — code_generation and
+  # debugging stay on T2 through ``complex``, escalating to T3 only at
+  # ``novel``; the other knowledge intents (research, analysis,
+  # creative_writing, planning, system_admin) escalate to T3 at ``complex``.
+  # Daily-driver intents (conversation, factual_lookup, retrieval,
+  # summarization, translation, scheduling, messaging, memory_operation)
+  # are named in no rule and fall through to the T1 floor. escalation
+  # step_up is DISABLED: the partition is total over the covered intents, so
+  # there is no uncovered combo for a low-confidence step_up to act on.
   #
-  #   * upward_moderate — moderate-complexity knowledge-work and
-  #     architect intents (planning is here at moderate so its FLOOR is
-  #     T2, never T1).
-  #   * upward — complex/novel work in the same family escalates to T3.
-  #
-  # The escalation step_up rule is narrowed: T1-native intents do NOT
-  # step up on low confidence (let Haiku handle uncertain chit-chat;
-  # stepping it to T2 is economic waste).
-  #
-  # This is the dial that makes routing yours: change a threshold, an
-  # intent list, or an `enabled` flag and the Autonomaton routes
-  # differently on the next request. No code change, no restart of intent.
+  # This is the dial that makes routing yours: change an intent list, a
+  # complexity set, a target_tier, or an `enabled` flag and the Autonomaton
+  # routes differently on the next request. No code change.
   # ----------------------------------------------------------------------
   routing_rules:
 
-    # Send moderate-complexity knowledge work UP to Premium Cognition.
-    # Catches the bulk of code, debugging, analysis, research, writing,
-    # and system-admin work that needs T2 but not T3.  ``planning`` is
-    # included so its FLOOR is T2 — a moderate planning task must never
-    # fall through to T1 Haiku.
-    upward_moderate:
+    # Coding — Premium (T2) through complex; Apex (T3) reserved for novel.
+    premium_coding:
       enabled: true
       match:
-        complexity: moderate
-        intents: [analysis, research, creative_writing, system_admin, planning]
+        complexity: [simple, moderate, complex]
+        intents: [code_generation, debugging]
       target_tier: T2
 
-    # Send hard work UP to the apex tier: complex or novel requests in
-    # the knowledge-work / architect family.
-    upward:
+    apex_coding:
       enabled: true
       match:
-        complexity: [moderate, complex, novel]
-        intents: [planning, analysis, code_generation, debugging,
-                  research, system_admin]
+        complexity: [novel]
+        intents: [code_generation, debugging]
       target_tier: T3
 
-    # When the classifier is not confident it has the right tier, step
-    # the request up one rung rather than risk a weak answer on a cheaper
-    # model.  Sprint 54: narrowed to T2/T3-native intents only.  Daily-
-    # driver intents (conversation, factual_lookup, retrieval,
-    # summarization, translation, scheduling, messaging,
-    # memory_operation) stay on T1 even at low confidence — the cost of
-    # an uncertain Haiku reply is well below the cost of escalating
-    # every uncertain chit-chat to Sonnet.
-    escalation:
+    # Other knowledge work — Premium (T2) at simple/moderate; Apex (T3) at
+    # complex/novel.
+    premium:
       enabled: true
       match:
-        max_confidence: 0.6
-        intents: [code_generation, debugging, analysis, research,
-                  creative_writing, system_admin, planning]
-      action: step_up
+        complexity: [simple, moderate]
+        intents: [research, analysis, creative_writing, planning, system_admin]
+      target_tier: T2
+
+    apex:
+      enabled: true
+      match:
+        complexity: [complex, novel]
+        intents: [research, analysis, creative_writing, planning, system_admin]
+      target_tier: T3
+
+    # Disabled — the partition above is total over the covered intents, so
+    # there is no uncovered combo to step up. Kept as an explicit
+    # ``enabled: false`` declaration rather than relying on the parser's
+    # synthesized-when-absent backward-compat.
+    escalation:
+      enabled: false
 
   telemetry:
     tier: T1
