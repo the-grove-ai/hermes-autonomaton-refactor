@@ -412,3 +412,324 @@ def test_route_mvp_tier_swap_gemma_opus_gemma_per_turn(tmp_path):
         router.route(**simple).tier_config.model,
     ]
     assert models == ["gemma4", "claude-opus-4-6", "gemma4"]
+
+
+# ----- declarative-routing-rules-v1: arbitrary names, config-key order -------
+# GRV-001 Invariant I — the rule NAME is no longer locked in code: every
+# routing_rules key parses as a rule, in config (insertion) order, and a
+# malformed rule / unknown key fails loud naming the offender.
+
+
+def _rules_cfg(rules_yaml: str) -> str:
+    """VALID_CONFIG (default_tier T2, tiers T0–T3) with a routing_rules block
+    spliced in above telemetry. ``rules_yaml`` is the 4-space-indented body."""
+    return VALID_CONFIG.replace(
+        "  telemetry:", "  routing_rules:\n" + rules_yaml + "  telemetry:",
+    )
+
+
+def _router_from(tmp_path: Path, name: str, text: str) -> CognitiveRouter:
+    p = tmp_path / name
+    p.write_text(text, encoding="utf-8")
+    return CognitiveRouter(p)
+
+
+NOVEL_NAMES_CONFIG = _rules_cfg(
+    """\
+    premium_coding:
+      enabled: true
+      match:
+        complexity: [simple, moderate, complex]
+        intents: [code_generation, debugging]
+      target_tier: T2
+    apex_coding:
+      enabled: true
+      match:
+        complexity: [novel]
+        intents: [code_generation, debugging]
+      target_tier: T3
+"""
+)
+
+
+def test_novel_named_rule_parses_and_routes(tmp_path):
+    """The core fix: a rule with a name outside the legacy tuple parses and
+    evaluates, and its reason IS the novel name (passthrough-safe)."""
+    router = CognitiveRouter(_write(tmp_path, NOVEL_NAMES_CONFIG))
+    d = router.route(complexity_signal="complex", intent="debugging", confidence=0.9)
+    assert d.tier == "T2"
+    assert d.reason == "premium_coding"
+    d2 = router.route(complexity_signal="novel", intent="code_generation", confidence=0.9)
+    assert d2.tier == "T3"
+    assert d2.reason == "apex_coding"
+
+
+def test_unknown_rule_level_key_raises_naming_offender(tmp_path):
+    bad = _rules_cfg(
+        """\
+    premium:
+      enabled: true
+      targt_tier: T2
+      match:
+        intents: [research]
+"""
+    )
+    with pytest.raises(ValueError, match=r"premium.*targt_tier|targt_tier"):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_unknown_match_key_raises_naming_offender(tmp_path):
+    bad = _rules_cfg(
+        """\
+    premium:
+      enabled: true
+      target_tier: T2
+      match:
+        complexty: simple
+"""
+    )
+    with pytest.raises(ValueError, match=r"complexty"):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_unknown_match_key_urgency_raises(tmp_path):
+    bad = _rules_cfg(
+        """\
+    premium:
+      enabled: true
+      target_tier: T2
+      match:
+        urgency: high
+"""
+    )
+    with pytest.raises(ValueError, match=r"urgency"):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_non_mapping_rule_spec_raises(tmp_path):
+    bad = _rules_cfg("    premium: T2\n")
+    with pytest.raises(ValueError, match=r"premium.*mapping"):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_non_string_target_tier_raises(tmp_path):
+    bad = _rules_cfg(
+        """\
+    premium:
+      enabled: true
+      target_tier: 2
+      match:
+        intents: [research]
+"""
+    )
+    with pytest.raises(ValueError, match=r"target_tier"):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_non_mapping_match_raises(tmp_path):
+    bad = _rules_cfg(
+        """\
+    premium:
+      enabled: true
+      target_tier: T2
+      match: simple
+"""
+    )
+    with pytest.raises(ValueError, match=r"match must be a mapping"):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_bad_complexity_type_raises(tmp_path):
+    bad = _rules_cfg(
+        """\
+    premium:
+      enabled: true
+      target_tier: T2
+      match:
+        complexity:
+          nested: bad
+"""
+    )
+    with pytest.raises(ValueError):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_bad_confidence_type_raises(tmp_path):
+    bad = _rules_cfg(
+        """\
+    premium:
+      enabled: true
+      target_tier: T2
+      match:
+        min_confidence: high
+"""
+    )
+    with pytest.raises(ValueError, match=r"min_confidence"):
+        CognitiveRouter(_write(tmp_path, bad))
+
+
+def test_escalation_is_positional_first_wins(tmp_path):
+    """A DECLARED escalation evaluates at its config position. Listed FIRST,
+    it wins over a later target rule on a turn matching both."""
+    esc_first = _rules_cfg(
+        """\
+    escalation:
+      enabled: true
+      match:
+        max_confidence: 0.6
+      action: step_up
+    upward:
+      enabled: true
+      match:
+        complexity: [complex]
+        intents: [planning]
+      target_tier: T3
+"""
+    )
+    router = CognitiveRouter(_write(tmp_path, esc_first))
+    d = router.route(complexity_signal="complex", intent="planning", confidence=0.4)
+    assert d.reason == "escalation"  # not "upward" — escalation is first
+    assert d.tier == "T3"  # default T2 stepped up one rung
+
+
+def test_escalation_position_flips_winner(tmp_path):
+    """Same overlapping low-confidence turn; only escalation's position
+    relative to upward differs. Position decides the winner."""
+    esc_first = _rules_cfg(
+        """\
+    escalation:
+      enabled: true
+      match:
+        max_confidence: 0.6
+      action: step_up
+    upward:
+      enabled: true
+      match:
+        complexity: [complex]
+        intents: [planning]
+      target_tier: T3
+"""
+    )
+    esc_last = _rules_cfg(
+        """\
+    upward:
+      enabled: true
+      match:
+        complexity: [complex]
+        intents: [planning]
+      target_tier: T3
+    escalation:
+      enabled: true
+      match:
+        max_confidence: 0.6
+      action: step_up
+"""
+    )
+    turn = dict(complexity_signal="complex", intent="planning", confidence=0.4)
+    r_first = _router_from(tmp_path, "esc_first.yaml", esc_first)
+    r_last = _router_from(tmp_path, "esc_last.yaml", esc_last)
+    assert r_first.route(**turn).reason == "escalation"
+    assert r_last.route(**turn).reason == "upward"
+
+
+def test_synthesized_escalation_when_absent_appended_last(tmp_path):
+    """A config with routing_rules but NO escalation key still steps up on
+    low confidence — the step_up is synthesized from escalation.threshold and
+    appended last."""
+    cfg = _rules_cfg(
+        """\
+    upward:
+      enabled: true
+      match:
+        complexity: [complex]
+        intents: [planning]
+      target_tier: T3
+"""
+    )
+    router = CognitiveRouter(_write(tmp_path, cfg))
+    d = router.route(confidence=0.4)  # below top-level threshold 0.6
+    assert d.reason == "escalation"
+    assert d.tier == "T3"  # default T2 + 1
+
+
+def test_eval_order_is_config_key_order(tmp_path):
+    """Two rules with overlapping match; first in config wins. Reordering
+    them flips the winner — eval order follows config-key order."""
+    a_first = _rules_cfg(
+        """\
+    rule_a:
+      enabled: true
+      match:
+        complexity: [complex]
+        intents: [planning]
+      target_tier: T2
+    rule_b:
+      enabled: true
+      match:
+        complexity: [complex]
+        intents: [planning]
+      target_tier: T3
+"""
+    )
+    b_first = _rules_cfg(
+        """\
+    rule_b:
+      enabled: true
+      match:
+        complexity: [complex]
+        intents: [planning]
+      target_tier: T3
+    rule_a:
+      enabled: true
+      match:
+        complexity: [complex]
+        intents: [planning]
+      target_tier: T2
+"""
+    )
+    turn = dict(complexity_signal="complex", intent="planning", confidence=0.9)
+    ra = _router_from(tmp_path, "a.yaml", a_first)
+    rb = _router_from(tmp_path, "b.yaml", b_first)
+    assert (ra.route(**turn).reason, ra.route(**turn).tier) == ("rule_a", "T2")
+    assert (rb.route(**turn).reason, rb.route(**turn).tier) == ("rule_b", "T3")
+
+
+def test_real_repo_config_routes_unchanged(tmp_path):
+    """Regression: the live repo config (upward_moderate, upward, escalation)
+    parses and routes identically under the generalized parser."""
+    repo_cfg = Path(__file__).resolve().parents[2] / "config" / "routing.config.yaml"
+    router = CognitiveRouter(repo_cfg)
+    # upward_moderate: moderate knowledge work → T2
+    assert router.route(
+        complexity_signal="moderate", intent="research", confidence=0.9
+    ).tier == "T2"
+    # upward: complex/novel knowledge work → T3
+    assert router.route(
+        complexity_signal="complex", intent="planning", confidence=0.9
+    ).tier == "T3"
+    # daily driver → default T1
+    assert router.route(
+        complexity_signal="simple", intent="conversation", confidence=0.95
+    ).tier == "T1"
+
+
+def test_malformed_rule_reload_keeps_prior_config(tmp_path, caplog):
+    """All-or-nothing swap (#14): a malformed rule on reload is rejected and
+    the prior loaded config stays intact."""
+    p = tmp_path / "routing.config.yaml"
+    p.write_text(RULES_CONFIG, encoding="utf-8")
+    router = CognitiveRouter(p)
+    before = router.route(complexity_signal="complex", intent="planning", confidence=0.9)
+    assert before.reason == "upward"
+    # Inject an unknown match key and reload — must reject, keep last-good.
+    p.write_text(
+        RULES_CONFIG.replace(
+            "        complexity: [complex, novel]",
+            "        complexity: [complex, novel]\n        bogus: x",
+        ),
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING):
+        router.reload()
+    after = router.route(complexity_signal="complex", intent="planning", confidence=0.9)
+    assert after.reason == "upward"  # prior config survived the rejected reload
