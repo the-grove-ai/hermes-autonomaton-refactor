@@ -87,16 +87,15 @@ def test_primary_refusal_payload_names_tool_tier_intent():
 # ── SECONDARY: registry tier-eligibility gate (defense-in-depth) ──────────────
 
 
-def test_secondary_refuses_tier_ineligible_record():
+def test_secondary_tier_refusal_neutered_admits_regardless_of_tier():
+    # neuter-tier-eligible-gate: the SECONDARY tier gate is retired. The seam
+    # never refuses on tier_rule.eligible — the router picks the tier and the
+    # zone system governs safety. Every governed tool is admitted at T1, even
+    # those whose records still document a narrower eligible ([2,3] / [3]).
     a = _agent()
     P._last_routed_tier = "T1"
-    # execute_code is eligible [2,3] — refused at T1.
-    assert _refused(a._seam5_tier_refusal("execute_code"))
-    # browser_navigate is eligible [3] — refused at T1.
-    assert _refused(a._seam5_tier_refusal("browser_navigate"))
-    # read_file / web_search are eligible [1,2,3] — allowed at T1.
-    assert a._seam5_tier_refusal("read_file") is None
-    assert a._seam5_tier_refusal("web_search") is None
+    for t in ("execute_code", "browser_navigate", "read_file", "web_search"):
+        assert a._seam5_tier_refusal(t) is None, t
 
 
 def test_secondary_allows_at_eligible_tier():
@@ -124,19 +123,19 @@ def test_secondary_ungoverned_tool_not_refused():
 # ── The E4 leak, named explicitly: T1 hosted-MCP green-read no longer runs ───
 
 
-def test_e4_t1_notion_green_read_no_longer_executes():
-    # The E4 deploy finding: notion (kind=mcp, tier_rule.eligible:[3]) executed on
-    # T1 despite being unoffered. C-SEAM5 closes it at BOTH layers.
+def test_e4_t1_notion_unoffered_still_refused_by_primary_offered_surface():
+    # The original E4 leak is closed by the C-SEAM5 PRIMARY (offered-surface)
+    # gate. neuter-tier-eligible-gate: the SECONDARY tier gate is retired (Notion
+    # is now tier-eligible everywhere), so the ONLY remaining seam boundary is the
+    # per-turn offered surface — a tool the turn did not OFFER is still refused,
+    # on the offered-set basis alone (NOT tier).
     P._last_routed_tier = "T1"
-    # PRIMARY: on a real T1 turn the resolver does not offer notion (eligible [3]),
-    # so the per-turn surface excludes it -> refused.
-    a = _agent(offered=["read_file", "web_search", "calendar_list"])  # a typical T1 surface, no notion
+    # PRIMARY: a turn whose offered surface excludes notion -> refused.
+    a = _agent(offered=["read_file", "web_search", "calendar_list"])  # no notion offered
     assert _refused(a._seam5_admission_refusal("mcp_notion_notion_search"))
-    # SECONDARY: independent of the offer path, the notion_read record's
-    # tier_rule.eligible=[3] refuses it at T1.
-    assert _refused(a._seam5_tier_refusal("mcp_notion_notion_search"))
-    # ...and at T3 the green-read is allowed by both layers.
-    P._last_routed_tier = "T3"
-    a3 = _agent(offered=["mcp_notion_notion_search", "read_file"])
-    assert a3._seam5_admission_refusal("mcp_notion_notion_search") is None
-    assert a3._seam5_tier_refusal("mcp_notion_notion_search") is None
+    # SECONDARY tier gate is neutered — it never refuses on tier, at any tier.
+    assert a._seam5_tier_refusal("mcp_notion_notion_search") is None
+    # When the turn DOES offer notion, both layers admit it — at T1 as at T3.
+    a_offered = _agent(offered=["mcp_notion_notion_search", "read_file"])
+    assert a_offered._seam5_admission_refusal("mcp_notion_notion_search") is None
+    assert a_offered._seam5_tier_refusal("mcp_notion_notion_search") is None

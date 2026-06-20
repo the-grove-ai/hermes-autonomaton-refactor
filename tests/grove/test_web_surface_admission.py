@@ -1,14 +1,14 @@
 """web-surface-admission-fix (Option B) — the offered surface ≡ the execution
 seam, and the re-sourced D8 escalation.
 
-tier_rule.eligible is the SOLE tier gate. This file proves the two invariants the
-fix exists to guarantee:
+neuter-tier-eligible-gate: the tier_rule.eligible gate is retired in the filter.
+This file proves the two invariants that survive the neuter:
 
 1. builder ⊆ seam — every native tool the offered-surface builder
    (resolve_tools_for_tier) admits at a tier, the execution seam
-   (_seam5_tier_refusal) also admits (tier ∈ tier_rule.eligible). The builder can
-   never offer a capability the seam would refuse (ANDON-builder-seam-divergence),
-   because both read the SAME tier_rule.eligible against the SAME current tier.
+   (_seam5_tier_refusal) also admits. The builder can never offer a capability
+   the seam would refuse (ANDON-builder-seam-divergence) — now because NEITHER
+   gates on tier: the builder strips nothing and the seam never refuses on tier.
 
 2. D8 escalation, re-sourced onto stripped_capabilities: a stripped cap escalates
    ONCE to the minimum covering tier; a null intersection fails loud naming the
@@ -60,17 +60,19 @@ SAMPLE_INTENTS = [
 @pytest.mark.parametrize("tier", [1, 2, 3])
 @pytest.mark.parametrize("intent", SAMPLE_INTENTS)
 def test_builder_offered_is_subset_of_seam_admission(tier, intent):
-    seam = _seam_eligible_map()
+    # neuter-tier-eligible-gate: both the builder and the seam now IGNORE tier —
+    # the builder strips nothing and _seam5_tier_refusal never refuses on tier.
+    # The builder⊆seam invariant still holds, and more strongly: the seam admits
+    # EVERY offered tool at every tier. Assert it against the REAL seam, not the
+    # (now-documentary) record eligible map.
+    import run_agent
     res = resolve_tools_for_tier(
         _all_native_tools(), intent, "moderate", TAXONOMY, None, current_tier=tier
     )
+    a = object.__new__(run_agent.AIAgent)
     for name in res.allowed_names:
-        # The seam admits a named tool iff tier ∈ its record's eligible (ungoverned
-        # tools the seam leaves alone). The builder must never offer one the seam
-        # would refuse.
-        assert tier in seam.get(name, {tier}), (
-            f"builder offered {name!r} at T{tier} but the seam refuses it "
-            f"(tier {tier} not in tier_rule.eligible={sorted(seam.get(name, []))})"
+        assert a._seam5_tier_refusal(name) is None, (
+            f"builder offered {name!r} at T{tier} but the seam refused it on tier"
         )
 
 

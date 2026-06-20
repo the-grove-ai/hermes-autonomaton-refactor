@@ -1,12 +1,14 @@
 """GRV-009 E4 — registry-driven MCP gating parity.
 
 Per-tier x per-entrypoint MCP tool exposure under the registry gate (kind=mcp
-Capability records: tier_rule.eligible + trigger): explicit T1 AND T2 MCP-free
-assertions and a T3 match/no-match disclosure pair.
+Capability records: trigger). neuter-tier-eligible-gate: the tier ceiling is
+retired, so MCP disclosure is tier-INDEPENDENT — a server discloses on
+trigger-match at T1/T2 exactly as at T3, and is withheld on no-match at every
+tier. The trigger gate is the sole MCP gate here (auth + zones govern the rest).
 
 C2 proved the registry gate IDENTICAL to the legacy gate (manifest mcp_allow +
-exclude_mcp); C4 retired the legacy gate, so this file now asserts the registry
-behavior directly (the legacy comparison is gone with the code it compared).
+exclude_mcp); C4 retired the legacy gate; the tier-eligible ceiling was then
+neutered, so this file asserts trigger-match disclosure across all tiers.
 """
 
 from __future__ import annotations
@@ -70,11 +72,20 @@ PLATFORMS = ["telegram", "cli"]
 
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize("tier", ["T1", "T2"])
-@pytest.mark.parametrize("label,intent,message,_t3", TURNS)
-def test_T1_and_T2_are_mcp_free_under_registry(platform, tier, label, intent, message, _t3):
+@pytest.mark.parametrize("label,intent,message,expect", TURNS)
+def test_mcp_discloses_on_trigger_match_any_tier(platform, tier, label, intent, message, expect):
+    # neuter-tier-eligible-gate: MCP disclosure is tier-INDEPENDENT now — a server
+    # discloses on trigger-match (intent/keyword/dock) at T1/T2 exactly as at T3.
+    # The trigger gate stays live; the tier ceiling is retired (T1/T2 are no
+    # longer MCP-free under the registry).
     surface = _native_surface(platform)
     exposed = _mcp_exposed(surface, tier, intent, message, _registry_allow(tier, intent, message))
-    assert exposed == set(), f"{platform}/{tier}/{label} leaked MCP: {exposed}"
+    if expect:
+        assert {MCP_READ, MCP_WRITE} <= exposed, (
+            f"{platform}/{tier}/{label}: should disclose notion on match, got {exposed}")
+    else:
+        assert exposed == set(), (
+            f"{platform}/{tier}/{label}: no-match should withhold, got {exposed}")
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)

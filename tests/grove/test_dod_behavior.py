@@ -36,10 +36,9 @@ def _names(tools):
 def _reg_allow(tier, intent="code_generation", message="update the notion page"):
     """GRV-009 E4 — the registry-driven mcp_allow for a tier on a notion-matching
     turn. The turn is a code_generation turn (so write_file selects) whose
-    message keyword-matches the notion record's trigger. T2 is not tier-eligible
-    (notion record tier_rule.eligible:[3]) so notion is withheld; T3 is eligible
-    and the keyword matches so notion discloses. (The exclude_mcp ceiling that
-    used to do this is retired.)"""
+    message keyword-matches the notion record's trigger. neuter-tier-eligible-
+    gate: the tier ceiling is retired, so notion discloses on the keyword match
+    at EVERY tier (T1/T2/T3) — disclosure is tier-independent now."""
     import run_agent
     import grove.providers as P
     a = object.__new__(run_agent.AIAgent)
@@ -72,15 +71,16 @@ def _contract_composer():
 # ── tool side: hosted Notion MCP ───────────────────────────────────────────
 
 
-def test_t2_profile_excludes_notion_mcp():
-    # GRV-009 E4 C4 — notion is withheld on T2 because it is not tier-eligible
-    # (tier_rule.eligible:[3]), via the registry mcp_allow, not the retired
-    # exclude_mcp ceiling. excluded_mcp is always empty now; 'other' (no record)
-    # is also withheld under disclose-on-match.
+def test_t2_profile_loads_notion_mcp_gate_neutered():
+    # neuter-tier-eligible-gate: Notion MCP now discloses at T2 on a notion-
+    # matching turn (trigger keyword-match), exactly as at T3 — the tier ceiling
+    # is retired, so disclosure is tier-independent. 'other' (no record) is still
+    # withheld under disclose-on-match (the trigger gate stays live).
     res = resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T2,
                                  mcp_allow=_reg_allow("T2"))
     names = _names(res.tools)
-    assert not any(n.startswith("mcp_notion") for n in names)   # the ~18.4K cut
+    assert any(n.startswith("mcp_notion") for n in names)       # discloses on match at T2
+    assert "mcp_other_do_thing" not in names                    # no record -> withheld
     assert "write_file" in names                                # code tools still load
 
 
@@ -113,17 +113,20 @@ def test_t3_profile_loads_claude_contract():
 # ── the post-condition, stated directly ────────────────────────────────────
 
 
-def test_dod_postcondition_7_t2_excludes_both_t3_loads_both():
-    # T2: neither Notion MCP (not tier-eligible) nor claude_contract.
+def test_dod_postcondition_7_notion_tier_independent_contract_still_t3():
+    # neuter-tier-eligible-gate: the TOOL side (Notion MCP) is now tier-
+    # INDEPENDENT — it discloses on the matching turn at T2 AND T3. The CONTEXT
+    # side (claude_contract block) is a separate tier-budget mechanism, untouched
+    # by the eligible-gate neuter: still T3-only.
     t2_tools = _names(
         resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T2,
                                mcp_allow=_reg_allow("T2")).tools
     )
     t2_blocks = frozenset(T2.context)
-    assert not any(n.startswith("mcp_notion") for n in t2_tools)
-    assert not tier_admits_context_block("claude_contract", t2_blocks)
+    assert any(n.startswith("mcp_notion") for n in t2_tools)            # tool side: now at T2
+    assert not tier_admits_context_block("claude_contract", t2_blocks)  # context side: still T3-only
 
-    # T3: both present (notion discloses on the matching turn).
+    # T3: notion discloses on the matching turn; claude_contract context loads.
     t3_tools = _names(
         resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T3,
                                mcp_allow=_reg_allow("T3")).tools

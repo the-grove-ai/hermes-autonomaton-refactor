@@ -42,9 +42,11 @@ def test_record_is_mcp_kind_with_locked_trigger_and_tier(caps, rid):
     assert c.trigger.intents == LOCKED_INTENTS
     assert c.trigger.keywords == LOCKED_KEYWORDS
     assert c.trigger.dock_affinity == []
-    # exclude_mcp ceiling -> tier_rule.eligible: T3 only (T1+T2 stay MCP-free).
-    assert c.tier_rule.eligible == [3]
-    assert c.tier_rule.preferred == 3
+    # Notion MCP eligible on all tiers (was apex-only): the apex ceiling blocked
+    # Notion on the Telegram default (T1). tier_rule is documentation now — the
+    # gate is neutered in the filter — but the record still carries the values.
+    assert c.tier_rule.eligible == [1, 2, 3]
+    assert c.tier_rule.preferred == 1
     # Migrated capability entered at the operator-locked gate.
     assert c.lifecycle.state == LifecycleState.APPROVED
     assert c.lifecycle.provenance == Provenance.MIGRATED

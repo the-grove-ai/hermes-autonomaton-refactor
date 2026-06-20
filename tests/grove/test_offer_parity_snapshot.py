@@ -2,10 +2,11 @@
 
 The committed golden (``fixtures/offer_parity_snapshot.json``) is the native
 offered surface from ``resolve_tools_for_tier`` across tier x intent x complexity.
-Regenerated for web-surface-admission-fix (Option B): the tier is bound via
-``current_tier`` and the SOLE tier gate is each record's ``tier_rule.eligible``
-(``allow_groups`` retired). The resolver must reproduce this surface byte-for-byte
-— any divergence is a parity violation and fails here.
+Regenerated for neuter-tier-eligible-gate: the ``tier_rule.eligible`` gate is
+retired in the filter, so the native offered surface is tier-INDEPENDENT (the
+router picks the tier; zones govern safety; eligible is documentation only).
+The resolver must reproduce this surface byte-for-byte — any divergence is a
+parity violation and fails here.
 """
 
 from __future__ import annotations

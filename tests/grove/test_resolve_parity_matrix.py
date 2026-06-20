@@ -47,8 +47,11 @@ def test_complexity_record_absent_on_simple_t3_present_on_complex():
     complex_ = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", None, current_tier=3, mcp_allow=None))
     assert "browser_navigate" not in simple, "complexity record leaked onto a low-complexity T3 turn"
     assert "browser_navigate" in complex_, "complexity record missing on a complex T3 turn"
+    # neuter-tier-eligible-gate: on a COMPLEX turn the complexity record now also
+    # rides at T1 — tier no longer strips. Complexity-disclosure gating (above)
+    # is unchanged; only the tier ceiling is retired.
     t1c = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", None, current_tier=1, mcp_allow=None))
-    assert "browser_navigate" not in t1c   # eligible=[3] → stripped at T1
+    assert "browser_navigate" in t1c   # tier ceiling retired → present at T1 on a complex turn
 
 
 @pytest.mark.parametrize("fb_tool", ["spotify_search", "kanban_list", "discord", "computer_use"])
