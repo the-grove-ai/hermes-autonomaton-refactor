@@ -1363,6 +1363,57 @@ class ProposalHandler:
     requires_source_patterns: bool = False
 
 
+# connector-failure-andon-v1 (C5) — the connector-failure offer is an
+# EPHEMERAL, agent-resident Andon (Ruling 1: NEVER written to the proposal
+# queue / proposals.jsonl — a dead connector must not pollute the Flywheel
+# evaluation ledger). It is rendered by its OWN standalone function below — it
+# is deliberately NOT a row in ``PROPOSAL_HANDLERS`` (that registry is the
+# closed set of queue-approvable types; adding a non-queue type there would
+# leak it into cli_approve/cli_show/review and break the registry parity
+# contract). Storage + dispositions live on the agent.
+PROPOSAL_TYPE_CONNECTOR_FAILURE = "connector_failure"
+
+
+@dataclass(frozen=True)
+class ConnectorFailureProposal:
+    """Ephemeral connector-failure offer. Content-addressed ``proposal_id`` =
+    stable hash(name + signature) so a same-signature re-trip dedups against
+    the agent shown-set and a changed-signature re-trip is a new offer."""
+
+    proposal_id: str
+    server_name: str
+    signature: str          # "reauth" | "unreachable"
+    reauth_command: str     # DISPLAYED to the operator, NEVER executed
+    type: str = PROPOSAL_TYPE_CONNECTOR_FAILURE
+
+
+def render_connector_failure_offer(p: "ConnectorFailureProposal") -> str:
+    """Render the connector-failure offer body (answer-then-surface).
+
+    Standalone (not routed through ``compose_offering``/``PROPOSAL_HANDLERS``)
+    because connector_failure is ephemeral, never queue-approvable. Re-auth
+    boundary: the re-auth command is DISPLAYED, never executed; this renderer
+    touches no token/credential material.
+    """
+    if p.signature == "reauth":
+        return (
+            f"⚠️ Shop-floor note — the **{p.server_name}** connector is "
+            f"unavailable this session (its sign-in expired, so its tools are "
+            f"absent — I'm not silently working around them). Re-authenticate "
+            f"with:\n\n    {p.reauth_command}\n\n"
+            f"then reply **Retry {p.server_name}** to reconnect, or **Dismiss** "
+            f"to proceed without it. Only select Retry after you have "
+            f"authenticated or restarted the service."
+        )
+    return (
+        f"⚠️ Shop-floor note — the **{p.server_name}** connector is "
+        f"unreachable this session (it failed to connect — not an auth issue — "
+        f"so its tools are absent). Reply **Retry {p.server_name}** once the "
+        f"service is back, or **Dismiss** to proceed without it. If it persists "
+        f"it's worth a bug report."
+    )
+
+
 PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT: ProposalHandler(
         summary_renderer=_summary_routing_adjustment,

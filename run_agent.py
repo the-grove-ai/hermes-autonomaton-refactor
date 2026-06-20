@@ -5284,6 +5284,96 @@ class AIAgent:
             logger.debug("[kaizen-offerings] push append skipped: %r", exc)
             return final_response
 
+    # connector-failure-andon-v1 (C4) — EPHEMERAL, agent-resident connector
+    # failure offers. Storage is the cached agent (survives per-turn
+    # reconstruction, like enabled_toolsets); NEVER the proposal queue
+    # (Ruling 1). Dedup + retry-eviction ride the agent shown-set (Ruling 2).
+    def _connector_failure_id(self, name: str, signature: str) -> str:
+        """Content-addressed id: same name+signature → same id (dedups against
+        the shown-set); a changed signature → a new id (re-surfaces)."""
+        import hashlib
+        digest = hashlib.sha256(f"{name}|{signature}".encode("utf-8")).hexdigest()
+        return f"connector_failure:{digest[:16]}"
+
+    def _session_wants_connector(self, name: str) -> bool:
+        """Session-relevance: surface a failed connector only if THIS session
+        requested it. ``enabled_toolsets`` None/empty = all enabled; otherwise
+        the connector is relevant iff its ``mcp-{name}`` toolset is enabled."""
+        toolsets = getattr(self, "enabled_toolsets", None)
+        if not toolsets:
+            return True
+        return f"mcp-{name}" in toolsets or name in toolsets
+
+    def _append_connector_failure_offer(self, final_response: str) -> str:
+        """Surface ONE session-relevant, not-yet-shown connector failure offer
+        alongside the answer (answer-then-surface). Best-effort."""
+        if not final_response:
+            return final_response
+        try:
+            from grove.flywheel_cli import (
+                ConnectorFailureProposal,
+                render_connector_failure_offer,
+            )
+            from tools.mcp_tool import get_connect_failures
+
+            shown = getattr(self, "_surfaced_connector_ids", None)
+            if shown is None:
+                shown = set()
+                self._surfaced_connector_ids = shown
+            active = getattr(self, "_connector_failure_offers", None)
+            if active is None:
+                active = {}
+                self._connector_failure_offers = active
+
+            for name, signature in get_connect_failures().items():
+                if not self._session_wants_connector(name):
+                    continue  # session-relevance: this session never wanted it
+                pid = self._connector_failure_id(name, signature)
+                if pid in shown:
+                    continue  # once-per-session (or dismissed) — do not re-append
+                proposal = ConnectorFailureProposal(
+                    proposal_id=pid,
+                    server_name=name,
+                    signature=signature,
+                    # re-auth boundary: command is DISPLAYED, never executed.
+                    reauth_command=f"hermes mcp login {name}",
+                )
+                active[pid] = proposal
+                shown.add(pid)  # one-at-a-time, once per session
+                offer = render_connector_failure_offer(proposal)
+                return final_response.rstrip() + "\n\n" + offer
+            return final_response
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[connector-andon] offer append skipped: %r", exc)
+            return final_response
+
+    def _connector_offer_retry(self, server_name: str) -> None:
+        """Operator 'Retry' disposition (Ruling 2): clear the connect-breaker
+        AND evict this connector's offer ids from the shown-set, so a
+        same-signature re-trip RE-SURFACES (the dedup must never silently
+        suppress a genuine re-fail). Touches NO credential material."""
+        from tools.mcp_tool import _clear_connect_failed
+        _clear_connect_failed(server_name)
+        shown = getattr(self, "_surfaced_connector_ids", None)
+        active = getattr(self, "_connector_failure_offers", None)
+        if active is not None:
+            for pid, prop in list(active.items()):
+                if prop.server_name == server_name:
+                    active.pop(pid, None)
+                    if shown is not None:
+                        shown.discard(pid)  # Ruling 2 eviction
+
+    def _connector_offer_dismiss(self, proposal_id: str) -> None:
+        """Operator 'Dismiss' disposition: drop the offer from the agent's
+        in-memory list and leave the breaker TRIPPED (the connector stays
+        down; the shown-set keeps it suppressed so it won't re-offer). NOT a
+        queue removal — it was never in the queue (Ruling 1)."""
+        active = getattr(self, "_connector_failure_offers", None)
+        if active is not None:
+            active.pop(proposal_id, None)
+        # shown-set retains the id → stays suppressed (dismissed); breaker
+        # is intentionally NOT cleared.
+
     def _spawn_skill_synthesis_detection(self) -> None:
         """Run the Kaizen skill-synthesis pass in a background daemon thread.
 
@@ -16898,6 +16988,10 @@ class AIAgent:
         # and before result assembly.
         if final_response and not interrupted:
             final_response = self._append_pending_offer(final_response)
+            # connector-failure-andon-v1 — surface a failed connector ALONGSIDE
+            # the answer (fail-loud: a dead connector's tools are absent, never
+            # silently worked around). Answer-then-surface, once per session.
+            final_response = self._append_connector_failure_offer(final_response)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.
