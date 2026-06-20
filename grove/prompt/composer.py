@@ -894,4 +894,24 @@ def build_default_composer(
         order=15,
         tier="volatile",
     )
+
+    # memory-substrate-v1 — accumulated_domain_memory at context:15 (the open
+    # slot between system_message:10 and context_files:20). The default store
+    # factory builds a fresh MemoryStore per call so records approved
+    # out-of-process (flywheel memory approve) surface without a restart.
+    from grove.memory.provider import create_memory_provider
+    memory_cfg: Dict[str, Any] = {}
+    if config and isinstance(config.get("sections"), dict):
+        entry = config["sections"].get("accumulated_domain_memory")
+        if isinstance(entry, dict):
+            memory_cfg = entry
+    memory_kwargs: Dict[str, Any] = {}
+    if "token_budget" in memory_cfg:
+        memory_kwargs["token_budget"] = memory_cfg["token_budget"]
+    composer.register_section(
+        "accumulated_domain_memory",
+        create_memory_provider(**memory_kwargs),
+        order=15,
+        tier="context",
+    )
     return composer
