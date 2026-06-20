@@ -325,15 +325,13 @@ _GOLDEN_TIER_UNAVAILABLE = (
     "a moment, cancel this request, or configure a fallback model and retry."
 )
 _GOLDEN_RED_SURFACE = (
-    "That's in your direct control — here's how.\n"
-    "\n"
-    "The command `sudo systemctl restart grove` needs privileges I deliberately "
-    "don't hold — sudo / su / doas stay with you, never with me. Run it "
-    "yourself in a terminal that has your credentials, then paste back anything "
-    "I need to keep going.\n"
-    "\n"
-    "To move this line, edit `~/.grove/zones.schema.yaml` (the `red.sovereign` "
-    "list) and restart me."
+    # governance-gateway-parity-v1 (Strike 1) — privilege surface copy
+    # simplified to the standards register: name the blocked command + that
+    # sudo/su/doas stay with the operator, and ask for the result. The config-
+    # lever instruction was dropped.
+    "The command `sudo systemctl restart grove` needs privileges that stay "
+    "with you — sudo / su / doas, never with me. Run it in your terminal, "
+    "then tell me the result so I can keep going."
 )
 
 

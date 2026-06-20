@@ -229,9 +229,14 @@ def render_red_surface(command: str, zone_result) -> str:
 
       1. Never say "access denied" or "forbidden."
       2. Read access is green — surface what we know.
-      3. Name the exact file and line to edit.
-      4. Name the reload method (restart in v0.1).
-      5. Register: "That's in your direct control — here's how."
+      3. Name the blocked command + that the privilege stays with the operator.
+      4. Ask the operator to run it and report the result.
+
+    governance-gateway-parity-v1 (Strike 1) simplified the copy to the
+    standards register: the config-lever instruction (edit
+    ``~/.grove/zones.schema.yaml`` + restart) was dropped in favour of "run it
+    yourself, then tell me the result". The actual text lives in
+    :func:`grove.halt_renderer._render_tool_boundary`.
 
     The message is returned (not printed) so the caller — currently
     ``check_all_command_guards`` in ``tools/approval.py`` — can place it in

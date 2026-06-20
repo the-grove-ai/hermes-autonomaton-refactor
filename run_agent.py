@@ -5374,6 +5374,153 @@ class AIAgent:
         # shown-set retains the id → stays suppressed (dismissed); breaker
         # is intentionally NOT cleared.
 
+    def _classify_connector_disposition(self, text: str):
+        """Match a free-text operator reply to a connector Retry/Dismiss
+        disposition for a CURRENTLY-failed connector — governance-gateway-
+        parity-v1 (Strike 1). Returns ``(action, name)`` with ``action`` in
+        ``{"retry", "dismiss"}``, or ``None`` when the message is not a
+        connector disposition.
+
+        Matched against the MODULE-LEVEL connect breaker
+        (:func:`tools.mcp_tool.get_connect_failures`), which is durable across
+        turns and agent instances — so the disposition resolves identically on
+        every surface (Telegram / WebUI / API) regardless of whether the
+        per-session agent cache still holds this instance. The grammar is tight
+        (leading ``retry``/``reconnect`` or ``dismiss`` plus a named connector,
+        or a sole outstanding failure) so ordinary conversation never trips it.
+        This is the cross-surface delivery; Telegram inline buttons are a
+        deferred fast-follow (see HANDOFF).
+        """
+        from tools.mcp_tool import get_connect_failures
+        failures = get_connect_failures()
+        if not failures:
+            return None
+        t = (text or "").strip().lower().rstrip(".!").replace("`", "")
+        if not t:
+            return None
+        tokens = t.split()
+        if not tokens:
+            return None
+        lead = tokens[0]
+
+        def _named():
+            for nm in failures:
+                if nm.lower() in t:
+                    return nm
+            return None
+
+        def _resolve(verb_aliases, filler):
+            # A named connector is a strong signal — accept regardless of length.
+            nm = _named()
+            if nm:
+                return nm
+            # Name-less: fall back to the SOLE outstanding failure only for a
+            # bare verb (optionally a filler word like "it"/"now"), so a normal
+            # sentence such as "retry the build" never trips the disposition.
+            if len(failures) == 1 and all(
+                w in verb_aliases or w in filler for w in tokens
+            ):
+                return next(iter(failures))
+            return None
+
+        if lead in ("retry", "reconnect"):
+            nm = _resolve(
+                {"retry", "reconnect"}, {"it", "now", "please", "again"},
+            )
+            return ("retry", nm) if nm else None
+        if lead == "dismiss":
+            nm = _resolve({"dismiss"}, {"it", "now", "please"})
+            return ("dismiss", nm) if nm else None
+        return None
+
+    def _apply_connector_disposition(self, action: str, name: str) -> str:
+        """Apply a connector Retry/Dismiss disposition and return the operator-
+        facing confirmation — governance-gateway-parity-v1 (Strike 1).
+
+        This IS the turn's answer (answer-then-surface): the disposition reply
+        is resolved here and the turn short-circuits with this string; nothing
+        is injected mid-agent-turn.
+
+        Retry: clear the breaker + evict the shown-set
+        (:meth:`_connector_offer_retry`), re-attempt the connect once
+        (re-discovery re-attempts ONLY the just-cleared server — the cold-gate
+        skips already-connected ones), then CONFIRM reconnection or RE-SURFACE
+        the governed offer on continued failure. The re-offer is the keystone:
+        a failed re-connect never leaves the operator with a bare acknowledgement
+        they could mistake for success. NOTE (SPEC amendment, logged in HANDOFF):
+        connect failures are DISCOVERY-time, not mid-tool-call, so there is no
+        bare Observation to intercept mid-turn — the re-offer is delivered here,
+        as the answer to the Retry reply.
+
+        Dismiss: leave the connector down (breaker untouched) and acknowledge;
+        the shown-set keeps it suppressed for this session's cached instance.
+        """
+        from tools.mcp_tool import get_connect_failures
+
+        if action == "dismiss":
+            sig = get_connect_failures().get(name, "")
+            self._connector_offer_dismiss(self._connector_failure_id(name, sig))
+            return (
+                f"Understood — proceeding without the **{name}** connector this "
+                f"session. Its tools stay absent; I won't silently work around "
+                f"them. Say **Retry {name}** anytime once it's back."
+            )
+
+        # action == "retry" — clear breaker + evict shown-set, then re-attempt.
+        # Capture the signature first so a re-discovery THROW can be re-recorded
+        # as the failed re-connect it is (never reported as a false reconnect).
+        sig_before = get_connect_failures().get(name, "unreachable")
+        self._connector_offer_retry(name)
+        _disp = getattr(self, "_dispatcher_singleton", None)
+        _registry = getattr(_disp, "registry", None) if _disp is not None else None
+        if _registry is None:
+            # No registry to drive a re-discovery (bare/uninitialised agent).
+            # The breaker is cleared, so the next natural discovery re-attempts
+            # the connect. Report honestly — do NOT claim a verified reconnect.
+            return (
+                f"Clearing the block on **{name}** — it'll re-attempt on the "
+                f"next connection refresh, and I'll flag it again if it's still "
+                f"down."
+            )
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools(registry=_registry)
+        except Exception as exc:  # noqa: BLE001 — a re-discovery throw IS a
+            # failed re-connect; re-record the breaker so the offer re-surfaces
+            # below rather than swallowing into a false "reconnected".
+            logger.warning(
+                "[connector-andon] retry re-discovery raised for %s: %r",
+                name, exc,
+            )
+            from tools.mcp_tool import _bump_connect_failed
+            _bump_connect_failed(name, sig_before)
+
+        if name in get_connect_failures():
+            # Failed re-connect — RE-SURFACE the governed offer (keystone). The
+            # shown-set was evicted by _connector_offer_retry, so render fresh,
+            # then re-suppress (add back to the shown-set) so it does not also
+            # double-append at the next post-turn surface.
+            from grove.flywheel_cli import (
+                ConnectorFailureProposal,
+                render_connector_failure_offer,
+            )
+            sig = get_connect_failures().get(name, "unreachable")
+            pid = self._connector_failure_id(name, sig)
+            offer = render_connector_failure_offer(ConnectorFailureProposal(
+                proposal_id=pid,
+                server_name=name,
+                signature=sig,
+                reauth_command=f"hermes mcp login {name}",
+            ))
+            shown = getattr(self, "_surfaced_connector_ids", None)
+            if shown is None:
+                shown = set()
+                self._surfaced_connector_ids = shown
+            shown.add(pid)
+            return f"Still couldn't reach **{name}**.\n\n{offer}"
+
+        return f"✅ Reconnected to **{name}** — its tools are available again."
+
     def _spawn_skill_synthesis_detection(self) -> None:
         """Run the Kaizen skill-synthesis pass in a background daemon thread.
 
@@ -13657,6 +13804,25 @@ class AIAgent:
                 "partial": False,
                 "failed": True,
                 "error": "codex_app_server runtime disabled (GRV-010 C1c-ii)",
+            }
+
+        # governance-gateway-parity-v1 (Strike 1) — connector Retry/Dismiss text
+        # disposition. Before the LLM loop, intercept a reply that resolves a
+        # currently-failed connector (matched off the durable module breaker)
+        # and short-circuit the turn with the confirmation / keystone re-offer.
+        # Wires the previously-unreachable _connector_offer_retry/_dismiss
+        # handlers on EVERY surface (answer-then-surface: this IS the answer to
+        # the disposition reply — no LLM call, no mid-turn injection).
+        _conn_disp = self._classify_connector_disposition(user_message)
+        if _conn_disp is not None:
+            _conn_msg = self._apply_connector_disposition(*_conn_disp)
+            return {
+                "final_response": _conn_msg,
+                "messages": messages,
+                "api_calls": 0,
+                "completed": True,
+                "partial": False,
+                "failed": False,
             }
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:

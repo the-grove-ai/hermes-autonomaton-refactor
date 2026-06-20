@@ -1139,15 +1139,42 @@ def check_all_command_guards(command: str, env_type: str,
             _strict = is_truthy_value(os.getenv("GROVE_ZONE_STRICT"))
             _interactive = is_cli and not is_gateway and not is_ask
             if _strict or not _interactive:
+                # governance-gateway-parity-v1 (Strike 1) — VERBOSE CANCEL on the
+                # gateway/strict shell-guard path (Path A). The base privilege
+                # surface already names the blocked command + the config lever;
+                # enrich it with the within-authority de-scoped alternative when
+                # one exists AND re-classifies OUT of red/yellow, so the operator
+                # sees a concrete way forward. Honest only: no interactive resume
+                # promise — the operator asks for the alternative in a fresh turn
+                # (the resumable bridge ships in Strike 2). Re-classification
+                # reuses ``classify_command``; a throw falls to the outer
+                # fail-closed handler below (no silent swallow).
+                _msg = render_red_surface(command, _zone)
+                _alt = descope_command(command)
+                _safe_alt = None
+                # Offer the de-scoped form when it clears the HARD boundary
+                # (no longer red). Yellow is fine — it is within authority and
+                # reaches the operator through the normal approval flow; only a
+                # still-red alternative (e.g. de-scoping a privilege wrapper off
+                # an already-destructive command) is withheld.
+                if _alt and classify_command(_alt, env_type).zone != "red":
+                    _safe_alt = _alt
+                    _msg = (
+                        _msg
+                        + f"\n\nWithin bounds I can take the de-scoped form "
+                        + f"instead — `{_safe_alt[:120]}` — just ask and I'll "
+                        + "pursue that approach."
+                    )
                 return {
                     "approved": False,
-                    "message": render_red_surface(command, _zone),
+                    "message": _msg,
                     "zone_classified": "red",
                     "matched_rule": _zone.matched_rule,
                     "zone_reason": _zone_reason,
                     "pattern_key": _zone_pattern_key,
                     "sovereign_red": True,
                     "strict": _strict,
+                    "remediation_alternative": _safe_alt,
                 }
             # Interactive CLI: Andon halted; Kaizen offers three options.
             _descoped = descope_command(command)
