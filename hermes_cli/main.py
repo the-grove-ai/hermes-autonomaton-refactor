@@ -5528,10 +5528,31 @@ def cmd_flywheel(args):
                 file=sys.stderr,
             )
             sys.exit(2)
+    elif action == "memory":
+        # memory-substrate-v1 — staged memory_context proposal review.
+        from grove.memory import cli as memory_cli
+        memory_action = getattr(args, "memory_action", None)
+        if memory_action == "list":
+            sys.exit(memory_cli.cli_memory_list())
+        elif memory_action == "show":
+            sys.exit(memory_cli.cli_memory_show(args.proposal_id))
+        elif memory_action == "approve":
+            sys.exit(memory_cli.cli_memory_approve(args.proposal_id))
+        elif memory_action == "reject":
+            sys.exit(memory_cli.cli_memory_reject(
+                args.proposal_id, reason=getattr(args, "reason", None),
+            ))
+        else:
+            print(
+                "Usage: autonomaton flywheel memory "
+                "{list,show,approve,reject}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     else:
         print(
             "Usage: autonomaton flywheel "
-            "{list,scan,show,approve,reject,patterns} [--help]",
+            "{list,scan,show,approve,reject,patterns,memory} [--help]",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -10494,6 +10515,42 @@ def main():
     flywheel_patterns_sub.add_parser(
         "stats",
         help="T0 hit rate + estimated inference savings",
+    )
+
+    # memory-substrate-v1 — operator review of staged memory_context
+    # proposals (the Context Persistence Detector's output). Same
+    # list/show/approve/reject UX as the routing-proposal surface above, but
+    # backed by ~/.grove/memory_proposals.jsonl and the memory store.
+    flywheel_memory_p = flywheel_subparsers.add_parser(
+        "memory",
+        help="Review and approve staged memory proposals",
+    )
+    flywheel_memory_sub = flywheel_memory_p.add_subparsers(
+        dest="memory_action",
+    )
+    flywheel_memory_sub.add_parser(
+        "list", help="List pending memory proposals",
+    )
+    flywheel_memory_show_p = flywheel_memory_sub.add_parser(
+        "show", help="Show one memory proposal's full detail",
+    )
+    flywheel_memory_show_p.add_argument(
+        "proposal_id", help="Short id (>=6 chars) from `flywheel memory list`",
+    )
+    flywheel_memory_approve_p = flywheel_memory_sub.add_parser(
+        "approve", help="Apply a memory proposal to the memory store",
+    )
+    flywheel_memory_approve_p.add_argument(
+        "proposal_id", help="Short id (>=6 chars) from `flywheel memory list`",
+    )
+    flywheel_memory_reject_p = flywheel_memory_sub.add_parser(
+        "reject", help="Reject a memory proposal (no store change)",
+    )
+    flywheel_memory_reject_p.add_argument(
+        "proposal_id", help="Short id (>=6 chars) from `flywheel memory list`",
+    )
+    flywheel_memory_reject_p.add_argument(
+        "--reason", help="Optional rejection reason",
     )
 
     flywheel_parser.set_defaults(func=cmd_flywheel)
