@@ -30,11 +30,12 @@ bindings:
   credentials: notion-oauth
   toolset_key: null
 tier_rule:
-  # D2/D3 parity: notion's EFFECTIVE exposure is T3 only — T2 ceiling
-  # (exclude_mcp: [notion]) and T1 wildcard (exclude_mcp: ["*"]) deny it.
-  # eligible: [3] reproduces that ceiling; T1 AND T2 stay MCP-free.
-  eligible: [3]
-  preferred: 3          # must be in eligible (dry-run validation)
+  # Notion is a workhorse tool, not an apex luxury: eligible on every
+  # inference tier so it discloses on the Telegram default (T1). The prior
+  # apex-only ceiling (eligible: [3], reproducing the old exclude_mcp:
+  # [notion] / T1 wildcard) blocked Notion on T1 turns.
+  eligible: [1, 2, 3]
+  preferred: 1          # must be in eligible (dry-run validation)
   promotion_criteria: {}
   validation:           # inert placeholders — validation fires only on promotion (epic out-of-scope)
     strategy: shadow_compare
