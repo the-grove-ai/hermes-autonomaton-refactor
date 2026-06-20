@@ -11,6 +11,8 @@ _connect_server.
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 import tools.mcp_tool as mt
@@ -192,6 +194,113 @@ def test_11_premature_retry_resurfaces_no_silent_suppression():
     mt._bump_connect_failed("notion", "reauth")
     resurfaced = agent._append_connector_failure_offer("b")
     assert "notion" in resurfaced  # NOT suppressed by the (evicted) shown-set
+
+
+# ── governance-gateway-parity-v1 (Strike 1): text-disposition wiring ──
+# The cross-surface Retry/Dismiss text disposition that finally CALLS the
+# (previously unreachable) _connector_offer_retry/_dismiss handlers, plus the
+# keystone re-offer on a failed re-connect.
+
+
+def test_disposition_classifier_matches_named_and_bare():
+    mt._bump_connect_failed("notion", "reauth")
+    a = _agent()
+    assert a._classify_connector_disposition("Retry notion") == ("retry", "notion")
+    assert a._classify_connector_disposition("retry") == ("retry", "notion")
+    assert a._classify_connector_disposition("Reconnect it") == ("retry", "notion")
+    assert a._classify_connector_disposition("Dismiss") == ("dismiss", "notion")
+    assert a._classify_connector_disposition("dismiss notion") == ("dismiss", "notion")
+
+
+def test_disposition_classifier_rejects_ordinary_messages():
+    # A sole outstanding failure must NOT make every "retry…" sentence a
+    # disposition — only the bare verb or a named connector counts.
+    mt._bump_connect_failed("notion", "reauth")
+    a = _agent()
+    assert a._classify_connector_disposition("retry the build please") is None
+    assert a._classify_connector_disposition("what is the weather?") is None
+    assert a._classify_connector_disposition("dismiss the meeting tomorrow") is None
+    # No outstanding failure → nothing matches at all.
+    mt._server_connect_failed.clear()
+    assert a._classify_connector_disposition("Retry notion") is None
+
+
+def test_disposition_ambiguous_dismiss_needs_a_name():
+    # Two failures + a bare "dismiss" is ambiguous → not classified.
+    mt._bump_connect_failed("notion", "reauth")
+    mt._bump_connect_failed("github", "unreachable")
+    a = _agent()
+    assert a._classify_connector_disposition("dismiss") is None
+    assert a._classify_connector_disposition("dismiss github") == ("dismiss", "github")
+
+
+def test_retry_disposition_reconnect_success(monkeypatch):
+    mt._bump_connect_failed("notion", "reauth")
+    a = _agent()
+    a._dispatcher_singleton = types.SimpleNamespace(registry=ToolRegistry())
+    # Re-discovery that records no failure == a successful re-connect (the
+    # breaker was already cleared by the retry).
+    monkeypatch.setattr(mt, "discover_mcp_tools", lambda registry=None: [])
+    msg = a._apply_connector_disposition("retry", "notion")
+    assert "Reconnected" in msg
+    assert "notion" not in mt.get_connect_failures()
+
+
+def test_retry_disposition_failed_reconnect_reoffers_keystone(monkeypatch):
+    # KEYSTONE: a failed re-connect re-surfaces the governed offer (never a bare
+    # "ok, retried" that the operator could mistake for success).
+    mt._bump_connect_failed("notion", "reauth")
+    a = _agent()
+    a._dispatcher_singleton = types.SimpleNamespace(registry=ToolRegistry())
+
+    def _fake_discover(registry=None):
+        mt._bump_connect_failed("notion", "reauth")  # re-connect fails again
+        return []
+
+    monkeypatch.setattr(mt, "discover_mcp_tools", _fake_discover)
+    msg = a._apply_connector_disposition("retry", "notion")
+    assert "Still couldn't reach" in msg
+    assert "Retry notion" in msg                 # the re-rendered governed offer
+    assert "notion" in mt.get_connect_failures()  # breaker re-tripped
+    # Re-suppressed so the post-turn surface does not ALSO double-append it.
+    assert a._connector_failure_id("notion", "reauth") in a._surfaced_connector_ids
+
+
+def test_dismiss_disposition_acknowledges_and_keeps_breaker():
+    mt._bump_connect_failed("notion", "reauth")
+    a = _agent()
+    msg = a._apply_connector_disposition("dismiss", "notion")
+    assert "proceeding without" in msg.lower()
+    assert "notion" in mt.get_connect_failures()  # NOT cleared — connector stays down
+
+
+def test_retry_without_registry_reports_honestly_not_false_success():
+    # A bare agent (no dispatcher / registry) cannot DRIVE a re-discovery, so it
+    # must NOT claim a verified reconnect. It clears the breaker (next discovery
+    # re-attempts) and says so honestly — no crash, no false "Reconnected".
+    mt._bump_connect_failed("notion", "reauth")
+    a = _agent()
+    msg = a._apply_connector_disposition("retry", "notion")
+    assert "Reconnected" not in msg
+    assert "re-attempt" in msg.lower()
+    assert "notion" not in mt.get_connect_failures()  # breaker cleared
+
+
+def test_retry_rediscovery_throw_is_treated_as_failed_reconnect(monkeypatch):
+    # A re-discovery that RAISES is a failed re-connect, not a success: the
+    # breaker is re-recorded and the governed offer re-surfaces.
+    mt._bump_connect_failed("notion", "reauth")
+    a = _agent()
+    a._dispatcher_singleton = types.SimpleNamespace(registry=ToolRegistry())
+
+    def _boom(registry=None):
+        raise RuntimeError("discovery exploded")
+
+    monkeypatch.setattr(mt, "discover_mcp_tools", _boom)
+    msg = a._apply_connector_disposition("retry", "notion")
+    assert "Reconnected" not in msg
+    assert "Still couldn't reach" in msg
+    assert "notion" in mt.get_connect_failures()  # re-recorded, not lost
 
 
 # ── Boundaries: re-auth (DoD 9) + ephemeral storage (DoD 10) ─────────

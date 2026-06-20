@@ -94,11 +94,12 @@ def test_T27_render_red_surface_is_clean():
     zr = SimpleNamespace(matched_rule="command.execute.sudo")
     surface = render_red_surface("sudo apt install foo", zr)
     _assert_no_governance_vocab(surface, where="render_red_surface")
-    # Butler structure preserved (Sprint 60 wording).
-    assert "That's in your direct control — here's how." in surface
-    assert "sudo / su / doas stay with you" in surface
-    # The config-file reference is allowed and still present.
-    assert "zones.schema.yaml" in surface
+    # Butler structure preserved; governance-gateway-parity-v1 (Strike 1)
+    # simplified the copy to the consequence + "run it yourself, tell me the
+    # result" (the config-lever line was dropped).
+    assert "needs privileges that stay with you" in surface
+    assert "sudo / su / doas, never with me" in surface
+    assert "tell me the result" in surface
 
 
 def test_T27_red_zone_guard_message_is_clean():

@@ -83,9 +83,53 @@ def test_red_zone_hard_blocks_non_interactive(fake_classifier) -> None:
     assert result.get("zone_classified") == "red"
     assert result.get("sovereign_red") is True
     # Sprint 60 — operator-friendly butler surface, no governance vocab.
-    assert "That's in your direct control" in result["message"]
-    assert "sudo / su / doas stay with you" in result["message"]
+    assert "needs privileges that stay with you" in result["message"]
+    assert "sudo / su / doas, never with me" in result["message"]
     assert "Andon" not in result["message"]
+
+
+def test_red_zone_verbose_cancel_offers_descoped_alternative(fake_classifier) -> None:
+    """governance-gateway-parity-v1 (Strike 1) — VERBOSE CANCEL on Path A.
+
+    The non-interactive (gateway/strict) RED return is enriched: when the
+    blocked command de-scopes to a within-authority alternative that clears the
+    hard boundary, the surface NAMES it (remediation context) and exposes it as
+    ``remediation_alternative``, without replacing the base privilege surface
+    and without promising interactive resume.
+    """
+    from tools.approval import check_all_command_guards
+
+    result = check_all_command_guards("sudo apt install foo", env_type="local")
+    assert result["approved"] is False
+    assert result.get("sovereign_red") is True
+    # Base privilege surface is preserved (not replaced).
+    assert "needs privileges that stay with you" in result["message"]
+    # The within-bounds de-scoped form is named + structured.
+    assert result.get("remediation_alternative") == "apt install foo"
+    assert "apt install foo" in result["message"]
+    assert "de-scoped form" in result["message"]
+    # Honest: no false interactive-resume promise, no governance vocab.
+    assert "Andon" not in result["message"]
+
+
+def test_red_zone_verbose_cancel_withholds_still_red_alternative(
+    fake_classifier,
+) -> None:
+    """If de-scoping leaves a still-RED command (privilege wrapper peeled off an
+    already-destructive command), NO alternative is offered — the hard boundary
+    still stands."""
+    from tools.approval import check_all_command_guards
+    from grove.dispatch import classify_command, descope_command
+
+    # Pick a sudo command whose de-scoped form is itself red, if one exists in
+    # this environment's effect classifier; otherwise the assertion is vacuous
+    # but the no-false-offer contract still holds for the common case.
+    cmd = "sudo dd if=/dev/zero of=/dev/sda"
+    alt = descope_command(cmd)
+    result = check_all_command_guards(cmd, env_type="local")
+    assert result["approved"] is False
+    if alt and classify_command(alt).zone == "red":
+        assert result.get("remediation_alternative") is None
 
 
 def test_red_zone_hard_blocks_in_strict_mode(
@@ -125,7 +169,7 @@ def test_red_zone_kaizen_prompt_operator_handles_cli(
     result = check_all_command_guards("sudo apt install foo", env_type="local")
     assert result["approved"] is False
     assert result.get("sovereign_choice") == "operator_handles"
-    assert "That's in your direct control" in result["message"]
+    assert "needs privileges that stay with you" in result["message"]
 
 
 def test_red_zone_kaizen_alternative_runs_descope(

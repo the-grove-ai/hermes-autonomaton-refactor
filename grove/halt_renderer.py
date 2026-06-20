@@ -21,6 +21,8 @@ operator is never left with a silent empty surface (no silent-swallow).
 
 from __future__ import annotations
 
+from typing import Optional
+
 from grove.action_facts import describe_action_kaizen
 from grove.halt_event import HaltEvent, HaltTrigger, OriginatingLayer
 
@@ -68,10 +70,14 @@ def _render_c2a(event: HaltEvent) -> str:
         # Distinct from the red_sovereign/deny_hard "requires your approval"
         # copy below — RED is a hard structural boundary, not a grantable
         # action. Factual RED register; no alternatives footer.
-        return (
-            "Action is structurally prohibited by the autonomaton. "
-            "Workflow cancelled."
-        )
+        #
+        # governance-gateway-parity-v1 (Strike 1) — VERBOSE CANCEL: the bare
+        # "structurally prohibited / cancelled" surface left a gateway operator
+        # with no remediation. Name WHAT was blocked (threaded via ctx.detail ->
+        # HaltDetail.note at the _resolve_red_halt raise site) and the lever to
+        # change it, so Cancel is actionable rather than a dead end. Honest only:
+        # no interactive De-scope/resume promise — that bridge ships in Strike 2.
+        return _render_red_cancel(event.detail.note)
     else:  # red_sovereign / deny_hard
         what = (
             f"This action{tool} requires your approval and was declined. "
@@ -81,6 +87,33 @@ def _render_c2a(event: HaltEvent) -> str:
         f"{what} I've stopped here rather than work around it. "
         "Your options: cancel this request, handle the action yourself, or "
         "tell me a different approach to take."
+    )
+
+
+def _render_red_cancel(action_summary: Optional[str]) -> str:
+    """Verbose-Cancel surface for a structurally-blocked RED workflow that the
+    operator (or the headless fail-safe) resolved to Cancel — governance-gateway-
+    parity-v1 (Strike 1).
+
+    Names WHAT was blocked (``action_summary`` is the shared
+    :func:`grove.action_facts.describe_action_kaizen` phrase, threaded through
+    ``GovernanceHaltContext.detail`` at the raise site) and the operator's lever
+    to change it: edit the governing config and restart, or ask for a within-
+    bounds approach. It deliberately makes NO interactive De-scope/resume
+    promise — the resumable bridge that would let the operator pick an
+    alternative from this surface ships in Strike 2; promising it here would be
+    the dishonest pause-then-terminate button the sprint forbids. Standards
+    register; carries no governance implementation terms (Andon / zone /
+    sovereignty) the agent would parrot back.
+    """
+    action = (action_summary or "").strip()
+    if action:
+        lead = f"I can't {action} on my own authority"
+    else:
+        lead = "I can't complete that step on my own authority"
+    return (
+        f"{lead} — that crosses a hard boundary, so it didn't run. "
+        "Tell me a different approach within my authority and I'll pursue it."
     )
 
 
@@ -106,15 +139,9 @@ def _render_tool_boundary(event: HaltEvent) -> str:
         command = event.what_halted.summary or ""
         snippet = command if len(command) <= 120 else command[:117] + "…"
         return (
-            "That's in your direct control — here's how.\n"
-            "\n"
-            f"The command `{snippet}` needs privileges I deliberately don't "
-            f"hold — sudo / su / doas stay with you, never with me. Run it "
-            f"yourself in a terminal that has your credentials, then paste back "
-            f"anything I need to keep going.\n"
-            "\n"
-            "To move this line, edit `~/.grove/zones.schema.yaml` (the "
-            "`red.sovereign` list) and restart me."
+            f"The command `{snippet}` needs privileges that stay with you "
+            "— sudo / su / doas, never with me. Run it in your terminal, "
+            "then tell me the result so I can keep going."
         )
     raise ValueError(
         f"unhandled tool-boundary trigger: {trigger!r}"

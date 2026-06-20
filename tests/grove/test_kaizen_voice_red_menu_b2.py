@@ -197,7 +197,11 @@ class TestM2RedMenu:
 
 
 class TestM3CancelCopy:
-    def test_red_workflow_cancel_renders_bespoke_copy(self):
+    def test_red_workflow_cancel_renders_verbose_cancel_copy(self):
+        """governance-gateway-parity-v1 (Strike 1) — the RED Cancel surface is
+        now the VERBOSE CANCEL: it states the action crossed a hard boundary and
+        invites a within-authority alternative, instead of the prior bare
+        "structurally prohibited / cancelled" dead end."""
         from grove.governance_halt import (
             GovernanceHaltContext,
             TerminalGovernanceHalt,
@@ -206,13 +210,34 @@ class TestM3CancelCopy:
             GovernanceHaltContext(trigger="red_workflow_cancel", tool_name="terminal")
         )
         text = halt.surface_text()
-        assert text == (
-            "Action is structurally prohibited by the autonomaton. "
-            "Workflow cancelled."
-        )
-        # NOT the generic red_sovereign/deny_hard copy or the alternatives footer.
+        # The block is stated plainly and the operator is offered a way forward.
+        assert "crosses a hard boundary" in text
+        assert "didn't run" in text
+        assert "a different approach within my authority" in text
+        # Honest: no governance-implementation vocabulary the agent would parrot.
+        assert "Andon" not in text
+        assert "sovereign" not in text.lower()
+        # NOT the generic red_sovereign/deny_hard copy or its alternatives footer.
         assert "requires your approval" not in text
         assert "handle the action yourself" not in text
+
+    def test_red_workflow_cancel_names_blocked_action_when_threaded(self):
+        """When the raise site threads the blocked-action description via
+        ``GovernanceHaltContext.detail``, the verbose Cancel NAMES what was
+        blocked (remediation context) rather than a generic "that step"."""
+        from grove.governance_halt import (
+            GovernanceHaltContext,
+            TerminalGovernanceHalt,
+        )
+        text = TerminalGovernanceHalt(
+            GovernanceHaltContext(
+                trigger="red_workflow_cancel",
+                tool_name="terminal",
+                detail="run a command on your machine",
+            )
+        ).surface_text()
+        assert "run a command on your machine" in text
+        assert "crosses a hard boundary" in text
 
     def test_red_sovereign_copy_unchanged_by_m3(self):
         """M3 is the ONLY copy change: the generic red_sovereign branch must

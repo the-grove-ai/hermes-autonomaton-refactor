@@ -116,15 +116,17 @@ def test_classify_command_tool_zones_green(fake_classifier) -> None:
 def test_render_red_surface_includes_register_and_command(fake_classifier) -> None:
     zr = gdispatch.classify_command("sudo apt install foo")
     surface = gdispatch.render_red_surface("sudo apt install foo", zr)
-    assert "That's in your direct control — here's how." in surface
+    assert "needs privileges that stay with you" in surface
     assert "sudo apt install foo" in surface
     # Sprint 60 — butler structure kept, impl jargon ("tool dispatch") and
     # the raw rule id removed; the consequence + the fix path remain.
-    assert "sudo / su / doas stay with you" in surface
+    # governance-gateway-parity-v1 (Strike 1) — copy simplified to the consequence
+    # + "run it yourself, tell me the result"; the config-lever line was dropped.
+    assert "sudo / su / doas, never with me" in surface
+    assert "tell me the result" in surface
     assert "Andon" not in surface
     assert "sovereignty" not in surface
     assert "tool dispatch" not in surface
-    assert "zones.schema.yaml" in surface
     # Must not use forbidden language
     assert "access denied" not in surface.lower()
     assert "forbidden" not in surface.lower()

@@ -4166,9 +4166,18 @@ class Dispatcher:
             # Cancel — reuse the terminal mechanism with DISTINCT provenance
             # (red_workflow_cancel, not red_sovereign): "operator aborted a
             # structurally-blocked workflow". Terminal, not resumable; no mint.
+            from grove.action_facts import describe_action_kaizen
             from grove.governance_halt import (
                 GovernanceHaltContext,
                 TerminalGovernanceHalt,
+            )
+            # governance-gateway-parity-v1 (Strike 1) — thread the blocked-action
+            # description into the halt so the verbose-Cancel render names WHAT
+            # was blocked (remediation context) on gateway surfaces. ``detail``
+            # maps to ``HaltDetail.note`` via the C2a boundary adapter.
+            _blocked_action = describe_action_kaizen(
+                getattr(_trig, "tool_name", "") or "",
+                getattr(_trig, "arguments", None) or {},
             )
             raise TerminalGovernanceHalt(
                 GovernanceHaltContext(
@@ -4177,6 +4186,7 @@ class Dispatcher:
                     zone=halt.zone,
                     matched_rule=(getattr(halt, "matched_rule", None) or None),
                     reason=getattr(halt, "reason", None),
+                    detail=_blocked_action,
                 )
             )
         # De-scoped — drop the structurally-blocked action + re-plan within
