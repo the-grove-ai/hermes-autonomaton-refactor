@@ -234,16 +234,28 @@ def test_disposition_ambiguous_dismiss_needs_a_name():
     assert a._classify_connector_disposition("dismiss github") == ("dismiss", "github")
 
 
-def test_retry_disposition_reconnect_success(monkeypatch):
+def test_retry_disposition_reconnect_success(monkeypatch, tmp_path):
     mt._bump_connect_failed("notion", "reauth")
     a = _agent()
+    a.session_id = "sess-reconnect"
     a._dispatcher_singleton = types.SimpleNamespace(registry=ToolRegistry())
+    # learning-loop-bridge-v1 (Strike 2): a verified reconnect that followed a
+    # real prior failure now records a correction IntentRecord. Isolate the
+    # store so the test does not write to the operator's real ~/.grove.
+    from grove.intent_store import IntentStore
+    store = IntentStore(store_path=tmp_path / "intent_records.jsonl")
+    monkeypatch.setattr("grove.intent_store.get_store", lambda: store)
     # Re-discovery that records no failure == a successful re-connect (the
     # breaker was already cleared by the retry).
     monkeypatch.setattr(mt, "discover_mcp_tools", lambda registry=None: [])
     msg = a._apply_connector_disposition("retry", "notion")
     assert "Reconnected" in msg
     assert "notion" not in mt.get_connect_failures()
+    # The remediation was recorded (the block AND the fix).
+    import json as _json
+    records = [_json.loads(ln) for ln in
+               store.path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(records) == 1 and records[0]["outcome"] == "correction"
 
 
 def test_retry_disposition_failed_reconnect_reoffers_keystone(monkeypatch):

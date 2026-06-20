@@ -1,0 +1,32 @@
+# Flywheel detector configuration — declarative governance (Pattern v1.3
+# Commitment 1). The operator copy lives at ~/.grove/flywheel.config.yaml;
+# this file is the documented template. A non-technical operator changes
+# promotion behavior by editing the values below — no code change.
+#
+# learning-loop-bridge-v1 (Strike 2) — the YELLOW promotion detector reads
+# the andon_disposition ledger and proposes a system-initiated
+# zone_promotion when the operator has repeatedly approved the same governed
+# (tool, rule) at the Sovereign Prompt. Repeated approvals are the signal;
+# the proposal lets the system STOP re-asking.
+#
+# Fail-loud contract: an ABSENT file or block uses the documented defaults
+# below (nothing has failed — this is the specified default). A PRESENT
+# value that is malformed or out of range raises LOUD at scan time naming
+# the key and the constraint, so the operator can fix it. There is no
+# silent per-key fill of a present-but-broken block.
+
+disposition_promotion:
+  # Minimum number of approval dispositions (session / always) for the same
+  # (triggering_tool, matched_rule) before a promotion is proposed.
+  # Must be an integer >= 1. "once" grants and "deny" vetoes do not count
+  # as approvals; a single "deny" in the window vetoes the proposal.
+  threshold_count: 3
+
+  # Minimum number of DISTINCT sessions those approvals must span. Guards
+  # against one frustrated batch in a single session reading as a pattern.
+  # Must be an integer >= 1 and <= threshold_count.
+  threshold_sessions: 2
+
+  # Rolling window, in days, over which approvals and vetoes are counted.
+  # Dispositions older than this are ignored. Must be an integer >= 1.
+  window_days: 30
