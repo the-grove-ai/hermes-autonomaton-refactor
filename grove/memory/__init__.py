@@ -17,8 +17,10 @@ from grove.memory.events import (
     new_event_id,
     new_record_id,
 )
+from grove.memory.detector import ContextPersistenceDetector
 from grove.memory.record import DECAY_RATES, MemoryRecord, decay_rate_for
 from grove.memory.store import MemoryStore
+from grove.memory.transcript_filter import filter_transcript_for_extraction
 
 __all__ = [
     "MemoryAccessed",
@@ -27,6 +29,8 @@ __all__ = [
     "MemorySuperseded",
     "MemoryRecord",
     "MemoryStore",
+    "ContextPersistenceDetector",
+    "filter_transcript_for_extraction",
     "DECAY_RATES",
     "decay_rate_for",
     "new_event_id",
