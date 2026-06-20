@@ -42,6 +42,7 @@ __all__ = [
     "PROPOSAL_TYPE_PATTERN_PROMOTION",
     "PROPOSAL_TYPE_PATTERN_DEMOTION",
     "PROPOSAL_TYPE_SKILL_SYNTHESIS",
+    "PROPOSAL_TYPE_MEMORY_CONTEXT",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -103,6 +104,17 @@ PROPOSAL_TYPE_PATTERN_DEMOTION = "pattern_demotion"
 # draft becomes a proposed record — the old invoke_skill-triggered chat
 # materialization path was retired in B1.
 PROPOSAL_TYPE_SKILL_SYNTHESIS = "skill_synthesis"
+# memory-substrate-v1 (epic memory-lifecycle-engine-v1) — the Context
+# Persistence Detector's staged memory proposals. UNLIKE every type above,
+# memory_context proposals do NOT flow through this RoutingProposal queue
+# (~/.grove/proposals.jsonl) or the flywheel CLI approve path. They live in
+# their own ~/.grove/memory_proposals.jsonl with their own record shape and
+# are applied by grove.memory.digest.MemoryProposalHandler. This constant is
+# the canonical type string so kaizen_disposition recording stays uniform
+# (one envelope, one ledger event) across every proposal class. It is
+# deliberately NOT added to the flywheel _handler_for registry — there is no
+# RoutingProposal apply path for it, by design.
+PROPOSAL_TYPE_MEMORY_CONTEXT = "memory_context"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 

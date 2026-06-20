@@ -18,6 +18,12 @@ from grove.memory.events import (
     new_record_id,
 )
 from grove.memory.detector import ContextPersistenceDetector
+from grove.memory.digest import MemoryProposalHandler, run_digest
+from grove.memory.lifecycle import (
+    dormant_session_ids,
+    load_active_dock_goal_dicts,
+    run_memory_extraction,
+)
 from grove.memory.record import DECAY_RATES, MemoryRecord, decay_rate_for
 from grove.memory.store import MemoryStore
 from grove.memory.transcript_filter import filter_transcript_for_extraction
@@ -30,6 +36,11 @@ __all__ = [
     "MemoryRecord",
     "MemoryStore",
     "ContextPersistenceDetector",
+    "MemoryProposalHandler",
+    "run_digest",
+    "dormant_session_ids",
+    "run_memory_extraction",
+    "load_active_dock_goal_dicts",
     "filter_transcript_for_extraction",
     "DECAY_RATES",
     "decay_rate_for",

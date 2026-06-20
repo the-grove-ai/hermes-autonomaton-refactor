@@ -679,6 +679,24 @@ class Dispatcher:
         self._session_deny_cache: Set[Tuple[str, str]] = set()
         self._session_allow_cache: Set[Tuple[str, str]] = set()
         if self._intent_store is not None:
+            # memory-substrate-v1 — capture sessions dormant >=30 min for
+            # memory extraction BEFORE the 60-min Implicit Success Sweep
+            # below finalizes their pending records. Without this ordering
+            # the overnight case (process down through the whole dormancy
+            # window, every stale session swept to success at the next boot)
+            # would never be extracted. Best-effort: a scan failure logs
+            # loud and leaves the list empty — extraction simply does not run.
+            self._memory_dormant_sessions: List[str] = []
+            try:
+                from grove.memory.lifecycle import dormant_session_ids
+                self._memory_dormant_sessions = dormant_session_ids(
+                    self._intent_store, minutes=30,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[grove.dispatcher] memory dormancy scan failed at "
+                    "init: %r — memory extraction will not run", exc,
+                )
             # Sprint 28 Phase 3 — Implicit Success Sweep on Dispatcher
             # construction. Stale ``pending`` records from previous
             # processes / abandoned sessions finalize as success per
@@ -843,6 +861,58 @@ class Dispatcher:
             # ownership relocated to the Dispatcher, injection must
             # happen here after the Agent's tools list is built.
             self._inject_memory_tool_schemas()
+
+        # memory-substrate-v1 — extract tacit operator knowledge from the
+        # sessions captured dormant above and stage memory_context proposals.
+        # Best-effort: a failure logs loud and never bricks Dispatcher
+        # construction (the Implicit Success Sweep precedent). Needs a
+        # session-DB handle to hydrate transcripts; test Dispatchers without
+        # one skip naturally. Surfacing/approval is asynchronous — staged
+        # proposals wait for the operator's review surface; nothing is applied
+        # here.
+        if getattr(self, "_memory_dormant_sessions", None) and \
+                self.session is not None:
+            try:
+                self._extract_memory_from_dormant_sessions(
+                    self._memory_dormant_sessions
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[grove.dispatcher] memory extraction failed at init: "
+                    "%r — staged proposals (if any) are unaffected", exc,
+                )
+
+    def _extract_memory_from_dormant_sessions(
+        self, session_ids: List[str]
+    ) -> None:
+        """memory-substrate-v1 — run the Context Persistence Detector over
+        dormant sessions, staging memory_context proposals.
+
+        One T1 Haiku call per not-yet-processed dormant session; the
+        detector's per-session processing lock makes each session strictly
+        one-shot, so steady-state this is a no-op. Imports are local so the
+        memory package is only loaded when extraction actually runs.
+        """
+        from hermes_constants import get_hermes_home
+        from grove.memory.detector import ContextPersistenceDetector
+        from grove.memory.lifecycle import (
+            load_active_dock_goal_dicts,
+            run_memory_extraction,
+        )
+        from grove.memory.store import MemoryStore
+
+        base = Path(get_hermes_home())
+        store = MemoryStore(base_dir=base)
+        detector = ContextPersistenceDetector(store=store, base_dir=base)
+        dock_goals = load_active_dock_goal_dicts()
+        run_memory_extraction(
+            detector=detector,
+            session_ids=session_ids,
+            transcript_loader=(
+                lambda sid: self.session.get_messages_as_conversation(sid)
+            ),
+            dock_goals=dock_goals,
+        )
 
     @property
     def runtime_ctx(self) -> RuntimeContext:
