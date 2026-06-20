@@ -1127,10 +1127,12 @@ class TestToolsetInjection:
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._servers", fresh_servers), \
+             patch("tools.mcp_tool._server_connect_failed", {}), \
+             patch("tools.mcp_tool._server_connect_auth_evidence", {}), \
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._connect_server", side_effect=flaky_connect), \
              patch("toolsets.TOOLSETS", fake_toolsets):
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp_tool import _clear_connect_failed, discover_mcp_tools
 
             # First call: good connects, broken fails
             result1 = discover_mcp_tools(registry=ToolRegistry())
@@ -1138,15 +1140,24 @@ class TestToolsetInjection:
             assert "mcp_broken_ping" not in result1
             first_attempts = call_count
 
-            # "Fix" the broken server
+            # connector-failure-andon-v1 — the failed connect is now recorded in
+            # the connect-breaker, so the cold-gate EXCLUDES it on subsequent
+            # calls (Option B: no per-request re-entry, no auto-retry). "Fixing"
+            # the server alone no longer re-attempts it.
             broken_fixed = True
             call_count = 0
-
-            # Second call: should retry broken, skip good
             result2 = discover_mcp_tools(registry=ToolRegistry())
-            assert "mcp_good_ping" in result2
-            assert "mcp_broken_ping" in result2
-            assert call_count == 1  # Only broken retried
+            assert "mcp_good_ping" in result2          # healthy replay unaffected
+            assert "mcp_broken_ping" not in result2    # breaker-excluded, NOT retried
+            assert call_count == 0                     # broken not re-attempted
+
+            # Operator-signaled retry clears the breaker → the now-fixed server
+            # is re-attempted and connects on the next call.
+            _clear_connect_failed("broken")
+            call_count = 0
+            result3 = discover_mcp_tools(registry=ToolRegistry())
+            assert "mcp_broken_ping" in result3
+            assert call_count == 1                     # only broken re-attempted after clear
 
 
 # ---------------------------------------------------------------------------

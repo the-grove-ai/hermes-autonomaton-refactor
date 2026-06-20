@@ -1717,6 +1717,62 @@ def _reset_server_error(server_name: str) -> None:
     _server_error_counts[server_name] = 0
     _server_breaker_opened_at.pop(server_name, None)
 
+
+# ---------------------------------------------------------------------------
+# connector-failure-andon-v1 — parallel CONNECT breaker (distinct from the
+# call-time breaker above). Records a FAILED initial connect (name ->
+# signature) so the cold-gate stops re-attempting it every request — killing
+# the per-request connect-timeout re-entry tax (the observed ~60s Notion
+# stall) — and so the post-turn Kaizen offering can surface it fail-loud.
+# Deliberately has NO cooldown and NO auto-retry: it clears ONLY on an
+# operator-signaled retry (Option B) or when a post-clear re-attempt succeeds
+# (the success IS the clear). All access is under ``_lock``.
+# ---------------------------------------------------------------------------
+_server_connect_failed: Dict[str, str] = {}          # name -> "reauth" | "unreachable"
+# Auth evidence carried by the (now-discarded) MCPServerTask: set in
+# _connect_server where ``self._error`` is in scope, read by the gather so a
+# 60s timeout-cancellation (surface CancelledError) is still recorded "reauth"
+# when the task had pre-marked an auth failure. The CancelledError is the
+# symptom; ``self._error`` is the disease.
+_server_connect_auth_evidence: Dict[str, bool] = {}  # name -> task carried an auth _error
+
+
+def _bump_connect_failed(name: str, signature: str) -> None:
+    """Record a failed connect — AUTH-WINS overwrite (Ruling 3 amended).
+
+    ``"reauth"`` always overwrites; a generic ``"unreachable"`` does NOT
+    clobber an existing ``"reauth"`` (a late timeout-cancellation must never
+    downgrade a known re-auth need to a bug report); same-specificity
+    refreshes (a genuine mode change). The discriminator is the auth signal,
+    not the caught exception type.
+    """
+    with _lock:
+        existing = _server_connect_failed.get(name)
+        if existing == "reauth" and signature != "reauth":
+            return  # auth-wins: never downgrade reauth -> unreachable
+        _server_connect_failed[name] = signature
+
+
+def _clear_connect_failed(name: str) -> None:
+    """Operator-signaled retry / successful re-attempt: drop the breaker entry.
+
+    This is the ONLY clear path (Option B — no cooldown, no auto-retry). After
+    this, the cold-gate no longer excludes ``name``, so the next request
+    re-attempts the connect; a success enters ``_servers`` (the success is the
+    confirming clear), a re-failure re-records here.
+    """
+    with _lock:
+        _server_connect_failed.pop(name, None)
+        _server_connect_auth_evidence.pop(name, None)
+
+
+def get_connect_failures() -> Dict[str, str]:
+    """Locked snapshot of the connect-breaker (name -> signature) for the turn
+    thread. Mirrors :func:`get_mcp_status`'s ``with _lock: dict(...)`` accessor;
+    the background mcp-loop thread writes under the same lock."""
+    with _lock:
+        return dict(_server_connect_failed)
+
 # ---------------------------------------------------------------------------
 # Auth-failure detection helpers (Task 6 of MCP OAuth consolidation)
 # ---------------------------------------------------------------------------
@@ -2513,7 +2569,21 @@ async def _connect_server(
         Exception: on connection or initialization failure.
     """
     server = MCPServerTask(name, registry=registry)
-    await server.start(config)
+    try:
+        await server.start(config)
+    except BaseException:
+        # connector-failure-andon-v1 (C2) — preserve the auth signal the task
+        # may have set at its give-up branch (``self._error``, set when
+        # _is_auth_error matched) BEFORE re-raising. The 60s connect-timeout
+        # cancels this coroutine with a CancelledError that carries no auth
+        # detail; the gather records the breaker but cannot reach this task,
+        # so stash the evidence here where ``server._error`` is in scope.
+        with _lock:
+            err = getattr(server, "_error", None)
+            _server_connect_auth_evidence[name] = bool(
+                err is not None and _is_auth_error(err)
+            )
+        raise
     return server
 
 
@@ -3392,6 +3462,11 @@ async def _discover_and_register_server(
     )
     with _lock:
         _servers[name] = server
+        # connector-failure-andon-v1 — a successful connect IS the breaker
+        # clear (Option B): drop any prior connect-failure record + auth
+        # evidence so a recovered server stops being excluded / offered.
+        _server_connect_failed.pop(name, None)
+        _server_connect_auth_evidence.pop(name, None)
         # Sprint 47.5 — a fresh server registration is a new MCP lifecycle:
         # re-arm the shutdown idempotency guard so this lifecycle can be
         # shut down again after a prior shutdown completed.
@@ -3448,7 +3523,13 @@ def register_mcp_servers(
         new_servers = {
             k: v
             for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            # connector-failure-andon-v1 (C3) — a connect-breaker-tripped server
+            # is excluded so it is NOT re-attempted every request (kills the
+            # ~60s connect re-entry tax). Cleared only by operator retry
+            # (_clear_connect_failed) or a confirming success.
+            if k not in _servers
+            and k not in _server_connect_failed
+            and _parse_boolish(v.get("enabled", True), default=True)
         }
         # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
@@ -3506,7 +3587,13 @@ def register_mcp_servers(
             return_exceptions=True,
         )
         for name, result in zip(server_names, results):
-            if isinstance(result, Exception):
+            # connector-failure-andon-v1 (C2) — BaseException, not Exception:
+            # the observed 60s timeout-cancellation surfaces here as a
+            # CancelledError (BaseException), which the old ``isinstance(...,
+            # Exception)`` guard silently skipped — so the breaker never
+            # tripped for the real case. Widened so every failed-connect mode
+            # is caught and recorded.
+            if isinstance(result, BaseException):
                 command = new_servers.get(name, {}).get("command")
                 logger.warning(
                     "Failed to connect to MCP server '%s'%s: %s",
@@ -3514,6 +3601,13 @@ def register_mcp_servers(
                     f" (command={command})" if command else "",
                     _format_connect_error(result),
                 )
+                # Single writer of the connect-breaker. Signature with
+                # auth-precedence: the task's stashed auth evidence
+                # (set in _connect_server) OR an auth surface exception →
+                # "reauth"; otherwise "unreachable". _bump_connect_failed
+                # enforces auth-wins so a late timeout can't downgrade it.
+                _auth = _server_connect_auth_evidence.get(name, False) or _is_auth_error(result)
+                _bump_connect_failed(name, "reauth" if _auth else "unreachable")
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.
