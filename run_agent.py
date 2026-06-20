@@ -5469,6 +5469,12 @@ class AIAgent:
         # action == "retry" — clear breaker + evict shown-set, then re-attempt.
         # Capture the signature first so a re-discovery THROW can be re-recorded
         # as the failed re-connect it is (never reported as a false reconnect).
+        # learning-loop-bridge-v1 (Strike 2) — capture whether the breaker held
+        # a real failure for this connector BEFORE _connector_offer_retry clears
+        # it. This boolean is the correlation anchor (GATE-A A4): a correction
+        # is recorded only when a verified reconnect FOLLOWS a real prior
+        # failure — never on a first-time connect.
+        _had_prior_failure = name in get_connect_failures()
         sig_before = get_connect_failures().get(name, "unreachable")
         self._connector_offer_retry(name)
         _disp = getattr(self, "_dispatcher_singleton", None)
@@ -5519,6 +5525,34 @@ class AIAgent:
             shown.add(pid)
             return f"Still couldn't reach **{name}**.\n\n{offer}"
 
+        # learning-loop-bridge-v1 (Strike 2) — verified reconnect. If the
+        # breaker held a real failure before the retry (captured above), record
+        # the operator's remediation as a correction IntentRecord so the system
+        # sees both the block and the fix (GATE-A A4, connector half). Fail
+        # loud: a learning-loop write that cannot land is a real failure,
+        # surfaced with diagnostic context, not swallowed into a false success.
+        if _had_prior_failure:
+            from grove.connector_remediation import record_connector_remediation
+            _turn_id = getattr(
+                getattr(self, "_dispatcher_singleton", None),
+                "_current_turn_id", None,
+            ) or self.session_id
+            try:
+                record_connector_remediation(
+                    session_id=self.session_id or "unknown",
+                    turn_id=_turn_id or "unknown",
+                    connector_name=name,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[connector-andon] reconnected to %s but FAILED to record "
+                    "the remediation IntentRecord: %r", name, exc,
+                )
+                raise RuntimeError(
+                    f"Reconnected to {name}, but failed to record the "
+                    f"remediation to the intent store — the learning loop did "
+                    f"not capture this fix. Original error: {exc!r}"
+                ) from exc
         return f"✅ Reconnected to **{name}** — its tools are available again."
 
     def _spawn_skill_synthesis_detection(self) -> None:

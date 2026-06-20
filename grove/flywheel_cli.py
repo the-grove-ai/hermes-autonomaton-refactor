@@ -60,6 +60,7 @@ __all__ = [
     "cli_approve",
     "cli_reject",
     "run_tier_ratchet_scan",
+    "run_disposition_promotion_scan",
     "compose_offering",
 ]
 
@@ -390,6 +391,48 @@ def run_tier_ratchet_scan(
     return queued_new, deduped
 
 
+def run_disposition_promotion_scan(
+    *,
+    ledger_dir: Optional[Path] = None,
+    queue_path: Optional[Path] = None,
+    thresholds: Optional[Any] = None,
+    now: Optional[Any] = None,
+) -> Tuple[int, int]:
+    """Run the YELLOW promotion detector over the Kaizen ledger; queue its
+    ``zone_promotion`` proposals. learning-loop-bridge-v1 (Strike 2).
+
+    An INDEPENDENT Flywheel signal that shares the ``flywheel scan --propose``
+    cadence with TierRatchet without coupling enable flags — mirroring how the
+    pattern-cache and TierRatchet scans coexist. Reads ``andon_disposition``
+    events (repeated operator approvals at the Sovereign Prompt), not the
+    intent store. Idempotent: ``proposal_id`` is stable per ``(tool, rule)``,
+    so a re-run over unchanged ledger state DEDUPS via
+    ``proposal_queue.append`` returning False rather than stacking duplicates.
+
+    Returns ``(queued_new, deduped)``.
+    """
+    from grove.eval.proposal_queue import append as _append
+    from grove.eval.disposition_promotion import (
+        DispositionPromotionDetector,
+        load_promotion_thresholds,
+    )
+
+    if thresholds is None:
+        thresholds = load_promotion_thresholds()
+    detector = DispositionPromotionDetector(
+        ledger_dir=ledger_dir, thresholds=thresholds,
+    )
+    proposals = detector.detect(now=now)
+    target = queue_path or default_queue_path()
+    queued_new = deduped = 0
+    for proposal in proposals:
+        if _append(proposal, path=target):
+            queued_new += 1
+        else:
+            deduped += 1
+    return queued_new, deduped
+
+
 # ── scan (T0 pattern cache — Sprint 48) ──────────────────────────────
 
 
@@ -422,6 +465,19 @@ def cli_scan(
             )
         else:
             print("TierRatchet: no routing adjustments meet the threshold.")
+        print()
+
+        dp_new, dp_dup = run_disposition_promotion_scan(queue_path=queue_path)
+        if dp_new or dp_dup:
+            print(
+                f"YELLOW promotions: queued {dp_new} zone_promotion proposal(s)"
+                + (f", {dp_dup} already pending (deduped)" if dp_dup else "")
+                + "."
+            )
+        else:
+            print(
+                "YELLOW promotions: no repeated approvals meet the threshold."
+            )
         print()
 
     from grove.eval.pattern_compiler import (
@@ -1145,12 +1201,59 @@ def _approve_skill_synthesis(
     return f"skill {name!r} (.andon/ + proposed record)", applied
 
 
+def _record_kaizen_disposition(
+    proposal: RoutingProposal,
+    *,
+    disposition: str,
+    applied_result: Optional[Dict[str, Any]] = None,
+    reason: Optional[str] = None,
+    ledger_dir: Optional[Path] = None,
+) -> None:
+    """Write one ``kaizen_disposition`` ledger event for an operator action.
+
+    learning-loop-bridge-v1 (Strike 2) — closes DARK Q9: a proposal no longer
+    vanishes on approval/rejection; the operator's disposition is recorded so
+    the Flywheel can observe that its proposals are acted on. One write at the
+    single registry-dispatch boundary covers every proposal type uniformly —
+    no per-handler branching (the anti-cruft #1 contract).
+
+    Session friction (GATE-A A3): ``cli_approve`` / ``cli_reject`` run in the
+    CLI process, which has no conversation session, and ``RoutingProposal``
+    carries no session_id. The event is written under a dedicated sentinel
+    session id ``cli-<utc-timestamp>`` so it lands in its own ledger file
+    rather than being misattributed to a conversation session.
+
+    Fail loud: a write failure propagates. By the time this is reached the
+    operator's action (apply + dequeue, or dequeue) has completed, so a ledger
+    failure is surfaced with context — telemetry that cannot record is a real
+    failure to see and fix, not something to swallow.
+    """
+    from datetime import datetime, timezone
+    from grove.kaizen_ledger import KaizenLedger
+
+    now = datetime.now(timezone.utc)
+    session_id = "cli-" + now.strftime("%Y%m%dT%H%M%S%fZ")
+    ledger = KaizenLedger(session_id, ledger_dir=ledger_dir)
+    fields: Dict[str, Any] = {
+        "proposal_id": proposal.proposal_id,
+        "proposal_type": proposal.type,
+        "disposition": disposition,
+        "evidence_count": len(proposal.evidence),
+    }
+    if applied_result is not None:
+        fields["applied_result"] = applied_result
+    if reason is not None:
+        fields["reason"] = reason
+    ledger.record("kaizen_disposition", **fields)
+
+
 def cli_approve(
     partial_id: str,
     *,
     strict: bool = False,
     queue_path: Optional[Path] = None,
     machine_path: Optional[Path] = None,
+    ledger_dir: Optional[Path] = None,
 ) -> int:
     """Apply the proposal; remove from queue.
 
@@ -1216,6 +1319,17 @@ def cli_approve(
             "removed from the queue", proposal.proposal_id,
         )
 
+    # learning-loop-bridge-v1 (Strike 2) — record the disposition. SPEC
+    # amendment: written AFTER apply+remove (not before remove) so a fail-loud
+    # ledger error never strands a proposal in the applied-but-still-queued
+    # half-state. The apply has happened; the audit write is the last step.
+    _record_kaizen_disposition(
+        proposal,
+        disposition="applied",
+        applied_result=applied,
+        ledger_dir=ledger_dir,
+    )
+
     print(f"Approved {proposal.proposal_id}")
     print(applied_label)
     print()
@@ -1273,6 +1387,7 @@ def cli_reject(
     *,
     reason: Optional[str] = None,
     queue_path: Optional[Path] = None,
+    ledger_dir: Optional[Path] = None,
 ) -> int:
     """Remove a proposal from the queue. No config change.
 
@@ -1316,6 +1431,16 @@ def cli_reject(
             "[flywheel] proposal %s rejected — %s",
             proposal.proposal_id, reason,
         )
+    # learning-loop-bridge-v1 (Strike 2) — record the rejection disposition
+    # (written after dequeue; fail-loud per _record_kaizen_disposition). This
+    # supersedes the Sprint 47 deferral of structured rejection telemetry noted
+    # in this function's docstring.
+    _record_kaizen_disposition(
+        proposal,
+        disposition="rejected",
+        reason=reason,
+        ledger_dir=ledger_dir,
+    )
     print(f"Rejected {proposal.proposal_id}")
     if reason:
         print(f"Reason:   {reason}")

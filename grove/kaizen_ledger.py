@@ -135,6 +135,14 @@ class KaizenLedger:
         # RED halt that formerly emitted one andon_disposition now emits one
         # red_resolution.
         "red_resolution",
+        # learning-loop-bridge-v1 (Strike 2) — the operator's disposition on a
+        # queued Flywheel proposal. Written at flywheel_cli.cli_approve /
+        # cli_reject for EVERY proposal type at the single registry-dispatch
+        # boundary, so a proposal no longer vanishes silently on approval.
+        # Carries proposal_id + proposal_type + disposition (applied/rejected)
+        # + evidence_count, and for applied the applied_result dict, for
+        # rejected the optional reason.
+        "kaizen_disposition",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:
