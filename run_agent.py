@@ -2890,7 +2890,6 @@ class AIAgent:
         if not records:
             return None  # no mcp records -> flip OFF, legacy allow-by-default
 
-        tier_int = self._current_tier_int()
         message_lower = (self._latest_user_text() or "").lower()
         resolved_goal_id = self._resolve_mcp_dock_goal(records, goal_alignment, message_lower)
 
@@ -2923,9 +2922,11 @@ class AIAgent:
             server = self._mcp_server_of_record(rec)
             if server is None:
                 continue
-            # Tier ceiling (tier_rule.eligible) — the exclude_mcp equivalent.
-            if tier_int is not None and tier_int not in rec.tier_rule.eligible:
-                continue
+            # Tier ceiling NEUTERED (neuter-tier-eligible-gate): MCP availability
+            # is an auth + zone question, not a tier question. tier_rule.eligible
+            # on mcp records is documentation now, not enforcement — disclosure is
+            # trigger-match only; auth (token presence) and the zone system still
+            # govern. (was: skip when current tier not in rec.tier_rule.eligible)
             # Per-turn disclose-on-match (trigger.intents/keywords/dock_affinity).
             reason = self._mcp_trigger_reason(
                 rec.trigger, intent_class, message_lower, resolved_goal_id
@@ -11909,23 +11910,16 @@ class AIAgent:
         return self._seam5_refusal(function_name, "not in the per-turn offered surface")
 
     def _seam5_tier_refusal(self, function_name: str) -> Optional[str]:
-        """SECONDARY (C-SEAM5): defense-in-depth at dispatch, independent of the
-        offer path. Refuse a tool whose governing capability record marks the
-        CURRENT tier ineligible (``tier_rule.eligible``). Ungoverned tools and the
-        no-tier path (vanilla/cloud — no ceiling, mirroring an empty exclude_mcp)
-        are not refused here."""
-        rec = self._seam5_tool_records().get(function_name)
-        if rec is None:
-            return None
-        tier = self._current_tier_int()
-        if tier is None:
-            return None
-        if tier not in (rec.tier_rule.eligible or []):
-            return self._seam5_refusal(
-                function_name,
-                f"tier {tier} not in governing record {rec.id!r} "
-                f"tier_rule.eligible={list(rec.tier_rule.eligible)}",
-            )
+        """SECONDARY (C-SEAM5): NEUTERED (neuter-tier-eligible-gate).
+
+        This seam formerly refused, at dispatch, any tool whose governing
+        capability record marked the CURRENT tier ineligible
+        (``tier_rule.eligible``). That gate is retired: the cognitive router
+        picks the tier and the zone system governs mutation safety, so
+        ``tier_rule.eligible`` is documentation on the records, not an
+        enforcement axis. The seam now always admits on tier grounds — the
+        offered-surface seam (``_seam5_*`` offer check) and the zone gates
+        remain the live boundaries."""
         return None
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,

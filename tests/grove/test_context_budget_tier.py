@@ -161,34 +161,36 @@ def test_victim_offered_at_eligible_tier_on_triggering_intent(synth_caps):
     assert "session_search" in res.allowed_names
 
 
-def test_x_search_not_offered_at_t2_and_is_stripped(synth_caps):
-    # x_search (eligible [3]) is NOT offered at T2 on a research turn (relocation
-    # trap closed) AND surfaces as a stripped capability for D8.
+def test_x_search_offered_at_t2_not_stripped(synth_caps):
+    # neuter-tier-eligible-gate: x_search (record documents eligible [3]) is now
+    # OFFERED at T2 on a research turn — tier no longer strips. The record's
+    # eligible is documentation, not enforcement; nothing is tier-stripped.
     res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", TAXONOMY,
                                  None, current_tier=2)
-    assert "x_search" not in res.allowed_names
-    assert "x_search" not in _names(res.tools)
-    assert _stripped_ids(res) == {"xsearch"}
-    assert dict(res.stripped_capabilities)["xsearch"] == (3,)
+    assert "x_search" in res.allowed_names
+    assert "x_search" in _names(res.tools)
+    assert res.stripped_capabilities == frozenset()
 
 
-def test_complexity_cap_stripped_below_eligible(synth_caps):
-    # The exploratory cap (eligible [3]) selected on a complex turn is stripped
-    # at T2.
+def test_complexity_cap_admitted_regardless_of_tier(synth_caps):
+    # neuter-tier-eligible-gate: the exploratory cap (record documents eligible
+    # [3]) selected on a complex turn is now ADMITTED at T2 — tier no longer
+    # strips. Disclosure-mode gating (complexity) is unchanged; tier gating gone.
     res = resolve_tools_for_tier(ALL_TOOLS, "code_generation", "complex",
                                  TAXONOMY, None, current_tier=2)
-    assert "delegate_task" not in res.allowed_names
-    assert "explore" in _stripped_ids(res)
+    assert "delegate_task" in res.allowed_names
+    assert res.stripped_capabilities == frozenset()
 
 
-def test_t1_strips_code_cap_keeps_core(synth_caps):
-    # code verb (eligible [2,3]) stripped at T1; core (eligible [1,2,3]) survives.
+def test_t1_admits_code_cap_and_core(synth_caps):
+    # neuter-tier-eligible-gate: the code verb (record documents eligible [2,3])
+    # is now ADMITTED at T1 alongside core — tier no longer strips.
     res = resolve_tools_for_tier(ALL_TOOLS, "code_generation", "moderate",
                                  TAXONOMY, None, current_tier=1)
     got = _names(res.tools)
-    assert "write_file" not in got
+    assert "write_file" in got
     assert "clarify" in got
-    assert _stripped_ids(res) == {"code"}
+    assert res.stripped_capabilities == frozenset()
 
 
 def test_none_tier_admits_all_intent_matched(synth_caps):
@@ -199,9 +201,10 @@ def test_none_tier_admits_all_intent_matched(synth_caps):
     assert res.stripped_capabilities == frozenset()
 
 
-def test_empty_eligible_never_offered(synth_caps, monkeypatch):
-    # A record with empty tier_rule.eligible is offered at NO tier (mirrors the
-    # seam refusing it everywhere) and is stripped on a classified turn.
+def test_empty_eligible_still_offered_gate_neutered(synth_caps, monkeypatch):
+    # neuter-tier-eligible-gate: a record with empty tier_rule.eligible is no
+    # longer special — the tier gate is retired, so an intent-matched cap is
+    # offered regardless of its (now documentary) eligible set. Nothing stripped.
     caps = SYNTH_CAPS + [
         ("orphan", "proactive", False, frozenset({"research"}), frozenset(),
             ("orphan_tool",)),
@@ -209,8 +212,8 @@ def test_empty_eligible_never_offered(synth_caps, monkeypatch):
     monkeypatch.setattr(cb, "_caps_index", lambda: caps)
     res = resolve_tools_for_tier(ALL_TOOLS + _mk("orphan_tool"), "research",
                                  "moderate", TAXONOMY, None, current_tier=3)
-    assert "orphan_tool" not in res.allowed_names
-    assert "orphan" in _stripped_ids(res)
+    assert "orphan_tool" in res.allowed_names
+    assert res.stripped_capabilities == frozenset()
 
 
 # ── crash-proof unparseable MCP: admitted + recorded + logged ──────────────
@@ -240,13 +243,16 @@ def test_mcp_server_of_is_crash_proof():
 # ── fallback under a tier (budget still honored; unknown strips nothing) ────
 
 
-def test_unknown_intent_fallback_capped_on_t2(synth_caps):
+def test_unknown_intent_fallback_uncapped_on_t2(synth_caps):
+    # neuter-tier-eligible-gate: the unknown maximal fallback at T2 is no longer
+    # tier-capped — x_search (record documents eligible [3]) is admitted at T2
+    # too. Unknown still strips nothing.
     res = resolve_tools_for_tier(ALL_TOOLS, None, None, TAXONOMY, None,
                                  current_tier=2)
     assert res.fallback is True
     assert res.stripped_capabilities == frozenset()         # unknown strips nothing
-    assert "write_file" in res.allowed_names                # code eligible@2
-    assert "x_search" not in res.allowed_names              # x_search ineligible@2
+    assert "write_file" in res.allowed_names
+    assert "x_search" in res.allowed_names                  # tier gate retired
 
 
 def test_unknown_intent_fallback_full_on_t3(synth_caps):

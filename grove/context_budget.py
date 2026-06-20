@@ -522,11 +522,15 @@ def _registry_allowed_names(
             intent_match = True if unknown else (intent_class in intents)
         if not intent_match:
             continue
-        tier_ok = current_tier is None or current_tier in eligible
-        if tier_ok:
-            names.update(native_tools)
-        elif not unknown:
-            stripped.append((cap_id, tuple(sorted(eligible))))
+        # tier_rule.eligible gate NEUTERED (neuter-tier-eligible-gate): the
+        # cognitive router picks the tier and the zone system governs mutation
+        # safety; eligible was a third axis doing the same job badly (and a
+        # tier-bypassable one — escalation re-ran the builder and admitted the
+        # tool anyway, so it was never a real boundary). Always admit the
+        # intent-matched capability; nothing is tier-stripped. Records keep
+        # tier_rule as documentation, not enforcement. ``current_tier`` /
+        # ``eligible`` stay in the signature + loop unpacking for shape.
+        names.update(native_tools)
     return names, stripped
 
 
