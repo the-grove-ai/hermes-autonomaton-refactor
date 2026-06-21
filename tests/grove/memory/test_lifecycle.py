@@ -55,22 +55,30 @@ def test_dormant_session_ids_dedupes(tmp_path):
 
 def test_run_memory_extraction_drives_detector():
     calls = []
+    flushed = []
 
     class FakeDetector:
         def detect_and_stage(self, session_id, transcript, dock_goals):
             calls.append((session_id, transcript, dock_goals))
             return 2
 
+    class FakeStore:
+        def flush_access_events(self, session_id):
+            flushed.append(session_id)
+            return 0
+
     transcripts = {"s1": [{"role": "user", "content": "a"}],
                    "s2": [{"role": "user", "content": "b"}]}
     total = run_memory_extraction(
         detector=FakeDetector(),
+        store=FakeStore(),
         session_ids=["s1", "s2"],
         transcript_loader=lambda sid: transcripts[sid],
         dock_goals=[{"slug": "g", "name": "G", "status": "accelerating"}],
     )
     assert total == 4
     assert [c[0] for c in calls] == ["s1", "s2"]
+    assert flushed == ["s1", "s2"]  # Fix 1 — flush runs per swept session
     assert calls[0][1] == [{"role": "user", "content": "a"}]
 
 

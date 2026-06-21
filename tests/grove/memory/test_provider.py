@@ -83,16 +83,21 @@ def test_dock_boost_ranks_higher(tmp_path):
     assert "[g1]" in result.text
 
 
-# 5. MemoryAccessed appended for each served record
+# 5. Served records are marked for a debounced access flush (hardening Fix 1)
 
-def test_memory_accessed_appended_per_served(tmp_path):
+def test_served_records_marked_for_batched_flush(tmp_path):
     store = MemoryStore(base_dir=tmp_path)
     _seed(store, "mem_a", "Fact A.")
     _seed(store, "mem_b", "Fact B.")
-    _provider(store)(_ctx())
     from grove.memory.events import MemoryAccessed
+
+    _provider(store)(_ctx())  # session_id "sess-1"
+    # Debounced: no access events written during the live turn.
+    assert not [e for e in store.read_events() if isinstance(e, MemoryAccessed)]
+
+    # Flushing the session emits exactly one event per served record.
+    assert store.flush_access_events("sess-1") == 2
     accesses = [e for e in store.read_events() if isinstance(e, MemoryAccessed)]
-    assert len(accesses) == 2
     assert {a.record_id for a in accesses} == {"mem_a", "mem_b"}
 
 

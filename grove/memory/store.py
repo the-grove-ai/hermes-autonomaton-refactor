@@ -57,6 +57,23 @@ _EVENT_TYPES = {
 }
 
 
+# memory-operational-hardening-v1 Fix 1 — telemetry debounce. The provider
+# served-record IDs are collected per session here (module-level so they
+# survive the per-call fresh-store factory) and flushed to exactly one
+# MemoryAccessed event per unique record id when the session is swept. This
+# replaces the per-turn record_access write (N+1 unbounded log growth).
+_PENDING_ACCESS: Dict[str, set] = {}
+_PENDING_ACCESS_LOCK = threading.Lock()
+# Context label recorded on a batched access event (the section that served it).
+_ACCESS_BATCH_CONTEXT = "accumulated_domain_memory"
+
+
+def _reset_pending_access() -> None:
+    """Clear the module-level pending-access registry (test isolation)."""
+    with _PENDING_ACCESS_LOCK:
+        _PENDING_ACCESS.clear()
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -274,6 +291,40 @@ class MemoryStore:
         rec = self._index[record_id]
         rec.access_count += 1
         rec.last_accessed = event.timestamp
+
+    def mark_accessed(self, session_id: str, record_id: str) -> None:
+        """Record that ``record_id`` was served this session — NO event write.
+
+        memory-operational-hardening-v1 Fix 1: collected into a module-level
+        per-session set (deduped) and flushed once when the session is swept.
+        Replaces the per-turn :meth:`record_access` write that grew the log
+        N-per-turn for zero analytical value.
+        """
+        with _PENDING_ACCESS_LOCK:
+            _PENDING_ACCESS.setdefault(session_id, set()).add(record_id)
+
+    def flush_access_events(self, session_id: str) -> int:
+        """Emit exactly one MemoryAccessed event per unique served record id.
+
+        Drains the session's pending-access set, so a second call emits
+        nothing (idempotent). Appends events directly to the log — it does
+        not bump the in-memory index (the store is typically a fresh sweep
+        instance) and never raises on a since-deprecated record (the access
+        happened regardless). Returns the number of events emitted.
+        """
+        with _PENDING_ACCESS_LOCK:
+            record_ids = _PENDING_ACCESS.pop(session_id, None)
+        if not record_ids:
+            return 0
+        for record_id in sorted(record_ids):
+            self.append_event(MemoryAccessed(
+                event_id=new_event_id(),
+                timestamp=_now_iso(),
+                record_id=record_id,
+                session_id=session_id,
+                context=_ACCESS_BATCH_CONTEXT,
+            ))
+        return len(record_ids)
 
     # ── decay ────────────────────────────────────────────────────────────
 

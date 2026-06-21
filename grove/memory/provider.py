@@ -95,12 +95,11 @@ def create_memory_provider(
         if not served:
             return None
 
+        # Fix 1 (telemetry debounce): collect served ids for a single
+        # per-session batch flush at sweep — no per-turn event write.
         session_id = context.get("session_id") or ""
-        access_context = context.get("intent_class") or _SECTION_LABEL
         for record in served:
-            active_store.record_access(
-                record.id, session_id=session_id, context=access_context,
-            )
+            active_store.mark_accessed(session_id, record.id)
 
         text = _SECTION_HEADER + "\n" + "\n".join(lines)
         return SectionResult(label=_SECTION_LABEL, text=text)
