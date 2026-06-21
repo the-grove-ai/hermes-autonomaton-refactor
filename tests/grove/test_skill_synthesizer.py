@@ -431,8 +431,10 @@ class TestQuietAppend:
         fake_self = SimpleNamespace(session_start=datetime.now() - timedelta(hours=1))
         first = AIAgent._append_pending_offer(fake_self, "Done.")
         # The push offer points at the review/approve loop, in-register.
+        # kaizen-voice-conformance — conversational, no CLI syntax.
         assert "stage it for your review" in first
-        assert "flywheel approve" in first
+        assert "flywheel approve" not in first
+        assert "Reply 'approve'" in first
         assert first.startswith("Done.")
         # Same proposal is not re-offered within the session (ephemeral guard).
         second = AIAgent._append_pending_offer(fake_self, "Done.")

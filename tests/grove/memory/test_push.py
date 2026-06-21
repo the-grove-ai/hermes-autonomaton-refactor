@@ -49,8 +49,12 @@ def test_one_pending_renders_note(tmp_path):
     assert returned_id == short_id
     assert "Shop floor note" in note
     assert "Operator prefers the CLI." in note            # summary_renderer output
-    assert f"flywheel memory approve {short_id}" in note
-    assert f"flywheel memory reject {short_id}" in note
+    # kaizen-voice-conformance — conversational register, zero CLI syntax.
+    assert "approve" in note.lower()
+    assert "dismiss" in note.lower()
+    assert "flywheel" not in note      # no CLI command
+    assert "`" not in note             # no backtick command syntax
+    assert short_id not in note        # no id/SHA in operator-facing text
 
 
 def test_already_shown_excluded(tmp_path):
@@ -104,8 +108,9 @@ def test_method_appends_and_marks_shown():
     out = AIAgent._append_memory_offer(agent, "Here is the answer.")
     assert "Here is the answer." in out
     assert "Shop floor note" in out
-    assert f"flywheel memory approve {short_id}" in out
-    assert short_id in agent._surfaced_proposal_ids
+    assert "approve" in out.lower()        # conversational, not CLI
+    assert "flywheel" not in out
+    assert short_id in agent._surfaced_proposal_ids  # internal dedup key, not shown
 
 
 def test_method_idempotent_within_session():
