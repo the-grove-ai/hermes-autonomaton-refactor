@@ -154,7 +154,8 @@ def test_memory_substrate_end_to_end():
 
 
 def test_e2e_provider_records_access_events():
-    """The served records each leave a MemoryAccessed trail (telemetry)."""
+    """Served records leave a debounced MemoryAccessed trail: nothing during
+    the turn, one batched event per record on the session flush (Fix 1)."""
     base = Path(get_hermes_home())
     store = MemoryStore(base_dir=base)
     store.append_event(MemoryCreated(
@@ -167,6 +168,10 @@ def test_e2e_provider_records_access_events():
     provider = create_memory_provider(store=store, dock_goals_loader=lambda: [])
     provider({"session_id": "s", "intent_class": "conversation"})
 
+    # Debounced: no event during the live turn.
+    assert not [e for e in store.read_events() if isinstance(e, MemoryAccessed)]
+    # One event per served record on flush.
+    assert store.flush_access_events("s") == 1
     accesses = [e for e in store.read_events() if isinstance(e, MemoryAccessed)]
     assert len(accesses) == 1
     assert accesses[0].record_id == "mem_a"

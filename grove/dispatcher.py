@@ -907,6 +907,7 @@ class Dispatcher:
         dock_goals = load_active_dock_goal_dicts()
         run_memory_extraction(
             detector=detector,
+            store=store,
             session_ids=session_ids,
             transcript_loader=(
                 lambda sid: self.session.get_messages_as_conversation(sid)

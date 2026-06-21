@@ -62,26 +62,33 @@ def dormant_session_ids(
 def run_memory_extraction(
     *,
     detector: Any,
+    store: Any,
     session_ids: List[str],
     transcript_loader: Callable[[str], List[Dict[str, Any]]],
     dock_goals: List[Dict[str, Any]],
 ) -> int:
     """Run the detector over each dormant session; return total staged.
 
-    No internal error handling — the detector is fail-loud and the caller
-    (Dispatcher init) wraps this in a single loud-log guard. The detector's
-    own processing lock makes each session strictly one-shot.
+    For each swept session, first flushes the batched MemoryAccessed
+    telemetry (Fix 1 — one event per served record id, regardless of whether
+    extraction then proceeds), then runs the detector. No internal error
+    handling — the detector is fail-loud and the caller (Dispatcher init)
+    wraps this in a single loud-log guard. The detector's own processing
+    lock makes each session strictly one-shot.
     """
     staged_total = 0
+    flushed_total = 0
     for session_id in session_ids:
+        flushed_total += store.flush_access_events(session_id)
         transcript = transcript_loader(session_id)
         staged_total += detector.detect_and_stage(
             session_id, transcript, dock_goals,
         )
-    if staged_total:
+    if staged_total or flushed_total:
         logger.info(
-            "[grove.memory] staged %d memory proposal(s) from %d "
-            "dormant session(s)", staged_total, len(session_ids),
+            "[grove.memory] staged %d proposal(s), flushed %d access "
+            "event(s) from %d dormant session(s)",
+            staged_total, flushed_total, len(session_ids),
         )
     return staged_total
 

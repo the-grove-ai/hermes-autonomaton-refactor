@@ -40,6 +40,15 @@ def _mock_t1(detector, payload):
     detector._call_detector = lambda *a, **k: raw  # type: ignore[assignment]
 
 
+# A transcript that clears the Fix 3 minimum-complexity gate (>=3 user turns)
+# so these detector-flow tests exercise the T1 path, not the early-exit.
+_GATE_OK = [
+    {"role": "user", "content": "First message about the work."},
+    {"role": "user", "content": "Second message with detail."},
+    {"role": "user", "content": "Third message confirming something."},
+]
+
+
 # 1. Transcript filter
 
 def test_filter_strips_and_preserves():
@@ -106,10 +115,10 @@ def test_idempotency_second_call_returns_zero(detector):
          "proposed_record": {"entity_type": "DomainFact", "content": "X.",
                              "confidence": 0.9, "justification": "why"}},
     ]})
-    first = detector.detect_and_stage("sess-1", [{"role": "user", "content": "x"}], [])
+    first = detector.detect_and_stage("sess-1", _GATE_OK, [])
     assert first == 1
 
-    second = detector.detect_and_stage("sess-1", [{"role": "user", "content": "x"}], [])
+    second = detector.detect_and_stage("sess-1", _GATE_OK, [])
     assert second == 0
 
 
@@ -123,7 +132,7 @@ def test_processing_lock_written_before_t1(detector):
         return json.dumps({"proposals": []})
 
     detector._call_detector = spy  # type: ignore[assignment]
-    detector.detect_and_stage("sess-lock", [{"role": "user", "content": "x"}], [])
+    detector.detect_and_stage("sess-lock", _GATE_OK, [])
 
     statuses = [r["status"] for r in seen["records_at_call"]
                 if r.get("session_id") == "sess-lock"]
@@ -140,7 +149,7 @@ def test_proposal_count_truncated_to_three(detector):
         for i in range(5)
     ]
     _mock_t1(detector, {"proposals": five})
-    staged = detector.detect_and_stage("sess-5", [{"role": "user", "content": "x"}], [])
+    staged = detector.detect_and_stage("sess-5", _GATE_OK, [])
     assert staged == 3
 
     pending = [r for r in _proposal_records(detector)
@@ -152,7 +161,7 @@ def test_proposal_count_truncated_to_three(detector):
 
 def test_malformed_json_stages_zero(detector):
     _mock_t1(detector, "this is not json at all {{{")
-    staged = detector.detect_and_stage("sess-bad", [{"role": "user", "content": "x"}], [])
+    staged = detector.detect_and_stage("sess-bad", _GATE_OK, [])
     assert staged == 0
     pending = [r for r in _proposal_records(detector)
                if r.get("status") == "pending"]
@@ -166,7 +175,7 @@ def test_markdown_fenced_json_parsed(detector):
                              "confidence": 0.9, "justification": "j"}},
     ]}) + "\n```"
     _mock_t1(detector, fenced)
-    staged = detector.detect_and_stage("sess-fence", [{"role": "user", "content": "x"}], [])
+    staged = detector.detect_and_stage("sess-fence", _GATE_OK, [])
     assert staged == 1
 
 
@@ -174,7 +183,7 @@ def test_markdown_fenced_json_parsed(detector):
 
 def test_empty_proposals_stages_zero(detector):
     _mock_t1(detector, {"proposals": []})
-    staged = detector.detect_and_stage("sess-empty", [{"role": "user", "content": "x"}], [])
+    staged = detector.detect_and_stage("sess-empty", _GATE_OK, [])
     assert staged == 0
 
 
@@ -187,7 +196,7 @@ def test_supersede_proposal_links_target(detector):
                              "content": "Updated fact.", "confidence": 0.92,
                              "justification": "contradicts old"}},
     ]})
-    detector.detect_and_stage("sess-sup", [{"role": "user", "content": "x"}], [])
+    detector.detect_and_stage("sess-sup", _GATE_OK, [])
     pending = [r for r in _proposal_records(detector) if r.get("status") == "pending"]
     assert len(pending) == 1
     prop = pending[0]["proposal"]
@@ -206,6 +215,6 @@ def test_dock_goal_ref_carried(detector):
     ]})
     dock_goals = [{"slug": "content-pipeline", "name": "Content Pipeline",
                    "status": "active", "vector": "ship"}]
-    detector.detect_and_stage("sess-dock", [{"role": "user", "content": "x"}], dock_goals)
+    detector.detect_and_stage("sess-dock", _GATE_OK, dock_goals)
     pending = [r for r in _proposal_records(detector) if r.get("status") == "pending"]
     assert pending[0]["proposal"]["dock_goal_ref"] == "content-pipeline"
