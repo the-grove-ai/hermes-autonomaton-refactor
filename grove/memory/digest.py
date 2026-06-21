@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List
 
 from grove.memory.events import (
     MemoryCreated,
+    MemoryDeprecated,
     MemorySuperseded,
     new_event_id,
     new_record_id,
@@ -64,8 +65,18 @@ class MemoryProposalHandler:
         serve as a one-arg renderer in the unified RENDER_REGISTRY. Still
         callable as ``handler.summary_renderer(proposal)`` on an instance.
         """
-        rec = proposal["proposed_record"]
         action = proposal.get("action", "create")
+        if action == "deprecate":
+            # Deprecation proposals carry target_id + reason + content (NOT a
+            # proposed_record). Render the record in plain words — no schema,
+            # no id. Falls back when content was not embedded at stage time.
+            content = proposal.get("content")
+            if not content:
+                return "A memory record has decayed below threshold. Deprecate?"
+            reason = proposal.get("reason", "")
+            tail = f" — {reason}" if reason else ""
+            return f"'{content}'{tail}. Deprecate?"
+        rec = proposal["proposed_record"]
         try:
             pct = round(float(rec["confidence"]) * 100)
         except (TypeError, ValueError, KeyError):
@@ -82,26 +93,24 @@ class MemoryProposalHandler:
         naming a record not in the index, raises BEFORE any append.
         """
         action = proposal.get("action")
-        rec = proposal["proposed_record"]
-        entity_type = rec["entity_type"]
-        content = rec["content"]
-        confidence = float(rec["confidence"])
         dock_goal_ref = proposal.get("dock_goal_ref")
         sources = proposal.get("sources") or []
 
         if action == "create":
+            rec = proposal["proposed_record"]
             event: Any = MemoryCreated(
                 event_id=new_event_id(),
                 timestamp=_now_iso(),
                 record_id=new_record_id(),
-                entity_type=entity_type,
-                content=content,
-                confidence=confidence,
+                entity_type=rec["entity_type"],
+                content=rec["content"],
+                confidence=float(rec["confidence"]),
                 dock_goal_ref=dock_goal_ref,
                 sources=sources,
                 supersedes=None,
             )
         elif action == "supersede":
+            rec = proposal["proposed_record"]
             target_id = proposal.get("target_id")
             if not target_id:
                 raise ValueError("supersede proposal missing target_id")
@@ -114,12 +123,28 @@ class MemoryProposalHandler:
                 event_id=new_event_id(),
                 timestamp=_now_iso(),
                 record_id=new_record_id(),
-                entity_type=entity_type,
-                content=content,
-                confidence=confidence,
+                entity_type=rec["entity_type"],
+                content=rec["content"],
+                confidence=float(rec["confidence"]),
                 dock_goal_ref=dock_goal_ref,
                 sources=sources,
                 supersedes=target_id,
+            )
+        elif action == "deprecate":
+            target_id = proposal.get("target_id")
+            if not target_id:
+                raise ValueError("deprecate proposal missing target_id")
+            if target_id not in self._store.projected_records():
+                raise ValueError(
+                    f"deprecate target {target_id!r} is not in the memory index; "
+                    f"refusing to append a dangling deprecate event"
+                )
+            reason = proposal.get("reason", "Confidence below deprecation threshold")
+            event = MemoryDeprecated(
+                event_id=new_event_id(),
+                timestamp=_now_iso(),
+                record_id=target_id,
+                reason=reason,
             )
         else:
             raise ValueError(f"unknown memory proposal action {action!r}")

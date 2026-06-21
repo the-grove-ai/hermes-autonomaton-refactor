@@ -187,7 +187,16 @@ GROVE_AGENT_HELP_GUIDANCE = (
     "operator approves in plain language and you handle the mechanics.\n"
     "When an operator wants to remember something, manage knowledge, or track "
     "work against their goals, use these built-in systems. Do NOT recommend "
-    "installing a third-party tool for a capability you already have."
+    "installing a third-party tool for a capability you already have.\n"
+    "HARD RULE — do not build storage for knowledge you already hold. Do NOT "
+    "create files, directories, notebooks, wikis, spreadsheets, or databases "
+    "to manage knowledge, compile research, capture notes, or store "
+    "information. The filesystem is not your memory: your governed memory and "
+    "the Dock already carry durable facts, preferences, and goals across "
+    "sessions. Do NOT recommend or reach for npm packages, external wikis, "
+    "note-taking apps, or any third-party tool for a capability you already "
+    "possess. If you catch yourself about to scaffold a place to put "
+    "knowledge, stop — stage a memory proposal or consult the Dock instead."
 )
 
 PROPOSAL_APPROVAL_GUIDANCE = (

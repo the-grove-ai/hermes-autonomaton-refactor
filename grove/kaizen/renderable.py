@@ -81,4 +81,7 @@ class MemoryProposalRenderable:
 
     def push_body(self, core: str) -> str:
         # Memory-specific voice — a crystallized insight, NOT "I noticed I could".
+        # Deprecation inverts the frame: this is governed forgetting, not capture.
+        if self.proposal_dict.get("action") == "deprecate":
+            return f"I'm recommending we retire a stale memory — {core}"
         return f"I crystallized a domain insight — {core}"

@@ -895,6 +895,7 @@ class Dispatcher:
         """
         from hermes_constants import get_hermes_home
         from grove.memory.detector import ContextPersistenceDetector
+        from grove.memory.freshness import FreshnessDetector
         from grove.memory.lifecycle import (
             load_active_dock_goal_dicts,
             run_memory_extraction,
@@ -914,6 +915,17 @@ class Dispatcher:
             ),
             dock_goals=dock_goals,
         )
+
+        # Governed forgetting (context-freshness-detector-v1): runs AFTER
+        # extraction so apply_decay's confidence mutation never perturbs the
+        # persistence detector's active-index summary. Reuses the same store
+        # (already loaded) and the active Dock goals (DI-3 suspension).
+        freshness = FreshnessDetector(base_dir=base)
+        stale_proposals = freshness.detect(store, dock_goals)
+        if stale_proposals:
+            freshness.stage_proposals(
+                stale_proposals, session_id="context-freshness-sweep"
+            )
 
     @property
     def runtime_ctx(self) -> RuntimeContext:
