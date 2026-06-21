@@ -51,10 +51,15 @@ APPROVE_PROPOSAL_SCHEMA = {
     "description": (
         "Approve a pending Flywheel proposal by id (the full id or the short "
         "prefix shown by review_proposals), applying the operator-approved "
-        "change. This is a governed self-modification: it routes through the same "
-        "gate the CLI uses, so a proposal that lacks its required evidence is "
-        "refused, not forced. Use ONLY when the operator explicitly approves a "
-        "specific proposal."
+        "change. Handles BOTH routing/zone/skill/pattern proposals and memory "
+        "proposals — one surface for everything Kaizen has pending. This is a "
+        "governed self-modification: it routes through the same gate the CLI "
+        "uses, so a proposal that lacks its required evidence is refused, not "
+        "forced. Use ONLY when the operator explicitly approves a specific "
+        "proposal. If multiple proposals are pending, specify which one by "
+        "including part of the proposal summary or its ID prefix; on a bare "
+        "'yes' with more than one pending, call review_proposals and ask the "
+        "operator which they mean."
     ),
     "parameters": {
         "type": "object",
@@ -105,26 +110,67 @@ def _capture(fn: Callable[[], int]) -> Tuple[int, str]:
     return rc, (out.getvalue() + err.getvalue()).strip()
 
 
+def _memory_proposal_summaries() -> list:
+    """Pending memory proposals as unified one-liners (Phase 3.2).
+
+    Reuses the memory CLI reader + short-id + the Phase 3
+    ``MemoryProposalHandler.summary_renderer`` — no new parser/renderer. Each
+    line carries the ``[memory_context]`` type tag and the ``(ID: <short>)``
+    the operator/model passes back to approve_proposal/reject_proposal.
+    """
+    from grove.memory.cli import _base, _pending, memory_proposal_short_id
+    from grove.memory.digest import MemoryProposalHandler
+    from grove.memory.store import MemoryStore
+
+    base = _base(None)
+    pending = _pending(base)
+    if not pending:
+        return []
+    handler = MemoryProposalHandler(MemoryStore(base_dir=base))
+    lines = []
+    for _full_id, record in pending:
+        proposal = record["proposal"]
+        short_id = memory_proposal_short_id(proposal)
+        summary = handler.summary_renderer(proposal)
+        lines.append(f"[memory_context] {summary} (ID: {short_id})")
+    return lines
+
+
 def review_proposals(*, queue_path: Optional[Path] = None) -> str:
-    """List pending proposals. REUSES ``flywheel_cli._format_summary`` per
-    proposal (the CLI's renderer) — no new renderer is built."""
+    """List ALL pending Kaizen proposals — routing AND memory — in one surface.
+
+    REUSES ``flywheel_cli._format_summary`` for routing and
+    ``MemoryProposalHandler.summary_renderer`` for memory; no new renderer is
+    built. One Kaizen voice: the operator does not distinguish the source.
+    """
     from grove import flywheel_cli
     from grove.eval.proposal_queue import default_queue_path, read_all
 
     target = queue_path or default_queue_path()
     try:
-        proposals = read_all(path=target)
+        routing = read_all(path=target)
     except Exception as exc:  # noqa: BLE001 — fail loud into the tool result
         return json.dumps(
             {"success": False, "error": f"could not read the proposal queue: {exc!r}"},
             ensure_ascii=False,
         )
+    try:
+        memory_lines = _memory_proposal_summaries()
+    except Exception as exc:  # noqa: BLE001 — fail loud, do not hide the gap
+        return json.dumps(
+            {"success": False, "error": f"could not read memory proposals: {exc!r}"},
+            ensure_ascii=False,
+        )
+
+    lines = [flywheel_cli._format_summary(p) for p in routing] + memory_lines
+    if not lines:
+        return json.dumps(
+            {"success": True, "pending_count": 0, "proposals": [],
+             "message": "No pending proposals."},
+            ensure_ascii=False,
+        )
     return json.dumps(
-        {
-            "success": True,
-            "pending_count": len(proposals),
-            "proposals": [flywheel_cli._format_summary(p) for p in proposals],
-        },
+        {"success": True, "pending_count": len(lines), "proposals": lines},
         ensure_ascii=False,
     )
 
@@ -141,6 +187,13 @@ def approve_proposal(
     B2's no-cluster refusal on routing_adjustment) enforces at cli_approve, and
     the tool is itself Yellow-zoned so the apply only runs on the operator's
     Sovereign-Prompt confirmation.
+
+    Phase 3.2 — store-aware. Probe-in-order: resolve against the routing queue
+    first (unchanged path); if no routing proposal matches, resolve against
+    memory_proposals.jsonl and route to the self-contained memory apply path
+    (``cli_memory_approve``, which constructs its own MemoryStore). Routing and
+    memory short-ids are both hex, so format detection is unreliable — probe
+    each backend rather than guess.
     """
     from grove import flywheel_cli
 
@@ -150,13 +203,35 @@ def approve_proposal(
             ensure_ascii=False,
         )
     pid = proposal_id.strip()
-    rc, message = _capture(
-        lambda: flywheel_cli.cli_approve(
-            pid, queue_path=queue_path, machine_path=machine_path,
+
+    # 1. Routing queue first (existing path, unchanged).
+    if flywheel_cli._resolve_proposal(pid, queue_path=queue_path) is not None:
+        rc, message = _capture(
+            lambda: flywheel_cli.cli_approve(
+                pid, queue_path=queue_path, machine_path=machine_path,
+            )
         )
-    )
+        return json.dumps(
+            {"success": rc == 0, "proposal_id": pid, "kind": "routing",
+             "message": message},
+            ensure_ascii=False,
+        )
+
+    # 2. Memory store fallback (Phase 3.2) — self-contained apply path.
+    from grove.memory import cli as memory_cli
+    mem_full, _err = memory_cli._resolve(memory_cli._base(None), pid)
+    if mem_full is not None:
+        rc, message = _capture(lambda: memory_cli.cli_memory_approve(pid))
+        return json.dumps(
+            {"success": rc == 0, "proposal_id": pid, "kind": "memory",
+             "message": message},
+            ensure_ascii=False,
+        )
+
+    # 3. Neither store owns it.
     return json.dumps(
-        {"success": rc == 0, "proposal_id": pid, "message": message},
+        {"success": False, "proposal_id": pid,
+         "message": f"No proposal matches {pid!r}."},
         ensure_ascii=False,
     )
 
@@ -167,7 +242,11 @@ def reject_proposal(
     *,
     queue_path: Optional[Path] = None,
 ) -> str:
-    """Route an operator rejection to ``flywheel_cli.cli_reject``."""
+    """Route an operator rejection to the right store (Phase 3.2 store-aware).
+
+    Probe-in-order, mirroring approve_proposal: routing queue first, then
+    memory_proposals.jsonl (``cli_memory_reject``).
+    """
     from grove import flywheel_cli
 
     if not isinstance(proposal_id, str) or not proposal_id.strip():
@@ -176,11 +255,35 @@ def reject_proposal(
             ensure_ascii=False,
         )
     pid = proposal_id.strip()
-    rc, message = _capture(
-        lambda: flywheel_cli.cli_reject(pid, reason=reason, queue_path=queue_path)
-    )
+
+    # 1. Routing queue first (existing path).
+    if flywheel_cli._resolve_proposal(pid, queue_path=queue_path) is not None:
+        rc, message = _capture(
+            lambda: flywheel_cli.cli_reject(pid, reason=reason, queue_path=queue_path)
+        )
+        return json.dumps(
+            {"success": rc == 0, "proposal_id": pid, "kind": "routing",
+             "message": message},
+            ensure_ascii=False,
+        )
+
+    # 2. Memory store fallback (Phase 3.2).
+    from grove.memory import cli as memory_cli
+    mem_full, _err = memory_cli._resolve(memory_cli._base(None), pid)
+    if mem_full is not None:
+        rc, message = _capture(
+            lambda: memory_cli.cli_memory_reject(pid, reason=reason)
+        )
+        return json.dumps(
+            {"success": rc == 0, "proposal_id": pid, "kind": "memory",
+             "message": message},
+            ensure_ascii=False,
+        )
+
+    # 3. Neither store owns it.
     return json.dumps(
-        {"success": rc == 0, "proposal_id": pid, "message": message},
+        {"success": False, "proposal_id": pid,
+         "message": f"No proposal matches {pid!r}."},
         ensure_ascii=False,
     )
 
