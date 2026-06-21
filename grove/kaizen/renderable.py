@@ -32,6 +32,13 @@ class KaizenRenderable(Protocol):
 
     def is_push_eligible(self, session_start: Optional[datetime]) -> bool: ...
 
+    def push_body(self, core: str) -> str:
+        """The type-specific middle clause of the conversational push note
+        (the shared 'Shop floor note —' frame + approve/dismiss tail wrap it).
+        Each type phrases its own offer; routing keeps 'I noticed I could …',
+        memory speaks as a crystallized insight — never 'I noticed I could'."""
+        ...
+
 
 class MemoryProposalRenderable:
     """Adapt a ``memory_proposals.jsonl`` record to :class:`KaizenRenderable`.
@@ -71,3 +78,7 @@ class MemoryProposalRenderable:
 
     def is_push_eligible(self, session_start: Optional[datetime] = None) -> bool:
         return self._record.get("status") == "pending"
+
+    def push_body(self, core: str) -> str:
+        # Memory-specific voice — a crystallized insight, NOT "I noticed I could".
+        return f"I crystallized a domain insight — {core}"

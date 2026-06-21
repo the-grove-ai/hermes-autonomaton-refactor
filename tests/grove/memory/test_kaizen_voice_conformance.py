@@ -118,3 +118,50 @@ def test_review_then_approve_commits_memory_inline():
     store = MemoryStore(base_dir=Path(get_hermes_home()))
     active = [r for r in store.projected_records().values() if r.status == "active"]
     assert any(r.content == "Take Flight Advisors uses Notion." for r in active)
+
+
+# ── kaizen-voice-smoke-fixes-v1 ───────────────────────────────────────────
+
+def _mem_proposal(content="Grove docs are centralized.", confidence=0.95,
+                  action="create", target_id=None):
+    return {"action": action, "target_id": target_id, "dock_goal_ref": None,
+            "proposed_record": {"entity_type": "ProjectState", "content": content,
+                                "confidence": confidence, "justification": "j"}}
+
+
+def test_summary_renderer_create_is_natural_language():
+    from grove.memory.digest import MemoryProposalHandler
+    out = MemoryProposalHandler.summary_renderer(_mem_proposal())
+    assert out == "Grove docs are centralized. (Confidence: 95%)"
+    assert "[create]" not in out and "ProjectState" not in out
+
+
+def test_summary_renderer_supersede_reads_as_update():
+    from grove.memory.digest import MemoryProposalHandler
+    out = MemoryProposalHandler.summary_renderer(
+        _mem_proposal(content="Prod HEAD is now abc.", action="supersede",
+                      target_id="mem_old"))
+    assert out.startswith("Updated understanding: ")
+    assert "Prod HEAD is now abc. (Confidence: 95%)" in out
+    assert "[supersede]" not in out and "mem_old" not in out
+
+
+def test_memory_push_frame_not_routing_voice():
+    rec = {"session_id": "s", "status": "pending", "timestamp": _TS,
+           "proposal": _mem_proposal(content="A crystallized fact.")}
+    note = compose_offering(MemoryProposalRenderable(rec), is_push=True)
+    assert "I noticed I could" not in note          # routing voice gone
+    assert "I crystallized a domain insight" in note
+    assert "A crystallized fact." in note
+
+
+def test_routing_push_frame_preserved():
+    from grove import flywheel_cli
+    payload = {"rule": "ratchet_promoted_t1", "add_intents": ["conversation"]}
+    p = RoutingProposal(
+        proposal_id=compute_proposal_id(
+            type="routing_adjustment", payload=payload, evidence=("t1",)),
+        type="routing_adjustment", payload=payload, evidence=("t1",),
+        eval_hash="", created_at="2026-06-01T00:00:00+00:00", source_patterns=("c1",))
+    push = flywheel_cli.compose_offering(p, is_push=True)
+    assert "I noticed I could" in push              # routing frame unchanged

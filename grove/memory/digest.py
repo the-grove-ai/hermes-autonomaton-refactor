@@ -54,7 +54,11 @@ class MemoryProposalHandler:
 
     @staticmethod
     def summary_renderer(proposal: Dict[str, Any]) -> str:
-        """Human-readable one-liner for operator review.
+        """Natural-language one-liner for operator review (kaizen-voice).
+
+        Operator-facing voice — NO internal schema (no ``[action]`` prefix, no
+        ``EntityType:`` label, no raw float, no ``mem_`` id). Just the content,
+        confidence as a percentage. A ``supersede`` reads as an update.
 
         Static — store-independent (reads only the proposal dict), so it can
         serve as a one-arg renderer in the unified RENDER_REGISTRY. Still
@@ -62,13 +66,14 @@ class MemoryProposalHandler:
         """
         rec = proposal["proposed_record"]
         action = proposal.get("action", "create")
-        line = (
-            f"[{action}] {rec['entity_type']}: {rec['content']} "
-            f"(Confidence: {rec['confidence']})"
-        )
-        if action == "supersede" and proposal.get("target_id"):
-            line += f" — supersedes {proposal['target_id']}"
-        return line
+        try:
+            pct = round(float(rec["confidence"]) * 100)
+        except (TypeError, ValueError, KeyError):
+            pct = 0
+        body = f"{rec['content']} (Confidence: {pct}%)"
+        if action == "supersede":
+            return f"Updated understanding: {body}"
+        return body
 
     def apply(self, proposal: Dict[str, Any]) -> bool:
         """Apply an approved proposal: mint the event, rebuild the index.

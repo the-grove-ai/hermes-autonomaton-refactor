@@ -206,6 +206,11 @@ class RoutingProposal:
             created = created.replace(tzinfo=timezone.utc)
         return created >= session_start
 
+    def push_body(self, core: str) -> str:
+        """Routing-family push clause — the generic 'I noticed I could …' that
+        fits every routing/zone/skill/pattern verb-phrase body (preserved)."""
+        return f"I noticed I could {core}"
+
 
 # ── Hashing ──────────────────────────────────────────────────────────
 
