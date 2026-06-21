@@ -158,6 +158,13 @@ class RoutingProposal:
     eval_hash: str
     created_at: str
     source_patterns: Tuple[str, ...] = ()
+    # machine-sink-generalization-v1 — optional memory-enriched rationale the
+    # Kaizen offering renders so promotions read with domain context, not just
+    # mechanics. Top-level and EXCLUDED from :func:`compute_proposal_id` (like
+    # ``source_patterns``), so enriching a proposal never changes its identity;
+    # old ``proposals.jsonl`` records written before this field deserialize to
+    # the default "" (no coercion needed — it is a plain string).
+    semantic_justification: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)

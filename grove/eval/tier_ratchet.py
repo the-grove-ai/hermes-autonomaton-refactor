@@ -39,8 +39,9 @@ review.
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections import defaultdict
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
@@ -50,6 +51,8 @@ from grove.eval.proposal_queue import (
 )
 from grove.intent_store import IntentRecord
 
+logger = logging.getLogger(__name__)
+
 
 __all__ = [
     "MIN_SAMPLE",
@@ -57,6 +60,8 @@ __all__ = [
     "MIN_SIMPLE_FRACTION_DOWNWARD",
     "MIN_SUCCESS_RATE_DOWNWARD",
     "MIN_CORRECTION_RATE_UPWARD",
+    "SINK_DOWNWARD",
+    "SINK_UPWARD",
     "compute_cluster_id",
     "propose_routing_adjustments",
 ]
@@ -68,6 +73,50 @@ MIN_AVG_CONFIDENCE_DOWNWARD = 0.85
 MIN_SIMPLE_FRACTION_DOWNWARD = 0.80
 MIN_SUCCESS_RATE_DOWNWARD = 0.90
 MIN_CORRECTION_RATE_UPWARD = 0.30
+
+# machine-sink-generalization-v1 — generalized machine-sink rule names.
+# The detection stays a direction (cheaper / escalate); the target tier is
+# implied by the detector's preconditions: downward fires only on a T2-skewed
+# simple/high-success cluster (route it cheaper → T1); upward fires on a
+# correction-heavy cluster (escalate → T3). The operator's routing.config.yaml
+# declares these sink rules' target_tier; the machine file set-unions the
+# intents in. (ratchet_promoted_t2 is reserved for a future detector — the
+# current two directions do not target T2.)
+SINK_DOWNWARD = "ratchet_promoted_t1"   # was "downward"
+SINK_UPWARD = "ratchet_promoted_t3"     # was "upward"
+
+
+def _build_justification(
+    memory_store: Any,
+    intent_class: str,
+    message_stems: Tuple[str, ...],
+) -> str:
+    """Memory-enriched rationale for a routing proposal (Gemini amendment).
+
+    Detection stays purely statistical; this only enriches the RENDERING.
+    Queries the active memory index for operator context related to the
+    cluster. Additive — ANY failure (no store, empty index, query error)
+    returns "" and the proposal still generates. This is the one sanctioned
+    silent degradation: an un-enriched proposal is still a valid proposal.
+    """
+    if memory_store is None:
+        return ""
+    try:
+        keywords = list(message_stems[:3]) if message_stems else [intent_class]
+        records = memory_store.query(
+            keywords=keywords,
+            entity_types=["DomainFact", "OperatorPreference"],
+            min_confidence=0.5,
+        )
+        if not records:
+            return ""
+        justification = f"Context: {records[0].content}"
+        if len(records) > 1:
+            justification += f" Also: {records[1].content}"
+        return justification
+    except Exception as exc:  # noqa: BLE001 — enrichment never blocks generation
+        logger.debug("[tier_ratchet] memory enrichment failed: %r", exc)
+        return ""
 
 
 def compute_cluster_id(
@@ -131,6 +180,13 @@ def _aggregate_by_intent(
             "tier_distribution": dict(tier_dist),
             "evidence_turn_ids": tuple(sorted(r.turn_id for r in recs)),
             "member_pattern_hashes": tuple(sorted({r.pattern_hash for r in recs})),
+            # machine-sink-generalization-v1 — recent operator message stems
+            # (newest first), the keyword seed for memory enrichment.
+            "message_stems": tuple(
+                r.user_message_stem
+                for r in sorted(recs, key=lambda r: r.timestamp, reverse=True)
+                if r.user_message_stem
+            ),
         }
     return out
 
@@ -160,6 +216,7 @@ def _maybe_downward(
     intent_class: str,
     stats: Dict[str, Any],
     current_routing_rules: Dict[str, Any],
+    memory_store: Any = None,
 ) -> Optional[RoutingProposal]:
     """Apply the downward detection rules. Return one proposal or None."""
     if stats["n"] < MIN_SAMPLE:
@@ -179,12 +236,12 @@ def _maybe_downward(
     if _intent_already_listed(
         intent_class,
         current_routing_rules=current_routing_rules,
-        rule_name="downward",
+        rule_name=SINK_DOWNWARD,
     ):
         return None
 
     payload: Dict[str, Any] = {
-        "rule": "downward",
+        "rule": SINK_DOWNWARD,
         "add_intents": [intent_class],
     }
     evidence = stats["evidence_turn_ids"]
@@ -201,6 +258,9 @@ def _maybe_downward(
         eval_hash="",  # set by gate_proposal after the suite passes
         created_at=_now_iso(),
         source_patterns=(cluster_id,),
+        semantic_justification=_build_justification(
+            memory_store, intent_class, stats.get("message_stems", ()),
+        ),
     )
 
 
@@ -208,6 +268,7 @@ def _maybe_upward(
     intent_class: str,
     stats: Dict[str, Any],
     current_routing_rules: Dict[str, Any],
+    memory_store: Any = None,
 ) -> Optional[RoutingProposal]:
     """Apply the upward detection rules. Return one proposal or None."""
     if stats["n"] < MIN_SAMPLE:
@@ -217,12 +278,12 @@ def _maybe_upward(
     if _intent_already_listed(
         intent_class,
         current_routing_rules=current_routing_rules,
-        rule_name="upward",
+        rule_name=SINK_UPWARD,
     ):
         return None
 
     payload: Dict[str, Any] = {
-        "rule": "upward",
+        "rule": SINK_UPWARD,
         "add_intents": [intent_class],
     }
     evidence = stats["evidence_turn_ids"]
@@ -239,6 +300,9 @@ def _maybe_upward(
         eval_hash="",
         created_at=_now_iso(),
         source_patterns=(cluster_id,),
+        semantic_justification=_build_justification(
+            memory_store, intent_class, stats.get("message_stems", ()),
+        ),
     )
 
 
@@ -246,6 +310,7 @@ def propose_routing_adjustments(
     records: Iterable[IntentRecord],
     *,
     current_routing_rules: Optional[Dict[str, Any]] = None,
+    memory_store: Any = None,
 ) -> List[RoutingProposal]:
     """Inspect the intent feed and emit routing proposals.
 
@@ -266,10 +331,10 @@ def propose_routing_adjustments(
     downward: List[Tuple[str, RoutingProposal]] = []
     upward: List[Tuple[str, RoutingProposal]] = []
     for intent_class, intent_stats in stats.items():
-        d = _maybe_downward(intent_class, intent_stats, current)
+        d = _maybe_downward(intent_class, intent_stats, current, memory_store)
         if d is not None:
             downward.append((intent_class, d))
-        u = _maybe_upward(intent_class, intent_stats, current)
+        u = _maybe_upward(intent_class, intent_stats, current, memory_store)
         if u is not None:
             upward.append((intent_class, u))
 

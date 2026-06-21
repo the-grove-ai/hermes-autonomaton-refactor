@@ -92,7 +92,7 @@ class TestDownwardProposal:
         # Sprint 32 renamed the type from Sprint 47's "routing_update"
         # to the GRV-008 § II canonical "routing_adjustment".
         assert p.type == "routing_adjustment"
-        assert p.payload == {"rule": "downward", "add_intents": ["conversation"]}
+        assert p.payload == {"rule": "ratchet_promoted_t1", "add_intents": ["conversation"]}
         assert len(p.evidence) == MIN_SAMPLE
 
     def test_low_confidence_blocks_downward(self) -> None:
@@ -147,7 +147,7 @@ class TestDownwardProposal:
     def test_already_in_downward_intents_blocks(self) -> None:
         records = _downward_qualifying("conversation", n=MIN_SAMPLE)
         current = {
-            "downward": {
+            "ratchet_promoted_t1": {
                 "match": {"intents": ["conversation"]},
             }
         }
@@ -165,7 +165,7 @@ class TestUpwardProposal:
         proposals = propose_routing_adjustments(records)
         assert len(proposals) == 1
         p = proposals[0]
-        assert p.payload == {"rule": "upward", "add_intents": ["debugging"]}
+        assert p.payload == {"rule": "ratchet_promoted_t3", "add_intents": ["debugging"]}
 
     def test_low_correction_rate_blocks_upward(self) -> None:
         # 4 success + 1 correction = correction_rate 0.20 < 0.30
@@ -178,7 +178,7 @@ class TestUpwardProposal:
     def test_already_in_upward_intents_blocks(self) -> None:
         records = _upward_qualifying("debugging", n=MIN_SAMPLE)
         current = {
-            "upward": {
+            "ratchet_promoted_t3": {
                 "match": {"intents": ["debugging"]},
             }
         }
@@ -198,4 +198,4 @@ class TestCompoundProposals:
         )
         proposals = propose_routing_adjustments(records)
         rules = sorted(p.payload["rule"] for p in proposals)
-        assert rules == ["downward", "upward"]
+        assert rules == ["ratchet_promoted_t1", "ratchet_promoted_t3"]

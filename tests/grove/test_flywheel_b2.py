@@ -80,7 +80,7 @@ def test_ratchet_emits_routing_adjustment_with_source_patterns() -> None:
     assert len(proposals) == 1
     p = proposals[0]
     assert p.type == PROPOSAL_TYPE_ROUTING_ADJUSTMENT
-    assert p.payload == {"rule": "upward", "add_intents": ["date_arithmetic"]}
+    assert p.payload == {"rule": "ratchet_promoted_t3", "add_intents": ["date_arithmetic"]}
     # source_patterns is populated with exactly the cluster id for this signal.
     assert p.source_patterns == (
         compute_cluster_id("date_arithmetic", ("a" * 64,)),
