@@ -110,65 +110,51 @@ def _capture(fn: Callable[[], int]) -> Tuple[int, str]:
     return rc, (out.getvalue() + err.getvalue()).strip()
 
 
-def _memory_proposal_summaries() -> list:
-    """Pending memory proposals as unified one-liners (Phase 3.2).
-
-    Reuses the memory CLI reader + short-id + the Phase 3
-    ``MemoryProposalHandler.summary_renderer`` — no new parser/renderer. Each
-    line carries the ``[memory_context]`` type tag and the ``(ID: <short>)``
-    the operator/model passes back to approve_proposal/reject_proposal.
-    """
-    from grove.memory.cli import _base, _pending, memory_proposal_short_id
-    from grove.memory.digest import MemoryProposalHandler
-    from grove.memory.store import MemoryStore
-
-    base = _base(None)
-    pending = _pending(base)
-    if not pending:
-        return []
-    handler = MemoryProposalHandler(MemoryStore(base_dir=base))
-    lines = []
-    for _full_id, record in pending:
-        proposal = record["proposal"]
-        short_id = memory_proposal_short_id(proposal)
-        summary = handler.summary_renderer(proposal)
-        lines.append(f"[memory_context] {summary} (ID: {short_id})")
-    return lines
-
-
 def review_proposals(*, queue_path: Optional[Path] = None) -> str:
     """List ALL pending Kaizen proposals — routing AND memory — in one surface.
 
-    REUSES ``flywheel_cli._format_summary`` for routing and
-    ``MemoryProposalHandler.summary_renderer`` for memory; no new renderer is
-    built. One Kaizen voice: the operator does not distinguish the source.
+    kaizen-proposal-surface-unification-v1: ONE code path. Both queues read,
+    wrapped as KaizenRenderables, merged, sorted by ``_PUSH_PRIORITY``, and
+    rendered through the unified ``get_renderer`` — no separate per-type
+    formatting. One Kaizen voice: the operator does not distinguish the source.
     """
     from grove import flywheel_cli
     from grove.eval.proposal_queue import default_queue_path, read_all
+    from grove.kaizen.renderable import MemoryProposalRenderable
 
+    renderables: list = []
     target = queue_path or default_queue_path()
     try:
-        routing = read_all(path=target)
+        renderables.extend(read_all(path=target))
     except Exception as exc:  # noqa: BLE001 — fail loud into the tool result
         return json.dumps(
             {"success": False, "error": f"could not read the proposal queue: {exc!r}"},
             ensure_ascii=False,
         )
     try:
-        memory_lines = _memory_proposal_summaries()
+        from grove.memory.cli import _base, _pending
+        for _full_id, record in _pending(_base(None)):
+            renderables.append(MemoryProposalRenderable(record))
     except Exception as exc:  # noqa: BLE001 — fail loud, do not hide the gap
         return json.dumps(
             {"success": False, "error": f"could not read memory proposals: {exc!r}"},
             ensure_ascii=False,
         )
 
-    lines = [flywheel_cli._format_summary(p) for p in routing] + memory_lines
-    if not lines:
+    if not renderables:
         return json.dumps(
             {"success": True, "pending_count": 0, "proposals": [],
              "message": "No pending proposals."},
             ensure_ascii=False,
         )
+
+    renderables.sort(
+        key=lambda r: (flywheel_cli._PUSH_PRIORITY.get(r.type, 99), r.sort_key)
+    )
+    lines = [
+        f"[{r.type}] {flywheel_cli.get_renderer(r.type)(r)} (ID: {r.short_id})"
+        for r in renderables
+    ]
     return json.dumps(
         {"success": True, "pending_count": len(lines), "proposals": lines},
         ensure_ascii=False,
