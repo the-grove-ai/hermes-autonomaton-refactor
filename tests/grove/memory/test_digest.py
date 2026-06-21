@@ -81,7 +81,9 @@ def test_surfacing_renders_through_handler(store, tmp_path):
 
     handler = MemoryProposalHandler(store)
     assert seen == [handler.summary_renderer(prop)]
-    assert "[create] DomainFact: Notion is the tracker. (Confidence: 0.9)" in seen[0]
+    # kaizen-voice-smoke-fixes-v1 — natural language, no [action]/EntityType.
+    assert "Notion is the tracker. (Confidence: 90%)" in seen[0]
+    assert "[create]" not in seen[0] and "DomainFact" not in seen[0]
 
 
 # 2. Approve — MemoryCreated event in store, index updated

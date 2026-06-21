@@ -339,11 +339,13 @@ def compose_offering(proposal: Any, *, is_push: bool) -> str:
     core = get_renderer(proposal.type)(proposal)
     if not is_push:
         return core
-    # kaizen-voice-conformance — conversational register, no CLI syntax / no id.
-    # The operator replies in natural language; the model routes it through
-    # review_proposals -> approve_proposal inline.
+    # kaizen-voice — conversational register, no CLI syntax / no id. The
+    # type-specific clause comes from the renderable (routing: "I noticed I
+    # could …"; memory: "I crystallized a domain insight …"); the shared frame +
+    # approve/dismiss tail are the one Kaizen voice. The operator replies in
+    # natural language; the model routes it via review_proposals -> approve.
     return (
-        f"{_OFFERING_PUSH_PREFIX} I noticed I could {core} — {_OFFERING_PUSH_ASK} "
+        f"{_OFFERING_PUSH_PREFIX} {proposal.push_body(core)} — {_OFFERING_PUSH_ASK} "
         f"Reply 'approve' to apply this, or 'dismiss' to skip."
     )
 
