@@ -5285,6 +5285,43 @@ class AIAgent:
             logger.debug("[kaizen-offerings] push append skipped: %r", exc)
             return final_response
 
+    def _append_memory_offer(self, final_response: str) -> str:
+        """Surface ONE pending memory proposal at the post-turn break.
+
+        memory-conversational-push-v1 (Phase 3.1) — PARALLEL to, and a
+        SEPARATE system from, ``_append_pending_offer``. Memory proposals live
+        in ``memory_proposals.jsonl`` (not the RoutingProposal queue), are born
+        from PRIOR dormant sessions (so the routing current-session
+        eligibility rule deliberately does NOT apply — any unshown pending
+        proposal is eligible), render via the Phase 3
+        ``MemoryProposalHandler.summary_renderer``, and stay CLI-approved
+        (``flywheel memory approve <id>``; conversational approval is Phase
+        3.2). Dedup rides the shared ephemeral ``_surfaced_proposal_ids`` set,
+        keyed by the memory content short_id alongside routing proposal ids.
+        Best-effort: any failure leaves the response untouched.
+        """
+        if not final_response:
+            return final_response
+        try:
+            from grove.memory.push import select_memory_push_note
+
+            surfaced = getattr(self, "_surfaced_proposal_ids", None)
+            if surfaced is None:
+                surfaced = set()
+                self._surfaced_proposal_ids = surfaced
+
+            result = select_memory_push_note(
+                shown_ids=surfaced, base_dir=get_hermes_home(),
+            )
+            if result is None:
+                return final_response
+            short_id, note = result
+            surfaced.add(short_id)  # one-at-a-time, once per session
+            return final_response.rstrip() + note
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[memory-push] append skipped: %r", exc)
+            return final_response
+
     # connector-failure-andon-v1 (C4) — EPHEMERAL, agent-resident connector
     # failure offers. Storage is the cached agent (survives per-turn
     # reconstruction, like enabled_toolsets); NEVER the proposal queue
@@ -17182,6 +17219,12 @@ class AIAgent:
         # and before result assembly.
         if final_response and not interrupted:
             final_response = self._append_pending_offer(final_response)
+            # memory-conversational-push-v1 (Phase 3.1) — surface ONE pending
+            # memory proposal alongside the answer. Separate system from the
+            # routing push above; both may surface (one-at-a-time each, deduped
+            # per session). Knowledge (memory) and optimization (routing) are
+            # independent and both matter.
+            final_response = self._append_memory_offer(final_response)
             # connector-failure-andon-v1 — surface a failed connector ALONGSIDE
             # the answer (fail-loud: a dead connector's tools are absent, never
             # silently worked around). Answer-then-surface, once per session.
