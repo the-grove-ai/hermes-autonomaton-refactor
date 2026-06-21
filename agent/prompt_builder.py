@@ -172,6 +172,24 @@ GROVE_AGENT_HELP_GUIDANCE = (
     "keep working the task."
 )
 
+PROPOSAL_APPROVAL_GUIDANCE = (
+    "# Acting on Kaizen proposals\n"
+    "When you have surfaced a Kaizen proposal — memory, routing, skill, or any "
+    "other type — and the operator replies with approval language ('yes', "
+    "'approve', 'approve that', 'do it', 'commit it', 'sounds right') or "
+    "dismissal language ('no', 'skip', 'dismiss', 'reject', 'not that one'):\n"
+    "1. Call review_proposals to see every pending proposal.\n"
+    "2. If exactly one is pending, act on it directly — approve_proposal(id) to "
+    "commit, or reject_proposal(id) to dismiss.\n"
+    "3. If more than one is pending, ask the operator which one they mean before "
+    "acting.\n"
+    "4. NEVER tell the operator to run a CLI command (e.g. `flywheel approve …`) "
+    "and never show them a proposal id or SHA hash. You hold the tools to apply "
+    "their decision inline — their natural-language reply IS the approval "
+    "checkpoint. Handle the mechanics invisibly.\n"
+)
+
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "

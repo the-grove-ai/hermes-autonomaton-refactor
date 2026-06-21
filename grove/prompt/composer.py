@@ -557,6 +557,7 @@ def _tool_guidance_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         SKILLS_GUIDANCE,
         ESCALATION_GUIDANCE,
         KANBAN_GUIDANCE,
+        PROPOSAL_APPROVAL_GUIDANCE,
     )
     valid = ctx.get("valid_tool_names") or set()
     parts: List[str] = []
@@ -570,6 +571,12 @@ def _tool_guidance_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         parts.append(ESCALATION_GUIDANCE)
     if "kanban_show" in valid:
         parts.append(KANBAN_GUIDANCE)
+    # kaizen-voice-conformance — when the operator can approve proposals inline
+    # (the flywheel review tools are present), tell the model to route
+    # approval/dismissal language through review_proposals -> approve/reject,
+    # never to a CLI command.
+    if "approve_proposal" in valid:
+        parts.append(PROPOSAL_APPROVAL_GUIDANCE)
     if not parts:
         return None
     return SectionResult(label="tool_guidance", text=" ".join(parts))

@@ -69,7 +69,10 @@ def test_push_form_is_interrupt() -> None:
     p = _routing(_NOW.isoformat())
     push = flywheel_cli.compose_offering(p, is_push=True)
     assert push.startswith(flywheel_cli._OFFERING_PUSH_PREFIX)
-    assert "flywheel approve" in push
+    # kaizen-voice-conformance — conversational register, no CLI syntax.
+    assert "flywheel approve" not in push
+    assert "`" not in push
+    assert "Reply 'approve'" in push
     # Same factual core rides inside the interrupt.
     assert flywheel_cli._summary_routing_adjustment(p) in push
 

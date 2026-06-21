@@ -28,8 +28,7 @@ _PUSH_TEMPLATE = (
     "\n\n---\n"
     "Shop floor note: I crystallized a memory from a recent session — "
     "{summary}\n"
-    "Say `flywheel memory approve {short_id}` to commit it, or "
-    "`flywheel memory reject {short_id}` to dismiss."
+    "Reply 'approve' to commit this to memory, or 'dismiss' to skip."
 )
 
 
@@ -78,5 +77,5 @@ def select_memory_push_note(
     summary = MemoryProposalHandler(
         MemoryStore(base_dir=base)
     ).summary_renderer(proposal)
-    note = _PUSH_TEMPLATE.format(summary=summary, short_id=short_id)
+    note = _PUSH_TEMPLATE.format(summary=summary)
     return short_id, note

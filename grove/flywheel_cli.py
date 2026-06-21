@@ -289,11 +289,12 @@ def compose_offering(proposal: RoutingProposal, *, is_push: bool) -> str:
     core = _handler_for(proposal.type).summary_renderer(proposal)
     if not is_push:
         return core
-    short_id = proposal.proposal_id.split(":")[-1][:12]
+    # kaizen-voice-conformance — conversational register, no CLI syntax / no id.
+    # The operator replies in natural language; the model routes it through
+    # review_proposals -> approve_proposal inline.
     return (
         f"{_OFFERING_PUSH_PREFIX} I noticed I could {core} — {_OFFERING_PUSH_ASK} "
-        f"Just say the word and I'll approve it (or run `flywheel approve "
-        f"{short_id}`)."
+        f"Reply 'approve' to apply this, or 'dismiss' to skip."
     )
 
 
