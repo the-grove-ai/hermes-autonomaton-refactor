@@ -130,3 +130,40 @@ def test_registered_in_default_composer():
     assert reg is not None
     assert reg.tier == "context"
     assert reg.order == 15
+
+
+# ── turn-keyword-relevance-v1: keyword extraction + provider blending ─────
+
+def test_extract_keywords_filters_and_caps():
+    from grove.memory.provider import _extract_keywords
+    kw = _extract_keywords("Please help me explain the deploy.sh script for Notion!")
+    assert "deploy.sh" in kw          # punctuation . kept by the token regex
+    assert "script" in kw
+    assert "notion" in kw             # trailing ! stripped, lowercased
+    for dropped in ("please", "help", "explain", "the", "for", "me"):
+        assert dropped not in kw      # stopwords + short tokens filtered
+    # max_keywords cap
+    long = " ".join(f"term{i}" for i in range(20))
+    assert len(_extract_keywords(long)) == 8
+    assert _extract_keywords("") == []
+
+
+def test_provider_keyword_elevates_matching_record(tmp_path):
+    store = MemoryStore(base_dir=tmp_path)
+    _seed(store, "mem_match", "The deploy script lives in scripts dir.", confidence=0.6)
+    _seed(store, "mem_other", "Unrelated trivia fact.", confidence=0.95)
+    ctx = {"session_id": "s", "intent_class": "conversation",
+           "user_message": "how do I run the deploy script"}
+    result = _provider(store, token_budget=4000)(ctx)
+    assert result is not None
+    # keyword match elevates mem_match above a HIGHER-confidence non-match
+    assert result.text.index("deploy script") < result.text.index("Unrelated trivia")
+
+
+def test_provider_without_user_message_is_dock_boost_only(tmp_path):
+    store = MemoryStore(base_dir=tmp_path)
+    _seed(store, "mem_a", "Take Flight uses Notion.", confidence=0.9)
+    # ctx carries no user_message → keywords None → backward-compatible path
+    result = _provider(store)({"session_id": "s", "intent_class": "conversation"})
+    assert result is not None
+    assert "Take Flight uses Notion." in result.text

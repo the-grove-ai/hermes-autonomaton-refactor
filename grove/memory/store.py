@@ -236,15 +236,20 @@ class MemoryStore:
         entity_types: Optional[List[str]] = None,
         min_confidence: float = 0.0,
         dock_goal_refs: Optional[List[str]] = None,
+        require_keyword_match: bool = True,
     ) -> List[MemoryRecord]:
         """Return ACTIVE records matching the predicates, ranked by score.
 
         Filter by ``entity_types`` and ``min_confidence``. Score by the
         count of ``keywords`` found (case-insensitive substring) in the
         content, with a fixed boost when ``dock_goal_ref`` is in
-        ``dock_goal_refs``. When ``keywords`` is given, only records with a
-        positive keyword score are returned. Sort by score desc, then
-        confidence desc.
+        ``dock_goal_refs``. Sort by score desc, then confidence desc.
+
+        ``require_keyword_match`` (default True — the original narrowing
+        contract): when keywords are given, records with zero keyword hits are
+        excluded. Pass ``False`` (turn-keyword-relevance-v1) for keyword-as-
+        boost: keyword hits ADD to score but zero-hit records (e.g. Dock-goal
+        memory) survive and rank on their boost/confidence.
         """
         scored: List[tuple] = []
         for rec in self._index.values():
@@ -259,7 +264,7 @@ class MemoryStore:
             if keywords:
                 content_lower = rec.content.lower()
                 hits = sum(1 for kw in keywords if kw.lower() in content_lower)
-                if hits == 0:
+                if require_keyword_match and hits == 0:
                     continue
                 score += hits
             if dock_goal_refs and rec.dock_goal_ref in dock_goal_refs:

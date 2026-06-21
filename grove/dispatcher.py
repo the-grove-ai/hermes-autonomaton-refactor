@@ -3682,6 +3682,11 @@ class Dispatcher:
             terminal_cwd=terminal_cwd,
             pattern_hash=pattern_hash,
             intent_class=intent_class,
+            # turn-keyword-relevance-v1 — the current turn's operator message,
+            # threaded the same way as pattern_hash/intent_class so the memory
+            # provider can extract keywords. "" at construction / pre-turn;
+            # refreshes on recompose turns (the accepted recompose cadence).
+            user_message=getattr(self, "_current_turn_user_message", None) or "",
             # Sprint 73 (D5) — per-tier context allow-list. None on a
             # non-routed / construction-time compose (no gating); populated by
             # Phase 4a's _apply_tier_budget on every routed inference tier, so

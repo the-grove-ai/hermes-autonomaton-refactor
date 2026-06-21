@@ -300,3 +300,47 @@ def test_record_access_bumps_live_index(store):
     # the access event landed in the log (survives rebuild)
     store.rebuild_index()
     assert store.projected_records()["mem_a"].access_count == 1
+
+
+# ── turn-keyword-relevance-v1: require_keyword_match gate ─────────────────
+
+def _seed_kw(store, rid, content, *, confidence=0.9, dock_goal_ref=None):
+    store.append_event(MemoryCreated(
+        event_id="evt_" + rid, timestamp=_ts(), record_id=rid,
+        entity_type="DomainFact", content=content, confidence=confidence,
+        dock_goal_ref=dock_goal_ref, sources=[], supersedes=None,
+    ))
+    store.rebuild_index()
+
+
+def test_require_keyword_match_false_keeps_dock_records(store):
+    _seed_kw(store, "mem_kw", "the deploy script details", confidence=0.6)
+    _seed_kw(store, "mem_dock", "unrelated goal note", confidence=0.6,
+             dock_goal_ref="g1")
+    res = store.query(keywords=["deploy"], dock_goal_refs=["g1"],
+                      require_keyword_match=False)
+    ids = [r.id for r in res]
+    assert "mem_kw" in ids and "mem_dock" in ids        # both survive (boost)
+    # Dock boost (2.0) outranks a single keyword hit (1.0) — documented order.
+    assert ids.index("mem_dock") < ids.index("mem_kw")
+
+
+def test_require_keyword_match_true_narrows(store):
+    # Regression: the original narrowing contract (default True).
+    _seed_kw(store, "mem_kw", "the deploy script", confidence=0.9)
+    _seed_kw(store, "mem_other", "totally different content", confidence=0.9)
+    assert [r.id for r in store.query(keywords=["deploy"])] == ["mem_kw"]
+    assert store.query(keywords=["nonexistent-term-xyz"]) == []
+
+
+def test_blended_ranking(store):
+    _seed_kw(store, "both", "deploy goal thing", confidence=0.5, dock_goal_ref="g1")
+    _seed_kw(store, "kw", "deploy only thing", confidence=0.5)
+    _seed_kw(store, "dock", "goal only thing", confidence=0.5, dock_goal_ref="g1")
+    _seed_kw(store, "neither", "unrelated thing", confidence=0.5)
+    res = store.query(keywords=["deploy"], dock_goal_refs=["g1"],
+                      require_keyword_match=False)
+    ids = [r.id for r in res]
+    assert ids[0] == "both"                  # keyword + dock = highest
+    assert ids[-1] == "neither"              # zero-hit, no boost = lowest
+    assert ids.index("dock") < ids.index("kw")   # boost 2.0 > 1 keyword hit

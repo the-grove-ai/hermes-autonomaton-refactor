@@ -33,6 +33,33 @@ _SECTION_LABEL = "accumulated_domain_memory"
 _SECTION_HEADER = "## Accumulated Domain Memory"
 _DEFAULT_TOKEN_BUDGET = 500
 
+# turn-keyword-relevance-v1 — deterministic keyword extraction (no LLM). Common
+# function/closed-class words + low-signal request verbs are filtered so a turn
+# like "help me explain the deploy script" keys on {deploy, script}.
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been",
+    "being", "have", "has", "had", "do", "does", "did", "will",
+    "would", "could", "should", "shall", "may", "might", "can",
+    "to", "of", "in", "for", "on", "with", "at", "by", "from",
+    "as", "into", "through", "during", "before", "after", "about",
+    "between", "under", "above", "up", "down", "out", "off", "over",
+    "then", "than", "so", "no", "not", "only", "very", "just",
+    "also", "how", "what", "which", "who", "whom", "when", "where",
+    "why", "this", "that", "these", "those", "it", "its", "i", "me",
+    "my", "we", "our", "you", "your", "he", "she", "they", "them",
+    "and", "but", "or", "if", "because", "while", "although",
+    "help", "please", "think", "know", "want", "need", "like",
+    "tell", "show", "explain", "describe", "give",
+}
+
+
+def _extract_keywords(text: str, max_keywords: int = 8) -> List[str]:
+    """Deterministic keyword extraction: split, strip punctuation, filter
+    stopwords + short tokens, cap at ``max_keywords``."""
+    import re
+    words = re.findall(r"[a-zA-Z0-9_.-]+", text.lower())
+    return [w for w in words if w not in STOPWORDS and len(w) > 2][:max_keywords]
+
 
 def _default_store_factory() -> MemoryStore:
     from hermes_constants import get_hermes_home
@@ -73,7 +100,17 @@ def create_memory_provider(
     def _provider(context: Dict[str, Any]) -> Optional[SectionResult]:
         active_store = store_factory()
         slugs = [g.get("slug") for g in dock_goals_loader() if g.get("slug")]
-        records = active_store.query(dock_goal_refs=slugs or None)
+        # turn-keyword-relevance-v1 — keyword-as-boost: turn keywords ELEVATE
+        # matching records but Dock-goal memory still surfaces (zero-hit records
+        # survive). Empty/absent user_message → keywords None → Dock-boost-only
+        # (backward compatible).
+        user_message = context.get("user_message", "")
+        keywords = _extract_keywords(user_message) if user_message else None
+        records = active_store.query(
+            dock_goal_refs=slugs or None,
+            keywords=keywords or None,
+            require_keyword_match=False,
+        )
         if not records:
             return None
 
