@@ -76,7 +76,7 @@ def _detect_one(store, queue):
 
 def _assert_machine_has_intent(machine: Path, intent_class: str) -> None:
     cfg = yaml.safe_load(machine.read_text(encoding="utf-8"))
-    intents = cfg["routing"]["routing_rules"]["upward"]["match"]["intents"]
+    intents = cfg["routing"]["routing_rules"]["ratchet_promoted_t3"]["match"]["intents"]
     assert intent_class in intents
 
 

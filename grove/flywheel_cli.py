@@ -71,6 +71,24 @@ def _machine_config_path() -> Path:
     return Path(get_hermes_home()) / "routing.autonomaton.yaml"
 
 
+# machine-sink-generalization-v1 — accepted routing-rule sink names. The
+# generalized ``ratchet_promoted_tX`` sinks are what the tier ratchet now
+# emits; the legacy ``downward``/``upward`` stay valid so any proposal queued
+# before this sprint (the live queue had pending routing proposals) still
+# approves. The router merge itself is name-agnostic (GRV-001 Invariant I);
+# this gate is the one place a sink name is validated.
+_VALID_SINK_NAMES = frozenset({
+    "downward", "upward",
+    "ratchet_promoted_t1", "ratchet_promoted_t2", "ratchet_promoted_t3",
+})
+
+
+def _validate_routing_rule(rule: Any) -> None:
+    """Raise ValueError unless ``rule`` is a known routing-rule sink name."""
+    if rule not in _VALID_SINK_NAMES:
+        raise ValueError(f"Unknown routing rule: {rule!r}")
+
+
 def _routing_adjustment_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     """Translate a routing_adjustment proposal into a routing-config diff.
 
@@ -81,7 +99,8 @@ def _routing_adjustment_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     """
     rule = proposal.payload.get("rule")
     add_intents = list(proposal.payload.get("add_intents") or [])
-    if rule not in ("downward", "upward") or not add_intents:
+    _validate_routing_rule(rule)
+    if not add_intents:
         raise ValueError(
             f"malformed routing_adjustment payload: {proposal.payload!r}"
         )
@@ -195,7 +214,12 @@ def _proposal_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
 def _summary_routing_adjustment(proposal: RoutingProposal) -> str:
     rule = proposal.payload.get("rule", "?")
     intents = ", ".join(proposal.payload.get("add_intents", []))
-    return f"add {intents} to routing.{rule}"
+    base = f"add {intents} to routing.{rule}"
+    # machine-sink-generalization-v1 — memory-enriched rationale, when present.
+    justification = getattr(proposal, "semantic_justification", "") or ""
+    if justification:
+        return f"{base} ({justification})"
+    return base
 
 
 def _summary_pattern_promotion(proposal: RoutingProposal) -> str:
@@ -377,9 +401,26 @@ def run_tier_ratchet_scan(
     if current_routing_rules is None:
         current_routing_rules = _load_current_routing_rules()
 
+    # machine-sink-generalization-v1 — one MemoryStore for the whole scan,
+    # reused across every proposal (query() is a fast in-memory index read;
+    # construction is the one log replay). Best-effort: if the store cannot be
+    # built (no ~/.grove, corrupt index), enrichment is skipped — proposals
+    # still generate without context.
+    memory_store: Optional[Any] = None
+    try:
+        from hermes_constants import get_hermes_home
+        from grove.memory.store import MemoryStore
+        memory_store = MemoryStore(base_dir=Path(get_hermes_home()))
+    except Exception as exc:  # noqa: BLE001 — enrichment is additive
+        logger.warning(
+            "[flywheel] memory store unavailable for ratchet enrichment "
+            "(proposals will generate without context): %r", exc,
+        )
+
     records = list(store.latest_by_turn())
     proposals = propose_routing_adjustments(
         records, current_routing_rules=current_routing_rules,
+        memory_store=memory_store,
     )
     target = queue_path or default_queue_path()
     queued_new = deduped = 0
