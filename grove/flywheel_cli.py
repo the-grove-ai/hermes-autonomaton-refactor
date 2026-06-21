@@ -261,32 +261,82 @@ _OFFERING_PUSH_PREFIX = "Shop floor note —"          # the conversational inte
 _OFFERING_PUSH_ASK = "want me to stage it for your review?"  # the foreman's offer
 
 # C3 — fixed type-priority for the post-turn push (NOT a learned ranker). Lower
-# = surfaced first. A drafted capability outranks a tier nudge outranks a
-# zone/skill grant outranks a pattern-cache tweak. Unknown types sort last.
+# = surfaced first. kaizen-proposal-surface-unification-v1: memory_context slots
+# at 1 (Gemini ruling) — confirming the system's understanding of the operator's
+# world outranks mechanical routing optimizations; everything else bumps down.
+# Unknown types sort last.
 _PUSH_PRIORITY = {
     PROPOSAL_TYPE_SKILL_SYNTHESIS: 0,
-    PROPOSAL_TYPE_ROUTING_ADJUSTMENT: 1,
-    PROPOSAL_TYPE_ZONE_PROMOTION: 2,
-    PROPOSAL_TYPE_SKILL_PROMOTION: 2,
-    PROPOSAL_TYPE_PATTERN_PROMOTION: 3,
-    PROPOSAL_TYPE_PATTERN_DEMOTION: 3,
+    "memory_context": 1,                      # == PROPOSAL_TYPE_MEMORY_CONTEXT
+    PROPOSAL_TYPE_ROUTING_ADJUSTMENT: 2,
+    PROPOSAL_TYPE_ZONE_PROMOTION: 3,
+    PROPOSAL_TYPE_SKILL_PROMOTION: 3,
+    PROPOSAL_TYPE_PATTERN_PROMOTION: 4,
+    PROPOSAL_TYPE_PATTERN_DEMOTION: 4,
 }
 
 
-def compose_offering(proposal: RoutingProposal, *, is_push: bool) -> str:
-    """The ONE in-register renderer for an offering (kaizen-offerings Cut B).
+# ── render registry (kaizen-proposal-surface-unification-v1) ──────────
+#
+# The ONE renderer surface, DECOUPLED from the apply-coupled PROPOSAL_HANDLERS.
+# Maps a proposal type to a callable that turns a KaizenRenderable of that type
+# into its one-line body. Routing types reuse their existing summary_renderer
+# (which reads the RoutingProposal directly); memory_context is registered
+# lazily (its renderer unwraps the adapter -> the proposal dict). Future types
+# register here + in _PUSH_PRIORITY and inherit the unified surface.
+RENDER_REGISTRY: Dict[str, Callable[[Any], str]] = {}
 
-    Deterministic — no model call. The factual core is the per-type ``_summary_*``
-    body (identical for push and pull); only the framing differs:
 
-    * ``is_push=True`` — a conversational interrupt for the post-turn push: the
-      foreman raising one item ("Shop floor note — I noticed I could …").
-    * ``is_push=False`` — the BARE inventory body (no interrupt wrapper), so a
-      pull queue reads as a list, not stacked interruptions. This is exactly the
-      per-type body, so :func:`_format_summary` and ``cli_show`` route their
-      human clause through here without changing the structured line.
+def register_renderer(type_name: str, renderer: Callable[[Any], str]) -> None:
+    RENDER_REGISTRY[type_name] = renderer
+
+
+def _ensure_memory_renderer() -> None:
+    """Lazy-register the memory_context renderer (avoids an import cycle —
+    flywheel_cli must not import the memory package at module load)."""
+    if "memory_context" in RENDER_REGISTRY:
+        return
+    try:
+        from grove.memory.digest import MemoryProposalHandler
+        RENDER_REGISTRY["memory_context"] = (
+            lambda r: MemoryProposalHandler.summary_renderer(r.proposal_dict)
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[flywheel] memory renderer registration failed: %r", exc)
+
+
+def get_renderer(type_name: str) -> Callable[[Any], str]:
+    """Resolve a proposal type to its body renderer. Fail loud on unknown.
+
+    Honors the legacy ``routing_update`` -> ``routing_adjustment`` alias in
+    this one place, mirroring :func:`_handler_for` (queue entries predating the
+    Sprint 32 rename still render).
     """
-    core = _handler_for(proposal.type).summary_renderer(proposal)
+    canonical = (
+        PROPOSAL_TYPE_ROUTING_ADJUSTMENT
+        if type_name == _LEGACY_ROUTING_TYPE
+        else type_name
+    )
+    if canonical == "memory_context":
+        _ensure_memory_renderer()
+    try:
+        return RENDER_REGISTRY[canonical]
+    except KeyError:
+        raise ValueError(f"No renderer for proposal type: {type_name!r}")
+
+
+def compose_offering(proposal: Any, *, is_push: bool) -> str:
+    """The ONE in-register renderer for an offering — any KaizenRenderable.
+
+    Deterministic — no model call. The factual core is the per-type body from
+    the RENDER_REGISTRY (routing/zone/skill/pattern/memory); only the framing
+    differs:
+
+    * ``is_push=True`` — a conversational interrupt for the post-turn push.
+    * ``is_push=False`` — the BARE inventory body (no interrupt wrapper), so a
+      pull queue / ``_format_summary`` / ``cli_show`` read as a list.
+    """
+    core = get_renderer(proposal.type)(proposal)
     if not is_push:
         return core
     # kaizen-voice-conformance — conversational register, no CLI syntax / no id.
@@ -1625,6 +1675,15 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         apply_label_prefix="Staged: ",
     ),
 }
+
+
+# kaizen-proposal-surface-unification-v1 — seed the render registry from the
+# apply registry: every routing/zone/skill/pattern type reuses its existing
+# summary_renderer (which reads the RoutingProposal directly). memory_context
+# is registered lazily via _ensure_memory_renderer (cross-package). Render is
+# now decoupled from apply — the two registries are separate by design.
+for _type_name, _handler in PROPOSAL_HANDLERS.items():
+    register_renderer(_type_name, _handler.summary_renderer)
 
 
 def _handler_for(proposal_type: str) -> ProposalHandler:

@@ -52,8 +52,14 @@ class MemoryProposalHandler:
     def __init__(self, store: MemoryStore) -> None:
         self._store = store
 
-    def summary_renderer(self, proposal: Dict[str, Any]) -> str:
-        """Human-readable one-liner for operator review."""
+    @staticmethod
+    def summary_renderer(proposal: Dict[str, Any]) -> str:
+        """Human-readable one-liner for operator review.
+
+        Static — store-independent (reads only the proposal dict), so it can
+        serve as a one-arg renderer in the unified RENDER_REGISTRY. Still
+        callable as ``handler.summary_renderer(proposal)`` on an instance.
+        """
         rec = proposal["proposed_record"]
         action = proposal.get("action", "create")
         line = (

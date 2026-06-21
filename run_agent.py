@@ -5213,113 +5213,78 @@ class AIAgent:
     _SKILL_SYNTHESIS_TURN_INTERVAL = 10
 
     def _append_pending_offer(self, final_response: str) -> str:
-        """Surface ONE pending Flywheel offering at the post-turn break.
+        """Surface ONE pending Kaizen proposal — routing OR memory — at the
+        post-turn break (kaizen-proposal-surface-unification-v1).
 
-        kaizen-offerings (Cut B) — generalizes the Sprint 63 §3 synthesis quiet
-        append to ANY pending proposal type (routing_adjustment, zone/skill
-        promotion, pattern promotion/demotion, skill_synthesis), surface-agnostic
-        (every surface delivers ``final_response``).
+        THE unified push surface. Both queues are read and wrapped as
+        KaizenRenderables, merged, filtered by each renderable's per-type
+        push-eligibility (routing = current-session; memory = any pending —
+        born from prior dormant sessions) AND the shared ephemeral
+        ``_surfaced_proposal_ids`` shown-set, then sorted by ``_PUSH_PRIORITY``
+        (memory_context = 1) with each renderable's ``sort_key`` as tiebreak.
+        The single top item is rendered through the ONE renderer
+        (``flywheel_cli.compose_offering(is_push=True)``) and appended.
 
-        ELIGIBILITY = CURRENT SESSION ONLY (the unified Gemini rule): only
-        proposals created since this session began (``created_at >=
-        self.session_start``) are push-eligible; past-session unacted proposals
-        stay pull-only via ``review_proposals``. Recency is both the
-        anti-starvation primary key and the anti-nagging guard. Among
-        current-session unseen proposals, the single highest type-priority one is
-        surfaced (one-at-a-time), rendered in-register by
-        ``flywheel_cli.compose_offering(is_push=True)``.
-
-        State: the ``_surfaced_proposal_ids`` guard is ephemeral/in-session; the
-        session check rides ``created_at`` vs ``self.session_start`` — NO schema
-        change to the frozen content-addressed proposal, NO durable store.
-
-        Acceptance stays conversational + surface-agnostic (B3): the operator
-        agrees, the model calls ``approve_proposal(proposal_id)`` → the governed
-        gate. Best-effort: any failure leaves the response untouched.
+        One push, one voice. Acceptance stays conversational: the operator
+        replies in natural language; the model routes it via review_proposals
+        -> approve_proposal. Best-effort: any failure leaves the response
+        untouched.
         """
         if not final_response:
             return final_response
         try:
-            from datetime import datetime, timezone
-            from grove.eval.proposal_queue import read_all
+            from datetime import timezone
             from grove.flywheel_cli import _PUSH_PRIORITY, compose_offering
-
-            # Session anchor — naive-local session_start → aware UTC. No anchor
-            # → no push (conservative; never nag without a session boundary).
-            session_start = getattr(self, "session_start", None)
-            if session_start is None:
-                return final_response
-            try:
-                start_utc = session_start.astimezone(timezone.utc)
-            except (ValueError, AttributeError):
-                return final_response
 
             surfaced = getattr(self, "_surfaced_proposal_ids", None)
             if surfaced is None:
                 surfaced = set()
                 self._surfaced_proposal_ids = surfaced
 
-            eligible = []
-            for p in read_all():
-                if p.proposal_id in surfaced:
-                    continue
+            # Session anchor — naive-local session_start → aware UTC. None is
+            # fine: routing renderables treat a missing anchor as ineligible;
+            # memory renderables ignore it.
+            session_start = getattr(self, "session_start", None)
+            start_utc = None
+            if session_start is not None:
                 try:
-                    created = datetime.fromisoformat(p.created_at)
-                except (ValueError, TypeError):
-                    continue
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                if created < start_utc:
-                    continue  # past-session — pull-only, never pushed
-                eligible.append(p)
+                    start_utc = session_start.astimezone(timezone.utc)
+                except (ValueError, AttributeError):
+                    start_utc = None
+
+            # Collect both queues as KaizenRenderables — inline (self-contained,
+            # so surface-agnostic callers needn't carry helper methods). Each
+            # source is best-effort: a failure reading one never blocks the other.
+            from grove.kaizen.renderable import MemoryProposalRenderable
+            renderables: list = []
+            try:
+                from grove.eval.proposal_queue import read_all
+                renderables.extend(read_all())  # RoutingProposal IS renderable
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[kaizen-offerings] routing read skipped: %r", exc)
+            try:
+                from grove.memory.cli import _base, _pending
+                for _full_id, record in _pending(_base(None)):
+                    renderables.append(MemoryProposalRenderable(record))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[kaizen-offerings] memory read skipped: %r", exc)
+
+            eligible = [
+                r for r in renderables
+                if r.short_id not in surfaced and r.is_push_eligible(start_utc)
+            ]
             if not eligible:
                 return final_response
 
-            # Highest priority first; created_at breaks ties (recency primary).
-            eligible.sort(key=lambda p: (_PUSH_PRIORITY.get(p.type, 99), p.created_at))
-            proposal = eligible[0]
-            surfaced.add(proposal.proposal_id)  # one-at-a-time, once per session
-            offer = compose_offering(proposal, is_push=True)
+            eligible.sort(
+                key=lambda r: (_PUSH_PRIORITY.get(r.type, 99), r.sort_key)
+            )
+            chosen = eligible[0]
+            surfaced.add(chosen.short_id)  # one-at-a-time, once per session
+            offer = compose_offering(chosen, is_push=True)
             return final_response.rstrip() + "\n\n" + offer
         except Exception as exc:  # noqa: BLE001
             logger.debug("[kaizen-offerings] push append skipped: %r", exc)
-            return final_response
-
-    def _append_memory_offer(self, final_response: str) -> str:
-        """Surface ONE pending memory proposal at the post-turn break.
-
-        memory-conversational-push-v1 (Phase 3.1) — PARALLEL to, and a
-        SEPARATE system from, ``_append_pending_offer``. Memory proposals live
-        in ``memory_proposals.jsonl`` (not the RoutingProposal queue), are born
-        from PRIOR dormant sessions (so the routing current-session
-        eligibility rule deliberately does NOT apply — any unshown pending
-        proposal is eligible), render via the Phase 3
-        ``MemoryProposalHandler.summary_renderer``, and stay CLI-approved
-        (``flywheel memory approve <id>``; conversational approval is Phase
-        3.2). Dedup rides the shared ephemeral ``_surfaced_proposal_ids`` set,
-        keyed by the memory content short_id alongside routing proposal ids.
-        Best-effort: any failure leaves the response untouched.
-        """
-        if not final_response:
-            return final_response
-        try:
-            from grove.memory.push import select_memory_push_note
-
-            surfaced = getattr(self, "_surfaced_proposal_ids", None)
-            if surfaced is None:
-                surfaced = set()
-                self._surfaced_proposal_ids = surfaced
-
-            result = select_memory_push_note(
-                shown_ids=surfaced, base_dir=get_hermes_home(),
-            )
-            if result is None:
-                return final_response
-            short_id, note = result
-            surfaced.add(short_id)  # one-at-a-time, once per session
-            return final_response.rstrip() + note
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[memory-push] append skipped: %r", exc)
             return final_response
 
     # connector-failure-andon-v1 (C4) — EPHEMERAL, agent-resident connector
@@ -17218,13 +17183,10 @@ class AIAgent:
         # transform_llm_output so a plugin transform cannot clobber the offer,
         # and before result assembly.
         if final_response and not interrupted:
+            # kaizen-proposal-surface-unification-v1 — ONE push surface for all
+            # proposal types (routing + memory + future). Surfaces at most one
+            # proposal per session, highest priority first (memory_context=1).
             final_response = self._append_pending_offer(final_response)
-            # memory-conversational-push-v1 (Phase 3.1) — surface ONE pending
-            # memory proposal alongside the answer. Separate system from the
-            # routing push above; both may surface (one-at-a-time each, deduped
-            # per session). Knowledge (memory) and optimization (routing) are
-            # independent and both matter.
-            final_response = self._append_memory_offer(final_response)
             # connector-failure-andon-v1 — surface a failed connector ALONGSIDE
             # the answer (fail-loud: a dead connector's tools are absent, never
             # silently worked around). Answer-then-surface, once per session.

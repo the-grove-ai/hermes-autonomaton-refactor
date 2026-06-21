@@ -172,6 +172,40 @@ class RoutingProposal:
         data["source_patterns"] = list(data["source_patterns"])
         return data
 
+    # ── KaizenRenderable (kaizen-proposal-surface-unification-v1) ─────────
+    # Frozen dataclasses allow properties/methods; these let a RoutingProposal
+    # be surfaced through the unified Kaizen renderer + push without a wrapper.
+
+    @property
+    def short_id(self) -> str:
+        """The 12-char id the operator/model sees (dedup + reference key)."""
+        return self.proposal_id.split(":")[-1][:12]
+
+    @property
+    def sort_key(self) -> float:
+        """Within-priority tiebreak — created_at as epoch seconds (oldest
+        first), uniform float so it never collides with another type's key."""
+        try:
+            dt = datetime.fromisoformat(self.created_at)
+        except (ValueError, TypeError):
+            return 0.0
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+
+    def is_push_eligible(self, session_start: Optional["datetime"]) -> bool:
+        """Routing proposals push only when created THIS session (the
+        anti-nag current-session rule). No anchor -> not eligible."""
+        if session_start is None:
+            return False
+        try:
+            created = datetime.fromisoformat(self.created_at)
+        except (ValueError, TypeError):
+            return False
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return created >= session_start
+
 
 # ── Hashing ──────────────────────────────────────────────────────────
 

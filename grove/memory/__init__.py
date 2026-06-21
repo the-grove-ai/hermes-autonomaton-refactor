@@ -25,7 +25,6 @@ from grove.memory.lifecycle import (
     run_memory_extraction,
 )
 from grove.memory.provider import create_memory_provider
-from grove.memory.push import select_memory_push_note
 from grove.memory.record import DECAY_RATES, MemoryRecord, decay_rate_for
 from grove.memory.store import MemoryStore
 from grove.memory.transcript_filter import filter_transcript_for_extraction
@@ -39,7 +38,6 @@ __all__ = [
     "MemoryStore",
     "ContextPersistenceDetector",
     "create_memory_provider",
-    "select_memory_push_note",
     "MemoryProposalHandler",
     "run_digest",
     "dormant_session_ids",

@@ -16,8 +16,9 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 
 from grove.eval.proposal_queue import RoutingProposal, compute_proposal_id
+from grove.flywheel_cli import compose_offering
+from grove.kaizen.renderable import MemoryProposalRenderable
 from grove.memory.cli import memory_proposal_short_id
-from grove.memory.push import select_memory_push_note
 from grove.memory.store import MemoryStore
 from tools.flywheel_review_tool import approve_proposal, review_proposals
 
@@ -46,9 +47,11 @@ def test_memory_push_note_has_no_cli_syntax(tmp_path):
                             "confidence": 0.9, "justification": "j"},
     }
     rec = {"session_id": "s", "status": "pending", "timestamp": _TS, "proposal": proposal}
-    (tmp_path / "memory_proposals.jsonl").write_text(json.dumps(rec) + "\n")
 
-    short_id, note = select_memory_push_note(shown_ids=set(), base_dir=tmp_path)
+    # The memory push note now renders through the ONE renderer (the unified
+    # surface), not a bespoke template.
+    note = compose_offering(MemoryProposalRenderable(rec), is_push=True)
+    short_id = memory_proposal_short_id(proposal)
     assert "`" not in note                 # no backtick command syntax
     assert "flywheel" not in note          # no CLI command
     assert short_id not in note            # no id/SHA in operator text
