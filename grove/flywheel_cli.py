@@ -32,6 +32,7 @@ import yaml
 
 from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_CONSOLIDATION,
+    PROPOSAL_TYPE_DOCK_MUTATION,
     PROPOSAL_TYPE_PATTERN_DEMOTION,
     PROPOSAL_TYPE_PATTERN_PROMOTION,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
@@ -274,6 +275,11 @@ _PUSH_PRIORITY = {
     # slot keeps it strictly BETWEEN memory (1) and routing_adjustment (2)
     # without renumbering the latter (whose ==2 value is contract-tested).
     PROPOSAL_TYPE_CONSOLIDATION: 1.5,
+    # dock-as-mutation-target-v1 — a Dock-goal proposal is a strategic
+    # observation the operator ratifies; it ranks just after a policy
+    # graduation and ahead of a routing tweak. Fractional slot keeps the
+    # contract-tested integers (routing_adjustment ==2) intact.
+    PROPOSAL_TYPE_DOCK_MUTATION: 1.7,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT: 2,
     PROPOSAL_TYPE_ZONE_PROMOTION: 3,
     PROPOSAL_TYPE_SKILL_PROMOTION: 3,
@@ -1008,6 +1014,69 @@ def _consolidation_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
             "remove_from_sink": {sink: [intent]},
         },
     }
+
+
+def _summary_dock_mutation(proposal: RoutingProposal) -> str:
+    """Natural-language Dock-goal offer — record count + theme, no ids."""
+    goal = (proposal.payload or {}).get("goal") or {}
+    name = goal.get("name", "an emerging theme")
+    n = len(goal.get("source_record_ids") or [])
+    noun = "record" if n == 1 else "records"
+    return (
+        f"{n} memory {noun} accumulating around '{name}'. No Dock goal tracks "
+        f"this. Add a staging goal?"
+    )
+
+
+def _dock_mutation_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """The one-file change the operator reviews before approving."""
+    goal = (proposal.payload or {}).get("goal") or {}
+    return {
+        "dock.autonomaton.yaml": {
+            "goals": {
+                "+add": {
+                    "id": goal.get("id", "?"),
+                    "name": goal.get("name", "?"),
+                    "keywords": goal.get("keywords", []),
+                    "vector": goal.get("vector", "personal"),
+                    "status": goal.get("status", "staging"),
+                },
+            },
+        },
+    }
+
+
+def _approve_dock_mutation(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+    dock_dir: Optional[Path] = None,
+) -> Tuple[Path, Dict[str, Any]]:
+    """Apply a dock_mutation proposal — append the staging goal to
+    ``dock.autonomaton.yaml`` (the machine Dock file, a GREEN granted workspace).
+
+    Delegates the read-modify-write to :func:`grove.dock.append_machine_goal`
+    (atomic temp+replace, id dedup, ``.bak`` backup). NO reload needed —
+    ``load_dock`` is fresh-per-call, so the goal is live on the next load. The
+    ``machine_path`` kwarg (the routing machine file) is unused here; the dock
+    writer resolves its own path (``dock_dir`` is injectable for tests).
+    """
+    from grove.dock import append_machine_goal
+
+    goal = (proposal.payload or {}).get("goal")
+    if not isinstance(goal, dict) or not goal.get("id"):
+        raise ValueError(
+            f"dock_mutation proposal {proposal.proposal_id} payload missing a "
+            f"goal with an id"
+        )
+    target = append_machine_goal(goal, dock_dir=dock_dir)
+    applied = {
+        "goal_id": goal["id"],
+        "goal_name": goal.get("name", ""),
+        "status": goal.get("status", "staging"),
+        "machine_file": str(target),
+    }
+    return target, applied
 
 
 def _reload_default_router() -> None:
@@ -1851,6 +1920,12 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         diff_renderer=_consolidation_to_diff,
         apply_callback=_approve_consolidation,
         apply_label_prefix="Graduated to operator policy: ",
+    ),
+    PROPOSAL_TYPE_DOCK_MUTATION: ProposalHandler(
+        summary_renderer=_summary_dock_mutation,
+        diff_renderer=_dock_mutation_to_diff,
+        apply_callback=_approve_dock_mutation,
+        apply_label_prefix="Added Dock goal: ",
     ),
     PROPOSAL_TYPE_ZONE_PROMOTION: ProposalHandler(
         summary_renderer=_summary_zone_promotion,

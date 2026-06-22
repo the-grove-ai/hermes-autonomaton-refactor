@@ -65,6 +65,9 @@ __all__ = [
     "resolve_goal",
     "load_goal_context",
     "build_turn_goal_context",
+    "append_machine_goal",
+    "MACHINE_DOCK_FILENAME",
+    "MACHINE_GOAL_ID_PREFIX",
 ]
 
 # Vector priority for conflict resolution (Component 5): higher wins.
@@ -233,6 +236,13 @@ def load_dock(path: Optional[Path] = None) -> Optional[Dock]:
             )
         seen_ids.add(gid)
 
+    # dock-as-mutation-target-v1 — merge system-proposed staging goals from the
+    # machine file alongside the operator goals (operator wins on id collision;
+    # system goals capped + recency-sorted). Built BEFORE the frozen Dock so the
+    # tuple is complete at construction. A missing machine file is a clean no-op
+    # (backward compatible); a malformed one is logged and skipped.
+    goals.extend(_load_machine_goals(root, seen_ids))
+
     return Dock(
         goals=tuple(goals),
         context_char_budget=budget,
@@ -284,6 +294,191 @@ def _parse_goal(g: Any, idx: int, target: Path, root: Path) -> Goal:
         root=root,
         extra=extra,
     )
+
+
+# ── System-proposed goals — the machine Dock file (dock-as-mutation-target-v1) ─
+#
+# dock.autonomaton.yaml is the SYSTEM's half of the Dock: staging goals the
+# DockMutationDetector proposed and the operator approved through Kaizen. It is
+# a GREEN granted workspace (is_scope_defining → False), written ONLY by
+# :func:`append_machine_goal`; the operator's dock.yaml stays RED and untouched.
+# load_dock MERGES it in (operator wins on id collision; system goals capped +
+# recency-sorted). A malformed machine file NEVER breaks the operator Dock — it
+# is logged and skipped (the operator surface must not fall over because a
+# system-authored goal is damaged).
+
+MACHINE_DOCK_FILENAME = "dock.autonomaton.yaml"
+# System goals carry this id prefix so the merge (and any consumer) can tell a
+# proposed goal from an operator-authored one without a side table.
+MACHINE_GOAL_ID_PREFIX = "auto-"
+# Cap on system goals merged into a live Dock — keeps the proposed overlay from
+# crowding the operator's own goals.
+_MAX_SYSTEM_GOALS = 3
+_MACHINE_DOCK_HEADER = (
+    "# dock.autonomaton.yaml — system-proposed Dock goals\n"
+    "# Managed by grove/dock (dock-as-mutation-target-v1). Do not edit manually;\n"
+    "# operator goals live in dock.yaml.\n"
+)
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _machine_dock_dir() -> Path:
+    """Runtime dir holding both dock.yaml and dock.autonomaton.yaml."""
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / "dock"
+
+
+def append_machine_goal(
+    goal: Dict[str, Any], *, dock_dir: Optional[Path] = None
+) -> Path:
+    """Append a system-proposed goal to ``dock.autonomaton.yaml`` and return the
+    file path. The SOLE writer of the machine Dock file.
+
+    Idempotent on goal id (a goal already present is a no-op), atomic (temp +
+    ``os.replace``), and backs the file up (``.bak``) before mutating. Never
+    touches the operator ``dock.yaml`` (RED). ``dock_dir`` is injectable for
+    tests; otherwise the runtime ``$GROVE_HOME/dock`` is used.
+    """
+    import os
+
+    d = Path(dock_dir) if dock_dir is not None else _machine_dock_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    machine_path = d / MACHINE_DOCK_FILENAME
+
+    data: Dict[str, Any] = {}
+    if machine_path.exists():
+        with machine_path.open(encoding="utf-8") as fh:
+            loaded = yaml.safe_load(fh)
+        if isinstance(loaded, dict):
+            data = loaded
+        # Back up the pre-write bytes before mutating (recovery; parity with the
+        # routing graduation writer).
+        backup = machine_path.with_suffix(machine_path.suffix + ".bak")
+        backup.write_bytes(machine_path.read_bytes())
+
+    goals = data.get("goals")
+    if not isinstance(goals, list):
+        goals = []
+
+    gid = goal.get("id")
+    if any(isinstance(e, dict) and e.get("id") == gid for e in goals):
+        logger.info(
+            "[dock] machine goal %r already present in %s — no write",
+            gid, machine_path,
+        )
+        return machine_path
+
+    entry = dict(goal)
+    entry.setdefault("created_at", _now_iso())
+    goals.append(entry)
+    data["goals"] = goals
+
+    tmp = machine_path.with_suffix(machine_path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        fh.write(_MACHINE_DOCK_HEADER)
+        yaml.safe_dump(data, fh, sort_keys=False, default_flow_style=False)
+    os.replace(tmp, machine_path)
+    logger.info("[dock] appended machine goal %r to %s", gid, machine_path)
+    return machine_path
+
+
+def _parse_machine_goal(
+    g: Any, idx: int, machine_path: Path, root: Path
+) -> Optional[Goal]:
+    """Convert one machine-goal dict → :class:`Goal`, or None on malformed.
+
+    Lenient where the operator parser is strict: system goals carry no
+    ``context_sources`` / ``unlocked_skills`` (defaulted empty) and may omit
+    ``definition_of_done``. Still validates vector/status against the closed
+    sets. On any problem it logs LOUD and returns None — a bad system goal is
+    skipped, never an Andon that takes down the operator Dock.
+    """
+    if not isinstance(g, dict):
+        logger.error(
+            "[dock] %s goals[%d] is not a mapping — skipped", machine_path, idx
+        )
+        return None
+    gid, name = g.get("id"), g.get("name")
+    if not gid or not name:
+        logger.error(
+            "[dock] %s goals[%d] missing id/name — skipped", machine_path, idx
+        )
+        return None
+    vector = g.get("vector", "personal")
+    status = g.get("status", "staging")
+    if vector not in _VALID_VECTORS:
+        logger.error(
+            "[dock] machine goal %r invalid vector %r — skipped", gid, vector
+        )
+        return None
+    if status not in _VALID_STATUSES:
+        logger.error(
+            "[dock] machine goal %r invalid status %r — skipped", gid, status
+        )
+        return None
+    keywords = g.get("keywords")
+    keywords = keywords if isinstance(keywords, list) else []
+    extra = {k: v for k, v in g.items() if k not in _REQUIRED_GOAL_KEYS}
+    return Goal(
+        id=str(gid),
+        name=str(name),
+        vector=vector,
+        status=status,
+        definition_of_done=str(g.get("definition_of_done", "")),
+        context_sources=(),
+        keywords=tuple(str(k) for k in keywords),
+        unlocked_skills=(),
+        root=root,
+        extra=extra,
+    )
+
+
+def _load_machine_goals(dock_dir: Path, operator_ids: set) -> List[Goal]:
+    """Load + filter system goals from ``dock.autonomaton.yaml``.
+
+    Operator wins on id collision (the system goal is suppressed); machine-side
+    duplicate ids collapse to the first; survivors are recency-sorted by
+    ``created_at`` and capped at :data:`_MAX_SYSTEM_GOALS`. Absent file → ``[]``
+    (backward compatible). Malformed file → logged + ``[]`` (never raises).
+    """
+    machine_path = dock_dir / MACHINE_DOCK_FILENAME
+    if not machine_path.exists():
+        return []
+    try:
+        with machine_path.open(encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as exc:
+        logger.error(
+            "[dock] machine file %s unreadable (%r) — ignoring", machine_path, exc
+        )
+        return []
+    if not isinstance(raw, dict) or not isinstance(raw.get("goals"), list):
+        logger.error("[dock] machine file %s malformed — ignoring", machine_path)
+        return []
+
+    candidates: List[Tuple[str, Goal]] = []
+    seen_machine: set = set()
+    for i, g in enumerate(raw["goals"]):
+        goal = _parse_machine_goal(g, i, machine_path, dock_dir)
+        if goal is None:
+            continue
+        if goal.id in operator_ids:
+            logger.debug(
+                "[dock] system goal %r shadowed by operator goal", goal.id
+            )
+            continue
+        if goal.id in seen_machine:
+            continue
+        seen_machine.add(goal.id)
+        created = str(g.get("created_at", "")) if isinstance(g, dict) else ""
+        candidates.append((created, goal))
+
+    candidates.sort(key=lambda t: t[0], reverse=True)  # most recent first
+    return [goal for _, goal in candidates[:_MAX_SYSTEM_GOALS]]
 
 
 def active_goals(dock: Dock) -> List[Goal]:
