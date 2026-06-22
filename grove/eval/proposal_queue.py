@@ -43,6 +43,7 @@ __all__ = [
     "PROPOSAL_TYPE_PATTERN_DEMOTION",
     "PROPOSAL_TYPE_SKILL_SYNTHESIS",
     "PROPOSAL_TYPE_MEMORY_CONTEXT",
+    "PROPOSAL_TYPE_CONSOLIDATION",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -115,6 +116,11 @@ PROPOSAL_TYPE_SKILL_SYNTHESIS = "skill_synthesis"
 # deliberately NOT added to the flywheel _handler_for registry — there is no
 # RoutingProposal apply path for it, by design.
 PROPOSAL_TYPE_MEMORY_CONTEXT = "memory_context"
+# consolidation-ratchet-v1 — Stage 2 routing policy graduation. UNLIKE
+# memory_context, these DO flow through this RoutingProposal queue and the
+# flywheel CLI approve path (a routing change is a routing proposal); the apply
+# handler performs the two-file atomic write to routing.config.yaml.
+PROPOSAL_TYPE_CONSOLIDATION = "consolidation_proposal"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 
@@ -208,7 +214,13 @@ class RoutingProposal:
 
     def push_body(self, core: str) -> str:
         """Routing-family push clause — the generic 'I noticed I could …' that
-        fits every routing/zone/skill/pattern verb-phrase body (preserved)."""
+        fits every routing/zone/skill/pattern verb-phrase body (preserved).
+
+        consolidation-ratchet-v1: a policy graduation speaks in its own frame —
+        it is not an opportunistic 'I could', it is a governance recommendation
+        the operator ratifies into permanent policy."""
+        if self.type == PROPOSAL_TYPE_CONSOLIDATION:
+            return f"I'm recommending a routing policy change — {core}"
         return f"I noticed I could {core}"
 
 

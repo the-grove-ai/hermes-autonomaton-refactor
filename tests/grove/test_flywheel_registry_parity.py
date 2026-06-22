@@ -176,13 +176,19 @@ def test_routing_update_alias_renders_as_routing_adjustment() -> None:
 # ── registry shape (Fork A) ──────────────────────────────────────────
 
 
-def test_registry_covers_exactly_the_six_types() -> None:
+def test_registry_covers_exactly_the_registered_types() -> None:
+    # consolidation-ratchet-v1 added the seventh row (consolidation_proposal,
+    # the Stage 2 policy-graduation apply path). Updated inline by the sprint
+    # that registers the type — the registry parity contract still holds, the
+    # closed set just grew by one.
     from grove.eval.proposal_queue import (
+        PROPOSAL_TYPE_CONSOLIDATION,
         PROPOSAL_TYPE_SKILL_SYNTHESIS,
     )
 
     assert set(flywheel_cli.PROPOSAL_HANDLERS) == {
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
+        PROPOSAL_TYPE_CONSOLIDATION,
         PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,
         PROPOSAL_TYPE_PATTERN_PROMOTION,

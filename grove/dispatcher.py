@@ -927,6 +927,23 @@ class Dispatcher:
                 stale_proposals, session_id="context-freshness-sweep"
             )
 
+        # Policy graduation (consolidation-ratchet-v1, Stage 2): reads the
+        # machine sinks, verifies long-term stability against the intent feed,
+        # and stages consolidation proposals to promote stable routing into
+        # permanent operator policy. Same wiring pattern as the detectors above.
+        from grove.eval.consolidation_ratchet import ConsolidationRatchet
+
+        consolidation = ConsolidationRatchet()
+        consolidation_proposals = consolidation.detect(
+            base / "routing.autonomaton.yaml",
+            base / "intent_records.jsonl",
+        )
+        if consolidation_proposals:
+            consolidation.stage_proposals(
+                consolidation_proposals,
+                session_id="consolidation-ratchet-sweep",
+            )
+
     @property
     def runtime_ctx(self) -> RuntimeContext:
         """The bare substrate-snapshot RuntimeContext.
