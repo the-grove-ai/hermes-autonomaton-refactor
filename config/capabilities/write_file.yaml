@@ -1,5 +1,5 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=file  zone=yellow  tiers=[1, 2, 3]  disclosure=proactive  trigger=code_generation/creative_writing/planning
+# family=file  zone=yellow  tiers=[1, 2, 3]  disclosure=proactive  trigger=code_generation/creative_writing/planning/memory_operation
 id: write_file
 kind: verb
 trigger:
@@ -7,6 +7,9 @@ trigger:
   - code_generation
   - creative_writing
   - planning
+  # SEAM5 parity with action-intent-disclosure-v1 (Notion): crystallize/persist
+  # turns classify as memory_operation, so write_file must be offered there too.
+  - memory_operation
   keywords: []
   dock_affinity: []
   always: false
