@@ -14,7 +14,7 @@ kind: mcp
 trigger:
   # Strict parity with config/manifest.yaml notion unit's disclose-on-match
   # trigger (server-level; the read/write split is the zone, not the trigger).
-  intents: [research, retrieval]
+  intents: [research, retrieval, memory_operation]
   keywords: [notion, page, database, workspace, doc]
   dock_affinity: []   # manifest notion unit declares dock_goal: null — empty, exactly as today
 bindings:
