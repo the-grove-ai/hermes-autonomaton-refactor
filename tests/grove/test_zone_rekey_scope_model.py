@@ -1,10 +1,13 @@
 """zone-rekey-v2-scope-model — GRV-001 v2.0 scope-keyed shell zone enforcement.
 
 The shell-effect classifier no longer treats all of ~/.grove as RED. A write's
-zone is keyed on SCOPE:
+zone is keyed on SCOPE (positive allowlist as of
+workspace-governance-unification-v1):
   * scope-defining surface (zone schema, routing/prompt config, dock goals,
     operator secrets, the live skills tree, the capability registry) -> RED
-  * granted workspace under ~/.grove (everything else) -> GREEN (autonomous)
+  * operator-granted workspace (declared in workspaces.yaml) -> GREEN (autonomous)
+  * under ~/.grove but NOT granted -> RED (fail-closed; this superseded the v2
+    blanket-GREEN complement and closes the credential-overwrite path)
   * outside ~/.grove -> YELLOW (four-choice operator grant)
 
 is_governed_path (the blanket wall for generic file tools) is intentionally
@@ -38,6 +41,13 @@ def grove_home(tmp_path, monkeypatch):
     (tmp_path / "capabilities" / "bar.yaml").write_text("x\n")
     (tmp_path / "memory" / "records.jsonl").write_text("x\n")
     (tmp_path / "research" / "doc.md").write_text("x\n")
+    (tmp_path / "notes").mkdir(parents=True, exist_ok=True)
+    # workspace-governance-unification-v1: research/ and notes/ are GREEN only
+    # because the operator granted them here. Un-granted paths (memory/, etc.)
+    # are RED under the positive-allowlist model.
+    (tmp_path / "workspaces.yaml").write_text(
+        "granted_workspaces:\n  - path: research/\n  - path: notes/\n"
+    )
     return tmp_path
 
 

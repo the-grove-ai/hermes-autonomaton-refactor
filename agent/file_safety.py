@@ -145,8 +145,16 @@ def reject_governed_agent_write(path: object) -> None:
     classified as an expected write denial by the file tools, so callers turn
     it into a clean tool error.
     """
-    from grove.utils.fs_utils import GOVERNED_PATH_MESSAGE, is_governed_path
+    from grove.utils.fs_utils import (
+        GOVERNED_PATH_MESSAGE,
+        is_governed_path,
+        is_granted_workspace,
+    )
 
+    # workspace-governance-unification-v1: operator-granted workspaces are
+    # writable; the raise contract is preserved for everything else governed.
+    if is_granted_workspace(path):
+        return
     if is_governed_path(path):
         raise PermissionError(GOVERNED_PATH_MESSAGE)
 
@@ -159,8 +167,12 @@ def reject_governed_agent_read(path: object) -> Optional[str]:
     read_file tool can surface it as a tool error. Realpath-resolved via
     ``is_governed_path``.
     """
-    from grove.utils.fs_utils import is_governed_path
+    from grove.utils.fs_utils import is_governed_path, is_granted_workspace
 
+    # workspace-governance-unification-v1: the agent may read back what it writes
+    # to an operator-granted workspace; everything else governed stays walled.
+    if is_granted_workspace(path):
+        return None
     if is_governed_path(path):
         return GOVERNED_READ_MESSAGE
     return None

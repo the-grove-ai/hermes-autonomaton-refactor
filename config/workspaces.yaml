@@ -1,0 +1,21 @@
+# workspace-governance-unification-v1 — declarative workspace grants.
+#
+# The positive allowlist of directories the autonomaton may read and write as
+# autonomous workspaces, consulted by ALL filesystem enforcement planes
+# (write_file / read_file, the agent FS chokepoint, and the shell classifier).
+#
+# Operator-managed. The runtime copy lives at $GROVE_HOME/workspaces.yaml and is
+# itself scope-defining — the system CANNOT modify it (the meta-wall: if the
+# agent could grant itself workspaces, the allowlist would be meaningless).
+#
+# Semantics (fail-closed):
+#   * paths are RELATIVE to $GROVE_HOME (keeps the manifest portable)
+#   * a trailing slash is optional; matching is component-boundary safe
+#     (`research/` grants `research/notes.md` but never `research-evil/x`)
+#   * a missing or malformed manifest grants NOTHING
+#   * a scope-defining surface is never grantable, even if listed here
+granted_workspaces:
+  - path: "research/"
+    description: "Knowledge crystallization and analysis"
+  - path: "notes/"
+    description: "Operator-requested content generation"
