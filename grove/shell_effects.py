@@ -23,15 +23,20 @@ Classification (most-restrictive-wins across all command nodes in a chain/pipe):
   execute the FIFO content; C3a-fix v1.1 reverted the unsound recursion).
 * RED (privilege): ``sudo`` / ``su`` / ``doas``.
 * RED (catastrophic): ``rm`` of ``/`` or ``~`` (or ``--no-preserve-root``). INV-9.
-* RED (governed write): a write/delete/move/redirect whose target resolves into
-  the ``~/.grove`` governance tree — deferred to :func:`grove.utils.fs_utils.is_governed_path`
-  (NOT reimplemented here).
+* RED (scope-defining write): a write/delete/move/redirect whose target resolves
+  onto a SCOPE-DEFINING surface (zone schema, routing/prompt config, dock goals,
+  operator secrets, the live skills tree, the capability registry) — GRV-001 v2.0
+  scope keying via :func:`grove.utils.fs_utils.is_scope_defining`. A write into a
+  GRANTED workspace under ``~/.grove`` (anything not scope-defining) is GREEN; a
+  write outside ``~/.grove`` keeps its default YELLOW.
 * RED (external agent — B5): launching ``claude`` / ``codex`` / ``opencode`` … —
   the child's effects are unanalyzable (opacity).
 * GREEN: a SINGLE simple command executing a promoted skill under
-  ``~/.grove/skills/`` (not ``.andon``), with no opacity and no governed write.
-  Google-Workspace / Notion fallback scripts keep their read-vs-write split
-  (reads GREEN, writes/unknown YELLOW), by SUBCOMMAND on the parsed argv.
+  ``~/.grove/skills/`` (not ``.andon``), with no opacity and no scope-defining
+  write; OR a SINGLE command whose write targets all land in a granted
+  ``~/.grove`` workspace (GRV-001 v2.0). Google-Workspace / Notion fallback
+  scripts keep their read-vs-write split (reads GREEN, writes/unknown YELLOW),
+  by SUBCOMMAND on the parsed argv.
 * YELLOW: everything else — the operator approves at Stage 04.
 
 The returned ``ZoneResult.pattern_key`` is an AST-derived EFFECT SIGNATURE (not a
@@ -390,9 +395,31 @@ def _is_andon_wrapper_sig(sig: str) -> bool:
 # ── Governed / catastrophic / skills helpers ─────────────────────────────────
 
 
-def _is_governed(token: str) -> bool:
-    from grove.utils.fs_utils import is_governed_path
-    return is_governed_path(token)
+def _classify_write_zone(target_path: str) -> str:
+    """GRV-001 v2.0 scope-keyed zone for a shell WRITE target.
+
+    * scope-defining surface (``is_scope_defining``) -> RED (non-grantable)
+    * under ``~/.grove`` but not scope-defining       -> GREEN (granted workspace)
+    * outside ``~/.grove``                            -> YELLOW (four-choice grant)
+
+    Replaces the v1 blanket ``_is_governed`` (which RED-ed all of ``~/.grove``).
+    Used by the per-node classifier for redirect / mutator / find WRITE targets
+    ONLY — read operands are never promoted to GREEN, so e.g. ``cat ~/.grove/.env``
+    stays YELLOW.
+    """
+    from grove.utils.fs_utils import is_scope_defining
+    from hermes_constants import get_hermes_home
+
+    if is_scope_defining(target_path):
+        return _RED
+    try:
+        resolved = os.path.realpath(os.path.expanduser(target_path))
+        grove = os.path.realpath(get_hermes_home())
+    except (OSError, ValueError):
+        return _RED  # unresolvable → fail closed
+    if resolved == grove or resolved.startswith(grove + os.sep):
+        return _GREEN
+    return _YELLOW
 
 
 _CATASTROPHIC_TARGETS = frozenset({"/", "//", "/*", "~", "~/", "/.", "/*/"})
@@ -505,7 +532,7 @@ def _classify_find(rest: List[str]) -> Tuple[str, str]:
         if _is_catastrophic_rm(paths):
             return (_RED, "rm:catastrophic")
         for p in paths:
-            if _is_governed(p):
+            if _classify_write_zone(p) == _RED:
                 return (_RED, "govwrite:find")
         if exec_red is not None:
             return (_RED, exec_red)
@@ -564,9 +591,12 @@ def _classify_argv(
     if exe in _EVAL_BUILTINS:
         return (_RED, f"opacity:{exe}")
 
-    # Any redirect into a governed tree.
+    # Scope-defining redirect target → RED (short-circuit). Granted-workspace and
+    # outside-tree redirects are resolved with the other write targets at the
+    # GREEN/YELLOW decision below — a GREEN redirect must NOT mask a later RED
+    # (e.g. ``python -c '...' > ~/.grove/research/x``).
     for r in redirects:
-        if _is_governed(r):
+        if _classify_write_zone(r) == _RED:
             return (_RED, "govwrite:redirect")
 
     # Shell interpreters: -c is opacity; being a pipe target is opacity
@@ -599,7 +629,7 @@ def _classify_argv(
         if dynamic_targets:
             return (_RED, f"mutation:dynamic:{exe}")
         for t in _positionals(rest):
-            if _is_governed(t):
+            if _classify_write_zone(t) == _RED:
                 return (_RED, f"govwrite:{exe}")
 
     # Promoted-skill execution (GREEN/YELLOW by script).
@@ -617,6 +647,19 @@ def _classify_argv(
         sub = _promoted_skill_subzone(script_token, script_rest)
         if sub is not None:
             return sub
+
+    # GRV-001 v2.0 granted-workspace GREEN: a command whose WRITE targets all
+    # resolve into a ~/.grove granted workspace (none scope-defining — those
+    # returned RED above; none outside the tree) is autonomous. WRITE targets are
+    # FS-mutator positionals and output redirects ONLY; read operands never count
+    # (so ``cat ~/.grove/.env`` stays YELLOW, never GREEN).
+    write_targets: List[str] = list(redirects)
+    if exe in _FS_MUTATORS:
+        write_targets.extend(_positionals(rest))
+    if write_targets and all(
+        _classify_write_zone(t) == _GREEN for t in write_targets
+    ):
+        return (_GREEN, f"workspace:{exe}")
 
     # Default: a parsed-argv-derived signature (comment/whitespace immune).
     sig = "argv:" + hashlib.sha1(
@@ -686,7 +729,11 @@ def classify_shell_effect(command: str) -> ZoneResult:
     # GREEN only for a SINGLE simple promoted-skill/read command with no other
     # effecting node. Any chaining or extra effect drops to YELLOW.
     if worst == _GREEN and len(ctx.commands) == 1:
-        return _result(_GREEN, "shell.effect.green", "Promoted-skill / read execution.", signature)
+        return _result(
+            _GREEN, "shell.effect.green",
+            "Promoted-skill / read execution, or a granted-workspace write.",
+            signature,
+        )
     # A quarantined (.andon) skill execution carries a ".andon" matched_rule so
     # the Dispatcher's quarantine try-before-promote flow fires (it keys on
     # ".andon" in the matched_rule).

@@ -437,3 +437,47 @@ tool_zones:
   #       reason: "Temporary directory cleanup is inherently safe."
   #
   #     # Anything else flowing through terminal → yellow (default_zone).
+
+# ============================================================================
+# GRV-001 v2.0 — scope-keyed zone model (shell governance path)
+# ============================================================================
+#
+# Declarative record of the scope-keyed model the shell-effect classifier
+# (grove/shell_effects.py via grove/utils/fs_utils.is_scope_defining) enforces.
+# Category keying ("a filesystem write is RED because it is a write") is
+# FORBIDDEN under v2.0 — a write's zone is computed from WHAT it changes:
+#   * a SCOPE-DEFINING surface (would expand the agent's own authority) -> RED
+#   * a GRANTED workspace under ~/.grove (everything else) -> GREEN (autonomous)
+#   * a path OUTSIDE ~/.grove -> YELLOW (four-choice operator grant)
+#
+# NOTE on schema_version: this block is DECLARATIVE. The loader
+# (grove/zones.py) hard-requires `schema_version: 1` and rejects any other
+# value, so the integer above is intentionally left at 1; the scope-keyed
+# model carries its own version marker below. The loader reads only
+# `schema_version`, `zones`, and `tool_zones` — it ignores the keys here.
+zone_model:
+  version: "2.0"
+  keying: operator-scope
+  category_keying: forbidden
+  enforcement: application_layer   # in-process classification; not os permissions
+
+  scope_defining_surfaces:
+    # Mutating any of these via the shell is RED (non-grantable,
+    # TerminalGovernanceHalt). Paths are relative to ~/.grove (GROVE_HOME).
+    files:
+      - zones.schema.yaml
+      - routing.config.yaml
+      - prompt.config.yaml
+      - .env                # operator secrets — never an autonomous write
+      - dock/dock.yaml
+    directories:
+      - skills              # whole live skill tree (authoring goes via .andon)
+      - capabilities        # capability registry (executable-surface authority)
+    enforcement: non_grantable
+
+  granted_workspaces:
+    rule: complement        # everything under ~/.grove NOT scope-defining
+    default_zone: green     # autonomous; write targets only (reads stay yellow)
+
+  unknown_paths:
+    default_zone: yellow    # outside ~/.grove — four-choice operator grant
