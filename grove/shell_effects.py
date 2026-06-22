@@ -396,29 +396,34 @@ def _is_andon_wrapper_sig(sig: str) -> bool:
 
 
 def _classify_write_zone(target_path: str) -> str:
-    """GRV-001 v2.0 scope-keyed zone for a shell WRITE target.
+    """workspace-governance-unification-v1 — positive-allowlist zone for a shell
+    WRITE target.
 
-    * scope-defining surface (``is_scope_defining``) -> RED (non-grantable)
-    * under ``~/.grove`` but not scope-defining       -> GREEN (granted workspace)
+    * scope-defining surface (``is_scope_defining``)  -> RED (non-grantable)
+    * operator-granted workspace (``is_granted_workspace``) -> GREEN (autonomous)
+    * under ``~/.grove`` but NOT granted              -> RED (fail-closed: this
+      protects substrate/secrets/tokens and closes the credential-overwrite path
+      that v2's blanket-GREEN complement left open)
     * outside ``~/.grove``                            -> YELLOW (four-choice grant)
 
-    Replaces the v1 blanket ``_is_governed`` (which RED-ed all of ``~/.grove``).
     Used by the per-node classifier for redirect / mutator / find WRITE targets
     ONLY — read operands are never promoted to GREEN, so e.g. ``cat ~/.grove/.env``
     stays YELLOW.
     """
-    from grove.utils.fs_utils import is_scope_defining
+    from grove.utils.fs_utils import is_granted_workspace, is_scope_defining
     from hermes_constants import get_hermes_home
 
     if is_scope_defining(target_path):
         return _RED
+    if is_granted_workspace(target_path):
+        return _GREEN
     try:
         resolved = os.path.realpath(os.path.expanduser(target_path))
         grove = os.path.realpath(get_hermes_home())
     except (OSError, ValueError):
         return _RED  # unresolvable → fail closed
     if resolved == grove or resolved.startswith(grove + os.sep):
-        return _GREEN
+        return _RED  # under ~/.grove but un-granted → fail-closed RED
     return _YELLOW
 
 

@@ -22,7 +22,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__all__ = ["is_governed_path", "is_scope_defining", "GOVERNED_PATH_MESSAGE"]
+__all__ = [
+    "is_governed_path",
+    "is_scope_defining",
+    "is_granted_workspace",
+    "GOVERNED_PATH_MESSAGE",
+]
 
 
 GOVERNED_PATH_MESSAGE = (
@@ -85,6 +90,10 @@ _SCOPE_DEFINING_FILES = frozenset({
     "prompt.config.yaml",
     ".env",
     os.path.join("dock", "dock.yaml"),
+    # workspace-governance-unification-v1 — the META-WALL: the workspace grant
+    # manifest is itself scope-defining. If the agent could write it, it could
+    # grant itself unlimited GREEN zones, so it is never an autonomous write.
+    "workspaces.yaml",
 })
 
 # Whole subtrees (relative to GROVE_HOME) that are scope-defining. The live skill
@@ -146,5 +155,91 @@ def is_scope_defining(path: object, grove_home: object = None) -> bool:
         # `dock` is the parent of the scope-defining `dock/dock.yaml`; deleting
         # the parent destroys the surface).
         if entry.startswith(rel + os.sep):
+            return True
+    return False
+
+
+# ── workspace-governance-unification-v1 — positive allowlist (ALL FS planes) ──
+#
+# is_granted_workspace is the POSITIVE allowlist consulted by the generic file
+# tools (write_file / read_file), the agent FS chokepoint, AND the shell
+# classifier. Only paths the operator explicitly grants in
+# ``$GROVE_HOME/workspaces.yaml`` are autonomous workspaces; everything else
+# under ~/.grove stays walled. FAIL-CLOSED on every axis: a missing or malformed
+# manifest grants NOTHING, a path outside the grove tree is not a workspace, and
+# a scope-defining surface is NEVER grantable even if the manifest lists it
+# (defense-in-depth — a fat-fingered grant cannot widen the agent's authority).
+# The manifest itself is in _SCOPE_DEFINING_FILES (the meta-wall).
+
+_WORKSPACES_MANIFEST = "workspaces.yaml"
+# {grove_realpath: (manifest_mtime_ns, frozenset(granted_relpaths))}. The
+# resolver runs per write-target per command, so the parsed manifest is cached
+# by mtime to avoid a YAML load on every FS check (A1). A stat is cheap; the
+# parse only re-runs when the manifest actually changes.
+_granted_cache: dict = {}
+
+
+def _load_granted_workspaces(grove: str) -> frozenset:
+    """Return the granted workspace relpaths (trailing slash stripped), cached by
+    manifest mtime. Fail-closed: a missing manifest or any parse error yields the
+    empty set (nothing granted)."""
+    ws_path = os.path.join(grove, _WORKSPACES_MANIFEST)
+    try:
+        mtime = os.stat(ws_path).st_mtime_ns
+    except OSError:
+        return frozenset()  # no manifest → nothing granted (not cached: a later
+        #                     create must be seen on the next call)
+    cached = _granted_cache.get(grove)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        import yaml
+
+        with open(ws_path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        granted = frozenset(
+            rel
+            for w in data.get("granted_workspaces", [])
+            if (rel := str(w.get("path", "")).strip().rstrip("/"))
+        )
+    except Exception:
+        granted = frozenset()  # malformed → fail closed
+    _granted_cache[grove] = (mtime, granted)
+    return granted
+
+
+def is_granted_workspace(path: object, grove_home: object = None) -> bool:
+    """Return ``True`` iff *path* resolves into an operator-granted workspace
+    under ``$GROVE_HOME`` (declared in ``workspaces.yaml``).
+
+    Positive allowlist, FAIL-CLOSED: a missing/malformed manifest → ``False``; a
+    path outside the grove tree → ``False``; a scope-defining surface → ``False``
+    even if the manifest mistakenly lists it (defense-in-depth). *path* and
+    ``GROVE_HOME`` are realpath-resolved first (collapsing symlinks AND ``..``)
+    so a traversal/symlink escape is matched on the resolved target. Prefix
+    matching is component-boundary safe — ``research/`` grants ``research/x`` but
+    never ``research-evil/x``.
+    """
+    from hermes_constants import get_hermes_home
+
+    try:
+        resolved = os.path.realpath(os.path.expanduser(str(path)))
+        grove = os.path.realpath(
+            str(grove_home) if grove_home is not None else get_hermes_home()
+        )
+    except (OSError, ValueError):
+        return False  # unresolvable → not granted
+
+    if resolved != grove and not resolved.startswith(grove + os.sep):
+        return False  # outside the grove tree
+
+    # Defense-in-depth: a scope-defining surface is never an autonomous
+    # workspace, even if workspaces.yaml mistakenly lists its container.
+    if is_scope_defining(resolved, grove):
+        return False
+
+    rel = os.path.relpath(resolved, grove)
+    for prefix in _load_granted_workspaces(grove):
+        if rel == prefix or rel.startswith(prefix + os.sep):
             return True
     return False

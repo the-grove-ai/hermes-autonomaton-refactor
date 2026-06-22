@@ -185,11 +185,19 @@ def _reject_governed_path(filepath: str, task_id: str = "default") -> None:
     already classified expected by ``_is_expected_write_exception`` below, so
     the caller's ``except`` turns it into a clean tool-error for the model.
     """
-    from grove.utils.fs_utils import GOVERNED_PATH_MESSAGE, is_governed_path
+    from grove.utils.fs_utils import (
+        GOVERNED_PATH_MESSAGE,
+        is_governed_path,
+        is_granted_workspace,
+    )
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except Exception:
         resolved = filepath
+    # workspace-governance-unification-v1: an operator-granted workspace passes
+    # the positive allowlist; everything else under ~/.grove hits the wall.
+    if is_granted_workspace(resolved):
+        return
     if is_governed_path(resolved):
         raise PermissionError(GOVERNED_PATH_MESSAGE)
 
