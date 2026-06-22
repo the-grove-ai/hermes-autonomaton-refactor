@@ -78,10 +78,15 @@ logger = logging.getLogger(__name__)
 # files — operator-core.md (every tier) + operator-extended.md (T2/T3) — loaded
 # and composed by ``load_identity`` after the loop. The old single operator.md
 # (with its <!-- t1 --> markers) is retired.
+# legacy-memory-retirement-v1: the ("memory.md", "MEMORY.md", …) row is
+# retired. It was the ONE identity reader of the legacy ~/.grove/memories/
+# MEMORY.md file, ungated by memory_enabled — it would have kept the legacy
+# memory composing into the (always-on) identity block after the toggle flip.
+# The governed Grove substrate (accumulated_domain_memory at context:15) is now
+# the sole memory voice. composition.memory stays None and compose() skips it.
 _IDENTITY_FILES: list[tuple[str, Optional[str], Optional[str], str]] = [
     ("constitution.md", None,        "constitution.md", "jidoka"),
     ("soul.md",         "SOUL.md",   "soul.md",         "jidoka"),
-    ("memory.md",       "MEMORY.md", None,              "graceful"),
     ("agents.md",       "AGENTS.md", None,              "silent"),
 ]
 
@@ -550,17 +555,11 @@ def _resolve_raw(
     """Find content for one identity file: canonical → legacy → seed.
 
     Returns the file content (str) or None if no source resolves.
-    """
-    # Memory is the one identity file whose store lives in a subdirectory:
-    # the memory subsystem writes ~/.grove/memories/MEMORY.md via
-    # get_memory_dir(), not the ~/.grove root the other identity files use.
-    # Resolve it through the substrate's own path function so identity and
-    # the memory tool can never diverge again.
-    if canonical == "memory.md":
-        from tools.memory_tool import get_memory_dir  # local: avoid import cycle
-        store_path = get_memory_dir() / "MEMORY.md"
-        return _read(store_path) if store_path.exists() else None
 
+    legacy-memory-retirement-v1: the ``memory.md`` special-case (which read the
+    legacy ~/.grove/memories/MEMORY.md via the memory tool) is removed with its
+    ``_IDENTITY_FILES`` row — identity no longer reads the retired legacy store.
+    """
     canonical_path = home / canonical
     if canonical_path.exists():
         return _read(canonical_path)

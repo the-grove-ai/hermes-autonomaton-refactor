@@ -109,10 +109,13 @@ prompt:
     # turn-volatile content after the cache-warm prefix avoids invalidating
     # the upstream prefix cache.
 
+    # legacy-memory-retirement-v1: the upstream hermes MEMORY.md block is
+    # retired (the Grove substrate's accumulated_domain_memory is the sole
+    # memory voice). Belt-and-suspenders with the config default flip.
     memory:
       tier: volatile
       order: 10
-      enabled: true
+      enabled: false
 
     # Sprint 37 — Compositional Preamble (GRV-006). Surfaces prior intent
     # records matching the current turn's classification so the model sees
@@ -129,10 +132,11 @@ prompt:
         - correction
         - drop
 
+    # legacy-memory-retirement-v1: the upstream hermes USER.md block is retired.
     user_profile:
       tier: volatile
       order: 20
-      enabled: true
+      enabled: false
 
     external_memory:
       tier: volatile

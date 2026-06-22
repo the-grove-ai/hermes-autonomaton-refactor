@@ -1140,9 +1140,13 @@ DEFAULT_CONFIG = {
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
+    # legacy-memory-retirement-v1: the upstream hermes MEMORY.md/USER.md store
+    # (tools/memory_tool.py) is retired in favor of the governed Grove substrate
+    # (grove/memory — accumulated_domain_memory at context:15). Both toggles
+    # hard-default False so the Grove substrate is the sole memory voice.
     "memory": {
-        "memory_enabled": True,
-        "user_profile_enabled": True,
+        "memory_enabled": False,
+        "user_profile_enabled": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).

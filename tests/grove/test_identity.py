@@ -335,9 +335,13 @@ def test_legacy_soul_md_fallback(
 # (the behavior it pinned no longer exists — "no migration to design").
 
 
-def test_legacy_memory_and_agents_fallback(
+def test_agents_fallback_and_no_legacy_memory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # legacy-memory-retirement-v1: identity no longer reads any MEMORY.md (the
+    # ungated legacy reader was the surface that kept the retired hermes memory
+    # composing into the always-on identity block). The AGENTS.md fallback is
+    # unchanged. A MEMORY.md on disk must NOT surface; comp.memory stays None.
     home = tmp_path / "grove_home"
     home.mkdir()
     (home / "constitution.md").write_text(_CONSTITUTION, encoding="utf-8")
@@ -346,7 +350,8 @@ def test_legacy_memory_and_agents_fallback(
     (home / "AGENTS.md").write_text("# Legacy Agents\n", encoding="utf-8")
     monkeypatch.setattr(gid, "get_hermes_home", lambda: home)
     comp = load_identity()
-    assert comp.memory is not None and "Legacy Memory" in comp.memory
+    assert comp.memory is None                       # legacy memory retired
+    assert "Legacy Memory" not in comp.compose()     # not surfaced anywhere
     assert comp.agents is not None and "Legacy Agents" in comp.agents
 
 

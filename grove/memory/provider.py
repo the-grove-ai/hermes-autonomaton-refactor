@@ -31,7 +31,10 @@ __all__ = ["create_memory_provider"]
 
 _SECTION_LABEL = "accumulated_domain_memory"
 _SECTION_HEADER = "## Accumulated Domain Memory"
-_DEFAULT_TOKEN_BUDGET = 500
+# legacy-memory-retirement-v1: bumped 500 -> 1000. With the legacy
+# MEMORY.md/USER.md sections retired (~1.3k tokens reclaimed), the Grove
+# substrate gets half that headroom back as the sole memory voice.
+_DEFAULT_TOKEN_BUDGET = 1000
 
 # turn-keyword-relevance-v1 — deterministic keyword extraction (no LLM). Common
 # function/closed-class words + low-signal request verbs are filtered so a turn
