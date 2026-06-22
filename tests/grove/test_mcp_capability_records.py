@@ -39,7 +39,15 @@ def test_record_is_mcp_kind_with_locked_trigger_and_tier(caps, rid):
     assert c.kind == CapabilityKind.MCP
     # Mapping (no A2): per-turn allow -> intents + keywords; dock clause ->
     # dock_affinity (empty, mirroring manifest dock_goal: null).
-    assert c.trigger.intents == LOCKED_INTENTS
+    # action-intent-disclosure-v1: notion_write also discloses on action
+    # turns (memory_operation) so crystallize -> persist can reach Notion;
+    # notion_read keeps the original GATE-A trigger.
+    expected_intents = (
+        LOCKED_INTENTS + ["memory_operation"]
+        if rid == "notion_write"
+        else LOCKED_INTENTS
+    )
+    assert c.trigger.intents == expected_intents
     assert c.trigger.keywords == LOCKED_KEYWORDS
     assert c.trigger.dock_affinity == []
     # Notion MCP eligible on all tiers (was apex-only): the apex ceiling blocked
