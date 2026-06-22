@@ -1,0 +1,181 @@
+"""zone-rekey-v2-scope-model — GRV-001 v2.0 scope-keyed shell zone enforcement.
+
+The shell-effect classifier no longer treats all of ~/.grove as RED. A write's
+zone is keyed on SCOPE:
+  * scope-defining surface (zone schema, routing/prompt config, dock goals,
+    operator secrets, the live skills tree, the capability registry) -> RED
+  * granted workspace under ~/.grove (everything else) -> GREEN (autonomous)
+  * outside ~/.grove -> YELLOW (four-choice operator grant)
+
+is_governed_path (the blanket wall for generic file tools) is intentionally
+NOT touched by this sprint; see tests/grove/test_c1b_substrate_write.py for its
+unchanged contract.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+
+@pytest.fixture
+def grove_home(tmp_path, monkeypatch):
+    """Redirect GROVE_HOME to a materialized tmp tree so scope keying is testable
+    without touching the operator's real ~/.grove. Mirrors the C1b fixture."""
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    # Materialize the tree so realpath resolves symlink/.. escapes cleanly.
+    (tmp_path / "dock").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "skills" / ".andon").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "skills" / "my-skill").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "skills" / "active" / "foo").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "capabilities").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "memory").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "research").mkdir(parents=True, exist_ok=True)
+    for fname in ("zones.schema.yaml", "routing.config.yaml", "prompt.config.yaml", ".env"):
+        (tmp_path / fname).write_text("x\n")
+    (tmp_path / "dock" / "dock.yaml").write_text("x\n")
+    (tmp_path / "skills" / "my-skill" / "SKILL.md").write_text("x\n")
+    (tmp_path / "skills" / "active" / "foo" / "SKILL.md").write_text("x\n")
+    (tmp_path / "capabilities" / "bar.yaml").write_text("x\n")
+    (tmp_path / "memory" / "records.jsonl").write_text("x\n")
+    (tmp_path / "research" / "doc.md").write_text("x\n")
+    return tmp_path
+
+
+# ── is_scope_defining (SPEC tests 1-10) ──────────────────────────────────────
+
+
+class TestIsScopeDefining:
+    def test_1_zones_schema(self, grove_home):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "zones.schema.yaml") is True
+
+    def test_2_routing_config(self, grove_home):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "routing.config.yaml") is True
+
+    def test_3_prompt_config(self, grove_home):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "prompt.config.yaml") is True
+
+    def test_4_dock_yaml(self, grove_home):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "dock" / "dock.yaml") is True
+
+    def test_5_skills_active_subtree(self, grove_home):
+        # Whole skills tree is scope-defining (skills/active/<name>/SKILL.md too).
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "skills" / "active" / "foo" / "SKILL.md") is True
+
+    def test_6_capabilities_subtree(self, grove_home):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "capabilities" / "bar.yaml") is True
+
+    def test_7_memory_is_granted_workspace(self, grove_home):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "memory" / "records.jsonl") is False
+
+    def test_8_research_is_granted_workspace(self, grove_home):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "research" / "doc.md") is False
+
+    def test_9_dotdot_traversal_to_scope_defining(self, grove_home):
+        # realpath collapses ../.. back to the grove root → scope-defining.
+        from grove.utils.fs_utils import is_scope_defining
+        escape = grove_home / "skills" / ".andon" / ".." / ".." / "zones.schema.yaml"
+        assert is_scope_defining(escape) is True
+
+    def test_10_symlink_to_scope_defining(self, grove_home, tmp_path):
+        from grove.utils.fs_utils import is_scope_defining
+        link = tmp_path.parent / "sneaky_zones_link.yaml"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(grove_home / "zones.schema.yaml")
+        assert is_scope_defining(link) is True
+
+    # ── Inline-amendment regression guards ──
+    def test_live_skill_name_is_scope_defining(self, grove_home):
+        # The real live tree is skills/<name> (not skills/active) — also RED.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "skills" / "my-skill" / "SKILL.md") is True
+
+    def test_env_secrets_is_scope_defining(self, grove_home):
+        # Amendment #2: secrets must not be an autonomous workspace write.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / ".env") is True
+
+    def test_outside_grove_is_not_scope_defining(self, grove_home, tmp_path):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(tmp_path.parent / "elsewhere.txt") is False
+
+    def test_grove_root_is_scope_defining(self, grove_home):
+        # The root contains every scope-defining surface — mutating it is RED.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home) is True
+
+    def test_ancestor_of_surface_is_scope_defining(self, grove_home):
+        # `dock` is the parent of the scope-defining dock/dock.yaml.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "dock") is True
+
+
+# ── _classify_write_zone (SPEC tests 11-13) ──────────────────────────────────
+
+
+class TestClassifyWriteZone:
+    def test_11_workspace_green(self, grove_home):
+        from grove.shell_effects import _classify_write_zone
+        assert _classify_write_zone(str(grove_home / "research" / "doc.md")) == "green"
+
+    def test_12_scope_defining_red(self, grove_home):
+        from grove.shell_effects import _classify_write_zone
+        assert _classify_write_zone(str(grove_home / "zones.schema.yaml")) == "red"
+
+    def test_13_outside_yellow(self, grove_home, tmp_path):
+        from grove.shell_effects import _classify_write_zone
+        assert _classify_write_zone(str(tmp_path.parent / "Desktop_output.txt")) == "yellow"
+
+
+# ── classify_shell_effect end-to-end zone (SPEC tests 14-16) ─────────────────
+
+
+class TestClassifyShellEffectScope:
+    def test_14_green_workspace_write_no_red(self, grove_home):
+        # The reported bug: mkdir into a workspace now classifies GREEN (no halt).
+        from grove.shell_effects import classify_shell_effect
+        zr = classify_shell_effect(f"mkdir -p {grove_home / 'research' / 'x'}")
+        assert zr.zone == "green"
+
+    def test_15_red_scope_defining_write(self, grove_home):
+        from grove.shell_effects import classify_shell_effect
+        zr = classify_shell_effect(f"echo data > {grove_home / 'zones.schema.yaml'}")
+        assert zr.zone == "red"
+
+    def test_16_yellow_outside_write(self, grove_home, tmp_path):
+        from grove.shell_effects import classify_shell_effect
+        zr = classify_shell_effect(f"echo data > {tmp_path.parent / 'output.txt'}")
+        assert zr.zone == "yellow"
+
+    # ── Inline-amendment + safety regression guards ──
+    def test_read_secrets_stays_yellow_not_green(self, grove_home):
+        # Reads never become GREEN — only WRITE targets do.
+        from grove.shell_effects import classify_shell_effect
+        zr = classify_shell_effect(f"cat {grove_home / '.env'}")
+        assert zr.zone == "yellow"
+
+    def test_overwrite_secrets_is_red(self, grove_home):
+        # Amendment #2: `echo x > ~/.grove/.env` must stay RED (was RED in v1).
+        from grove.shell_effects import classify_shell_effect
+        zr = classify_shell_effect(f"echo x > {grove_home / '.env'}")
+        assert zr.zone == "red"
+
+    def test_green_redirect_does_not_mask_opacity_red(self, grove_home):
+        # A GREEN redirect target must not short-circuit a later opacity RED.
+        from grove.shell_effects import classify_shell_effect
+        zr = classify_shell_effect(f"python3 -c 'print(1)' > {grove_home / 'research' / 'x'}")
+        assert zr.zone == "red"
+
+    def test_rm_rf_grove_root_is_red(self, grove_home):
+        # Deleting the grove root as a unit destroys scope-defining surfaces.
+        from grove.shell_effects import classify_shell_effect
+        zr = classify_shell_effect(f"rm -rf {grove_home}")
+        assert zr.zone == "red"
