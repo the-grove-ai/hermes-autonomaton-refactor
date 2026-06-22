@@ -44,6 +44,7 @@ __all__ = [
     "PROPOSAL_TYPE_SKILL_SYNTHESIS",
     "PROPOSAL_TYPE_MEMORY_CONTEXT",
     "PROPOSAL_TYPE_CONSOLIDATION",
+    "PROPOSAL_TYPE_DOCK_MUTATION",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -121,6 +122,15 @@ PROPOSAL_TYPE_MEMORY_CONTEXT = "memory_context"
 # flywheel CLI approve path (a routing change is a routing proposal); the apply
 # handler performs the two-file atomic write to routing.config.yaml.
 PROPOSAL_TYPE_CONSOLIDATION = "consolidation_proposal"
+# dock-as-mutation-target-v1 — the DockMutationDetector's proposal to add a
+# system-authored staging goal to the Dock. Flows through THIS RoutingProposal
+# queue and the flywheel CLI approve path; the apply handler appends the goal to
+# dock.autonomaton.yaml (the machine file — a GREEN granted workspace, never the
+# RED operator dock.yaml). Payload shape:
+#   {"action": "create_goal",
+#    "goal": {"id", "name", "keywords", "vector", "status", "definition_of_done",
+#             "source_record_ids"}}
+PROPOSAL_TYPE_DOCK_MUTATION = "dock_mutation"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 
@@ -221,6 +231,11 @@ class RoutingProposal:
         the operator ratifies into permanent policy."""
         if self.type == PROPOSAL_TYPE_CONSOLIDATION:
             return f"I'm recommending a routing policy change — {core}"
+        # dock-as-mutation-target-v1 — a Dock-goal proposal is an observation
+        # the operator ratifies into a tracked goal, not an opportunistic 'I
+        # could'. Its own frame.
+        if self.type == PROPOSAL_TYPE_DOCK_MUTATION:
+            return f"I've observed a pattern worth tracking — {core}"
         return f"I noticed I could {core}"
 
 

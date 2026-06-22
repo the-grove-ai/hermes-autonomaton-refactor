@@ -944,6 +944,24 @@ class Dispatcher:
                 session_id="consolidation-ratchet-sweep",
             )
 
+        # Dock mutation (dock-as-mutation-target-v1): when active memory records
+        # cluster around a domain no Dock goal tracks, propose a staging goal
+        # through Kaizen — closing the Memory↔Dock loop's write side. Reuses the
+        # same store + active Dock goals; the T1 synthesis is timeout-bounded and
+        # returns no proposal on any failure, so it never blocks init. Runs last,
+        # inside the same best-effort wrap as the detectors above.
+        from grove.dock.detector import DockMutationDetector
+
+        active_goal_slugs = {
+            g["slug"] for g in dock_goals if isinstance(g, dict) and g.get("slug")
+        }
+        dock_detector = DockMutationDetector()
+        dock_proposals = dock_detector.detect(store, active_goal_slugs)
+        if dock_proposals:
+            dock_detector.stage_proposals(
+                dock_proposals, session_id="dock-mutation-sweep"
+            )
+
     @property
     def runtime_ctx(self) -> RuntimeContext:
         """The bare substrate-snapshot RuntimeContext.
