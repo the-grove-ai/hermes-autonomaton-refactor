@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import yaml
 
 from grove.eval.proposal_queue import (
+    PROPOSAL_TYPE_CONSOLIDATION,
     PROPOSAL_TYPE_PATTERN_DEMOTION,
     PROPOSAL_TYPE_PATTERN_PROMOTION,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
@@ -43,7 +44,7 @@ from grove.eval.proposal_queue import (
     read_all,
     remove,
 )
-from grove.router_merge import apply_diff_to_machine_config
+from grove.router_merge import _MACHINE_HEADER, apply_diff_to_machine_config
 
 # The Sprint 47 v0.1 spelling. Honored as an alias for routing_adjustment on
 # read (proposal_queue back-compat) and resolved to the routing_adjustment
@@ -268,6 +269,11 @@ _OFFERING_PUSH_ASK = "want me to stage it for your review?"  # the foreman's off
 _PUSH_PRIORITY = {
     PROPOSAL_TYPE_SKILL_SYNTHESIS: 0,
     "memory_context": 1,                      # == PROPOSAL_TYPE_MEMORY_CONTEXT
+    # consolidation-ratchet-v1 — a permanent-policy graduation outranks a
+    # transient routing tweak but yields to a fresh memory insight. A fractional
+    # slot keeps it strictly BETWEEN memory (1) and routing_adjustment (2)
+    # without renumbering the latter (whose ==2 value is contract-tested).
+    PROPOSAL_TYPE_CONSOLIDATION: 1.5,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT: 2,
     PROPOSAL_TYPE_ZONE_PROMOTION: 3,
     PROPOSAL_TYPE_SKILL_PROMOTION: 3,
@@ -958,6 +964,203 @@ def _approve_routing_adjustment(
     return target, diff
 
 
+# ── consolidation (consolidation-ratchet-v1) ─────────────────────────────
+
+
+def _operator_config_path() -> Path:
+    """The hermes_home operator routing.config.yaml — the graduation target."""
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / "routing.config.yaml"
+
+
+def _summary_consolidation(proposal: RoutingProposal) -> str:
+    """Natural-language graduation offer — no schema, no ids."""
+    p = proposal.payload
+    intent = p.get("intent_class", "?")
+    tier = p.get("target_tier", "?")
+    stats = p.get("stats") or {}
+    n = stats.get("n", "?")
+    rate = stats.get("success_rate")
+    pct = f"{round(float(rate) * 100)}%" if isinstance(rate, (int, float)) else "?"
+    return (
+        f"Intent '{intent}' stable at {tier} ({n} obs, {pct} success, zero "
+        f"halts). Promote to permanent routing policy?"
+    )
+
+
+def _consolidation_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """The two-file change the operator reviews before approving."""
+    p = proposal.payload
+    intent = p.get("intent_class", "?")
+    tier = p.get("target_tier", "?")
+    sink = p.get("source_sink", "?")
+    return {
+        "routing.config.yaml": {
+            "routing_rules": {
+                intent: {
+                    "enabled": True,
+                    "match": {"intents": [intent]},
+                    "target_tier": tier,
+                },
+            },
+        },
+        "routing.autonomaton.yaml": {
+            "remove_from_sink": {sink: [intent]},
+        },
+    }
+
+
+def _reload_default_router() -> None:
+    """Hot-reload the live Cognitive Router so the graduated policy takes
+    effect this session. No live router (e.g. an offline CLI approve) is not an
+    error — the operator file is the source of truth, re-read at next init."""
+    import grove.router as _router_mod
+
+    router = _router_mod._default_router
+    if router is None:
+        logger.info(
+            "[flywheel] consolidation applied; no live router to hot-reload "
+            "(graduated policy applies on next init)"
+        )
+        return
+    router.reload()
+
+
+def _remove_intent_from_machine_sink(
+    machine_path: Path, sink_name: str, intent_class: str
+) -> None:
+    """Drop ``intent_class`` from the named sink in the machine file.
+
+    If the sink's intents list empties, the sink rule is removed entirely
+    (A6: a missing rule is a clean set-union no-op; an empty intents list would
+    also be harmless but we prune for tidiness). Writes the machine file with
+    its standard header banner, mirroring ``apply_diff_to_machine_config``.
+    """
+    machine_path = Path(machine_path)
+    if not machine_path.exists():
+        return
+    existing = yaml.safe_load(machine_path.read_text(encoding="utf-8"))
+    if existing is None:
+        return
+    if not isinstance(existing, dict):
+        raise ValueError(
+            f"machine routing config at {machine_path} is not a YAML mapping"
+        )
+    rules = ((existing.get("routing") or {}).get("routing_rules")) or {}
+    rule = rules.get(sink_name)
+    if not isinstance(rule, dict):
+        return
+    match = rule.get("match") or {}
+    intents = match.get("intents")
+    if not isinstance(intents, list) or intent_class not in intents:
+        return
+    remaining = [i for i in intents if i != intent_class]
+    if remaining:
+        match["intents"] = remaining
+    else:
+        rules.pop(sink_name, None)
+    rendered = yaml.safe_dump(existing, sort_keys=False, default_flow_style=False)
+    machine_path.write_text(_MACHINE_HEADER + "\n" + rendered, encoding="utf-8")
+
+
+def _approve_consolidation(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+    operator_path: Optional[Path] = None,
+    reload_fn: Optional[Callable[[], None]] = None,
+) -> Tuple[Path, Dict[str, Any]]:
+    """Graduate a sink intent to permanent operator policy — two-file atomic.
+
+    BACKUP both files → VALIDATE the proposed operator config in a sandbox
+    CognitiveRouter → ruamel round-trip WRITE (temp + atomic replace,
+    comments preserved) → CLEANUP the machine sink → HOT-RELOAD. Any failure
+    after backup restores BOTH files and re-raises (fail loud, no partial
+    state). Per GRV-008 § III this is the one sanctioned writer of
+    ``routing.config.yaml``; it only writes when the operator approves.
+    """
+    import os
+    import tempfile
+
+    from ruamel.yaml import YAML
+
+    payload = proposal.payload
+    intent_class = payload["intent_class"]
+    target_tier = payload["target_tier"]
+    source_sink = payload["source_sink"]
+
+    op_path = Path(operator_path) if operator_path else _operator_config_path()
+    mac_path = Path(machine_path) if machine_path else _machine_config_path()
+    if not op_path.exists():
+        raise FileNotFoundError(
+            f"operator routing config not found at {op_path}; cannot graduate "
+            f"a policy without the operator root (GRV-008 § III)"
+        )
+
+    # Step 1 — BACKUP both files (bytes; machine may be absent).
+    op_backup = op_path.read_bytes()
+    op_bak_path = op_path.with_suffix(op_path.suffix + ".bak")
+    op_bak_path.write_bytes(op_backup)
+    mac_backup = mac_path.read_bytes() if mac_path.exists() else None
+
+    try:
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        yaml_rt.indent(mapping=2, sequence=4, offset=2)
+        yaml_rt.width = 100
+        with open(op_path, encoding="utf-8") as fh:
+            data = yaml_rt.load(fh)
+        if not isinstance(data, dict) or "routing" not in data:
+            raise ValueError(f"{op_path} has no 'routing' mapping to graduate into")
+        routing_rules = data["routing"].setdefault("routing_rules", {})
+        routing_rules[intent_class] = {
+            "enabled": True,
+            "match": {"intents": [intent_class]},
+            "target_tier": target_tier,
+        }
+
+        # Step 2 — VALIDATE in a sandbox before touching the live file (D9).
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as tmp:
+            yaml_rt.dump(data, tmp)
+            sandbox_path = tmp.name
+        try:
+            from grove.router import CognitiveRouter
+
+            CognitiveRouter(Path(sandbox_path), machine_path=mac_path)
+        finally:
+            os.unlink(sandbox_path)
+
+        # Step 3 — WRITE the operator file (temp + atomic replace).
+        op_tmp = op_path.with_suffix(op_path.suffix + ".tmp")
+        with open(op_tmp, "w", encoding="utf-8") as fh:
+            yaml_rt.dump(data, fh)
+        os.replace(op_tmp, op_path)
+
+        # Step 4 — CLEANUP the machine sink (intent now lives in operator policy).
+        _remove_intent_from_machine_sink(mac_path, source_sink, intent_class)
+
+        # Step 5 — HOT-RELOAD the live router (A7).
+        (reload_fn or _reload_default_router)()
+    except Exception:
+        # Restore BOTH files to the pre-apply state, then fail loud.
+        op_path.write_bytes(op_backup)
+        if mac_backup is not None:
+            mac_path.write_bytes(mac_backup)
+        elif mac_path.exists():
+            mac_path.unlink()
+        raise
+
+    applied = {
+        "intent_class": intent_class,
+        "target_tier": target_tier,
+        "graduated_from": source_sink,
+        "operator_file": str(op_path),
+    }
+    return op_path, applied
+
+
 def _approve_zone_promotion(
     proposal: RoutingProposal,
     *,
@@ -1642,6 +1845,12 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         # B2 — a routing_adjustment MUST cite the evidence cluster it derives
         # from (TierRatchet populates source_patterns). No-cluster-no-proposal.
         requires_source_patterns=True,
+    ),
+    PROPOSAL_TYPE_CONSOLIDATION: ProposalHandler(
+        summary_renderer=_summary_consolidation,
+        diff_renderer=_consolidation_to_diff,
+        apply_callback=_approve_consolidation,
+        apply_label_prefix="Graduated to operator policy: ",
     ),
     PROPOSAL_TYPE_ZONE_PROMOTION: ProposalHandler(
         summary_renderer=_summary_zone_promotion,
