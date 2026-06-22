@@ -1,13 +1,18 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=file  zone=yellow  tiers=[2, 3]  disclosure=proactive  trigger=code_generation
+# family=file  zone=yellow  tiers=[2, 3]  disclosure=proactive  trigger=always
 id: patch
 kind: verb
 trigger:
-  intents:
-  - code_generation
+  # Core file primitive, always-on like terminal / read_file / write_file.
+  # Intent-gating was a redundant lock: patch_tool routes through
+  # _reject_governed_path (is_granted_workspace + is_governed_path), so
+  # authorization is enforced per-call by zone (YELLOW) + the granted-workspace
+  # allowlist, not by disclosure. Always-offering adds availability without
+  # weakening governance.
+  intents: []
   keywords: []
   dock_affinity: []
-  always: false
+  always: true
   disclosure: proactive
 bindings:
   tools:
