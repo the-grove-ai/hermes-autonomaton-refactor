@@ -1,18 +1,21 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=file  zone=yellow  tiers=[1, 2, 3]  disclosure=proactive  trigger=code_generation/creative_writing/planning/memory_operation
+# family=file  zone=yellow  tiers=[1, 2, 3]  disclosure=proactive  trigger=always
 id: write_file
 kind: verb
 trigger:
-  intents:
-  - code_generation
-  - creative_writing
-  - planning
-  # SEAM5 parity with action-intent-disclosure-v1 (Notion): crystallize/persist
-  # turns classify as memory_operation, so write_file must be offered there too.
-  - memory_operation
+  # write_file is a CORE file primitive, now always-on like its siblings
+  # `terminal` and `read_file` (both always: true). Intent-gating it was the
+  # anomaly: the agent could always read and always shell, but write_file was
+  # offered only on a few intents — so file-writes (which classify as
+  # system_admin / memory_operation / etc.) fell back to shell heredoc and hit
+  # the opacity-RED wall. Authorization is enforced per-call by zone (YELLOW) +
+  # the granted-workspace allowlist, NOT by disclosure, so always-offering adds
+  # availability without weakening governance. Supersedes the incremental
+  # intent adds (action-intent-disclosure-v1 memory_operation, etc.).
+  intents: []
   keywords: []
   dock_affinity: []
-  always: false
+  always: true
   disclosure: proactive
 bindings:
   tools:
