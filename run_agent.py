@@ -5212,6 +5212,15 @@ class AIAgent:
     # recurring cross-session pattern, so most passes stage nothing.
     _SKILL_SYNTHESIS_TURN_INTERVAL = 10
 
+    # kaizen-push-cadence-v1 (Fix C) — minimum user turns between proactive
+    # shop-floor-note pushes. The _surfaced_proposal_ids shown-set only dedups
+    # per-proposal; with a deep backlog every turn surfaces the NEXT one, so
+    # the operator gets a footer every turn. This paces it: at most one push
+    # per N turns. review_proposals (pull) is never rate-limited. Hardcoded to
+    # match the sibling interval constants; declarative-config migration of all
+    # interval constants is a flagged follow-up.
+    _PUSH_COOLDOWN_TURNS = 3
+
     def _append_pending_offer(self, final_response: str) -> str:
         """Surface ONE pending Kaizen proposal — routing OR memory — at the
         post-turn break (kaizen-proposal-surface-unification-v1).
@@ -5231,6 +5240,16 @@ class AIAgent:
         untouched.
         """
         if not final_response:
+            return final_response
+        # kaizen-push-cadence-v1 (Fix C) — rate-limit the proactive push to at
+        # most one per _PUSH_COOLDOWN_TURNS. Turn-based (not wall-clock) so it's
+        # deterministic and rides the already-hydrated _user_turn_count. Placed
+        # before the queue reads so a suppressed turn skips read_all() entirely.
+        # _last_push_turn is ephemeral (lazy getattr, resets to None on agent
+        # eviction) — same lifecycle as _surfaced_proposal_ids.
+        _turn = getattr(self, "_user_turn_count", 0) or 0
+        _last = getattr(self, "_last_push_turn", None)
+        if _last is not None and (_turn - _last) < self._PUSH_COOLDOWN_TURNS:
             return final_response
         try:
             from datetime import timezone
@@ -5296,6 +5315,7 @@ class AIAgent:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[kaizen-offerings] last-offered write skipped: %r", exc)
             offer = compose_offering(chosen, is_push=True)
+            self._last_push_turn = _turn  # Fix C — start the cooldown clock
             return final_response.rstrip() + "\n\n" + offer
         except Exception as exc:  # noqa: BLE001
             logger.debug("[kaizen-offerings] push append skipped: %r", exc)
@@ -17221,6 +17241,21 @@ class AIAgent:
                 if isinstance(m, dict) and m.get("role") == "assistant"
                 for tc in (m.get("tool_calls") or [])
             )
+            # kaizen-push-cadence-v1 (Fix D) — an explicit dismiss
+            # (reject_proposal this turn) is an opt-out signal: reset the
+            # cooldown clock forward so the operator who said "skip the shop
+            # floor note" gets _PUSH_COOLDOWN_TURNS quiet turns, not a fresh
+            # push next turn. The tool layer can't reach agent state, so we set
+            # it here at the call site where self is in scope. Composes with
+            # Fix C on the shared _last_push_turn.
+            _rejected_this_turn = any(
+                ((tc or {}).get("function", {}) or {}).get("name") == "reject_proposal"
+                for m in messages[_last_user_idx + 1:]
+                if isinstance(m, dict) and m.get("role") == "assistant"
+                for tc in (m.get("tool_calls") or [])
+            )
+            if _rejected_this_turn:
+                self._last_push_turn = getattr(self, "_user_turn_count", 0) or 0
             if not _flywheel_ran_this_turn:
                 final_response = self._append_pending_offer(final_response)
             # connector-failure-andon-v1 — surface a failed connector ALONGSIDE
