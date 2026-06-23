@@ -223,6 +223,15 @@ PROPOSAL_APPROVAL_GUIDANCE = (
     "and never show them a proposal id or SHA hash. You hold the tools to apply "
     "their decision inline — their natural-language reply IS the approval "
     "checkpoint. Handle the mechanics invisibly.\n"
+    "5. CRITICAL — DISMISSAL REQUIRES THE TOOL CALL. Treat 'dismiss'/'skip'/'no'/"
+    "'not that one'/'reject' EXACTLY like approval: you MUST call "
+    "reject_proposal(id). Replying 'dismissed' or 'skipped' in text WITHOUT "
+    "calling reject_proposal does NOT dismiss anything — the proposal stays "
+    "pending and WILL resurface, which reads to the operator as if you ignored "
+    "them. A dismissal is not complete until reject_proposal has run. When the "
+    "operator dismisses a proposal you surfaced (including a shop-floor-note "
+    "push that said \"reply 'dismiss' to skip\"), resolve that proposal's id and "
+    "call reject_proposal on it before you respond.\n"
 )
 
 

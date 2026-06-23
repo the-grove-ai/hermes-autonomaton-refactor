@@ -17186,7 +17186,29 @@ class AIAgent:
             # kaizen-proposal-surface-unification-v1 — ONE push surface for all
             # proposal types (routing + memory + future). Surfaces at most one
             # proposal per session, highest priority first (memory_context=1).
-            final_response = self._append_pending_offer(final_response)
+            #
+            # agent-ux-critical-fixes (Fix A) — suppress the proactive push when
+            # the operator already acted on / reviewed proposals THIS turn (a
+            # flywheel tool ran). Otherwise a fresh note re-appends to the very
+            # response that approved/dismissed/listed, reading as if the action
+            # was ignored. Scope to this turn = assistant tool_calls after the
+            # last user message.
+            _last_user_idx = max(
+                (i for i, m in enumerate(messages)
+                 if isinstance(m, dict) and m.get("role") == "user"),
+                default=-1,
+            )
+            _FLYWHEEL_TOOLS = {
+                "review_proposals", "approve_proposal", "reject_proposal",
+            }
+            _flywheel_ran_this_turn = any(
+                ((tc or {}).get("function", {}) or {}).get("name") in _FLYWHEEL_TOOLS
+                for m in messages[_last_user_idx + 1:]
+                if isinstance(m, dict) and m.get("role") == "assistant"
+                for tc in (m.get("tool_calls") or [])
+            )
+            if not _flywheel_ran_this_turn:
+                final_response = self._append_pending_offer(final_response)
             # connector-failure-andon-v1 — surface a failed connector ALONGSIDE
             # the answer (fail-loud: a dead connector's tools are absent, never
             # silently worked around). Answer-then-surface, once per session.
