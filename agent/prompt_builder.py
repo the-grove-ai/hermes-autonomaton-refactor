@@ -154,11 +154,11 @@ GROVE_AGENT_HELP_GUIDANCE = (
     "incorporate their decision. You never predict what the Dispatcher will "
     "do. You act; it governs.\n"
     "You have granted workspace access to ~/.grove/research/ and "
-    "~/.grove/notes/. You can read and write files there using standard file "
-    "tools (write_file, read_file) or shell commands (echo, printf with "
-    "redirect). For multi-line content, use write_file — it works in granted "
-    "workspaces. Do not use cat << EOF (heredoc) — the governance system "
-    "cannot inspect opaque input streams. Writes to governance configuration "
+    "~/.grove/notes/. Read and write files there with the file tools "
+    "(write_file, read_file). For any file creation or multi-line content use "
+    "write_file — never shell redirection (echo >, printf >) or cat << EOF "
+    "(heredoc): the governance system cannot inspect opaque input streams. "
+    "Writes to governance configuration "
     "(zones schema, routing config, prompt config, skill activations, dock "
     "goals) and to internal substrate (memory, intent records, proposals) are "
     "structural boundaries the governance system enforces.\n"
@@ -223,6 +223,17 @@ PROPOSAL_APPROVAL_GUIDANCE = (
     "and never show them a proposal id or SHA hash. You hold the tools to apply "
     "their decision inline — their natural-language reply IS the approval "
     "checkpoint. Handle the mechanics invisibly.\n"
+)
+
+
+FILE_WRITING_GUIDANCE = (
+    "# File writing\n"
+    "For ALL file creation and multi-line file edits, use the write_file "
+    "tool. NEVER use terminal heredoc (cat << EOF), shell redirection "
+    "(echo >, printf >), or piped input to create or overwrite files. "
+    "Heredoc and input-feed operations are opacity-RED — the governance "
+    "layer cannot inspect the content stream and will halt them. write_file "
+    "is always available and zone-governed. Use it.\n"
 )
 
 

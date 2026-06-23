@@ -1,0 +1,75 @@
+# flywheel_read.yaml — Kaizen proposal review (read-only) verb record.
+# Added by agent-ux-critical-fixes sprint (P0). Restores the flywheel review
+# tool to the offered surface — the flywheel toolset was omitted during the
+# Jun-12 declarative-resolution-v1 / E5 C-VERBS migration, so review_proposals
+# never appeared on the offered surface at any tier.
+# family=flywheel  zone=green  tiers=[1,2,3]  disclosure=proactive  trigger=always
+id: flywheel_read
+kind: verb
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - review_proposals
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'Kaizen proposal review (read-only, zone green). Tools: review_proposals.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: '2026-06-23T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-23T00:00:00+00:00'
+    from_state: migrated
+    to_state: approved
+    reason: 'agent-ux-critical-fixes (P0): restore the flywheel review tool to the
+      offered surface; the flywheel toolset was omitted during declarative-resolution-v1
+      / E5 C-VERBS migration'
+    evidence:
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: flywheel_read'
+  - 'subsystem: flywheel review tool (tools.flywheel_review_tool)'
+  - 'check: tool registered + zone mapped in zones.schema.yaml'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
