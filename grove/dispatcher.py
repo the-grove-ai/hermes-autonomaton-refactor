@@ -455,6 +455,7 @@ class Dispatcher:
         resume: bool = False,
         memory_store: Optional[Any] = None,
         memory_manager: Optional[Any] = None,
+        inject_core_tools: bool = False,
     ) -> None:
         """Capture the substrate snapshot and install Phase 5 disposition handler.
 
@@ -584,6 +585,11 @@ class Dispatcher:
         # The Agent receives a RuntimeContext that has the relevant cache
         # entries promoted into its frozen fields.
         self._tools_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+        # agent-ux-critical-fixes-v3 — messaging-platform turns set this so the
+        # universal core floor (incl. flywheel review/approve tools) is injected
+        # into the per-turn tool surface, working around the gateway's
+        # reverse-mapped enabled_toolsets dropping core/non-configurable toolsets.
+        self._inject_core_tools: bool = bool(inject_core_tools)
         self._memory_store_cache: Optional[Any] = None
         self._anthropic_client_cache: Dict[tuple, Any] = {}
         self._context_length_cache: Dict[str, int] = {}
@@ -1090,6 +1096,7 @@ class Dispatcher:
             tuple(sorted(enabled_toolsets or ())),
             tuple(sorted(disabled_toolsets or ())),
             bool(quiet_mode),
+            bool(self._inject_core_tools),
         )
         cached = self._tools_cache.get(key)
         if cached is not None:
@@ -1100,6 +1107,7 @@ class Dispatcher:
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             quiet_mode=quiet_mode,
+            include_core=self._inject_core_tools,
         )
         self._tools_cache[key] = tools
         return tools
