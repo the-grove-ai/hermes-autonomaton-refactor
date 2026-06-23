@@ -4534,10 +4534,15 @@ class Dispatcher:
                 else str(arguments)
             )
             evidence_turn_id = self._current_turn_id or ""
+            # terminal-rule-generalization-v1 — thread the per-command cwd
+            # (terminal `workdir`) so normalize_pattern can broaden within a
+            # granted workspace. Absent → None → exact-match fallback.
+            _cwd = arguments.get("workdir") if isinstance(arguments, dict) else None
             _proposal, payload = build_zone_promotion_proposal(
                 tool_name=intent.tool_name,
                 command_string=command_string or "",
                 evidence_turn_id=evidence_turn_id,
+                cwd=_cwd,
             )
             save_zone_rule(
                 tool_id=payload["tool"],

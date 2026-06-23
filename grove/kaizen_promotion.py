@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any, Dict, Tuple
+from urllib.parse import urlparse
 
 from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_ZONE_PROMOTION,
@@ -63,35 +64,108 @@ __all__ = [
 PromotionPayloadShape = Dict[str, Any]
 
 
-def normalize_pattern(tool_name: str, command_string: str) -> str:
+# terminal-rule-generalization-v1 — verb taxonomy for terminal zone-promotion
+# broadening. Read verbs broaden inside a granted workspace; read network verbs
+# broaden to the target domain; mutating verbs broaden inside a workspace but
+# stay path-constrained (no leading-slash absolute paths, no `..` traversal).
+# `echo` is deliberately NOT a read verb — `echo x > file` is a write — so it
+# falls to the conservative exact-match default.
+SAFE_NET_VERBS = frozenset({"curl", "wget", "ping"})
+SAFE_READ_VERBS = frozenset({"ls", "cat", "grep", "which", "pwd", "head", "tail"})
+MUTATING_VERBS = frozenset(
+    {"rm", "mv", "cp", "chmod", "chown", "mkdir", "touch", "kill"}
+)
+
+
+def normalize_pattern(
+    tool_name: str, command_string: str = "", cwd: str = None,
+) -> str:
     """Generate the regex pattern for a zone-promotion green rule.
 
-    v0.1 strategy per GATE-A:
+    The matcher (:mod:`grove.zones`) uses ``re.fullmatch``, so every pattern is
+    implicitly anchored end-to-end; the explicit ``^...$`` below are
+    belt-and-suspenders.
 
-    * Terminal + ``.grove/skills/<name>/`` path → ``.*\\.grove/skills/
-      <name>/.*``. The operator's home prefix is elided so the rule
-      fires for any operator on any host.
-    * Terminal + non-skill command → ``^<re.escape(command)>$``. Safe
-      and conservative; manual edits broaden later.
-    * Non-terminal tool → the tool name as a literal (the bare-string
-      zone form encoded into a green rule for normalization symmetry).
+    terminal-rule-generalization-v1 — instead of pinning the exact command,
+    generalize by verb class so a previously-approved verb does not re-prompt on
+    a varied argument:
 
-    Sprint 32.2 — ``$HOME`` / ``${HOME}`` / leading ``~/`` are
-    expanded before the substring match via the shared
-    :func:`grove.sovereign_prompt_handlers.normalize_command`
-    helper, closing the GATE-A A7 v0.2 limitation for the three
-    common forms.  Arbitrary shell evaluation (other variables,
-    command substitution, nested expansions) remains out of scope.
+    * skill-path command → any command touching that skill dir (unchanged).
+    * read network verb (curl/wget/ping) → any invocation targeting the same
+      domain.
+    * read local verb (ls/cat/grep/…) → any invocation inside a granted
+      workspace; outside, any non-redirecting/non-chaining invocation.
+    * mutating verb (rm/mv/mkdir/…) → any invocation inside a granted workspace
+      with a relative, non-traversing path; else exact match.
+    * anything else → exact match (conservative default).
+
+    Non-terminal tool → the tool name (tool-level: every invocation matches).
+
+    Sprint 32.2 — ``$HOME`` / ``${HOME}`` / leading ``~/`` are expanded via
+    :func:`grove.action_facts.normalize_command` before matching (preserved
+    from the prior version, applied to every terminal branch).
     """
-    if tool_name == "terminal":
-        normalized = normalize_command(command_string or "")
-        skill_name = _extract_skill_name(normalized)
-        if skill_name != "unknown":
-            return r".*\.grove/skills/" + re.escape(skill_name) + r"/.*"
-        if normalized:
-            return "^" + re.escape(normalized) + "$"
-        return "^.*$"  # degenerate; will fail safety check, surfacing the issue
-    return re.escape(tool_name)
+    if tool_name != "terminal":
+        return re.escape(tool_name)
+
+    # Preserve Sprint 32.2 $HOME/~ normalization for ALL terminal branches.
+    command_string = normalize_command((command_string or "").strip())
+    if not command_string:
+        return "^.*$"  # degenerate; fails the loader safety check, surfacing it
+
+    # 1. Skill-path branch (unchanged) — any command under that skill dir.
+    skill_name = _extract_skill_name(command_string)
+    if skill_name != "unknown":
+        return r".*\.grove/skills/" + re.escape(skill_name) + r"/.*"
+
+    # 2. Verb-class broadening.
+    verb = command_string.split()[0]
+
+    in_workspace = False
+    if cwd:
+        try:
+            from grove.utils.fs_utils import is_granted_workspace
+            in_workspace = bool(is_granted_workspace(cwd))
+        except Exception:  # noqa: BLE001 — never let workspace probing break rule-gen
+            in_workspace = False
+
+    # 2a. Read-only network verbs → broaden to the target domain.
+    if verb in SAFE_NET_VERBS:
+        for part in command_string.split()[1:]:
+            # Strip surrounding quotes BEFORE the scheme check — the common
+            # form is a quoted URL (curl -s "https://…"), which would otherwise
+            # start with `"` and never match.
+            candidate = part.strip("\"'")
+            if candidate.startswith(("http://", "https://")):
+                try:
+                    netloc = urlparse(candidate).netloc
+                except ValueError:
+                    netloc = ""
+                if netloc:
+                    return (
+                        "^" + re.escape(verb) + r" .*\b"
+                        + re.escape(netloc) + r"\b.*$"
+                    )
+                break
+        return "^" + re.escape(command_string) + "$"
+
+    # 2b. Read-only local verbs.
+    if verb in SAFE_READ_VERBS:
+        if in_workspace:
+            return "^" + re.escape(verb) + r" .*$"
+        # Outside a workspace: forbid pipes, redirects, and command chaining.
+        return "^" + re.escape(verb) + r" [^|><;]+$"
+
+    # 2c. State-mutating verbs.
+    if verb in MUTATING_VERBS:
+        if in_workspace:
+            # Allow mutation; forbid leading-slash absolute paths (/etc/…) and
+            # `..` traversal (Fix 1). Internal slashes (src/main.py) are allowed.
+            return "^" + re.escape(verb) + r" (?!/)(?!.*\.\.).+$"
+        return "^" + re.escape(command_string) + "$"
+
+    # 3. Conservative default — exact match.
+    return "^" + re.escape(command_string) + "$"
 
 
 def _kaizen_reason(tool_name: str, command_string: str) -> str:
@@ -123,6 +197,7 @@ def build_zone_promotion_proposal(
     command_string: str,
     evidence_turn_id: str,
     eval_hash: str = "",
+    cwd: str = None,
 ) -> Tuple[RoutingProposal, PromotionPayloadShape]:
     """Build a ZonePromotionProposal from a halted action.
 
@@ -146,7 +221,7 @@ def build_zone_promotion_proposal(
       gate doesn't currently model zone config, so the field is
       reserved for a future sprint that extends the gate.
     """
-    pattern = normalize_pattern(tool_name, command_string)
+    pattern = normalize_pattern(tool_name, command_string, cwd=cwd)
     reason = _kaizen_reason(tool_name, command_string)
     payload: PromotionPayloadShape = {
         "tool": tool_name,
