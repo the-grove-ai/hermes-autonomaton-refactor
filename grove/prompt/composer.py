@@ -558,9 +558,15 @@ def _tool_guidance_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         ESCALATION_GUIDANCE,
         KANBAN_GUIDANCE,
         PROPOSAL_APPROVAL_GUIDANCE,
+        FILE_WRITING_GUIDANCE,
     )
     valid = ctx.get("valid_tool_names") or set()
     parts: List[str] = []
+    # write_file is an always-on core verb; lead the tool guidance with the
+    # file-writing mandate so the model never falls back to opaque shell
+    # heredoc/redirect for file I/O.
+    if "write_file" in valid:
+        parts.append(FILE_WRITING_GUIDANCE)
     if "memory" in valid:
         parts.append(MEMORY_GUIDANCE)
     if "session_search" in valid:
