@@ -61,6 +61,14 @@ _GROVE_CORE_TOOLS = [
     "text_to_speech",
     # Planning & memory
     "todo", "memory",
+    # Flywheel proposal review/approval — governed self-improvement (GRV-009 B3).
+    # Surface-agnostic governance peers of `memory`: every surface must be able
+    # to review and act on Kaizen proposals, so they belong in core, not a
+    # platform-gated toolset (agent-ux-critical-fixes-v2 — the flywheel toolset
+    # reached no platform's enabled set, so the v1 capability records, which only
+    # filter self.tools, never saw these tools). zones.schema.yaml governs
+    # review_proposals=green, approve_proposal/reject_proposal=yellow.
+    "review_proposals", "approve_proposal", "reject_proposal",
     # Session history search
     "session_search",
     # Clarifying questions
