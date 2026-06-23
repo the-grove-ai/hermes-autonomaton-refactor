@@ -5281,6 +5281,20 @@ class AIAgent:
             )
             chosen = eligible[0]
             surfaced.add(chosen.short_id)  # one-at-a-time, once per session
+            # agent-ux-critical-fixes — record the surfaced proposal so a later
+            # bare 'approve'/'dismiss' (no id) resolves to it. The push note
+            # shows no id and review_proposals can list dozens of near-identical
+            # memory proposals, so without this the model cannot tell which one a
+            # one-word reply means. Best-effort; never blocks the push.
+            try:
+                from tools.flywheel_review_tool import _write_last_offered
+                _write_last_offered(
+                    chosen.short_id,
+                    type=getattr(chosen, "type", "") or "",
+                    session_id=getattr(self, "session_id", "") or "",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[kaizen-offerings] last-offered write skipped: %r", exc)
             offer = compose_offering(chosen, is_push=True)
             return final_response.rstrip() + "\n\n" + offer
         except Exception as exc:  # noqa: BLE001

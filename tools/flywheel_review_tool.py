@@ -55,45 +55,107 @@ APPROVE_PROPOSAL_SCHEMA = {
         "proposals — one surface for everything Kaizen has pending. This is a "
         "governed self-modification: it routes through the same gate the CLI "
         "uses, so a proposal that lacks its required evidence is refused, not "
-        "forced. Use ONLY when the operator explicitly approves a specific "
-        "proposal. If multiple proposals are pending, specify which one by "
-        "including part of the proposal summary or its ID prefix; on a bare "
-        "'yes' with more than one pending, call review_proposals and ask the "
-        "operator which they mean."
+        "forced. When the operator approves a proposal you just surfaced "
+        "(e.g. replies 'approve' to a shop-floor-note push), call this with NO "
+        "proposal_id — it targets the most recently offered proposal. Only pass "
+        "proposal_id when the operator names a specific OTHER proposal to approve "
+        "(e.g. one of multiple pending, identified by part of its summary or id "
+        "prefix)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "proposal_id": {
                 "type": "string",
-                "description": "The proposal id (full or short prefix) to approve.",
+                "description": (
+                    "OPTIONAL. The proposal id (full or short prefix) to approve. "
+                    "OMIT to act on the proposal most recently surfaced to the "
+                    "operator (the shop-floor-note push they are replying to)."
+                ),
             },
         },
-        "required": ["proposal_id"],
     },
 }
 
 REJECT_PROPOSAL_SCHEMA = {
     "name": "reject_proposal",
     "description": (
-        "Reject (dismiss) a pending Flywheel proposal by id, removing it from the "
-        "queue with no change applied. Use when the operator declines a proposal."
+        "Reject (dismiss) a pending Flywheel proposal, removing it from the queue "
+        "with no change applied. Use when the operator declines a proposal. When "
+        "the operator dismisses a proposal you just surfaced (e.g. replies "
+        "'dismiss'/'skip'/'no' to a shop-floor-note push), call this with NO "
+        "proposal_id — it targets the most recently offered proposal. Only pass "
+        "proposal_id when dismissing a specific OTHER proposal the operator named."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "proposal_id": {
                 "type": "string",
-                "description": "The proposal id (full or short prefix) to reject.",
+                "description": (
+                    "OPTIONAL. The proposal id (full or short prefix) to reject. "
+                    "OMIT to act on the proposal most recently surfaced to the "
+                    "operator (the shop-floor-note push they are replying to)."
+                ),
             },
             "reason": {
                 "type": "string",
                 "description": "OPTIONAL: why the operator declined.",
             },
         },
-        "required": ["proposal_id"],
     },
 }
+
+
+# ── Last-offered handle (agent-ux-critical-fixes) ────────────────────────────
+# The proactive push (run_agent._append_pending_offer) records the proposal it
+# just surfaced here, so a later bare 'approve'/'dismiss' (no id) can target it.
+# The push note deliberately shows no id, and review_proposals can return dozens
+# of near-identical memory proposals — without this handle the model cannot
+# resolve which proposal a one-word reply refers to. Best-effort; never raises.
+
+def _last_offered_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / ".last_offered_proposal.json"
+
+
+def _write_last_offered(short_id: str, *, type: str = "", session_id: str = "") -> None:
+    """Record the proposal a push just surfaced. Best-effort; never raises."""
+    try:
+        from datetime import datetime, timezone
+        path = _last_offered_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps({
+                "short_id": short_id, "type": type, "session_id": session_id,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except Exception:  # noqa: BLE001 — convenience handle; never block the push
+        pass
+
+
+def _read_last_offered() -> Optional[str]:
+    """The short_id of the most recently surfaced proposal, or None."""
+    try:
+        path = _last_offered_path()
+        if not path.exists():
+            return None
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        sid = rec.get("short_id")
+        return sid if isinstance(sid, str) and sid.strip() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _clear_last_offered() -> None:
+    try:
+        _last_offered_path().unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _capture(fn: Callable[[], int]) -> Tuple[int, str]:
@@ -162,7 +224,7 @@ def review_proposals(*, queue_path: Optional[Path] = None) -> str:
 
 
 def approve_proposal(
-    proposal_id: str,
+    proposal_id: str = "",
     *,
     queue_path: Optional[Path] = None,
     machine_path: Optional[Path] = None,
@@ -183,12 +245,19 @@ def approve_proposal(
     """
     from grove import flywheel_cli
 
-    if not isinstance(proposal_id, str) or not proposal_id.strip():
-        return json.dumps(
-            {"success": False, "error": "approve_proposal requires a non-empty 'proposal_id'."},
-            ensure_ascii=False,
-        )
-    pid = proposal_id.strip()
+    # No id ⇒ act on the proposal the push most recently surfaced (the operator
+    # is replying 'approve' to a shop-floor note). agent-ux-critical-fixes.
+    pid = (proposal_id or "").strip() if isinstance(proposal_id, str) else ""
+    used_last_offered = False
+    if not pid:
+        pid = _read_last_offered() or ""
+        used_last_offered = bool(pid)
+        if not pid:
+            return json.dumps(
+                {"success": False, "error": "No proposal_id given and no recently "
+                 "offered proposal to act on. Call review_proposals to choose one."},
+                ensure_ascii=False,
+            )
 
     # 1. Routing queue first (existing path, unchanged).
     if flywheel_cli._resolve_proposal(pid, queue_path=queue_path) is not None:
@@ -197,6 +266,8 @@ def approve_proposal(
                 pid, queue_path=queue_path, machine_path=machine_path,
             )
         )
+        if rc == 0 and used_last_offered:
+            _clear_last_offered()
         return json.dumps(
             {"success": rc == 0, "proposal_id": pid, "kind": "routing",
              "message": message},
@@ -208,6 +279,8 @@ def approve_proposal(
     mem_full, _err = memory_cli._resolve(memory_cli._base(None), pid)
     if mem_full is not None:
         rc, message = _capture(lambda: memory_cli.cli_memory_approve(pid))
+        if rc == 0 and used_last_offered:
+            _clear_last_offered()
         return json.dumps(
             {"success": rc == 0, "proposal_id": pid, "kind": "memory",
              "message": message},
@@ -223,7 +296,7 @@ def approve_proposal(
 
 
 def reject_proposal(
-    proposal_id: str,
+    proposal_id: str = "",
     reason: Optional[str] = None,
     *,
     queue_path: Optional[Path] = None,
@@ -235,18 +308,27 @@ def reject_proposal(
     """
     from grove import flywheel_cli
 
-    if not isinstance(proposal_id, str) or not proposal_id.strip():
-        return json.dumps(
-            {"success": False, "error": "reject_proposal requires a non-empty 'proposal_id'."},
-            ensure_ascii=False,
-        )
-    pid = proposal_id.strip()
+    # No id ⇒ act on the proposal the push most recently surfaced (the operator
+    # is replying 'dismiss'/'skip' to a shop-floor note). agent-ux-critical-fixes.
+    pid = (proposal_id or "").strip() if isinstance(proposal_id, str) else ""
+    used_last_offered = False
+    if not pid:
+        pid = _read_last_offered() or ""
+        used_last_offered = bool(pid)
+        if not pid:
+            return json.dumps(
+                {"success": False, "error": "No proposal_id given and no recently "
+                 "offered proposal to dismiss. Call review_proposals to choose one."},
+                ensure_ascii=False,
+            )
 
     # 1. Routing queue first (existing path).
     if flywheel_cli._resolve_proposal(pid, queue_path=queue_path) is not None:
         rc, message = _capture(
             lambda: flywheel_cli.cli_reject(pid, reason=reason, queue_path=queue_path)
         )
+        if rc == 0 and used_last_offered:
+            _clear_last_offered()
         return json.dumps(
             {"success": rc == 0, "proposal_id": pid, "kind": "routing",
              "message": message},
@@ -260,6 +342,8 @@ def reject_proposal(
         rc, message = _capture(
             lambda: memory_cli.cli_memory_reject(pid, reason=reason)
         )
+        if rc == 0 and used_last_offered:
+            _clear_last_offered()
         return json.dumps(
             {"success": rc == 0, "proposal_id": pid, "kind": "memory",
              "message": message},
