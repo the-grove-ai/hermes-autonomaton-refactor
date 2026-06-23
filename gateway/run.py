@@ -10879,7 +10879,7 @@ class GatewayRunner:
                 # INV-7: wire the intent store so gateway turns are recorded
                 # (mirrors cli.py / run_agent.py; the gateway path never had it).
                 from grove.intent_store import get_store as _get_intent_store
-                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), agent_kwargs=dict(
+                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), inject_core_tools=True, agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
@@ -15516,7 +15516,7 @@ class GatewayRunner:
                 # INV-7: wire the intent store so gateway turns are recorded
                 # (mirrors cli.py / run_agent.py; the gateway path never had it).
                 from grove.intent_store import get_store as _get_intent_store
-                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), agent_kwargs=dict(
+                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), inject_core_tools=True, agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
