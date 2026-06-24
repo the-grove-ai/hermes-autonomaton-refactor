@@ -264,7 +264,6 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
-    include_core: bool = False,
 ) -> List[Dict[str, Any]]:
     """Get tool definitions for model API calls with toolset-based filtering.
 
@@ -305,7 +304,6 @@ def get_tool_definitions(
             id(registry),
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
-            bool(include_core),
             registry._generation,
             cfg_fp,
         )
@@ -315,7 +313,7 @@ def get_tool_definitions(
             _last_resolved_tool_names = [t["function"]["name"] for t in cached]
             return list(cached)
 
-    result = _compute_tool_definitions(registry, enabled_toolsets, disabled_toolsets, quiet_mode, include_core)
+    result = _compute_tool_definitions(registry, enabled_toolsets, disabled_toolsets, quiet_mode)
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations don't poison the cache. (issue #17335)
@@ -329,7 +327,6 @@ def _compute_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
-    include_core: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -354,19 +351,6 @@ def _compute_tool_definitions(
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets(registry):
             tools_to_include.update(resolve_toolset(ts_name, registry))
-
-    # agent-ux-critical-fixes-v3 — opt-in core floor. The gateway derives
-    # enabled_toolsets from a reverse-mapped configurable subset that can drop
-    # core toolsets (e.g. `file` → read_file/write_file) and cannot represent
-    # non-configurable governance toolsets (`flywheel`). When the caller opts in
-    # (Dispatcher.inject_core_tools=True, set only for messaging-platform turns),
-    # add the universal core floor so every platform surface has the core verbs
-    # and the flywheel review/approve tools. Applied BEFORE the disabled-toolset
-    # subtraction below, so per-platform opt-outs are still honored. CLI/`safe`
-    # and direct callers leave include_core=False and are unaffected.
-    if include_core:
-        from toolsets import _GROVE_CORE_TOOLS
-        tools_to_include.update(_GROVE_CORE_TOOLS)
 
     # Always apply disabled toolsets as a subtraction step at the end.
     # This ensures composite toolsets like hermes-cli still get tools
