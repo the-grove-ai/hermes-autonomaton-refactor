@@ -55,7 +55,21 @@ echo "▸ Deploying origin/main to ${INSTANCE} (${ZONE})"
 # deploy — its first real end-to-end run.)
 REMOTE_CMD="$(cat <<REMOTE
 set -euo pipefail
-sudo -u hermes -H bash -c 'set -euo pipefail; cd "${REPO_DIR}"; git fetch origin main; git reset --hard origin/main; .venv/bin/pip install -e ".[web,mcp]" --quiet'
+sudo -u hermes -H bash -s <<'HERMES'
+set -euo pipefail
+cd "${REPO_DIR}"
+git fetch origin main
+git reset --hard origin/main
+.venv/bin/pip install -e ".[web,mcp]" --quiet
+
+# Sync routing config (gated on two-file split being active — ANDON A3)
+if [ -f "\$HOME/.grove/routing.autonomaton.yaml" ]; then
+  cp config/routing.config.yaml "\$HOME/.grove/routing.config.yaml"
+  echo "Synced routing.config.yaml from repo"
+else
+  echo "ANDON A3: routing.autonomaton.yaml absent — skipping routing sync" >&2
+fi
+HERMES
 sudo systemctl restart hermes-gateway
 echo "DEPLOYED_COMMIT=\$(sudo -u hermes git -C '${REPO_DIR}' rev-parse --short HEAD)"
 REMOTE
