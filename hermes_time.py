@@ -88,6 +88,12 @@ def get_timezone() -> Optional[ZoneInfo]:
     return _cached_tz
 
 
+def get_timezone_name() -> str:
+    """Return the configured IANA timezone name, or empty string if not set."""
+    get_timezone()  # ensure cache is populated
+    return _cached_tz_name or ""
+
+
 def now() -> datetime:
     """
     Return the current time as a timezone-aware datetime.

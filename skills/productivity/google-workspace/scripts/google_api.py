@@ -174,6 +174,42 @@ def _datetime_with_timezone(value: str) -> str:
     return value + "Z"
 
 
+def _is_naive_datetime(value: str) -> bool:
+    """Return True if value is an ISO datetime with no timezone offset or Z."""
+    if not value or "T" not in value:
+        return False
+    if value.endswith("Z"):
+        return False
+    tail = value[10:]
+    return "+" not in tail and "-" not in tail
+
+
+def _get_local_tz_name() -> str:
+    """Return the operator's configured IANA timezone name.
+
+    Resolution order mirrors hermes_time: hermes_time module, then
+    ~/.grove/config.yaml, then the hardcoded operator default.
+    """
+    try:
+        from hermes_time import get_timezone_name as _gtzn
+        name = _gtzn()
+        if name:
+            return name
+    except Exception:
+        pass
+    try:
+        import yaml as _yaml
+        _cfg_path = os.path.expanduser("~/.grove/config.yaml")
+        with open(_cfg_path) as _f:
+            _cfg = _yaml.safe_load(_f) or {}
+        _tz = _cfg.get("timezone", "")
+        if isinstance(_tz, str) and _tz.strip():
+            return _tz.strip()
+    except Exception:
+        pass
+    return "America/Indiana/Indianapolis"
+
+
 def get_credentials():
     """Load and refresh credentials from token file."""
     _ensure_authenticated()
@@ -477,7 +513,11 @@ def gmail_modify(args):
 
 
 def calendar_list(args):
-    now = datetime.now(timezone.utc)
+    try:
+        from hermes_time import now as _hermes_now
+        now = _hermes_now()
+    except Exception:
+        now = datetime.now(timezone.utc)
     time_min = _datetime_with_timezone(args.start or now.isoformat())
     time_max = _datetime_with_timezone(args.end or (now + timedelta(days=7)).isoformat())
 
@@ -531,10 +571,17 @@ def calendar_list(args):
 
 
 def calendar_create(args):
+    _tz = _get_local_tz_name()
+    _start_dict: dict = {"dateTime": args.start}
+    if _is_naive_datetime(args.start):
+        _start_dict["timeZone"] = _tz
+    _end_dict: dict = {"dateTime": args.end}
+    if _is_naive_datetime(args.end):
+        _end_dict["timeZone"] = _tz
     event = {
         "summary": args.summary,
-        "start": {"dateTime": args.start},
-        "end": {"dateTime": args.end},
+        "start": _start_dict,
+        "end": _end_dict,
     }
     if args.location:
         event["location"] = args.location

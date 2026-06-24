@@ -829,7 +829,7 @@ def _timestamp_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         from hermes_time import now as _now
         now_fn = _now
     now = now_fn()
-    line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+    line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p %Z')}"
     if ctx.get("pass_session_id") and ctx.get("session_id"):
         line += f"\nSession ID: {ctx['session_id']}"
     if ctx.get("model"):
