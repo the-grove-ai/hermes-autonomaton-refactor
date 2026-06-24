@@ -243,7 +243,35 @@ tool_zones:
   # writes into ~/.grove (is_governed_path), and external-agent spawn all
   # classify RED; promoted-skill execution stays GREEN by effect. The bare
   # entry below is only the fallback for a bare classify("terminal") action.
-  terminal:                  yellow
+  # Phase 1.5 inline correction (runtime-config-sync): Sprint 53/53.2/69/BLOCKER
+  # policy rules were written directly to the runtime file during their sprints.
+  # Restored here as repo policy. Cohort 1 RED rules dropped — AST classifier
+  # (grove/shell_effects.py) owns privilege escalation per GRV-010.
+  terminal:
+    default_zone: yellow
+    rules:
+      # ── Google Workspace: governed by SUBCOMMAND ──
+      - match_pattern: '.*\bgoogle_api\.py\s+(gmail\s+(search|get|labels)|calendar\s+list|drive\s+(search|get|download)|contacts\s+list|sheets\s+get|docs\s+get)\b.*'
+        zone: green
+        reason: "Google Workspace read operations."
+      - match_pattern: '.*\b(google_api\.py|gws)\b.*'
+        zone: yellow
+        reason: "Google Workspace mutations require approval."
+      # ── Quarantined skills: halt BEFORE promoted-skills green rule ──
+      - match_pattern: '.*\.grove/skills/\.andon/.*'
+        zone: yellow
+        reason: "Quarantine gate: .andon skills require approval."
+      # ── Notion fallback skill ──
+      - match_pattern: '.*\bnotion\.py\s+(create-page|update-page)\b.*'
+        zone: yellow
+        reason: "Notion CLI fallback writes require approval."
+      - match_pattern: '.*\bnotion\.py\s+(search|get|query)\b.*'
+        zone: green
+        reason: "Notion CLI fallback reads."
+      # ── Promoted skills: operator-approved quarantine graduates ──
+      - match_pattern: '.*\.grove/skills/.*'
+        zone: green
+        reason: "Promoted skills execute without approval."
   skill_manage.create:       yellow
   skill_manage.promote:      red
   file_operations.write:     yellow

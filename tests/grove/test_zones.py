@@ -253,3 +253,177 @@ def test_T14_classify_before_initialize_raises(reset_singleton: None) -> None:
     from grove import zones as grove_zones
     with pytest.raises(RuntimeError, match="not initialized"):
         grove_zones.classify("anything")
+
+
+# ----- merge_zone_schemas tests (Phase 2 — runtime-config-sync) ---------------
+
+def test_merge_overlay_none_returns_repo_unchanged():
+    from grove.zones import merge_zone_schemas
+    repo = {
+        "schema_version": 1,
+        "zones": {"green": {"auto_approve": ["file.read.*"]}},
+        "tool_zones": {"terminal": "yellow"},
+    }
+    result = merge_zone_schemas(repo, None)
+    assert result == repo
+    # Must be a deep copy, not the same object
+    assert result is not repo
+
+
+def test_merge_overlay_tool_not_in_repo():
+    from grove.zones import merge_zone_schemas
+    repo = {"schema_version": 1, "zones": {}, "tool_zones": {}}
+    overlay = {
+        "schema_version": 1,
+        "tool_zones": {
+            "new_tool": {
+                "default_zone": "yellow",
+                "rules": [{"match_pattern": "^do_thing$", "zone": "green", "reason": "Operator approved: ok"}],
+            }
+        },
+    }
+    result = merge_zone_schemas(repo, overlay)
+    assert "new_tool" in result["tool_zones"]
+    assert result["tool_zones"]["new_tool"]["default_zone"] == "yellow"
+    assert len(result["tool_zones"]["new_tool"]["rules"]) == 1
+
+
+def test_merge_overlay_rules_appended_after_repo():
+    from grove.zones import merge_zone_schemas
+    repo = {
+        "schema_version": 1,
+        "zones": {},
+        "tool_zones": {
+            "terminal": {
+                "default_zone": "yellow",
+                "rules": [{"match_pattern": "^sudo.*", "zone": "red", "reason": "privilege"}],
+            }
+        },
+    }
+    overlay = {
+        "schema_version": 1,
+        "tool_zones": {
+            "terminal": {
+                "default_zone": "yellow",
+                "rules": [{"match_pattern": "^ls$", "zone": "green", "reason": "Operator approved: ls"}],
+            }
+        },
+    }
+    result = merge_zone_schemas(repo, overlay)
+    rules = result["tool_zones"]["terminal"]["rules"]
+    assert len(rules) == 2
+    # repo rule first, overlay rule second
+    assert rules[0]["match_pattern"] == "^sudo.*"
+    assert rules[1]["match_pattern"] == "^ls$"
+
+
+def test_merge_red_nongrantable_guard():
+    from grove.zones import merge_zone_schemas
+    repo = {
+        "schema_version": 1,
+        "zones": {},
+        "tool_zones": {
+            "terminal": {
+                "default_zone": "yellow",
+                "rules": [{"match_pattern": "^sudo.*", "zone": "red", "reason": "privilege"}],
+            }
+        },
+    }
+    overlay = {
+        "schema_version": 1,
+        "tool_zones": {
+            "terminal": {
+                "default_zone": "yellow",
+                "rules": [
+                    {"match_pattern": "^sudo.*", "zone": "green", "reason": "Operator approved: sudo"},
+                ],
+            }
+        },
+    }
+    result = merge_zone_schemas(repo, overlay)
+    rules = result["tool_zones"]["terminal"]["rules"]
+    # Overlay green rule for ^sudo.* must be dropped; only repo red rule remains
+    assert len(rules) == 1
+    assert rules[0]["zone"] == "red"
+
+
+# ----- _resolve_schema_path and _resolve_overlay_path tests -------------------
+
+def test_resolve_schema_path_returns_repo_path():
+    from grove.zones import _resolve_schema_path
+    result = _resolve_schema_path(None)
+    # Should be the repo config path, not ~/.grove/
+    assert "config" in str(result)
+    assert result.name == "zones.schema.yaml"
+    assert str(Path.home() / ".grove") not in str(result)
+
+
+def test_resolve_overlay_path_returns_none_when_absent(tmp_path, monkeypatch):
+    # Monkeypatch home so ~/.grove/zones.autonomaton.yaml doesn't exist
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    import grove.zones as _zones_module
+    import importlib
+    importlib.reload(_zones_module)
+    from grove.zones import _resolve_overlay_path
+    result = _resolve_overlay_path()
+    assert result is None
+
+
+# ----- save_zone_rule overlay redirect tests (Phase 3) -----------------------
+
+def test_save_zone_rule_writes_to_overlay(tmp_path, monkeypatch):
+    # Monkeypatch home so overlay goes to tmp_path
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / ".grove").mkdir()
+    # Initialize zones from repo
+    import grove.zones as _zones
+    import importlib
+    importlib.reload(_zones)
+    _zones.initialize()
+    from grove.zone_rules import save_zone_rule, _schema_path
+    overlay_path = _schema_path()
+    assert str(tmp_path) in str(overlay_path)
+    assert overlay_path.name == "zones.autonomaton.yaml"
+
+
+def test_save_zone_rule_dedup_guard(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / ".grove").mkdir()
+    import grove.zones as _zones
+    import importlib
+    importlib.reload(_zones)
+    _zones.initialize()
+    from grove.zone_rules import save_zone_rule, _schema_path
+    import yaml
+    save_zone_rule("test_tool", "^pattern$", "green", "Operator approved: test")
+    save_zone_rule("test_tool", "^pattern$", "green", "Operator approved: test again")  # dup
+    save_zone_rule("test_tool", "^other$", "green", "Operator approved: other")  # not dup
+    overlay_path = _schema_path()
+    data = yaml.safe_load(overlay_path.read_text())
+    rules = data["tool_zones"]["test_tool"]["rules"]
+    # Only 2 rules: the first ^pattern$ and ^other$ (second ^pattern$ was deduped)
+    patterns = [r["match_pattern"] for r in rules]
+    assert patterns.count("^pattern$") == 1
+    assert "^other$" in patterns
+
+
+# ----- reload picks up overlay changes ----------------------------------------
+
+def test_reload_picks_up_overlay(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / ".grove").mkdir()
+    import grove.zones as _zones
+    import importlib
+    importlib.reload(_zones)
+    classifier = _zones.initialize()
+    # Before overlay exists, test_reload_tool should be yellow (default)
+    result_before = classifier.classify("test_reload_tool")
+    assert result_before.zone == "yellow"
+    # Write an overlay with test_reload_tool → green
+    overlay = tmp_path / ".grove" / "zones.autonomaton.yaml"
+    overlay.write_text(
+        "schema_version: 1\ntool_zones:\n  test_reload_tool: green\n"
+    )
+    classifier.reload()
+    result_after = classifier.classify("test_reload_tool")
+    assert result_after.zone == "green"
