@@ -353,9 +353,9 @@ class TestSaveZoneRule:
         # hierarchical (with operator-directed sudo/su/doas/GAPI rules),
         # so coupling this test to it would mean asserting the count of
         # those rules. This test's invariant is narrower: when
-        # ``save_zone_rule`` is called against a bare-string entry, it
-        # normalises that entry to the dict form. Build the bare-string
-        # state explicitly.
+        # ``save_zone_rule`` is called against a bare-string entry in the
+        # overlay, it normalises that entry to the dict form. Build the
+        # bare-string state explicitly in the overlay.
         target.write_text(textwrap.dedent("""
             schema_version: 1
             zones:
@@ -369,13 +369,22 @@ class TestSaveZoneRule:
         gz._singleton = None
         gz.initialize(target)
 
+        # Pre-populate the overlay with a bare-string entry so save_zone_rule
+        # exercises the normalise-bare-to-dict path on the overlay file.
+        overlay = tmp_path / ".grove" / "zones.autonomaton.yaml"
+        overlay.write_text(textwrap.dedent("""
+            schema_version: 1
+            tool_zones:
+              terminal: yellow
+        """).lstrip())
+
         zr.save_zone_rule(
             "terminal", r"^rm\s+/tmp/.*", "green", "Tmp cleanup.",
         )
 
-        # The bare `terminal: yellow` should now be a dict with rules.
+        # The bare `terminal: yellow` in the overlay should now be a dict with rules.
         import yaml as _yaml
-        with open(target) as fh:
+        with open(overlay) as fh:
             data = _yaml.safe_load(fh)
         terminal_entry = data["tool_zones"]["terminal"]
         assert isinstance(terminal_entry, dict), (
@@ -387,8 +396,8 @@ class TestSaveZoneRule:
         assert terminal_entry["rules"][0]["zone"] == "green"
 
     def test_save_preserves_schema_comments(self, tmp_path: Path, monkeypatch):
-        """ruamel.yaml round-trips the operator's primary governance
-        interface without stripping its humanity."""
+        """ruamel.yaml round-trips the operator overlay without stripping
+        its humanity — comments in the overlay file survive a save cycle."""
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
         target = tmp_path / ".grove" / "zones.schema.yaml"
@@ -397,23 +406,33 @@ class TestSaveZoneRule:
             / "config" / "zones.schema.yaml",
             target,
         )
+        # Seed the overlay with a commented entry so we can verify ruamel
+        # preserves comments across a save cycle.
+        overlay = tmp_path / ".grove" / "zones.autonomaton.yaml"
+        overlay.write_text(textwrap.dedent("""
+            # Operator overlay — zone customisations.
+            schema_version: 1
+            tool_zones:
+              # my_tool is safe for reads
+              my_tool: green
+        """).lstrip())
         gz._singleton = None
         gz.initialize(target)
 
         before = sum(
-            1 for line in target.read_text().splitlines()
+            1 for line in overlay.read_text().splitlines()
             if line.lstrip().startswith("#")
         )
         zr.save_zone_rule(
-            "terminal", r"^rm\s+/tmp/.*", "green", "Tmp cleanup.",
+            "my_tool", r"^ls\s+/tmp/.*", "green", "Tmp listing.",
         )
         after = sum(
-            1 for line in target.read_text().splitlines()
+            1 for line in overlay.read_text().splitlines()
             if line.lstrip().startswith("#")
         )
         assert after == before, (
             f"Comment lines dropped during save: before={before} after={after}. "
-            f"ruamel.yaml should preserve all schema commentary."
+            f"ruamel.yaml should preserve all overlay commentary."
         )
 
     def test_save_then_reload_makes_rule_effective(self, tmp_path: Path, monkeypatch):
@@ -421,17 +440,15 @@ class TestSaveZoneRule:
         a process restart."""
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
-        target = tmp_path / ".grove" / "zones.schema.yaml"
-        shutil.copy(
-            Path(__file__).resolve().parent.parent.parent
-            / "config" / "zones.schema.yaml",
-            target,
-        )
+        # Use initialize() with no explicit path so the classifier loads
+        # the repo default schema (which is the canonical policy path and
+        # the only path for which overlay loading is enabled).
         gz._singleton = None
-        gz.initialize(target)
+        gz.initialize()
         cls = gz._singleton
 
-        # Before: no hierarchical rule, `rm /tmp/x` falls through to legacy → default yellow.
+        # Before: no overlay yet; `rm /tmp/x` doesn't match any of the 6
+        # terminal rules in the repo schema and falls to default_zone: yellow.
         r_before = cls.classify_command_string(
             "rm /tmp/x", "command.execute.rm", tool_id="terminal",
         )
@@ -441,7 +458,7 @@ class TestSaveZoneRule:
             "terminal", r"^rm\s+/tmp/.*", "green", "Tmp cleanup.",
         )
 
-        # After: hierarchical rule fires, returning green.
+        # After: overlay rule appended; reload merges it; classification → green.
         r_after = gz._singleton.classify_command_string(
             "rm /tmp/x", "command.execute.rm", tool_id="terminal",
         )

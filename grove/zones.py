@@ -1,9 +1,9 @@
 """Zone classifier for the Grove Autonomaton.
 
-Reads ``~/.grove/zones.schema.yaml`` (or the repo default at
-``config/zones.schema.yaml``) and exposes a pure
-``classify(action) -> ZoneResult`` query. No enforcement, no prompts, no
-blocking. Sprint 06a turns this output into the Sovereignty Gate.
+Reads the repo policy schema at ``config/zones.schema.yaml`` and optionally
+merges an operator overlay from ``~/.grove/zones.autonomaton.yaml``, then
+exposes a pure ``classify(action) -> ZoneResult`` query. No enforcement, no
+prompts, no blocking. Sprint 06a turns this output into the Sovereignty Gate.
 
 Action identifiers are opaque pure-dot-notation strings. The tool dispatch
 layer (Sprint 06a) is responsible for mapping filesystem paths, command
@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -373,16 +372,54 @@ class ZoneClassifier:
 
     # ----- internals ----------------------------------------------------------
 
-    def _load_into_self(self) -> None:
-        """Read, parse, validate; mutate self atomically on success."""
-        with open(self._schema_path) as fh:
-            raw = yaml.safe_load(fh)
+    def _load_merged(self) -> None:
+        """Load repo policy, merge overlay if present, apply to self.
 
-        if not isinstance(raw, dict):
+        The overlay (``~/.grove/zones.autonomaton.yaml``) is only loaded
+        when ``self._schema_path`` is the canonical repo policy path.
+        Classifiers constructed with an explicit non-repo path (e.g. in
+        tests or a custom deployment) load only that file — the overlay
+        extends the repo policy, not an arbitrary schema.
+        """
+        with open(self._schema_path) as fh:
+            repo_data = yaml.safe_load(fh)
+        if not isinstance(repo_data, dict):
             raise ValueError(
                 f"zones schema at {self._schema_path} did not parse to a mapping"
             )
 
+        # Only load the overlay when using the canonical repo policy path.
+        repo_default = (
+            Path(__file__).resolve().parent.parent / "config" / "zones.schema.yaml"
+        )
+        overlay_data = None
+        if self._schema_path.resolve() == repo_default.resolve():
+            overlay_path = _resolve_overlay_path()
+            if overlay_path is not None:
+                try:
+                    with open(overlay_path) as fh:
+                        overlay_data = yaml.safe_load(fh)
+                except yaml.YAMLError as exc:
+                    logger.warning(
+                        "[zones] overlay at %s is not valid YAML (%s); ignoring.",
+                        overlay_path, exc,
+                    )
+                    overlay_data = None
+                if overlay_data is not None and not isinstance(overlay_data, dict):
+                    logger.warning(
+                        "[zones] overlay at %s did not parse to a mapping; ignoring.",
+                        overlay_path,
+                    )
+                    overlay_data = None
+
+        merged = merge_zone_schemas(repo_data, overlay_data)
+        self._load_from_dict(merged)
+
+    def _load_into_self(self) -> None:
+        self._load_merged()
+
+    def _load_from_dict(self, raw: dict) -> None:
+        """Validate and atomically apply a merged schema dict to self."""
         version = raw.get("schema_version")
         if version != 1:
             raise ValueError(
@@ -531,12 +568,13 @@ def initialize(schema_path: Optional[Path] = None) -> ZoneClassifier:
 
     Resolution order for ``schema_path``:
         1. Explicit argument, if given.
-        2. ``~/.grove/zones.schema.yaml`` (operator copy).
-        3. Repo default at ``<grove-package-parent>/config/zones.schema.yaml``,
-           copied to the operator location on first run.
+        2. Repo default at ``<grove-package-parent>/config/zones.schema.yaml``.
 
-    Raises FileNotFoundError if neither the operator copy nor the repo
-    default exists.
+    If ``~/.grove/zones.autonomaton.yaml`` exists, it is loaded as an operator
+    overlay and merged on top of the repo policy (overlay rules appended after
+    repo rules, red-non-grantable guard applied).
+
+    Raises FileNotFoundError if the repo policy schema does not exist.
     """
     global _singleton
     _singleton = ZoneClassifier(_resolve_schema_path(schema_path))
@@ -565,18 +603,107 @@ def _resolve_schema_path(explicit: Optional[Path]) -> Path:
     if explicit is not None:
         return Path(explicit)
 
-    operator_copy = Path.home() / ".grove" / "zones.schema.yaml"
-    if operator_copy.exists():
-        return operator_copy
-
     repo_default = (
         Path(__file__).resolve().parent.parent / "config" / "zones.schema.yaml"
     )
     if not repo_default.exists():
         raise FileNotFoundError(
-            f"no zones schema found at {operator_copy} or {repo_default}"
+            f"repo policy schema not found at {repo_default} — "
+            f"ANDON A1: policy source absent."
         )
+    return repo_default
 
-    operator_copy.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(repo_default, operator_copy)
-    return operator_copy
+
+def _resolve_overlay_path() -> Optional[Path]:
+    """Return the operator overlay path if it exists, else None."""
+    overlay = Path.home() / ".grove" / "zones.autonomaton.yaml"
+    if overlay.exists():
+        return overlay
+    return None
+
+
+def merge_zone_schemas(
+    repo_data: dict,
+    overlay_data: Optional[dict],
+) -> dict:
+    """Merge repo policy and operator overlay into a single schema dict.
+
+    Overlay rules are appended AFTER repo rules per tool (first-match-wins
+    at classify time means repo policy evaluates before operator overrides).
+
+    Red-non-grantable guard (V1 — literal string match): if repo defines a
+    rule with zone=red for a match_pattern string, and overlay defines a rule
+    with zone != red for the SAME literal match_pattern, repo wins and a
+    warning is logged. Regex intersection is out of scope; rule ordering is
+    the runtime safety guard.
+
+    Zone category lists (auto_approve / proposes / sovereign) are repo-only.
+    Overlay cannot modify category membership.
+    """
+    import copy
+    if overlay_data is None:
+        return copy.deepcopy(repo_data)
+
+    merged = copy.deepcopy(repo_data)
+
+    overlay_tool_zones = (overlay_data.get("tool_zones") or {})
+    merged_tool_zones = merged.setdefault("tool_zones", {})
+
+    # Build a lookup of repo red patterns per tool for the guard.
+    # Key: (tool_id, match_pattern) -> True if zone is red in repo.
+    repo_red_patterns: dict[tuple, bool] = {}
+    for tool_id, value in (repo_data.get("tool_zones") or {}).items():
+        if isinstance(value, dict):
+            for rule in (value.get("rules") or []):
+                if isinstance(rule, dict) and rule.get("zone") == "red":
+                    repo_red_patterns[(tool_id, rule.get("match_pattern"))] = True
+
+    for tool_id, overlay_entry in overlay_tool_zones.items():
+        overlay_rules = []
+        overlay_default = None
+
+        if isinstance(overlay_entry, str):
+            overlay_default = overlay_entry
+        elif isinstance(overlay_entry, dict):
+            overlay_default = overlay_entry.get("default_zone")
+            overlay_rules = list(overlay_entry.get("rules") or [])
+
+        # Filter overlay rules through the red-non-grantable guard.
+        safe_overlay_rules = []
+        for rule in overlay_rules:
+            if not isinstance(rule, dict):
+                continue
+            pattern = rule.get("match_pattern")
+            if repo_red_patterns.get((tool_id, pattern)):
+                logger.warning(
+                    "[zones] red-non-grantable guard: overlay rule for tool %r "
+                    "pattern %r (zone=%r) conflicts with repo red rule — "
+                    "repo wins; overlay rule dropped.",
+                    tool_id, pattern, rule.get("zone"),
+                )
+                continue
+            safe_overlay_rules.append(rule)
+
+        existing = merged_tool_zones.get(tool_id)
+        if existing is None:
+            # Tool only in overlay — add it.
+            merged_tool_zones[tool_id] = {
+                "default_zone": overlay_default or "yellow",
+                "rules": safe_overlay_rules,
+            }
+        elif isinstance(existing, str):
+            # Repo has bare string — normalise to dict, append overlay rules.
+            effective_default = overlay_default or existing
+            merged_tool_zones[tool_id] = {
+                "default_zone": effective_default,
+                "rules": safe_overlay_rules,
+            }
+        elif isinstance(existing, dict):
+            # Repo has hierarchical entry — use overlay default if specified,
+            # append overlay rules after repo rules.
+            if overlay_default:
+                existing["default_zone"] = overlay_default
+            repo_rules = list(existing.get("rules") or [])
+            existing["rules"] = repo_rules + safe_overlay_rules
+
+    return merged

@@ -376,14 +376,10 @@ def synthesize_pattern(command: str) -> SynthesisResult:
 # with a loud log so the comment loss is visible.
 
 def _schema_path() -> Path:
-    """Mirror grove.zones._resolve_schema_path for the write target."""
-    operator_copy = Path.home() / ".grove" / "zones.schema.yaml"
-    operator_copy.parent.mkdir(parents=True, exist_ok=True)
-    if not operator_copy.exists():
-        # Triggering a read-side initialize() copies the repo default
-        # into place; reuse that path so write doesn't race with first-run.
-        _zones.initialize()
-    return operator_copy
+    """Return the operator overlay path, creating parent dir if needed."""
+    overlay = Path.home() / ".grove" / "zones.autonomaton.yaml"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    return overlay
 
 
 def _write_with_ruamel(path: Path, data) -> bool:
@@ -443,19 +439,23 @@ def save_zone_rule(
         raise ValueError(f"pattern rejected by safety check: {safe_why}")
 
     path = _schema_path()
-    data = _read_with_ruamel(path)
-    if data is None:
-        # ruamel failed — fall back to pyyaml on the read side too so
-        # we at least produce a valid schema; loud log makes the
-        # comment loss visible.
-        logger.error(
-            "[zone_rules] ruamel.yaml unavailable; falling back to pyyaml. "
-            "Schema comments will be stripped from %s.",
-            path,
-        )
-        import yaml as _yaml
-        with open(path) as fh:
-            data = _yaml.safe_load(fh) or {}
+    if not path.exists():
+        # Overlay does not exist yet — seed with an empty schema dict.
+        data = {"schema_version": 1, "tool_zones": {}}
+    else:
+        data = _read_with_ruamel(path)
+        if data is None:
+            # ruamel failed — fall back to pyyaml on the read side too so
+            # we at least produce a valid schema; loud log makes the
+            # comment loss visible.
+            logger.error(
+                "[zone_rules] ruamel.yaml unavailable; falling back to pyyaml. "
+                "Schema comments will be stripped from %s.",
+                path,
+            )
+            import yaml as _yaml
+            with open(path) as fh:
+                data = _yaml.safe_load(fh) or {}
 
     if not isinstance(data, dict):
         raise ValueError(f"{path} did not parse to a mapping")
@@ -481,7 +481,24 @@ def save_zone_rule(
         }
     elif isinstance(existing, dict):
         rules = existing.setdefault("rules", [])
-        rules.append({"match_pattern": pattern, "zone": zone, "reason": reason or ""})
+        # Dedup guard: skip if (match_pattern, zone) already present in rules.
+        if any(
+            r.get("match_pattern") == pattern and r.get("zone") == zone
+            for r in rules
+            if isinstance(r, dict)
+        ):
+            logger.info(
+                "[zone_rules] duplicate zone rule skipped for %r: pattern=%r zone=%s",
+                tool_id, pattern, zone,
+            )
+            # Reload so callers holding the singleton stay current (overlay unchanged).
+            try:
+                _zones.reload()
+            except RuntimeError:
+                pass
+            return
+        else:
+            rules.append({"match_pattern": pattern, "zone": zone, "reason": reason or ""})
     else:
         raise ValueError(
             f"tool_zones[{tool_id!r}] is not a string or mapping; got "
