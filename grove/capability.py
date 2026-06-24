@@ -51,7 +51,14 @@ __all__ = [
     "Capability",
     "IllegalTransitionError",
     "LEGAL_TRANSITIONS",
+    "VALID_PLATFORMS",
 ]
+
+
+# ── Platform surface registry ────────────────────────────────────────────────
+# Public constant — downstream subsystems (gateway filter, tool-admission
+# checks) enumerate valid surfaces from here rather than duplicating the list.
+VALID_PLATFORMS: frozenset = frozenset({"telegram", "cli", "api", "web", "discord", "cron"})
 
 
 # ── Enums (str-valued; serialize as lowercase strings) ───────────────────────
@@ -320,6 +327,10 @@ class Capability:
     # GRV-009 E6a — skill-scoped presentation grouping (lock 2). None for every
     # non-skill kind; required on kind=skill (see validate()). Governance-free.
     skill: "SkillPresentation | None" = None
+    # tool-admission-unification: surface filter. "all" means every platform
+    # receives this capability. A list restricts delivery to the named surfaces.
+    # Valid values: telegram, cli, api, web, discord, cron.
+    platform: list[str] | str = "all"
 
     def __post_init__(self) -> None:
         self.validate()
@@ -428,6 +439,27 @@ class Capability:
             raise ValueError("failure.circuit_breaker.threshold must be > 0")
         if cb.window_seconds <= 0:
             raise ValueError("failure.circuit_breaker.window_seconds must be > 0")
+
+        p = self.platform
+        if isinstance(p, str):
+            if p != "all":
+                raise ValueError(
+                    f"platform must be 'all' or a non-empty list of platform strings; "
+                    f"got string {p!r}. Valid platform values: {sorted(VALID_PLATFORMS)}"
+                )
+        elif isinstance(p, list):
+            if not p:
+                raise ValueError("platform list must be non-empty; use 'all' for all surfaces")
+            if len(set(p)) != len(p):
+                raise ValueError("platform list must not repeat a surface name")
+            invalid = set(p) - VALID_PLATFORMS
+            if invalid:
+                raise ValueError(
+                    f"platform list contains unknown values {sorted(invalid)!r}. "
+                    f"Valid: {sorted(VALID_PLATFORMS)}"
+                )
+        else:
+            raise ValueError(f"platform must be 'all' or a list of strings; got {type(p)!r}")
 
     # ── Lifecycle state machine ──────────────────────────────────────────────
 
@@ -543,6 +575,8 @@ class Capability:
         }
         if self.skill is not None:
             d["skill"] = {"category": self.skill.category}
+        if self.platform != "all":
+            d["platform"] = list(self.platform) if isinstance(self.platform, list) else self.platform
         return d
 
     @classmethod
@@ -651,6 +685,9 @@ class Capability:
         if "skill" in d and d["skill"] is not None:
             sk = d["skill"]
             kwargs["skill"] = SkillPresentation(category=sk.get("category", "general"))
+
+        if "platform" in d:
+            kwargs["platform"] = d["platform"]
 
         if "failure" in d:
             f = d["failure"]
