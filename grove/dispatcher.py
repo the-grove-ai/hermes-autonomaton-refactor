@@ -2436,6 +2436,16 @@ class Dispatcher:
                 tier_selected=(tier_override or _current_tier()),
                 model_used=model_used,
                 tools_yielded=tuple(self._current_turn_tools_yielded),
+                # seam5-intent-stickiness-v1 — the OFFERED surface (resolved
+                # tool names) the agent computed for this turn, captured from
+                # _last_tool_selection.selected_names. Distinct from
+                # tools_yielded (actually called); the carry-forward heuristic
+                # reads this off the previous turn.
+                tools_offered=tuple(
+                    (getattr(agent, "_last_tool_selection", {}) or {}).get(
+                        "selected_names"
+                    ) or ()
+                ),
                 api_calls=api_calls,
                 duration_ms=round(duration_ms, 2),
                 final_response_chars=final_response_chars,
