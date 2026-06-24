@@ -23,6 +23,8 @@ tier_rule:
     confidence_threshold: 0.95
     shadow_window: 20
 zone: yellow
+platform:
+- discord
 telemetry:
   feed: intent_feed
   track:
