@@ -5241,24 +5241,27 @@ class AIAgent:
         """
         if not final_response:
             return final_response
-        # kaizen-push-cadence-v1 (Fix C) — rate-limit the proactive push to at
-        # most one per _PUSH_COOLDOWN_TURNS. Turn-based (not wall-clock) so it's
-        # deterministic and rides the already-hydrated _user_turn_count. Placed
-        # before the queue reads so a suppressed turn skips read_all() entirely.
-        # _last_push_turn is ephemeral (lazy getattr, resets to None on agent
-        # eviction) — same lifecycle as _surfaced_proposal_ids.
+        # kaizen-push-cadence-v1.1 (Fix C) — rate-limit the proactive push to at
+        # most one per _PUSH_COOLDOWN_TURNS. State lives in the session-scoped
+        # .push_cadence.json, NOT agent attributes: the gateway rebuilds the
+        # agent on nearly every turn (per-turn enabled_toolsets busts the cache
+        # signature), which wiped v1's ephemeral _last_push_turn /
+        # _surfaced_proposal_ids and made BOTH the cooldown and the dedup inert.
+        # _user_turn_count is rehydrated from history so the turn delta is
+        # reliable; the file makes _last and the dedup set survive the rebuild.
+        # Read before read_all() so a suppressed turn still skips the queue scan.
+        from tools.flywheel_review_tool import _read_push_cadence, _write_push_cadence
+        _sid = getattr(self, "session_id", "") or ""
+        _cad = _read_push_cadence(_sid)
         _turn = getattr(self, "_user_turn_count", 0) or 0
-        _last = getattr(self, "_last_push_turn", None)
+        _last = _cad["last_push_turn"]
         if _last is not None and (_turn - _last) < self._PUSH_COOLDOWN_TURNS:
             return final_response
         try:
             from datetime import timezone
             from grove.flywheel_cli import _PUSH_PRIORITY, compose_offering
 
-            surfaced = getattr(self, "_surfaced_proposal_ids", None)
-            if surfaced is None:
-                surfaced = set()
-                self._surfaced_proposal_ids = surfaced
+            surfaced = _cad["surfaced_ids"]  # session-scoped, survives rebuild
 
             # Session anchor — naive-local session_start → aware UTC. None is
             # fine: routing renderables treat a missing anchor as ineligible;
@@ -5315,7 +5318,15 @@ class AIAgent:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[kaizen-offerings] last-offered write skipped: %r", exc)
             offer = compose_offering(chosen, is_push=True)
-            self._last_push_turn = _turn  # Fix C — start the cooldown clock
+            # kaizen-push-cadence-v1.1 — persist cooldown + dedup so they survive
+            # the gateway's per-turn agent rebuild. surfaced_connectors is owned
+            # by the connector-offer surface (written there); preserve it as read.
+            _write_push_cadence(
+                _sid,
+                last_push_turn=_turn,
+                surfaced_ids=surfaced,
+                surfaced_connectors=_cad["surfaced_connectors"],
+            )
             return final_response.rstrip() + "\n\n" + offer
         except Exception as exc:  # noqa: BLE001
             logger.debug("[kaizen-offerings] push append skipped: %r", exc)
@@ -17241,13 +17252,13 @@ class AIAgent:
                 if isinstance(m, dict) and m.get("role") == "assistant"
                 for tc in (m.get("tool_calls") or [])
             )
-            # kaizen-push-cadence-v1 (Fix D) — an explicit dismiss
+            # kaizen-push-cadence-v1.1 (Fix D) — an explicit dismiss
             # (reject_proposal this turn) is an opt-out signal: reset the
             # cooldown clock forward so the operator who said "skip the shop
             # floor note" gets _PUSH_COOLDOWN_TURNS quiet turns, not a fresh
-            # push next turn. The tool layer can't reach agent state, so we set
-            # it here at the call site where self is in scope. Composes with
-            # Fix C on the shared _last_push_turn.
+            # push next turn. Read-modify-write the session-scoped cadence file
+            # (preserving the dedup sets) so the extension survives the gateway's
+            # per-turn agent rebuild — an in-memory attr would be wiped.
             _rejected_this_turn = any(
                 ((tc or {}).get("function", {}) or {}).get("name") == "reject_proposal"
                 for m in messages[_last_user_idx + 1:]
@@ -17255,7 +17266,17 @@ class AIAgent:
                 for tc in (m.get("tool_calls") or [])
             )
             if _rejected_this_turn:
-                self._last_push_turn = getattr(self, "_user_turn_count", 0) or 0
+                from tools.flywheel_review_tool import (
+                    _read_push_cadence, _write_push_cadence,
+                )
+                _rd_sid = getattr(self, "session_id", "") or ""
+                _rd_cad = _read_push_cadence(_rd_sid)
+                _write_push_cadence(
+                    _rd_sid,
+                    last_push_turn=getattr(self, "_user_turn_count", 0) or 0,
+                    surfaced_ids=_rd_cad["surfaced_ids"],
+                    surfaced_connectors=_rd_cad["surfaced_connectors"],
+                )
             if not _flywheel_ran_this_turn:
                 final_response = self._append_pending_offer(final_response)
             # connector-failure-andon-v1 — surface a failed connector ALONGSIDE

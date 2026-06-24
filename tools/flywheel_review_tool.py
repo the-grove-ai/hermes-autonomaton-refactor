@@ -158,6 +158,80 @@ def _clear_last_offered() -> None:
         pass
 
 
+# kaizen-push-cadence-v1.1 — session-scoped persistence for proactive-push
+# cadence. v1 stored the cooldown (_last_push_turn) and the dedup set
+# (_surfaced_proposal_ids) as ephemeral AIAgent attributes; the gateway rebuilds
+# the agent on nearly every turn (per-turn enabled_toolsets busts the agent
+# cache signature), wiping both and making the cooldown AND the dedup inert.
+# This file survives the rebuild — the same proven pattern as _last_offered.
+# Single-slot, content-keyed by session_id: a record from another session reads
+# as empty, so a session boundary resets cadence (the once-per-session semantics
+# the in-memory sets had). ``surfaced_connectors`` is in the schema for the
+# deferred connector-dedup fold; the proposal path preserves it untouched.
+def _push_cadence_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / ".push_cadence.json"
+
+
+def _read_push_cadence(session_id: str) -> dict:
+    """Cooldown + dedup state for THIS session's proactive pushes.
+
+    Returns ``{"last_push_turn": int|None, "surfaced_ids": set[str],
+    "surfaced_connectors": set[str]}``. Missing file, parse error, or a record
+    written under a different session_id all read as empty defaults (a session
+    boundary resets cadence). Best-effort; never raises.
+    """
+    empty = {"last_push_turn": None, "surfaced_ids": set(), "surfaced_connectors": set()}
+    try:
+        path = _push_cadence_path()
+        if not path.exists():
+            return empty
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(rec, dict) or rec.get("session_id") != (session_id or ""):
+            return empty
+        lpt = rec.get("last_push_turn")
+        return {
+            "last_push_turn": lpt if isinstance(lpt, int) else None,
+            "surfaced_ids": set(rec.get("surfaced_ids") or []),
+            "surfaced_connectors": set(rec.get("surfaced_connectors") or []),
+        }
+    except Exception:  # noqa: BLE001
+        return empty
+
+
+def _write_push_cadence(
+    session_id: str,
+    *,
+    last_push_turn: Optional[int],
+    surfaced_ids: set,
+    surfaced_connectors: set,
+) -> None:
+    """Atomically persist this session's push cadence. Best-effort; never raises.
+
+    A write failure degrades the cooldown toward may-surface-again (never toward
+    silence): the operator always still sees proposals — we fail toward
+    visibility, the safe direction for this UX surface.
+    """
+    try:
+        from datetime import datetime, timezone
+        path = _push_cadence_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps({
+                "session_id": session_id or "",
+                "last_push_turn": last_push_turn,
+                "surfaced_ids": sorted(surfaced_ids),
+                "surfaced_connectors": sorted(surfaced_connectors),
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except Exception:  # noqa: BLE001 — never block the push on a persistence hiccup
+        pass
+
+
 def _capture(fn: Callable[[], int]) -> Tuple[int, str]:
     """Run a flywheel_cli command, capturing its operator-facing stdout/stderr.
 
