@@ -466,6 +466,89 @@ class TestSaveZoneRule:
             f"Rule did not take effect after save+reload; got {r_after.zone}."
         )
 
+    def test_save_tool_id_as_pattern_promotes_default_zone(self, tmp_path: Path, monkeypatch):
+        """When pattern == tool_id, save_zone_rule promotes default_zone instead
+        of appending a semantically inert rule."""
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        (tmp_path / ".grove").mkdir()
+        overlay = tmp_path / ".grove" / "zones.autonomaton.yaml"
+
+        # Seed overlay with a bare-string entry and an inert rule (simulating
+        # accumulation that happened before this fix).
+        import yaml as _yaml
+        overlay.write_text(_yaml.dump({
+            "schema_version": 1,
+            "tool_zones": {
+                "execute_code": {
+                    "default_zone": "yellow",
+                    "rules": [
+                        {"match_pattern": "execute_code", "zone": "green",
+                         "reason": "Operator approved: allow execute_code actions."},
+                    ],
+                },
+            },
+        }))
+
+        import grove.zones as _zones_mod
+        import importlib
+        importlib.reload(_zones_mod)
+        _zones_mod.initialize()
+
+        # Calling save_zone_rule with pattern == tool_id triggers promotion.
+        zr.save_zone_rule("execute_code", "execute_code", "green", "Operator approved: allow execute_code actions.")
+
+        data = _yaml.safe_load(overlay.read_text())
+        entry = data["tool_zones"]["execute_code"]
+        # default_zone must be promoted to green.
+        assert entry.get("default_zone") == "green" or entry == "green" or entry == {"default_zone": "green"}
+        # Inert rule must be removed.
+        assert "rules" not in entry or entry.get("rules") == []
+
+        # A second call is a no-op (dedup via promotion path idempotency).
+        zr.save_zone_rule("execute_code", "execute_code", "green", "again")
+        data2 = _yaml.safe_load(overlay.read_text())
+        entry2 = data2["tool_zones"]["execute_code"]
+        assert entry2 == entry  # unchanged
+
+    def test_save_tool_id_as_pattern_keeps_real_rules(self, tmp_path: Path, monkeypatch):
+        """When promoting via tool-id-as-pattern, real command-string rules
+        (match_pattern != tool_id) are preserved."""
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        (tmp_path / ".grove").mkdir()
+        overlay = tmp_path / ".grove" / "zones.autonomaton.yaml"
+
+        import yaml as _yaml
+        overlay.write_text(_yaml.dump({
+            "schema_version": 1,
+            "tool_zones": {
+                "my_tool": {
+                    "default_zone": "yellow",
+                    "rules": [
+                        {"match_pattern": "my_tool", "zone": "green",
+                         "reason": "Operator approved: inert."},
+                        {"match_pattern": r"^real_command\s+.*", "zone": "green",
+                         "reason": "Operator approved: real command rule."},
+                    ],
+                },
+            },
+        }))
+
+        import grove.zones as _zones_mod
+        import importlib
+        importlib.reload(_zones_mod)
+        _zones_mod.initialize()
+
+        zr.save_zone_rule("my_tool", "my_tool", "green", "Operator approved: promote.")
+
+        data = _yaml.safe_load(overlay.read_text())
+        entry = data["tool_zones"]["my_tool"]
+        assert entry["default_zone"] == "green"
+        # Real rule kept; inert rule dropped.
+        rules = entry.get("rules", [])
+        patterns = [r["match_pattern"] for r in rules]
+        assert r"^real_command\s+.*" in patterns
+        assert "my_tool" not in patterns
+
     def test_save_refuses_redos_pattern(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
