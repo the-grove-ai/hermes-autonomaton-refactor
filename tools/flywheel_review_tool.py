@@ -299,8 +299,12 @@ def review_proposals(*, queue_path: Optional[Path] = None) -> str:
         key=lambda r: (flywheel_cli._PUSH_PRIORITY.get(r.type, 99), r.sort_key)
     )
     lines = [
-        f"[{r.type}] {flywheel_cli.get_renderer(r.type)(r)} (ID: {r.short_id})"
-        for r in renderables
+        {
+            "ordinal": i + 1,
+            "display": f"[{r.type}] {flywheel_cli.get_renderer(r.type)(r)}",
+            "id": r.short_id,
+        }
+        for i, r in enumerate(renderables)
     ]
     return json.dumps(
         {"success": True, "pending_count": len(lines), "proposals": lines},
