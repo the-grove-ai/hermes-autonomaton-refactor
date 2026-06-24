@@ -181,7 +181,12 @@ def _read_push_cadence(session_id: str) -> dict:
     written under a different session_id all read as empty defaults (a session
     boundary resets cadence). Best-effort; never raises.
     """
-    empty = {"last_push_turn": None, "surfaced_ids": set(), "surfaced_connectors": set()}
+    empty = {
+        "last_push_turn": None,
+        "surfaced_ids": set(),
+        "surfaced_connectors": set(),
+        "connector_active_map": {},
+    }
     try:
         path = _push_cadence_path()
         if not path.exists():
@@ -194,6 +199,10 @@ def _read_push_cadence(session_id: str) -> dict:
             "last_push_turn": lpt if isinstance(lpt, int) else None,
             "surfaced_ids": set(rec.get("surfaced_ids") or []),
             "surfaced_connectors": set(rec.get("surfaced_connectors") or []),
+            "connector_active_map": {
+                str(k): str(v)
+                for k, v in (rec.get("connector_active_map") or {}).items()
+            },
         }
     except Exception:  # noqa: BLE001
         return empty
@@ -205,6 +214,7 @@ def _write_push_cadence(
     last_push_turn: Optional[int],
     surfaced_ids: set,
     surfaced_connectors: set,
+    connector_active_map: dict = None,
 ) -> None:
     """Atomically persist this session's push cadence. Best-effort; never raises.
 
@@ -223,6 +233,7 @@ def _write_push_cadence(
                 "last_push_turn": last_push_turn,
                 "surfaced_ids": sorted(surfaced_ids),
                 "surfaced_connectors": sorted(surfaced_connectors),
+                "connector_active_map": dict(connector_active_map or {}),
                 "ts": datetime.now(timezone.utc).isoformat(),
             }),
             encoding="utf-8",

@@ -5417,6 +5417,7 @@ class AIAgent:
                 last_push_turn=_turn,
                 surfaced_ids=surfaced,
                 surfaced_connectors=_cad["surfaced_connectors"],
+                connector_active_map=_cad["connector_active_map"],
             )
             return final_response.rstrip() + "\n\n" + offer
         except Exception as exc:  # noqa: BLE001
@@ -5455,14 +5456,45 @@ class AIAgent:
             )
             from tools.mcp_tool import get_connect_failures
 
+            from tools.flywheel_review_tool import _read_push_cadence, _write_push_cadence
+            _cf_sid = getattr(self, "session_id", "") or ""
+            _cf_cad = _read_push_cadence(_cf_sid)
+
             shown = getattr(self, "_surfaced_connector_ids", None)
             if shown is None:
-                shown = set()
+                shown = set(_cf_cad["surfaced_connectors"])
                 self._surfaced_connector_ids = shown
+
             active = getattr(self, "_connector_failure_offers", None)
             if active is None:
                 active = {}
                 self._connector_failure_offers = active
+
+            # Orphan self-heal (ANDON A1): pids in shown with no active-map entry
+            # cannot be evicted — they would permanently suppress the connector.
+            # Evict them from shown now and persist the cleaned set.
+            _stored_map = _cf_cad["connector_active_map"]
+            _orphans = shown - set(_stored_map.keys())
+            if _orphans:
+                logger.warning(
+                    "[connector-andon] orphaned pids in surfaced_connectors "
+                    "(no active-map entry): %s — evicting to restore fail-open",
+                    _orphans,
+                )
+                shown -= _orphans
+                try:
+                    _write_push_cadence(
+                        _cf_sid,
+                        last_push_turn=_cf_cad["last_push_turn"],
+                        surfaced_ids=_cf_cad["surfaced_ids"],
+                        surfaced_connectors=shown,
+                        connector_active_map=_stored_map,
+                    )
+                except Exception as _exc:  # ANDON A2 — store write failure
+                    logger.error(
+                        "[connector-andon] orphan cleanup write failed (ephemeral only): %r",
+                        _exc,
+                    )
 
             for name, signature in get_connect_failures().items():
                 if not self._session_wants_connector(name):
@@ -5479,6 +5511,18 @@ class AIAgent:
                 )
                 active[pid] = proposal
                 shown.add(pid)  # one-at-a-time, once per session
+                try:
+                    _write_push_cadence(
+                        _cf_sid,
+                        last_push_turn=_cf_cad["last_push_turn"],
+                        surfaced_ids=_cf_cad["surfaced_ids"],
+                        surfaced_connectors=shown,
+                        connector_active_map={p: prop.server_name for p, prop in active.items()},
+                    )
+                except Exception as _exc:  # ANDON A2
+                    logger.error(
+                        "[connector-andon] ADD persist failed (ephemeral only): %r", _exc,
+                    )
                 offer = render_connector_failure_offer(proposal)
                 return final_response.rstrip() + "\n\n" + offer
             return final_response
@@ -5501,6 +5545,34 @@ class AIAgent:
                     active.pop(pid, None)
                     if shown is not None:
                         shown.discard(pid)  # Ruling 2 eviction
+        # Persist eviction so it survives the next agent rebuild.
+        # Use the store as the authoritative source (shown/active may be
+        # None if the agent was rebuilt before this retry was called).
+        try:
+            from tools.flywheel_review_tool import _read_push_cadence, _write_push_cadence
+            _r_sid = getattr(self, "session_id", "") or ""
+            _r_cad = _read_push_cadence(_r_sid)
+            # Evict only pids belonging to this server_name.
+            _pids_to_evict = {
+                p for p, sn in _r_cad["connector_active_map"].items()
+                if sn == server_name
+            }
+            _new_shown = set(_r_cad["surfaced_connectors"]) - _pids_to_evict
+            _new_map = {
+                p: sn for p, sn in _r_cad["connector_active_map"].items()
+                if sn != server_name
+            }
+            _write_push_cadence(
+                _r_sid,
+                last_push_turn=_r_cad["last_push_turn"],
+                surfaced_ids=_r_cad["surfaced_ids"],
+                surfaced_connectors=_new_shown,
+                connector_active_map=_new_map,
+            )
+        except Exception as _exc:  # ANDON A2
+            logger.error(
+                "[connector-andon] EVICT persist failed (ephemeral only): %r", _exc,
+            )
 
     def _connector_offer_dismiss(self, proposal_id: str) -> None:
         """Operator 'Dismiss' disposition: drop the offer from the agent's
@@ -5512,6 +5584,23 @@ class AIAgent:
             active.pop(proposal_id, None)
         # shown-set retains the id → stays suppressed (dismissed); breaker
         # is intentionally NOT cleared.
+        # Persist so suppress survives the next agent rebuild.
+        try:
+            from tools.flywheel_review_tool import _read_push_cadence, _write_push_cadence
+            _d_sid = getattr(self, "session_id", "") or ""
+            _d_cad = _read_push_cadence(_d_sid)
+            shown = getattr(self, "_surfaced_connector_ids", None)
+            _write_push_cadence(
+                _d_sid,
+                last_push_turn=_d_cad["last_push_turn"],
+                surfaced_ids=_d_cad["surfaced_ids"],
+                surfaced_connectors=shown or set(),
+                connector_active_map={p: prop.server_name for p, prop in (active or {}).items()},
+            )
+        except Exception as _exc:  # ANDON A2
+            logger.error(
+                "[connector-andon] DISMISS persist failed (ephemeral only): %r", _exc,
+            )
 
     def _classify_connector_disposition(self, text: str):
         """Match a free-text operator reply to a connector Retry/Dismiss
@@ -17367,6 +17456,7 @@ class AIAgent:
                     last_push_turn=getattr(self, "_user_turn_count", 0) or 0,
                     surfaced_ids=_rd_cad["surfaced_ids"],
                     surfaced_connectors=_rd_cad["surfaced_connectors"],
+                    connector_active_map=_rd_cad["connector_active_map"],
                 )
             if not _flywheel_ran_this_turn:
                 final_response = self._append_pending_offer(final_response)
