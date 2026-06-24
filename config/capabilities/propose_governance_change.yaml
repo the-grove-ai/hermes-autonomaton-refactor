@@ -1,0 +1,83 @@
+# GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
+# family=file  zone=red  tiers=[1, 2, 3]  disclosure=proactive  trigger=always
+id: propose_governance_change
+kind: verb
+trigger:
+  # propose_governance_change is the sole authorized write path to ~/.grove
+  # governance configs. RED zone: every call requires sovereign approval.
+  # Always-on mirrors its file-family siblings (write_file, patch) — but
+  # authorization is enforced per-call by zone (RED) + sovereign approval gate,
+  # not by disclosure. trigger.always: true ensures the tool is offered
+  # unconditionally so the RED gate fires on every governance-write attempt.
+  # Note: zone enforcement is runtime-classified by classify_governance_target(target_file)
+  # in tools/governance_tool.py — .env → RED, YAML configs → YELLOW. The zone: red field
+  # above documents the maximum zone this tool can reach; it is not read for gating.
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - propose_governance_change
+  credentials: null
+  toolset_key: file
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 3  # governance writes warrant apex cognition — wrong target_file on a .env diff is a security event
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'Governance-write tool (zone red). Routes .env changes through RED zone
+    (sovereign approval) and YAML governance files through YELLOW zone (operator-gated).
+    Sole authorized write path to ~/.grove governance configs. Tools: propose_governance_change.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: operator_authored
+  created_at: '2026-06-24T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-24T00:00:00+00:00'
+    from_state: new
+    to_state: approved
+    reason: 'tool-admission-unification sprint — ANDON A3 prerequisite: propose_governance_change
+      was registered but had no capability record; RED zone (sovereign approval on
+      every governance write)'
+    evidence:
+    - tools/governance_tool.py
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: propose_governance_change'
+  - 'subsystem: native verb registry (tools.registry)'
+  - 'check: tool registered + zone mapped in zones.schema.yaml'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
