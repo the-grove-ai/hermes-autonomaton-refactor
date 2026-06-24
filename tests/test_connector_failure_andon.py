@@ -21,7 +21,11 @@ from tools.registry import ToolRegistry
 
 
 @pytest.fixture(autouse=True)
-def _reset_breaker():
+def _reset_breaker(tmp_path, monkeypatch):
+    # connector-dedup-persistence: each test gets an isolated cadence store so
+    # persist calls in one test cannot bleed into agents created later in the
+    # same function or in a subsequent test.
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     mt._server_connect_failed.clear()
     mt._server_connect_auth_evidence.clear()
     mt._servers.clear()
@@ -148,15 +152,24 @@ def test_4_once_per_session_no_re_append():
 
 
 def test_5_session_relevance_both_branches():
+    # Each call represents an INDEPENDENT session; give them distinct session_ids
+    # so the cadence store for one does not pre-populate the shown-set of the
+    # next (connector-dedup-persistence now persists the shown-set to disk).
     mt._bump_connect_failed("notion", "reauth")
     # session enabled only github tools → notion offer is NOT surfaced
-    irrelevant = _agent(enabled_toolsets=["mcp-github"])._append_connector_failure_offer("a")
+    a_irrel = _agent(enabled_toolsets=["mcp-github"])
+    a_irrel.session_id = "sess-5-irrelevant"
+    irrelevant = a_irrel._append_connector_failure_offer("a")
     assert irrelevant == "a"
     # session enabled notion → surfaced
-    relevant = _agent(enabled_toolsets=["mcp-notion"])._append_connector_failure_offer("a")
+    a_rel = _agent(enabled_toolsets=["mcp-notion"])
+    a_rel.session_id = "sess-5-relevant"
+    relevant = a_rel._append_connector_failure_offer("a")
     assert "notion" in relevant
     # None enabled_toolsets = all enabled → surfaced
-    allon = _agent(enabled_toolsets=None)._append_connector_failure_offer("a")
+    a_all = _agent(enabled_toolsets=None)
+    a_all.session_id = "sess-5-allon"
+    allon = a_all._append_connector_failure_offer("a")
     assert "notion" in allon
 
 
