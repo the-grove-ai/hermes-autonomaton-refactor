@@ -60,7 +60,7 @@ set -euo pipefail
 cd "${REPO_DIR}"
 git fetch origin main
 git reset --hard origin/main
-.venv/bin/pip install -e ".[web,mcp]" --quiet
+.venv/bin/pip install -e ".[web,mcp,dev]" --quiet
 
 # Sync routing config (gated on two-file split being active — ANDON A3)
 if [ -f "\$HOME/.grove/routing.autonomaton.yaml" ]; then
