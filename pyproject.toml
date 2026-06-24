@@ -243,6 +243,7 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
 addopts = "-m 'not integration' -n auto"
+asyncio_mode = "auto"
 
 [tool.ty.environment]
 python-version = "3.13"
