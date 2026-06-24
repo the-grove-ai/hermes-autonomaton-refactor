@@ -462,6 +462,43 @@ def save_zone_rule(
 
     tool_zones = data.setdefault("tool_zones", {})
     existing = tool_zones.get(tool_id)
+
+    # Tool-id-as-pattern: synthesize_pattern returned the tool_id itself,
+    # meaning this tool has no command-string classification path (not
+    # terminal or similar). The operator's intent is default_zone promotion,
+    # not a command-string rule. Append a rule with match_pattern==tool_id
+    # would be semantically inert — the classifier never fullmatches a
+    # command string against a bare tool_id.
+    if pattern == tool_id:
+        if isinstance(existing, dict):
+            existing["default_zone"] = zone
+            # Drop inert rules (match_pattern == tool_id) — clean slate.
+            clean = [
+                r for r in (existing.get("rules") or [])
+                if isinstance(r, dict) and r.get("match_pattern") != tool_id
+            ]
+            if clean:
+                existing["rules"] = clean
+            else:
+                existing.pop("rules", None)
+        else:
+            # Absent or bare string — replace with explicit default_zone dict.
+            tool_zones[tool_id] = {"default_zone": zone}
+        logger.info(
+            "[zone_rules] promoted %r default_zone to %s (tool-id-as-pattern)",
+            tool_id, zone,
+        )
+        wrote_with_ruamel = _write_with_ruamel(path, data)
+        if not wrote_with_ruamel:
+            import yaml as _yaml
+            with open(path, "w") as fh:
+                _yaml.safe_dump(data, fh, sort_keys=False, default_flow_style=False)
+        try:
+            _zones.reload()
+        except RuntimeError:
+            pass
+        return
+
     if existing is None:
         # New tool entry — start with the operator's chosen zone as default.
         tool_zones[tool_id] = {
