@@ -144,6 +144,12 @@ class IntentRecord:
     # Per-turn dispatch telemetry. Tuples not lists so the dataclass stays
     # hashable; JSON round-trip coerces lists back to tuples on read.
     tools_yielded: Tuple[str, ...] = field(default_factory=tuple)
+    # seam5-intent-stickiness-v1 — tool names OFFERED (the resolved per-turn
+    # surface), distinct from tools_yielded (those actually called). The
+    # carry-forward heuristic reads the previous turn's offered surface so a
+    # tool stays available across a terse continuation reply. Same tuple/JSON
+    # coercion as tools_yielded so the frozen record stays hashable.
+    tools_offered: Tuple[str, ...] = field(default_factory=tuple)
     api_calls: int = 0
     duration_ms: float = 0.0
     final_response_chars: Optional[int] = None
@@ -213,6 +219,7 @@ class IntentStore:
         data = asdict(record)
         # Coerce tuple → list for stable JSON; reads coerce back.
         data["tools_yielded"] = list(data["tools_yielded"])
+        data["tools_offered"] = list(data["tools_offered"])
         line = json.dumps(data, sort_keys=True, default=str) + "\n"
         with self._lock:
             with open(self._path, "a", encoding="utf-8") as fh:
@@ -300,6 +307,8 @@ class IntentStore:
                     continue
                 if isinstance(data.get("tools_yielded"), list):
                     data["tools_yielded"] = tuple(data["tools_yielded"])
+                if isinstance(data.get("tools_offered"), list):
+                    data["tools_offered"] = tuple(data["tools_offered"])
                 try:
                     yield IntentRecord(**data)
                 except (TypeError, ValueError) as exc:

@@ -3175,7 +3175,7 @@ class AIAgent:
                 self._tools_for_turn.append(d)
                 have.add(nm)
 
-    def _maybe_apply_tool_filter(self) -> None:
+    def _maybe_apply_tool_filter(self, user_message: str = "") -> None:
         """Compute the per-turn filtered tool list and stash the selection +
         provenance for the Dispatcher's ledger and the D8 escalation.
 
@@ -3291,6 +3291,27 @@ class AIAgent:
                 from tools.terminal_tool import scope_terminal_def_for_t1
                 tools = [scope_terminal_def_for_t1(t) for t in tools]
             self._tools_for_turn = tools
+        # seam5-intent-stickiness-v1 — carry forward the previous turn's offered
+        # toolset on a terse continuation reply. The per-turn intent filter
+        # drops a tool a multi-turn task still needs (the operator's "9 am"
+        # reclassifies as conversation, dropping the calendar_create the prior
+        # turn offered → SEAM5 refuses). Additive union, never replacement.
+        # Three gates — the two cheap ones first, so the persistent store read
+        # only fires on a candidate turn: message ≤ 50 chars, intent ==
+        # conversation, and (inside the helper) a non-empty prior offered
+        # surface. Source is the PERSISTENT intent store, not the ephemeral
+        # _last_tool_selection (wiped on the gateway's per-turn rebuild —
+        # push-cadence v1.1 lesson). Skips the fallback (None) surface, which is
+        # the full registry already. A3 cap (ruling A) lives in the helper.
+        _carried_names: set = set()
+        if (
+            isinstance(self._tools_for_turn, list)
+            and intent_class == "conversation"
+            and len((user_message or "").strip()) <= 50
+        ):
+            self._tools_for_turn, _carried_names = self._carry_forward_offered_tools(
+                self._tools_for_turn, tier_budget
+            )
         self._last_tool_selection = {
             "intent_class": intent_class,
             "complexity_signal": complexity,
@@ -3310,10 +3331,17 @@ class AIAgent:
             # GRV-009 spike C1 — the selected tool NAMES, not just the count.
             # Without these the operator cannot tell from telemetry whether a
             # given verb (e.g. calendar_list) was on the delivered surface.
+            # seam5-intent-stickiness-v1 — the offered surface is res.tools
+            # PLUS any names carried forward this turn, so the persisted
+            # tools_offered reflects what was actually offered (and a chain of
+            # terse follow-ups keeps propagating the carried tool).
             "selected_names": sorted(
-                t["function"]["name"]
-                for t in res.tools
-                if isinstance(t, dict) and t.get("function", {}).get("name")
+                {
+                    t["function"]["name"]
+                    for t in res.tools
+                    if isinstance(t, dict) and t.get("function", {}).get("name")
+                }
+                | _carried_names
             ),
         }
 
@@ -3336,6 +3364,69 @@ class AIAgent:
         # event carries it; this is what reveals whether the direct/CLI path
         # actually attached the payload.
         self._apply_capability_hook(intent_class)
+
+    def _carry_forward_offered_tools(self, resolved, tier_budget):
+        """seam5-intent-stickiness-v1 — additive union of this turn's resolved
+        tools with the PREVIOUS turn's offered surface. Returns
+        ``(tools, carried_names)``.
+
+        The previous offered surface is read from the PERSISTENT intent store
+        (``IntentRecord.tools_offered``), never ``self._last_tool_selection`` —
+        the gateway rebuilds the agent on nearly every turn, so the ephemeral
+        attribute is empty on the very turn carry-forward needs it (Andon A2 /
+        push-cadence v1.1 lesson).
+
+        A3 cap (ruling A): gated on the tier's ``prefill_ceiling_tokens``. None
+        (cloud / default / the observed T1 path) → carry forward freely. A
+        positive int (a local, memory-constrained tier) → skip entirely: that
+        tier's eager surface is governed by the disclosure layer, and an extra
+        eager schema would risk the prefill knee. The local-tier limitation is
+        intentional and surfaced — not a silent degrade.
+
+        Reads are fail-loud: a genuine store fault propagates rather than
+        degrading to a swallowed no-op. The store's own methods already return
+        empty for the expected missing-file case.
+        """
+        # A3 cap — skip on a prefill-ceiling'd (local memory-constrained) tier.
+        if getattr(tier_budget, "prefill_ceiling_tokens", None) is not None:
+            return resolved, set()
+        sid = getattr(self, "session_id", "") or ""
+        if not sid:
+            return resolved, set()
+        from grove.intent_store import get_store
+        prior = get_store().filter(session_id=sid, collapse_by_turn=True)
+        if not prior:
+            return resolved, set()
+        prior.sort(key=lambda r: r.timestamp)
+        prev_offered = set(prior[-1].tools_offered or ())
+        if not prev_offered:
+            return resolved, set()
+        have = {
+            t["function"]["name"]
+            for t in resolved
+            if isinstance(t, dict) and t.get("function", {}).get("name")
+        }
+        to_add = prev_offered - have
+        if not to_add:
+            return resolved, set()
+        additions = [
+            t
+            for t in self.tools
+            if isinstance(t, dict)
+            and t.get("function", {}).get("name") in to_add
+        ]
+        if not additions:
+            return resolved, set()
+        carried = {
+            t["function"]["name"]
+            for t in additions
+            if t.get("function", {}).get("name")
+        }
+        logger.info(
+            "[seam5-stickiness] carried forward %d tool(s) from the prior "
+            "turn's offered surface: %s", len(additions), sorted(carried),
+        )
+        return resolved + additions, carried
 
     # ── GRV-009 E2 C3 — Workspace Capability hook (additive) ─────────────────
     # A Workspace-shaped turn (one of the four Workspace intent classes) resolves
@@ -13217,7 +13308,7 @@ class AIAgent:
         # tool_groups taxonomy, prunes self.tools for this turn via
         # the _tools_for_api property. Maximal fallback (full registry)
         # on unknown intent or any failure — never crashes the turn.
-        self._maybe_apply_tool_filter()
+        self._maybe_apply_tool_filter(user_message)
 
         # Sprint 73 Phase 4b (D8) — strip-driven escalation, re-sourced onto
         # tier_rule.eligible (web-surface-admission-fix, Option B; allow_groups
