@@ -10846,8 +10846,6 @@ class GatewayRunner:
 
             platform_key = _platform_config_key(source.platform)
 
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -10879,13 +10877,12 @@ class GatewayRunner:
                 # INV-7: wire the intent store so gateway turns are recorded
                 # (mirrors cli.py / run_agent.py; the gateway path never had it).
                 from grove.intent_store import get_store as _get_intent_store
-                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), inject_core_tools=True, agent_kwargs=dict(
+                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), platform=platform_key, agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
@@ -14050,7 +14047,7 @@ class GatewayRunner:
     def _agent_config_signature(
         model: str,
         runtime: dict,
-        enabled_toolsets: list,
+        platform: str,
         ephemeral_prompt: str,
         cache_keys: dict | None = None,
     ) -> str:
@@ -14085,7 +14082,7 @@ class GatewayRunner:
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
-                sorted(enabled_toolsets) if enabled_toolsets else [],
+                platform or "cli",
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
@@ -14815,8 +14812,6 @@ class GatewayRunner:
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
@@ -15489,7 +15484,7 @@ class GatewayRunner:
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
-                enabled_toolsets,
+                platform_key,
                 combined_ephemeral,
                 cache_keys=self._extract_cache_busting_config(user_config),
             )
@@ -15516,13 +15511,12 @@ class GatewayRunner:
                 # INV-7: wire the intent store so gateway turns are recorded
                 # (mirrors cli.py / run_agent.py; the gateway path never had it).
                 from grove.intent_store import get_store as _get_intent_store
-                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), inject_core_tools=True, agent_kwargs=dict(
+                agent = Dispatcher(session_db=self._session_db, intent_store=_get_intent_store(), platform=platform_key, agent_kwargs=dict(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,

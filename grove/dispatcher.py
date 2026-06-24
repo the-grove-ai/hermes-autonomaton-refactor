@@ -455,7 +455,7 @@ class Dispatcher:
         resume: bool = False,
         memory_store: Optional[Any] = None,
         memory_manager: Optional[Any] = None,
-        inject_core_tools: bool = False,
+        platform: str = "cli",
     ) -> None:
         """Capture the substrate snapshot and install Phase 5 disposition handler.
 
@@ -585,11 +585,9 @@ class Dispatcher:
         # The Agent receives a RuntimeContext that has the relevant cache
         # entries promoted into its frozen fields.
         self._tools_cache: Dict[tuple, List[Dict[str, Any]]] = {}
-        # agent-ux-critical-fixes-v3 — messaging-platform turns set this so the
-        # universal core floor (incl. flywheel review/approve tools) is injected
-        # into the per-turn tool surface, working around the gateway's
-        # reverse-mapped enabled_toolsets dropping core/non-configurable toolsets.
-        self._inject_core_tools: bool = bool(inject_core_tools)
+        # tool-admission-unification: platform drives admission via
+        # grove.tool_admission.get_admitted_tools() in get_authorized_tools().
+        self._platform: str = platform
         self._memory_store_cache: Optional[Any] = None
         self._anthropic_client_cache: Dict[tuple, Any] = {}
         self._context_length_cache: Dict[str, int] = {}
@@ -1093,10 +1091,10 @@ class Dispatcher:
         ``get_tool_definitions`` no longer reaches a module-level singleton.
         """
         key = (
-            tuple(sorted(enabled_toolsets or ())),
+            "_raw",  # namespace: _get_or_build_tools returns unfiltered defs
+            self._platform,
             tuple(sorted(disabled_toolsets or ())),
             bool(quiet_mode),
-            bool(self._inject_core_tools),
         )
         cached = self._tools_cache.get(key)
         if cached is not None:
@@ -1104,15 +1102,14 @@ class Dispatcher:
         from model_tools import get_tool_definitions
         tools = get_tool_definitions(
             self.registry,
-            enabled_toolsets=enabled_toolsets,
+            enabled_toolsets=None,  # get_admitted_tools() handles admission
             disabled_toolsets=disabled_toolsets,
             quiet_mode=quiet_mode,
-            include_core=self._inject_core_tools,
         )
         self._tools_cache[key] = tools
         return tools
 
-    # ── Sprint 53 — Capability Provider ──────────────────────────────────
+    # ── tool-admission-unification — Capability Provider ─────────────────
     def get_authorized_tools(
         self,
         enabled_toolsets: Optional[List[str]] = None,
@@ -1121,17 +1118,70 @@ class Dispatcher:
     ) -> List[Dict[str, Any]]:
         """Return the filtered OpenAI-format tool list the Agent may call.
 
-        Sprint 53 § III — this is the capability provider the Agent
-        receives as ``_get_available_tools``. It wraps
-        :func:`model_tools.get_tool_definitions` against the Dispatcher's
-        owned registry and threads through the same memoized cache used
-        by ``_get_or_build_tools``. The Agent never sees the registry
-        itself; it only reads the filtered snapshot through this
-        callback.
+        tool-admission-unification — reads capability records via
+        grove.tool_admission.get_admitted_tools() keyed on self._platform.
+        enabled_toolsets, when provided, acts as a secondary intersection
+        filter AFTER capability-record admission. Used by compression/hygiene
+        agents (enabled_toolsets=["memory"]) that need a minimal tool surface.
+        The main gateway path does not pass enabled_toolsets.
         """
-        return self._get_or_build_tools(
-            enabled_toolsets, disabled_toolsets, quiet_mode,
+        key = (
+            self._platform,
+            tuple(sorted(enabled_toolsets or ())),
+            tuple(sorted(disabled_toolsets or ())),
+            bool(quiet_mode),
         )
+        cached = self._tools_cache.get(key)
+        if cached is not None:
+            return cached
+
+        from grove.tool_admission import get_admitted_tools
+        from model_tools import get_tool_definitions
+
+        config = self._base_runtime_ctx.config
+        admitted_names = get_admitted_tools(self.registry, self._platform, config)
+
+        # Get all definitions with check_fn and dynamic schemas applied,
+        # then filter to the capability-admitted set.
+        all_defs = get_tool_definitions(
+            self.registry,
+            enabled_toolsets=None,
+            quiet_mode=quiet_mode,
+        )
+        result = [d for d in all_defs if d["function"]["name"] in admitted_names]
+
+        # Optional secondary filter: callers can further restrict the
+        # admitted set to a subset of toolsets. Used by compression/hygiene
+        # agents (enabled_toolsets=["memory"]) that need a minimal surface.
+        # The main gateway path no longer passes enabled_toolsets at all.
+        if enabled_toolsets is not None:
+            from toolsets import resolve_toolset
+            restricted: set = set()
+            for ts in enabled_toolsets:
+                try:
+                    restricted.update(resolve_toolset(ts, self.registry))
+                except Exception:
+                    logger.debug(
+                        "[Dispatcher] enabled_toolsets entry %r not resolvable — skipping", ts
+                    )
+            if restricted:
+                result = [d for d in result if d["function"]["name"] in restricted]
+
+        # Apply user opt-out via disabled_toolsets (still honored).
+        if disabled_toolsets:
+            from toolsets import resolve_toolset
+            disabled_names: set = set()
+            for ts in disabled_toolsets:
+                try:
+                    disabled_names.update(resolve_toolset(ts, self.registry))
+                except Exception:
+                    logger.debug(
+                        "[Dispatcher] disabled_toolset %r not resolvable — skipping", ts
+                    )
+            result = [d for d in result if d["function"]["name"] not in disabled_names]
+
+        self._tools_cache[key] = result
+        return result
 
     def _get_or_build_memory_store(self) -> Optional[Any]:
         """Build (or return cached) memory store with disk content pre-loaded.
