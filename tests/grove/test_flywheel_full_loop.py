@@ -129,9 +129,12 @@ def test_review_proposals_lists_pending(tmp_path: Path) -> None:
     result = json.loads(review_proposals(queue_path=queue))
     assert result["success"] is True
     assert result["pending_count"] == 1
-    # Reuses flywheel_cli._format_summary — the line carries type + body.
-    assert "routing_adjustment" in result["proposals"][0]
-    assert "date_arithmetic" in result["proposals"][0]
+    # proposals are now dicts with ordinal/display/id fields.
+    p0 = result["proposals"][0]
+    assert p0["ordinal"] == 1
+    assert "routing_adjustment" in p0["display"]
+    assert "date_arithmetic" in p0["display"]
+    assert "id" in p0
 
 
 def test_reject_proposal_tool_removes(tmp_path: Path) -> None:
