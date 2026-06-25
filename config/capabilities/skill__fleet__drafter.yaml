@@ -78,31 +78,35 @@ context:
     \ (e.g., \"draft from the latest brief\" → read the most recent file in ~/.grove/researcher/)\n\
     - A Researcher brief that was already produced in this session (use it from context)\n\
     - Direct operator guidance (topic, angle, audience — no brief needed)\n\nIf working\
-    \ from a Researcher brief, read the full JSON. Extract:\n- `operator_intent.angle`\
-    \ — shapes the piece architecture\n- `operator_intent.audience` — shapes register\
-    \ and depth\n- `operator_intent.thesis` — the through-line the piece argues\n\
-    - `synthesis.recommended_angle` — the working outline\n- `synthesis.counter_arguments`\
-    \ — what to address\n- `synthesis.key_claims` — the evidence base\n- `research.web_sources`\
-    \ — for attribution\n\nIf a draft already exists from the Researcher (it sometimes\
-    \ drafts with momentum), treat it as a head start to refine, not a constraint\
-    \ to preserve.\n\n### Step 3 — Confirm format with operator\n\nAsk the operator\
-    \ ONE question: \"What format — LinkedIn, Substack, X thread, or internal memo?\"\
-    \n\nIf the operator already stated the format (e.g., \"draft a LinkedIn piece\"\
-    ), skip this step.\n\n**Format architectures:**\n\n**LinkedIn long-form (1,500-2,500\
-    \ words):**\n- Reveal-and-reframe opening (per linkedin-thinkpiece skill)\n- Claim-based\
-    \ section headers (not topic headers — each header makes a claim)\n- Evidence\
-    \ within 2 sentences of every claim\n- Close with implication, not summary\n-\
-    \ No hashtags in the body. 3-5 at the end only.\n\n**Substack essay (2,000-4,000\
-    \ words):**\n- Longer evidence chains permitted\n- Section breaks with pull-quote-weight\
-    \ transitions\n- Can include data tables, embedded links, footnote-style asides\n\
-    - Close with a forward-looking question or provocation\n\n**X thread (5-12 posts):**\n\
-    - Post 1: the hook — one insight, no preamble (under 280 chars)\n- Posts 2-N:\
-    \ one claim per post, each standalone readable\n- Final post: the implication\
-    \ + a question or call to engage\n- No numbering (1/N). Each post earns the next.\n\
-    - Total: 800-1,500 words across the thread\n\n**Internal memo (500-1,000 words):**\n\
-    - Executive brief format: recommendation first, then evidence\n- Bullet-supported\
-    \ but not bullet-driven\n- Ends with decision requested or next steps\n\n### Step\
-    \ 4 — Draft\n\nWrite the piece applying:\n- Voice DNA from jim-voice-writing-style\
+    \ from a Researcher brief, use the `terminal` tool to read it — `read_file` is\
+    \ blocked on `~/.grove/` by the governance layer:\n```\ncat /home/hermes/.grove/researcher/brief-YYYY-MM-DD-SLUG.json\n\
+    ```\nIf \"draft from the latest brief\" and you don't know the exact filename:\
+    \ `ls -t /home/hermes/.grove/researcher/ | head -1` then cat that file.\n\nRead\
+    \ the full JSON. Extract:\n- `operator_intent.angle` — shapes the piece architecture\n\
+    - `operator_intent.audience` — shapes register and depth\n- `operator_intent.thesis`\
+    \ — the through-line the piece argues\n- `synthesis.recommended_angle` — the working\
+    \ outline\n- `synthesis.counter_arguments` — what to address\n- `synthesis.key_claims`\
+    \ — the evidence base\n- `research.web_sources` — for attribution\n\nIf a draft\
+    \ already exists from the Researcher (it sometimes drafts with momentum), treat\
+    \ it as a head start to refine, not a constraint to preserve.\n\n### Step 3 —\
+    \ Confirm format with operator\n\nAsk the operator ONE question: \"What format\
+    \ — LinkedIn, Substack, X thread, or internal memo?\"\n\nIf the operator already\
+    \ stated the format (e.g., \"draft a LinkedIn piece\"), skip this step.\n\n**Format\
+    \ architectures:**\n\n**LinkedIn long-form (1,500-2,500 words):**\n- Reveal-and-reframe\
+    \ opening (per linkedin-thinkpiece skill)\n- Claim-based section headers (not\
+    \ topic headers — each header makes a claim)\n- Evidence within 2 sentences of\
+    \ every claim\n- Close with implication, not summary\n- No hashtags in the body.\
+    \ 3-5 at the end only.\n\n**Substack essay (2,000-4,000 words):**\n- Longer evidence\
+    \ chains permitted\n- Section breaks with pull-quote-weight transitions\n- Can\
+    \ include data tables, embedded links, footnote-style asides\n- Close with a forward-looking\
+    \ question or provocation\n\n**X thread (5-12 posts):**\n- Post 1: the hook —\
+    \ one insight, no preamble (under 280 chars)\n- Posts 2-N: one claim per post,\
+    \ each standalone readable\n- Final post: the implication + a question or call\
+    \ to engage\n- No numbering (1/N). Each post earns the next.\n- Total: 800-1,500\
+    \ words across the thread\n\n**Internal memo (500-1,000 words):**\n- Executive\
+    \ brief format: recommendation first, then evidence\n- Bullet-supported but not\
+    \ bullet-driven\n- Ends with decision requested or next steps\n\n### Step 4 —\
+    \ Draft\n\nWrite the piece applying:\n- Voice DNA from jim-voice-writing-style\
     \ (every sentence passes the quality checklist)\n- Format architecture from Step\
     \ 3\n- Evidence and angle from the Researcher brief\n- The operator's stated thesis\
     \ as the through-line\n\n**Voice checklist (apply to every paragraph):**\n- [\
