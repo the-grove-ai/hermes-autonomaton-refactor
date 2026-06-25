@@ -109,7 +109,8 @@ def test_review_then_approve_commits_memory_inline():
     short = _stage_memory(content="Take Flight Advisors uses Notion.")
 
     listing = json.loads(review_proposals())
-    blob = " ".join(listing["proposals"])
+    # Include both display text and id so both content and short-id are searchable.
+    blob = " ".join(p["display"] + " " + p.get("id", "") for p in listing["proposals"])
     assert short in blob and "memory_context" in blob   # discoverable via tool
 
     out = json.loads(approve_proposal(short))

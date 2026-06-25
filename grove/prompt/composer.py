@@ -559,9 +559,14 @@ def _tool_guidance_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         KANBAN_GUIDANCE,
         PROPOSAL_APPROVAL_GUIDANCE,
         FILE_WRITING_GUIDANCE,
+        SYSTEM_SELF_AWARENESS,
     )
     valid = ctx.get("valid_tool_names") or set()
     parts: List[str] = []
+    # Self-awareness is always-on — identity, not a tool-gated luxury. The agent
+    # must know it has andon/flywheel/grant tools regardless of which specific
+    # tools are loaded this turn, so it never tells the operator to run a CLI command.
+    parts.append(SYSTEM_SELF_AWARENESS)
     # write_file is an always-on core verb; lead the tool guidance with the
     # file-writing mandate so the model never falls back to opaque shell
     # heredoc/redirect for file I/O.
