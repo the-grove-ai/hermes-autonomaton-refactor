@@ -37,13 +37,21 @@ GOVERNANCE_VERBS: dict[str, str] = {
     "approve": "flywheel_approve",
     "demote": "flywheel_demote",
     "downgrade": "flywheel_downgrade",
+    # Grant management — "hermes grants revoke <id>" maps here via GRANTS_PATTERN.
+    "revoke_grant": "grant_revoke",
 }
 
 GOVERNANCE_PATTERN = re.compile(
     r"^/?(?:hermes\s+(?:andon|flywheel)\s+(?:patterns\s+)?)?"
-    r"(" + "|".join(GOVERNANCE_VERBS.keys()) + r")"
+    r"(" + "|".join(k for k in GOVERNANCE_VERBS if k != "revoke_grant") + r")"
     r"\s+([a-zA-Z0-9_.-]+)"
     r"(?:\s+.*)?$",
+    re.IGNORECASE,
+)
+
+# Separate pattern for grant management commands: "hermes grants revoke <grant-id>"
+GRANTS_PATTERN = re.compile(
+    r"^/?hermes\s+grants\s+(revoke)\s+([a-zA-Z0-9_.-]+)(?:\s+.*)?$",
     re.IGNORECASE,
 )
 
@@ -58,7 +66,23 @@ def try_mint_implicit_grant(
     The grant is implicit — it derives its authority from the operator's
     choice of channel (already authenticated) and the explicit verb in their
     message. No secondary prompt is shown.
+
+    Checks GRANTS_PATTERN first (hermes grants revoke <id>) so grant
+    management commands get the correct write_class ("grant_revoke") rather
+    than the standard "andon_revoke" that "revoke" in GOVERNANCE_VERBS maps to.
     """
+    # Grant management commands take precedence.
+    m = GRANTS_PATTERN.match(raw_message.strip())
+    if m:
+        _, target = m.group(1).lower(), m.group(2)
+        return GrantToken(
+            source=source,
+            scope=target,
+            write_class="grant_revoke",
+            disposition="once",
+            authorized_by=source,
+        )
+    # Standard governance-mutation verbs.
     m = GOVERNANCE_PATTERN.match(raw_message.strip())
     if not m:
         return None

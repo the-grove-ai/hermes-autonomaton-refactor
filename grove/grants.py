@@ -197,3 +197,33 @@ def get_grant_store(grants_path: Optional[Path] = None) -> GrantStore:
     if _store is None or grants_path is not None:
         _store = GrantStore(grants_path)
     return _store
+
+
+# ── CLI surfaces ──────────────────────────────────────────────────────────────
+
+def cli_list() -> int:
+    """Print active standing grants. Returns exit code."""
+    store = get_grant_store()
+    grants = store.list_grants()
+    if not grants:
+        print("No active standing grants.")
+        return 0
+    print(f"{'ID':<20} {'SCOPE':<25} {'WRITE_CLASS':<20} {'ISSUED_AT':<32} AUTH")
+    print("-" * 110)
+    for g in grants:
+        print(
+            f"{g.id:<20} {g.scope:<25} {g.write_class:<20} "
+            f"{g.issued_at:<32} {g.authorized_by}"
+        )
+    return 0
+
+
+def cli_revoke(grant_id: str) -> int:
+    """Revoke a standing grant by ID. Returns exit code."""
+    store = get_grant_store()
+    found = store.revoke_grant(grant_id)
+    if found:
+        print(f"Grant {grant_id!r} revoked.")
+        return 0
+    print(f"Grant {grant_id!r} not found or already revoked.", file=__import__("sys").stderr)
+    return 1
