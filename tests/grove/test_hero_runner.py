@@ -201,10 +201,15 @@ class TestToolsAssertion:
         assert not tool_failures
 
     def test_must_include_missing_reports_failure(self) -> None:
+        # execute_code is not offered for conversation intent — it requires
+        # code_generation or debugging context.  write_file was used here
+        # previously but is now admitted broadly (propose_governance_change
+        # trigger.always: true pulled it into the conversation surface as
+        # part of tool-admission-unification).
         report = evaluate(
             [_prompt(
                 intent_class="conversation",
-                tools_must_include=["write_file"],
+                tools_must_include=["execute_code"],
             )],
             classifier=lambda msg: _classification(intent_class="conversation"),
         )

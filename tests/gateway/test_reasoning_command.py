@@ -354,11 +354,12 @@ class TestReasoningCommand:
 
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
-        enabled_toolsets = set(_CapturingAgent.last_init["enabled_toolsets"])
-        assert "web" in enabled_toolsets
-        assert "memory" in enabled_toolsets
-        assert "exa" in enabled_toolsets
-        assert "web-search-prime" in enabled_toolsets
+        # After tool-admission-unification, enabled_toolsets is no longer passed in
+        # agent_kwargs — MCP server admission now goes through capability records
+        # (kind=mcp) via get_admitted_tools(). Verify the agent was initialized
+        # with the correct platform instead.
+        assert "enabled_toolsets" not in _CapturingAgent.last_init
+        assert _CapturingAgent.last_init.get("platform") is not None
 
     def test_run_agent_homeassistant_uses_default_platform_toolset(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
@@ -406,7 +407,7 @@ class TestReasoningCommand:
 
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
-        assert "homeassistant" in set(_CapturingAgent.last_init["enabled_toolsets"])
+        assert _CapturingAgent.last_init.get("platform") == "homeassistant"
 
 
 class TestLoadShowReasoningCoercion:
