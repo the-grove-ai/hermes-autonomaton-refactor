@@ -185,12 +185,19 @@ class ZoneRule:
         zone: ``"green" | "yellow" | "red"`` returned on a match.
         reason: human-readable explanation surfaced to operators.
         compiled: the pre-compiled ``re.Pattern`` used for matching.
+        max_disposition: optional cap on the operator's disposition choices.
+            ``"once"`` restricts the Sovereign Prompt to per-instance approval
+            only — "session" and "always" are suppressed. ``None`` (default)
+            leaves all four choices available. Use for governance-mutation CLI
+            verbs that must never accumulate a blanket session pass (GRV-001
+            Stage 04).
     """
 
     match_pattern: str
     zone: str
     reason: str
     compiled: "re.Pattern"
+    max_disposition: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +238,7 @@ class ZoneResult:
     source: str
     reason: Optional[str] = None
     pattern_key: Optional[str] = None
+    max_disposition: Optional[str] = None
 
 
 class ZoneClassifier:
@@ -337,6 +345,7 @@ class ZoneClassifier:
                     source=f"tool_zones.{resolved_tool}.rules",
                     reason=rule.reason,
                     pattern_key=rule.match_pattern,
+                    max_disposition=rule.max_disposition,
                 )
         return ZoneResult(
             zone=entry.default_zone,
@@ -522,12 +531,20 @@ class ZoneClassifier:
                     f"{why}. pattern={pattern!r}. "
                     f"Tighten the pattern or remove the rule."
                 )
+            raw_max = rule_raw.get("max_disposition")
+            if raw_max is not None and raw_max not in ("once", "session", "always"):
+                raise SchemaConfigurationError(
+                    f"zones.schema.yaml: tool_zones[{tool_id!r}]."
+                    f"rules[{idx}].max_disposition must be one of "
+                    f"once/session/always or absent; got {raw_max!r}."
+                )
             compiled_rules.append(
                 ZoneRule(
                     match_pattern=pattern,
                     zone=zone,
                     reason=reason,
                     compiled=re.compile(pattern),
+                    max_disposition=raw_max,
                 )
             )
         return ToolZoneEntry(default_zone=default_zone, rules=tuple(compiled_rules))

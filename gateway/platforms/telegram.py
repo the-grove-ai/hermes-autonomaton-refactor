@@ -2247,14 +2247,20 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_kaizen_prompt(
         self, chat_id: str, kaizen_id: int, description: str,
         metadata: Optional[Dict[str, Any]] = None,
+        max_disposition: Optional[str] = None,
     ) -> SendResult:
-        """Render the four-choice Kaizen prompt as an inline keyboard.
+        """Render the Kaizen prompt as an inline keyboard.
 
         ``description`` is the Sprint-32.2 Kaizen-register template text
         (``describe_action_kaizen``) — plain language, no governance jargon.
         Callback data is ``kz:<disposition>:<kaizen_id>`` — a short int id (not
         the session_key) so it stays under Telegram's 64-byte cap. Stores the
-        sent message_id/chat_id on the entry so a timeout can edit it."""
+        sent message_id/chat_id on the entry so a timeout can edit it.
+
+        ``max_disposition`` (GRV-001 Stage 04) — when ``"once"``, renders only
+        the "Just once" and "Not now" buttons, suppressing "Always" and
+        "This session" so governance-mutation verbs cannot accumulate a blanket
+        session pass via a mobile tap."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:
@@ -2266,12 +2272,18 @@ class TelegramAdapter(BasePlatformAdapter):
             if len(body) > 280:
                 body = body[:279] + "…"
             text = f"🔔 {_html.escape(body)}"
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🟢 Always", callback_data=f"kz:always:{kaizen_id}")],
-                [InlineKeyboardButton("🟡 This session", callback_data=f"kz:session:{kaizen_id}")],
-                [InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")],
-                [InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")],
-            ])
+            if max_disposition == "once":
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")],
+                    [InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")],
+                ])
+            else:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🟢 Always", callback_data=f"kz:always:{kaizen_id}")],
+                    [InlineKeyboardButton("🟡 This session", callback_data=f"kz:session:{kaizen_id}")],
+                    [InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")],
+                    [InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")],
+                ])
             thread_id = self._metadata_thread_id(metadata)
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
