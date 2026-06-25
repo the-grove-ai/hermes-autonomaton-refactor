@@ -94,6 +94,10 @@ _SCOPE_DEFINING_FILES = frozenset({
     # manifest is itself scope-defining. If the agent could write it, it could
     # grant itself unlimited GREEN zones, so it is never an autonomous write.
     "workspaces.yaml",
+    # GRV-001 Grant Token model — standing grant manifest is scope-defining.
+    # The agent cannot write its own grants; only the operator can create or
+    # revoke standing grants via authenticated grant management commands.
+    "grants.yaml",
 })
 
 # Whole subtrees (relative to GROVE_HOME) that are scope-defining. The live skill

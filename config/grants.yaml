@@ -1,0 +1,15 @@
+# Operator standing grants — scope-defining surface (GRV-001 Grant Token model)
+#
+# The agent CANNOT write to this file on the autonomous loop.
+# Only the operator (via authenticated grant management commands or by tapping
+# "Always" on a sovereignty prompt for an agent-synthesized action) can create
+# or revoke standing grants.
+#
+# Each grant is scoped to an EXACT (scope, write_class) pair — there is no
+# blanket pass for a verb class. A grant for "grove-site-fetch / andon_promote"
+# does not authorize "my-other-skill / andon_promote".
+#
+# Runtime path: ~/.grove/grants.yaml  (deploy separately; not auto-synced from repo)
+# This file is the committed template.  The live operator copy lives in GROVE_HOME.
+schema_version: "1.0"
+grants: []

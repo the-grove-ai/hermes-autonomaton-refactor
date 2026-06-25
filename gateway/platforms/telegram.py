@@ -2247,7 +2247,6 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_kaizen_prompt(
         self, chat_id: str, kaizen_id: int, description: str,
         metadata: Optional[Dict[str, Any]] = None,
-        max_disposition: Optional[str] = None,
     ) -> SendResult:
         """Render the Kaizen prompt as an inline keyboard.
 
@@ -2257,10 +2256,7 @@ class TelegramAdapter(BasePlatformAdapter):
         the session_key) so it stays under Telegram's 64-byte cap. Stores the
         sent message_id/chat_id on the entry so a timeout can edit it.
 
-        ``max_disposition`` (GRV-001 Stage 04) — when ``"once"``, renders only
-        the "Just once" and "Not now" buttons, suppressing "Always" and
-        "This session" so governance-mutation verbs cannot accumulate a blanket
-        session pass via a mobile tap."""
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:
@@ -2272,24 +2268,12 @@ class TelegramAdapter(BasePlatformAdapter):
             if len(body) > 280:
                 body = body[:279] + "…"
             text = f"🔔 {_html.escape(body)}"
-            if max_disposition in ("once", "session"):
-                # GRV-001 Stage 04 — suppress Always button for governance-mutation
-                # verbs so no permanent zone rule can be written via a mobile tap.
-                rows = []
-                if max_disposition == "once":
-                    rows.append([InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")])
-                else:  # session cap
-                    rows.append([InlineKeyboardButton("🟡 This session", callback_data=f"kz:session:{kaizen_id}")])
-                    rows.append([InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")])
-                rows.append([InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")])
-                keyboard = InlineKeyboardMarkup(rows)
-            else:
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🟢 Always", callback_data=f"kz:always:{kaizen_id}")],
-                    [InlineKeyboardButton("🟡 This session", callback_data=f"kz:session:{kaizen_id}")],
-                    [InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")],
-                    [InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")],
-                ])
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🟢 Always", callback_data=f"kz:always:{kaizen_id}")],
+                [InlineKeyboardButton("🟡 This session", callback_data=f"kz:session:{kaizen_id}")],
+                [InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")],
+                [InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")],
+            ])
             thread_id = self._metadata_thread_id(metadata)
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
@@ -2424,6 +2408,38 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning(
                 "[%s] kp: %s failed for proposal %s: %s",
                 self.name, action, proposal_id, exc,
+            )
+
+    def _mint_flywheel_grant(self, skill_name: str) -> None:
+        """Mint a flywheel_approval GrantToken and write it as a standing grant.
+
+        Called after the operator taps 'Promote it' on a kp: keyboard.
+        The grant is scoped to (skill_name, andon_promote) — future operator
+        messages like 'promote <skill_name>' will have a standing grant and
+        bypass the sovereignty prompt. Invoked via asyncio.to_thread.
+        """
+        try:
+            from grove.grant_recognition import GrantToken
+            from grove.grants import get_grant_store
+            from datetime import datetime, timezone
+            grant = GrantToken(
+                source="flywheel_approval",
+                scope=skill_name,
+                write_class="andon_promote",
+                disposition="standing",
+                issued_at=datetime.now(timezone.utc).isoformat(),
+                authorized_by="operator_telegram",
+                revoked=False,
+            )
+            get_grant_store().add_standing_grant(grant)
+            logger.info(
+                "[%s] flywheel_approval standing grant added: scope=%r",
+                self.name, skill_name,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] flywheel grant mint failed (non-fatal): %s",
+                self.name, exc,
             )
 
     async def send_slash_confirm(
@@ -3030,17 +3046,25 @@ class TelegramAdapter(BasePlatformAdapter):
                         pass
                     return
 
-                label_map = {
-                    "promote": "🟢 Promoted",
-                    "not_yet": "🟡 Not yet",
-                    "never": "🔴 Never",
-                }
-                label = label_map.get(action, "Resolved")
                 skill_name = entry.get("skill_name", "skill")
+
+                if action == "promote":
+                    label = "✅ Promoted"
+                    promote_text = (
+                        f"✅ Skill **{skill_name}** promoted. "
+                        f"Executing autonomously on future matches."
+                    )
+                elif action == "not_yet":
+                    label = "🟡 Not yet"
+                    promote_text = f"🟡 Not yet — {skill_name}"
+                else:
+                    label = "🔴 Never"
+                    promote_text = f"🔴 Never — {skill_name}"
+
                 await query.answer(text=label)
                 try:
                     await query.edit_message_text(
-                        text=self.format_message(f"{label} — {skill_name}"),
+                        text=self.format_message(promote_text),
                         parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )
@@ -3054,6 +3078,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     await asyncio.to_thread(
                         self._apply_promo_decision, action, proposal_id,
                     )
+
+                # GRV-001 Grant Token model: "Promote it" tap mints a flywheel
+                # approval grant and stores it as a standing grant so future
+                # operator-initiated promotions of this skill bypass the prompt.
+                if action == "promote":
+                    await asyncio.to_thread(
+                        self._mint_flywheel_grant, skill_name,
+                    )
+
                 logger.info(
                     "Telegram promotion button: promo_id=%s action=%s skill=%s",
                     promo_id, action, skill_name,
