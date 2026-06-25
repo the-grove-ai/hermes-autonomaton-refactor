@@ -15583,7 +15583,7 @@ class GatewayRunner:
             # subsequently executes the matching terminal command, the handler
             # bypasses the sovereignty prompt and returns the grant disposition.
             _implicit_grant = None
-            _raw_msg = getattr(event, "text", None) or ""
+            _raw_msg = (message or "").strip()
             if _raw_msg:
                 from grove.grant_recognition import try_mint_implicit_grant
                 _implicit_grant = try_mint_implicit_grant(
