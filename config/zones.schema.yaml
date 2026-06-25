@@ -523,6 +523,7 @@ zone_model:
       - prompt.config.yaml
       - .env                # operator secrets — never an autonomous write
       - dock/dock.yaml
+      - grants.yaml         # GRV-001 Grant Token model — standing grant manifest
     directories:
       - skills              # whole live skill tree (authoring goes via .andon)
       - capabilities        # capability registry (executable-surface authority)
