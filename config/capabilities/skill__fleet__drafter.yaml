@@ -108,9 +108,11 @@ context:
     \ output\n\n**CRITICAL: Output location is ~/.grove/drafter/ — nowhere else.**\n\
     Before writing, run: mkdir -p ~/.grove/drafter\nWrite to the FULL EXPANDED PATH:\
     \ e.g., /home/hermes/.grove/drafter/draft-YYYY-MM-DD-SLUG.md\nDo NOT write to\
-    \ the repo working directory or any other location.\n\nWrite the draft as markdown\
-    \ with YAML frontmatter:\n\n```yaml\n---\ntitle: \"The piece title\"\nformat:\
-    \ linkedin | substack | x-thread | memo\nsource_brief: \"~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json\"\
+    \ the repo working directory, ~/drafts/, ~/.grove/researcher/, or any other location.\n\
+    The read path (~/.grove/researcher/) and the write path (~/.grove/drafter/) are\
+    \ different directories. Do not confuse them.\n\nWrite the draft as markdown with\
+    \ YAML frontmatter:\n\n```yaml\n---\ntitle: \"The piece title\"\nformat: linkedin\
+    \ | substack | x-thread | memo\nsource_brief: \"~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json\"\
     \nangle: \"the operator's stated angle\"\naudience: \"the target audience\"\n\
     word_count: 0\nstatus: staged\ndrafted_at: \"ISO-8601\"\n---\n```\n\nFollowed\
     \ by the full draft text.\n\n### Step 6 — Present to operator\n\nPresent the full\
