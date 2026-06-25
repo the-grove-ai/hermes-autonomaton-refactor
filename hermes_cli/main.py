@@ -5558,6 +5558,28 @@ def cmd_flywheel(args):
         sys.exit(2)
 
 
+def cmd_grants(args):
+    """Standing grant management — GRV-001 Grant Token model.
+
+    Dispatches ``hermes grants {list,revoke}`` to grove.grants CLI renderers.
+    Grants are stored in ``~/.grove/grants.yaml`` (scope-defining surface).
+    The agent cannot write this file; only operator-authenticated paths can.
+    """
+    from grove import grants as _grants_mod
+
+    action = getattr(args, "grants_action", None)
+    if action == "list":
+        sys.exit(_grants_mod.cli_list())
+    elif action == "revoke":
+        sys.exit(_grants_mod.cli_revoke(args.grant_id))
+    else:
+        print(
+            "Usage: hermes grants {list,revoke} [--help]",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
 def cmd_andon(args):
     """Operator-facing skill quarantine review (Sprint 06a).
 
@@ -10420,6 +10442,34 @@ def main():
     )
 
     andon_parser.set_defaults(func=cmd_andon)
+
+    # =========================================================================
+    # grants command (GRV-001 Grant Token model — standing grant management)
+    # =========================================================================
+    grants_parser = subparsers.add_parser(
+        "grants",
+        help="Manage standing operator grants (GRV-001 Grant Token model)",
+        description=(
+            "List and revoke standing grants stored in ~/.grove/grants.yaml. "
+            "Grants are scope-defining — the agent cannot modify them. Only "
+            "operator-authenticated paths (sovereignty prompt 'Always' or "
+            "'hermes grants revoke') can create or revoke standing grants."
+        ),
+    )
+    grants_subparsers = grants_parser.add_subparsers(dest="grants_action")
+
+    grants_subparsers.add_parser(
+        "list", help="Show all active standing grants"
+    )
+
+    grants_revoke_p = grants_subparsers.add_parser(
+        "revoke", help="Revoke a standing grant by ID"
+    )
+    grants_revoke_p.add_argument(
+        "grant_id", help="Grant ID (e.g. grant-abc12345, shown by 'hermes grants list')"
+    )
+
+    grants_parser.set_defaults(func=cmd_grants)
 
     # =========================================================================
     # flywheel command (Sprint 47 — GRV-008 § IV operator review surface)

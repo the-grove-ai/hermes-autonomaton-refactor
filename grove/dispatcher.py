@@ -410,20 +410,6 @@ def _synth_skill_eval_hash(skill_name: str, skill_path: str) -> str:
     return "sha256:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
-def _get_halt_max_disposition(halt: Any) -> "Optional[str]":
-    """Return the first non-None max_disposition from halt.zone_results, or None.
-
-    GRV-001 Stage 04 conformance — governance-mutation CLI verbs carry
-    ``max_disposition: once`` in their zone rule, signalling that the
-    operator's disposition choice must not exceed "once" (no session
-    accumulation, no permanent zone promotion).
-    """
-    for zr in (getattr(halt, "zone_results", None) or []):
-        md = getattr(zr, "max_disposition", None)
-        if md is not None:
-            return md
-    return None
-
 
 class Dispatcher:
     """Grove Autonomaton runtime entry point per GRV-005 § II.
@@ -561,6 +547,11 @@ class Dispatcher:
         self._sovereign_prompt_handler: Callable[["AndonHalt"], str] = (
             sovereign_prompt_handler or _default_sovereign_prompt
         )
+        # GRV-001 Grant Token model — per-turn implicit grant, set by the gateway
+        # at each handler rebinding alongside _sovereign_prompt_handler.  None for
+        # CLI/TTY sessions (no T0 intercept); set to a GrantToken when the
+        # operator's raw message matched a governance-mutation verb.
+        self._implicit_grant: Optional[Any] = None
         # ── GRV-005 §VI RED resolution handler (kaizen-voice Sprint B1) ──
         # RED halts are workflow RESOLUTIONS, not dispositions: a distinct
         # handler with a distinct return space (``cancel`` / ``descoped``).
@@ -1709,23 +1700,47 @@ class Dispatcher:
                         # (the unchanged four-choice path below). The fork keys
                         # solely on the halt TYPE the raise site set from the
                         # triggering zone — YELLOW falls through verbatim.
-                        if isinstance(halt, AndonResolutionHalt):
-                            # RED — resolve into {cancel, descoped}. Cancel raises
-                            # TerminalGovernanceHalt inside; descoped drops + re-plans
-                            # and returns the generator's next yield. NEITHER records
-                            # andon_disposition NOR reaches a token-mint gate.
+                        # GRV-001 Grant Token model: governance-mutation verbs are
+                        # scope-defining (Red) but grantable — they route through
+                        # the permission path, not the terminal Red resolution path.
+                        # Non-governance Red halts take the normal terminal path.
+                        _gov_mutation = (
+                            isinstance(halt, AndonResolutionHalt)
+                            and self._is_governance_mutation_halt(halt)
+                        )
+                        if isinstance(halt, AndonResolutionHalt) and not _gov_mutation:
+                            # Normal Red halt — terminal resolution. Cancel raises
+                            # TerminalGovernanceHalt inside; descoped drops + re-plans.
+                            # NEITHER records andon_disposition NOR reaches a token-mint gate.
                             yielded = self._resolve_red_halt(
                                 agent, gen, halt, ledger=ledger,
                             )
                             continue
-                        # YELLOW permission grant — verbatim Sprint 32 path. A
-                        # non-RED AndonHalt is an AndonPermissionHalt by
-                        # construction (fork-early at the raise site).
-                        # Sprint 32 — Kaizen Sovereign Prompt + disposition.
-                        # The handler may now return v1.1 vocabulary
-                        # (once / session / always / deny) or v1.0
-                        # legacy values (skip / drop / shadow_approve).
-                        disposition = self._handle_andon_halt(agent, halt, ledger=ledger)
+
+                        # Permission path: grantable Red or Yellow.
+                        # Check for an implicit or standing grant covering this halt.
+                        _grant_bypass = (
+                            self._resolve_governance_grant(halt)
+                            if _gov_mutation else None
+                        )
+                        if _grant_bypass is not None and not _grant_bypass.revoked:
+                            # Grant covers this halt — bypass sovereignty prompt.
+                            # Stamp provenance and use the grant's disposition.
+                            self._stamp_grant_provenance(halt, _grant_bypass, ledger)
+                            disposition = _grant_bypass.disposition
+                        else:
+                            # No grant (agent-synthesized) or Yellow halt —
+                            # fire the sovereignty prompt.
+                            # Sprint 32 — Kaizen Sovereign Prompt + disposition.
+                            # The handler may now return v1.1 vocabulary
+                            # (once / session / always / deny) or v1.0
+                            # legacy values (skip / drop / shadow_approve).
+                            disposition = self._handle_andon_halt(agent, halt, ledger=ledger)
+                            # Governance verb + "always" → standing grant, NOT zone
+                            # rule. _apply_zone_promotion creates a blanket green
+                            # entry; standing grants are exactly scoped.
+                            if disposition == "always" and _gov_mutation:
+                                self._add_standing_grant_from_halt(halt)
                         # Strict zone-disposition coupling (fail-loud): a YELLOW
                         # permission halt must NEVER yield a RED resolution value.
                         # Cross-contamination is a structural defect, not a
@@ -4541,26 +4556,6 @@ class Dispatcher:
         finally:
             self._clear_pending_andon(agent, marker_path)
 
-        # GRV-001 Stage 04 — enforce max_disposition cap from zone rule.
-        # Governance-mutation verbs carry max_disposition: session so "always"
-        # is suppressed — no permanent green rule can accumulate across sessions.
-        # "session" is allowed: the agent may invoke repeatedly within one
-        # session without re-prompting after the operator grants it.
-        # The cap is applied BEFORE cache mutation so _apply_zone_promotion
-        # cannot fire on a capped disposition.
-        _max_disp = _get_halt_max_disposition(halt)
-        _DISPOSITION_RANK = {"once": 0, "session": 1, "always": 2}
-        if (
-            _max_disp in _DISPOSITION_RANK
-            and _DISPOSITION_RANK.get(disposition, -1) > _DISPOSITION_RANK[_max_disp]
-        ):
-            logger.info(
-                "[Dispatcher] max_disposition=%r cap: operator chose %r → %r "
-                "for tool=%s (GRV-001 Stage 04).",
-                _max_disp, disposition, _max_disp, triggering_intent.tool_name,
-            )
-            disposition = _max_disp
-
         # Cache mutation by disposition.
         if disposition == "deny":
             self._session_deny_cache.add(cache_key)
@@ -4582,7 +4577,12 @@ class Dispatcher:
         # session_allow cache mutation above already gave this turn's
         # action its relief.
         if disposition == "always":
-            self._apply_zone_promotion(triggering_intent)
+            # GRV-001: governance-mutation verbs use standing grants (written by
+            # the drive loop after this method returns). _apply_zone_promotion
+            # would create a blanket green zone rule — the bypass bug this model
+            # fixes. Only fire for non-governance halts (Yellow zone generics).
+            if not self._is_governance_mutation_halt(halt):
+                self._apply_zone_promotion(triggering_intent)
 
         # Sprint 53.2 — if an "allow once" disposition just let a
         # quarantined (.andon) skill run, flag it so the post-execution
@@ -4657,6 +4657,132 @@ class Dispatcher:
                 "[grove.dispatcher] operator 'always' promotion apply "
                 "failed (non-fatal; session_allow cache still applies this "
                 "turn): %r", exc,
+            )
+
+    # ── GRV-001 Grant Token model — governance-mutation halt helpers ─────────
+
+    def _is_governance_mutation_halt(self, halt: Any) -> bool:
+        """Return True if the halt's triggering command is a governance-mutation verb."""
+        try:
+            from grove.grant_recognition import GOVERNANCE_VERBS
+            triggering = halt.intents[halt.triggering_index]
+            args = getattr(triggering, "arguments", None) or {}
+            cmd = str(args.get("command", "")).lower()
+            tokens = cmd.split()
+            return any(verb in tokens for verb in GOVERNANCE_VERBS)
+        except Exception:
+            return False
+
+    def _resolve_governance_grant(self, halt: Any) -> "Optional[Any]":
+        """Return the first valid grant (implicit or standing) covering this halt.
+
+        Checks T0 implicit grant first, then the GrantStore standing grants.
+        Uses try_mint_implicit_grant as a command parser to extract (scope,
+        write_class) for the standing grant lookup.
+        Returns None if no valid grant is found.
+        """
+        from grove.grant_recognition import grant_covers_halt, try_mint_implicit_grant
+        # T0 implicit grant — minted from operator's raw message this turn.
+        if (
+            self._implicit_grant is not None
+            and not self._implicit_grant.revoked
+            and grant_covers_halt(self._implicit_grant, halt)
+        ):
+            return self._implicit_grant
+        # Standing grant — check GrantStore for persisted operator grants.
+        try:
+            triggering = halt.intents[halt.triggering_index]
+            args = getattr(triggering, "arguments", None) or {}
+            cmd = str(args.get("command", ""))
+            parsed = try_mint_implicit_grant(cmd, source="standing_lookup")
+            if parsed is not None:
+                from grove.grants import get_grant_store
+                standing = get_grant_store().get_grant(parsed.scope, parsed.write_class)
+                if standing is not None and not standing.revoked:
+                    return standing
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _resolve_grant_auth_type(grant: Any) -> str:
+        """Derive the auth_type provenance label from a GrantToken's source."""
+        src = getattr(grant, "source", "") or ""
+        if src.startswith("operator_"):
+            return "operator_implicit"
+        if src == "flywheel_approval":
+            return "flywheel_grant"
+        if src in ("standing", "standing_lookup"):
+            return "standing_grant"
+        if src == "sovereignty_prompt":
+            disp = getattr(grant, "disposition", "once")
+            return f"prompt_{disp}"
+        return "unknown"
+
+    def _stamp_grant_provenance(
+        self, halt: Any, grant: Any, ledger: "Optional[Any]"
+    ) -> None:
+        """Record a grant_execution telemetry event on every Red-zone execution."""
+        try:
+            triggering = halt.intents[halt.triggering_index]
+            args = getattr(triggering, "arguments", None) or {}
+            cmd = str(args.get("command", ""))
+            if ledger is not None:
+                ledger.record(
+                    "grant_execution",
+                    actor="agent",
+                    surface="operator_authenticated",
+                    surface_class="scope_defining",
+                    write_target=getattr(triggering, "tool_name", None),
+                    write_class=getattr(grant, "write_class", None),
+                    pipeline_stage="execution",
+                    grant_id=getattr(grant, "id", None),
+                    authorized_by=getattr(grant, "authorized_by", None),
+                    auth_type=self._resolve_grant_auth_type(grant),
+                    scope=getattr(grant, "scope", None),
+                    command=cmd,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[grove.dispatcher] grant provenance stamp failed (non-fatal): %r", exc
+            )
+
+    def _add_standing_grant_from_halt(self, halt: Any) -> None:
+        """Write a standing grant when the operator taps 'Always' on a governance verb.
+
+        Called only from the drive loop for governance-mutation Red halts —
+        replaces _apply_zone_promotion so 'Always' writes a scoped standing
+        grant instead of a blanket zone rule.
+        """
+        try:
+            from grove.grant_recognition import try_mint_implicit_grant, GrantToken
+            from grove.grants import get_grant_store
+            from datetime import datetime, timezone
+            triggering = halt.intents[halt.triggering_index]
+            args = getattr(triggering, "arguments", None) or {}
+            cmd = str(args.get("command", ""))
+            parsed = try_mint_implicit_grant(cmd, source="standing_lookup")
+            if parsed is None:
+                return
+            standing = GrantToken(
+                id=parsed.id,
+                source="standing",
+                scope=parsed.scope,
+                write_class=parsed.write_class,
+                disposition="standing",
+                issued_at=datetime.now(timezone.utc).isoformat(),
+                authorized_by="sovereignty_prompt",
+                revoked=False,
+            )
+            get_grant_store().add_standing_grant(standing)
+            logger.info(
+                "[grove.dispatcher] standing grant added: scope=%r write_class=%r",
+                parsed.scope, parsed.write_class,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[grove.dispatcher] add_standing_grant_from_halt failed (non-fatal): %r",
+                exc,
             )
 
     # B1 — the synthesized-skill acceptance materialization that used to live

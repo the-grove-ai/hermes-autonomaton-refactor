@@ -1023,6 +1023,7 @@ def _gateway_kaizen_timeout_seconds() -> int:
 
 def _build_kaizen_prompt_handler(
     *, adapter, chat_id, loop, metadata, session_key, timeout=None,
+    implicit_grant=None,
 ):
     """Build a sovereign-prompt handler that renders the Kaizen four-choice
     prompt as an inline keyboard and blocks the Dispatcher thread until the
@@ -1057,17 +1058,18 @@ def _build_kaizen_prompt_handler(
         except Exception:
             return non_interactive_deny_handler(halt)
 
-        # GRV-001 Stage 04 — derive max_disposition cap from zone results so
-        # governance-mutation verbs suppress Always/Session buttons on Telegram.
-        from grove.dispatcher import _get_halt_max_disposition
-        _max_disp = _get_halt_max_disposition(halt)
+        # T0 grant check — operator-initiated turn carries an implicit grant.
+        # If the grant covers this halt, bypass the sovereignty prompt entirely.
+        if implicit_grant is not None and not implicit_grant.revoked:
+            from grove.grant_recognition import grant_covers_halt
+            if grant_covers_halt(implicit_grant, halt):
+                return implicit_grant.disposition
 
         kid, entry = adapter.register_kaizen_pending(session_key)
         send_fut = safe_schedule_threadsafe(
             adapter.send_kaizen_prompt(
                 chat_id=chat_id, kaizen_id=kid,
                 description=description, metadata=metadata,
-                max_disposition=_max_disp,
             ),
             loop, logger=logger,
             log_message="send_kaizen_prompt scheduling error",
@@ -15574,8 +15576,26 @@ class GatewayRunner:
             # sovereign-prompt handler needs THIS turn's adapter / chat / loop,
             # so it is rebound here per-turn (like the callbacks above). Adapters
             # without send_kaizen_prompt fail closed (deny) per C0.
+            #
+            # T0 grant recognition — if the operator's raw message is an explicit
+            # governance verb, mint an implicit grant before the LLM runs.
+            # The grant is injected into the kaizen handler closure; when the LLM
+            # subsequently executes the matching terminal command, the handler
+            # bypasses the sovereignty prompt and returns the grant disposition.
+            _implicit_grant = None
+            _raw_msg = getattr(event, "text", None) or ""
+            if _raw_msg:
+                from grove.grant_recognition import try_mint_implicit_grant
+                _implicit_grant = try_mint_implicit_grant(
+                    _raw_msg,
+                    source=f"operator_{(source.platform.value if source.platform else 'unknown')}",
+                )
+
             _disp_singleton = getattr(agent, "_dispatcher_singleton", None)
             if _disp_singleton is not None:
+                # Propagate the per-turn implicit grant to the Dispatcher so the
+                # drive loop can bypass the sovereignty prompt for grantable Red halts.
+                _disp_singleton._implicit_grant = _implicit_grant
                 if (
                     _status_adapter is not None
                     and getattr(type(_status_adapter), "send_kaizen_prompt", None) is not None
@@ -15586,6 +15606,7 @@ class GatewayRunner:
                         loop=_loop_for_step,
                         metadata=_status_thread_metadata,
                         session_key=session_key or "",
+                        implicit_grant=_implicit_grant,
                     )
                     # Sprint 58 Phase 2 — post-execution promotion buttons. Same
                     # adapters; non-blocking (queues + sends, returns not_yet).
