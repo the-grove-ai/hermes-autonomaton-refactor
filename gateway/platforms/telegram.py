@@ -2247,7 +2247,6 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_kaizen_prompt(
         self, chat_id: str, kaizen_id: int, description: str,
         metadata: Optional[Dict[str, Any]] = None,
-        max_disposition: Optional[str] = None,
     ) -> SendResult:
         """Render the Kaizen prompt as an inline keyboard.
 
