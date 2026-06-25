@@ -410,20 +410,6 @@ def _synth_skill_eval_hash(skill_name: str, skill_path: str) -> str:
     return "sha256:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
-def _get_halt_max_disposition(halt: Any) -> "Optional[str]":
-    """Return the first non-None max_disposition from halt.zone_results, or None.
-
-    GRV-001 Stage 04 conformance — governance-mutation CLI verbs carry
-    ``max_disposition: once`` in their zone rule, signalling that the
-    operator's disposition choice must not exceed "once" (no session
-    accumulation, no permanent zone promotion).
-    """
-    for zr in (getattr(halt, "zone_results", None) or []):
-        md = getattr(zr, "max_disposition", None)
-        if md is not None:
-            return md
-    return None
-
 
 class Dispatcher:
     """Grove Autonomaton runtime entry point per GRV-005 § II.
@@ -4540,26 +4526,6 @@ class Dispatcher:
             disposition = self._sovereign_prompt_handler(halt)
         finally:
             self._clear_pending_andon(agent, marker_path)
-
-        # GRV-001 Stage 04 — enforce max_disposition cap from zone rule.
-        # Governance-mutation verbs carry max_disposition: session so "always"
-        # is suppressed — no permanent green rule can accumulate across sessions.
-        # "session" is allowed: the agent may invoke repeatedly within one
-        # session without re-prompting after the operator grants it.
-        # The cap is applied BEFORE cache mutation so _apply_zone_promotion
-        # cannot fire on a capped disposition.
-        _max_disp = _get_halt_max_disposition(halt)
-        _DISPOSITION_RANK = {"once": 0, "session": 1, "always": 2}
-        if (
-            _max_disp in _DISPOSITION_RANK
-            and _DISPOSITION_RANK.get(disposition, -1) > _DISPOSITION_RANK[_max_disp]
-        ):
-            logger.info(
-                "[Dispatcher] max_disposition=%r cap: operator chose %r → %r "
-                "for tool=%s (GRV-001 Stage 04).",
-                _max_disp, disposition, _max_disp, triggering_intent.tool_name,
-            )
-            disposition = _max_disp
 
         # Cache mutation by disposition.
         if disposition == "deny":

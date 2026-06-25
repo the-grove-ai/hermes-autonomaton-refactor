@@ -253,35 +253,27 @@ tool_zones:
       # ── Governance-mutation CLI verbs (GRV-001 Stage 04) ──────────────────
       # These verbs mutate sovereignty state (skill promotion/rejection,
       # flywheel approval, pattern demotion). They are Yellow (operator
-      # decides per invocation) but max_disposition: session caps at
-      # session scope — "always" is suppressed so no permanent green rule
-      # can accumulate across sessions (GRV-001 Stage 04). Session-scoped
-      # approval is intentional: the agent may invoke repeatedly within
-      # one session without re-prompting.
+      # decides per invocation). Disposition is governed by the Grant Token
+      # model — operator-initiated turns carry an implicit grant; agent-
+      # synthesized turns trigger the sovereignty prompt with all four choices.
       # Rules placed first so they fire before any broader pattern below.
       - match_pattern: hermes\s+andon\s+promote\b.*
         zone: yellow
-        max_disposition: session
         reason: "Skill promotion mutates live sovereignty state — per-instance operator approval required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+andon\s+reject\b.*
         zone: yellow
-        max_disposition: session
         reason: "Skill rejection permanently deletes from .andon/ — per-instance operator approval required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+andon\s+revoke\b.*
         zone: yellow
-        max_disposition: session
         reason: "Skill revocation returns an active skill to quarantine — per-instance operator approval required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+flywheel\s+approve\b.*
         zone: yellow
-        max_disposition: session
         reason: "Flywheel approval writes a zone rule to the overlay — per-instance operator approval required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+flywheel\s+reject\b.*
         zone: yellow
-        max_disposition: session
         reason: "Flywheel rejection drops a pending proposal — per-instance operator approval required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+flywheel\s+patterns\s+demote\b.*
         zone: yellow
-        max_disposition: session
         reason: "Pattern demotion degrades a compiled T0 pattern — per-instance operator approval required (GRV-001 Stage 04)."
       # ── Google Workspace: governed by SUBCOMMAND ──
       - match_pattern: '.*\bgoogle_api\.py\s+(gmail\s+(search|get|labels)|calendar\s+list|drive\s+(search|get|download)|contacts\s+list|sheets\s+get|docs\s+get)\b.*'
