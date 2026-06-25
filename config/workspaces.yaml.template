@@ -1,0 +1,9 @@
+# Workspace grants — operator-managed autonomous write zones under ~/.grove/.
+# Copy to ~/.grove/workspaces.yaml and edit.
+# See grove/utils/fs_utils.py:is_granted_workspace for semantics.
+# Scope-defining surfaces are NEVER grantable (defense-in-depth).
+#
+# Fleet skill output directories:
+granted_workspaces:
+  - path: scout
+  - path: researcher
