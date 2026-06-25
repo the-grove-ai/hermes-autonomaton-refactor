@@ -1,0 +1,166 @@
+id: skill.fleet.cultivator
+kind: skill
+trigger:
+  intents:
+  - research
+  keywords:
+  - cultivate
+  - cultivator
+  - outreach
+  - prospects
+  - community
+  - reach out
+  - find people
+  dock_affinity: []
+  always: false
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\nname: cultivator\ndescription: \"Community cultivation — identifies\
+    \ high-value prospects for the distributed-AI thesis from engagement signals and\
+    \ Scout output, researches their work, drafts personalized outreach, stages for\
+    \ operator approval. Yellow zone: outreach is external communication in the operator's\
+    \ name. Fleet Phase 1 reference implementation.\"\nversion: 1.0.0\nplatforms:\
+    \ [linux, macos]\nzone: yellow\ntier: T2\nmetadata:\n  hermes:\n    tags: [community,\
+    \ outreach, fleet, cultivation, relationships]\n    related_skills: [scout, jim-voice-writing-style]\n\
+    ---\n\n# Cultivator — Community Cultivation Skill\n\n## Purpose\n\nYou are a community\
+    \ cultivator. Your job is to identify people worth building relationships with\
+    \ around the distributed-AI thesis, research their work, and draft personalized\
+    \ outreach the operator can send by hand.\n\n**You never send messages, follow\
+    \ accounts, DM, or interact on any platform.** You identify, research, and draft.\
+    \ The operator engages. This is a structural constraint — Yellow zone guarantees\
+    \ the operator reviews every outreach before it exists the system.\n\n## The four\
+    \ tiers\n\nProspects are classified into tiers that determine outreach calibration:\n\
+    \n**Tier 1 — Allies and adjacents.** People already questioning centralized AI\
+    \ or building near the thesis: AI sovereignty, open weights, edge/distributed\
+    \ inference, AI governance, decentralization. Priority targets. Most outreach\
+    \ should land here.\n\n**Tier 2 — Technical validators.** Distributed-systems\
+    \ engineers, ML-infra, edge AI, federated-learning researchers. People who recognize\
+    \ the convergence argument on sight. Also priority — they lend credibility.\n\n\
+    **Tier 3 — Amplifiers.** Journalists, analysts, newsletter writers, infra and\
+    \ open-source VCs. People who can carry the idea to a bigger audience. Engage\
+    \ to build relationships over time.\n\n**Tier 4 — Apex camp.** Centralized-AI\
+    \ leaders and their advocates. Flag for operator with NO draft. The operator decides\
+    \ whether and how to engage. Never combative. Always respectful.\n\n## Procedure\n\
+    \n### Step 1 — Identify prospects\n\nThe operator provides one of:\n- A topic\
+    \ or thesis angle (e.g., \"find people talking about AI sovereignty\")\n- A Scout\
+    \ digest to mine (read from ~/.grove/scout/)\n- A specific platform or community\
+    \ to scan\n- Direct guidance (\"find people like @handle\")\n\nUse `x_search`\
+    \ and `web_search` to identify 5-10 people who are actively engaging with thesis-adjacent\
+    \ topics. For each prospect, capture:\n- `name` and `handle` (platform-specific)\n\
+    - `platform` (x, linkedin, substack, github, mastodon)\n- `tier` (1-4, per the\
+    \ tier definitions above)\n- `why_they_matter` (one sentence — what makes them\
+    \ worth the operator's time)\n- `recent_work` (their most relevant recent post,\
+    \ paper, article, or project)\n- `engagement_signal` (what they said or did that\
+    \ surfaced them)\n- `relationship_status` (cold — first contact; or warming —\
+    \ if prior interaction exists in Scout output)\n\n### Step 2 — Research each prospect\n\
+    \nFor each of the 5-10 prospects, do a focused research pass:\n- Read their recent\
+    \ posts/articles (last 30 days)\n- Identify their specific position on thesis-adjacent\
+    \ topics\n- Find the hook — the specific thing in their work that connects to\
+    \ the Grove's thesis\n- Note any potential tension (e.g., they work at a frontier\
+    \ lab but advocate for open weights)\n\nKeep research per prospect to 2-3 key\
+    \ findings. Quality over volume.\n\n### Step 3 — Draft outreach\n\nFor each Tier\
+    \ 1-3 prospect, draft a personalized outreach message:\n\n**Outreach rules** (compose\
+    \ with jim-voice-writing-style):\n- 1-3 sentences maximum. Shorter is better.\n\
+    - Reference their SPECIFIC recent work — never generic (\"I love your content\"\
+    )\n- Connect their work to the thesis without pitching\n- No ask in the first\
+    \ message. Observation or genuine question only.\n- Calibrate register to tier:\n\
+    \  - Tier 1: peer-to-peer, direct (\"Your piece on X nailed the dependency graph.\
+    \ The missing piece is...\")\n  - Tier 2: technical respect (\"Your federated\
+    \ learning work at [lab] maps to something I've been building...\")\n  - Tier\
+    \ 3: value-first (\"Your coverage of [topic] missed one structural angle that\
+    \ changes the math...\")\n- NEVER draft outreach for Tier 4. Flag only.\n\n**Draft\
+    \ format per prospect:**\n\n```\nProspect: [name]\nHandle: [@handle]\nPlatform:\
+    \ [x/linkedin]\nTier: [1-3]\nHook: [the specific connection point]\n\nDraft: [1-3\
+    \ sentence outreach message]\n\nWhy this works: [one sentence — what makes this\
+    \ outreach specific, not generic]\n```\n\n### Step 4 — Write structured output\n\
+    \n**CRITICAL: Output location is ~/.grove/cultivator/ — nowhere else.**\nBefore\
+    \ writing, run: mkdir -p ~/.grove/cultivator\nWrite to the FULL EXPANDED PATH:\
+    \ e.g., /home/hermes/.grove/cultivator/prospects-YYYY-MM-DD-SLUG.json\nDo NOT\
+    \ write to the repo working directory or any other location.\nDo NOT write to\
+    \ ~/.grove/scout/, ~/.grove/researcher/, ~/.grove/drafter/, or any other ~/.grove/\
+    \ subdirectory.\nThe only correct base path is /home/hermes/.grove/cultivator/\
+    \ — not ~/ or any other location.\n\nSchema:\n\n```json\n{\n  \"generated_at\"\
+    : \"ISO-8601\",\n  \"input_source\": \"topic | scout_digest | operator_direction\"\
+    ,\n  \"input_detail\": \"what the operator asked for\",\n  \"prospects\": [\n\
+    \    {\n      \"rank\": 1,\n      \"name\": \"Full Name\",\n      \"handle\":\
+    \ \"@handle\",\n      \"platform\": \"x\",\n      \"tier\": 1,\n      \"why_they_matter\"\
+    : \"one sentence\",\n      \"recent_work\": \"title or description of their most\
+    \ relevant piece\",\n      \"engagement_signal\": \"what surfaced them\",\n  \
+    \    \"relationship_status\": \"cold\",\n      \"research_findings\": [\"finding\
+    \ 1\", \"finding 2\"],\n      \"outreach_draft\": \"1-3 sentence personalized\
+    \ message\",\n      \"outreach_rationale\": \"why this draft works\"\n    }\n\
+    \  ],\n  \"flagged_tier_4\": [\n    {\n      \"name\": \"Full Name\",\n      \"\
+    handle\": \"@handle\",\n      \"platform\": \"x\",\n      \"why_they_matter\"\
+    : \"one sentence\",\n      \"reason_flagged\": \"tier_4 — operator decides engagement\"\
+    \n    }\n  ],\n  \"summary\": {\n    \"total_prospects\": 0,\n    \"by_tier\"\
+    : {\"tier_1\": 0, \"tier_2\": 0, \"tier_3\": 0},\n    \"total_flagged_tier_4\"\
+    : 0,\n    \"platforms\": {\"x\": 0, \"linkedin\": 0, \"other\": 0}\n  }\n}\n```\n\
+    \n### Step 5 — Present to operator\n\nPresent each prospect with their draft inline,\
+    \ grouped by tier. Present Tier 4 flags separately with the explicit note: \"\
+    Flagged for your decision — no draft provided.\"\n\nClose with: \"Prospects staged\
+    \ at [path]. Edit any drafts, or approve to finalize?\"\n\nThe operator reviews\
+    \ every outreach. This is the Yellow-zone guarantee.\n\n## Composites\n\n- **jim-voice-writing-style**\
+    \ — voice DNA for outreach drafts\n- **x_search** — find prospects on X\n- **web_search**\
+    \ — find prospects across platforms\n- **read_file** — consume Scout digests from\
+    \ ~/.grove/scout/\n- **write_file** — stage prospect lists to ~/.grove/cultivator/\n\
+    \n## Output location\n\n`~/.grove/cultivator/prospects-YYYY-MM-DD-SLUG.json`\n\
+    \nExpand to full path at write time. NEVER write to the repo working\ndirectory.\
+    \ Always mkdir -p first.\n\n## Invocation\n\nThe operator says: \"Find people\
+    \ to reach out to\" or \"Who's talking about AI sovereignty\" or \"Mine the latest\
+    \ Scout digest for prospects\" or \"Run the cultivator.\"\n"
+dock_composition: none
+lifecycle:
+  state: active
+  provenance: operator_authored
+  created_at: '2026-06-25T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-25T00:00:00+00:00'
+    from_state: new
+    to_state: active
+    reason: 'Fleet Phase 1 Sprint 4: cultivator-skill-v1 — Yellow-zone community cultivation,
+      operator-installed'
+    evidence:
+    - skills/fleet/cultivator/SKILL.md
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.fleet.cultivator'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: fleet
