@@ -1057,11 +1057,17 @@ def _build_kaizen_prompt_handler(
         except Exception:
             return non_interactive_deny_handler(halt)
 
+        # GRV-001 Stage 04 — derive max_disposition cap from zone results so
+        # governance-mutation verbs suppress Always/Session buttons on Telegram.
+        from grove.dispatcher import _get_halt_max_disposition
+        _max_disp = _get_halt_max_disposition(halt)
+
         kid, entry = adapter.register_kaizen_pending(session_key)
         send_fut = safe_schedule_threadsafe(
             adapter.send_kaizen_prompt(
                 chat_id=chat_id, kaizen_id=kid,
                 description=description, metadata=metadata,
+                max_disposition=_max_disp,
             ),
             loop, logger=logger,
             log_message="send_kaizen_prompt scheduling error",

@@ -250,6 +250,37 @@ tool_zones:
   terminal:
     default_zone: yellow
     rules:
+      # ── Governance-mutation CLI verbs (GRV-001 Stage 04) ──────────────────
+      # These verbs mutate sovereignty state (skill promotion/rejection,
+      # flywheel approval, pattern demotion). They are Yellow (operator
+      # decides per invocation) but max_disposition: once prevents any
+      # "always" or "session" accumulation — an operator tap IS the
+      # approval, but only for that one invocation. No blanket pass.
+      # Rules placed first so they fire before any broader pattern below.
+      - match_pattern: hermes\s+andon\s+promote\b.*
+        zone: yellow
+        max_disposition: once
+        reason: "Skill promotion mutates live sovereignty state — per-instance operator approval required (GRV-001 Stage 04)."
+      - match_pattern: hermes\s+andon\s+reject\b.*
+        zone: yellow
+        max_disposition: once
+        reason: "Skill rejection permanently deletes from .andon/ — per-instance operator approval required (GRV-001 Stage 04)."
+      - match_pattern: hermes\s+andon\s+revoke\b.*
+        zone: yellow
+        max_disposition: once
+        reason: "Skill revocation returns an active skill to quarantine — per-instance operator approval required (GRV-001 Stage 04)."
+      - match_pattern: hermes\s+flywheel\s+approve\b.*
+        zone: yellow
+        max_disposition: once
+        reason: "Flywheel approval writes a zone rule to the overlay — per-instance operator approval required (GRV-001 Stage 04)."
+      - match_pattern: hermes\s+flywheel\s+reject\b.*
+        zone: yellow
+        max_disposition: once
+        reason: "Flywheel rejection drops a pending proposal — per-instance operator approval required (GRV-001 Stage 04)."
+      - match_pattern: hermes\s+flywheel\s+patterns\s+demote\b.*
+        zone: yellow
+        max_disposition: once
+        reason: "Pattern demotion degrades a compiled T0 pattern — per-instance operator approval required (GRV-001 Stage 04)."
       # ── Google Workspace: governed by SUBCOMMAND ──
       - match_pattern: '.*\bgoogle_api\.py\s+(gmail\s+(search|get|labels)|calendar\s+list|drive\s+(search|get|download)|contacts\s+list|sheets\s+get|docs\s+get)\b.*'
         zone: green
