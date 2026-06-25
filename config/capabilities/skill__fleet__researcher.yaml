@@ -1,0 +1,151 @@
+id: skill.fleet.researcher
+kind: skill
+trigger:
+  intents: [research, analysis]
+  keywords: [research, researcher, brief, analyze, break down, deep dive]
+  dock_affinity: []
+  always: false
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\nname: researcher\ndescription: \"Deep-research skill — accepts\
+    \ an article URL or body, runs a Socratic exchange to capture operator intent,\
+    \ then researches against LLM-Wiki, Notion, and web. Produces structured brief\
+    \ that bridges to Drafter. Fleet Phase 1 reference implementation.\"\nversion:\
+    \ 1.0.0\nplatforms: [linux, macos]\nzone: green\ntier: T2\nmetadata:\n  hermes:\n\
+    \    tags: [research, analysis, fleet, deep-research, socratic]\n    related_skills:\
+    \ [llm-wiki, jim-voice-writing-style, scout]\n---\n\n# Researcher — Deep Research\
+    \ Skill\n\n## Purpose\n\nYou are a research analyst. Your job is to take a source\
+    \ article, understand what the operator wants to do with it, then produce a structured\
+    \ research brief shaped by that intent — drawing on the wiki, Notion, and the\
+    \ web.\n\nThe quality of your output depends on the quality of your questions.\
+    \ Ask before you research.\n\n## Procedure\n\n### Phase A — Ingest + Socratic\
+    \ Capture\n\n**Step 1 — Ingest the source**\n\nThe operator will provide either:\n\
+    - A URL → fetch it with `web_extract` and read the content\n- Pasted article\
+    \ body → use it directly\n\nRead the article. Identify the core claims, the author's\
+    \ position, and the domain.\n\n**Step 2 — Socratic exchange**\n\nBefore doing\
+    \ any research, ask the operator 2-3 shaping questions. These are cheap turns\
+    \ that dramatically improve research quality. Ask them conversationally, not as\
+    \ a form.\n\nQuestions to choose from (pick the 2-3 most relevant):\n- \"What's\
+    \ your angle — are you building on this, rebutting it, using it as background\
+    \ for something you're writing, or just researching the space?\"\n- \"Who's the\
+    \ audience — internal notes, a LinkedIn piece, a client deliverable, or something\
+    \ you'd publish?\"\n- \"What thesis are you testing this against? Or is this exploratory?\"\
+    \n- \"Is there a specific claim in here you want me to pressure-test?\"\n- \"Anything\
+    \ in our prior work that connects to this? Or fresh territory?\"\n\nCapture the\
+    \ operator's answers as structured intent:\n- `angle`: rebuttal | build-on | background\
+    \ | pure-research\n- `audience`: internal | linkedin | client | publication\n\
+    - `thesis`: the operator's stated thesis (or \"exploratory\" if none)\n\nDo NOT\
+    \ proceed to Phase B until the operator has answered. This is the load-bearing\
+    \ step.\n\n### Phase B — Deep Research\n\nNow execute the expensive research,\
+    \ shaped by the operator's intent.\n\n**Step 3 — Query the LLM-Wiki**\n\nIf a\
+    \ wiki exists at `$WIKI_PATH` (typically `~/wiki`), search it for files related\
+    \ to the article's domain and claims. Use `terminal` to:\n- `ls $WIKI_PATH/` to\
+    \ see available topics\n- `grep -rl \"keyword\" $WIKI_PATH/` to find relevant\
+    \ files\n- `cat $WIKI_PATH/relevant-file.md` to read content\n\nExtract insights\
+    \ that connect to the article's claims. Note contradictions or reinforcements.\n\
+    \nIf no wiki exists, skip this step and note \"wiki not available\" in the output.\n\
+    \n**Step 4 — Search Notion for prior work**\n\nUse Notion MCP reads to search\
+    \ for related content in the operator's workspace:\n- Search for the article's\
+    \ topic keywords\n- Look for prior meeting notes, research docs, strategy docs\
+    \ that connect\n- Extract relevant context and note the source page titles/URLs\n\
+    \nKeep Notion reads targeted — search by keyword, don't browse.\n\n**Step 5 —\
+    \ Web research**\n\nUse `web_search` to find:\n- **Counter-arguments**: who disagrees\
+    \ with the article's claims, and why?\n- **Supporting evidence**: additional sources\
+    \ that reinforce the claims\n- **Adjacent discussion**: what's the broader conversation\
+    \ around this topic?\n- **Social signal**: use `x_search` for X/Twitter discussion\
+    \ on the topic\n\nShape your search queries by the operator's intent:\n- If rebuttal:\
+    \ weight counter-arguments heavily\n- If build-on: weight supporting evidence\
+    \ and extensions\n- If background: balanced coverage\n- If pure-research: widest\
+    \ net, most sources\n\n**Step 6 — Synthesize**\n\nProduce a synthesis shaped\
+    \ by the operator's stated angle, audience, and thesis:\n- Key claims from the\
+    \ article (with your assessment of each)\n- Counter-arguments (strongest first)\n\
+    - Evidence gaps (what's asserted without support?)\n- Recommended angle (one paragraph\
+    \ — what would YOU write about this, given the operator's intent?)\n- Strength\
+    \ of thesis assessment (strong / moderate / weak / mixed)\n\n### Phase C — Structured\
+    \ Output\n\n**Step 7 — Write the brief**\n\nWrite the full brief as JSON to `~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json`\
+    \ where SLUG is a 2-3 word kebab-case identifier from the article topic.\n\nSchema:\n\
+    \n```json\n{\n  \"generated_at\": \"ISO-8601 timestamp\",\n  \"source_article\"\
+    : {\n    \"url\": \"https://... or 'pasted'\",\n    \"title\": \"article title\"\
+    ,\n    \"author\": \"author name\",\n    \"summary\": \"3-5 sentence summary\"\
+    \n  },\n  \"operator_intent\": {\n    \"angle\": \"rebuttal | build-on | background\
+    \ | pure-research\",\n    \"audience\": \"internal | linkedin | client | publication\"\
+    ,\n    \"thesis\": \"operator's stated thesis\"\n  },\n  \"research\": {\n  \
+    \  \"wiki_insights\": [{\"source_file\": \"...\", \"relevance\": \"...\", \"excerpt\"\
+    : \"...\"}],\n    \"notion_context\": [{\"page_title\": \"...\", \"url\": \"...\"\
+    , \"relevance\": \"...\"}],\n    \"web_sources\": [{\"url\": \"...\", \"title\"\
+    : \"...\", \"relevance\": \"...\", \"position\": \"supporting | counter | adjacent\"\
+    }],\n    \"social_discussion\": [{\"platform\": \"x\", \"author\": \"...\", \"\
+    url\": \"...\", \"preview\": \"...\"}]\n  },\n  \"synthesis\": {\n    \"key_claims\"\
+    : [\"claim with assessment\"],\n    \"counter_arguments\": [\"strongest counter-arguments\"\
+    ],\n    \"evidence_gaps\": [\"what's asserted without support\"],\n    \"recommended_angle\"\
+    : \"one paragraph shaped by operator intent\",\n    \"strength_of_thesis\": \"\
+    strong | moderate | weak | mixed\"\n  }\n}\n```\n\n**Step 8 — Present to operator**\n\
+    \nPresent the synthesis section inline — the recommended angle, key claims, and\
+    \ strongest counter-arguments. Point the operator to the full brief file for the\
+    \ complete research. Note which sources were most valuable.\n\nIf the operator's\
+    \ angle was \"build-on\" or \"background\", close with: \"This is ready for the\
+    \ Drafter whenever you want to write it up.\"\n\n## Composites\n\n- **web_extract**\
+    \ — fetch article content from URL\n- **web_search** — counter-arguments, supporting\
+    \ evidence, adjacent sources\n- **x_search** — social discussion\n- **terminal**\
+    \ — read LLM-Wiki files at $WIKI_PATH\n- **Notion MCP reads** — prior work, meeting\
+    \ notes, related docs\n- **write_file** — structured output to ~/.grove/researcher/\n\
+    \n## Output location\n\n`~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json`\n\n##\
+    \ Invocation\n\nThe operator pastes a URL and says nothing else, or says \"research\
+    \ this\", \"what do you think of this article\", \"break this down for me\", \"\
+    I want to write about this\"."
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: operator_authored
+  created_at: '2026-06-25T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-25T00:00:00+00:00'
+    from_state: new
+    to_state: active
+    reason: 'Fleet Phase 1 Sprint 2: researcher-skill-v1 — Socratic deep-research
+      skill, operator-installed'
+    evidence:
+    - skills/fleet/researcher/SKILL.md
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.fleet.researcher'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: fleet
