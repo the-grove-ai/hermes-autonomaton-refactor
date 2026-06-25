@@ -108,28 +108,28 @@ context:
     \ output\n\n**CRITICAL: Output location is ~/.grove/drafter/ — nowhere else.**\n\
     Before writing, run: mkdir -p ~/.grove/drafter\nWrite to the FULL EXPANDED PATH:\
     \ e.g., /home/hermes/.grove/drafter/draft-YYYY-MM-DD-SLUG.md\nDo NOT write to\
-    \ the repo working directory, ~/drafts/, ~/.grove/researcher/, or any other location.\n\
-    The read path (~/.grove/researcher/) and the write path (~/.grove/drafter/) are\
-    \ different directories. Do not confuse them.\n\nWrite the draft as markdown with\
-    \ YAML frontmatter:\n\n```yaml\n---\ntitle: \"The piece title\"\nformat: linkedin\
-    \ | substack | x-thread | memo\nsource_brief: \"~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json\"\
-    \nangle: \"the operator's stated angle\"\naudience: \"the target audience\"\n\
-    word_count: 0\nstatus: staged\ndrafted_at: \"ISO-8601\"\n---\n```\n\nFollowed\
-    \ by the full draft text.\n\n### Step 6 — Present to operator\n\nPresent the full\
-    \ draft inline. Do NOT summarize it — the operator needs to read every word.\n\
-    \nClose with: \"This is staged at [path]. Edit notes, or approve to finalize?\"\
-    \n\nThe operator may:\n- Approve (status → approved, draft is done)\n- Request\
-    \ edits (revise and re-present)\n- Reject (start over or abandon)\n\nThis is the\
-    \ Yellow-zone governance checkpoint. The draft is not done until the operator\
-    \ says it is.\n\n## Composites\n\n- **jim-voice-writing-style** — voice DNA, loaded\
-    \ at Step 1 (mandatory)\n- **linkedin-thinkpiece** — format architecture for LinkedIn\
-    \ (loaded when format = linkedin)\n- **read_file** — consume Researcher briefs\
-    \ from ~/.grove/researcher/\n- **write_file** — stage drafts to ~/.grove/drafter/\n\
-    \n## Output location\n\n`~/.grove/drafter/draft-YYYY-MM-DD-SLUG.md`\n\nExpand\
-    \ to full path at write time. NEVER write to the repo working\ndirectory or ~/drafts/.\
-    \ Always mkdir -p first.\n\n## Invocation\n\nThe operator says: \"Draft this for\
-    \ LinkedIn\" or \"Write up the latest brief\" or \"Turn this into a Substack piece\"\
-    \ or \"Draft a thread from the Moon Bot research.\"\n"
+    \ the repo working directory, ~/drafts/, ~/linkedin-*.md, ~/.grove/research/,\
+    \ ~/.grove/researcher/, or any other location.\nThe only correct base path is\
+    \ /home/hermes/.grove/drafter/ — not ~/.grove/research/, not ~/.grove/researcher/,\
+    \ not ~/.\n\nWrite the draft as markdown with YAML frontmatter:\n\n```yaml\n---\n\
+    title: \"The piece title\"\nformat: linkedin | substack | x-thread | memo\nsource_brief:\
+    \ \"~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json\"\nangle: \"the operator's\
+    \ stated angle\"\naudience: \"the target audience\"\nword_count: 0\nstatus: staged\n\
+    drafted_at: \"ISO-8601\"\n---\n```\n\nFollowed by the full draft text.\n\n###\
+    \ Step 6 — Present to operator\n\nPresent the full draft inline. Do NOT summarize\
+    \ it — the operator needs to read every word.\n\nClose with: \"This is staged\
+    \ at [path]. Edit notes, or approve to finalize?\"\n\nThe operator may:\n- Approve\
+    \ (status → approved, draft is done)\n- Request edits (revise and re-present)\n\
+    - Reject (start over or abandon)\n\nThis is the Yellow-zone governance checkpoint.\
+    \ The draft is not done until the operator says it is.\n\n## Composites\n\n- **jim-voice-writing-style**\
+    \ — voice DNA, loaded at Step 1 (mandatory)\n- **linkedin-thinkpiece** — format\
+    \ architecture for LinkedIn (loaded when format = linkedin)\n- **read_file** —\
+    \ consume Researcher briefs from ~/.grove/researcher/\n- **write_file** — stage\
+    \ drafts to ~/.grove/drafter/\n\n## Output location\n\n`~/.grove/drafter/draft-YYYY-MM-DD-SLUG.md`\n\
+    \nExpand to full path at write time. NEVER write to the repo working\ndirectory\
+    \ or ~/drafts/. Always mkdir -p first.\n\n## Invocation\n\nThe operator says:\
+    \ \"Draft this for LinkedIn\" or \"Write up the latest brief\" or \"Turn this\
+    \ into a Substack piece\" or \"Draft a thread from the Moon Bot research.\"\n"
 dock_composition: none
 lifecycle:
   state: active

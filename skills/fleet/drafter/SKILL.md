@@ -109,8 +109,8 @@ Write the piece applying:
 **CRITICAL: Output location is ~/.grove/drafter/ — nowhere else.**
 Before writing, run: mkdir -p ~/.grove/drafter
 Write to the FULL EXPANDED PATH: e.g., /home/hermes/.grove/drafter/draft-YYYY-MM-DD-SLUG.md
-Do NOT write to the repo working directory, ~/drafts/, ~/.grove/researcher/, or any other location.
-The read path (~/.grove/researcher/) and the write path (~/.grove/drafter/) are different directories. Do not confuse them.
+Do NOT write to the repo working directory, ~/drafts/, ~/linkedin-*.md, ~/.grove/research/, ~/.grove/researcher/, or any other location.
+The only correct base path is /home/hermes/.grove/drafter/ — not ~/.grove/research/, not ~/.grove/researcher/, not ~/.
 
 Write the draft as markdown with YAML frontmatter:
 
