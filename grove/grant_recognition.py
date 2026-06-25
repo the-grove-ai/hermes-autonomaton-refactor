@@ -75,9 +75,13 @@ def try_mint_implicit_grant(
 def grant_covers_halt(grant: "GrantToken", halt: object) -> bool:
     """Return True if the grant authorizes the halted action.
 
-    Checks that:
-    - The grant scope appears in the terminal command string.
-    - The grant write_class verb appears in the command.
+    Scope protection: BOTH checks use exact token matching, not substring.
+    A grant for "grove-site-fetch / andon_promote" does NOT cover
+    "my-other-skill / andon_promote" or "grove-site-fetch / flywheel_approve".
+
+    Checks:
+    - grant.scope appears as an exact whitespace-delimited token in the command.
+    - The verb for grant.write_class appears as an exact token in the command.
     """
     try:
         triggering = halt.intents[halt.triggering_index]  # type: ignore[attr-defined]
@@ -85,14 +89,15 @@ def grant_covers_halt(grant: "GrantToken", halt: object) -> bool:
         cmd = str(args.get("command", "")).lower()
         if not cmd:
             return False
-        if grant.scope and grant.scope.lower() not in cmd:
+        tokens = cmd.split()
+        if grant.scope and grant.scope.lower() not in tokens:
             return False
         if grant.write_class:
             expected_verb = next(
                 (k for k, v in GOVERNANCE_VERBS.items() if v == grant.write_class),
                 None,
             )
-            if expected_verb and expected_verb not in cmd:
+            if expected_verb and expected_verb not in tokens:
                 return False
         return True
     except Exception:
