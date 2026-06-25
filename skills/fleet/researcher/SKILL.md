@@ -100,10 +100,16 @@ Produce a synthesis shaped by the operator's stated angle, audience, and thesis:
 
 **Step 7 — Write the brief**
 
+**CRITICAL: Output location is `~/.grove/researcher/` — nowhere else.**
+Before writing, run: `mkdir -p ~/.grove/researcher`
+Write to the FULL EXPANDED PATH: `/home/hermes/.grove/researcher/brief-YYYY-MM-DD-SLUG.json`
+Do NOT write to `~/research/`, the repo CWD, or any other location.
+The workspace grant for this directory is already in place.
+
 First, create the output directory if it doesn't exist:
 Use the terminal tool to run: `mkdir -p ~/.grove/researcher`
 
-Then write the full brief as JSON to `~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json` where SLUG is a 2-3 word kebab-case identifier from the article topic, using write_file with the FULL EXPANDED PATH (e.g. `/home/hermes/.grove/researcher/brief-2026-06-25-topic-slug.json` on Linux, or the equivalent `$HOME` expansion). Do NOT write to the current working directory.
+Then write the full brief as JSON to `/home/hermes/.grove/researcher/brief-YYYY-MM-DD-SLUG.json` where SLUG is a 2-3 word kebab-case identifier from the article topic, using write_file with the full expanded path shown above.
 
 Schema:
 
@@ -155,6 +161,9 @@ If the operator's angle was "build-on" or "background", close with: "This is rea
 ## Output location
 
 `~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json`
+
+Expand to full path at write time. NEVER write to the repo working
+directory or `~/research/`. Always `mkdir -p` first.
 
 ## Invocation
 
