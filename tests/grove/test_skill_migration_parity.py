@@ -40,16 +40,19 @@ from grove.skill_index import (
 _FIX = Path(__file__).parent / "fixtures"
 _GOLDEN = _FIX / "skill_index_golden.txt"
 
-# The operator-signed green set (GATE-B2 zone-manifest). Four entries: the
-# canonical repo skills/ (the VM source) carries no jim-voice/linkedin symlink
-# duplicates — those were a local ~/.grove artifact — so the conditional
-# "symlink paths IF the golden emits them" resolves to no. A4 halts on any green
-# skill record off this list.
+# The operator-signed green set (GATE-B2 zone-manifest). The canonical repo
+# skills/ (the VM source) carries no jim-voice/linkedin symlink duplicates —
+# those were a local ~/.grove artifact — so the conditional "symlink paths IF
+# the golden emits them" resolves to no. A4 halts on any green skill record off
+# this list. Fleet Phase 1 added scout + researcher as GREEN (drafter +
+# cultivator are YELLOW and so are NOT signed here).
 _SIGNED_GREEN = {
     "skill.content.jim-voice-writing-style",
     "skill.content.linkedin-thinkpiece",
     "skill.creative.songwriting-and-ai-music",
     "skill.upstream-sync-register.upstream-sync-register",
+    "skill.fleet.scout",
+    "skill.fleet.researcher",
 }
 
 
