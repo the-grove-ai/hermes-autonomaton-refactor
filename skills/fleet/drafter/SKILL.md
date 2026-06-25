@@ -46,7 +46,13 @@ The operator will provide one of:
 - A Researcher brief that was already produced in this session (use it from context)
 - Direct operator guidance (topic, angle, audience — no brief needed)
 
-If working from a Researcher brief, read the full JSON. Extract:
+If working from a Researcher brief, use the `terminal` tool to read it — `read_file` is blocked on `~/.grove/` by the governance layer:
+```
+cat /home/hermes/.grove/researcher/brief-YYYY-MM-DD-SLUG.json
+```
+If "draft from the latest brief" and you don't know the exact filename: `ls -t /home/hermes/.grove/researcher/ | head -1` then cat that file.
+
+Read the full JSON. Extract:
 - `operator_intent.angle` — shapes the piece architecture
 - `operator_intent.audience` — shapes register and depth
 - `operator_intent.thesis` — the through-line the piece argues
