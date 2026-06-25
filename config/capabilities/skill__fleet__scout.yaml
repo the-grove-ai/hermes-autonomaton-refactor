@@ -1,0 +1,129 @@
+id: skill.fleet.scout
+kind: skill
+trigger:
+  intents: [research]
+  keywords: [scout, digest, engagement opportunities, morning digest, social monitoring]
+  dock_affinity: []
+  always: false
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\nname: scout\ndescription: \"Social monitoring scout — scans\
+    \ X and web for engagement opportunities in the distributed-AI conversation, drafts\
+    \ on-voice candidate responses, writes structured report. Fleet Phase 1 reference\
+    \ implementation.\"\nversion: 1.0.0\nplatforms: [linux, macos]\nzone: green\n\
+    tier: T2\nmetadata:\n  hermes:\n    tags: [social, monitoring, fleet, engagement,\
+    \ content]\n    related_skills: [jim-voice-writing-style, linkedin-thinkpiece]\n\
+    ---\n\n# Scout — Social Monitoring Skill\n\n## Purpose\n\nYou are a social\
+    \ media scout. Your job is to find the highest-value engagement opportunities\
+    \ in the distributed-AI conversation and draft on-voice responses the operator\
+    \ can review, edit, and post by hand.\n\n**You never post, comment, follow, or\
+    \ interact on any platform.** You research and draft. The operator engages. This\
+    \ is a structural constraint, not a suggestion.\n\n## Procedure\n\n### Step 1\
+    \ — Keyword scan\n\nSearch X and the web for recent activity (last 24-48\
+    \ hours) matching these topic clusters:\n\n**Primary keywords:** distributed AI,\
+    \ AI sovereignty, open weights, model independence, edge inference, federated\
+    \ learning, AI governance, decentralized AI, local inference, on-device AI\n\n\
+    **Secondary keywords:** Grove Foundation, grove-autonomaton, Autonomaton Pattern,\
+    \ polarity hypothesis\n\n**Adjacent keywords:** AI safety, AI alignment, open\
+    \ source AI, self-hosting AI, inference at the edge\n\nUse `x_search` for X results.\
+    \ Use `web_search` for LinkedIn, Substack, blogs, and forums.\n\nFor each result,\
+    \ capture:\n- `platform` (x, linkedin, substack, blog, forum)\n- `author` (handle\
+    \ or name)\n- `content_preview` (first 280 chars)\n- `url`\n- `timestamp`\n-\
+    \ `reach_signal` (follower count if available, engagement count, or \"unknown\"\
+    )\n\n### Step 2 — Rank and filter\n\nRank opportunities by value. High value\
+    \ = substantive discussion of a thesis-adjacent topic by someone with reach or\
+    \ credibility. Low value = hot takes, rage bait, self-promotion with no substance.\n\
+    \nApply these filters:\n- **Include:** thoughtful analysis, technical discussion,\
+    \ genuine questions, open debates\n- **Exclude:** rage bait, dunks, promotional\
+    \ spam, posts older than 72 hours\n- **Flag for operator review:** any Tier 4\
+    \ (apex camp / centralized-AI leaders) — the operator decides whether to\
+    \ engage\n\nKeep the top 10-15 opportunities.\n\n### Step 3 — Draft responses\n\
+    \nFor each opportunity in the top 10-15, draft 2-3 candidate responses.\n\n**Voice\
+    \ rules** (compose with `jim-voice-writing-style`):\n- Lead with the insight,\
+    \ not the setup\n- Standards register — no villain in plumbing, only design\
+    \ and consequence\n- Specific, evidence-based, never vague\n- Confident without\
+    \ arrogance\n- Short (1-3 sentences for X comments, 2-4 sentences for LinkedIn)\n\
+    - Never combative, even with Tier 4\n\n**Draft format per opportunity:**\n\n```\n\
+    Opportunity: [title/summary]\nAuthor: [handle]\nPlatform: [x/linkedin/etc]\n\
+    URL: [link]\nTier: [1-4]\nValue: [high/medium]\n\nDraft A: [response text]\n\
+    Draft B: [response text]\nDraft C: [response text] (optional)\n\nRationale: [one\
+    \ sentence — why this opportunity matters for the thesis]\n```\n\n### Step\
+    \ 4 — Write structured output\n\nWrite the full report as JSON to ~/.grove/scout/digest-YYYY-MM-DD.json\
+    \ with this schema:\n\n```json\n{\n  \"generated_at\": \"ISO-8601 timestamp\"\
+    ,\n  \"keyword_clusters_searched\": [\"list of keywords used\"],\n  \"opportunities\"\
+    : [\n    {\n      \"rank\": 1,\n      \"platform\": \"x\",\n      \"author\":\
+    \ \"@handle\",\n      \"url\": \"https://...\",\n      \"content_preview\": \"\
+    first 280 chars\",\n      \"reach_signal\": \"12.5K followers\",\n      \"tier\"\
+    : 2,\n      \"value\": \"high\",\n      \"drafts\": [\n        {\"label\": \"\
+    A\", \"text\": \"...\"},\n        {\"label\": \"B\", \"text\": \"...\"},\n  \
+    \      {\"label\": \"C\", \"text\": \"...\"}\n      ],\n      \"rationale\": \"\
+    ...\"\n    }\n  ],\n  \"flagged_for_review\": [\n    {\n      \"reason\": \"tier_4\"\
+    ,\n      \"author\": \"@handle\",\n      \"url\": \"https://...\",\n      \"content_preview\"\
+    : \"...\"\n    }\n  ],\n  \"summary\": {\n    \"total_scanned\": 0,\n    \"total_opportunities\"\
+    : 0,\n    \"total_flagged\": 0,\n    \"platforms\": {\"x\": 0, \"linkedin\": 0,\
+    \ \"substack\": 0, \"other\": 0}\n  }\n}\n```\n\nAlso write a human-readable\
+    \ summary to stdout so the operator sees the highlights immediately.\n\n### Step\
+    \ 5 — Surface to operator\n\nPresent the top 5 opportunities with their best\
+    \ draft inline. For the remainder, point the operator to the full report file.\
+    \ Flag any Tier 4 items explicitly.\n\n## Composites\n\n- **jim-voice-writing-style**\
+    \ — voice DNA for all drafted responses\n- **x_search** — X/Twitter\
+    \ search\n- **web_search** — web search for LinkedIn, Substack, blogs\n-\
+    \ **write_file** — structured output to ~/.grove/scout/\n\n## Output location\n\
+    \n`~/.grove/scout/digest-YYYY-MM-DD.json`\n\n## Invocation\n\nThe operator says:\
+    \ \"Run the scout\" or \"Morning digest\" or \"What's happening in the conversation\
+    \ today?\""
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: operator_authored
+  created_at: '2026-06-25T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-25T00:00:00+00:00'
+    from_state: new
+    to_state: active
+    reason: 'Fleet Phase 1 Sprint 1: scout-skill-v1 — first Fleet capability, operator-installed'
+    evidence:
+    - skills/fleet/scout/SKILL.md
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.fleet.scout'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: fleet
