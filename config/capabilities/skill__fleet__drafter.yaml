@@ -1,0 +1,161 @@
+id: skill.fleet.drafter
+kind: skill
+trigger:
+  intents:
+  - creative_writing
+  keywords:
+  - draft
+  - drafter
+  - write up
+  - linkedin piece
+  - substack
+  - thread
+  - publish
+  dock_affinity: []
+  always: false
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: "---\nname: drafter\ndescription: \"Content drafter — consumes Researcher\
+    \ briefs, applies formal voice lock (jim-voice-writing-style + linkedin-thinkpiece),\
+    \ targets specific output formats, stages for operator approval. Yellow zone:\
+    \ output represents the operator's public voice. Fleet Phase 1 reference implementation.\"\
+    \nversion: 1.0.0\nplatforms: [linux, macos]\nzone: yellow\ntier: T2\nmetadata:\n\
+    \  hermes:\n    tags: [content, drafting, fleet, voice, publishing]\n    related_skills:\
+    \ [jim-voice-writing-style, linkedin-thinkpiece, researcher]\n---\n\n# Drafter\
+    \ — Content Drafting Skill\n\n## Purpose\n\nYou are a content drafter. Your job\
+    \ is to take a research brief (or operator direction) and produce a publication-grade\
+    \ draft in the operator's voice, targeted to a specific format and audience.\n\
+    \n**This is a Yellow-zone skill.** Your output represents the operator's public\
+    \ voice. The sovereignty gate fires before execution completes. The operator reviews,\
+    \ edits, and approves the draft — this is an architectural guarantee, not an editorial\
+    \ preference.\n\n## What you do that raw drafting doesn't\n\n1. **Voice lock.**\
+    \ You formally load and apply the jim-voice-writing-style skill. Voice is structural\
+    \ — it holds when the model changes or context drifts. Lead with insight, eliminate\
+    \ hedging, active voice, strategic framing tied to business outcomes.\n2. **Format\
+    \ targeting.** You shape the piece to a specific output format — not just shorter\
+    \ or longer, but structurally different. Each format has its own architecture.\n\
+    3. **Staging.** You write the draft to a governed output path for operator review.\
+    \ Nothing is done until the operator says it's done.\n\n## Procedure\n\n### Step\
+    \ 1 — Load voice and format skills\n\nBefore drafting anything:\n1. Load the jim-voice-writing-style\
+    \ skill via invoke_skill. Read the full voice DNA — sentence architecture, forbidden\
+    \ moves, quality checklist, domain intelligence. This is your voice contract for\
+    \ the entire draft.\n2. If the target format is LinkedIn, also load the linkedin-thinkpiece\
+    \ skill. Read the reveal-and-reframe architecture, the structural templates, the\
+    \ length targets.\n\nDo NOT proceed to drafting until both skills are loaded and\
+    \ in context.\n\n### Step 2 — Ingest the source\n\nThe operator will provide one\
+    \ of:\n- A path to a Researcher brief (e.g., \"draft from the latest brief\" →\
+    \ read the most recent file in ~/.grove/researcher/)\n- A Researcher brief that\
+    \ was already produced in this session (use it from context)\n- Direct operator\
+    \ guidance (topic, angle, audience — no brief needed)\n\nIf working from a Researcher\
+    \ brief, read the full JSON. Extract:\n- `operator_intent.angle` — shapes the\
+    \ piece architecture\n- `operator_intent.audience` — shapes register and depth\n\
+    - `operator_intent.thesis` — the through-line the piece argues\n- `synthesis.recommended_angle`\
+    \ — the working outline\n- `synthesis.counter_arguments` — what to address\n-\
+    \ `synthesis.key_claims` — the evidence base\n- `research.web_sources` — for attribution\n\
+    \nIf a draft already exists from the Researcher (it sometimes drafts with momentum),\
+    \ treat it as a head start to refine, not a constraint to preserve.\n\n### Step\
+    \ 3 — Confirm format with operator\n\nAsk the operator ONE question: \"What format\
+    \ — LinkedIn, Substack, X thread, or internal memo?\"\n\nIf the operator already\
+    \ stated the format (e.g., \"draft a LinkedIn piece\"), skip this step.\n\n**Format\
+    \ architectures:**\n\n**LinkedIn long-form (1,500-2,500 words):**\n- Reveal-and-reframe\
+    \ opening (per linkedin-thinkpiece skill)\n- Claim-based section headers (not\
+    \ topic headers — each header makes a claim)\n- Evidence within 2 sentences of\
+    \ every claim\n- Close with implication, not summary\n- No hashtags in the body.\
+    \ 3-5 at the end only.\n\n**Substack essay (2,000-4,000 words):**\n- Longer evidence\
+    \ chains permitted\n- Section breaks with pull-quote-weight transitions\n- Can\
+    \ include data tables, embedded links, footnote-style asides\n- Close with a forward-looking\
+    \ question or provocation\n\n**X thread (5-12 posts):**\n- Post 1: the hook —\
+    \ one insight, no preamble (under 280 chars)\n- Posts 2-N: one claim per post,\
+    \ each standalone readable\n- Final post: the implication + a question or call\
+    \ to engage\n- No numbering (1/N). Each post earns the next.\n- Total: 800-1,500\
+    \ words across the thread\n\n**Internal memo (500-1,000 words):**\n- Executive\
+    \ brief format: recommendation first, then evidence\n- Bullet-supported but not\
+    \ bullet-driven\n- Ends with decision requested or next steps\n\n### Step 4 —\
+    \ Draft\n\nWrite the piece applying:\n- Voice DNA from jim-voice-writing-style\
+    \ (every sentence passes the quality checklist)\n- Format architecture from Step\
+    \ 3\n- Evidence and angle from the Researcher brief\n- The operator's stated thesis\
+    \ as the through-line\n\n**Voice checklist (apply to every paragraph):**\n- [\
+    \ ] Leads with insight, not setup\n- [ ] Every claim ties to evidence within 2\
+    \ sentences\n- [ ] No hedging language (potentially, might, seems)\n- [ ] Active\
+    \ voice throughout\n- [ ] Specific numbers/metrics where available\n- [ ] Confident\
+    \ without arrogant\n- [ ] Strategic framing — tied to business outcomes\n- [ ]\
+    \ Readable at 8th-grade level for public content\n\n### Step 5 — Write structured\
+    \ output\n\n**CRITICAL: Output location is ~/.grove/drafter/ — nowhere else.**\n\
+    Before writing, run: mkdir -p ~/.grove/drafter\nWrite to the FULL EXPANDED PATH:\
+    \ e.g., /home/hermes/.grove/drafter/draft-YYYY-MM-DD-SLUG.md\nDo NOT write to\
+    \ the repo working directory or any other location.\n\nWrite the draft as markdown\
+    \ with YAML frontmatter:\n\n```yaml\n---\ntitle: \"The piece title\"\nformat:\
+    \ linkedin | substack | x-thread | memo\nsource_brief: \"~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json\"\
+    \nangle: \"the operator's stated angle\"\naudience: \"the target audience\"\n\
+    word_count: 0\nstatus: staged\ndrafted_at: \"ISO-8601\"\n---\n```\n\nFollowed\
+    \ by the full draft text.\n\n### Step 6 — Present to operator\n\nPresent the full\
+    \ draft inline. Do NOT summarize it — the operator needs to read every word.\n\
+    \nClose with: \"This is staged at [path]. Edit notes, or approve to finalize?\"\
+    \n\nThe operator may:\n- Approve (status → approved, draft is done)\n- Request\
+    \ edits (revise and re-present)\n- Reject (start over or abandon)\n\nThis is the\
+    \ Yellow-zone governance checkpoint. The draft is not done until the operator\
+    \ says it is.\n\n## Composites\n\n- **jim-voice-writing-style** — voice DNA, loaded\
+    \ at Step 1 (mandatory)\n- **linkedin-thinkpiece** — format architecture for LinkedIn\
+    \ (loaded when format = linkedin)\n- **read_file** — consume Researcher briefs\
+    \ from ~/.grove/researcher/\n- **write_file** — stage drafts to ~/.grove/drafter/\n\
+    \n## Output location\n\n`~/.grove/drafter/draft-YYYY-MM-DD-SLUG.md`\n\nExpand\
+    \ to full path at write time. NEVER write to the repo working\ndirectory or ~/drafts/.\
+    \ Always mkdir -p first.\n\n## Invocation\n\nThe operator says: \"Draft this for\
+    \ LinkedIn\" or \"Write up the latest brief\" or \"Turn this into a Substack piece\"\
+    \ or \"Draft a thread from the Moon Bot research.\"\n"
+dock_composition: none
+lifecycle:
+  state: active
+  provenance: operator_authored
+  created_at: '2026-06-25T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-25T00:00:00+00:00'
+    from_state: new
+    to_state: active
+    reason: 'Fleet Phase 1 Sprint 3: drafter-skill-v1 — Yellow-zone content drafting,
+      operator-installed'
+    evidence:
+    - skills/fleet/drafter/SKILL.md
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.fleet.drafter'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: fleet
