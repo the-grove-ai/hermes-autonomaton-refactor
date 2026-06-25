@@ -39,16 +39,25 @@ class TestWrapperRecursion:
         'env sh -c "rm -rf ~"',          # → opacity at sh -c
         'nice rm -rf ~',                 # → catastrophic at rm
         'env claude --dangerously-skip-permissions',  # → external at claude
-        'timeout 60 python -c "x"',      # → opacity at python -c
         'nohup bash -c "rm -rf /"',
         'setsid sh -c "evil"',
-        'stdbuf -oL python -c "import os"',
         'nice -n 10 rm -rf ~',           # nice with -n arg, still catastrophic
         'timeout -s KILL 5 bash -c "x"', # timeout flags + duration, leaf bash -c
         'env FOO=bar nice timeout 5 rm -rf /',  # nested wrappers → catastrophic
     ])
     def test_wrapper_recurses_to_red_leaf(self, cmd, grove_home):
         assert C(cmd).zone == "red", cmd
+
+    @pytest.mark.parametrize("cmd", [
+        'timeout 60 python -c "x"',         # → code-interp -c at leaf (YELLOW)
+        'stdbuf -oL python -c "import os"',  # → code-interp -c at leaf (YELLOW)
+    ])
+    def test_wrapper_recurses_to_yellow_code_interp_leaf(self, cmd, grove_home):
+        # operational-toolkit-v1: a wrapper around `python -c` still recurses to
+        # the leaf; the leaf is now YELLOW (operator-approvable per-payload), not
+        # RED. This proves the recursion reaches the real leaf without a false
+        # RED bubble — the wrapper-recursion contract is preserved.
+        assert C(cmd).zone == "yellow", cmd
 
     def test_wrapper_does_not_red_benign_leaf(self, grove_home):
         # env/nice/timeout around a benign command stay non-RED (no false bubble
