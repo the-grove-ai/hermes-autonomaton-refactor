@@ -15593,6 +15593,9 @@ class GatewayRunner:
 
             _disp_singleton = getattr(agent, "_dispatcher_singleton", None)
             if _disp_singleton is not None:
+                # Propagate the per-turn implicit grant to the Dispatcher so the
+                # drive loop can bypass the sovereignty prompt for grantable Red halts.
+                _disp_singleton._implicit_grant = _implicit_grant
                 if (
                     _status_adapter is not None
                     and getattr(type(_status_adapter), "send_kaizen_prompt", None) is not None

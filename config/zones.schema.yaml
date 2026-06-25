@@ -250,31 +250,33 @@ tool_zones:
   terminal:
     default_zone: yellow
     rules:
-      # ── Governance-mutation CLI verbs (GRV-001 Stage 04) ──────────────────
+      # ── Governance-mutation CLI verbs (GRV-001 Stage 04 / Grant Token model) ─
       # These verbs mutate sovereignty state (skill promotion/rejection,
-      # flywheel approval, pattern demotion). They are Yellow (operator
-      # decides per invocation). Disposition is governed by the Grant Token
-      # model — operator-initiated turns carry an implicit grant; agent-
-      # synthesized turns trigger the sovereignty prompt with all four choices.
+      # flywheel approval, pattern demotion). They are RED (scope-defining) and
+      # GRANTABLE under the Grant Token model:
+      #   Red + valid grant (T0 implicit or standing) = execute immediately
+      #   Red + no grant (agent-synthesized) = sovereignty prompt, all four choices
+      # "Always" on the prompt writes a standing grant (grove/grants.py), NOT a
+      # blanket zone rule — _apply_zone_promotion is guarded for these verbs.
       # Rules placed first so they fire before any broader pattern below.
       - match_pattern: hermes\s+andon\s+promote\b.*
-        zone: yellow
-        reason: "Skill promotion mutates live sovereignty state — per-instance operator approval required (GRV-001 Stage 04)."
+        zone: red
+        reason: "Skill promotion mutates live sovereignty state — scope-defining write, grant required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+andon\s+reject\b.*
-        zone: yellow
-        reason: "Skill rejection permanently deletes from .andon/ — per-instance operator approval required (GRV-001 Stage 04)."
+        zone: red
+        reason: "Skill rejection permanently deletes from .andon/ — scope-defining write, grant required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+andon\s+revoke\b.*
-        zone: yellow
-        reason: "Skill revocation returns an active skill to quarantine — per-instance operator approval required (GRV-001 Stage 04)."
+        zone: red
+        reason: "Skill revocation returns an active skill to quarantine — scope-defining write, grant required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+flywheel\s+approve\b.*
-        zone: yellow
-        reason: "Flywheel approval writes a zone rule to the overlay — per-instance operator approval required (GRV-001 Stage 04)."
+        zone: red
+        reason: "Flywheel approval writes a zone rule to the overlay — scope-defining write, grant required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+flywheel\s+reject\b.*
-        zone: yellow
-        reason: "Flywheel rejection drops a pending proposal — per-instance operator approval required (GRV-001 Stage 04)."
+        zone: red
+        reason: "Flywheel rejection drops a pending proposal — scope-defining write, grant required (GRV-001 Stage 04)."
       - match_pattern: hermes\s+flywheel\s+patterns\s+demote\b.*
-        zone: yellow
-        reason: "Pattern demotion degrades a compiled T0 pattern — per-instance operator approval required (GRV-001 Stage 04)."
+        zone: red
+        reason: "Pattern demotion degrades a compiled T0 pattern — scope-defining write, grant required (GRV-001 Stage 04)."
       # ── Google Workspace: governed by SUBCOMMAND ──
       - match_pattern: '.*\bgoogle_api\.py\s+(gmail\s+(search|get|labels)|calendar\s+list|drive\s+(search|get|download)|contacts\s+list|sheets\s+get|docs\s+get)\b.*'
         zone: green
