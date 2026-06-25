@@ -62,7 +62,7 @@ If a wiki exists at `$WIKI_PATH` (typically `~/wiki`), search it for files relat
 
 Extract insights that connect to the article's claims. Note contradictions or reinforcements.
 
-If no wiki exists, skip this step and note "wiki not available" in the output.
+If no wiki exists, skip this step and note "wiki not available" in the output. In the output JSON, set wiki_insights to an empty array [] — do not omit the key.
 
 **Step 4 — Search Notion for prior work**
 
@@ -100,7 +100,10 @@ Produce a synthesis shaped by the operator's stated angle, audience, and thesis:
 
 **Step 7 — Write the brief**
 
-Write the full brief as JSON to `~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json` where SLUG is a 2-3 word kebab-case identifier from the article topic.
+First, create the output directory if it doesn't exist:
+Use the terminal tool to run: `mkdir -p ~/.grove/researcher`
+
+Then write the full brief as JSON to `~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json` where SLUG is a 2-3 word kebab-case identifier from the article topic, using write_file with the FULL EXPANDED PATH (e.g. `/home/hermes/.grove/researcher/brief-2026-06-25-topic-slug.json` on Linux, or the equivalent `$HOME` expansion). Do NOT write to the current working directory.
 
 Schema:
 
