@@ -2410,6 +2410,38 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, action, proposal_id, exc,
             )
 
+    def _mint_flywheel_grant(self, skill_name: str) -> None:
+        """Mint a flywheel_approval GrantToken and write it as a standing grant.
+
+        Called after the operator taps 'Promote it' on a kp: keyboard.
+        The grant is scoped to (skill_name, andon_promote) — future operator
+        messages like 'promote <skill_name>' will have a standing grant and
+        bypass the sovereignty prompt. Invoked via asyncio.to_thread.
+        """
+        try:
+            from grove.grant_recognition import GrantToken
+            from grove.grants import get_grant_store
+            from datetime import datetime, timezone
+            grant = GrantToken(
+                source="flywheel_approval",
+                scope=skill_name,
+                write_class="andon_promote",
+                disposition="standing",
+                issued_at=datetime.now(timezone.utc).isoformat(),
+                authorized_by="operator_telegram",
+                revoked=False,
+            )
+            get_grant_store().add_standing_grant(grant)
+            logger.info(
+                "[%s] flywheel_approval standing grant added: scope=%r",
+                self.name, skill_name,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] flywheel grant mint failed (non-fatal): %s",
+                self.name, exc,
+            )
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -3014,17 +3046,25 @@ class TelegramAdapter(BasePlatformAdapter):
                         pass
                     return
 
-                label_map = {
-                    "promote": "🟢 Promoted",
-                    "not_yet": "🟡 Not yet",
-                    "never": "🔴 Never",
-                }
-                label = label_map.get(action, "Resolved")
                 skill_name = entry.get("skill_name", "skill")
+
+                if action == "promote":
+                    label = "✅ Promoted"
+                    promote_text = (
+                        f"✅ Skill **{skill_name}** promoted. "
+                        f"Executing autonomously on future matches."
+                    )
+                elif action == "not_yet":
+                    label = "🟡 Not yet"
+                    promote_text = f"🟡 Not yet — {skill_name}"
+                else:
+                    label = "🔴 Never"
+                    promote_text = f"🔴 Never — {skill_name}"
+
                 await query.answer(text=label)
                 try:
                     await query.edit_message_text(
-                        text=self.format_message(f"{label} — {skill_name}"),
+                        text=self.format_message(promote_text),
                         parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )
@@ -3038,6 +3078,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     await asyncio.to_thread(
                         self._apply_promo_decision, action, proposal_id,
                     )
+
+                # GRV-001 Grant Token model: "Promote it" tap mints a flywheel
+                # approval grant and stores it as a standing grant so future
+                # operator-initiated promotions of this skill bypass the prompt.
+                if action == "promote":
+                    await asyncio.to_thread(
+                        self._mint_flywheel_grant, skill_name,
+                    )
+
                 logger.info(
                     "Telegram promotion button: promo_id=%s action=%s skill=%s",
                     promo_id, action, skill_name,
