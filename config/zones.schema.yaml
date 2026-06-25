@@ -411,6 +411,17 @@ tool_zones:
   review_grants:                             green
   revoke_grant:                              yellow
 
+  # ── GRV-001 Stage 04 — andon skill governance tools (andon_tool) ──────────
+  # andon_list is read-only → green. promote/reject/revoke mutate sovereignty
+  # state → red (scope-defining writes). Red + valid Grant Token = execute;
+  # Red + no grant (agent-synthesized) = sovereignty prompt (4 choices).
+  # The Grant Token model recognises operator natural language ("promote X")
+  # as an implicit grant so no prompt fires on operator-initiated turns.
+  andon_list:                                green
+  andon_promote:                             red
+  andon_reject:                              red
+  andon_revoke:                              red
+
   # ── Native tools: SECURITY / SYSTEM → RED ──
   # OS-level UI automation; keystroke-injection territory.
   computer_use:                              red

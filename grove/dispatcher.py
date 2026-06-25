@@ -4661,11 +4661,27 @@ class Dispatcher:
 
     # ── GRV-001 Grant Token model — governance-mutation halt helpers ─────────
 
+    # Native tool names that are governance-mutation operations.  Checked in
+    # _is_governance_mutation_halt so andon_tool.py calls (which carry no
+    # ``command`` key) route through the permission path rather than terminal halt.
+    _NATIVE_GOVERNANCE_TOOLS = frozenset({
+        "andon_promote", "andon_reject", "andon_revoke", "revoke_grant",
+    })
+
     def _is_governance_mutation_halt(self, halt: Any) -> bool:
-        """Return True if the halt's triggering command is a governance-mutation verb."""
+        """Return True if the halt's triggering intent is a governance-mutation.
+
+        Handles both terminal CLI commands (check GOVERNANCE_VERBS tokens in the
+        command string) and native registered tools (check tool_name directly).
+        """
         try:
-            from grove.grant_recognition import GOVERNANCE_VERBS
             triggering = halt.intents[halt.triggering_index]
+            tool_name = getattr(triggering, "tool_name", "") or ""
+            # Native tool path — andon_promote/reject/revoke / revoke_grant
+            if tool_name in self._NATIVE_GOVERNANCE_TOOLS:
+                return True
+            # Terminal command path — check tokens against GOVERNANCE_VERBS
+            from grove.grant_recognition import GOVERNANCE_VERBS
             args = getattr(triggering, "arguments", None) or {}
             cmd = str(args.get("command", "")).lower()
             tokens = cmd.split()
@@ -4677,8 +4693,7 @@ class Dispatcher:
         """Return the first valid grant (implicit or standing) covering this halt.
 
         Checks T0 implicit grant first, then the GrantStore standing grants.
-        Uses try_mint_implicit_grant as a command parser to extract (scope,
-        write_class) for the standing grant lookup.
+        Handles both terminal CLI commands and native registered andon tools.
         Returns None if no valid grant is found.
         """
         from grove.grant_recognition import grant_covers_halt, try_mint_implicit_grant
@@ -4689,17 +4704,34 @@ class Dispatcher:
             and grant_covers_halt(self._implicit_grant, halt)
         ):
             return self._implicit_grant
-        # Standing grant — check GrantStore for persisted operator grants.
+        # Standing grant — check GrantStore.
         try:
             triggering = halt.intents[halt.triggering_index]
+            tool_name = getattr(triggering, "tool_name", "") or ""
             args = getattr(triggering, "arguments", None) or {}
-            cmd = str(args.get("command", ""))
-            parsed = try_mint_implicit_grant(cmd, source="standing_lookup")
-            if parsed is not None:
-                from grove.grants import get_grant_store
-                standing = get_grant_store().get_grant(parsed.scope, parsed.write_class)
-                if standing is not None and not standing.revoked:
-                    return standing
+            from grove.grants import get_grant_store
+            if tool_name in self._NATIVE_GOVERNANCE_TOOLS:
+                # Native tool call: extract scope from skill_name / grant_id argument.
+                _NATIVE_WRITE_CLASS = {
+                    "andon_promote": "andon_promote",
+                    "andon_reject": "andon_reject",
+                    "andon_revoke": "andon_revoke",
+                    "revoke_grant": "grant_revoke",
+                }
+                write_class = _NATIVE_WRITE_CLASS.get(tool_name, "")
+                scope = str(args.get("skill_name") or args.get("grant_id") or "").strip()
+                if scope and write_class:
+                    standing = get_grant_store().get_grant(scope, write_class)
+                    if standing is not None and not standing.revoked:
+                        return standing
+            else:
+                # Terminal command: use try_mint_implicit_grant as parser.
+                cmd = str(args.get("command", ""))
+                parsed = try_mint_implicit_grant(cmd, source="standing_lookup")
+                if parsed is not None:
+                    standing = get_grant_store().get_grant(parsed.scope, parsed.write_class)
+                    if standing is not None and not standing.revoked:
+                        return standing
         except Exception:
             pass
         return None
@@ -4752,23 +4784,37 @@ class Dispatcher:
 
         Called only from the drive loop for governance-mutation Red halts —
         replaces _apply_zone_promotion so 'Always' writes a scoped standing
-        grant instead of a blanket zone rule.
+        grant instead of a blanket zone rule. Handles both terminal commands
+        and native andon tool calls.
         """
         try:
             from grove.grant_recognition import try_mint_implicit_grant, GrantToken
             from grove.grants import get_grant_store
             from datetime import datetime, timezone
             triggering = halt.intents[halt.triggering_index]
+            tool_name = getattr(triggering, "tool_name", "") or ""
             args = getattr(triggering, "arguments", None) or {}
-            cmd = str(args.get("command", ""))
-            parsed = try_mint_implicit_grant(cmd, source="standing_lookup")
-            if parsed is None:
-                return
+            _NATIVE_WRITE_CLASS = {
+                "andon_promote": "andon_promote",
+                "andon_reject": "andon_reject",
+                "andon_revoke": "andon_revoke",
+                "revoke_grant": "grant_revoke",
+            }
+            if tool_name in _NATIVE_WRITE_CLASS:
+                scope = str(args.get("skill_name") or args.get("grant_id") or "").strip()
+                write_class = _NATIVE_WRITE_CLASS[tool_name]
+                if not scope:
+                    return
+            else:
+                cmd = str(args.get("command", ""))
+                parsed = try_mint_implicit_grant(cmd, source="standing_lookup")
+                if parsed is None:
+                    return
+                scope, write_class = parsed.scope, parsed.write_class
             standing = GrantToken(
-                id=parsed.id,
                 source="standing",
-                scope=parsed.scope,
-                write_class=parsed.write_class,
+                scope=scope,
+                write_class=write_class,
                 disposition="standing",
                 issued_at=datetime.now(timezone.utc).isoformat(),
                 authorized_by="sovereignty_prompt",
@@ -4777,7 +4823,7 @@ class Dispatcher:
             get_grant_store().add_standing_grant(standing)
             logger.info(
                 "[grove.dispatcher] standing grant added: scope=%r write_class=%r",
-                parsed.scope, parsed.write_class,
+                scope, write_class,
             )
         except Exception as exc:
             logger.warning(

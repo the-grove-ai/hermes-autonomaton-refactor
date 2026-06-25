@@ -99,17 +99,41 @@ def try_mint_implicit_grant(
 def grant_covers_halt(grant: "GrantToken", halt: object) -> bool:
     """Return True if the grant authorizes the halted action.
 
-    Scope protection: BOTH checks use exact token matching, not substring.
+    Scope protection: BOTH checks use exact matching, not substring.
     A grant for "grove-site-fetch / andon_promote" does NOT cover
     "my-other-skill / andon_promote" or "grove-site-fetch / flywheel_approve".
 
-    Checks:
-    - grant.scope appears as an exact whitespace-delimited token in the command.
-    - The verb for grant.write_class appears as an exact token in the command.
+    Handles two intent shapes:
+    - Terminal commands: ``arguments["command"]`` contains the command string;
+      scope and verb are matched as whitespace-delimited tokens.
+    - Native andon tool calls: ``arguments["skill_name"]`` (or ``grant_id``)
+      is the scope; write_class is matched against the tool_name directly.
     """
+    # Native andon tool name → write_class mapping (static, no zone imports).
+    _NATIVE_TOOL_WRITE_CLASS: dict = {
+        "andon_promote": "andon_promote",
+        "andon_reject": "andon_reject",
+        "andon_revoke": "andon_revoke",
+        "revoke_grant": "grant_revoke",
+    }
     try:
         triggering = halt.intents[halt.triggering_index]  # type: ignore[attr-defined]
+        tool_name = getattr(triggering, "tool_name", "") or ""
         args = getattr(triggering, "arguments", None) or {}
+
+        if tool_name in _NATIVE_TOOL_WRITE_CLASS:
+            # Native tool call: verify write_class and scope exactly.
+            expected_write_class = _NATIVE_TOOL_WRITE_CLASS[tool_name]
+            if grant.write_class and grant.write_class != expected_write_class:
+                return False
+            scope_from_args = str(
+                args.get("skill_name") or args.get("grant_id") or ""
+            ).strip()
+            if grant.scope and scope_from_args and grant.scope != scope_from_args:
+                return False
+            return True
+
+        # Terminal command path: token-exact matching.
         cmd = str(args.get("command", "")).lower()
         if not cmd:
             return False
