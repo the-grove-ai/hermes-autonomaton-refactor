@@ -68,7 +68,7 @@ context:
     \ see available topics\n- `grep -rl \"keyword\" $WIKI_PATH/` to find relevant\
     \ files\n- `cat $WIKI_PATH/relevant-file.md` to read content\n\nExtract insights\
     \ that connect to the article's claims. Note contradictions or reinforcements.\n\
-    \nIf no wiki exists, skip this step and note \"wiki not available\" in the output.\n\
+    \nIf no wiki exists, skip this step and note \"wiki not available\" in the output. In the output JSON, set wiki_insights to an empty array [] — do not omit the key.\n\
     \n**Step 4 — Search Notion for prior work**\n\nUse Notion MCP reads to search\
     \ for related content in the operator's workspace:\n- Search for the article's\
     \ topic keywords\n- Look for prior meeting notes, research docs, strategy docs\
@@ -87,8 +87,7 @@ context:
     - Evidence gaps (what's asserted without support?)\n- Recommended angle (one paragraph\
     \ — what would YOU write about this, given the operator's intent?)\n- Strength\
     \ of thesis assessment (strong / moderate / weak / mixed)\n\n### Phase C — Structured\
-    \ Output\n\n**Step 7 — Write the brief**\n\nWrite the full brief as JSON to `~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json`\
-    \ where SLUG is a 2-3 word kebab-case identifier from the article topic.\n\nSchema:\n\
+    \ Output\n\n**Step 7 — Write the brief**\n\nFirst, create the output directory if it doesn't exist:\nUse the terminal tool to run: `mkdir -p ~/.grove/researcher`\n\nThen write the full brief as JSON to `~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json` where SLUG is a 2-3 word kebab-case identifier from the article topic, using write_file with the FULL EXPANDED PATH (e.g. `/home/hermes/.grove/researcher/brief-2026-06-25-topic-slug.json` on Linux, or the equivalent `$HOME` expansion). Do NOT write to the current working directory.\n\nSchema:\n\
     \n```json\n{\n  \"generated_at\": \"ISO-8601 timestamp\",\n  \"source_article\"\
     : {\n    \"url\": \"https://... or 'pasted'\",\n    \"title\": \"article title\"\
     ,\n    \"author\": \"author name\",\n    \"summary\": \"3-5 sentence summary\"\
