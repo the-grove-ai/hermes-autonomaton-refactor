@@ -178,10 +178,22 @@ class TestClassifyShellEffectScope:
         zr = classify_shell_effect(f"echo x > {grove_home / '.env'}")
         assert zr.zone == "red"
 
-    def test_green_redirect_does_not_mask_opacity_red(self, grove_home):
-        # A GREEN redirect target must not short-circuit a later opacity RED.
+    def test_code_interp_redirect_into_granted_workspace_is_yellow(self, grove_home):
+        # operational-toolkit-v1 (Gemini GATE-B): `python -c` reclassified RED→
+        # YELLOW (operator-approvable per-payload). Writing into a GRANTED
+        # workspace (research/ is GREEN) no longer forces RED — the operator sees
+        # the full payload at the YELLOW gate. (Was RED pre-reclassification.)
         from grove.shell_effects import classify_shell_effect
         zr = classify_shell_effect(f"python3 -c 'print(1)' > {grove_home / 'research' / 'x'}")
+        assert zr.zone == "yellow"
+
+    def test_code_interp_redirect_into_ungranted_grove_path_is_red(self, grove_home):
+        # The "redirect does not mask" protection still fires where it matters:
+        # an UNGRANTED path under ~/.grove (memory/ is not in workspaces.yaml) is
+        # fail-closed RED via the redirect check, which runs BEFORE the code-interp
+        # branch — so a benign-looking `python -c` cannot smuggle a write there.
+        from grove.shell_effects import classify_shell_effect
+        zr = classify_shell_effect(f"python3 -c 'print(1)' > {grove_home / 'memory' / 'x'}")
         assert zr.zone == "red"
 
     def test_rm_rf_grove_root_is_red(self, grove_home):

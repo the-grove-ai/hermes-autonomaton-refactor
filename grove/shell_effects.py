@@ -9,7 +9,7 @@ their verbs, targets, and redirects — so string tricks have nothing to grab.
 Classification (most-restrictive-wins across all command nodes in a chain/pipe):
 
 * RED (opacity — fail closed): the AST cannot statically resolve the payload —
-  ``sh -c`` / ``bash -c``, ``eval``/``source``, ``python -c`` / ``perl -e`` …,
+  ``sh -c`` / ``bash -c``, ``eval``/``source``,
   command substitution ``$(...)`` / backticks, any pipe INTO a shell/interpreter
   (``curl x | bash``, ``base64 -d | sh``), an input feed to stdin (``<`` / ``<<``
   / ``<<<`` — herestring or file, opaque regardless of receiver), an
@@ -37,7 +37,16 @@ Classification (most-restrictive-wins across all command nodes in a chain/pipe):
   ``~/.grove`` workspace (GRV-001 v2.0). Google-Workspace / Notion fallback
   scripts keep their read-vs-write split (reads GREEN, writes/unknown YELLOW),
   by SUBCOMMAND on the parsed argv.
-* YELLOW: everything else — the operator approves at Stage 04.
+* YELLOW: everything else — the operator approves at Stage 04. This INCLUDES
+  code interpreters with inline ``-c`` / ``-e`` (``python -c`` / ``perl -e`` /
+  ``ruby -e`` / ``node -e`` …): the inline payload is opaque to the AST, but the
+  operator sees the literal command at the approval gate, so it is approvable
+  rather than fail-closed RED (operational-toolkit-v1, Gemini GATE-B). The
+  ``pattern_key`` carries a per-payload SHA-1 of the resolved argv
+  (``opacity:{exe}-c:argv:<hash>``) so one approval covers exactly that payload
+  for the session — a different inline script re-prompts. A code interpreter as a
+  PIPE TARGET (``… | python3``) stays RED (the piped script is invisible), and
+  SHELL interpreters (``sh -c`` / ``bash -c``) stay RED (full execution vector).
 
 The returned ``ZoneResult.pattern_key`` is an AST-derived EFFECT SIGNATURE (not a
 hash of the raw string), so the approval cache keys on the effect: a re-approved
@@ -612,10 +621,16 @@ def _classify_argv(
             return (_RED, f"opacity:{exe}-c")
         if pipe_stage > 0:
             return (_RED, f"opacity:pipe-into-{exe}")
-    # Code interpreters: -c / -e inline is opacity; pipe target is opacity.
+    # Code interpreters: -c / -e inline is YELLOW (operator-approvable) with
+    # per-payload disposition hash — each unique script gets its own approval.
+    # Pipe target stays RED (opacity — piped payload is invisible).
+    # Shell interpreters (_SHELL_INTERP) stay RED — checked in the block above.
     if exe in _CODE_INTERP:
         if any(a in ("-c", "-e") or a.startswith(("-c", "-e")) for a in rest):
-            return (_RED, f"opacity:{exe}-c")
+            sig = "argv:" + hashlib.sha1(
+                json.dumps(argv, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()[:16]
+            return (_YELLOW, f"opacity:{exe}-c:{sig}")
         if pipe_stage > 0:
             return (_RED, f"opacity:pipe-into-{exe}")
 

@@ -120,7 +120,6 @@ class TestC3aCanonicalNoBackslide:
         'env sh -c "rm -rf ~"',
         'nice rm -rf ~',
         'env claude --dangerously-skip-permissions',
-        'timeout 60 python -c "x"',
         'bash <<< "rm -rf ~"',
         'sh < /tmp/evil.sh',
         'nice $TARGET',          # unresolvable wrapper operand → RED + ANDON-WRAPPER
@@ -128,6 +127,12 @@ class TestC3aCanonicalNoBackslide:
     ])
     def test_still_red(self, cmd, grove_home):
         assert C(cmd).zone == "red", cmd
+
+    def test_wrapped_code_interp_now_yellow(self, grove_home):
+        # operational-toolkit-v1 (Gemini GATE-B): `python -c` reclassified RED→
+        # YELLOW (operator-approvable per-payload). A wrapper around it resolves
+        # to the leaf and is YELLOW too. SHELL interps (env sh -c above) stay RED.
+        assert C('timeout 60 python -c "x"').zone == "yellow"
 
     def test_governed_find_delete_red(self, grove_home):
         assert C(f"find {grove_home} -delete").zone == "red"
