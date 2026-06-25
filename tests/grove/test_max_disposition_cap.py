@@ -1,9 +1,9 @@
 """max_disposition cap on zone rules — GRV-001 Stage 04 conformance.
 
 Governance-mutation CLI verbs (hermes andon promote, hermes flywheel approve,
-etc.) must be Yellow-zoned with max_disposition: once, so the operator gives
-per-instance approval and "always" cannot accumulate a blanket session pass
-that bypasses Stage 04.
+etc.) must be Yellow-zoned with max_disposition: session, so "always" cannot
+write a permanent green rule across sessions while still allowing the agent to
+invoke repeatedly within one session after the operator grants it.
 """
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ _SCHEMA_WITH_CAP = """
         rules:
           - match_pattern: hermes\\s+andon\\s+promote.*
             zone: yellow
-            max_disposition: once
+            max_disposition: session
             reason: "Governance-mutation verb."
           - match_pattern: ls\\s+.*
             zone: green
@@ -94,7 +94,7 @@ def test_classify_returns_max_disposition_from_matching_rule(tmp_path):
         tool_id="terminal",
     )
     assert result.zone == "yellow"
-    assert result.max_disposition == "once"
+    assert result.max_disposition == "session"
 
 
 def test_classify_max_disposition_none_for_rule_without_field(tmp_path):
@@ -117,15 +117,15 @@ def test_classify_max_disposition_none_on_default_fallthrough(tmp_path):
 
 @pytest.mark.skipif(not _REPO_SCHEMA.exists(), reason="repo schema not found")
 @pytest.mark.parametrize("cmd", _GOVERNANCE_VERBS)
-def test_governance_verb_is_yellow_with_once_cap(cmd):
+def test_governance_verb_is_yellow_with_session_cap(cmd):
     clf = ZoneClassifier(_REPO_SCHEMA)
     result = clf.classify_command_string(cmd, "command.execute.hermes", tool_id="terminal")
     assert result.zone == "yellow", (
         f"{cmd!r}: expected yellow, got {result.zone!r} "
         f"(source={result.source!r})"
     )
-    assert result.max_disposition == "once", (
-        f"{cmd!r}: expected max_disposition='once', "
+    assert result.max_disposition == "session", (
+        f"{cmd!r}: expected max_disposition='session', "
         f"got {result.max_disposition!r}"
     )
 
@@ -145,9 +145,9 @@ def test_non_governance_terminal_cmd_has_no_cap():
 def test_get_halt_max_disposition_returns_first_nonnull():
     from grove.dispatcher import _get_halt_max_disposition
     zr_none = MagicMock(); zr_none.max_disposition = None
-    zr_once = MagicMock(); zr_once.max_disposition = "once"
-    halt = MagicMock(); halt.zone_results = [zr_none, zr_once]
-    assert _get_halt_max_disposition(halt) == "once"
+    zr_sess = MagicMock(); zr_sess.max_disposition = "session"
+    halt = MagicMock(); halt.zone_results = [zr_none, zr_sess]
+    assert _get_halt_max_disposition(halt) == "session"
 
 
 def test_get_halt_max_disposition_returns_none_when_all_absent():
@@ -163,47 +163,48 @@ def test_get_halt_max_disposition_returns_none_for_empty_results():
     assert _get_halt_max_disposition(halt) is None
 
 
-# ── 5. TTY sovereign prompt filtering ────────────────────────────────────────
+# ── 5. TTY sovereign prompt — session cap: show once/session/deny, no always ──
 
-def test_tty_prompt_shows_only_once_and_deny_when_capped():
-    """With max_disposition=once, tty_sovereign_prompt renders no session/always choices."""
+def test_tty_prompt_shows_session_but_not_always_when_capped():
+    """With max_disposition=session, tty_sovereign_prompt shows session choice but not always."""
+    from grove.sovereign_prompt_handlers import tty_sovereign_prompt
+
+    out = io.StringIO()
+    with patch("builtins.input", return_value="2"):
+        result = tty_sovereign_prompt(_halt("session"), out=out)
+
+    assert result == "session"
+    rendered = out.getvalue().lower()
+    assert "session" in rendered, "Session choice must appear when capped at session"
+    assert "always" not in rendered, "Always choice must NOT appear when capped at session"
+
+
+def test_tty_prompt_accepts_once_when_session_capped():
+    """When capped at session, choice '1' (once) is still valid."""
     from grove.sovereign_prompt_handlers import tty_sovereign_prompt
 
     out = io.StringIO()
     with patch("builtins.input", return_value="1"):
-        result = tty_sovereign_prompt(_halt("once"), out=out)
+        result = tty_sovereign_prompt(_halt("session"), out=out)
 
     assert result == "once"
-    rendered = out.getvalue().lower()
-    assert "session" not in rendered, "Session choice must not appear when capped"
-    assert "always" not in rendered, "Always choice must not appear when capped"
 
 
-def test_tty_prompt_rejects_session_choice_when_capped():
-    """When capped, input '2' (session) is treated as unknown — not a valid disposition."""
+def test_tty_prompt_rejects_always_choice_when_session_capped():
+    """When capped at session, input '3' (which was always) is unknown — re-prompts."""
     from grove.sovereign_prompt_handlers import tty_sovereign_prompt
 
     out = io.StringIO()
-    # First "2" is rejected, then "4" (deny) succeeds.
-    with patch("builtins.input", side_effect=["2", "4"]):
-        result = tty_sovereign_prompt(_halt("once"), out=out)
+    # "3" is the old always slot; should be unknown in the 3-choice capped menu.
+    # In capped mode, [3] = Not this time (deny), so "3" → deny.
+    with patch("builtins.input", side_effect=["3"]):
+        result = tty_sovereign_prompt(_halt("session"), out=out)
 
     assert result == "deny"
 
 
-def test_tty_prompt_rejects_always_choice_when_capped():
-    """When capped, input '3' (always) is treated as unknown — re-prompts."""
-    from grove.sovereign_prompt_handlers import tty_sovereign_prompt
-
-    out = io.StringIO()
-    with patch("builtins.input", side_effect=["3", "1"]):
-        result = tty_sovereign_prompt(_halt("once"), out=out)
-
-    assert result == "once"
-
-
 def test_tty_prompt_shows_all_four_choices_when_uncapped():
-    """Without a cap, prompt text includes all four disposition labels."""
+    """Without a cap, prompt text includes session and always labels."""
     from grove.sovereign_prompt_handlers import tty_sovereign_prompt
 
     out = io.StringIO()
@@ -212,7 +213,6 @@ def test_tty_prompt_shows_all_four_choices_when_uncapped():
 
     assert result == "once"
     rendered = out.getvalue().lower()
-    # At least session or always must appear in the uncapped prompt.
     assert "session" in rendered or "always" in rendered, (
         "Uncapped prompt must show session/always choices"
     )

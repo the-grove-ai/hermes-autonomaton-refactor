@@ -2272,11 +2272,17 @@ class TelegramAdapter(BasePlatformAdapter):
             if len(body) > 280:
                 body = body[:279] + "…"
             text = f"🔔 {_html.escape(body)}"
-            if max_disposition == "once":
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")],
-                    [InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")],
-                ])
+            if max_disposition in ("once", "session"):
+                # GRV-001 Stage 04 — suppress Always button for governance-mutation
+                # verbs so no permanent zone rule can be written via a mobile tap.
+                rows = []
+                if max_disposition == "once":
+                    rows.append([InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")])
+                else:  # session cap
+                    rows.append([InlineKeyboardButton("🟡 This session", callback_data=f"kz:session:{kaizen_id}")])
+                    rows.append([InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")])
+                rows.append([InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")])
+                keyboard = InlineKeyboardMarkup(rows)
             else:
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("🟢 Always", callback_data=f"kz:always:{kaizen_id}")],

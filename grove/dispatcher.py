@@ -4542,18 +4542,24 @@ class Dispatcher:
             self._clear_pending_andon(agent, marker_path)
 
         # GRV-001 Stage 04 — enforce max_disposition cap from zone rule.
-        # Governance-mutation verbs carry max_disposition: once so an operator
-        # cannot accumulate a blanket session pass via "always" or "session".
-        # The cap is applied BEFORE cache mutation so neither the session allow
-        # cache nor _apply_zone_promotion fires on a capped disposition.
+        # Governance-mutation verbs carry max_disposition: session so "always"
+        # is suppressed — no permanent green rule can accumulate across sessions.
+        # "session" is allowed: the agent may invoke repeatedly within one
+        # session without re-prompting after the operator grants it.
+        # The cap is applied BEFORE cache mutation so _apply_zone_promotion
+        # cannot fire on a capped disposition.
         _max_disp = _get_halt_max_disposition(halt)
-        if _max_disp == "once" and disposition in ("session", "always"):
+        _DISPOSITION_RANK = {"once": 0, "session": 1, "always": 2}
+        if (
+            _max_disp in _DISPOSITION_RANK
+            and _DISPOSITION_RANK.get(disposition, -1) > _DISPOSITION_RANK[_max_disp]
+        ):
             logger.info(
-                "[Dispatcher] max_disposition=once cap: operator chose %r → 'once' "
+                "[Dispatcher] max_disposition=%r cap: operator chose %r → %r "
                 "for tool=%s (GRV-001 Stage 04).",
-                disposition, triggering_intent.tool_name,
+                _max_disp, disposition, _max_disp, triggering_intent.tool_name,
             )
-            disposition = "once"
+            disposition = _max_disp
 
         # Cache mutation by disposition.
         if disposition == "deny":
