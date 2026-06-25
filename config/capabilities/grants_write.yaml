@@ -1,0 +1,75 @@
+# grants_write.yaml — Standing grant revocation (governed) verb record.
+# Added by fix(tool-admission): grants_tool.py registered revoke_grant under
+# toolset="governance" but no capability record existed, so get_admitted_tools()
+# filtered it out. Yellow zone: revocation is a governance mutation governed
+# by the Sovereign Prompt.
+# family=grants  zone=yellow  tiers=[1,2,3]  disclosure=proactive  trigger=always
+id: grants_write
+kind: verb
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - revoke_grant
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'Standing grant revocation (governed, zone yellow). Tools: revoke_grant.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: '2026-06-25T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-25T00:00:00+00:00'
+    from_state: new
+    to_state: approved
+    reason: 'fix(tool-admission): admit revoke_grant through capability record;
+      tool was registered in grants_tool.py but had no record, so get_admitted_tools()
+      filtered it out'
+    evidence:
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: grants_write'
+  - 'subsystem: grant management (tools.grants_tool)'
+  - 'check: tool registered + zone mapped in zones.schema.yaml'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

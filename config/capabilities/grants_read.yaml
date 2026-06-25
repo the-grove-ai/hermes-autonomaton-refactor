@@ -1,0 +1,74 @@
+# grants_read.yaml — Standing grant review (read-only) verb record.
+# Added by fix(tool-admission): grants_tool.py registered review_grants under
+# toolset="governance" but no capability record existed, so get_admitted_tools()
+# filtered it out. This record closes the admission gap.
+# family=grants  zone=green  tiers=[1,2,3]  disclosure=proactive  trigger=always
+id: grants_read
+kind: verb
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - review_grants
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'Standing grant review (read-only, zone green). Tools: review_grants.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: '2026-06-25T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-25T00:00:00+00:00'
+    from_state: new
+    to_state: approved
+    reason: 'fix(tool-admission): admit review_grants through capability record;
+      tool was registered in grants_tool.py but had no record, so get_admitted_tools()
+      filtered it out'
+    evidence:
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: grants_read'
+  - 'subsystem: grant management (tools.grants_tool)'
+  - 'check: tool registered + zone mapped in zones.schema.yaml'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

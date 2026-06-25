@@ -1,0 +1,78 @@
+# andon_write.yaml — Skill quarantine governance (governed) verb record.
+# Added by fix(tool-admission): andon_tool.py registered andon_promote/reject/revoke
+# under toolset="andon" but no capability record existed, so get_admitted_tools()
+# filtered them out. Red zone: promote/reject/revoke are sovereignty acts governed
+# by the Sovereign Prompt or a standing grant.
+# family=andon  zone=red  tiers=[1,2,3]  disclosure=proactive  trigger=always
+id: andon_write
+kind: verb
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - andon_promote
+  - andon_reject
+  - andon_revoke
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'Skill quarantine governance (governed, zone red). Tools: andon_promote,
+    andon_reject, andon_revoke.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: '2026-06-25T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-25T00:00:00+00:00'
+    from_state: new
+    to_state: approved
+    reason: 'fix(tool-admission): admit andon_promote/reject/revoke through capability
+      record; tools were registered in andon_tool.py but had no record, so
+      get_admitted_tools() filtered them out'
+    evidence:
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: andon_write'
+  - 'subsystem: skill quarantine (tools.andon_tool)'
+  - 'check: tool registered + zone mapped in zones.schema.yaml'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
