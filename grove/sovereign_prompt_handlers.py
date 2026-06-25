@@ -158,14 +158,13 @@ def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
         if _md is not None:
             _max_disp = _md
             break
-    _capped = (_max_disp == "once")
+    _capped = _max_disp  # "once", "session", or None
 
     triggering = halt.intents[halt.triggering_index]
 
-    if _capped:
-        # GRV-001 Stage 04 — governance-mutation verb: show only once/deny.
-        # Bypass render_yellow_sovereign_prompt (which hardcodes all 4 choices)
-        # and emit a 2-choice prompt so the operator cannot tap Session or Always.
+    if _capped == "session":
+        # GRV-001 Stage 04 — governance-mutation verb: show once/session/deny,
+        # suppress Always so no permanent zone rule can be written.
         description = describe_action_kaizen(
             triggering.tool_name, triggering.arguments or {}
         )
@@ -173,21 +172,24 @@ def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
             f"\nI'd like to {description}. This one's your call before I go ahead.\n"
             "\n"
             "  [1] Just this once\n"
-            "  [2] Not this time",
+            "  [2] For the rest of this session\n"
+            "  [3] Not this time",
             file=out,
         )
         while True:
             try:
-                choice = input("Choose [1/2]: ").strip().lower()
+                choice = input("Choose [1/2/3]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print("(no input — declining the action)", file=out)
                 return "deny"
             if choice in ("1", "once", "allow", "yes", "y"):
                 return "once"
-            if choice in ("2", "deny", "no", "n", "don't allow", "dont allow"):
+            if choice in ("2", "session"):
+                return "session"
+            if choice in ("3", "deny", "no", "n", "don't allow", "dont allow"):
                 return "deny"
             print(
-                f"Unknown choice {choice!r}; pick 1 (just this once) or 2 (not this time).",
+                f"Unknown choice {choice!r}; pick 1 (once), 2 (session), or 3 (not this time).",
                 file=out,
             )
 
