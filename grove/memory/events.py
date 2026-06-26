@@ -21,6 +21,7 @@ __all__ = [
     "MemorySuperseded",
     "MemoryDeprecated",
     "MemoryAccessed",
+    "MemoryGraduated",
     "MemoryEvent",
     "new_event_id",
     "new_record_id",
@@ -92,6 +93,26 @@ class MemoryAccessed:
     context: str                        # query keywords that triggered the access
 
 
+@dataclass(frozen=True)
+class MemoryGraduated:
+    """A record is graduated into the permanent wiki cellar.
+
+    memory-cellar-graduation-v1: graduation projects the record into the wiki
+    as a permanent page. It does NOT retire the record — the dual-serve
+    invariant keeps ``status == "active"`` so the record is still served via
+    the JSONL/query path. The fold records only ``graduated_at`` (suppression
+    is deferred to K4). Minimal identity shape: ``record_id`` + ``timestamp``.
+    """
+
+    event_id: str
+    timestamp: str
+    record_id: str
+
+
 MemoryEvent = Union[
-    MemoryCreated, MemorySuperseded, MemoryDeprecated, MemoryAccessed
+    MemoryCreated,
+    MemorySuperseded,
+    MemoryDeprecated,
+    MemoryAccessed,
+    MemoryGraduated,
 ]

@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, List
 from grove.memory.events import (
     MemoryCreated,
     MemoryDeprecated,
+    MemoryGraduated,
     MemorySuperseded,
     new_event_id,
     new_record_id,
@@ -76,6 +77,14 @@ class MemoryProposalHandler:
             reason = proposal.get("reason", "")
             tail = f" — {reason}" if reason else ""
             return f"'{content}'{tail}. Deprecate?"
+        if action == "graduate":
+            # Graduation proposals carry target_id + content (NOT a
+            # proposed_record), same as deprecate. Read content directly —
+            # reaching for proposal["proposed_record"] here would KeyError.
+            content = proposal.get("content")
+            if not content:
+                return "A stable memory record is ready to graduate to permanent knowledge. Graduate?"
+            return f"'{content}' has proven stable. Graduate it to permanent knowledge?"
         rec = proposal["proposed_record"]
         try:
             pct = round(float(rec["confidence"]) * 100)
@@ -146,11 +155,45 @@ class MemoryProposalHandler:
                 record_id=target_id,
                 reason=reason,
             )
+        elif action == "graduate":
+            target_id = proposal.get("target_id")
+            if not target_id:
+                raise ValueError("graduate proposal missing target_id")
+            record = self._store.projected_records().get(target_id)
+            if record is None:
+                raise ValueError(
+                    f"graduate target {target_id!r} is not in the memory index; "
+                    f"refusing to append a dangling graduate event"
+                )
+            # Idempotency (fail loud): a record already graduated has a cellar
+            # page and a MemoryGraduated event — re-minting would duplicate.
+            if record.graduated_at is not None:
+                raise ValueError(
+                    f"graduate target {target_id!r} is already graduated "
+                    f"(graduated_at={record.graduated_at!r}); refusing to re-graduate"
+                )
+            event = MemoryGraduated(
+                event_id=new_event_id(),
+                timestamp=_now_iso(),
+                record_id=target_id,
+            )
         else:
             raise ValueError(f"unknown memory proposal action {action!r}")
 
         self._store.append_event(event)
         self._store.rebuild_index()
+
+        # Graduation projects the now-graduated record into the wiki cellar.
+        # The fold set graduated_at but LEFT status "active" (dual-serve): the
+        # record is still served via query(); the cellar page is the second
+        # serving surface. Lazy import — the memory subsystem reaches the wiki
+        # subsystem ONLY here, never at module load (GUARD P4-a: grove.wiki
+        # imports grove.memory under TYPE_CHECKING only, so no runtime cycle).
+        if action == "graduate":
+            from grove.wiki.pipeline import project_memory
+
+            project_memory(self._store.projected_records()[event.record_id])
+
         return True
 
 

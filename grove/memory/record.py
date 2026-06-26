@@ -64,3 +64,4 @@ class MemoryRecord:
     last_accessed: Optional[str] = None
     access_count: int = 0
     decay_rate: float = 1.0            # entity-type-derived
+    graduated_at: Optional[str] = None  # ISO ts when graduated to the cellar; None = not graduated

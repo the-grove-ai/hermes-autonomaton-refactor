@@ -47,6 +47,7 @@ from grove.wiki.adapters import NormalizedDoc
 
 if TYPE_CHECKING:
     from grove.dock import Goal
+    from grove.memory.record import MemoryRecord
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,15 @@ _HASH_LEN = 8
 _DOCK_GOAL_SOURCE_TYPE = "dock_goal"
 _DOCK_GOAL_SOURCE_PREFIX = "dock.yaml#"
 _DOCK_MANIFEST_FILENAME = "dock.yaml"
+
+# Memory graduation (memory-cellar-graduation-v1). A graduated MemoryRecord
+# projects to a canonical page with this source_type and a synthetic,
+# source-stable ``source`` string ``memory#<record id>`` — opaque to
+# _write_page (hashed, never path-normalized), so the "#" is safe.
+_MEMORY_SOURCE_TYPE = "memory_graduated"
+_MEMORY_SOURCE_PREFIX = "memory#"
+# Title is the record content capped at this length (or full when shorter).
+_MEMORY_TITLE_MAX = 80
 
 _EVAL_TOOL: Dict[str, Any] = {
     "name": "wiki_evaluation",
@@ -372,6 +382,58 @@ def project_dock(
     return pages
 
 
+def project_memory(
+    record: "MemoryRecord",
+    *,
+    wiki_root: Optional[Path] = None,
+) -> CanonicalPage:
+    """Project one graduated :class:`grove.memory.record.MemoryRecord` into a
+    canonical wiki page — the DETERMINISTIC sibling of :func:`compact`.
+
+    Like :func:`project`, it NEVER calls the LLM (``call_t1`` / Writer /
+    Evaluator / Editor): a graduated record's own fields map straight to a
+    page, so the same retrieval surface that serves the fleet cellar and the
+    Dock goals also serves crystallized operator memory.
+
+    Mapping (Sprint K3): ``title`` ← ``content`` capped at
+    :data:`_MEMORY_TITLE_MAX`; ``source`` ← ``memory#<id>`` (source-stable,
+    opaque to :func:`_write_page`); ``source_type`` ← ``memory_graduated``;
+    ``dock_goal_refs`` ← ``[dock_goal_ref]`` or ``[]``; ``topics`` ←
+    ``[entity_type]``; ``key_entities`` ← ``[]``; ``confidence`` ←
+    ``record.confidence``. ``status`` is rendered into the frontmatter (the
+    index ignores it; the operator/Obsidian see it).
+
+    Both frontmatter timestamps derive from ``record.created_at`` — already an
+    ISO string fixed at the record's creation (K3 ruling), so the page is
+    byte-stable and no ``stat``/wall-clock conversion is needed (unlike K2's
+    mtime path). Reuses :func:`_write_page` for the source-hash/glob
+    idempotency but renders its OWN markdown (``_render_memory_page`` carries
+    ``status``), so the fleet path through :func:`_render` is untouched.
+    """
+    title = record.content[:_MEMORY_TITLE_MAX]
+    dock_refs = [record.dock_goal_ref] if record.dock_goal_ref else []
+
+    page = CanonicalPage(
+        source=_MEMORY_SOURCE_PREFIX + record.id,
+        source_type=_MEMORY_SOURCE_TYPE,
+        title=title,
+        topics=[record.entity_type],
+        key_entities=[],
+        dock_goal_refs=dock_refs,
+        confidence=record.confidence,
+        created_at=record.created_at,
+        updated_at=record.created_at,
+        body=_render_memory_body(record),
+        path=Path("/dev/null"),  # replaced below
+        markdown="",             # replaced below
+        editor_ran=False,
+        evaluator_verdict={},
+    )
+    markdown = _render_memory_page(page, record)
+    path = _write_page(page, markdown, wiki_root)
+    return _with_output(page, path=path, markdown=markdown)
+
+
 # ── parsing / validation (fail loud) ────────────────────────────────────
 
 
@@ -569,6 +631,59 @@ def _render_dock_body(goal: "Goal") -> str:
     ]
     if goal.context_sources:
         lines.extend(f"- {src}" for src in goal.context_sources)
+    else:
+        lines.append("(none)")
+    return "\n".join(lines)
+
+
+def _render_memory_page(page: CanonicalPage, record: "MemoryRecord") -> str:
+    """Render a projected graduated MemoryRecord to Markdown (Sprint K3).
+
+    Distinct from :func:`_render`: the frontmatter additionally carries
+    ``status`` (pulled from the record, not the page) and every field is
+    deterministic — no wall-clock, so output is byte-stable. The key set the
+    index reads (title/source_type/confidence/dock_goal_refs/topics/
+    key_entities) is a superset-compatible subset here.
+    """
+    fm = {
+        "title": page.title,
+        "source_type": page.source_type,
+        "source": page.source,
+        "status": record.status,
+        "created_at": page.created_at,
+        "updated_at": page.updated_at,
+        "confidence": page.confidence,
+        "dock_goal_refs": list(page.dock_goal_refs),
+        "topics": list(page.topics),
+        "key_entities": list(page.key_entities),
+    }
+    return (
+        "---\n"
+        + yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
+        + "---\n\n"
+        + page.body.rstrip("\n")
+        + "\n"
+    )
+
+
+def _render_memory_body(record: "MemoryRecord") -> str:
+    """Deterministic body for a graduated MemoryRecord — the content VERBATIM
+    and prominent on the first line, then entity type, the source list, and the
+    access telemetry, in a fixed layout."""
+    last_accessed = record.last_accessed or "(never)"
+    lines = [
+        record.content,
+        "",
+        f"- **Entity type:** {record.entity_type}",
+        f"- **Created:** {record.created_at}",
+        f"- **Last accessed:** {last_accessed}",
+        f"- **Access count:** {record.access_count}",
+        "",
+        "## Sources",
+        "",
+    ]
+    if record.sources:
+        lines.extend(f"- {src}" for src in record.sources)
     else:
         lines.append("(none)")
     return "\n".join(lines)
