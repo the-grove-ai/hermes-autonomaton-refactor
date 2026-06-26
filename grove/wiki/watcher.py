@@ -26,11 +26,15 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from grove.wiki.adapters import FLEET_ADAPTERS
-from grove.wiki.pipeline import CanonicalPage, compact
+from grove.wiki.pipeline import CanonicalPage, compact, project_dock
 
 logger = logging.getLogger(__name__)
 
 _LEDGER_REL = Path(".index") / "ingest_state.json"
+
+# The Dock manifest, relative to the hermes home. The watcher treats it as one
+# more observed target alongside the fleet sinks (Sprint K2).
+_DOCK_REL = Path("dock") / "dock.yaml"
 
 
 def scan_and_ingest(
@@ -68,6 +72,23 @@ def scan_and_ingest(
             ledger[str(source)] = mtime
             pages.append(page)
             logger.info("[wiki] ingested %s -> %s", source.name, page.path.name)
+
+    # Dock observed-target branch (Sprint K2) — parallel to the fleet loop,
+    # riding the SAME ledger dict + single save. Acts ONLY when the manifest
+    # exists: an absent dock.yaml is "Dock not installed" — no trigger, no reap
+    # (the existing dock_goal pages remain last-known-good). An emptied-but-
+    # present manifest is a real mtime change and routes to project_dock, whose
+    # reap-all mirrors the now-empty Dock.
+    dock_path = home / _DOCK_REL
+    if dock_path.is_file():
+        mtime = dock_path.stat().st_mtime
+        if ledger.get(str(dock_path)) != mtime:
+            dock_pages = project_dock(wiki_root=root, dock_path=dock_path)
+            ledger[str(dock_path)] = mtime
+            pages.extend(dock_pages)
+            logger.info(
+                "[wiki] dock reconcile -> %d page(s)", len(dock_pages)
+            )
 
     _save_ledger(ledger_path, ledger)
     return pages

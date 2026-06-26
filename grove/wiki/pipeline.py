@@ -36,7 +36,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import yaml
 
@@ -44,6 +44,9 @@ from hermes_constants import get_wiki_path
 
 from grove.t1_call import call_t1
 from grove.wiki.adapters import NormalizedDoc
+
+if TYPE_CHECKING:
+    from grove.dock import Goal
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,14 @@ _EVAL_MAX_TOKENS = 1024
 
 # Short source hash length — the source-stable component of the filename.
 _HASH_LEN = 8
+
+# Dock projection (Sprint K2 dock-cellar-projection-v1). A Dock goal projects to
+# a canonical page with this source_type and a synthetic, source-stable
+# ``source`` string ``dock.yaml#<goal id>`` — opaque to _write_page (hashed,
+# never path-normalized), so the "#" is safe.
+_DOCK_GOAL_SOURCE_TYPE = "dock_goal"
+_DOCK_GOAL_SOURCE_PREFIX = "dock.yaml#"
+_DOCK_MANIFEST_FILENAME = "dock.yaml"
 
 _EVAL_TOOL: Dict[str, Any] = {
     "name": "wiki_evaluation",
@@ -247,6 +258,120 @@ def compact(
     return _with_output(page, path=path, markdown=markdown)
 
 
+def project(
+    goal: "Goal",
+    *,
+    wiki_root: Optional[Path] = None,
+    source_mtime: Optional[float] = None,
+) -> CanonicalPage:
+    """Project one Dock :class:`grove.dock.Goal` into a canonical wiki page.
+
+    The DETERMINISTIC sibling of :func:`compact`: it NEVER calls the LLM
+    (``call_t1`` / Writer / Evaluator / Editor). The goal's own fields map
+    straight to a canonical page, so the same retrieval surface that serves
+    fleet briefs also serves the operator's strategic goals.
+
+    Mapping (Sprint K2): ``title`` ← name; ``source`` ← ``dock.yaml#<id>``
+    (source-stable, opaque to :func:`_write_page`); ``source_type`` ←
+    ``dock_goal``; ``dock_goal_refs`` ← ``[id]``; ``topics`` / ``key_entities``
+    ← keywords; ``confidence`` ← 1.0. ``status`` and ``vector`` are rendered
+    into the frontmatter (the index ignores them, but Obsidian/the operator
+    see them). Both timestamps derive from the ``dock.yaml`` mtime (RULING 3),
+    rendered UTC so a page is byte-identical whether built on the Mac (tests)
+    or the VM (runtime).
+
+    Reuses :func:`_write_page` for the hash/glob idempotency but renders its
+    OWN markdown (``_render`` omits status/vector and stamps wall-clock), so
+    the fleet path through ``_render`` is untouched.
+
+    ``source_mtime`` is the authoritative ``dock.yaml`` mtime. When None it is
+    re-derived from ``goal.root/dock.yaml`` (the standalone case); :func:`
+    project_dock` THREADS it so every page in one reconcile shares the trigger
+    file's stamp (GUARD P2-a — the trigger source and the stamp source are one
+    file).
+    """
+    if source_mtime is None:
+        manifest = goal.root / _DOCK_MANIFEST_FILENAME
+        # Fail loud: the manifest must exist to stamp timestamps.
+        source_mtime = manifest.stat().st_mtime
+    stamp = _iso_from_mtime(source_mtime)
+    keywords = list(goal.keywords)
+
+    page = CanonicalPage(
+        source=_DOCK_GOAL_SOURCE_PREFIX + goal.id,
+        source_type=_DOCK_GOAL_SOURCE_TYPE,
+        title=goal.name,
+        topics=keywords,
+        key_entities=keywords,
+        dock_goal_refs=[goal.id],
+        confidence=1.0,
+        created_at=stamp,
+        updated_at=stamp,
+        body=_render_dock_body(goal),
+        path=Path("/dev/null"),  # replaced below
+        markdown="",             # replaced below
+        editor_ran=False,
+        evaluator_verdict={},
+    )
+    markdown = _render_dock_page(page, goal)
+    path = _write_page(page, markdown, wiki_root)
+    return _with_output(page, path=path, markdown=markdown)
+
+
+def project_dock(
+    wiki_root: Optional[Path] = None,
+    *,
+    dock_path: Optional[Path] = None,
+) -> List[CanonicalPage]:
+    """Reconcile the ``dock_goal`` cellar against the live Dock manifest.
+
+    Pure projection: the set of ``dock_goal`` pages mirrors the live goals.
+
+    1. Load the manifest (``dock_path`` injected by the watcher; runtime path
+       when None). An ABSENT manifest (:func:`grove.dock.load_dock` returns
+       None) is a NO-OP — nothing is touched, nothing reaped (GUARD P2-b).
+    2. Project EVERY goal (not just active — a ``complete`` goal still gets a
+       page). :func:`project`'s own glob-clear removes a title-drifted goal's
+       stale same-hash slug (GUARD P2-c, axis 1).
+    3. Set-difference reap (GUARD P2-c, axis 2): delete ``dock_goal`` pages
+       whose trailing hash is ABSENT from the expected set — i.e. goals that no
+       longer exist. A present-but-EMPTY manifest yields an empty expected set
+       and reaps ALL dock_goal pages — correct-by-model and intentional.
+
+    Returns the pages projected this pass (``[]`` on the no-op path or an empty
+    manifest).
+    """
+    from grove.dock import load_dock
+
+    dock = load_dock(dock_path)
+    if dock is None:
+        logger.debug("[wiki] no Dock manifest — projection no-op")
+        return []
+
+    # Single authoritative stamp source (GUARD P2-a): the manifest load_dock
+    # just read. dock.root is <manifest dir>; the file is dock.yaml.
+    manifest = dock.root / _DOCK_MANIFEST_FILENAME
+    source_mtime = manifest.stat().st_mtime
+
+    root = Path(wiki_root) if wiki_root else get_wiki_path()
+    out_dir = root / "pages" / _DOCK_GOAL_SOURCE_TYPE
+
+    pages: List[CanonicalPage] = []
+    expected: set[str] = set()
+    for goal in dock.goals:
+        pages.append(project(goal, wiki_root=root, source_mtime=source_mtime))
+        expected.add(_dock_source_hash(goal.id))
+
+    if out_dir.is_dir():
+        for path in sorted(out_dir.glob("*.md")):
+            h = _trailing_hash(path)
+            if h is not None and h not in expected:
+                path.unlink()
+                logger.info("[wiki] reaped orphaned dock page %s", path.name)
+
+    return pages
+
+
 # ── parsing / validation (fail loud) ────────────────────────────────────
 
 
@@ -390,6 +515,65 @@ def _render(page: CanonicalPage) -> str:
     )
 
 
+def _render_dock_page(page: CanonicalPage, goal: "Goal") -> str:
+    """Render a projected Dock goal to Markdown (Sprint K2, own-render).
+
+    Distinct from :func:`_render`: the frontmatter additionally carries
+    ``status`` and ``vector`` (pulled from the goal, not the page), and every
+    field is deterministic — no wall-clock, so output is byte-stable. The key
+    set the index reads (title/source_type/confidence/dock_goal_refs/topics/
+    key_entities) is a superset-compatible subset here.
+    """
+    fm = {
+        "title": page.title,
+        "source_type": page.source_type,
+        "source": page.source,
+        "status": goal.status,
+        "vector": goal.vector,
+        "created_at": page.created_at,
+        "updated_at": page.updated_at,
+        "confidence": page.confidence,
+        "dock_goal_refs": list(page.dock_goal_refs),
+        "topics": list(page.topics),
+        "key_entities": list(page.key_entities),
+    }
+    return (
+        "---\n"
+        + yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
+        + "---\n\n"
+        + page.body.rstrip("\n")
+        + "\n"
+    )
+
+
+def _render_dock_body(goal: "Goal") -> str:
+    """Deterministic body for a projected Dock goal — name, vector, status,
+    definition of done, keywords, and context sources, in a fixed layout."""
+    keywords = ", ".join(goal.keywords) if goal.keywords else "(none)"
+    lines = [
+        f"# {goal.name}",
+        "",
+        f"- **Vector:** {goal.vector}",
+        f"- **Status:** {goal.status}",
+        "",
+        "## Definition of Done",
+        "",
+        goal.definition_of_done,
+        "",
+        "## Keywords",
+        "",
+        keywords,
+        "",
+        "## Context Sources",
+        "",
+    ]
+    if goal.context_sources:
+        lines.extend(f"- {src}" for src in goal.context_sources)
+    else:
+        lines.append("(none)")
+    return "\n".join(lines)
+
+
 def _write_page(page: CanonicalPage, markdown: str, wiki_root: Optional[Path]) -> Path:
     root = Path(wiki_root) if wiki_root else get_wiki_path()
     out_dir = root / "pages" / page.source_type
@@ -405,6 +589,30 @@ def _write_page(page: CanonicalPage, markdown: str, wiki_root: Optional[Path]) -
     path = out_dir / f"{_slug(page.title)}-{short_hash}.md"
     path.write_text(markdown, encoding="utf-8")
     return path
+
+
+_HEX_RE = re.compile(r"^[0-9a-f]+$")
+
+
+def _dock_source_hash(goal_id: str) -> str:
+    """Expected filename hash for a Dock goal id. Shares the source PREFIX
+    constant, sha256, and ``_HASH_LEN`` with :func:`_write_page` (GUARD P2-d) —
+    never a re-spelled ``dock.yaml#`` literal — so the reaper's expected set and
+    the writer's filenames can't silently desync."""
+    source = _DOCK_GOAL_SOURCE_PREFIX + goal_id
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:_HASH_LEN]
+
+
+def _trailing_hash(path: Path) -> Optional[str]:
+    """The source hash = the LAST ``-``-delimited segment of the filename stem
+    (RULING 4). Slugs contain ``-``, so split on the last one. Returns the
+    segment only when it is exactly ``_HASH_LEN`` lowercase-hex chars; otherwise
+    None — a non-conforming file is not a projection artifact and is left alone
+    (the reaper never deletes a hand-authored note)."""
+    seg = path.stem.rsplit("-", 1)[-1]
+    if len(seg) == _HASH_LEN and _HEX_RE.match(seg):
+        return seg
+    return None
 
 
 def _slug(title: str, max_len: int = 60) -> str:
