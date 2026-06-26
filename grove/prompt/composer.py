@@ -94,9 +94,15 @@ _TIER_ORDER: Tuple[str, ...] = ("stable", "context", "volatile")
 # providers are absent here and are therefore never tier-gated. ``goal_record``
 # is NOT a composer provider — it is the Dock ephemeral injection, gated by the
 # same allow-list at the run_agent.py seam.
+#
+# K6 (A-rename Resolution A) — the cellar provider keeps its registration name
+# ``cellar_knowledge`` (existing tests reference it) but is gated as the block
+# ``cellar_context``, following the ``context_files → claude_contract``
+# precedent that registration name and gateable block name need not match.
 _PROVIDER_GATEABLE_BLOCK: Dict[str, str] = {
     "context_files": "claude_contract",
     "skills_index": "skills_index",
+    "cellar_knowledge": "cellar_context",
 }
 
 

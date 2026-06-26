@@ -3898,6 +3898,13 @@ class Dispatcher:
             # applies the current tier's context gate.
             tier_context_blocks=getattr(agent, "_tier_context_blocks", None),
             tier=getattr(agent, "_tier_name", None),  # Sprint 75 — identity gate
+            # K6 (D3) — the routed tier's cellar budget, read off the resolved
+            # TierBudget on the agent. None on a construction-time / non-routed
+            # compose (no _tier_budget yet) — the cellar provider then falls back
+            # to its constructor default (1500).
+            cellar_context_ceiling=getattr(
+                getattr(agent, "_tier_budget", None), "cellar_context_ceiling", None
+            ),
         )
         # Sprint 73 Phase 5 — retain the structured composition RESULT as data
         # on the agent (NOT a recomposing method — GRV-007 deleted that). The
