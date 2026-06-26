@@ -14,6 +14,7 @@ trigger:
   intents: [research, retrieval]
   keywords: [notion, page, database, workspace, doc]
   dock_affinity: []   # manifest notion unit declares dock_goal: null — empty, exactly as today
+  always: true        # tool-admission-widening-v1: Green-zone read, always admitted (key was absent → intent-gated-only)
 bindings:
   # A4 (GRV-009 E5 C-BACKFILL) — strict 1:1 tool ownership. The 7 GREEN hosted
   # Notion MCP read tools (names per zones.schema.yaml::tool_zones, Sprint 69).

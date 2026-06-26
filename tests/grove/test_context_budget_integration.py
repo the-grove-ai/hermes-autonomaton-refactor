@@ -435,3 +435,51 @@ class TestSpikeC1Observability:
         agent = _bare_agent_with_tools([_tool("clarify")])
         agent._maybe_apply_tool_filter()
         assert "construction_provenance" not in agent._last_tool_selection
+
+
+# ── tool-admission-widening-v1 — Green-zone read admission ────────────────
+
+
+class TestRegistryAdmissionWidening:
+    """tool-admission-widening-v1 — Green-zone read records flipped to
+    ``trigger.always: true`` are admitted on ANY classified turn, not only
+    turns naming their former gating intents. Guards the post-K6 Bug 1 root
+    cause: ``search_files`` was gated behind narrow ``trigger.intents`` and
+    excluded on conversation/messaging/etc., blocking the primary read path.
+
+    Exercises the LIVE on-disk capability registry (``config/capabilities/``)
+    via ``_registry_allowed_names`` — the same admission predicate the
+    per-turn tool filter uses — with the cache reset so the assertion reads
+    the records as written to disk.
+    """
+
+    def test_search_files_admitted_on_conversation_intent(self):
+        from grove.context_budget import (
+            _registry_allowed_names,
+            reset_caps_index_cache,
+        )
+
+        # Read the registry fresh from disk, not a stale cached projection.
+        reset_caps_index_cache()
+        try:
+            allowed, _stripped = _registry_allowed_names(
+                intent_class="conversation",
+                complexity_signal="simple",
+                current_tier=None,
+            )
+        finally:
+            reset_caps_index_cache()
+
+        # search_files flipped to always: true — admitted on a conversation
+        # turn that names NONE of its former gating intents (analysis,
+        # code_generation, debugging, planning, research).
+        assert "search_files" in allowed
+
+        # read_file is always-core — regression guard that the widening did
+        # not disturb the pre-existing core read surface.
+        assert "read_file" in allowed
+
+        # web_search held at always: false (operator cost-gating decision,
+        # the HOLD disposition). conversation names none of its intents, so
+        # it must NOT be admitted — confirms the flip was surgical.
+        assert "web_search" not in allowed
