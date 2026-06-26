@@ -149,10 +149,10 @@ routing:
 tier_budgets:
 
   T3:                       # Apex Cognition — unbounded window, eager.
-    context: [claude_contract, goal_record, skills_index]
+    context: [claude_contract, skills_index]
 
   T2:                       # Premium Cognition — local, memory-budgeted.
-    context: [goal_record]  # claude_contract + skills_index gated OFF
+    context: []  # claude_contract + skills_index gated OFF (K6 D1 retired goal_record)
     # Sprint 77.0a memory governor: the max composed-prefill tokens the local
     # gpt-oss endpoint may receive. MUST stay below the llama-server -c context
     # size (24576 — memory-validated at ~2.39 GB min-avail, Sprint 77.4) so an

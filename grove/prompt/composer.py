@@ -91,9 +91,9 @@ _TIER_ORDER: Tuple[str, ...] = ("stable", "context", "volatile")
 
 # Sprint 73 (D5) — the gateable context blocks a tier budget may switch off,
 # keyed by the composer registration NAME that emits each. Always-on baseline
-# providers are absent here and are therefore never tier-gated. ``goal_record``
-# is NOT a composer provider — it is the Dock ephemeral injection, gated by the
-# same allow-list at the run_agent.py seam.
+# providers are absent here and are therefore never tier-gated. (K6 D1 retired
+# ``goal_record``, the former Dock ephemeral injection — Dock goals now serve
+# through the cellar; the run_agent.py injection seam is removed.)
 #
 # K6 (A-rename Resolution A) — the cellar provider keeps its registration name
 # ``cellar_knowledge`` (existing tests reference it) but is gated as the block

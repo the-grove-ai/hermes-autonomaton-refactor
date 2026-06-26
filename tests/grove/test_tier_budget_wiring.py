@@ -25,10 +25,12 @@ def _budget(context):
     return TierBudget(context=tuple(context))
 
 
+# K6 (A-goalrec-tests ruling) — representative gateable block swapped
+# goal_record -> skills_index (goal_record left GATEABLE_CONTEXT_BLOCKS).
 BUDGETS = {
     "T1": _budget([]),
-    "T2": _budget(["goal_record"]),
-    "T3": _budget(["claude_contract", "goal_record", "skills_index"]),
+    "T2": _budget(["skills_index"]),
+    "T3": _budget(["claude_contract", "skills_index"]),
 }
 
 
@@ -56,8 +58,8 @@ def test_single_source_both_carriers_from_one_budget(disp):
     agent = types.SimpleNamespace()
     disp.agent = agent
     disp._apply_tier_budget(agent, "T2")
-    assert agent._tier_budget is BUDGETS["T2"]                       # tools carrier
-    assert agent._tier_context_blocks == frozenset({"goal_record"})  # context carrier
+    assert agent._tier_budget is BUDGETS["T2"]                        # tools carrier
+    assert agent._tier_context_blocks == frozenset({"skills_index"})  # context carrier
     # both derive from the SAME TierBudget — they cannot disagree
     assert agent._tier_context_blocks == frozenset(agent._tier_budget.context)
 
@@ -135,6 +137,6 @@ def test_hot_swap_new_agent_composed_directly(disp):
     disp._apply_tier_budget(new_agent, "T3")          # new_agent is not self.agent
     assert new_agent._tier_budget is BUDGETS["T3"]
     assert new_agent._tier_context_blocks == frozenset(
-        {"claude_contract", "goal_record", "skills_index"}
+        {"claude_contract", "skills_index"}
     )
     assert compose_calls == [new_agent]               # composed the NEW agent

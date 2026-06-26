@@ -30,10 +30,12 @@ BASE_TIERS = {
     "T3": {"provider": "anthropic", "model": "claude-opus-4-6"},
 }
 
+# K6 (A-goalrec-tests ruling) — representative gateable block swapped
+# goal_record -> skills_index after goal_record left GATEABLE_CONTEXT_BLOCKS.
 VALID_BUDGETS = {
     "T1": {"context": []},
-    "T2": {"context": ["goal_record"]},
-    "T3": {"context": ["claude_contract", "goal_record", "skills_index"]},
+    "T2": {"context": ["skills_index"]},
+    "T3": {"context": ["claude_contract", "skills_index"]},
 }
 
 _SENTINEL = object()
@@ -81,7 +83,7 @@ def test_valid_budget_loads_all_inference_tiers(tmp_path):
 def test_valid_budget_values_are_typed_and_ordered(tmp_path):
     budgets = _load(tmp_path)
     t2 = budgets["T2"]
-    assert t2.context == ("goal_record",)
+    assert t2.context == ("skills_index",)
     assert t2.prefill_ceiling_tokens is None
     # frozen dataclasses are immutable
     with pytest.raises(Exception):
@@ -92,9 +94,9 @@ def test_leftover_tools_block_is_silently_ignored(tmp_path):
     # A stale tools.allow_groups key in an old/sovereign config must not crash —
     # the budget no longer reads it (Option B); only context is governed.
     budgets = copy.deepcopy(VALID_BUDGETS)
-    budgets["T2"] = {"context": ["goal_record"], "tools": {"allow_groups": ["core"]}}
+    budgets["T2"] = {"context": ["skills_index"], "tools": {"allow_groups": ["core"]}}
     loaded = _load(tmp_path, budgets=budgets)
-    assert loaded["T2"].context == ("goal_record",)
+    assert loaded["T2"].context == ("skills_index",)
 
 
 def test_t0_handler_tier_requires_no_budget(tmp_path):
@@ -137,14 +139,14 @@ def test_budget_for_unknown_tier_raises(tmp_path):
 
 def test_unknown_context_block_raises(tmp_path):
     budgets = copy.deepcopy(VALID_BUDGETS)
-    budgets["T2"]["context"] = ["goal_record", "kitchen_sink"]
+    budgets["T2"]["context"] = ["skills_index", "kitchen_sink"]
     with pytest.raises(ValueError, match=r"unknown block 'kitchen_sink'"):
         _load(tmp_path, budgets=budgets)
 
 
 def test_context_must_be_a_list(tmp_path):
     budgets = copy.deepcopy(VALID_BUDGETS)
-    budgets["T2"]["context"] = "goal_record"
+    budgets["T2"]["context"] = "skills_index"
     with pytest.raises(ValueError, match="context must be a list"):
         _load(tmp_path, budgets=budgets)
 
@@ -159,7 +161,7 @@ def test_context_required(tmp_path):
 def test_gateable_blocks_constant_is_the_d5_set():
     # K6 (A-pin ruling) — cellar_context joins the D5 set (SPEC post-condition 1).
     assert GATEABLE_CONTEXT_BLOCKS == frozenset(
-        {"claude_contract", "goal_record", "skills_index", "cellar_context"}
+        {"claude_contract", "skills_index", "cellar_context"}
     )
 
 

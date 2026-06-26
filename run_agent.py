@@ -13981,53 +13981,15 @@ class AIAgent:
             except Exception:
                 pass
 
-        # Sprint 68 (the-dock-v1) Component 3 — per-turn goal-context
-        # injection (Path A′). Gate on this turn's goal_alignment: only a
-        # "direct" alignment triggers the Dock read, so the cost lands on
-        # goal-advancing turns, not every turn. The resolved block is
-        # injected into the current user message at the ephemeral seam
-        # below (cache-safe, never persisted) and rebuilt each turn so a
-        # goal shift purges the prior context rather than stacking it.
-        #
-        # Fail-loud: a malformed dock.yaml, a missing promised context
-        # file, or a budget ANDON propagates — the turn path does NOT
-        # swallow Dock failures (the sanctioned-graceful path is the
-        # classifier's, not this one). Plumbing access (dispatcher /
-        # classification absent, e.g. a T0 cache-hit turn with no
-        # goal_alignment) simply skips injection — that is not a Dock
-        # defect.
-        _dock_user_context = ""
-        _disp_for_dock = getattr(self, "_dispatcher_singleton", None)
-        _cls_for_dock = getattr(_disp_for_dock, "_current_turn_classification", None) if _disp_for_dock else None
-        # Sprint 73 (D5) — tier context gate for the Dock per-goal record.
-        # ``goal_record`` is injected this turn ONLY when the tier's allow-list
-        # admits it, in addition to the existing on-match rule. The carrier
-        # ``_tier_context_blocks`` is populated per turn by the Phase 4 wiring;
-        # when absent (None) the gate is a no-op — the Phase 3 isolation
-        # default, current behavior unchanged. (Once wired, an inference tier
-        # always populates it: absent != eager — see the Phase 4 invariants.)
-        from grove.tier_budget import tier_admits_context_block
-        _tier_blocks_for_dock = getattr(self, "_tier_context_blocks", None)
-        _goal_record_allowed = tier_admits_context_block(
-            "goal_record", _tier_blocks_for_dock
-        )
-        if (
-            _goal_record_allowed
-            and getattr(_cls_for_dock, "goal_alignment", None) == "direct"
-        ):
-            from grove.dock import build_turn_goal_context, load_dock
-            _dock = load_dock()
-            if _dock is not None:
-                _dock_query = original_user_message if isinstance(original_user_message, str) else ""
-                _dock_hist = list(getattr(self, "_dock_goal_history", ()))
-                _tgc = build_turn_goal_context(
-                    _dock, message=_dock_query, history=_dock_hist,
-                )
-                if _tgc is not None:
-                    _dock_user_context = _tgc.block
-                    # Rolling 3-intent history (most-recent last) for the
-                    # Component 5 conflict-resolution momentum tiebreak.
-                    self._dock_goal_history = (_dock_hist + [_tgc.goal_id])[-3:]
+        # K6 (dynamic-context-assembly-v1, D1) — the Sprint 68 per-turn Dock
+        # goal-context injection seam (the composer-bypassing ephemeral
+        # ``goal_record`` block) is REMOVED. Dock goals now serve through the
+        # cellar: K2 projects every Dock goal to a canonical cellar page, and the
+        # cellar_context provider's BM25 dock_goal_refs boost surfaces it on
+        # relevant turns, under the tier's cellar_context ceiling. Single source
+        # of truth — no out-of-composer Dock text, no separate goal_record block.
+        # (``_dock_goal_history`` retired with the seam: it was read and written
+        # only here, feeding build_turn_goal_context's momentum tiebreak.)
 
         # GRV-010 C1c-ii — the codex_app_server RUNTIME is DISABLED (Option c).
         # Discovery fired ANDON-EXFIL: codex's approval_callback is read-blind
@@ -14247,8 +14209,8 @@ class AIAgent:
                             _injections.append(_fenced)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
-                    if _dock_user_context:  # Sprint 68 Component 3 (Path A′)
-                        _injections.append(_dock_user_context)
+                    # K6 (D1) — Dock goal-context injection removed; Dock goals
+                    # now serve via the cellar_context BM25 path (see above).
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):
