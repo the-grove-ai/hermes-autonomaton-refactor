@@ -27,6 +27,8 @@ register, the Tier-0 routing manifest) is never listed and always composes:
     claude_contract   the CLAUDE.md contract (``context_files`` provider, ~4.5K)
     goal_record       the Dock Tier-1 per-goal record (on-match injection)
     skills_index      the promoted-skills index (~2.8K)
+    cellar_context    the wiki-cellar BM25 retrieval (``cellar_knowledge``
+                      provider; per-tier ``cellar_context_ceiling``, K6)
 """
 
 from __future__ import annotations
@@ -74,8 +76,14 @@ class PrefillCeilingExceeded(RuntimeError):
 # D5 — the only names a tier's ``context`` allow-list may contain. Everything
 # else in the prompt is always-on baseline and is never budget-listed.
 GATEABLE_CONTEXT_BLOCKS: frozenset = frozenset(
-    {"claude_contract", "goal_record", "skills_index"}
+    {"claude_contract", "goal_record", "skills_index", "cellar_context"}
 )
+
+# K6 (dynamic-context-assembly-v1, A-D3 ruling) — the default per-tier
+# ``cellar_context`` token ceiling when a tier omits ``cellar_context_ceiling``.
+# Matches the legacy fixed cellar cap (grove/wiki/provider.py) for backward
+# compatibility during rollout.
+_DEFAULT_CELLAR_CONTEXT_CEILING = 1500
 
 @dataclass(frozen=True)
 class TierBudget:
@@ -91,10 +99,21 @@ class TierBudget:
     "local-path only" by configuration rather than by a hardcoded provider
     name. The value is the measured prefill knee minus margin (interim:
     operator-confirmed live ~5K prefill + margin, until 77.1 measures the knee).
+
+    ``cellar_context_ceiling`` (K6, A-D3 ruling) — the per-tier token budget the
+    ``cellar_knowledge`` provider fills when the ``cellar_context`` block is
+    admitted this turn. A dedicated scalar (NOT a per-block map): one block needs
+    a ceiling, one field solves it. Defaults to
+    ``_DEFAULT_CELLAR_CONTEXT_CEILING`` (1500) when the tier omits it — backward
+    compatible with the legacy fixed cellar cap. Threaded into the compose
+    context so the provider reads it from ``**kwargs`` (single config surface,
+    D3). Distinct from ``prefill_ceiling_tokens`` (a tier-wide local-memory
+    governor, not a per-block budget).
     """
 
     context: Tuple[str, ...]
     prefill_ceiling_tokens: Optional[int] = None
+    cellar_context_ceiling: int = _DEFAULT_CELLAR_CONTEXT_CEILING
 
 
 def tier_admits_context_block(
@@ -303,7 +322,30 @@ def _parse_tier_budget(
             )
         prefill_ceiling_tokens = ceiling_raw
 
+    # ── cellar_context_ceiling: per-tier cellar budget (K6, A-D3 ruling) ──
+    # Absent ⇒ the 1500 default (backward compat with the legacy fixed cap).
+    # Present ⇒ a positive int; ``bool`` rejected (isinstance(True, int) is
+    # True). Validated independently of the ``context`` allow-list — a ceiling
+    # without admission is harmless (the gate drops the block), and admission
+    # without a ceiling falls back to the default. Fail-loud on malformed (D7).
+    cellar_ceiling_raw = spec.get("cellar_context_ceiling")
+    cellar_context_ceiling = _DEFAULT_CELLAR_CONTEXT_CEILING
+    if cellar_ceiling_raw is not None:
+        if (
+            isinstance(cellar_ceiling_raw, bool)
+            or not isinstance(cellar_ceiling_raw, int)
+            or cellar_ceiling_raw <= 0
+        ):
+            raise ValueError(
+                f"routing config at {target}: tier_budgets[{tier_name!r}]."
+                f"cellar_context_ceiling must be a positive integer when present "
+                f"(got {cellar_ceiling_raw!r}); omit it to use the "
+                f"{_DEFAULT_CELLAR_CONTEXT_CEILING}-token default."
+            )
+        cellar_context_ceiling = cellar_ceiling_raw
+
     return TierBudget(
         context=tuple(context),
         prefill_ceiling_tokens=prefill_ceiling_tokens,
+        cellar_context_ceiling=cellar_context_ceiling,
     )

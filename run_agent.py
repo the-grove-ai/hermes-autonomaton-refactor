@@ -7701,6 +7701,12 @@ class AIAgent:
             "system_message": system_message,
             "tier_context_blocks": getattr(self, "_tier_context_blocks", None),
             "tier": getattr(self, "_tier_name", None),  # Sprint 75 — identity gate
+            # K6 (D3) — per-tier cellar budget off the resolved TierBudget; None
+            # when no tier budget is bound (the cellar provider falls back to its
+            # constructor default). Symmetric with Dispatcher.compose_system_prompt.
+            "cellar_context_ceiling": getattr(
+                getattr(self, "_tier_budget", None), "cellar_context_ceiling", None
+            ),
         }
         # Sprint 73 Phase 5 — retain the structured result as data (see
         # Dispatcher.compose_system_prompt). The dispatcher-driven path is the

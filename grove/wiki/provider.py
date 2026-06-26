@@ -5,6 +5,12 @@ Dock goals, graduated memory) relevant to the turn, queried from the K1
 ``WikiIndex`` via BM25. Registered at ``tier="context", order=11`` — strictly
 between ``system_message`` (10) and ``accumulated_domain_memory`` (15).
 
+K6 (dynamic-context-assembly-v1) — this provider is gated as the
+``cellar_context`` block (registration name stays ``cellar_knowledge``; see
+``_PROVIDER_GATEABLE_BLOCK``). Its fill budget is the routed tier's
+``cellar_context_ceiling`` (threaded into the compose context), falling back to
+the constructor ``token_budget`` (1500) on non-routed composes.
+
 ADDITIVE, never a replacement: this runs ALONGSIDE
 ``accumulated_domain_memory``. 28/29 active MemoryRecords are ungraduated and
 have no cellar page; the JSONL provider remains their only serving path
@@ -133,6 +139,19 @@ def create_cellar_provider(
         if not results:
             return None
 
+        # K6 (D3) — per-tier ceiling. The compose context threads the routed
+        # tier's ``cellar_context_ceiling`` (1000/1500/2000 for T1/T2/T3). SPEC-
+        # commanded fallback to the constructor ``token_budget`` (default 1500)
+        # when absent — construction-time / pre-route / no-dispatcher composes
+        # thread no tier budget (backward compat during rollout, NOT a silent
+        # degradation: the fallback is explicit per the K6 SPEC). The loader has
+        # already validated any threaded value as a positive int.
+        _ceiling = context.get("cellar_context_ceiling")
+        effective_budget = (
+            _ceiling if isinstance(_ceiling, int) and not isinstance(_ceiling, bool)
+            and _ceiling > 0 else token_budget
+        )
+
         # Greedy fill in rank order; skip a block that would overflow the
         # budget (lowest-ranked drop first).
         lines: List[str] = []
@@ -140,7 +159,7 @@ def create_cellar_provider(
         for result in results:
             block = _format_result(result)
             cost = _approx_tokens(block)
-            if used + cost > token_budget:
+            if used + cost > effective_budget:
                 continue
             used += cost
             lines.append(block)
