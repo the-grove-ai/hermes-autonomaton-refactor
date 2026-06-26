@@ -7376,6 +7376,28 @@ class AIAgent:
         lines.append("  • Or handle the write yourself")
         return "\n".join(lines)
 
+    def _governance_block_text_if_any(self) -> Optional[str]:
+        """Return the governance-block replacement text when a governed-path
+        write was blocked this turn, else None.
+
+        Single source of "is there a governed block + its text", shared by both
+        turn exit paths:
+          • _apply_mutation_verifier — normal turn completion (Option C: the
+            text REPLACES the model's response);
+          • the TerminalGovernanceHalt path — when the model cascaded from a
+            governed write into a shell write that halted the turn, the halt
+            bypasses the normal seam, so the dispatcher attaches this text to
+            the halt and terminal_halt_result surfaces it ABOVE the halt
+            message (governance-representation-v1 cascade coverage).
+        """
+        failed = getattr(self, "_turn_failed_file_mutations", None) or {}
+        if not failed or not self._file_mutation_verifier_enabled():
+            return None
+        if not any(info.get("governed") for info in failed.values()):
+            return None
+        succeeded = getattr(self, "_turn_succeeded_tools", None) or []
+        return self._format_governance_block_replacement(failed, succeeded)
+
     def _apply_mutation_verifier(self, final_response: str) -> str:
         """Apply the per-turn file-mutation verifier to the operator-facing
         response text (governance-representation-v1).
@@ -7392,15 +7414,14 @@ class AIAgent:
         before it is yielded; it never touches governance, message history,
         or the tool_result ground truth.
         """
+        block = self._governance_block_text_if_any()
+        if block is not None:
+            return block  # Option C: governed block replaces the text wholesale
         failed = getattr(self, "_turn_failed_file_mutations", None) or {}
-        if not failed or not self._file_mutation_verifier_enabled():
-            return final_response
-        if any(info.get("governed") for info in failed.values()):
-            succeeded = getattr(self, "_turn_succeeded_tools", None) or []
-            return self._format_governance_block_replacement(failed, succeeded)
-        footer = self._format_file_mutation_failure_footer(failed)
-        if footer:
-            return final_response.rstrip() + "\n\n" + footer
+        if failed and self._file_mutation_verifier_enabled():
+            footer = self._format_file_mutation_failure_footer(failed)
+            if footer:
+                return final_response.rstrip() + "\n\n" + footer
         return final_response
 
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:

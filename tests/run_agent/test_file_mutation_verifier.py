@@ -498,3 +498,105 @@ class TestGovernanceBlockReplacement:
         )
         text = "Saved to ~/.grove/x.md"
         assert agent._apply_mutation_verifier(text) == text
+
+
+# ---------------------------------------------------------------------------
+# governance-representation-v1 (cascade follow-up) — Issue 1: the governed
+# tool-error message instructs the model to STOP, not to reroute through
+# terminal / execute_code.  Issue 2: the ⛔ block reaches the operator even
+# when the turn exits via TerminalGovernanceHalt (the model cascaded from the
+# blocked write into a shell write that halted), bypassing the normal seam.
+# ---------------------------------------------------------------------------
+
+
+class TestGovernedMessageCascadeInstruction:
+    def test_message_instructs_no_alternative_write_paths(self):
+        msg = GOVERNED_PATH_MESSAGE.lower()
+        assert "do not attempt" in msg
+        assert "terminal" in msg
+        assert "execute_code" in msg
+        assert "governance boundary" in msg
+
+    def test_is_governed_block_still_matches_extended_constant(self):
+        # The discriminator imports the same constant, so extending the message
+        # must not break detection (full-constant equality).
+        assert _is_governed_block(json.dumps({"error": GOVERNED_PATH_MESSAGE})) is True
+
+
+class TestGovernanceBlockHaltCoverage:
+    def test_block_text_present_when_governed_entry(self):
+        agent = _verifier_agent()
+        agent._record_file_mutation_result(
+            "write_file", {"path": "~/.grove/research/x.md", "content": "y"},
+            json.dumps({"error": GOVERNED_PATH_MESSAGE}), is_error=True,
+        )
+        text = agent._governance_block_text_if_any()
+        assert text is not None
+        assert "Write blocked" in text
+        assert "~/.grove/research/x.md" in text
+
+    def test_block_text_none_without_governed_failure(self):
+        # Generic (non-governed) failure → no governance block text.
+        agent = _verifier_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "/tmp/a.md", "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "Could not find old_string"}), is_error=True,
+        )
+        assert agent._governance_block_text_if_any() is None
+        # Clean turn → also None.
+        assert _verifier_agent()._governance_block_text_if_any() is None
+
+    def test_block_text_none_when_verifier_disabled(self):
+        agent = _verifier_agent()
+        agent._file_mutation_verifier_enabled = lambda: False  # type: ignore[method-assign]
+        agent._record_file_mutation_result(
+            "write_file", {"path": "~/.grove/x.md", "content": "y"},
+            json.dumps({"error": GOVERNED_PATH_MESSAGE}), is_error=True,
+        )
+        assert agent._governance_block_text_if_any() is None
+
+    def test_halt_result_prepends_block_above_surface_text(self):
+        """The cascade case at the result-builder: governed write blocked →
+        halt fires on the subsequent shell write → operator sees the ⛔ block
+        ABOVE the halt's surface text (block prepended, halt preserved)."""
+        from grove.governance_halt import (
+            GovernanceHaltContext,
+            TerminalGovernanceHalt,
+            terminal_halt_result,
+        )
+
+        agent = _verifier_agent()
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": "~/.grove/research/test-governance.md", "content": "notes"},
+            json.dumps({"error": GOVERNED_PATH_MESSAGE}),
+            is_error=True,
+        )
+        halt = TerminalGovernanceHalt(
+            GovernanceHaltContext(trigger="red_sovereign", tool_name="terminal")
+        )
+        # Mirror the dispatcher wiring (dispatcher.py @1601).
+        halt.pending_governed_block = agent._governance_block_text_if_any()
+
+        out = terminal_halt_result(halt)["final_response"]
+        assert "Write blocked" in out
+        assert "~/.grove/research/test-governance.md" in out
+        # The halt's own message is still present — block is prepended, not a
+        # replacement of the halt.
+        assert halt.surface_text() in out
+        # Order: governance block first, halt message second.
+        assert out.index("Write blocked") < out.index(halt.surface_text())
+
+    def test_halt_result_unchanged_without_pending_block(self):
+        """Regression: a halt with no governed write this turn renders exactly
+        surface_text — the pre-existing contract is preserved."""
+        from grove.governance_halt import (
+            GovernanceHaltContext,
+            TerminalGovernanceHalt,
+            terminal_halt_result,
+        )
+
+        halt = TerminalGovernanceHalt(
+            GovernanceHaltContext(trigger="red_sovereign", tool_name="terminal")
+        )
+        assert terminal_halt_result(halt)["final_response"] == halt.surface_text()

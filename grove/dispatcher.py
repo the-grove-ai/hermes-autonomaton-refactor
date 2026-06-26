@@ -1598,7 +1598,7 @@ class Dispatcher:
                 # the deferral is not mislabeled as a failure in the ledger.
                 self._write_intent_record(agent, outcome="awaiting_operator")
                 raise
-            except TerminalGovernanceHalt:
+            except TerminalGovernanceHalt as _tgh:
                 # GRV-010 C2a — a STRUCTURAL governed denial terminated the turn
                 # (RED-sovereign / deny_hard / quarantined-.andon / GovernanceError).
                 # Record a distinct, non-"error" outcome — the halt is the governance
@@ -1607,6 +1607,20 @@ class Dispatcher:
                 # disposition. This guard sits ABOVE the BaseException catch so the
                 # terminal halt is not mislabeled "error" in the ledger (mirrors the
                 # OperatorInputRequired guard above).
+                #
+                # governance-representation-v1 (cascade coverage): if a governed
+                # write_file was blocked earlier this turn and the model cascaded
+                # into a shell write that triggered THIS halt, the halt exit
+                # bypasses agent._apply_mutation_verifier. Attach the ⛔ block text
+                # to the halt so terminal_halt_result surfaces it above the halt
+                # message. Representation only — no change to the halt or its
+                # classification; best-effort, never masks the halt.
+                try:
+                    _gov_block = agent._governance_block_text_if_any()
+                    if _gov_block:
+                        _tgh.pending_governed_block = _gov_block
+                except Exception:
+                    pass
                 self._write_intent_record(agent, outcome="governance_terminated")
                 raise
             except TierUnavailableError as _tue:
