@@ -11098,6 +11098,20 @@ Examples:
     _register_index_cli(index_parser)
 
     # =========================================================================
+    # wiki command
+    # =========================================================================
+    wiki_parser = subparsers.add_parser(
+        "wiki",
+        help="Manage the living cellar (compacted, searchable knowledge pages)",
+        description="The living cellar (living-cellar-v1) compacts Fleet skill "
+        "output and operator-curated docs into canonical, BM25-searchable pages "
+        "under $GROVE_WIKI_PATH. 'ingest' compacts a file or scans the fleet "
+        "sinks; 'search' retrieves; 'rebuild' forces a full index rebuild.",
+    )
+    from hermes_cli.wiki_command import register_cli as _register_wiki_cli
+    _register_wiki_cli(wiki_parser)
+
+    # =========================================================================
     # import command
     # =========================================================================
     import_parser = subparsers.add_parser(

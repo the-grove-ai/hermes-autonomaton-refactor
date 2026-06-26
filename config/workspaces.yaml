@@ -14,8 +14,20 @@
 #     (`research/` grants `research/notes.md` but never `research-evil/x`)
 #   * a missing or malformed manifest grants NOTHING
 #   * a scope-defining surface is never grantable, even if listed here
+# Reconciled (living-cellar-v1 Phase 6) UP to the canonical runtime grant set
+# at $GROVE_HOME/workspaces.yaml (the VM is canonical; the repo comes up to
+# match) plus the wiki cellar grant. The wiki/ grant is DEFENSIVE: K1 writes
+# the cellar via a system-process (the `hermes wiki` CLI / watcher, direct
+# file I/O), which does not consult this allowlist — the grant future-proofs
+# any later governed-FS access to the cellar.
 granted_workspaces:
-  - path: "research/"
-    description: "Knowledge crystallization and analysis"
-  - path: "notes/"
-    description: "Operator-requested content generation"
+  - path: "scout/"
+    description: "Fleet scout skill output (digest-*.json)"
+  - path: "researcher/"
+    description: "Fleet researcher skill output (brief-*.json)"
+  - path: "drafter/"
+    description: "Fleet drafter skill output (draft-*.md)"
+  - path: "cultivator/"
+    description: "Fleet cultivator skill output (prospects-*.json)"
+  - path: "wiki/"
+    description: "Living cellar — compacted canonical knowledge pages (living-cellar-v1)"
