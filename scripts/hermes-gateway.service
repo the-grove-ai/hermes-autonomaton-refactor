@@ -24,6 +24,11 @@ TimeoutStopSec=210
 # symlink; get_hermes_home() reads GROVE_HOME, so this is the single source of
 # truth for where the gateway keeps config, secrets, and databases.
 Environment=GROVE_HOME=/home/hermes/.grove
+# living-cellar-v1: pin the wiki cellar under GROVE_HOME (explicit over the
+# get_wiki_path() default). ~/.grove -> /mnt/grove-data/.grove, so this resolves
+# to /mnt/grove-data/.grove/wiki on the persistent disk. systemd does NOT
+# interpolate Environment= lines — the literal path is required.
+Environment=GROVE_WIKI_PATH=/home/hermes/.grove/wiki
 # Hardening: /usr, /boot, /etc read-only; private /tmp. /home and /mnt stay
 # writable, which is where the repo and the persistent state live.
 ProtectSystem=full
