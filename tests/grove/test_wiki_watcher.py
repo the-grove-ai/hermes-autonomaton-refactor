@@ -185,3 +185,125 @@ def test_ledger_persists_between_scans(monkeypatch, tmp_path):
     assert ledger.exists()
     data = json.loads(ledger.read_text())
     assert any("brief-2026-06-25-x.json" in k for k in data)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# P3 — Dock observed-target branch (parallel to the FLEET_ADAPTERS loop).
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _dock_goal(**over):
+    g = {
+        "id": "a",
+        "name": "Goal A",
+        "vector": "strategic",
+        "status": "accelerating",
+        "definition_of_done": "done",
+        "context_sources": [],
+        "keywords": ["alpha"],
+        "unlocked_skills": [],
+    }
+    g.update(over)
+    return g
+
+
+def _write_home_dock(home, goals):
+    d = home / "dock"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "dock.yaml"
+    p.write_text(
+        yaml.safe_dump({"version": 1, "goals": goals}), encoding="utf-8"
+    )
+    return p
+
+
+def _dock_pages(wiki):
+    return list((wiki / "pages" / "dock_goal").glob("*.md"))
+
+
+def test_dock_present_triggers_projection(monkeypatch, tmp_path):
+    _install_t1(monkeypatch)
+    home, wiki = tmp_path / "home", tmp_path / "wiki"
+    _write_home_dock(home, [_dock_goal(id="a"), _dock_goal(id="b")])
+    pages = scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert len([p for p in pages if p.source_type == "dock_goal"]) == 2
+    assert len(_dock_pages(wiki)) == 2
+
+
+def test_dock_unchanged_mtime_skips(monkeypatch, tmp_path):
+    _install_t1(monkeypatch)
+    home, wiki = tmp_path / "home", tmp_path / "wiki"
+    _write_home_dock(home, [_dock_goal(id="a")])
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    second = scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert [p for p in second if p.source_type == "dock_goal"] == []
+
+
+def test_dock_mtime_change_retriggers(monkeypatch, tmp_path):
+    _install_t1(monkeypatch)
+    home, wiki = tmp_path / "home", tmp_path / "wiki"
+    dp = _write_home_dock(home, [_dock_goal(id="a", name="One")])
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    _write_home_dock(home, [_dock_goal(id="a", name="Two"), _dock_goal(id="b")])
+    os.utime(dp, (dp.stat().st_atime, dp.stat().st_mtime + 10))
+    again = scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert len([p for p in again if p.source_type == "dock_goal"]) == 2
+
+
+def test_dock_absent_tolerated_and_no_reap(monkeypatch, tmp_path):
+    """GUARD P3-a: absent dock.yaml = 'dock not installed' — no trigger, no
+    reap. Existing dock_goal pages survive as last-known-good."""
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)   # no dock/ dir
+    out = wiki / "pages" / "dock_goal"
+    out.mkdir(parents=True)
+    survivor = out / "keep-aaaaaaaa.md"
+    survivor.write_text(
+        "---\ntitle: x\nsource_type: dock_goal\n---\n\nbody\n", encoding="utf-8"
+    )
+    pages = scan_and_ingest(wiki_root=wiki, hermes_home=home)  # must not raise
+    assert "dock_goal" not in {p.source_type for p in pages}
+    assert survivor.exists()
+
+
+def test_dock_emptied_reaps_all_via_watcher(monkeypatch, tmp_path):
+    """GUARD P3-b: an emptied-but-present dock.yaml routes through the watcher to
+    project_dock's reap-all (the watcher does NOT short-circuit on zero goals)."""
+    _install_t1(monkeypatch)
+    home, wiki = tmp_path / "home", tmp_path / "wiki"
+    dp = _write_home_dock(home, [_dock_goal(id="a"), _dock_goal(id="b")])
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert len(_dock_pages(wiki)) == 2
+
+    _write_home_dock(home, [])   # present, zero goals
+    os.utime(dp, (dp.stat().st_atime, dp.stat().st_mtime + 10))
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert _dock_pages(wiki) == []
+
+
+def test_dock_ledger_entry_under_dock_path_key(monkeypatch, tmp_path):
+    """GUARD P3-c: the dock entry is keyed on the resolved dock_path and lands
+    in the SAME ingest_state.json the fleet loop writes (single save)."""
+    _install_t1(monkeypatch)
+    home, wiki = tmp_path / "home", tmp_path / "wiki"
+    dp = _write_home_dock(home, [_dock_goal(id="a")])
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    ledger = json.loads((wiki / ".index" / "ingest_state.json").read_text())
+    assert str(dp) in ledger
+    assert ledger[str(dp)] == dp.stat().st_mtime
+
+
+def test_dock_and_fleet_share_one_ledger(monkeypatch, tmp_path):
+    """GUARD P3-c/d: fleet and dock keys coexist in one ledger — no separate
+    writer racing the file; the fleet loop is unchanged."""
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)
+    dp = _write_home_dock(home, [_dock_goal(id="a")])
+    pages = scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    # fleet still scanned
+    assert {"scout_digest", "researcher_brief", "drafter_draft"} <= {
+        p.source_type for p in pages
+    }
+    ledger = json.loads((wiki / ".index" / "ingest_state.json").read_text())
+    assert str(dp) in ledger
+    assert any("brief-2026-06-25-x.json" in k for k in ledger)
