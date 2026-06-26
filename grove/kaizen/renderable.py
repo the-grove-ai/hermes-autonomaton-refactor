@@ -68,7 +68,13 @@ class MemoryProposalRenderable:
 
     @property
     def sort_key(self) -> float:
-        raw = self.proposal_dict.get("proposed_record", {}).get("confidence", 0.0)
+        proposal = self.proposal_dict
+        if proposal.get("action") == "graduate":
+            # Graduate proposals carry confidence at the top level (no
+            # proposed_record), so rank by the record's real confidence.
+            raw = proposal.get("confidence", 0.0)
+        else:
+            raw = proposal.get("proposed_record", {}).get("confidence", 0.0)
         try:
             confidence = float(raw)
         except (TypeError, ValueError):
@@ -82,6 +88,10 @@ class MemoryProposalRenderable:
     def push_body(self, core: str) -> str:
         # Memory-specific voice — a crystallized insight, NOT "I noticed I could".
         # Deprecation inverts the frame: this is governed forgetting, not capture.
-        if self.proposal_dict.get("action") == "deprecate":
+        # Graduation is promotion: a proven memory ascends to the permanent cellar.
+        action = self.proposal_dict.get("action")
+        if action == "deprecate":
             return f"I'm recommending we retire a stale memory — {core}"
+        if action == "graduate":
+            return f"I'm graduating a proven memory to the permanent cellar — {core}"
         return f"I crystallized a domain insight — {core}"

@@ -28,6 +28,7 @@ from grove.memory.events import (
     MemoryCreated,
     MemoryDeprecated,
     MemoryEvent,
+    MemoryGraduated,
     MemorySuperseded,
     new_event_id,
 )
@@ -54,6 +55,7 @@ _EVENT_TYPES = {
     "MemorySuperseded": MemorySuperseded,
     "MemoryDeprecated": MemoryDeprecated,
     "MemoryAccessed": MemoryAccessed,
+    "MemoryGraduated": MemoryGraduated,
 }
 
 
@@ -201,6 +203,18 @@ class MemoryStore:
                 else:
                     rec.access_count += 1
                     rec.last_accessed = ev.timestamp
+            elif isinstance(ev, MemoryGraduated):
+                rec = records.get(ev.record_id)
+                if rec is None:
+                    logger.warning(
+                        "[grove.memory] graduate names missing record %s",
+                        ev.record_id,
+                    )
+                else:
+                    # Dual-serve invariant: record graduation, but DO NOT touch
+                    # status — the record stays "active" and is still served
+                    # via the query/JSONL path. Suppression is deferred to K4.
+                    rec.graduated_at = ev.timestamp
 
         self._index = records
         self._save_index(records)

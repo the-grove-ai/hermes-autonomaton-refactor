@@ -937,6 +937,17 @@ class Dispatcher:
                 stale_proposals, session_id="context-freshness-sweep"
             )
 
+        # Graduation (memory-cellar-graduation-v1): promote stable, high-
+        # confidence, frequently-accessed memory into the permanent wiki cellar.
+        # Runs AFTER the freshness block so it reads POST-decay confidence
+        # (apply_decay mutated the shared store in place). Reuses the same store
+        # and active Dock goals. Same best-effort wiring as the detectors above;
+        # graduation does NOT change record status (dual-serve invariant).
+        from grove.memory.graduation import GraduationDetector
+
+        graduation = GraduationDetector(base_dir=base)
+        graduation.stage_proposals(store, dock=dock_goals)
+
         # Policy graduation (consolidation-ratchet-v1, Stage 2): reads the
         # machine sinks, verifies long-term stability against the intent feed,
         # and stages consolidation proposals to promote stable routing into
