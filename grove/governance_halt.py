@@ -92,6 +92,14 @@ class TerminalGovernanceHalt(BaseException):
 
     def __init__(self, context: GovernanceHaltContext) -> None:
         self.context = context
+        # governance-representation-v1 (cascade coverage): when a governed
+        # write_file was blocked EARLIER this turn and the model then cascaded
+        # into a shell write that triggers THIS halt, the halt exit bypasses
+        # the normal _apply_mutation_verifier seam. The dispatcher attaches the
+        # ⛔ governance-block text here so terminal_halt_result surfaces it
+        # above the halt message. Representation only — None unless a governed
+        # write was recorded.
+        self.pending_governed_block: Optional[str] = None
         super().__init__(self.surface_text())
 
     def surface_text(self) -> str:
@@ -128,8 +136,16 @@ def terminal_halt_result(
     ``OperatorInputRequired`` alone.
     """
     ctx = halt.context
+    # governance-representation-v1 (cascade coverage): if a governed write was
+    # blocked earlier in this (now halt-terminated) turn, surface the ⛔ block
+    # ABOVE the halt message so the operator always sees it regardless of which
+    # exit path the turn took. None unless the dispatcher attached it.
+    _surface = halt.surface_text()
+    _pending = getattr(halt, "pending_governed_block", None)
+    if _pending:
+        _surface = _pending + "\n\n— — —\n\n" + _surface
     result: Dict[str, Any] = {
-        "final_response": halt.surface_text(),
+        "final_response": _surface,
         "messages": messages if messages is not None else [],
         "api_calls": 0,
         "completed": True,
