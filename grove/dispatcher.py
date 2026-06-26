@@ -983,6 +983,54 @@ class Dispatcher:
                 dock_proposals, session_id="dock-mutation-sweep"
             )
 
+        # Session compaction (session-compaction-v1, K5): compact dormant
+        # session transcripts into canonical wiki pages. Fires AFTER all
+        # memory/policy subsystems above (including the Dock mutation detector)
+        # so they consume the raw transcript first. Capped at
+        # MAX_SESSIONS_PER_INIT to bound init latency.
+        MAX_SESSIONS_PER_INIT = 3
+        try:
+            from grove.memory.transcript_filter import (
+                filter_transcript_for_extraction,
+            )
+            from grove.wiki.session_compactor import compact_session
+
+            for sid in session_ids[:MAX_SESSIONS_PER_INIT]:
+                try:
+                    transcript = self.session.get_messages_as_conversation(sid)
+                    filtered = filter_transcript_for_extraction(transcript)
+                    # source_mtime: latest intent record timestamp (D7).
+                    session_records = self._intent_store.filter(session_id=sid)
+                    if session_records:
+                        latest_ts = max(r.timestamp for r in session_records)
+                        try:
+                            source_mtime = datetime.fromisoformat(
+                                latest_ts
+                            ).timestamp()
+                        except (ValueError, TypeError):
+                            source_mtime = datetime.now(timezone.utc).timestamp()
+                    else:
+                        source_mtime = datetime.now(timezone.utc).timestamp()
+                    page = compact_session(
+                        sid, filtered, self._intent_store, source_mtime,
+                    )
+                    if page is not None:
+                        logger.info(
+                            "[grove.dispatcher] session compacted: %s -> %s",
+                            sid, page.path.name,
+                        )
+                except Exception as exc:
+                    # A1: per-session failure is not fatal — log loud, skip.
+                    logger.warning(
+                        "[grove.dispatcher] session compaction failed for %s: "
+                        "%r — skipping", sid, exc,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[grove.dispatcher] session compaction subsystem failed at "
+                "init: %r — skipping entirely", exc,
+            )
+
     @property
     def runtime_ctx(self) -> RuntimeContext:
         """The bare substrate-snapshot RuntimeContext.
