@@ -291,6 +291,21 @@ class MemoryStore:
         scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
         return [rec for _, _, rec in scored]
 
+    def iter_graduated(self) -> Iterator[MemoryRecord]:
+        """Yield every graduated record (``status == "graduated"``), unranked.
+
+        K6 (D5) — a read-only reconciliation accessor. :meth:`query` returns
+        ACTIVE records only; the K4 dual-serve closure flips a record's status
+        to ``"graduated"`` once it projects to the cellar, so query suppresses
+        it from the JSONL path. This exposes the graduated set so the
+        ``accumulated_domain_memory`` provider can verify each has a cellar page
+        and fail-safe (serve from JSONL) when one is missing — knowledge must
+        not go dark on a lost cellar page. No side effects.
+        """
+        for rec in self._index.values():
+            if rec.status == "graduated":
+                yield rec
+
     # ── access telemetry ─────────────────────────────────────────────────
 
     def record_access(self, record_id: str, session_id: str, context: str) -> None:
