@@ -24,7 +24,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from grove.memory.events import (
     MemoryCreated,
@@ -104,6 +104,10 @@ class MemoryProposalHandler:
         action = proposal.get("action")
         dock_goal_ref = proposal.get("dock_goal_ref")
         sources = proposal.get("sources") or []
+        # GUARD P3-b — captured from the PRE-supersede projection (before the
+        # common tail's rebuild flips the old record to "superseded"); drives
+        # the stale-cellar-page reap after rebuild.
+        superseded_graduated_at: Optional[str] = None
 
         if action == "create":
             rec = proposal["proposed_record"]
@@ -123,11 +127,15 @@ class MemoryProposalHandler:
             target_id = proposal.get("target_id")
             if not target_id:
                 raise ValueError("supersede proposal missing target_id")
-            if target_id not in self._store.projected_records():
+            projected = self._store.projected_records()
+            if target_id not in projected:
                 raise ValueError(
                     f"supersede target {target_id!r} is not in the memory index; "
                     f"refusing to append a dangling supersede event"
                 )
+            # Capture BEFORE the rebuild (ruling d): if the superseded record was
+            # graduated, its cellar page must be reaped after the index rebuild.
+            superseded_graduated_at = projected[target_id].graduated_at
             event = MemorySuperseded(
                 event_id=new_event_id(),
                 timestamp=_now_iso(),
@@ -183,16 +191,38 @@ class MemoryProposalHandler:
         self._store.append_event(event)
         self._store.rebuild_index()
 
-        # Graduation projects the now-graduated record into the wiki cellar.
-        # The fold set graduated_at but LEFT status "active" (dual-serve): the
-        # record is still served via query(); the cellar page is the second
-        # serving surface. Lazy import — the memory subsystem reaches the wiki
-        # subsystem ONLY here, never at module load (GUARD P4-a: grove.wiki
-        # imports grove.memory under TYPE_CHECKING only, so no runtime cycle).
+        # Graduation projects the now-graduated record into the wiki cellar. The
+        # fold set graduated_at AND flipped status to "graduated" (K4 dual-serve
+        # closure) — query() no longer serves it; the cellar page is its sole
+        # surface. Lazy import — the memory subsystem reaches the wiki subsystem
+        # ONLY here, never at module load (GUARD P4-a: grove.wiki imports
+        # grove.memory under TYPE_CHECKING only, so no runtime cycle).
         if action == "graduate":
             from grove.wiki.pipeline import project_memory
 
             project_memory(self._store.projected_records()[event.record_id])
+        elif action == "supersede" and superseded_graduated_at is not None:
+            # The superseded record was graduated — reap its now-stale cellar
+            # page (the new record will graduate on its own merits later). The
+            # FTS index drops the orphaned row on its next mtime refresh, so no
+            # explicit index delete is needed. Hash basis MUST match
+            # _write_page (sha256("memory#"+id)[:_HASH_LEN]).
+            import hashlib
+
+            from grove.wiki.pipeline import (
+                _HASH_LEN,
+                _MEMORY_SOURCE_PREFIX,
+                _MEMORY_SOURCE_TYPE,
+                get_wiki_path,
+            )
+
+            short_hash = hashlib.sha256(
+                (_MEMORY_SOURCE_PREFIX + target_id).encode("utf-8")
+            ).hexdigest()[:_HASH_LEN]
+            out_dir = get_wiki_path() / "pages" / _MEMORY_SOURCE_TYPE
+            if out_dir.is_dir():
+                for stale in out_dir.glob(f"*-{short_hash}.md"):
+                    stale.unlink()
 
         return True
 

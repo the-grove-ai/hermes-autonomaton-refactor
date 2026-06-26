@@ -1,10 +1,12 @@
 """memory-cellar-graduation-v1 — graduation event, field, and fold.
 
 P1 covers the event-sourced primitives: a ``MemoryGraduated`` event, the
-additive ``graduated_at`` field on ``MemoryRecord``, and the store fold that
-records graduation WITHOUT changing status. The dual-serve invariant lives
-here: a graduated record keeps ``status == "active"`` so it is still served
-through the JSONL/query path (suppression is deferred to K4).
+additive ``graduated_at`` field on ``MemoryRecord``, and the store fold.
+
+K3 served graduated records via BOTH the JSONL path and the cellar page (the
+dual-serve interim). unified-retrieval-provider-v1 (K4) CLOSES that window: the
+fold now also flips ``status`` to ``"graduated"``, suppressing the record from
+the JSONL/query path so the cellar page becomes its sole serving surface.
 """
 
 from __future__ import annotations
@@ -73,9 +75,9 @@ def test_memory_graduated_event_round_trip(store):
     assert read_back == [event]
 
 
-# 2. Fold sets graduated_at AND preserves status="active" (dual-serve invariant).
+# 2. Fold sets graduated_at AND flips status to "graduated" (K4 closes dual-serve).
 
-def test_graduation_fold_sets_graduated_at_and_preserves_active(store):
+def test_graduation_fold_sets_graduated_at_and_flips_status(store):
     store.append_event(_create("mem_aaaaaaaa"))
     grad_ts = _ts(3)
     store.append_event(MemoryGraduated(
@@ -87,8 +89,8 @@ def test_graduation_fold_sets_graduated_at_and_preserves_active(store):
     store.rebuild_index()
     rec = store.projected_records()["mem_aaaaaaaa"]
     assert rec.graduated_at == grad_ts
-    # CRITICAL: graduation does NOT change status — the record is still active.
-    assert rec.status == "active"
+    # K4 dual-serve closure: graduation flips status to "graduated".
+    assert rec.status == "graduated"
 
 
 # 3. A record with no graduation event folds to graduated_at=None.
@@ -101,9 +103,9 @@ def test_ungraduated_record_folds_to_none(store):
     assert rec.graduated_at is None
 
 
-# 4. A graduated record is still returned by query() (status stayed active).
+# 4. A graduated record is SUPPRESSED from query() (K4 dual-serve closure).
 
-def test_graduated_record_still_queryable(store):
+def test_graduated_record_suppressed_from_query(store):
     store.append_event(_create("mem_cccccccc", content="Notion tracks projects."))
     store.append_event(MemoryGraduated(
         event_id="evt_grad0003",
@@ -114,7 +116,7 @@ def test_graduated_record_still_queryable(store):
 
     results = store.query(keywords=["notion"])
     ids = [r.id for r in results]
-    assert "mem_cccccccc" in ids
+    assert "mem_cccccccc" not in ids       # served by the cellar, not the JSONL path
 
 
 # 5. Graduation fold survives a later access event (independent fields).
@@ -138,7 +140,7 @@ def test_graduation_and_access_coexist(store):
     rec = store.projected_records()["mem_dddddddd"]
     assert rec.graduated_at == _ts(2)
     assert rec.access_count == 1
-    assert rec.status == "active"
+    assert rec.status == "graduated"      # K4 dual-serve closure
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -569,9 +571,9 @@ def test_dispatcher_sweep_wires_graduation_detector(monkeypatch, tmp_path):
     assert seen["dock"] == [{"slug": "grow-fleet"}]
 
 
-def test_graduation_end_to_end_dual_serve(store, detector, tmp_path, monkeypatch):
-    """GUARD P4-c: the self-contained dual-serve proof — all five conditions
-    plus idempotent re-graduation, in ONE test."""
+def test_graduation_end_to_end_closed_loop(store, detector, tmp_path, monkeypatch):
+    """K4 closed-loop proof — graduation writes the cellar page AND suppresses
+    the record from the JSONL/query path, plus idempotent re-graduation."""
     wiki = tmp_path / "wiki"
     monkeypatch.setattr("grove.wiki.pipeline.get_wiki_path", lambda: wiki)
 
@@ -606,8 +608,8 @@ def test_graduation_end_to_end_dual_serve(store, detector, tmp_path, monkeypatch
     )
     # (2) graduated_at set.
     assert rec.graduated_at is not None
-    # (3) status STILL "active" — the dual-serve invariant.
-    assert rec.status == "active"
+    # (3) status flipped to "graduated" — K4 dual-serve closure.
+    assert rec.status == "graduated"
     # (4) cellar page with correct frontmatter + verbatim content.
     h = _hash("memory#mem_e2e0001")
     pages = list((wiki / "pages" / "memory_graduated").glob(f"*-{h}.md"))
@@ -616,11 +618,108 @@ def test_graduation_end_to_end_dual_serve(store, detector, tmp_path, monkeypatch
     fm = _frontmatter(text)
     assert fm["source"] == "memory#mem_e2e0001"
     assert fm["source_type"] == "memory_graduated"
-    assert fm["status"] == "active"
+    assert fm["status"] == "graduated"
     assert "Grove uses an event-sourced memory substrate." in text
-    # (5) record still returned by query() (not suppressed).
-    assert "mem_e2e0001" in [r.id for r in store.query(keywords=["event-sourced"])]
+    # (5) record SUPPRESSED from query() — served by the cellar, not the JSONL path.
+    assert "mem_e2e0001" not in [r.id for r in store.query(keywords=["event-sourced"])]
 
     # Idempotent: a re-graduation attempt is rejected at the write boundary.
     with pytest.raises(ValueError, match="already graduated"):
         handler.apply(proposal)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# P3 — dual-serve closure (status flip) + supersession reap.
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def test_status_flip_suppresses_all_consumers(store, tmp_path):
+    """GUARD P3-a: a graduated record is suppressed by ALL four consumers —
+    query(), the saved index cache, FreshnessDetector, GraduationDetector."""
+    from grove.memory.freshness import FreshnessDetector
+
+    _seed(store, "mem_flip0001", entity_type="ProjectState", confidence=0.9,
+          access_count=4, days_old=5, content="Flip suppression fact.")
+    store.append_event(MemoryGraduated(
+        event_id="evt_flip01", timestamp=_ts(6), record_id="mem_flip0001"))
+    store.rebuild_index()
+
+    assert store.projected_records()["mem_flip0001"].status == "graduated"
+    # 1. query() suppresses (store.py:270).
+    assert "mem_flip0001" not in [r.id for r in store.query(keywords=["flip"])]
+    # 2. _save_index drops it from the on-disk cache (store.py:403-408).
+    saved = json.loads(store.index_path.read_text(encoding="utf-8"))
+    assert "mem_flip0001" not in saved
+    # 3. FreshnessDetector does not propose it (skips non-active).
+    fresh = FreshnessDetector(base_dir=tmp_path)
+    assert "mem_flip0001" not in [
+        p["target_id"] for p in fresh.detect(store, [])
+    ]
+    # 4. GraduationDetector does not re-propose it.
+    grad = GraduationDetector(base_dir=tmp_path)
+    assert "mem_flip0001" not in [p["target_id"] for p in grad.detect(store)]
+
+
+def _graduate(store, rid):
+    """Stage+approve a graduation for an already-eligible seeded record."""
+    handler = MemoryProposalHandler(store)
+    handler.apply({
+        "action": "graduate", "target_id": rid, "content": "x",
+        "entity_type": "DomainFact", "confidence": 0.9, "access_count": 4,
+    })
+
+
+def test_supersede_graduated_record_reaps_cellar_page(store, tmp_path, monkeypatch):
+    """GUARD P3-b: superseding a graduated record deletes its cellar page; the
+    graduated_at is captured pre-rebuild so the reap fires even though the
+    record's post-rebuild status is 'superseded'."""
+    wiki = tmp_path / "wiki"
+    monkeypatch.setattr("grove.wiki.pipeline.get_wiki_path", lambda: wiki)
+
+    _seed(store, "mem_reap0001", confidence=0.9, access_count=4, days_old=5,
+          content="Reap me when superseded.")
+    store.rebuild_index()
+    _graduate(store, "mem_reap0001")
+
+    h = _hash("memory#mem_reap0001")
+    pages_dir = wiki / "pages" / "memory_graduated"
+    assert list(pages_dir.glob(f"*-{h}.md"))           # page exists post-graduation
+
+    # Supersede the graduated record.
+    handler = MemoryProposalHandler(store)
+    handler.apply({
+        "action": "supersede", "target_id": "mem_reap0001",
+        "proposed_record": {
+            "entity_type": "DomainFact", "content": "Newer fact.",
+            "confidence": 0.95,
+        },
+    })
+
+    # Cellar page reaped; the old record is now superseded (proving the
+    # graduated_at capture happened pre-rebuild, not via a status==active gate).
+    assert list(pages_dir.glob(f"*-{h}.md")) == []
+    assert store.projected_records()["mem_reap0001"].status == "superseded"
+
+
+def test_supersede_non_graduated_record_no_page_action(store, tmp_path, monkeypatch):
+    """A supersede of a never-graduated record performs no page reap and does
+    not error (no memory_graduated dir need exist)."""
+    wiki = tmp_path / "wiki"
+    monkeypatch.setattr("grove.wiki.pipeline.get_wiki_path", lambda: wiki)
+
+    _seed(store, "mem_plain001", confidence=0.9, access_count=4, days_old=5,
+          content="Never graduated.")
+    store.rebuild_index()
+
+    handler = MemoryProposalHandler(store)
+    assert handler.apply({
+        "action": "supersede", "target_id": "mem_plain001",
+        "proposed_record": {
+            "entity_type": "DomainFact", "content": "Replacement.",
+            "confidence": 0.9,
+        },
+    }) is True
+    assert store.projected_records()["mem_plain001"].status == "superseded"
+    # No cellar page was ever written, and none is created by the reap path.
+    assert not (wiki / "pages" / "memory_graduated").exists() or \
+        list((wiki / "pages" / "memory_graduated").glob("*.md")) == []

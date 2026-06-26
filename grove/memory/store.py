@@ -211,10 +211,13 @@ class MemoryStore:
                         ev.record_id,
                     )
                 else:
-                    # Dual-serve invariant: record graduation, but DO NOT touch
-                    # status — the record stays "active" and is still served
-                    # via the query/JSONL path. Suppression is deferred to K4.
+                    # K3 recorded graduation but left status "active" (dual-serve
+                    # interim). unified-retrieval-provider-v1 (K4) CLOSES that
+                    # window: flip status to "graduated" so query() (store.py:270)
+                    # and _save_index (store.py:403-408) suppress the record — the
+                    # cellar page is now its sole serving surface.
                     rec.graduated_at = ev.timestamp
+                    rec.status = "graduated"
 
         self._index = records
         self._save_index(records)

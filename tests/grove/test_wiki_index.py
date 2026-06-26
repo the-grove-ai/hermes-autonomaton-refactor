@@ -107,6 +107,60 @@ def test_topics_and_entities_are_searchable(tmp_path):
     ]
 
 
+# ── ensure_fresh param (unified-retrieval-provider-v1 P1) ─────────────────
+# An additive keyword-only param lets a hot-path caller (the cellar provider)
+# skip the per-query mtime refresh and read cached SQLite state. Default True
+# preserves every existing caller.
+
+
+def test_query_default_runs_ensure_fresh(tmp_path, monkeypatch):
+    _write_page(tmp_path, "researcher_brief/alpha.md", body="quantum tunneling")
+    idx = _idx(tmp_path)
+    idx.build_index()
+    calls = {"n": 0}
+    real = idx._ensure_fresh
+    monkeypatch.setattr(idx, "_ensure_fresh",
+                        lambda: (calls.__setitem__("n", calls["n"] + 1), real())[1])
+    idx.query("quantum", k=5)          # default ensure_fresh=True
+    assert calls["n"] == 1
+
+
+def test_query_ensure_fresh_true_runs_refresh(tmp_path, monkeypatch):
+    _write_page(tmp_path, "researcher_brief/alpha.md", body="quantum tunneling")
+    idx = _idx(tmp_path)
+    idx.build_index()
+    calls = {"n": 0}
+    real = idx._ensure_fresh
+    monkeypatch.setattr(idx, "_ensure_fresh",
+                        lambda: (calls.__setitem__("n", calls["n"] + 1), real())[1])
+    idx.query("quantum", k=5, ensure_fresh=True)
+    assert calls["n"] == 1
+
+
+def test_query_ensure_fresh_false_skips_refresh(tmp_path, monkeypatch):
+    _write_page(tmp_path, "researcher_brief/alpha.md", body="quantum tunneling")
+    idx = _idx(tmp_path)
+    idx.build_index()
+    calls = {"n": 0}
+    monkeypatch.setattr(idx, "_ensure_fresh",
+                        lambda: calls.__setitem__("n", calls["n"] + 1))
+    results = idx.query("quantum", k=5, ensure_fresh=False)
+    assert calls["n"] == 0                      # refresh skipped
+    assert [r.source_path for r in results] == ["researcher_brief/alpha.md"]
+
+
+def test_ensure_fresh_false_does_not_see_new_page_until_true(tmp_path):
+    _write_page(tmp_path, "researcher_brief/alpha.md", body="quantum tunneling")
+    idx = _idx(tmp_path)
+    idx.build_index()
+    # Add a page AFTER the build. With ensure_fresh=False it is invisible.
+    _write_page(tmp_path, "researcher_brief/beta.md", body="garden composting beta")
+    assert idx.query("composting", k=5, ensure_fresh=False) == []
+    # ensure_fresh=True picks it up.
+    hits = idx.query("composting", k=5, ensure_fresh=True)
+    assert [r.source_path for r in hits] == ["researcher_brief/beta.md"]
+
+
 # ── source_type filter ──────────────────────────────────────────────────
 
 
