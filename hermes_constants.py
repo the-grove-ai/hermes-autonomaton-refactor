@@ -294,6 +294,25 @@ def get_env_path() -> Path:
     return get_hermes_home() / ".env"
 
 
+def get_wiki_path() -> Path:
+    """Return the living cellar (wiki) root.
+
+    ``GROVE_WIKI_PATH`` if set, else ``get_hermes_home()/"wiki"`` (which on the
+    VM resolves through the ``~/.grove`` → ``/mnt/grove-data`` symlink to the
+    locked cellar path). Derives from ``get_hermes_home()`` — never
+    ``Path.home()`` (the cellar.py:70 anti-pattern).
+
+    Sprint K1 (living-cellar-v1): this reads ``GROVE_WIKI_PATH`` ONLY. The
+    legacy ``WIKI_PATH`` (the Researcher's read path) is intentionally NOT
+    read, aliased, or remapped here — that consumer-wiring is deferred to a
+    deliberate post-K1 step.
+    """
+    env = os.environ.get("GROVE_WIKI_PATH", "").strip()
+    if env:
+        return Path(env)
+    return get_hermes_home() / "wiki"
+
+
 # ─── Network Preferences ─────────────────────────────────────────────────────
 
 
