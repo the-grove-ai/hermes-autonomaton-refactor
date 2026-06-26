@@ -656,6 +656,33 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
     return text
 
 
+def _is_governed_block(result: Any) -> bool:
+    """Return True when *result* is the governed-path wall's rejection.
+
+    The wall (``agent/file_safety.reject_governed_agent_write`` /
+    ``tools.file_tools._reject_governed_path``) returns
+    ``tool_error(GOVERNED_PATH_MESSAGE)`` — JSON ``{"error": <constant>}``.
+    Match on the FULL constant (the single source of truth in fs_utils), not
+    a prefix or substring, so a generic write failure (disk full, a
+    non-governed ``PermissionError``) is never misclassified as a governance
+    block.  Representation-only: this reads the error the wall already
+    produced; it does not change any classification, grant, or admission.
+    """
+    if not isinstance(result, str):
+        return False
+    stripped = result.strip()
+    if not stripped.startswith("{"):
+        return False
+    try:
+        data = json.loads(stripped)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    from grove.utils.fs_utils import GOVERNED_PATH_MESSAGE
+    return data.get("error") == GOVERNED_PATH_MESSAGE
+
+
 def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Strip image blobs from a message for trajectory saving.
 
@@ -7187,6 +7214,16 @@ class AIAgent:
         state dict hasn't been initialised yet (e.g. a tool dispatched
         outside ``run_conversation``).
         """
+        # Per-turn success ledger for the governance-block replacement's
+        # "what also completed" summary (governance-representation-v1).  Tracks
+        # EVERY successful tool by name — composed from execution outcomes, not
+        # the model's narrative.  Recorded before the file-mutating filter so
+        # non-mutating reads/searches are captured.  No-ops when the per-turn
+        # list isn't initialised (tool dispatched outside run_conversation).
+        succeeded = getattr(self, "_turn_succeeded_tools", None)
+        if succeeded is not None and not is_error:
+            succeeded.append(tool_name)
+
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
         state = getattr(self, "_turn_failed_file_mutations", None)
@@ -7198,6 +7235,7 @@ class AIAgent:
         landed = file_mutation_result_landed(tool_name, result)
         if is_error and not landed:
             preview = _extract_error_preview(result)
+            governed = _is_governed_block(result)
             for path in targets:
                 # Keep the FIRST error we saw for a given path unless we
                 # later see success.  A repeated failure with a different
@@ -7206,6 +7244,7 @@ class AIAgent:
                     state[path] = {
                         "tool": tool_name,
                         "error_preview": preview,
+                        "governed": governed,
                     }
         else:
             for path in targets:
@@ -7265,6 +7304,104 @@ class AIAgent:
         if remaining > 0:
             lines.append(f"  • … and {remaining} more")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_governance_block_replacement(
+        failed: Dict[str, Dict[str, Any]],
+        succeeded: List[str],
+    ) -> str:
+        """Compose the operator-facing replacement when a write was blocked by
+        the governed-path wall (governance-representation-v1, Option C).
+
+        The model's text is premised on a write that did not happen, so it is
+        replaced WHOLESALE with an honest summary built from the turn's actual
+        tool outcomes:
+          • the governed path(s) that were blocked, and why,
+          • any non-governed write failures in the same turn,
+          • what else completed (tool-name granularity),
+          • how to proceed.
+
+        Surface-agnostic: plain text + emoji + literal bullets only.  No
+        Markdown/Telegram-specific markup or escaping — the text rides the
+        same final_response → surface path as every other response, and each
+        surface applies its own formatting downstream.
+        """
+        governed = [p for p, info in failed.items() if info.get("governed")]
+        other = [(p, info) for p, info in failed.items() if not info.get("governed")]
+        lines: List[str] = []
+
+        if len(governed) == 1:
+            lines.append(f"⛔ Write blocked — {governed[0]} is a governed path.")
+        else:
+            lines.append(
+                f"⛔ Write blocked — {len(governed)} file(s) are governed "
+                "paths and were not written:"
+            )
+            for path in governed:
+                lines.append(f"  • {path}")
+        lines.append(
+            "Generic file tools cannot write inside ~/.grove (config, the live "
+            "skills tree, or the provenance/telemetry feed)."
+        )
+
+        if other:
+            lines.append("")
+            lines.append("Also not written (other errors):")
+            for path, info in other:
+                preview = (info.get("error_preview") or "").strip()
+                tool = info.get("tool") or "patch"
+                lines.append(
+                    f"  • {path} — [{tool}] {preview}" if preview
+                    else f"  • {path} — [{tool}] failed"
+                )
+
+        # Dedup successful tool names, preserve first-seen order.
+        seen: set = set()
+        uniq: List[str] = []
+        for tool in succeeded:
+            if tool not in seen:
+                seen.add(tool)
+                uniq.append(tool)
+        if uniq:
+            lines.append("")
+            lines.append("This turn also completed:")
+            for tool in uniq:
+                lines.append(f"  • {tool} (ok)")
+
+        lines.append("")
+        lines.append("To proceed:")
+        lines.append("  • Save to a non-governed location (e.g. ~/Documents/…)")
+        lines.append("  • Grant the path as a workspace (edit ~/.grove/workspaces.yaml)")
+        lines.append("  • Author governance changes via propose_governance_change / skill_manage")
+        lines.append("  • Or handle the write yourself")
+        return "\n".join(lines)
+
+    def _apply_mutation_verifier(self, final_response: str) -> str:
+        """Apply the per-turn file-mutation verifier to the operator-facing
+        response text (governance-representation-v1).
+
+        Single decision path for the turn-end seam:
+          • a governed-path block this turn → REPLACE the (epistemically
+            compromised) model text wholesale with the honest outcome
+            (Option C);
+          • a generic, non-governed write failure → append the advisory
+            footer to the model text (pre-existing behavior, preserved);
+          • verifier disabled or nothing failed → text unchanged.
+
+        Operator-representation only: this rewrites the local response text
+        before it is yielded; it never touches governance, message history,
+        or the tool_result ground truth.
+        """
+        failed = getattr(self, "_turn_failed_file_mutations", None) or {}
+        if not failed or not self._file_mutation_verifier_enabled():
+            return final_response
+        if any(info.get("governed") for info in failed.values()):
+            succeeded = getattr(self, "_turn_succeeded_tools", None) or []
+            return self._format_governance_block_replacement(failed, succeeded)
+        footer = self._format_file_mutation_failure_footer(failed)
+        if footer:
+            return final_response.rstrip() + "\n\n" + footer
+        return final_response
 
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Append any pending /steer text to the last tool result in this turn.
@@ -13940,7 +14077,10 @@ class AIAgent:
         # present are surfaced in an advisory footer so the model cannot
         # over-claim success while the file is actually unchanged on disk.
         self._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
-        
+        # Per-turn success ledger (tool names) for the governance-block
+        # replacement's "what also completed" summary.  Reset every turn.
+        self._turn_succeeded_tools: List[str] = []
+
         # Record the execution thread so interrupt()/clear_interrupt() can
         # scope the tool-level interrupt signal to THIS agent's thread only.
         # Must be set before any thread-scoped interrupt syncing.
@@ -17341,13 +17481,9 @@ class AIAgent:
         # already have other surface text that shouldn't be augmented.
         if final_response and not interrupted:
             try:
-                _failed = getattr(self, "_turn_failed_file_mutations", None) or {}
-                if _failed and self._file_mutation_verifier_enabled():
-                    footer = self._format_file_mutation_failure_footer(_failed)
-                    if footer:
-                        final_response = final_response.rstrip() + "\n\n" + footer
+                final_response = self._apply_mutation_verifier(final_response)
             except Exception as _ver_err:
-                logger.debug("file-mutation verifier footer failed: %s", _ver_err)
+                logger.debug("file-mutation verifier failed: %s", _ver_err)
 
         # Plugin hook: transform_llm_output
         # Fired once per turn after the tool-calling loop completes.
