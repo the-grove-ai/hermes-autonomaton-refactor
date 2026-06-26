@@ -136,13 +136,15 @@ _WRITER_SYSTEM = (
     "closing '---', write the page body: a short summary, the key findings, and "
     "relationships to prior knowledge. Canonicalize vocabulary. Do NOT include "
     "any other frontmatter keys — source, timestamps, and confidence are set by "
-    "the system, not by you."
+    "the system, not by you. Output ONLY the document: begin immediately with "
+    "the '---' line, with no preamble and no surrounding code fences."
 )
 
 _EDITOR_SYSTEM = (
     "You revise a canonical wiki page to fix the listed issues. Output the same "
-    "Markdown+frontmatter format (title, topics, key_entities, then body). Your "
-    "revision is final."
+    "Markdown+frontmatter format (title, topics, key_entities, then body). Output "
+    "ONLY the document: begin immediately with the '---' line, with no preamble "
+    "and no surrounding code fences. Your revision is final."
 )
 
 
@@ -249,16 +251,21 @@ def compact(
 
 
 def _parse_semantic_page(text: str) -> _SemanticPage:
+    """Single chokepoint for BOTH Writer and Editor output (Phase 4).
+
+    Tolerates two common LLM formatting wrappers — a surrounding code fence and
+    leading preamble prose — then locates the frontmatter block by LINE anchor
+    (a line that is exactly ``---``), so a body markdown horizontal rule is
+    never mistaken for the delimiter. This bends on *formatting*, never on
+    *missing data*: a response with no frontmatter block, unparseable YAML, a
+    missing/empty title, or an empty body still raises (the existing required-
+    field validation backstops any mis-anchor into a loud failure).
+    """
     if not isinstance(text, str) or not text.strip():
         raise MalformedWriterOutput("writer/editor returned empty output")
-    stripped = text.lstrip()
-    if not stripped.startswith("---"):
-        raise MalformedWriterOutput("output has no YAML frontmatter block")
-    end = stripped.find("\n---", 3)
-    if end == -1:
-        raise MalformedWriterOutput("output frontmatter block is not terminated")
-    fm_str = stripped[3:end]
-    body = stripped[end + 4:].lstrip("\n")
+
+    cleaned = _strip_code_fence(text)
+    fm_str, body = _extract_frontmatter_block(cleaned)
     try:
         meta = yaml.safe_load(fm_str)
     except yaml.YAMLError as exc:
@@ -278,6 +285,50 @@ def _parse_semantic_page(text: str) -> _SemanticPage:
         key_entities=_as_str_list(meta.get("key_entities"), "key_entities"),
         body=body,
     )
+
+
+_FRONTMATTER_DELIM = re.compile(r"^---\s*$")
+
+
+def _strip_code_fence(text: str) -> str:
+    """Remove a single wrapping triple-backtick code fence if present
+    (```` ```markdown `` … `` ``` ````). Leaves unfenced text untouched."""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+    lines = stripped.splitlines()
+    lines = lines[1:]  # drop the opening fence line (``` or ```lang)
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]  # drop the closing fence line
+    return "\n".join(lines)
+
+
+def _extract_frontmatter_block(text: str) -> tuple:
+    """Return (frontmatter_str, body_str), anchoring on LINES that are exactly
+    ``---`` — not any ``---`` substring — so a body horizontal rule is never
+    mistaken for the delimiter. Leading preamble before the opener is dropped.
+    Raises if no opener/closer line exists (fail loud on missing frontmatter)."""
+    lines = text.splitlines()
+    open_idx = next(
+        (i for i, ln in enumerate(lines) if _FRONTMATTER_DELIM.match(ln)), None
+    )
+    if open_idx is None:
+        raise MalformedWriterOutput(
+            "output has no YAML frontmatter block (no '---' delimiter line)"
+        )
+    close_idx = next(
+        (
+            j
+            for j in range(open_idx + 1, len(lines))
+            if _FRONTMATTER_DELIM.match(lines[j])
+        ),
+        None,
+    )
+    if close_idx is None:
+        raise MalformedWriterOutput("output frontmatter block is not terminated")
+    fm_str = "\n".join(lines[open_idx + 1 : close_idx])
+    body = "\n".join(lines[close_idx + 1 :]).lstrip("\n")
+    return fm_str, body
 
 
 def _as_str_list(value: Any, field: str) -> List[str]:
