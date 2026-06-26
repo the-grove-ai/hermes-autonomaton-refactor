@@ -21,6 +21,7 @@ visible without an agent restart.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -28,6 +29,8 @@ from grove.memory.store import MemoryStore
 from grove.prompt.composer import SectionResult
 
 __all__ = ["create_memory_provider"]
+
+logger = logging.getLogger(__name__)
 
 _SECTION_LABEL = "accumulated_domain_memory"
 _SECTION_HEADER = "## Accumulated Domain Memory"
@@ -80,6 +83,54 @@ def _approx_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _orphaned_graduated_records(store: MemoryStore) -> List[Any]:
+    """K6 (D5) — graduated records whose cellar page is missing on disk.
+
+    For each graduated record, recompute the source-stable cellar hash exactly
+    as ``grove/wiki/pipeline.py:_write_page`` does — the ``_MEMORY_SOURCE_PREFIX``
+    and ``_HASH_LEN`` are IMPORTED, never re-spelled, so this can't silently
+    desync from the writer (GUARD P2-d) — and check that
+    ``pages/memory_graduated/*-<hash>.md`` exists under the wiki root.
+
+    A missing page is a P1 signal: a graduated record has gone dark (suppressed
+    from JSONL by the K4 closure AND absent from the cellar). Log it and return
+    the record so the provider serves it from JSONL as the fail-safe. This does
+    NOT halt boot (A4 / D5 refinement) — the warning is the signal; the JSONL
+    serve is the safety net.
+    """
+    import hashlib
+
+    # Resolve the wiki root the SAME way grove/wiki/pipeline.py:_write_page does
+    # — through the pipeline's ``get_wiki_path`` binding (itself re-exported from
+    # hermes_constants), NOT a fresh hermes_constants import. Same object in
+    # production; the difference matters only under test, where the wiki-path
+    # seam is monkeypatched on ``grove.wiki.pipeline`` — so the reconciliation
+    # reads the exact cellar root the writer wrote to (SPEC amendment: import
+    # source corrected from hermes_constants to grove.wiki.pipeline for
+    # writer-parity / patch-consistency; the hash recipe is unchanged).
+    from grove.wiki.pipeline import (
+        _HASH_LEN,
+        _MEMORY_SOURCE_PREFIX,
+        get_wiki_path,
+    )
+
+    graduated_dir = Path(get_wiki_path()) / "pages" / "memory_graduated"
+    dir_exists = graduated_dir.exists()
+    orphans: List[Any] = []
+    for rec in store.iter_graduated():
+        source = _MEMORY_SOURCE_PREFIX + rec.id
+        short_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()[:_HASH_LEN]
+        matches = list(graduated_dir.glob(f"*-{short_hash}.md")) if dir_exists else []
+        if not matches:
+            logger.warning(
+                "[grove.memory] graduated record %s has no cellar page — "
+                "serving from JSONL as fallback",
+                rec.id,
+            )
+            orphans.append(rec)
+    return orphans
+
+
 def create_memory_provider(
     store: Optional[MemoryStore] = None,
     *,
@@ -100,8 +151,25 @@ def create_memory_provider(
         from grove.memory.lifecycle import load_active_dock_goal_dicts
         dock_goals_loader = load_active_dock_goal_dicts
 
+    # K6 (D5, A-Phase3 ruling) — graduated-record reconciliation, computed ONCE
+    # on first compose (init) and cached, NOT per turn. The factory rebuilds a
+    # fresh store per compose for active-record freshness; the set of orphaned
+    # graduated records (status="graduated" but cellar page missing) is a
+    # startup sanity check, so it is a snapshot taken on the first provider call.
+    _orphans_state: Dict[str, Any] = {"computed": False, "records": []}
+
     def _provider(context: Dict[str, Any]) -> Optional[SectionResult]:
         active_store = store_factory()
+
+        # First-call init: reconcile graduated records against the cellar. An
+        # orphan (graduated, no cellar page) is served from JSONL here as the
+        # D5 fail-safe — overriding the K4 suppression so the knowledge does not
+        # go dark. The P1 warning fired once during this scan.
+        if not _orphans_state["computed"]:
+            _orphans_state["records"] = _orphaned_graduated_records(active_store)
+            _orphans_state["computed"] = True
+        orphans: List[Any] = _orphans_state["records"]
+
         slugs = [g.get("slug") for g in dock_goals_loader() if g.get("slug")]
         # turn-keyword-relevance-v1 — keyword-as-boost: turn keywords ELEVATE
         # matching records but Dock-goal memory still surfaces (zero-hit records
@@ -114,6 +182,15 @@ def create_memory_provider(
             keywords=keywords or None,
             require_keyword_match=False,
         )
+        # D5 merge — orphaned graduated records (cellar page missing) are served
+        # from JSONL as the fail-safe. They cannot appear in query() output
+        # (status != "active"), so dedup is defensive only. Appended after the
+        # relevance-ranked active records: active turn-relevant memory leads;
+        # orphans fill remaining budget (the P1 warning is the durable remedy
+        # signal regardless of whether budget admits an orphan this turn).
+        if orphans:
+            _seen = {r.id for r in records}
+            records = list(records) + [o for o in orphans if o.id not in _seen]
         if not records:
             return None
 
