@@ -338,10 +338,10 @@ routing:
 #
 # context — an allow-list over the GATEABLE heavy blocks only:
 #     claude_contract   the CLAUDE.md contract        (~4.5K)
-#     goal_record       the Dock per-goal record      (loaded on match)
 #     skills_index      the promoted-skills index      (~2.8K)
 #     cellar_context    the wiki-cellar BM25 retrieval (K6; per-tier ceiling
 #                       via cellar_context_ceiling, default 1500)
+#   (K6 D1 retired goal_record — Dock goals now serve via cellar_context.)
 #   The always-on baseline (identity, environment, platform, register, the
 #   Tier-0 routing manifest) is NEVER listed — it always composes. A block
 #   absent from a tier's list is gated OFF for that tier.
@@ -356,11 +356,11 @@ routing:
 tier_budgets:
 
   T3:                       # Apex Cognition — unbounded window, eager.
-    context: [claude_contract, goal_record, skills_index, cellar_context]
+    context: [claude_contract, skills_index, cellar_context]
     cellar_context_ceiling: 2000
 
   T2:                       # Premium Cognition — the prefill-budgeted path.
-    context: [goal_record, cellar_context]  # claude_contract + skills_index gated OFF; goal_record loads on match
+    context: [cellar_context]  # claude_contract + skills_index gated OFF
     cellar_context_ceiling: 1500
 
   T1:                       # Cheap Cognition — the floor. Minimal prefill.

@@ -25,10 +25,13 @@ and only these. The always-on baseline (identity, environment, platform,
 register, the Tier-0 routing manifest) is never listed and always composes:
 
     claude_contract   the CLAUDE.md contract (``context_files`` provider, ~4.5K)
-    goal_record       the Dock Tier-1 per-goal record (on-match injection)
     skills_index      the promoted-skills index (~2.8K)
     cellar_context    the wiki-cellar BM25 retrieval (``cellar_knowledge``
                       provider; per-tier ``cellar_context_ceiling``, K6)
+
+K6 (D1) retired ``goal_record``: the Dock per-goal injection seam is removed and
+Dock goals now serve through the ``cellar_context`` BM25 path (K2 projection +
+dock_goal_refs boost).
 """
 
 from __future__ import annotations
@@ -76,7 +79,7 @@ class PrefillCeilingExceeded(RuntimeError):
 # D5 — the only names a tier's ``context`` allow-list may contain. Everything
 # else in the prompt is always-on baseline and is never budget-listed.
 GATEABLE_CONTEXT_BLOCKS: frozenset = frozenset(
-    {"claude_contract", "goal_record", "skills_index", "cellar_context"}
+    {"claude_contract", "skills_index", "cellar_context"}
 )
 
 # K6 (dynamic-context-assembly-v1, A-D3 ruling) — the default per-tier
