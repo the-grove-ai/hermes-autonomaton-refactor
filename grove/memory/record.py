@@ -58,7 +58,7 @@ class MemoryRecord:
     confidence: float
     dock_goal_ref: Optional[str]
     sources: List[Dict] = field(default_factory=list)
-    status: str = "active"              # active | superseded | deprecated
+    status: str = "active"              # active | superseded | deprecated | graduated
     supersedes: Optional[str] = None
     created_at: str = ""
     last_accessed: Optional[str] = None

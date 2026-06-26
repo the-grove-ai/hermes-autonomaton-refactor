@@ -932,4 +932,24 @@ def build_default_composer(
         order=15,
         tier="context",
     )
+
+    # unified-retrieval-provider-v1 — cellar_knowledge at context:11, strictly
+    # between system_message (10) and accumulated_domain_memory (15). ADDITIVE:
+    # the BM25 cellar reader runs ALONGSIDE the JSONL provider, never replacing
+    # it (28/29 active records are ungraduated and have no cellar page).
+    from grove.wiki.provider import create_cellar_provider
+    cellar_cfg: Dict[str, Any] = {}
+    if config and isinstance(config.get("sections"), dict):
+        entry = config["sections"].get("cellar_knowledge")
+        if isinstance(entry, dict):
+            cellar_cfg = entry
+    cellar_kwargs: Dict[str, Any] = {}
+    if "token_budget" in cellar_cfg:
+        cellar_kwargs["token_budget"] = cellar_cfg["token_budget"]
+    composer.register_section(
+        "cellar_knowledge",
+        create_cellar_provider(**cellar_kwargs),
+        order=11,
+        tier="context",
+    )
     return composer

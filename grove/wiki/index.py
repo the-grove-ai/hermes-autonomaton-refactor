@@ -120,6 +120,7 @@ class WikiIndex:
         *,
         source_type: Optional[str] = None,
         dock_goal: Optional[str] = None,
+        ensure_fresh: bool = True,
     ) -> List[WikiResult]:
         """Return up to ``k`` pages ranked by relevance to ``text``.
 
@@ -127,10 +128,18 @@ class WikiIndex:
         whose ``dock_goal_refs`` contain it rank higher, but non-matching pages
         still appear. Confidence always boosts. Builds the index on first use
         and refreshes incrementally by mtime.
+
+        ``ensure_fresh`` (unified-retrieval-provider-v1) — when True (default,
+        all existing callers) the index is built/mtime-refreshed before the
+        query. When False the query runs against the cached SQLite state with
+        no refresh, so a hot-path caller (the cellar provider) can TTL-gate the
+        per-turn mtime scan. A page added since the last refresh is invisible
+        until a subsequent ``ensure_fresh=True`` query runs.
         """
         if not text or not text.strip():
             return []
-        self._ensure_fresh()
+        if ensure_fresh:
+            self._ensure_fresh()
         match = _sanitize_fts_query(text)
         if not match:
             return []
