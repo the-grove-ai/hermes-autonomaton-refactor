@@ -216,6 +216,64 @@ def test_fail_loud_on_editor_unparseable_output(monkeypatch, tmp_path):
         compact(_doc(tmp_path), wiki_root=tmp_path / "wiki")
 
 
+# ── Writer/Editor output wrapping tolerance (single chokepoint) ─────────
+
+
+def _fenced(md, lang="markdown"):
+    return f"```{lang}\n{md}```\n"
+
+
+def _preambled(md, preamble="Here is the canonical page:\n\n"):
+    return preamble + md
+
+
+def test_writer_code_fence_wrapping_recovers(monkeypatch, tmp_path):
+    _install(monkeypatch, _FakeT1(_fenced(_writer_md()), _verdict()))
+    page = compact(_doc(tmp_path), wiki_root=tmp_path / "wiki")
+    assert page.title == "The Moat Moved"
+    assert page.body.strip() == "Canonical body text."
+
+
+def test_writer_preamble_recovers(monkeypatch, tmp_path):
+    _install(monkeypatch, _FakeT1(_preambled(_writer_md()), _verdict()))
+    page = compact(_doc(tmp_path), wiki_root=tmp_path / "wiki")
+    assert page.title == "The Moat Moved"
+
+
+def test_writer_genuinely_missing_frontmatter_still_raises(monkeypatch, tmp_path):
+    # The contract does NOT bend on missing data — only on formatting wrapping.
+    _install(monkeypatch, _FakeT1("Just prose. No frontmatter anywhere.", _verdict()))
+    with pytest.raises(MalformedWriterOutput):
+        compact(_doc(tmp_path), wiki_root=tmp_path / "wiki")
+
+
+def test_body_horizontal_rule_not_mistaken_for_frontmatter(monkeypatch, tmp_path):
+    # A body markdown horizontal rule (---) must not be parsed as the
+    # frontmatter delimiter; anchoring is on a line that is exactly '---'.
+    body = "First section.\n\n---\n\nSecond section after a horizontal rule.\n"
+    _install(monkeypatch, _FakeT1(_writer_md(body=body), _verdict()))
+    page = compact(_doc(tmp_path), wiki_root=tmp_path / "wiki")
+    assert page.title == "The Moat Moved"
+    assert "Second section after a horizontal rule." in page.body
+    assert "First section." in page.body
+
+
+def test_editor_path_recovers_wrapped_page(monkeypatch, tmp_path):
+    # Evaluator fail → Editor; the Editor's output flows through the same
+    # chokepoint and must get the same fence/preamble tolerance.
+    _install(
+        monkeypatch,
+        _FakeT1(
+            _writer_md(body="weak"),
+            _verdict(complete=False, quality_score=0.2, issues=["thin"]),
+            editor=_fenced(_writer_md(body="revised after edit")),
+        ),
+    )
+    page = compact(_doc(tmp_path), wiki_root=tmp_path / "wiki")
+    assert page.editor_ran is True
+    assert "revised after edit" in page.body
+
+
 # ── write location / idempotency / A6 ───────────────────────────────────
 
 
