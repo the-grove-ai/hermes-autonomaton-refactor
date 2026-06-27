@@ -28,12 +28,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, FrozenSet, List, Optional, Set, Tuple
+from typing import FrozenSet, List, Optional, Set, Tuple
 
 import yaml
-
-if TYPE_CHECKING:
-    from grove.tier_budget import TierBudget
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +217,6 @@ def _selected_group_names(
 def resolve_tool_set(
     intent_class: Optional[str],
     complexity_signal: Optional[str],
-    taxonomy: Optional[dict] = None,
 ) -> Optional[Set[str]]:
     """Compute the per-turn allowed tool-name set (Sprint 29, intent-only).
 
@@ -241,9 +237,6 @@ def resolve_tool_set(
         complexity_signal: one of the Sprint 12 COMPLEXITY_SIGNALS
             (``simple`` / ``moderate`` / ``complex`` / ``novel``).
             ``complex`` / ``novel`` add the exploratory group.
-        taxonomy: GRV-009 E5 C-RETIRE — accepted for back-compatibility and
-            IGNORED; native selection is registry-driven and reads no
-            ``tool_groups.yaml`` taxonomy.
 
     Returns:
         Set of tool names to expose this turn, or None for "load all".
@@ -305,7 +298,6 @@ def _mcp_server_of(name: str) -> Optional[str]:
 def _partition_tools(
     tools: List[dict],
     allowed: Optional[Set[str]],
-    tier_budget: Optional["TierBudget"],
     mcp_allow: Optional[Set[str]] = None,
 ) -> Tuple[List[dict], Set[str], List[str]]:
     """Single source of truth for per-tool admission (D4 + Sprint 74 Phase 2).
@@ -365,10 +357,9 @@ def filter_tools_by_name(
     tools: List[dict],
     allowed: Optional[Set[str]],
     *,
-    tier_budget: Optional["TierBudget"] = None,
     mcp_allow: Optional[Set[str]] = None,
 ) -> List[dict]:
-    """Filter an OpenAI-format tools list by tool name, with optional per-tier
+    """Filter an OpenAI-format tools list by tool name, with optional per-turn
     MCP gating (Sprint 73, D4).
 
     Args:
@@ -376,22 +367,18 @@ def filter_tools_by_name(
             ``{"type": "function", "function": {"name": ..., ...}}`` shape.
         allowed: set of names the turn should expose, OR ``None`` for non-MCP
             pass-through (the maximal-fallback signal).
-        tier_budget: vestigial back-compat positional — ignored. Per-tier MCP
-            exposure is no longer a budget concern; MCP gating is governed solely
-            by ``mcp_allow`` (the registry-driven per-turn disclose set).
         mcp_allow: an MCP tool passes only if its server is in this set; ``None``
             ⇒ every MCP passes (the legacy allow-by-default signal). ``None`` for
-            all of ``tier_budget`` / ``allowed`` / ``mcp_allow`` is the legacy
-            pass-through fast-path.
+            both ``allowed`` and ``mcp_allow`` is the legacy pass-through fast-path.
 
     Returns:
         The filtered list, preserving insertion order.
     """
-    # Legacy fast-path: no tier, no name set, and no MCP match-gate returns the
-    # list verbatim (including any non-dict entries) exactly as Sprint 29 did.
-    if tier_budget is None and allowed is None and mcp_allow is None:
+    # Legacy fast-path: no name set and no MCP match-gate returns the list
+    # verbatim (including any non-dict entries) exactly as Sprint 29 did.
+    if allowed is None and mcp_allow is None:
         return tools
-    kept, _, _ = _partition_tools(tools, allowed, tier_budget, mcp_allow)
+    kept, _, _ = _partition_tools(tools, allowed, mcp_allow)
     return kept
 
 
@@ -535,8 +522,6 @@ def resolve_tools_for_tier(
     tools: List[dict],
     intent_class: Optional[str],
     complexity_signal: Optional[str],
-    taxonomy: dict,
-    tier_budget: Optional["TierBudget"] = None,
     *,
     mcp_allow: Optional[Set[str]] = None,
     current_tier: Optional[int] = None,
@@ -555,10 +540,7 @@ def resolve_tools_for_tier(
 
     On an unknown intent (maximal fallback) the surface is the full registry
     capped by ``tier_rule.eligible`` and marked ``fallback`` loudly; the unknown
-    fallback strips nothing (it could not name an intent to cover). The
-    ``taxonomy`` and ``tier_budget`` args are vestigial back-compat positionals —
-    the resolver reads neither (no ``tool_groups.yaml``, no ``allow_groups``);
-    ``tier_budget`` rides only to ``_partition_tools``, which ignores it.
+    fallback strips nothing (it could not name an intent to cover).
     """
     fallback = intent_class is None or intent_class == "unknown"
 
@@ -581,7 +563,7 @@ def resolve_tools_for_tier(
         )
 
     kept, excluded_mcp, unparseable = _partition_tools(
-        tools, allowed, tier_budget, mcp_allow
+        tools, allowed, mcp_allow
     )
     return ToolResolution(
         tools=tuple(kept),

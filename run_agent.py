@@ -3246,20 +3246,15 @@ class AIAgent:
         budgeted = tier_budget is not None
 
         def _resolve():
-            # GRV-009 E5 C-RETIRE — the resolver path reads no tool_groups.yaml
-            # taxonomy (native selection is registry-driven); the positional
-            # taxonomy arg is back-compat-only and ignored, so pass None.
-            # web-surface-admission-fix (Option B) — tier_rule.eligible is bound
-            # to ``current_tier`` (``_current_tier_int()``). None (cloud / no tier
-            # routed) bypasses the gate. ``allow_groups`` (and the
-            # PERMISSIVE wildcard budget) are retired — non-budgeted turns pass
-            # ``tier_budget=None``; the resolver no longer reads it.
+            # GRV-009 E5 C-RETIRE — native selection is registry-driven (reads no
+            # tool_groups.yaml taxonomy). web-surface-admission-fix (Option B) —
+            # tier_rule.eligible is bound to ``current_tier`` (``_current_tier_int()``);
+            # None (cloud / no tier routed) bypasses the gate. ``allow_groups`` and
+            # the per-tier tool budget are retired — the resolver takes neither.
             return resolve_tools_for_tier(
                 self.tools,
                 intent_class,
                 complexity,
-                None,
-                tier_budget,
                 mcp_allow=self._compute_mcp_allow(intent_class, goal_alignment),
                 current_tier=self._current_tier_int(),
             )

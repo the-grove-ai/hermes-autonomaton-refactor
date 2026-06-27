@@ -144,16 +144,16 @@ class TestResolveToolSet:
     def test_unknown_intent_returns_none_loud_fallback(self, caplog):
         import logging
         with caplog.at_level(logging.INFO, logger="grove.context_budget"):
-            result = resolve_tool_set("unknown", "simple", _minimal_taxonomy())
+            result = resolve_tool_set("unknown", "simple")
         assert result is None
         assert "maximal fallback" in caplog.text
 
     def test_none_intent_returns_none(self):
-        assert resolve_tool_set(None, "simple", _minimal_taxonomy()) is None
+        assert resolve_tool_set(None, "simple") is None
 
     def test_core_always_loaded(self):
         result = resolve_tool_set(
-            "conversation", "simple", _minimal_taxonomy(),
+            "conversation", "simple",
         )
         assert {"clarify", "read_file", "memory"}.issubset(result)
 
@@ -163,13 +163,13 @@ class TestResolveToolSet:
         # filter_tools_by_name, not the per-turn budget set. So the
         # resolved set contains no mcp_ names.
         result = resolve_tool_set(
-            "conversation", "simple", _minimal_taxonomy(),
+            "conversation", "simple",
         )
         assert not any(name.startswith("mcp_") for name in result)
 
     def test_domain_chunk_added_for_intent(self):
         result = resolve_tool_set(
-            "code_generation", "simple", _minimal_taxonomy(),
+            "code_generation", "simple",
         )
         assert "write_file" in result
         assert "patch" in result
@@ -182,7 +182,7 @@ class TestResolveToolSet:
         # signals maximal fallback. This is an intent_class the Sprint 12
         # classifier produced that isn't in the taxonomy yet.
         tax = _minimal_taxonomy()
-        result = resolve_tool_set("brand_new_intent", "simple", tax)
+        result = resolve_tool_set("brand_new_intent", "simple")
         assert result is not None
         assert "clarify" in result
         # No exploratory and no writes.
@@ -191,26 +191,26 @@ class TestResolveToolSet:
 
     def test_complex_adds_exploratory(self):
         result = resolve_tool_set(
-            "code_generation", "complex", _minimal_taxonomy(),
+            "code_generation", "complex",
         )
         assert "delegate_task" in result
         assert "browser_navigate" in result
 
     def test_novel_adds_exploratory(self):
         result = resolve_tool_set(
-            "code_generation", "novel", _minimal_taxonomy(),
+            "code_generation", "novel",
         )
         assert "delegate_task" in result
 
     def test_simple_does_not_add_exploratory(self):
         result = resolve_tool_set(
-            "code_generation", "simple", _minimal_taxonomy(),
+            "code_generation", "simple",
         )
         assert "delegate_task" not in result
 
     def test_moderate_does_not_add_exploratory(self):
         result = resolve_tool_set(
-            "code_generation", "moderate", _minimal_taxonomy(),
+            "code_generation", "moderate",
         )
         assert "delegate_task" not in result
 
@@ -260,7 +260,7 @@ class TestCoLocationGuard:
         )
         for intent in ("conversation", "factual_retrieval", "code_generation"):
             tax["domain_chunks"].setdefault(intent, [])
-            result = resolve_tool_set(intent, "simple", tax)
+            result = resolve_tool_set(intent, "simple")
             assert "skill_view" in result
             assert "terminal" in result
 
@@ -270,7 +270,7 @@ class TestCoLocationGuard:
             core=["clarify", "skill_view"],
             domain={"system_admin": ["terminal", "process"]},
         )
-        result = resolve_tool_set("system_admin", "simple", tax)
+        result = resolve_tool_set("system_admin", "simple")
         assert "skill_view" in result
         assert "terminal" in result
 
@@ -282,7 +282,7 @@ class TestCoLocationGuard:
             core=["clarify", "skill_view"],  # missing terminal — would fail guard
             domain={"factual_retrieval": ["web_search"]},
         )
-        result = resolve_tool_set("unknown", "simple", tax)
+        result = resolve_tool_set("unknown", "simple")
         assert result is None  # maximal fallback signal
 
     def test_message_points_at_fix_path(self) -> None:

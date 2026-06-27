@@ -43,14 +43,14 @@ def test_complexity_record_absent_on_simple_t3_present_on_complex():
     # web-surface-admission-fix (Option B) — the tier is bound via current_tier
     # (tier_rule.eligible is the sole gate); browser_navigate is a complexity
     # record eligible=[3], so it rides only a complex turn AT T3.
-    simple = _names(resolve_tools_for_tier(TOOLS, "conversation", "simple", None, current_tier=3, mcp_allow=None))
-    complex_ = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", None, current_tier=3, mcp_allow=None))
+    simple = _names(resolve_tools_for_tier(TOOLS, "conversation", "simple", current_tier=3, mcp_allow=None))
+    complex_ = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", current_tier=3, mcp_allow=None))
     assert "browser_navigate" not in simple, "complexity record leaked onto a low-complexity T3 turn"
     assert "browser_navigate" in complex_, "complexity record missing on a complex T3 turn"
     # neuter-tier-eligible-gate: on a COMPLEX turn the complexity record now also
     # rides at T1 — tier no longer strips. Complexity-disclosure gating (above)
     # is unchanged; only the tier ceiling is retired.
-    t1c = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", None, current_tier=1, mcp_allow=None))
+    t1c = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", current_tier=1, mcp_allow=None))
     assert "browser_navigate" in t1c   # tier ceiling retired → present at T1 on a complex turn
 
 
@@ -59,13 +59,13 @@ def test_fallback_record_absent_on_every_known_intent_present_only_in_fallback(f
     for tier_int in (1, 2, 3):
         for intent in INTENT_CLASSES:
             for cx in COMPLEXITY_SIGNALS:
-                got = _names(resolve_tools_for_tier(TOOLS, intent, cx, None, current_tier=tier_int, mcp_allow=None))
+                got = _names(resolve_tools_for_tier(TOOLS, intent, cx, current_tier=tier_int, mcp_allow=None))
                 assert fb_tool not in got, f"fallback record {fb_tool} leaked onto known cell T{tier_int}|{intent}|{cx}"
-    t3_unknown = _names(resolve_tools_for_tier(TOOLS, None, "simple", None, current_tier=3, mcp_allow=None))
+    t3_unknown = _names(resolve_tools_for_tier(TOOLS, None, "simple", current_tier=3, mcp_allow=None))
     assert fb_tool in t3_unknown, f"fallback record {fb_tool} missing from maximal unknown fallback"
 
 
 def test_fallback_explicitly_t3_research_complex():
-    got = _names(resolve_tools_for_tier(TOOLS, "research", "complex", None, current_tier=3, mcp_allow=None))
+    got = _names(resolve_tools_for_tier(TOOLS, "research", "complex", current_tier=3, mcp_allow=None))
     for fb in ("spotify_search", "kanban_list", "computer_use", "todo", "invoke_skill"):
         assert fb not in got, f"{fb} (fallback) must be absent on T3|research|complex"

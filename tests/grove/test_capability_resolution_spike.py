@@ -87,7 +87,7 @@ def _delivered_for_scheduling(reg, platform):
     _enabled, tools = _platform_surface(reg, platform)
     tax = None  # GRV-009 E5b C2 — tool_groups.yaml retired; resolver ignores taxonomy
     t1 = load_tier_budgets()["T1"]
-    res = resolve_tools_for_tier(tools, "scheduling", "simple", tax, t1)
+    res = resolve_tools_for_tier(tools, "scheduling", "simple")
     return list(res.tools)
 
 

@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 from grove.classify import COMPLEXITY_SIGNALS, INTENT_CLASSES
-from grove.context_budget import _name_of, load_taxonomy, resolve_tools_for_tier
+from grove.context_budget import _name_of, resolve_tools_for_tier
 from grove.disclosure import (
     build_disclosure_units,
     build_pull_tool_defs,
@@ -40,8 +40,7 @@ def _setup():
     native = sorted(n for n in {e.name for e in reg._tools.values()} if not n.startswith("mcp_"))
     defs_by = {_name_of(d): d for d in reg.get_definitions(set(native), quiet=True)}
     tooldicts = [defs_by[n] for n in native if n in defs_by]
-    budgets = load_tier_budgets(_REPO / "config" / "routing.config.yaml",
-                                taxonomy_path=_REPO / "config" / "tool_groups.yaml")
+    budgets = load_tier_budgets(_REPO / "config" / "routing.config.yaml")
     return reg, defs_by, tooldicts, budgets
 
 
@@ -77,7 +76,7 @@ def test_split_parity_matches_golden_byte_for_byte():
             for cx in COMPLEXITY_SIGNALS:
                 cell = f"{tier}|{intent}|{cx}"
                 g = golden[cell]
-                res = resolve_tools_for_tier(tooldicts, intent, cx, None, budgets[tier], mcp_allow=None).tools
+                res = resolve_tools_for_tier(tooldicts, intent, cx, mcp_allow=None).tools
                 eager, idx = _record_split(units, defs_by, res, intent)
                 if (eager != g["eager_names"] or idx != g["pull_index"]
                         or estimate_tokens_rough(idx) != g["pull_tokens"]):

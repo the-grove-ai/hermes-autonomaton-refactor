@@ -57,7 +57,7 @@ def _registry_allow(tier, intent, message):
 
 
 def _mcp_exposed(surface, tier, intent, message, allow):
-    res = resolve_tools_for_tier(surface, intent, "moderate", TAX, BUDGETS[tier], mcp_allow=allow)
+    res = resolve_tools_for_tier(surface, intent, "moderate", mcp_allow=allow)
     return {_name_of(t) for t in res.tools if _is_mcp(_name_of(t))}
 
 
