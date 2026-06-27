@@ -3216,9 +3216,8 @@ class AIAgent:
         retired). The SOLE tier gate is each capability's ``tier_rule.eligible``
         evaluated against ``current_tier`` (web-surface-admission-fix, Option B —
         ``allow_groups`` retired). ``current_tier`` is bound from
-        ``self._current_tier_int()``, the SAME source ``_seam5_tier_refusal``
-        admits on, so the offered surface and the execution seam cannot disagree.
-        ``None`` (cloud / no tier routed) bypasses the gate, mirroring the seam.
+        ``self._current_tier_int()``. ``None`` (cloud / no tier routed) bypasses
+        the gate.
 
         Fires inside ``_run_turn_generator`` after classification, so
         ``grove.providers.current_classification()`` is set.
@@ -3250,11 +3249,9 @@ class AIAgent:
             # GRV-009 E5 C-RETIRE — the resolver path reads no tool_groups.yaml
             # taxonomy (native selection is registry-driven); the positional
             # taxonomy arg is back-compat-only and ignored, so pass None.
-            # web-surface-admission-fix (Option B) — the SOLE tier gate is
-            # tier_rule.eligible, bound to the SAME ``current_tier`` the
-            # ``_seam5_tier_refusal`` admits on (``_current_tier_int()``), so the
-            # builder and the seam cannot desync. None (cloud / no tier routed)
-            # bypasses the gate, mirroring the seam. ``allow_groups`` (and the
+            # web-surface-admission-fix (Option B) — tier_rule.eligible is bound
+            # to ``current_tier`` (``_current_tier_int()``). None (cloud / no tier
+            # routed) bypasses the gate. ``allow_groups`` (and the
             # PERMISSIVE wildcard budget) are retired — non-budgeted turns pass
             # ``tier_budget=None``; the resolver no longer reads it.
             return resolve_tools_for_tier(
@@ -12406,19 +12403,6 @@ class AIAgent:
             return None
         return self._seam5_refusal(function_name, "not in the per-turn offered surface")
 
-    def _seam5_tier_refusal(self, function_name: str) -> Optional[str]:
-        """SECONDARY (C-SEAM5): NEUTERED (neuter-tier-eligible-gate).
-
-        This seam formerly refused, at dispatch, any tool whose governing
-        capability record marked the CURRENT tier ineligible
-        (``tier_rule.eligible``). That gate is retired: the cognitive router
-        picks the tier and the zone system governs mutation safety, so
-        ``tier_rule.eligible`` is documentation on the records, not an
-        enforcement axis. The seam now always admits on tier grounds — the
-        offered-surface seam (``_seam5_*`` offer check) and the zone gates
-        remain the live boundaries."""
-        return None
-
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -12608,14 +12592,6 @@ class AIAgent:
                 pass
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
-
-        # GRV-009 E5 C-SEAM5 SECONDARY — registry tier-eligibility refusal at
-        # dispatch (defense-in-depth, independent of the offer path): a tool whose
-        # governing record excludes the current tier never executes, even if it
-        # somehow reached here.
-        _tier_refusal = self._seam5_tier_refusal(function_name)
-        if _tier_refusal is not None:
-            return _tier_refusal
 
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool

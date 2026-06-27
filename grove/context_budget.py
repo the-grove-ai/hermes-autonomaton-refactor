@@ -496,11 +496,10 @@ def _registry_allowed_names(
         record's; on the unknown fallback every proactive record is selected.
 
     ``tier_ok`` — ``current_tier in tier_rule.eligible``. ``current_tier is None``
-    (cloud / vanilla — no tier routed) BYPASSES the gate and admits, exactly as
-    ``_seam5_tier_refusal`` admits on the no-tier path. An EMPTY ``eligible``
-    admits at NO tier — mirroring the seam refusing it everywhere; a core record
-    with too-narrow ``eligible`` therefore surfaces as a stripped capability (a
-    RECORD bug), never a hidden branch special-case.
+    (cloud / vanilla — no tier routed) BYPASSES the gate and admits. An EMPTY
+    ``eligible`` admits at NO tier; a core record with too-narrow ``eligible``
+    therefore surfaces as a stripped capability (a RECORD bug), never a hidden
+    branch special-case.
 
     A record the turn SELECTED but the tier makes ineligible is STRIPPED —
     returned as ``(cap_id, eligible_tuple)`` for the D8 escalation net, never
@@ -546,11 +545,9 @@ def resolve_tools_for_tier(
 
     The native surface derives from the capability registry gated by ONE rule:
     ``current_tier in tier_rule.eligible`` (``allow_groups`` retired). ``current_tier``
-    is the int tier (1/2/3) bound from ``run_agent._current_tier_int()`` — the SAME
-    authoritative source ``_seam5_tier_refusal`` admits on, so the builder and the
-    seam cannot disagree (and escalation re-runs this builder at the new tier).
-    ``current_tier is None`` (cloud / vanilla — no tier routed) bypasses the gate,
-    mirroring the seam's no-tier admit. A capability the intent selected but the
+    is the int tier (1/2/3) bound from ``run_agent._current_tier_int()``; escalation
+    re-runs this builder at the new tier. ``current_tier is None`` (cloud / vanilla —
+    no tier routed) bypasses the gate. A capability the intent selected but the
     tier makes ineligible is reported in ``stripped_capabilities`` for the D8
     escalation net; it is never silently dropped. MCP exposure is gated solely by
     ``mcp_allow`` (GRV-009 E4 C4): a server is admitted only if it is in the
