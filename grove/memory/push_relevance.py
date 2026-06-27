@@ -67,16 +67,36 @@ def is_push_relevant(
     *,
     goal_ref: Optional[str] = None,
     active_goal_ids: Optional[Iterable[str]] = None,
+    goal_alignment: Optional[str] = None,
+    engaged_goal_id: Optional[str] = None,
 ) -> bool:
     """Return True when a crystallization proposal of ``entity_type`` may push
     on a turn classified ``intent_class``.
 
-    Dock override: if ``goal_ref`` names a goal in ``active_goal_ids``, the
-    proposal is always relevant (Dock-tagged insight is always welcome),
-    regardless of the intent map.
+    Dock override (crystallization-cadence-v1.1): a proposal tagged to a Dock
+    goal overrides the intent gate ONLY when the turn is actually ENGAGING that
+    goal — all four conditions of the locked spec must hold:
+
+      1. ``goal_ref`` is present on the proposal,
+      2. ``goal_ref`` is an ACTIVE goal (``goal_ref in active_goal_ids``),
+      3. the turn is goal-aligned (``goal_alignment`` is ``direct``/``indirect``,
+         not ``orthogonal``/``no_goals_set``),
+      4. the turn's engaged goal IS ``goal_ref`` (``engaged_goal_id == goal_ref``),
+         not merely some other active goal.
+
+    The v1 bug checked only (1)+(2), so an always-active umbrella goal
+    (``hermes-autonomaton``) overrode the gate on EVERY turn — including a
+    ``scheduling`` "what's on my calendar" turn. Condition (3) alone kills that
+    case (orthogonal alignment); (4) prevents a goal-A turn from surfacing a
+    goal-B proposal.
     """
-    # Dock override — a proposal tied to a goal active this turn always pushes.
-    if goal_ref and active_goal_ids and goal_ref in set(active_goal_ids):
+    if (
+        goal_ref
+        and active_goal_ids
+        and goal_ref in set(active_goal_ids)
+        and goal_alignment in ("direct", "indirect")
+        and engaged_goal_id == goal_ref
+    ):
         return True
 
     if not intent_class or not entity_type:
