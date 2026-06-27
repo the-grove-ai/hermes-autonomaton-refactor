@@ -186,3 +186,35 @@ def cli_memory_reject(
     print(f"Memory proposal {full_id[:_SHORT_ID_LEN]} was not rejected.",
           file=sys.stderr)
     return 1
+
+
+def cli_memory_dismiss(
+    partial_id: str, *, base_dir: Any = None, ledger_dir: Any = None,
+) -> int:
+    """Soft-dismiss a memory proposal (crystallization-cadence-v1, Gap 3).
+
+    Flips the proposal to ``status="dismissed"`` via the shared digest engine:
+    it loses push eligibility and stays in the backlog, but — unlike reject —
+    does NOT feed the detector's rejection memory. Mirrors ``cli_memory_reject``;
+    the only difference is the decision verb the digest applies.
+    """
+    base = _base(base_dir)
+    full_id, err = _resolve(base, partial_id)
+    if full_id is None:
+        print(err, file=sys.stderr)
+        return 1
+    store = MemoryStore(base_dir=base)
+
+    def decide(_summary: str, proposal: Dict[str, Any]) -> str:
+        return "dismiss" if _full_id(proposal) == full_id else "defer"
+
+    counts = run_digest(
+        store=store, proposals_path=_proposals_path(base),
+        decide=decide, ledger_dir=ledger_dir,
+    )
+    if counts["dismissed"]:
+        print(f"Dismissed memory proposal {full_id[:_SHORT_ID_LEN]}.")
+        return 0
+    print(f"Memory proposal {full_id[:_SHORT_ID_LEN]} was not dismissed.",
+          file=sys.stderr)
+    return 1

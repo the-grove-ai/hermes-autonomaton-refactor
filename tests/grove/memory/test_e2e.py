@@ -101,7 +101,8 @@ def test_memory_substrate_end_to_end():
 
     counts = run_digest(store=store, proposals_path=ppath, decide=decide,
                         ledger_dir=ledger_dir)
-    assert counts == {"approved": 2, "rejected": 1, "deferred": 0}
+    # crystallization-cadence-v1 added a "dismissed" disposition to the engine.
+    assert counts == {"approved": 2, "rejected": 1, "deferred": 0, "dismissed": 0}
 
     # 7. Two MemoryCreated events in the log; one proposal rejected.
     created = [e for e in store.read_events() if isinstance(e, MemoryCreated)]

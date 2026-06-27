@@ -402,6 +402,10 @@ tool_zones:
   review_proposals:                          green
   approve_proposal:                          yellow
   reject_proposal:                           yellow
+  # crystallization-cadence-v1 — soft dismiss of a crystallization proposal.
+  # Yellow like reject (it mutates proposal state); yellow is also the
+  # classifier default, stated explicitly per the E5 convention.
+  dismiss_proposal:                          yellow
 
   # ── GRV-001 Grant Token model — standing grant management (grants_tool) ──
   # review_grants is read-only → green (the agent can surface grants on request).

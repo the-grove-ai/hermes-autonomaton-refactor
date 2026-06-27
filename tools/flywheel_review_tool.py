@@ -80,12 +80,14 @@ APPROVE_PROPOSAL_SCHEMA = {
 REJECT_PROPOSAL_SCHEMA = {
     "name": "reject_proposal",
     "description": (
-        "Reject (dismiss) a pending Flywheel proposal, removing it from the queue "
-        "with no change applied. Use when the operator declines a proposal. When "
-        "the operator dismisses a proposal you just surfaced (e.g. replies "
-        "'dismiss'/'skip'/'no' to a shop-floor-note push), call this with NO "
-        "proposal_id — it targets the most recently offered proposal. Only pass "
-        "proposal_id when dismissing a specific OTHER proposal the operator named."
+        "REJECT a pending Flywheel proposal as WRONG — the proposed fact, "
+        "routing change, or memory is incorrect or unwanted. This is permanent: "
+        "it feeds the detector's rejection memory so the same insight is NOT "
+        "re-proposed. Use ONLY when the operator says the content is wrong / "
+        "bad / not true (e.g. 'no, that's incorrect', 'reject that'). For a mere "
+        "'not now' / 'stop showing me this' / 'skip it', use dismiss_proposal "
+        "instead — a soft dismiss must NOT poison the detector's memory. Call "
+        "with NO proposal_id to act on the proposal most recently surfaced."
     ),
     "parameters": {
         "type": "object",
@@ -101,6 +103,34 @@ REJECT_PROPOSAL_SCHEMA = {
             "reason": {
                 "type": "string",
                 "description": "OPTIONAL: why the operator declined.",
+            },
+        },
+    },
+}
+
+DISMISS_PROPOSAL_SCHEMA = {
+    "name": "dismiss_proposal",
+    "description": (
+        "Soft-DISMISS a surfaced crystallization (memory) proposal: 'stop "
+        "bothering me with this' / 'not now' / 'no thanks' / 'skip it'. The "
+        "proposal loses its proactive-push privilege and stays in the CLI "
+        "backlog for manual review, but is NOT recorded as a rejection — the "
+        "detector's rejection memory is untouched, so valid insights are not "
+        "blinded. Use this for the common 'don't show me that again' reply to a "
+        "shop-floor note. If the operator says the content is actually WRONG, "
+        "use reject_proposal instead. Call with NO proposal_id to act on the "
+        "proposal most recently surfaced."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "proposal_id": {
+                "type": "string",
+                "description": (
+                    "OPTIONAL. The proposal id (full or short prefix) to dismiss. "
+                    "OMIT to act on the proposal most recently surfaced to the "
+                    "operator (the shop-floor-note push they are replying to)."
+                ),
             },
         },
     },
@@ -240,6 +270,60 @@ def _write_push_cadence(
         )
         tmp.replace(path)
     except Exception:  # noqa: BLE001 — never block the push on a persistence hiccup
+        pass
+
+
+# ── Global "ever-pushed" memory ledger (crystallization-cadence-v1, Gap 1) ───
+# The push cadence above is session-scoped BY DESIGN (the cooldown resets on a
+# session boundary). But a crystallization proposal born from a prior dormant
+# session must NOT re-push in every NEW session — the session reset re-armed
+# the dedup, leaking verbatim duplicates across conversations. This ledger is
+# the cross-session dedup: a flat, GLOBAL set of memory short_ids ever pushed
+# in ANY session. Once a memory proposal is pushed, it permanently loses its
+# auto-push privilege (still reachable via the flywheel CLI for manual review).
+# Separate file so the session-scoped cadence reset never touches it.
+def _pushed_memory_ids_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / ".pushed_memory_ids.json"
+
+
+def _read_pushed_memory_ids() -> set:
+    """The GLOBAL set of memory short_ids ever proactively pushed. Missing file
+    or parse error reads as empty. Best-effort; never raises."""
+    try:
+        path = _pushed_memory_ids_path()
+        if not path.exists():
+            return set()
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        return set(rec.get("pushed_ids") or []) if isinstance(rec, dict) else set()
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _mark_pushed_memory_id(short_id: str) -> None:
+    """Add ``short_id`` to the global ever-pushed ledger. Atomic, idempotent,
+    best-effort. A write failure degrades toward may-push-again (visibility),
+    never toward silence."""
+    if not short_id:
+        return
+    try:
+        from datetime import datetime, timezone
+        path = _pushed_memory_ids_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        current = _read_pushed_memory_ids()
+        if short_id in current:
+            return
+        current.add(short_id)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps({
+                "pushed_ids": sorted(current),
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -447,6 +531,51 @@ def reject_proposal(
     )
 
 
+def dismiss_proposal(
+    proposal_id: str = "",
+) -> str:
+    """Soft-dismiss a surfaced crystallization (memory) proposal
+    (crystallization-cadence-v1, Gap 3).
+
+    Distinct from reject_proposal: dismiss flips the memory proposal to
+    ``status="dismissed"`` — it loses push eligibility and stays in the CLI
+    backlog, but is NOT recorded as a rejection, so the detector's rejection
+    memory (``_recently_rejected``) is untouched and valid insights are not
+    blinded. Memory proposals only; a routing proposal has no soft-dismiss
+    (reject_proposal owns those).
+    """
+    pid = (proposal_id or "").strip() if isinstance(proposal_id, str) else ""
+    used_last_offered = False
+    if not pid:
+        pid = _read_last_offered() or ""
+        used_last_offered = bool(pid)
+        if not pid:
+            return json.dumps(
+                {"success": False, "error": "No proposal_id given and no recently "
+                 "offered proposal to dismiss. Call review_proposals to choose one."},
+                ensure_ascii=False,
+            )
+
+    from grove.memory import cli as memory_cli
+    mem_full, _err = memory_cli._resolve(memory_cli._base(None), pid)
+    if mem_full is not None:
+        rc, message = _capture(lambda: memory_cli.cli_memory_dismiss(pid))
+        if rc == 0 and used_last_offered:
+            _clear_last_offered()
+        return json.dumps(
+            {"success": rc == 0, "proposal_id": pid, "kind": "memory",
+             "message": message},
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        {"success": False, "proposal_id": pid,
+         "message": "dismiss applies to crystallization (memory) proposals; "
+                    "for a routing proposal use reject_proposal."},
+        ensure_ascii=False,
+    )
+
+
 def register(reg):
     """Auto-discovered by tools.registry.register_builtin_tools — one registration,
     inherited by every surface through the shared agent/dispatcher loop."""
@@ -472,4 +601,11 @@ def register(reg):
             args.get("proposal_id", ""), reason=args.get("reason"),
         ),
         emoji="🚫",
+    )
+    reg.register(
+        name="dismiss_proposal",
+        toolset="flywheel",
+        schema=DISMISS_PROPOSAL_SCHEMA,
+        handler=lambda args, **kw: dismiss_proposal(args.get("proposal_id", "")),
+        emoji="🤫",
     )

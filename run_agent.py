@@ -5409,9 +5409,39 @@ class AIAgent:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[kaizen-offerings] memory read skipped: %r", exc)
 
+            # crystallization-cadence-v1 — this turn's relevance context for the
+            # memory-push gate (Gap 2). Read once: the turn's intent_class and
+            # the active Dock goal slugs (for the Dock override). Best-effort —
+            # a missing classification suppresses crystallization pushes (the
+            # maximal fallback is "don't spam"), routing pushes are unaffected.
+            _intent_class = None
+            try:
+                from grove import providers as _prov
+                _lc = getattr(_prov, "_last_classification", None)
+                _intent_class = getattr(_lc, "intent_class", None) if _lc else None
+            except Exception:  # noqa: BLE001
+                _intent_class = None
+            _active_goal_slugs: set = set()
+            try:
+                from grove.memory import load_active_dock_goal_dicts
+                _active_goal_slugs = {
+                    g.get("slug") for g in (load_active_dock_goal_dicts() or [])
+                    if isinstance(g, dict) and g.get("slug")
+                }
+            except Exception:  # noqa: BLE001
+                _active_goal_slugs = set()
+
             eligible = [
                 r for r in renderables
-                if r.short_id not in surfaced and r.is_push_eligible(start_utc)
+                if r.short_id not in surfaced
+                and r.is_push_eligible(start_utc)
+                # Relevance gate applies to crystallization (memory) proposals
+                # ONLY; routing proposals are current-session and short-circuit
+                # before the call (so they are never collateral to the gate).
+                and (
+                    getattr(r, "type", "") != "memory_context"
+                    or self._push_relevance_ok(r, _intent_class, _active_goal_slugs)
+                )
             ]
             if not eligible:
                 return final_response
@@ -5421,6 +5451,16 @@ class AIAgent:
             )
             chosen = eligible[0]
             surfaced.add(chosen.short_id)  # one-at-a-time, once per session
+            # crystallization-cadence-v1 (Gap 1) — record the surfaced memory
+            # proposal in the GLOBAL ever-pushed ledger so it never auto-pushes
+            # again in a later session (the session-scoped surfaced set above
+            # resets on a session boundary; this does not).
+            if getattr(chosen, "type", "") == "memory_context":
+                try:
+                    from tools.flywheel_review_tool import _mark_pushed_memory_id
+                    _mark_pushed_memory_id(chosen.short_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[kaizen-offerings] pushed-ledger mark skipped: %r", exc)
             # agent-ux-critical-fixes — record the surfaced proposal so a later
             # bare 'approve'/'dismiss' (no id) resolves to it. The push note
             # shows no id and review_proposals can list dozens of near-identical
@@ -5450,6 +5490,44 @@ class AIAgent:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[kaizen-offerings] push append skipped: %r", exc)
             return final_response
+
+    def _push_relevance_ok(
+        self, renderable, intent_class, active_goal_slugs,
+    ) -> bool:
+        """Gate a renderable's proactive push (crystallization-cadence-v1).
+
+        Routing proposals are current-session — already relevant — and pass
+        through untouched. Memory (crystallization) proposals are gated by:
+          • Gap 1 — the GLOBAL ever-pushed ledger: once pushed in ANY session,
+            never auto-push again (the session surfaced-set reset re-armed
+            duplicates across conversations);
+          • Gap 2 — the deterministic intent→entity relevance map, with the
+            Dock-goal override. No LLM call.
+        Best-effort: any failure suppresses the memory push (fail toward
+        silence, the safe direction for this surface).
+        """
+        if getattr(renderable, "type", "") != "memory_context":
+            return True
+        try:
+            from tools.flywheel_review_tool import _read_pushed_memory_ids
+            if renderable.short_id in _read_pushed_memory_ids():
+                return False  # Gap 1 — already pushed in a prior session
+
+            proposal = renderable.proposal_dict
+            proposed = proposal.get("proposed_record") or {}
+            # graduate proposals carry entity_type at the top level (no
+            # proposed_record); fall back to it.
+            entity_type = proposed.get("entity_type") or proposal.get("entity_type")
+            goal_ref = proposal.get("dock_goal_ref")
+
+            from grove.memory.push_relevance import is_push_relevant
+            return is_push_relevant(
+                intent_class, entity_type,
+                goal_ref=goal_ref, active_goal_ids=active_goal_slugs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[kaizen-offerings] relevance gate suppressed: %r", exc)
+            return False
 
     # connector-failure-andon-v1 (C4) — EPHEMERAL, agent-resident connector
     # failure offers. Storage is the cached agent (survives per-turn
