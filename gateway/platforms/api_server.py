@@ -3838,8 +3838,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             from grove.api import register_portal_routes, portal_auth_middleware, init_substrate_singletons
-            # portal_auth_middleware first so it gates /api/substrate/ before
-            # the existing middlewares run; it passes through all other paths.
+            from grove.api.fragments import register_fragment_routes
+            # portal_auth_middleware first so it gates /api/substrate/ and
+            # /portal before the existing middlewares run; it passes through all
+            # other paths.
             mws = [mw for mw in (portal_auth_middleware, cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             self._app["api_server_adapter"] = self
@@ -3870,6 +3872,12 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             # Operator Portal substrate API (Sprint P1) — read-only /api/substrate/ routes
             register_portal_routes(self._app)
+            # Operator Portal Knowledge Browser (Sprint P2) — HTML shell at
+            # /portal, vendored static assets, and /portal/fragments/* routes.
+            from pathlib import Path as _Path
+            _portal_assets = _Path(__file__).resolve().parents[2] / "gateway" / "assets" / "portal"
+            self._app.router.add_static("/portal/static", str(_portal_assets))
+            register_fragment_routes(self._app)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

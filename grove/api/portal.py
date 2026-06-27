@@ -55,7 +55,11 @@ async def portal_auth_middleware(request: web.Request, handler):
     # ever placed in front of the gateway, request.remote will be the proxy's
     # IP. Update this middleware to parse X-Forwarded-For / X-Real-IP in that
     # case.
-    if not request.path.startswith("/api/substrate/"):
+    # Both the JSON substrate API (/api/substrate/) and the HTML portal
+    # (/portal, /portal/static, /portal/fragments) get the same localhost /
+    # Tailscale-mesh gate. Everything else (chat, health, OpenAI-compat) passes.
+    if not (request.path.startswith("/api/substrate/")
+            or request.path.startswith("/portal")):
         return await handler(request)
     remote = request.remote
     if remote in _LOOPBACK:
