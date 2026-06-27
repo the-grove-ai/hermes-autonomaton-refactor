@@ -225,6 +225,10 @@ class TierValidation:
 
 @dataclass
 class TierRule:
+    # tier_rule.eligible: inert at admission after neuter-tier-eligible-gate —
+    # NOT consulted when admitting tools (the cognitive router picks the tier and
+    # the zone system governs mutation safety). Retained for record round-trip and
+    # still STRUCTURALLY load-validated (see validate(): non-empty subset of {0,1,2,3}).
     eligible: list[int] = field(default_factory=list)
     preferred: int = -1
     promotion_criteria: dict = field(default_factory=dict)

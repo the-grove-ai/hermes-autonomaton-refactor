@@ -165,14 +165,6 @@ class DisclosableUnit:
             )
 
 
-# ── Match-pass (Phase 2): MCP disclose-on-match ──────────────────────────
-# GRV-009 E4 C4 — ``matched_mcp_servers`` / ``mcp_match_reasons`` retired (MCP
-# disclose-on-match moved onto the kind=mcp Capability records).
-# GRV-009 E5b C2 — ``matched_tool_units`` retired: the native eager/pull split
-# is derived from capability records (grove.disclosure.disclosure_split_sets),
-# not from manifest-derived per-unit triggers.
-
-
 # ── Loader + validator ───────────────────────────────────────────────────
 
 
@@ -319,12 +311,3 @@ def _oneline_from_description(desc: str) -> str:
     if len(first) > ONELINE_CAP:
         first = first[: ONELINE_CAP - 3].rstrip() + "..."
     return first
-
-
-# ── build_manifest / _groups_of_tool / _tiers_for_tool — RETIRED ─────────
-# GRV-009 E5b C2 — the derived-tool disclosure-split half of the manifest is
-# gone: native disclosure is registry-driven (grove.disclosure
-# .build_disclosure_units for the index units, disclosure_split_sets for the
-# eager/pull split). tool_groups.yaml is deleted; nothing derives tool units
-# from it. The DECLARATIVE half (load_manifest + DisclosableUnit + UnitTrigger,
-# above) stays — goal/contract/mcp units have no registry source.

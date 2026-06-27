@@ -313,13 +313,12 @@ def _partition_tools(
     Returns ``(kept, excluded_mcp_servers, unparseable_mcp_names)``.
 
     * MCP tool (name starts ``mcp_``): gated by the ``mcp_allow`` set alone.
-      GRV-009 E4 C4 — the legacy ``exclude_mcp`` ceiling is RETIRED;
       ``mcp_allow`` (computed by ``run_agent._compute_mcp_allow`` from the
-      ``kind=mcp`` Capability records: ``tier_rule.eligible`` ceiling +
-      ``trigger`` per-turn match) is the SOLE MCP gate. ``None`` ⇒ no records
-      (flip OFF, every MCP passes — vanilla/legacy). A set ⇒ a server passes
-      ONLY if it is in the set; otherwise withheld. ``excluded_mcp_servers`` is
-      always empty now (kept for the return shape / provenance).
+      ``kind=mcp`` Capability records via per-turn ``trigger`` match) is the
+      SOLE MCP gate. ``None`` ⇒ no records (flip OFF, every MCP passes —
+      vanilla/legacy). A set ⇒ a server passes ONLY if it is in the set;
+      otherwise withheld. ``excluded_mcp_servers`` is always empty (kept for
+      the return shape / provenance).
       An unparseable MCP name is admitted by default and recorded — never
       silently swallowed, and never subject to the match flip.
     * non-MCP tool: admitted when ``allowed is None`` (pass-through) or its name
@@ -327,9 +326,8 @@ def _partition_tools(
 
     With ``mcp_allow=None`` every MCP passes — the no-records / vanilla case.
     """
-    # GRV-009 E4 C4 — the exclude_mcp ceiling is retired; the registry-driven
-    # ``mcp_allow`` (kind=mcp records: tier_rule.eligible + trigger) is the sole
-    # MCP gate. ``excluded_mcp`` is always empty now (kept for the return shape /
+    # ``mcp_allow`` (registry-driven, kind=mcp records via trigger match) is the
+    # sole MCP gate. ``excluded_mcp`` is always empty (kept for the return shape /
     # the D10 provenance field).
     kept: List[dict] = []
     excluded_mcp: Set[str] = set()
@@ -378,10 +376,13 @@ def filter_tools_by_name(
             ``{"type": "function", "function": {"name": ..., ...}}`` shape.
         allowed: set of names the turn should expose, OR ``None`` for non-MCP
             pass-through (the maximal-fallback signal).
-        tier_budget: when supplied, an MCP tool passes only if its server is
-            NOT in the tier's ``exclude_mcp`` (``"*"`` = exclude all). When
-            ``None`` (the legacy call shape) every MCP passes — byte-for-byte
-            the pre-Sprint-73 behavior.
+        tier_budget: vestigial back-compat positional — ignored. Per-tier MCP
+            exposure is no longer a budget concern; MCP gating is governed solely
+            by ``mcp_allow`` (the registry-driven per-turn disclose set).
+        mcp_allow: an MCP tool passes only if its server is in this set; ``None``
+            ⇒ every MCP passes (the legacy allow-by-default signal). ``None`` for
+            all of ``tier_budget`` / ``allowed`` / ``mcp_allow`` is the legacy
+            pass-through fast-path.
 
     Returns:
         The filtered list, preserving insertion order.
@@ -522,14 +523,11 @@ def _registry_allowed_names(
             intent_match = True if unknown else (intent_class in intents)
         if not intent_match:
             continue
-        # tier_rule.eligible gate NEUTERED (neuter-tier-eligible-gate): the
-        # cognitive router picks the tier and the zone system governs mutation
-        # safety; eligible was a third axis doing the same job badly (and a
-        # tier-bypassable one — escalation re-ran the builder and admitted the
-        # tool anyway, so it was never a real boundary). Always admit the
-        # intent-matched capability; nothing is tier-stripped. Records keep
-        # tier_rule as documentation, not enforcement. ``current_tier`` /
-        # ``eligible`` stay in the signature + loop unpacking for shape.
+        # tier_rule.eligible is inert at admission (neuter-tier-eligible-gate):
+        # the cognitive router picks the tier; the zone system governs mutation
+        # safety. Every intent-matched capability is admitted; nothing is
+        # tier-stripped. ``current_tier`` / ``eligible`` remain in the loop
+        # unpacking only to preserve the vestigial signature shape.
         names.update(native_tools)
     return names, stripped
 

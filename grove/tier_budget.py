@@ -29,9 +29,8 @@ register, the Tier-0 routing manifest) is never listed and always composes:
     cellar_context    the wiki-cellar BM25 retrieval (``cellar_knowledge``
                       provider; per-tier ``cellar_context_ceiling``, K6)
 
-K6 (D1) retired ``goal_record``: the Dock per-goal injection seam is removed and
-Dock goals now serve through the ``cellar_context`` BM25 path (K2 projection +
-dock_goal_refs boost).
+There is no ``goal_record`` injection seam: Dock goals serve through the
+``cellar_context`` BM25 path (K2 projection + dock_goal_refs boost).
 """
 
 from __future__ import annotations
