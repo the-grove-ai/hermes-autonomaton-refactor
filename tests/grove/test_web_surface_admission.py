@@ -1,14 +1,14 @@
 """web-surface-admission-fix (Option B) — the offered surface ≡ the execution
 seam, and the re-sourced D8 escalation.
 
-neuter-tier-eligible-gate: the tier_rule.eligible gate is retired in the filter.
-This file proves the two invariants that survive the neuter:
+neuter-tier-eligible-gate: the tier_rule.eligible gate is retired in the filter;
+tool-admission-deadcode-removal-v1 then deleted the dead _seam5_tier_refusal seam
+entirely. This file proves the two invariants that survive:
 
-1. builder ⊆ seam — every native tool the offered-surface builder
-   (resolve_tools_for_tier) admits at a tier, the execution seam
-   (_seam5_tier_refusal) also admits. The builder can never offer a capability
-   the seam would refuse (ANDON-builder-seam-divergence) — now because NEITHER
-   gates on tier: the builder strips nothing and the seam never refuses on tier.
+1. builder strips nothing on tier — the offered-surface builder
+   (resolve_tools_for_tier) IGNORES tier, so it strips nothing at any tier and
+   the offered surface IS the execution boundary (the PRIMARY offered-surface
+   seam; there is no longer a separate tier seam to diverge from).
 
 2. D8 escalation, re-sourced onto stripped_capabilities: a stripped cap escalates
    ONCE to the minimum covering tier; a null intersection fails loud naming the
@@ -33,8 +33,8 @@ TAXONOMY = {"version": 1, "core": [], "domain_chunks": {}, "exploratory": []}
 
 
 def _seam_eligible_map():
-    """tool name -> set(tier_rule.eligible) — exactly what _seam5_tier_refusal
-    reads (record.tier_rule.eligible) to admit/refuse a named native tool."""
+    """tool name -> set(tier_rule.eligible) from the live record corpus — the
+    (now-documentary) per-tool eligibility the victim-table test samples."""
     m = {}
     for c in load_capabilities().values():
         for t in c.bindings.tools:
@@ -59,21 +59,19 @@ SAMPLE_INTENTS = [
 
 @pytest.mark.parametrize("tier", [1, 2, 3])
 @pytest.mark.parametrize("intent", SAMPLE_INTENTS)
-def test_builder_offered_is_subset_of_seam_admission(tier, intent):
-    # neuter-tier-eligible-gate: both the builder and the seam now IGNORE tier —
-    # the builder strips nothing and _seam5_tier_refusal never refuses on tier.
-    # The builder⊆seam invariant still holds, and more strongly: the seam admits
-    # EVERY offered tool at every tier. Assert it against the REAL seam, not the
-    # (now-documentary) record eligible map.
-    import run_agent
+def test_builder_strips_nothing_on_tier_at_any_tier(tier, intent):
+    # neuter-tier-eligible-gate (and tool-admission-deadcode-removal-v1, which
+    # deleted the dead _seam5_tier_refusal seam): the builder IGNORES tier, so it
+    # strips nothing at any tier and the offered surface IS the execution boundary
+    # (the surviving PRIMARY offered-surface seam). Assert the builder offers a
+    # non-empty surface and never tier-strips.
     res = resolve_tools_for_tier(
         _all_native_tools(), intent, "moderate", TAXONOMY, None, current_tier=tier
     )
-    a = object.__new__(run_agent.AIAgent)
-    for name in res.allowed_names:
-        assert a._seam5_tier_refusal(name) is None, (
-            f"builder offered {name!r} at T{tier} but the seam refused it on tier"
-        )
+    assert res.stripped_capabilities == frozenset(), (
+        f"builder tier-stripped at T{tier} for {intent!r}; the tier gate is retired"
+    )
+    assert res.allowed_names, f"builder offered nothing for {intent!r} at T{tier}"
 
 
 def test_victim_table_offered_at_eligible_tiers():

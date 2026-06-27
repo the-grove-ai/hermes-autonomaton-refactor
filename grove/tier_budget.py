@@ -8,8 +8,7 @@ here (D1, in ``routing.config.yaml``).
 Per-tier TOOL exposure is no longer a budget concern: the ``allow_groups``
 dual-gate is retired (web-surface-admission-fix, Option B). ``tier_rule.eligible``
 on each Capability record is the SOLE tier gate for the offered surface, applied
-by ``grove.context_budget.resolve_tools_for_tier`` and enforced by
-``run_agent._seam5_tier_refusal``.
+by ``grove.context_budget.resolve_tools_for_tier``.
 
 This is the parse-and-validate surface ONLY (Phase 1). It performs NO
 enforcement and is wired to neither the PromptComposer nor the Sprint 29 tool
