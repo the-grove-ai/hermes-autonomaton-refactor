@@ -340,3 +340,51 @@ dl.frontmatter dd { margin: 0.1rem 0 0; }
     .nav-list a { padding: 0.4rem 0.7rem; }
     .chart-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- Action surface (Sprint P4) ------------------------------------- */
+/* Proposal approve/reject/dismiss button row. */
+.proposal-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.7rem;
+}
+.btn {
+    padding: 0.35rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-elev);
+    color: var(--text);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s ease, opacity 0.12s ease;
+}
+.btn:hover { background: var(--accent-dim); }
+.btn-approve { border-color: var(--zone-green); color: var(--zone-green); }
+.btn-approve:hover { background: var(--zone-green); color: #fff; }
+.btn-reject { border-color: var(--zone-red); color: var(--zone-red); }
+.btn-reject:hover { background: var(--zone-red); color: #fff; }
+.btn-dismiss { color: var(--text-dim); }
+
+/* In-flight: dim the card and disable its buttons while the request runs. */
+.htmx-request.btn,
+.htmx-request .btn { opacity: 0.5; pointer-events: none; }
+.proposal-actions.htmx-request { opacity: 0.5; pointer-events: none; }
+
+/* Post-action: greyed-out resolved card, kept visible. */
+.card-resolved {
+    opacity: 0.6;
+    background: var(--bg-panel);
+}
+
+/* Dock goal status toggle. */
+.goal-actions { margin-top: 0.6rem; }
+.goal-actions select {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.85rem;
+    padding: 0.3rem 0.5rem;
+}
+.goal-actions select:hover { border-color: var(--accent); }
