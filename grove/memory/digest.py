@@ -229,6 +229,7 @@ class MemoryProposalHandler:
 
 def _read_records(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
+        logger.info("[grove.memory.digest] proposals file does not exist: %s", path)
         return []
     records: List[Dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8").splitlines():

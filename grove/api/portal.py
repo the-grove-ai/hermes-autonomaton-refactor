@@ -32,6 +32,8 @@ from grove.cellar import CellarIndex
 from grove.dock import load_dock
 from grove.eval import proposal_queue
 from grove.eval.proposal_queue import read_all as read_all_proposals
+from grove.memory.digest import MemoryProposalHandler
+from grove.memory.digest import _read_records as read_memory_records
 from grove.memory.record import DECAY_RATES
 from grove.memory.store import MemoryStore
 from grove.wiki.index import MalformedWikiPage, WikiIndex, _split_frontmatter
@@ -101,6 +103,10 @@ def init_substrate_singletons(app: web.Application) -> None:
     build keeps that failure contained to the /search request, where it
     surfaces as a 500 with the offending page named. (SPEC amendment, GATE 2.)
     """
+    logger.info(
+        "[portal] init substrate: wiki_path=%s cellar_dir=%s",
+        get_wiki_path(), get_hermes_home(),
+    )
     app["wiki_index"] = WikiIndex(wiki_root=get_wiki_path())
     app["cellar_index"] = CellarIndex(cellar_dir=get_hermes_home())
 
@@ -278,6 +284,8 @@ async def handle_cellar_pages(request: web.Request) -> web.Response:
                 "confidence": confidence,
                 "source": meta.get("source"),
             })
+    else:
+        logger.warning("[portal] cellar pages directory does not exist: %s", pages_dir)
     return _envelope(pages, count=len(pages))
 
 
@@ -362,10 +370,60 @@ async def handle_dock_goals(request: web.Request) -> web.Response:
     return _envelope(_json_safe(goals), count=len(goals))
 
 
+def _memory_proposals_path() -> Path:
+    """Resolve ``~/.grove/memory_proposals.jsonl`` — the detector's crystallization
+    staging file, distinct from the routing queue ``proposals.jsonl``."""
+    return Path(get_hermes_home()) / "memory_proposals.jsonl"
+
+
+def _memory_proposal_content(proposal: dict) -> str:
+    """Content preview for a memory_context proposal, action-agnostic.
+
+    ``create``/``supersede`` carry the text in ``proposed_record.content``;
+    ``deprecate``/``graduate`` carry a flat ``content`` (no proposed_record).
+    """
+    rec = proposal.get("proposed_record")
+    if isinstance(rec, dict) and rec.get("content"):
+        return str(rec["content"])
+    return str(proposal.get("content") or "")
+
+
+def pending_memory_proposal_items() -> list:
+    """Project pending memory_context crystallizations into review-queue items.
+
+    The portal's review surface unifies two backing files: routing proposals
+    (``proposals.jsonl``) and memory crystallizations (``memory_proposals.jsonl``).
+    Each detector record is ``{session_id, status, timestamp, proposal}``; we
+    filter to ``status == "pending"`` and project into a JSON-safe item that
+    sits beside ``RoutingProposal.to_dict()`` in the combined list. The
+    operator-facing summary reuses the existing ``MemoryProposalHandler``
+    renderer so the portal and the CLI digest read identically.
+    """
+    items: list = []
+    for rec in read_memory_records(_memory_proposals_path()):
+        if rec.get("status") != "pending" or "proposal" not in rec:
+            continue
+        proposal = rec["proposal"]
+        items.append({
+            "type": "memory_context",
+            "action": proposal.get("action", "create"),
+            "content_preview": _memory_proposal_content(proposal),
+            "semantic_justification": MemoryProposalHandler.summary_renderer(proposal),
+            "created_at": rec.get("timestamp"),
+        })
+    return items
+
+
 async def handle_proposals_pending(request: web.Request) -> web.Response:
-    """List pending Kaizen proposals (the review queue)."""
+    """List pending Kaizen proposals (the review queue).
+
+    Unifies routing proposals (``proposals.jsonl``) and memory crystallizations
+    (``memory_proposals.jsonl``) — the portal showed 0 while the agent reported
+    59 because it read only the routing file (Sprint P3.1).
+    """
     proposals = read_all_proposals()
     data = [p.to_dict() for p in proposals]  # to_dict() is JSON-safe by construction
+    data.extend(pending_memory_proposal_items())
     return _envelope(data, count=len(data))
 
 
