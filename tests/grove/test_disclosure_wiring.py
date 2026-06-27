@@ -131,16 +131,22 @@ def test_apply_disclosure_eager_on_matched_intent():
 
 
 def test_apply_disclosure_withheld_on_unmatched_intent():
-    # JIT intact: on a non-Workspace turn the verb stays pull-only, not eager.
+    # JIT intact: a genuinely intent-gated verb stays pull-only on an unmatched
+    # turn. NOTE (tool-admission-widening-v1): calendar_list was the prior
+    # example, but workspace_read was promoted to always:true (operator
+    # decision — "operator's own data, no cost concern"), so it is now eager on
+    # EVERY turn. We assert withholding on web_search instead: held at
+    # always:false (cost-gating, operator decision) and intent-gated to
+    # research/analysis/factual_lookup/planning/retrieval — NOT conversation.
     agent = _bare_agent([])
     agent._dispatcher_singleton = _DispatcherHolder(_WS_REGISTRY)
-    res = _res([_tool("terminal"), _tool("calendar_list")])
+    res = _res([_tool("terminal"), _tool("web_search")])
     reduced = agent._apply_disclosure(res, intent_class="conversation")
     names = _names(reduced)
     assert "terminal" in names                              # core still eager
-    assert "calendar_list" not in names                     # withheld
+    assert "web_search" not in names                        # withheld (intent-gated)
     rts = next(t for t in reduced if t["function"]["name"] == "read_tool_schema")
-    assert "calendar_list" in rts["function"]["description"]  # pullable
+    assert "web_search" in rts["function"]["description"]   # pullable
 
 
 def test_intercept_read_tool_schema_splices_pulled_def():
