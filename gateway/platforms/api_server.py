@@ -58,7 +58,7 @@ from grove.governance_halt import TerminalGovernanceHalt
 logger = logging.getLogger(__name__)
 
 # Default settings
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
