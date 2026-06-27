@@ -44,13 +44,22 @@ def grove_home(tmp_path, monkeypatch):
     monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     monkeypatch.setenv("GROVE_WIKI_PATH", str(tmp_path / "wiki"))
 
+    # Canonical pages are nested in per-source_type subdirs on the real cellar
+    # (dock_goal/, scout_digest/, ...). Seed two subdirs to exercise recursion
+    # and the path-qualified page_id.
     pages = tmp_path / "wiki" / "pages"
-    pages.mkdir(parents=True)
-    (pages / "sov-abc123.md").write_text(
+    (pages / "dock_goal").mkdir(parents=True)
+    (pages / "scout_digest").mkdir(parents=True)
+    (pages / "dock_goal" / "sov-abc123.md").write_text(
         "---\ntitle: Sovereignty\nsource_type: research\n"
         "topics:\n  - sovereignty\nkey_entities:\n  - Grove\n"
         "dock_goal_refs:\n  - goal-sov\nconfidence: 0.9\n---\n"
         "# Sovereignty\nModel independence and sovereignty matter.\n",
+        encoding="utf-8",
+    )
+    (pages / "scout_digest" / "ai-gov-def456.md").write_text(
+        "---\ntitle: AI Governance\nsource_type: scout_digest\n"
+        "topics:\n  - governance\n---\n# Governance\nGovernance as architecture.\n",
         encoding="utf-8",
     )
     (tmp_path / "operator.md").write_text(
@@ -111,24 +120,28 @@ def _find_enum_leaks(obj, path="$"):
 # ---------------------------------------------------------------------------
 
 
-async def test_cellar_pages_envelope(client):
+async def test_cellar_pages_lists_nested(client):
+    """Recursive discovery: pages nested in source_type subdirs are listed,
+    with subdir-qualified page_ids (the GATE-6 fix)."""
     r = await client.get("/api/substrate/cellar/pages")
     assert r.status == 200
     body = await r.json()
     _assert_envelope(body)
-    assert body["meta"]["count"] == 1
-    page = body["data"][0]
-    assert page["page_id"] == "sov-abc123"
-    assert page["title"] == "Sovereignty"
-    assert page["topics"] == ["sovereignty"]
+    assert body["meta"]["count"] == 2
+    page_ids = {p["page_id"] for p in body["data"]}
+    assert page_ids == {"dock_goal/sov-abc123", "scout_digest/ai-gov-def456"}
+    sov = next(p for p in body["data"] if p["page_id"] == "dock_goal/sov-abc123")
+    assert sov["title"] == "Sovereignty"
+    assert sov["topics"] == ["sovereignty"]
 
 
-async def test_cellar_page_detail(client):
-    r = await client.get("/api/substrate/cellar/pages/sov-abc123")
+async def test_cellar_page_detail_nested(client):
+    """Detail resolves a subdir-qualified page_id (slashes in the route)."""
+    r = await client.get("/api/substrate/cellar/pages/dock_goal/sov-abc123")
     assert r.status == 200
     body = await r.json()
     _assert_envelope(body)
-    assert body["data"]["page_id"] == "sov-abc123"
+    assert body["data"]["page_id"] == "dock_goal/sov-abc123"
     assert body["data"]["frontmatter"]["title"] == "Sovereignty"
     assert "sovereignty" in body["data"]["body"].lower()
 
