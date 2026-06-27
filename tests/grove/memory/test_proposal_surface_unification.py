@@ -64,9 +64,28 @@ def _stage_memory(**kw):
 
 
 def _agent():
-    return types.SimpleNamespace(
-        session_start=datetime.now() - timedelta(hours=1),
-        _surfaced_proposal_ids=set(),
+    # crystallization-cadence-v1: a REAL AIAgent instance (was a
+    # SimpleNamespace) so the relevance-gate method (_push_relevance_ok) and the
+    # _PUSH_COOLDOWN_TURNS class attribute resolve on the unbound push call.
+    import run_agent
+    a = object.__new__(run_agent.AIAgent)
+    a.session_start = datetime.now() - timedelta(hours=1)
+    a.session_id = ""
+    a._user_turn_count = 0
+    a._surfaced_proposal_ids = set()
+    return a
+
+
+@pytest.fixture(autouse=True)
+def _relevant_intent(monkeypatch):
+    # crystallization-cadence-v1 (Gap 2): memory pushes are now relevance-gated
+    # by intent_class. The fixtures here stage OperatorPreference memories, so
+    # default the turn's classification to a relevant intent ('conversation')
+    # — tests that need a DIFFERENT/irrelevant intent override this locally.
+    from grove import providers
+    monkeypatch.setattr(
+        providers, "_last_classification",
+        types.SimpleNamespace(intent_class="conversation"), raising=False,
     )
 
 
@@ -153,11 +172,29 @@ def test_merged_push_routing_eligibility_enforced():
     assert out == "Answer."                        # nothing eligible
 
 
-def test_merged_push_memory_always_eligible():
+def test_merged_push_memory_eligible_when_relevant():
+    # crystallization-cadence-v1: prior-session memory is eligible despite no
+    # session window — WHEN relevant to the turn's intent (OperatorPreference
+    # on a 'conversation' turn, set by the autouse fixture).
     from run_agent import AIAgent
     _stage_memory(content="Prior-session memory.")
     out = AIAgent._append_pending_offer(_agent(), "Answer.")
-    assert "Prior-session memory." in out          # eligible despite no session window
+    assert "Prior-session memory." in out
+
+
+def test_merged_push_memory_suppressed_when_irrelevant(monkeypatch):
+    # crystallization-cadence-v1 (Gap 2): the SAME memory is suppressed on an
+    # unrelated intent (system_admin is absent from the relevance map) — this
+    # is the reportlab/numpy-on-a-governance-turn fix.
+    from grove import providers
+    from run_agent import AIAgent
+    monkeypatch.setattr(
+        providers, "_last_classification",
+        types.SimpleNamespace(intent_class="system_admin"), raising=False,
+    )
+    _stage_memory(content="Prior-session memory.")
+    out = AIAgent._append_pending_offer(_agent(), "Answer.")
+    assert out == "Answer."                        # suppressed, not surfaced
 
 
 # 9. Merged push — shown-set dedup across types

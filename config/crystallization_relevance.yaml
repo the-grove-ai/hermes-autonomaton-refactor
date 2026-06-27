@@ -1,0 +1,53 @@
+# ============================================================================
+# Crystallization push-relevance map (crystallization-cadence-v1, Gap 2)
+# ============================================================================
+#
+# Deterministic relevance gate for the proactive crystallization push (the
+# "Shop floor note — I crystallized a domain insight" surface). A staged memory
+# proposal is push-eligible on a turn ONLY when its entity_type appears under
+# the turn's intent_class below. No LLM call — pure table lookup.
+#
+# This is STRUCTURAL tuning tied to the intent taxonomy (grove/classify.py) and
+# the memory entity types (grove/memory/events.py), NOT operator preference:
+# changes go through commits, not runtime edits. Repo-config only — there is no
+# ~/.grove override (by design, crystallization-cadence-v1 Gate Q1).
+#
+# entity_type vocabulary: DomainFact | OperatorPreference | ProjectState |
+#                         ArchitecturalRule
+#
+# Semantics:
+#   * intent_class present below  -> only the listed entity_types may push.
+#   * intent_class ABSENT below   -> SUPPRESS ALL (e.g. system_admin,
+#                                     scheduling, messaging — no crystallization
+#                                     push; this is what killed the
+#                                     reportlab/numpy-on-a-governance-turn spam).
+#   * unknown / null intent_class -> SUPPRESS ALL (maximal fallback: don't spam).
+#   * A proposal tagged to an ACTIVE Dock goal this turn bypasses this gate
+#     entirely (handled in code, not here) — Dock-relevant insights are always
+#     welcome.
+#
+# Err toward inclusive within a knowledge/work intent; err toward silence on
+# operational/transactional intents (admin, scheduling, messaging).
+
+version: 1
+
+relevance:
+  # Knowledge & engineering work — the natural home for crystallized insight.
+  code_generation:  [ArchitecturalRule, ProjectState]
+  debugging:        [ArchitecturalRule, ProjectState]
+  analysis:         [DomainFact, ArchitecturalRule, ProjectState]
+  research:         [DomainFact, ArchitecturalRule, ProjectState]
+  planning:         [ProjectState, ArchitecturalRule, OperatorPreference]
+  factual_lookup:   [DomainFact]
+  retrieval:        [DomainFact, ProjectState]
+
+  # Explicit memory work — the operator is already in the cellar; show anything.
+  memory_operation: [DomainFact, OperatorPreference, ProjectState, ArchitecturalRule]
+
+  # Light-touch intents — only operator-preference insight is welcome here.
+  conversation:     [OperatorPreference]
+  creative_writing: [OperatorPreference]
+
+  # Intentionally ABSENT (suppress all crystallization pushes on these turns):
+  #   system_admin, scheduling, messaging
+  # Operational/transactional turns are not the place for a shop-floor note.

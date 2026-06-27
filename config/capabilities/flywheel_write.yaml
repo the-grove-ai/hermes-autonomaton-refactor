@@ -17,6 +17,7 @@ bindings:
   tools:
   - approve_proposal
   - reject_proposal
+  - dismiss_proposal
   credentials: null
   toolset_key: null
 tier_rule:
@@ -43,7 +44,8 @@ telemetry:
 context:
   disclosure: eager
   payload: 'Kaizen proposal apply/dismiss (governed, zone yellow). Tools: approve_proposal,
-    reject_proposal.
+    reject_proposal (content is WRONG — permanent, feeds rejection memory),
+    dismiss_proposal (stop surfacing — soft, does NOT feed rejection memory).
 
     '
   dock_composition: none

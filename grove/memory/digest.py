@@ -294,7 +294,7 @@ def run_digest(
     path = Path(proposals_path)
     records = _read_records(path)
     handler = MemoryProposalHandler(store)
-    counts = {"approved": 0, "rejected": 0, "deferred": 0}
+    counts = {"approved": 0, "rejected": 0, "deferred": 0, "dismissed": 0}
     changed = False
 
     for rec in records:
@@ -326,6 +326,17 @@ def run_digest(
                 reason=proposal.get("proposed_record", {}).get("justification"),
                 ledger_dir=ledger_dir,
             )
+        elif decision == "dismiss":
+            # crystallization-cadence-v1 (Gap 3) — SOFT dismiss. Flip to a
+            # distinct "dismissed" status: the proposal loses push eligibility
+            # (is_push_eligible / _pending read "pending" only) and stays in the
+            # CLI backlog, but is NOT a rejection — _recently_rejected reads
+            # status=="rejected" only, so the detector's rejection memory is
+            # untouched and valid insight is not blinded. No kaizen rejection
+            # disposition is recorded (that channel is for genuine rejections).
+            rec["status"] = "dismissed"
+            changed = True
+            counts["dismissed"] += 1
         else:
             counts["deferred"] += 1
 

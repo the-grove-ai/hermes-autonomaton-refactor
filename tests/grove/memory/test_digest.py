@@ -135,7 +135,8 @@ def test_zero_proposals_no_decide_call(store, tmp_path):
     result = run_digest(store=store, proposals_path=ppath, decide=decide,
                         ledger_dir=tmp_path / "led")
     assert called == []
-    assert result == {"approved": 0, "rejected": 0, "deferred": 0}
+    # crystallization-cadence-v1 added a "dismissed" disposition to the engine.
+    assert result == {"approved": 0, "rejected": 0, "deferred": 0, "dismissed": 0}
 
 
 def test_processing_lock_only_no_decide_call(store, tmp_path):
