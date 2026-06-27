@@ -237,7 +237,10 @@ async def handle_cellar_pages(request: web.Request) -> web.Response:
     pages_dir = get_wiki_path() / "pages"
     pages: list = []
     if pages_dir.is_dir():
-        for path in sorted(pages_dir.glob("*.md")):
+        # Recursive: canonical pages are nested in per-source_type subdirs
+        # (dock_goal/, scout_digest/, session_compacted/, ...). Matches
+        # WikiIndex's **/*.md so the listing agrees with /search and detail.
+        for path in sorted(pages_dir.glob("**/*.md")):
             try:
                 meta, _body = _read_page(path)
             except FileNotFoundError:
@@ -259,7 +262,10 @@ async def handle_cellar_pages(request: web.Request) -> web.Response:
             except (TypeError, ValueError):
                 pass
             pages.append({
-                "page_id": path.stem,
+                # page_id is the path relative to pages_dir without .md (posix
+                # slashes) — unique across subdirs, and equal to the /search
+                # wiki source_path minus ".md".
+                "page_id": path.relative_to(pages_dir).with_suffix("").as_posix(),
                 "title": meta.get("title"),
                 "source_type": meta.get("source_type"),
                 "topics": _as_str_list(meta.get("topics")),
@@ -470,7 +476,9 @@ def register_portal_routes(app: web.Application) -> None:
     """
     # Phase 2 — cellar
     app.router.add_get("/api/substrate/cellar/pages", handle_cellar_pages)
-    app.router.add_get("/api/substrate/cellar/pages/{page_id}", handle_cellar_page_detail)
+    # {page_id:.+} allows the subdir-qualified page_id (e.g. dock_goal/foo) to
+    # carry slashes. The handler's containment guard blocks path traversal.
+    app.router.add_get("/api/substrate/cellar/pages/{page_id:.+}", handle_cellar_page_detail)
     # Phase 3 — memory, dock, proposals, skills
     app.router.add_get("/api/substrate/memory/records", handle_memory_records)
     app.router.add_get("/api/substrate/dock/goals", handle_dock_goals)
