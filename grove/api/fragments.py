@@ -35,6 +35,7 @@ from grove.api.portal import (
     _check_wiki_stale,
     _read_page,
     _serialize_capability,
+    pending_memory_proposal_items,
 )
 from grove.capability import CapabilityKind
 from grove.capability_registry import load_capabilities
@@ -403,10 +404,17 @@ async def handle_dock_goals(request: web.Request) -> web.Response:
 
 
 async def handle_proposals_pending(request: web.Request) -> web.Response:
-    """List pending Kaizen proposals as read-only cards (approve/reject is P4)."""
+    """List pending Kaizen proposals as read-only cards (approve/reject is P4).
+
+    Unifies the two backing files: routing proposals (``proposals.jsonl``) and
+    memory crystallizations (``memory_proposals.jsonl``). Before Sprint P3.1 the
+    panel read only the routing file and showed "No pending proposals" while the
+    agent reported 59 staged memory crystallizations.
+    """
     proposals = [p.to_dict() for p in read_all_proposals()]
+    memory_items = pending_memory_proposal_items()
     parts = ['<div id="proposals-listing">']
-    if not proposals:
+    if not proposals and not memory_items:
         parts.append(
             '<p class="placeholder">No pending proposals — the system has '
             'nothing to recommend changing.</p>'
@@ -425,6 +433,18 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
             f'<p>{_esc(p.get("semantic_justification"))}</p>'
             f'<div class="meta">evidence: {_esc(ev_summary)}</div>'
             f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
+            f'</div>'
+        )
+    for m in memory_items:
+        # Memory crystallizations carry a type badge plus the crystallization
+        # action (create/supersede/deprecate/graduate); the card body is the
+        # kaizen-voice summary from the shared MemoryProposalHandler renderer.
+        parts.append(
+            f'<div class="card">'
+            f'<h4><span class="badge">{_esc(m.get("type"))}</span> '
+            f'<span class="badge">{_esc(m.get("action"))}</span></h4>'
+            f'<p>{_esc(m.get("semantic_justification"))}</p>'
+            f'<div class="meta">created {_esc(m.get("created_at"))}</div>'
             f'</div>'
         )
     parts.append('</div>')

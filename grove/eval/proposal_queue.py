@@ -311,6 +311,7 @@ def _read_records(path: Path) -> List[RoutingProposal]:
     operator-facing and must not crash on a damaged entry.
     """
     if not path.exists():
+        logger.info("[proposal_queue] queue file does not exist: %s", path)
         return []
     out: List[RoutingProposal] = []
     with open(path, "r", encoding="utf-8") as fh:
