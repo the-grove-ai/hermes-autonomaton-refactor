@@ -3839,6 +3839,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             from grove.api import register_portal_routes, portal_auth_middleware, init_substrate_singletons
             from grove.api.fragments import register_fragment_routes
+            from grove.api.dashboard_fragments import register_dashboard_routes
             # portal_auth_middleware first so it gates /api/substrate/ and
             # /portal before the existing middlewares run; it passes through all
             # other paths.
@@ -3878,6 +3879,9 @@ class APIServerAdapter(BasePlatformAdapter):
             _portal_assets = _Path(__file__).resolve().parents[2] / "gateway" / "assets" / "portal"
             self._app.router.add_static("/portal/static", str(_portal_assets))
             register_fragment_routes(self._app)
+            # Operator Portal Telemetry Dashboard (Sprint P3) — server-rendered
+            # SVG charts + KPI cards under /portal/fragments/dashboard/.
+            register_dashboard_routes(self._app)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
