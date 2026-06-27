@@ -404,7 +404,19 @@ def pending_memory_proposal_items() -> list:
         if rec.get("status") != "pending" or "proposal" not in rec:
             continue
         proposal = rec["proposal"]
+        session_id = rec.get("session_id", "")
+        # P4 — mint the SAME content-addressable id the digest mints
+        # (digest._disposition_envelope), so the portal's action button and
+        # the kaizen ledger agree on proposal_id. evidence parity is exact:
+        # ``(session_id,)`` when present, else ``()``.
+        evidence = (session_id,) if session_id else ()
+        pid = proposal_queue.compute_proposal_id(
+            type=proposal_queue.PROPOSAL_TYPE_MEMORY_CONTEXT,
+            payload=proposal,
+            evidence=evidence,
+        )
         items.append({
+            "proposal_id": pid,
             "type": "memory_context",
             "action": proposal.get("action", "create"),
             "content_preview": _memory_proposal_content(proposal),

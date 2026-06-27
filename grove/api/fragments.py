@@ -39,7 +39,7 @@ from grove.api.portal import (
 )
 from grove.capability import CapabilityKind
 from grove.capability_registry import load_capabilities
-from grove.dock import load_dock
+from grove.dock import _VALID_STATUSES, load_dock
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.wiki.index import MalformedWikiPage
 from hermes_constants import get_wiki_path
@@ -376,6 +376,54 @@ def _milestones_html(extra: dict) -> str:
     return '<div class="meta">milestones: ' + "".join(chips) + "</div>"
 
 
+def _status_select_html(goal) -> str:
+    """The P4 status toggle. Options are driven by ``_VALID_STATUSES`` (sorted)
+    so the dropdown inherits the loader's taxonomy automatically — if the set
+    ever expands, the toggle follows (PM ruling, Sprint P4). A current status
+    somehow off-set renders as a leading disabled option so the operator sees
+    the truth, while the writer is never asked to persist an invalid value."""
+    options: list[str] = []
+    current = goal.status
+    if current not in _VALID_STATUSES:
+        options.append(
+            f'<option value="{_esc(current)}" disabled selected>'
+            f'{_esc(current)} (unknown)</option>'
+        )
+    for status in sorted(_VALID_STATUSES):
+        sel = " selected" if status == current else ""
+        options.append(
+            f'<option value="{_esc(status)}"{sel}>{_esc(status)}</option>'
+        )
+    gid = _esc(goal.id)
+    return (
+        f'<div class="goal-actions">'
+        f'<select name="status" '
+        f'hx-patch="/portal/actions/dock/goals/{gid}" '
+        f'hx-target="#goal-{gid}" hx-swap="outerHTML">'
+        f'{"".join(options)}'
+        f'</select>'
+        f'</div>'
+    )
+
+
+def render_goal_card(goal) -> str:
+    """One Dock goal card. Shared by the listing (:func:`handle_dock_goals`) and
+    the PATCH response (``actions.handle_dock_goal_update``) so the swapped-in
+    card is byte-identical to the listed one."""
+    keywords = "".join(f'<span class="tag">{_esc(k)}</span>' for k in goal.keywords)
+    return (
+        f'<div class="card" id="goal-{_esc(goal.id)}" {_ctx_attrs("dock", goal.id)}>'
+        f'<h4>{_esc(goal.name)} '
+        f'<span class="badge">{_esc(goal.vector)}</span> '
+        f'<span class="badge">{_esc(goal.status)}</span></h4>'
+        f'<div class="meta">{_esc(goal.definition_of_done)}</div>'
+        f'<div>{keywords}</div>'
+        f'{_milestones_html(goal.extra)}'
+        f'{_status_select_html(goal)}'
+        f'</div>'
+    )
+
+
 async def handle_dock_goals(request: web.Request) -> web.Response:
     """List Dock goals as cards, or a 'not installed' message when absent."""
     dock = load_dock()
@@ -388,23 +436,40 @@ async def handle_dock_goals(request: web.Request) -> web.Response:
     if not dock.goals:
         parts.append('<p class="placeholder">The Dock has no goals.</p>')
     for g in dock.goals:
-        keywords = "".join(f'<span class="tag">{_esc(k)}</span>' for k in g.keywords)
-        parts.append(
-            f'<div class="card" {_ctx_attrs("dock", g.id)}>'
-            f'<h4>{_esc(g.name)} '
-            f'<span class="badge">{_esc(g.vector)}</span> '
-            f'<span class="badge">{_esc(g.status)}</span></h4>'
-            f'<div class="meta">{_esc(g.definition_of_done)}</div>'
-            f'<div>{keywords}</div>'
-            f'{_milestones_html(g.extra)}'
-            f'</div>'
-        )
+        parts.append(render_goal_card(g))
     parts.append('</div>')
     return _html_fragment("".join(parts))
 
 
+def _short_id(proposal_id: str) -> str:
+    """First 12 chars of the hash tail — the stable DOM id for a proposal card.
+    Mirrors ``RoutingProposal.short_id`` so routing and memory cards share one
+    convention."""
+    return proposal_id.split(":")[-1][:12]
+
+
+def _proposal_actions_html(proposal_id: str, short_id: str) -> str:
+    """The approve/reject/dismiss button row. The full ``proposal_id`` rides the
+    hx-post URL; the ``short_id`` targets the card for outerHTML replacement."""
+    pid = _esc(proposal_id)
+    return (
+        f'<div class="proposal-actions">'
+        f'<button class="btn btn-approve" '
+        f'hx-post="/portal/actions/proposals/{pid}/approve" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
+        f'hx-confirm="Approve this proposal?">Approve</button>'
+        f'<button class="btn btn-reject" '
+        f'hx-post="/portal/actions/proposals/{pid}/reject" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">Reject</button>'
+        f'<button class="btn btn-dismiss" '
+        f'hx-post="/portal/actions/proposals/{pid}/dismiss" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">Dismiss</button>'
+        f'</div>'
+    )
+
+
 async def handle_proposals_pending(request: web.Request) -> web.Response:
-    """List pending Kaizen proposals as read-only cards (approve/reject is P4).
+    """List pending Kaizen proposals as cards with approve/reject/dismiss (P4).
 
     Unifies the two backing files: routing proposals (``proposals.jsonl``) and
     memory crystallizations (``memory_proposals.jsonl``). Before Sprint P3.1 the
@@ -427,24 +492,30 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
             ev_summary = f"{len(evidence)} item(s)"
         else:
             ev_summary = str(evidence) if evidence else ""
+        pid = p.get("proposal_id", "")
+        short_id = _short_id(pid)
         parts.append(
-            f'<div class="card">'
+            f'<div class="card" id="proposal-{short_id}">'
             f'<h4><span class="badge">{_esc(p.get("type"))}</span></h4>'
             f'<p>{_esc(p.get("semantic_justification"))}</p>'
             f'<div class="meta">evidence: {_esc(ev_summary)}</div>'
             f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
+            f'{_proposal_actions_html(pid, short_id)}'
             f'</div>'
         )
     for m in memory_items:
         # Memory crystallizations carry a type badge plus the crystallization
         # action (create/supersede/deprecate/graduate); the card body is the
         # kaizen-voice summary from the shared MemoryProposalHandler renderer.
+        pid = m.get("proposal_id", "")
+        short_id = _short_id(pid)
         parts.append(
-            f'<div class="card">'
+            f'<div class="card" id="proposal-{short_id}">'
             f'<h4><span class="badge">{_esc(m.get("type"))}</span> '
             f'<span class="badge">{_esc(m.get("action"))}</span></h4>'
             f'<p>{_esc(m.get("semantic_justification"))}</p>'
             f'<div class="meta">created {_esc(m.get("created_at"))}</div>'
+            f'{_proposal_actions_html(pid, short_id)}'
             f'</div>'
         )
     parts.append('</div>')
