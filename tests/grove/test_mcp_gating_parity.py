@@ -61,11 +61,17 @@ def _mcp_exposed(surface, tier, intent, message, allow):
     return {_name_of(t) for t in res.tools if _is_mcp(_name_of(t))}
 
 
-# Turn shapes: (label, intent, message, expect_notion_on_T3)
+# Turn shapes: (label, intent, message, expect_notion_disclosed)
+# tool-admission-simplification-v1 B2: notion_read carries ``trigger.always: true``
+# (set by tool-admission-widening-v1). MCP gating is server-level, so the notion
+# server — read AND write tools — discloses EVERY turn, including one matching no
+# intent/keyword/dock. Before B2 the always flag was silently ignored and this
+# turn withheld; that was the bug behavior these tests had encoded. Disclosure
+# != execution: YELLOW notion writes remain zone-gated at Stage 04.
 TURNS = [
     ("intent_match", "research", "summarize the findings", True),
     ("keyword_match", "conversation", "search my notion workspace", True),
-    ("no_match", "conversation", "what is the weather today", False),
+    ("always_on", "conversation", "what is the weather today", True),  # always:true → disclosed
 ]
 PLATFORMS = ["telegram", "cli"]
 
@@ -97,3 +103,29 @@ def test_T3_match_no_match_disclosure_pair(platform, label, intent, message, exp
         assert {MCP_READ, MCP_WRITE} <= exposed, f"{platform}/{label}: T3 should disclose notion, got {exposed}"
     else:
         assert exposed == set(), f"{platform}/{label}: T3 no-match should withhold notion, got {exposed}"
+
+
+# ── B2 (tool-admission-simplification-v1): trigger.always must disclose ───────
+# A kind=mcp record with ``trigger.always: true`` and NO intents/keywords/
+# dock_affinity is the ungated control surface (Amendment A4). Before B2,
+# _mcp_trigger_reason checked intents/keywords/dock only and silently returned
+# None for such a record — it never disclosed. The fix repairs the class.
+
+def _trigger_reason(trigger, intent_class=None, message_lower="", goal_id=None):
+    import run_agent
+    return run_agent.AIAgent._mcp_trigger_reason(
+        trigger, intent_class, message_lower, goal_id
+    )
+
+
+def test_mcp_trigger_always_true_discloses_with_no_other_clause():
+    from grove.capability import Trigger
+    trig = Trigger(intents=[], keywords=[], dock_affinity=[], always=True)
+    # No intent, no keyword in the message, no dock goal — only ``always`` fires.
+    assert _trigger_reason(trig) , "always:true must yield a truthy disclose reason"
+
+
+def test_mcp_trigger_always_false_no_other_clause_returns_none():
+    from grove.capability import Trigger
+    trig = Trigger(intents=[], keywords=[], dock_affinity=[], always=False)
+    assert _trigger_reason(trig) is None, "always:false with no other trigger must not disclose"

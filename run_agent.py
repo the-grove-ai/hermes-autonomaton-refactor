@@ -2985,9 +2985,14 @@ class AIAgent:
 
     @staticmethod
     def _mcp_trigger_reason(trigger, intent_class, message_lower, resolved_goal_id):
-        """The disclose reason for an mcp record's trigger, or None — same clause
-        precedence (intent > keyword > dock) as the retired
-        ``manifest.mcp_match_reasons``."""
+        """The disclose reason for an mcp record's trigger, or None — clause
+        precedence (always > intent > keyword > dock). The ``always`` clause is
+        checked FIRST: a kind=mcp record with ``trigger.always: true`` is the
+        ungated/bootstrap control surface (Amendment A4) and must disclose
+        every turn regardless of intent/keyword/dock match — mirroring how the
+        native registry resolver admits ``always`` records unconditionally."""
+        if trigger.always:
+            return "always-on"
         if intent_class is not None and intent_class in (trigger.intents or []):
             return "intent-match"
         if any(kw.lower() in message_lower for kw in (trigger.keywords or [])):

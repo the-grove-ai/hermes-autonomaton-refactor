@@ -146,11 +146,12 @@ class TestMaybeApplyToolFilter:
     ):
         # code_generation, simple — should keep core + code_generation
         # domain chunk; should NOT add exploratory. Sprint 74 flip: MCP tools
-        # no longer pass through by default — they disclose only on a manifest
-        # trigger match. This turn is code_generation with no notion keyword in
-        # the message, so the notion MCP unit (intents=[research,retrieval],
-        # keywords=[notion,...]) does NOT match and notion is WITHHELD. Native
-        # selection (tool_groups.yaml) is unchanged.
+        # no longer pass through by default — they disclose only on a registry
+        # trigger match. tool-admission-simplification-v1 B2: notion_read carries
+        # trigger.always:true, so the notion server (read AND write tools, via
+        # server-level gating) discloses every turn even with no notion keyword.
+        # Disclosure != execution: the YELLOW write tool stays zone-gated at run.
+        # Native selection (tool_groups.yaml) is unchanged.
         _set_classification(
             monkeypatch, intent_class="code_generation",
             complexity_signal="simple",
@@ -160,8 +161,8 @@ class TestMaybeApplyToolFilter:
             _tool("write_file"),                    # code_generation
             _tool("patch"),                         # code_generation
             _tool("delegate_task"),                 # exploratory — excluded
-            _tool("mcp_notion_notion_search"),      # mcp read — unmatched
-            _tool("mcp_notion_notion_update_page"), # mcp write — unmatched
+            _tool("mcp_notion_notion_search"),      # mcp read — notion always-on
+            _tool("mcp_notion_notion_update_page"), # mcp write — same server
         ]
         agent = _bare_agent_with_tools(full)
         agent._maybe_apply_tool_filter()
@@ -170,8 +171,8 @@ class TestMaybeApplyToolFilter:
         assert "clarify" in names
         assert "write_file" in names
         assert "patch" in names
-        assert "mcp_notion_notion_search" not in names       # unmatched -> withheld
-        assert "mcp_notion_notion_update_page" not in names  # unmatched -> withheld
+        assert "mcp_notion_notion_search" in names           # notion always-on -> disclosed
+        assert "mcp_notion_notion_update_page" in names      # same server -> disclosed
         assert "delegate_task" not in names
         assert agent._last_tool_selection["intent_class"] == "code_generation"
         assert agent._last_tool_selection["fallback"] is False

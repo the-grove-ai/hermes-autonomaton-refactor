@@ -135,8 +135,10 @@ def test_disclosure_gate_t1_eager_core_no_pull(monkeypatch):
 
 def test_no_budget_native_matches_legacy_mcp_disclose_on_match(monkeypatch):
     # Sprint 74: the no-budget path still matches Sprint 29 legacy for NATIVE
-    # tools; MCPs now disclose on manifest match instead of passing through.
-    # This code_generation turn (no notion keyword) matches no MCP -> withheld.
+    # tools; MCPs disclose on registry trigger match instead of passing through.
+    # tool-admission-simplification-v1 B2: notion_read carries trigger.always:true,
+    # so the notion server discloses every turn (server-level gating) even with no
+    # notion keyword; 'other' has no kind=mcp record and stays withheld.
     _setup(monkeypatch, "code_generation", "moderate")
     agent = _bare_agent(ALL_TOOLS)            # no _tier_budget
     agent._maybe_apply_tool_filter()
@@ -151,7 +153,8 @@ def test_no_budget_native_matches_legacy_mcp_disclose_on_match(monkeypatch):
         if not n.startswith("mcp_")
     ]
     assert [n for n in got if not n.startswith("mcp_")] == legacy_native
-    assert not any(n.startswith("mcp_") for n in got)   # no MCP matched -> withheld
+    assert "mcp_notion_API_post_page" in got            # notion always-on -> disclosed
+    assert "mcp_other_do_thing" not in got              # no record -> withheld
     assert agent._last_tool_selection["fallback"] is False
     assert agent._last_tool_selection["stripped_capabilities"] == []  # no tier strip
     assert agent._tool_resolution is not None
@@ -174,10 +177,11 @@ def test_budgeted_serves_intent_and_excludes_mcp(monkeypatch):
     agent._maybe_apply_tool_filter()
     got = _names(agent._tools_for_api)
     assert "write_file" in got                       # code_generation eligible@T2
-    # GRV-009 E4 C4 — notion (not eligible on T2 per its kind=mcp record) and
-    # 'other' (no record) are withheld by the registry-driven mcp_allow.
-    assert "mcp_notion_API_post_page" not in got
-    assert "mcp_other_do_thing" not in got
+    # tool-admission-simplification-v1 B2: notion_read carries trigger.always:true
+    # and the tier-eligible ceiling is neutered, so the notion server discloses at
+    # T2 regardless of intent/keyword; 'other' has no record and stays withheld.
+    assert "mcp_notion_API_post_page" in got            # notion always-on -> disclosed
+    assert "mcp_other_do_thing" not in got              # no record -> withheld
     sel = agent._last_tool_selection
     assert sel["excluded_mcp"] == []
     assert sel["stripped_capabilities"] == []         # code caps all eligible@T2
