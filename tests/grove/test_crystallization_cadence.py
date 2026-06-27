@@ -69,15 +69,33 @@ class TestRelevanceMap:
     def test_missing_entity_suppressed(self):
         assert is_push_relevant("research", None) is False
 
-    def test_dock_override(self):
-        # An active Dock-goal tag overrides the intent gate (Dock-relevant
-        # insight is always welcome) — even on an otherwise-suppressed intent.
+    def test_dock_override_requires_all_four_conditions(self):
+        # crystallization-cadence-v1.1: the override fires only when the turn
+        # ENGAGES the proposal's goal — active + aligned (direct/indirect) +
+        # engaged goal == goal_ref. All four must hold.
         assert is_push_relevant(
             "system_admin", "DomainFact", goal_ref="g1", active_goal_ids={"g1"},
+            goal_alignment="direct", engaged_goal_id="g1",
         ) is True
-        # ...but only when the goal is actually active this turn.
+        # (3) fails — orthogonal alignment (the smoke-test scheduling case).
+        assert is_push_relevant(
+            "system_admin", "DomainFact", goal_ref="g1", active_goal_ids={"g1"},
+            goal_alignment="orthogonal", engaged_goal_id="g1",
+        ) is False
+        # (4) fails — the turn engages a DIFFERENT active goal.
+        assert is_push_relevant(
+            "system_admin", "DomainFact", goal_ref="g1", active_goal_ids={"g1", "g2"},
+            goal_alignment="direct", engaged_goal_id="g2",
+        ) is False
+        # (2) fails — the goal is not active.
         assert is_push_relevant(
             "system_admin", "DomainFact", goal_ref="g1", active_goal_ids={"g2"},
+            goal_alignment="direct", engaged_goal_id="g1",
+        ) is False
+        # The old v1 over-permissive call (active-only, no alignment) no longer
+        # overrides — this is the bug that surfaced reportlab on every turn.
+        assert is_push_relevant(
+            "system_admin", "DomainFact", goal_ref="g1", active_goal_ids={"g1"},
         ) is False
 
 
@@ -111,6 +129,24 @@ class TestPushRelevanceOk:
         # a relevant turn.
         _mark_pushed_memory_id(r.short_id)
         assert agent._push_relevance_ok(r, "research", set()) is False
+
+    def test_umbrella_goal_suppressed_on_orthogonal_turn(self, grove_home):
+        # crystallization-cadence-v1.1 regression: the exact smoke-test bug —
+        # a ProjectState tagged to the always-active umbrella goal
+        # (hermes-autonomaton) must NOT override the gate on an orthogonal
+        # 'scheduling' turn ("what's on my calendar tomorrow?").
+        r = MemoryProposalRenderable(
+            _mem_record(entity_type="ProjectState", goal_ref="hermes-autonomaton"))
+        agent = _bare_agent()
+        assert agent._push_relevance_ok(
+            r, "scheduling", {"hermes-autonomaton"},
+            goal_alignment="orthogonal", engaged_goal_id="hermes-autonomaton",
+        ) is False
+        # ...but on a turn that DIRECTLY engages that goal, the override fires.
+        assert agent._push_relevance_ok(
+            r, "scheduling", {"hermes-autonomaton"},
+            goal_alignment="direct", engaged_goal_id="hermes-autonomaton",
+        ) is True
 
 
 # ── Gap 1 — the global ever-pushed ledger (cross-session) ────────────────

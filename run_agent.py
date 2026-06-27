@@ -5415,12 +5415,15 @@ class AIAgent:
             # a missing classification suppresses crystallization pushes (the
             # maximal fallback is "don't spam"), routing pushes are unaffected.
             _intent_class = None
+            _goal_alignment = None
             try:
                 from grove import providers as _prov
                 _lc = getattr(_prov, "_last_classification", None)
                 _intent_class = getattr(_lc, "intent_class", None) if _lc else None
+                _goal_alignment = getattr(_lc, "goal_alignment", None) if _lc else None
             except Exception:  # noqa: BLE001
                 _intent_class = None
+                _goal_alignment = None
             _active_goal_slugs: set = set()
             try:
                 from grove.memory import load_active_dock_goal_dicts
@@ -5430,6 +5433,20 @@ class AIAgent:
                 }
             except Exception:  # noqa: BLE001
                 _active_goal_slugs = set()
+            # crystallization-cadence-v1.1 — the goal the turn actually ENGAGES
+            # (condition 4 of the Dock override). Resolved once, best-effort, via
+            # the keyword resolver; "" / no match → None → the override can't fire
+            # (degrades toward the intent gate, the safe direction).
+            _engaged_goal_id = None
+            try:
+                if _goal_alignment in ("direct", "indirect"):
+                    from grove.dock import load_dock, resolve_goal
+                    _dock = load_dock()
+                    if _dock is not None:
+                        _g = resolve_goal(_dock, (self._latest_user_text() or "").lower())
+                        _engaged_goal_id = _g.id if _g else None
+            except Exception:  # noqa: BLE001
+                _engaged_goal_id = None
 
             eligible = [
                 r for r in renderables
@@ -5440,7 +5457,10 @@ class AIAgent:
                 # before the call (so they are never collateral to the gate).
                 and (
                     getattr(r, "type", "") != "memory_context"
-                    or self._push_relevance_ok(r, _intent_class, _active_goal_slugs)
+                    or self._push_relevance_ok(
+                        r, _intent_class, _active_goal_slugs,
+                        _goal_alignment, _engaged_goal_id,
+                    )
                 )
             ]
             if not eligible:
@@ -5493,6 +5513,7 @@ class AIAgent:
 
     def _push_relevance_ok(
         self, renderable, intent_class, active_goal_slugs,
+        goal_alignment=None, engaged_goal_id=None,
     ) -> bool:
         """Gate a renderable's proactive push (crystallization-cadence-v1).
 
@@ -5502,7 +5523,8 @@ class AIAgent:
             never auto-push again (the session surfaced-set reset re-armed
             duplicates across conversations);
           • Gap 2 — the deterministic intent→entity relevance map, with the
-            Dock-goal override. No LLM call.
+            Dock-goal override gated on the turn ENGAGING that goal
+            (goal_alignment + engaged_goal_id; v1.1 fix). No LLM call.
         Best-effort: any failure suppresses the memory push (fail toward
         silence, the safe direction for this surface).
         """
@@ -5524,6 +5546,7 @@ class AIAgent:
             return is_push_relevant(
                 intent_class, entity_type,
                 goal_ref=goal_ref, active_goal_ids=active_goal_slugs,
+                goal_alignment=goal_alignment, engaged_goal_id=engaged_goal_id,
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[kaizen-offerings] relevance gate suppressed: %r", exc)
