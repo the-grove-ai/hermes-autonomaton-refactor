@@ -137,9 +137,6 @@ def tier_admits_context_block(
 
 def load_tier_budgets(
     config_path: Optional[Path] = None,
-    *,
-    taxonomy: Optional[Dict[str, Any]] = None,
-    taxonomy_path: Optional[Path] = None,
 ) -> Dict[str, TierBudget]:
     """Load + validate the ``tier_budgets`` block from ``routing.config.yaml``.
 
@@ -147,10 +144,6 @@ def load_tier_budgets(
         config_path: explicit ``routing.config.yaml`` path (tests pass this).
             When ``None``, resolves the runtime sovereign copy
             (``$GROVE_HOME/routing.config.yaml``) then the repo template.
-        taxonomy: accepted for back-compatibility and IGNORED. The
-            ``allow_groups`` cross-check (D2) that consumed it is retired with
-            ``allow_groups`` (web-surface-admission-fix, Option B).
-        taxonomy_path: accepted for back-compatibility and IGNORED.
 
     Returns:
         A mapping of tier name → :class:`TierBudget`, one entry per

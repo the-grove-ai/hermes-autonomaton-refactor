@@ -66,7 +66,7 @@ def test_builder_strips_nothing_on_tier_at_any_tier(tier, intent):
     # (the surviving PRIMARY offered-surface seam). Assert the builder offers a
     # non-empty surface and never tier-strips.
     res = resolve_tools_for_tier(
-        _all_native_tools(), intent, "moderate", TAXONOMY, None, current_tier=tier
+        _all_native_tools(), intent, "moderate", current_tier=tier
     )
     assert res.stripped_capabilities == frozenset(), (
         f"builder tier-stripped at T{tier} for {intent!r}; the tier gate is retired"
@@ -87,7 +87,7 @@ def test_victim_table_offered_at_eligible_tiers():
         for tier in sorted(seam[name]):
             # pick an intent the record actually triggers on
             res = resolve_tools_for_tier(
-                tools, _a_triggering_intent(name), "moderate", TAXONOMY, None,
+                tools, _a_triggering_intent(name), "moderate",
                 current_tier=tier,
             )
             assert name in res.allowed_names, (
@@ -110,7 +110,7 @@ def test_research_at_t2_strips_nothing_after_widen():
     # so a research turn at T2 strips NOTHING → stripped_capabilities is empty →
     # the D8 strip-escalation never raises (dissolved at the root, not handled).
     res = resolve_tools_for_tier(
-        _all_native_tools(), "research", "moderate", TAXONOMY, None, current_tier=2
+        _all_native_tools(), "research", "moderate", current_tier=2
     )
     assert res.stripped_capabilities == frozenset(), (
         "research @ T2 must strip nothing after the widen (no D8 escalation)"
@@ -124,7 +124,7 @@ def test_research_at_t1_strips_nothing_after_widen():
     # The widen also covers T1: every research-family native verb is eligible at
     # T1, so a T1 research turn strips nothing either.
     res = resolve_tools_for_tier(
-        _all_native_tools(), "research", "moderate", TAXONOMY, None, current_tier=1
+        _all_native_tools(), "research", "moderate", current_tier=1
     )
     assert res.stripped_capabilities == frozenset()
     assert "x_search" in res.allowed_names
@@ -135,7 +135,7 @@ def test_none_tier_admits_all_intent_matched_like_the_seam():
     # No tier routed (cloud): the eligibility gate is bypassed — the seam admits
     # the no-tier path too (tier is None ⇒ admit).
     res = resolve_tools_for_tier(
-        _all_native_tools(), "research", "moderate", TAXONOMY, None, current_tier=None
+        _all_native_tools(), "research", "moderate", current_tier=None
     )
     assert "x_search" in res.allowed_names      # eligible-[3] tool admitted (no gate)
     assert res.stripped_capabilities == frozenset()

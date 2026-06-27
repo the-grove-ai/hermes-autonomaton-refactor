@@ -20,7 +20,7 @@ _CFG = _REPO / "config" / "routing.config.yaml"
 _TAX = _REPO / "config" / "tool_groups.yaml"
 
 # The real committed budgets + taxonomy drive the behavior — not hand-typed copies.
-BUDGETS = load_tier_budgets(_CFG, taxonomy_path=_TAX)
+BUDGETS = load_tier_budgets(_CFG)
 T2, T3 = BUDGETS["T2"], BUDGETS["T3"]
 TAXONOMY = None  # GRV-009 E5b C2 — tool_groups.yaml retired; resolver ignores taxonomy
 
@@ -76,7 +76,7 @@ def test_t2_profile_loads_notion_mcp_gate_neutered():
     # matching turn (trigger keyword-match), exactly as at T3 — the tier ceiling
     # is retired, so disclosure is tier-independent. 'other' (no record) is still
     # withheld under disclose-on-match (the trigger gate stays live).
-    res = resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T2,
+    res = resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate",
                                  mcp_allow=_reg_allow("T2"))
     names = _names(res.tools)
     assert any(n.startswith("mcp_notion") for n in names)       # discloses on match at T2
@@ -85,7 +85,7 @@ def test_t2_profile_loads_notion_mcp_gate_neutered():
 
 
 def test_t3_profile_includes_notion_mcp():
-    res = resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T3)
+    res = resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate")
     names = _names(res.tools)
     assert any(n.startswith("mcp_notion") for n in names)       # full Notion MCP
     assert res.excluded_mcp == frozenset()
@@ -119,7 +119,7 @@ def test_dod_postcondition_7_notion_tier_independent_contract_still_t3():
     # side (claude_contract block) is a separate tier-budget mechanism, untouched
     # by the eligible-gate neuter: still T3-only.
     t2_tools = _names(
-        resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T2,
+        resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate",
                                mcp_allow=_reg_allow("T2")).tools
     )
     t2_blocks = frozenset(T2.context)
@@ -128,7 +128,7 @@ def test_dod_postcondition_7_notion_tier_independent_contract_still_t3():
 
     # T3: notion discloses on the matching turn; claude_contract context loads.
     t3_tools = _names(
-        resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate", TAXONOMY, T3,
+        resolve_tools_for_tier(TURN_TOOLS, "code_generation", "moderate",
                                mcp_allow=_reg_allow("T3")).tools
     )
     t3_blocks = frozenset(T3.context)

@@ -61,10 +61,10 @@ ALL_TOOLS = _mk(
 )
 def test_no_tier_reproduces_tier_unaware(intent, complexity):
     legacy = filter_tools_by_name(
-        ALL_TOOLS, resolve_tool_set(intent, complexity, TAXONOMY)
+        ALL_TOOLS, resolve_tool_set(intent, complexity)
     )
     res = resolve_tools_for_tier(
-        ALL_TOOLS, intent, complexity, TAXONOMY, None, current_tier=None
+        ALL_TOOLS, intent, complexity, current_tier=None
     )
     assert _names(res.tools) == _names(legacy)
     assert res.stripped_capabilities == frozenset()   # no tier -> nothing stripped
@@ -147,7 +147,7 @@ def test_no_budget_native_matches_legacy_mcp_disclose_on_match(monkeypatch):
         n
         for n in _names(
             filter_tools_by_name(
-                ALL_TOOLS, resolve_tool_set("code_generation", "moderate", TAXONOMY)
+                ALL_TOOLS, resolve_tool_set("code_generation", "moderate")
             )
         )
         if not n.startswith("mcp_")
