@@ -200,14 +200,33 @@ def create_memory_provider(
         served: List[Any] = []
         lines: List[str] = []
         used = 0
+        _dropped_blocks = 0
+        _dropped_tokens = 0
         for record in records:
             line = _format_line(record)
             cost = _approx_tokens(line)
             if used + cost > token_budget:
+                # composer-observability-v1 (Wave 1, F2) — count the budget drop
+                # with THIS provider's own _approx_tokens (the floor measure the
+                # gate just used at ``cost``), so the ledger agrees with the
+                # decision that dropped the record. The ``continue`` is PRESERVED.
+                _dropped_blocks += 1
+                _dropped_tokens += cost
                 continue
             used += cost
             lines.append(line)
             served.append(record)
+
+        # F2 sink: record drops on the compose-seeded channel BEFORE the
+        # all-dropped early return, so a section that drops EVERY record still
+        # reports its truncation. No-op outside compose() (sink absent).
+        if _dropped_blocks:
+            _sink = context.get("_composer_drops")
+            if _sink is not None:
+                _sink[_SECTION_LABEL] = {
+                    "dropped_blocks": _dropped_blocks,
+                    "dropped_tokens": _dropped_tokens,
+                }
 
         if not served:
             return None
