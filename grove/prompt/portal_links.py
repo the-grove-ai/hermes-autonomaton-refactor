@@ -46,9 +46,24 @@ def resolve_portal_base_url(config: Optional[Dict[str, Any]] = None) -> str:
       3. Sensible default ``http://127.0.0.1:8642``.
 
     The trailing slash is stripped so callers append
-    ``/portal#fragments/...`` without doubling the separator. Pure sync —
-    reads the already-loaded config dict only (A4: no file/network I/O).
+    ``/portal#fragments/...`` without doubling the separator.
+
+    ``config`` semantics:
+      * An explicit dict (even ``{}``) is used as-is — pure, no I/O.
+      * ``None`` means "read the real sovereign config yourself": the
+        FULL config is loaded via ``hermes_cli.config.load_config()``.
+        This is the production path — the Dispatcher hands the composer
+        only the ``prompt`` sub-block, which lacks the top-level
+        ``portal`` / ``platforms`` keys, so a partial dict would silently
+        resolve to the loopback default. ``None`` reaches past that.
     """
+    if config is None:
+        # Load the full sovereign config (~/.grove/config.yaml, merged +
+        # mtime-cached). NOT the prompt sub-block — portal.base_url and
+        # platforms.api_server live at the top level.
+        from hermes_cli.config import load_config
+
+        config = load_config()
     cfg = config or {}
 
     # (1) Operator-set base URL wins outright.
@@ -124,8 +139,16 @@ def build_portal_links_provider(
     call (it is session-stable — the bind address does not change
     mid-session) and cached; subsequent turns reuse it.
 
-    Resolution precedence: explicit ``base_url`` arg → ``resolve_portal_
-    base_url(config)`` → ``resolve_portal_base_url(context["config"])``.
+    Resolution precedence:
+      1. explicit ``base_url`` arg (an operator override) → use it.
+      2. explicit ``config`` dict (a FULL config injected for tests /
+         embedding) → ``resolve_portal_base_url(config)``.
+      3. neither → ``resolve_portal_base_url()`` with NO args, so the
+         resolver loads the FULL sovereign config itself. The composer
+         must NOT hand us the ``prompt`` sub-block — it lacks
+         ``portal`` / ``platforms`` and would resolve to the loopback
+         default (the base_url-empty bug this factory was fixed for).
+
     The closure returns ``None`` only if resolution yields nothing usable
     (the composer treats that as a skip) — not a normal path, since the
     resolver always carries a default.
@@ -135,10 +158,14 @@ def build_portal_links_provider(
 
     def _provider(context: Dict[str, Any]) -> Optional[SectionResult]:
         if not resolved_cache:
-            candidate = base_url
-            if not candidate:
-                cfg = config if config is not None else context.get("config")
-                candidate = resolve_portal_base_url(cfg)
+            if base_url:
+                candidate = base_url
+            elif config is not None:
+                candidate = resolve_portal_base_url(config)
+            else:
+                # Production path: read the FULL sovereign config (load_config),
+                # NOT the prompt sub-block the composer holds.
+                candidate = resolve_portal_base_url()
             cleaned = (candidate or "").strip().rstrip("/")
             resolved_cache.append(cleaned or None)
 
