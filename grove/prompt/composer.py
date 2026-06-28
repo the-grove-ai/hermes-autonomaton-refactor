@@ -958,4 +958,26 @@ def build_default_composer(
         order=11,
         tier="context",
     )
+
+    # portal-link-provider-v1 — portal_links at volatile:17 (the open slot
+    # between contextual_preamble:15 and user_profile:20). Injects portal
+    # deep-link templates so the agent links the operator to rendered
+    # substrate artifacts. base_url resolves from sovereign config (I2:
+    # config.portal.base_url, else derived from platforms.api_server). An
+    # optional sections.portal_links.base_url overrides the resolved value.
+    from grove.prompt.portal_links import build_portal_links_provider
+    portal_links_cfg: Dict[str, Any] = {}
+    if config and isinstance(config.get("sections"), dict):
+        entry = config["sections"].get("portal_links")
+        if isinstance(entry, dict):
+            portal_links_cfg = entry
+    portal_links_kwargs: Dict[str, Any] = {}
+    if "base_url" in portal_links_cfg:
+        portal_links_kwargs["base_url"] = portal_links_cfg["base_url"]
+    composer.register_section(
+        "portal_links",
+        build_portal_links_provider(config=config, **portal_links_kwargs),
+        order=17,
+        tier="volatile",
+    )
     return composer
