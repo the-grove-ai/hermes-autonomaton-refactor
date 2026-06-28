@@ -783,6 +783,10 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
 #   notion:
 #     url: https://mcp.notion.com/mcp
+#   grove-browser:
+#     url: "http://100.80.12.118:8830/mcp"
+#     enabled: true
+#     supports_parallel_tool_calls: false
 #   github:
 #     command: npx
 #     args: ["-y", "@modelcontextprotocol/server-github"]

@@ -459,6 +459,13 @@ tool_zones:
   mcp_notion_notion_create_view:         yellow
   mcp_notion_notion_update_view:         yellow
 
+  # grove-browser node tools — engine authority over node-proposed Green
+  # Authority inversion (GRV-004): the node proposes Green in its served
+  # declaration; the engine's zone entry here is the authority. Absent
+  # these entries, both tools default Yellow (zones.py:266).
+  mcp_grove_browser_browser_search: green
+  mcp_grove_browser_browser_fetch_page: green
+
   # ── Google Workspace native verbs: READ → GREEN (workspace-first-class-capability-v1) ──
   # First-class native tools wrapping google_api.py. Classified by the bare
   # tool_name at the Dispatcher intent gate — the in-process call bypasses the

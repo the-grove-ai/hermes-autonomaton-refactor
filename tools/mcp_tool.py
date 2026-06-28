@@ -1729,6 +1729,20 @@ def _reset_server_error(server_name: str) -> None:
 # (the success IS the clear). All access is under ``_lock``.
 # ---------------------------------------------------------------------------
 _server_connect_failed: Dict[str, str] = {}          # name -> "reauth" | "unreachable"
+
+# engine-composer-v1 — GRV-004 composed-node declarations, keyed by
+# server_name. Module-global to mirror _servers / _server_connect_failed
+# (there is no MCPServerManager instance in this module — connection state
+# is module-global). Populated once at INITIAL connect in
+# register_mcp_servers (_discover_all), for every url-transport server that
+# serves a /.well-known/grove-autonomaton declaration. A declaration is a
+# PROPOSAL only; grove/zones.py remains the zone authority (Invariant 1,
+# authority inversion).
+#
+# LIFECYCLE: transport-level reconnects (_handle_session_expired_and_retry)
+# do NOT refresh this. A node that updates its declaration requires an
+# engine restart for the change to be seen.
+_composed_nodes: Dict[str, "NodeDeclaration"] = {}
 # Auth evidence carried by the (now-discarded) MCPServerTask: set in
 # _connect_server where ``self._error`` is in scope, read by the gather so a
 # 60s timeout-cancellation (surface CancelledError) is still recorded "reauth"
@@ -2591,6 +2605,33 @@ async def _connect_server(
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+_SESSION_INVALID_STATUS = "session_invalid"
+# Tight non-JSON fallback: the status FIELD set to session_invalid (double-quoted,
+# whitespace-tolerant). Deliberately does NOT match prose that merely mentions
+# "session_invalid" (e.g. a fetched page documenting the convention — including
+# grove-browser's own declaration), which a bare substring check would false-trip.
+_SESSION_INVALID_RE = re.compile(r'"status"\s*:\s*"session_invalid"')
+
+
+def _is_session_invalid_payload(text_result: str, structured) -> bool:
+    """AC-7 narrow detector — True iff a SUCCESSFUL result signals browser-session
+    decay via {"status": "session_invalid"}. structuredContent -> JSON-parsed text
+    -> tight regex. Any other content returns False. One condition only — NOT a
+    general error handler (Gemini constraint)."""
+    if isinstance(structured, dict) and structured.get("status") == _SESSION_INVALID_STATUS:
+        return True
+    if text_result:
+        try:
+            parsed = json.loads(text_result)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("status") == _SESSION_INVALID_STATUS:
+            return True
+        if _SESSION_INVALID_RE.search(text_result):
+            return True
+    return False
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2674,6 +2715,35 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # is machine-oriented (JSON metadata).  For an AI agent, content
             # is the primary payload; structuredContent supplements it.
             structured = getattr(result, "structuredContent", None)
+            # ── AC-7 session-decay classifier (engine-composer-v1 Phase 2) ──
+            # NARROW signal detector: fires ONLY on {"status":"session_invalid"}
+            # in a SUCCESSFUL result (result.isError already returned above).
+            # EVERY other result — genuine application errors (no results,
+            # page-not-found, rate limit) and all normal payloads — passes
+            # through untouched. Single-condition detector, NOT an error handler.
+            # Generic by construction (Invariant 5, mesh-primitive): no node name
+            # is branched on; server_name is log DATA, never a control branch.
+            if _is_session_invalid_payload(text_result, structured):
+                # No auto-retry (AC-7); the server is HEALTHY (stale browser
+                # session, not transport). Returning (not raising) makes the
+                # except-block retry path unreachable, and the "result" key (not
+                # "error") routes the post-call check to _reset_server_error, so
+                # the connect/error breaker is never bumped. No HaltEvent emit
+                # sink is reachable from the MCP background loop — the operator
+                # alert is this structured WARNING plus the governance-terminated
+                # return the model relays to the operator.
+                logger.warning(
+                    "AC-7 session_decay: MCP server '%s' tool '%s' returned "
+                    "session_invalid — browser session expired; operator must "
+                    "re-seed the browser profile (no auto-retry).",
+                    server_name, tool_name,
+                )
+                return json.dumps({
+                    "result": (
+                        "Tool execution halted: browser session expired. "
+                        "Operator action required: re-seed browser profile."
+                    )
+                }, ensure_ascii=False)
             if structured is not None:
                 if text_result:
                     return json.dumps({
@@ -3581,6 +3651,23 @@ def register_mcp_servers(
 
     async def _discover_all():
         server_names = list(new_servers.keys())
+        # engine-composer-v1 — fetch each url-transport node's GRV-004
+        # declaration BEFORE dialing its tools. The declaration is a
+        # PROPOSAL; the zone gate stays the authority (Invariant 1). A
+        # failed fetch (dark node) is non-blocking: the server still
+        # connects below, it is only absent from composeWith derivation
+        # until a declaration caches.
+        from grove.composition.declaration import fetch_node_declaration
+        for _cn_name, _cn_cfg in new_servers.items():
+            if "url" not in _cn_cfg:
+                continue
+            _cn_decl = await fetch_node_declaration(
+                _cn_cfg["url"],
+                _cn_cfg.get("declaration_url"),
+                fallback_node_id=_cn_name,
+            )
+            if _cn_decl is not None:
+                _composed_nodes[_cn_name] = _cn_decl
         # Connect to all servers in PARALLEL
         results = await asyncio.gather(
             *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
@@ -3638,6 +3725,20 @@ def register_mcp_servers(
         if failed:
             summary += f" ({failed} failed)"
         logger.info(summary)
+
+    # engine-composer-v1 Phase 4 — publish the DERIVED composeWith after
+    # initial discovery: health-passing composed nodes only (Invariant 2),
+    # written to ~/.grove/compose-with.json (NOT mcp-children.json, the PID
+    # registry). REFRESH GAP (R2 prime): single write here; breaker-state
+    # changes after this are not re-published until the next process start.
+    # Loud-but-non-fatal: a publication failure must not break tool
+    # registration, so it is logged at ERROR and swallowed (surfaced, not
+    # hidden).
+    try:
+        from grove.composition.declaration import publish_compose_with
+        publish_compose_with()
+    except Exception as exc:  # noqa: BLE001 — loud, non-fatal
+        logger.error("composeWith publication failed (non-fatal): %r", exc)
 
     return _existing_tool_names()
 
