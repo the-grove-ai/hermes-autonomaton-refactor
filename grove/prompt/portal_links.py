@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from grove.prompt.composer import SectionProvider, SectionResult
+
 # Sensible default when neither sovereign config nor the api_server block
 # names a reachable address — the loopback portal on its conventional port.
 _DEFAULT_HOST = "127.0.0.1"
@@ -75,3 +77,75 @@ def resolve_portal_base_url(config: Optional[Dict[str, Any]] = None) -> str:
         host = _DEFAULT_HOST
 
     return f"http://{host}:{port}".rstrip("/")
+
+
+_SECTION_LABEL = "portal_links"
+
+
+def _render_section(base_url: str) -> str:
+    """Render the portal deep-link guidance section.
+
+    Every link uses ``{base_url}/portal#fragments/...`` (I5: ``#``, not
+    ``/``) so the operator lands in the full styled shell. The text MUST
+    stay under 300 tokens (I4); ``{title}`` / ``{page_id}`` / ``{count}`` /
+    ``{query}`` are placeholders the agent fills per reference.
+    """
+    return (
+        "## Portal Deep Links\n"
+        f"The Operator Portal is at {base_url}/portal. When you write to or "
+        "reference substrate content, include a portal link so the operator "
+        "can view the rendered artifact directly.\n"
+        "\n"
+        "Link templates (Markdown [text](url) — the # routes through the portal shell):\n"
+        f"- Cellar page: [{{title}}]({base_url}/portal#fragments/cellar/pages/{{page_id}})\n"
+        f"- Proposals: [{{count}} pending]({base_url}/portal#fragments/proposals/pending)\n"
+        f"- Dock goals: [View goals]({base_url}/portal#fragments/dock/goals)\n"
+        f"- Composition: [View mesh]({base_url}/portal#fragments/composition/panel)\n"
+        f"- Dashboard: [Dashboard]({base_url}/portal#fragments/dashboard/overview)\n"
+        f"- Search: [Search: {{query}}]({base_url}/portal#fragments/search?q={{query}})\n"
+        "\n"
+        "Convention:\n"
+        "- After writing a cellar page, include the page link.\n"
+        "- After surfacing Kaizen proposals, include the review queue link.\n"
+        "- After referencing dock goals, include the goals link.\n"
+        "- Links are standard Markdown — works on Telegram, web, and CLI.\n"
+        "- Include links naturally in your response, not as a separate block."
+    )
+
+
+def build_portal_links_provider(
+    base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> SectionProvider:
+    """Factory returning the portal-links section provider (Phase 3).
+
+    Mirrors the ``preamble.py`` factory pattern: the factory captures the
+    ``base_url`` / ``config`` at composer-build time and returns a closure
+    the composer calls per turn. The base URL is resolved ONCE on first
+    call (it is session-stable — the bind address does not change
+    mid-session) and cached; subsequent turns reuse it.
+
+    Resolution precedence: explicit ``base_url`` arg → ``resolve_portal_
+    base_url(config)`` → ``resolve_portal_base_url(context["config"])``.
+    The closure returns ``None`` only if resolution yields nothing usable
+    (the composer treats that as a skip) — not a normal path, since the
+    resolver always carries a default.
+    """
+    # One-element cache: empty until the first call resolves the URL.
+    resolved_cache: list[Optional[str]] = []
+
+    def _provider(context: Dict[str, Any]) -> Optional[SectionResult]:
+        if not resolved_cache:
+            candidate = base_url
+            if not candidate:
+                cfg = config if config is not None else context.get("config")
+                candidate = resolve_portal_base_url(cfg)
+            cleaned = (candidate or "").strip().rstrip("/")
+            resolved_cache.append(cleaned or None)
+
+        resolved = resolved_cache[0]
+        if not resolved:
+            return None
+        return SectionResult(label=_SECTION_LABEL, text=_render_section(resolved))
+
+    return _provider
