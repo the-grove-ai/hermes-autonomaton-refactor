@@ -81,6 +81,15 @@ class ComposedPrompt:
     sections: Dict[str, str]
     tiers: Dict[str, str]
     gated_context_blocks: FrozenSet[str] = field(default_factory=frozenset)
+    # composer-observability-v1 (Wave 1) — per-provider drop provenance, the
+    # OUTER channel from ``compose()`` to the dispatcher emission site. Keyed by
+    # registration NAME (== SectionResult label for every registered provider).
+    # Empty until Phase 3 (F1) / Phase 4 (F2) populate them; the emission site
+    # reads them to assign ``status_reason``. NO prompt text — exception class
+    # name + drop counts only. Sits alongside ``gated_context_blocks`` (the
+    # existing per-compose provenance precedent).
+    exception_drops: Dict[str, str] = field(default_factory=dict)  # F1
+    budget_drops: Dict[str, Dict[str, int]] = field(default_factory=dict)  # F2
 
 
 # ── The composer ──────────────────────────────────────────────────────
@@ -176,6 +185,19 @@ class PromptComposer:
             frozenset(_raw_blocks) if _raw_blocks is not None else None
         )
         gated_blocks: Set[str] = set()
+        # composer-observability-v1 (Wave 1, F1) — compose-scoped exception
+        # ledger, keyed by registration NAME (the emission join key). LOCAL by
+        # design (Gemini advisory B): if compose() raises before the emission
+        # site, this is garbage-collected — a drop can never bleed into the
+        # next turn. NOT a class attribute, NOT module-level.
+        exception_drops: Dict[str, str] = {}
+        # composer-observability-v1 (Wave 1, F2) — INNER channel: a compose-
+        # seeded drop sink the greedy-fill providers (cellar/memory) write their
+        # budget-truncation counts into, keyed by their _SECTION_LABEL (== the
+        # registration name, == the emission join key). Survives a provider that
+        # drops EVERY block (those return None, losing a return-value channel).
+        # Drained into ``budget_drops`` after the loop.
+        context["_composer_drops"] = {}
 
         per_tier: Dict[str, List[Tuple[int, str, str]]] = {
             t: [] for t in _TIER_ORDER
@@ -200,11 +222,26 @@ class PromptComposer:
                     continue
             try:
                 result = reg.provider(context)
-            except Exception:
+            except Exception as exc:
                 # Provider failure must not crash the turn. Sprint 36
                 # discipline: degrade by dropping the section, do not
                 # raise. Operator sees a missing section, not a
-                # broken turn.
+                # broken turn. The graceful ``continue`` is PRESERVED.
+                #
+                # composer-observability-v1 (Wave 1, F1) — make the drop
+                # OBSERVABLE and restore fail-loud: record the exception class
+                # keyed by registration name (the emission join key), and add
+                # the block (gateable block name, else section name) to the
+                # excluded set so /context surfaces it (AC-8). Only the class
+                # NAME is recorded/logged — never ``exc`` args, which could
+                # carry section text (NO-prompt-text invariant).
+                exception_drops[reg.name] = type(exc).__name__
+                gated_blocks.add(_PROVIDER_GATEABLE_BLOCK.get(reg.name, reg.name))
+                logger.warning(
+                    "[composer] provider %r raised %s; section dropped "
+                    "(composer-observability-v1 F1)",
+                    reg.name, type(exc).__name__,
+                )
                 continue
             if result is None:
                 continue
@@ -226,12 +263,43 @@ class PromptComposer:
             if tier_text:
                 joined_tiers.append(tier_text)
         full_text = "\n\n".join(joined_tiers)
+        # Drain the F2 inner channel into the outer ComposedPrompt field.
+        budget_drops: Dict[str, Dict[str, int]] = {
+            str(name): {
+                "dropped_blocks": int(drop.get("dropped_blocks", 0)),
+                "dropped_tokens": int(drop.get("dropped_tokens", 0)),
+            }
+            for name, drop in (context.get("_composer_drops") or {}).items()
+        }
         return ComposedPrompt(
             text=full_text,
             sections=sections,
             tiers=tiers,
             gated_context_blocks=frozenset(gated_blocks),
+            exception_drops=exception_drops,
+            budget_drops=budget_drops,
         )
+
+    def registered_provider_views(
+        self,
+    ) -> List[Tuple[str, str, int, Optional[str]]]:
+        """``(name, band, order_index, gateable_block)`` per ENABLED registered
+        section, in registration order — the registry view the
+        composer-observability-v1 emission site needs to emit one record per
+        provider (not just those that produced sections).
+
+        ``band`` is the section's tier (``stable``/``context``/``volatile``).
+        ``gateable_block`` is the GATEABLE context block this provider emits
+        (via :data:`_PROVIDER_GATEABLE_BLOCK`) or ``None`` for a baseline
+        provider; the caller derives ``is_gateable`` from membership in
+        ``GATEABLE_CONTEXT_BLOCKS`` (never hardcoded). Disabled sections are
+        omitted — they never run, so they have no compose status.
+        """
+        return [
+            (reg.name, reg.tier, reg.order, _PROVIDER_GATEABLE_BLOCK.get(reg.name))
+            for reg in self._sections.values()
+            if reg.enabled
+        ]
 
     def _section_config(self, name: str) -> Dict[str, Any]:
         """Return the ``prompt.sections.<name>`` config block, or {}."""
