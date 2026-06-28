@@ -180,13 +180,32 @@ def create_cellar_provider(
         # budget (lowest-ranked drop first).
         lines: List[str] = []
         used = 0
+        _dropped_blocks = 0
+        _dropped_tokens = 0
         for result in results:
             block = _format_result(result, base_url=base_url)
             cost = _approx_tokens(block)
             if used + cost > effective_budget:
+                # composer-observability-v1 (Wave 1, F2) — count the budget drop
+                # with THIS provider's own _approx_tokens (the floor measure the
+                # gate just used at ``cost``), so the ledger agrees with the
+                # decision that dropped the block. The ``continue`` is PRESERVED.
+                _dropped_blocks += 1
+                _dropped_tokens += cost
                 continue
             used += cost
             lines.append(block)
+
+        # F2 sink: record drops on the compose-seeded channel BEFORE the
+        # all-dropped early return, so a section that drops EVERY block still
+        # reports its truncation. No-op outside compose() (sink absent).
+        if _dropped_blocks:
+            _sink = context.get("_composer_drops")
+            if _sink is not None:
+                _sink[_SECTION_LABEL] = {
+                    "dropped_blocks": _dropped_blocks,
+                    "dropped_tokens": _dropped_tokens,
+                }
 
         if not lines:
             return None
