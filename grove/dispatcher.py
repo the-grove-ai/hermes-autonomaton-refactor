@@ -3927,6 +3927,38 @@ class Dispatcher:
         # SAME result whose .text becomes _composed_system_prompt, so the two
         # can never diverge.
         agent._composed_prompt = result
+
+        # composer-observability-v1 (Wave 1) — emit ONE structural compose event
+        # per compose() call: per-provider token map + drop provenance, NO prompt
+        # text. Harvests the resident ``result`` + the composer registry view
+        # (no recompute). Synchronous, after the retention assignment, before the
+        # return to the reasoning loop. Fail-loud (no swallow), consistent with
+        # the IntentStore writer — a telemetry sink that cannot write is a real
+        # fault, not something to degrade past silently.
+        from datetime import datetime, timezone
+
+        from grove.composer_events import build_composer_event, get_writer
+
+        # Event CONSTRUCTION is unshielded — a logic error here is a real defect
+        # and must propagate (PM ruling 2, Phase 2).
+        _composer_event = build_composer_event(
+            result=result,
+            provider_views=composer.registered_provider_views(),
+            correlation_key=getattr(self, "_current_turn_id", None),
+            compose_tier=getattr(agent, "_tier_name", None),
+            budget_ceiling=getattr(
+                getattr(agent, "_tier_budget", None),
+                "prefill_ceiling_tokens",
+                None,
+            ),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        # The sink WRITE is shielded (PM ruling 2): a telemetry I/O fault must
+        # not deny the operator a turn. Surface loudly, then continue.
+        try:
+            get_writer().emit(_composer_event)
+        except Exception:
+            logger.error("Composer telemetry emit failed", exc_info=True)
         return result.text
 
     def _compose_and_inject_system_prompt(
