@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from grove.prompt.composer import SectionResult
+from grove.prompt.portal_links import resolve_portal_base_url
 from grove.wiki.index import WikiIndex, WikiResult
 
 __all__ = ["create_cellar_provider"]
@@ -63,8 +64,24 @@ def _approx_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def _format_result(result: WikiResult) -> str:
-    return f"### {result.title} ({result.source_type})\n{result.snippet}"
+def _format_result(result: WikiResult, base_url: Optional[str] = None) -> str:
+    """Render one cellar page block. When ``base_url`` is set, a portal deep
+    link follows the title so the agent hands the operator the exact rendered
+    page — it can't reconstruct the hash-suffixed page_id otherwise.
+
+    ``page_id`` follows the SAME contract as ``handle_cellar_page_detail`` in
+    grove/api/portal.py: ``source_path`` (already relative to the pages root),
+    ``.md`` stripped, posix slashes. Hash-routed (``#fragments``) so the link
+    lands in the full styled shell.
+    """
+    header = f"### {result.title} ({result.source_type})"
+    if base_url:
+        page_id = Path(result.source_path).with_suffix("").as_posix()
+        link = (
+            f"📄 [View in portal]({base_url}/portal#fragments/cellar/pages/{page_id})"
+        )
+        return f"{header}\n{link}\n{result.snippet}"
+    return f"{header}\n{result.snippet}"
 
 
 def _synthetic_query(goals: List[Dict[str, Any]]) -> str:
@@ -152,12 +169,19 @@ def create_cellar_provider(
             and _ceiling > 0 else token_budget
         )
 
+        # Resolve the portal base URL ONCE for this render and reuse it for
+        # every page block. No args → the resolver reads the FULL sovereign
+        # config itself (load_config); the prompt sub-block we'd otherwise have
+        # lacks portal.base_url. Empty/unusable → skip the link lines rather
+        # than emit a hostless URL (don't break the existing render).
+        base_url = (resolve_portal_base_url() or "").strip() or None
+
         # Greedy fill in rank order; skip a block that would overflow the
         # budget (lowest-ranked drop first).
         lines: List[str] = []
         used = 0
         for result in results:
-            block = _format_result(result)
+            block = _format_result(result, base_url=base_url)
             cost = _approx_tokens(block)
             if used + cost > effective_budget:
                 continue

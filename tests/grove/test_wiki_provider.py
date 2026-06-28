@@ -196,7 +196,11 @@ def test_cold_start_empty_cellar_returns_none(tmp_path):
     assert provider({"user_message": "anything"}) is None
 
 
-def test_token_budget_caps_results(tmp_path):
+def test_token_budget_caps_results(tmp_path, monkeypatch):
+    # Isolate the budget-cap logic from the per-page portal link line (and its
+    # real load_config() I/O) — stub the resolver off so blocks are just
+    # header+snippet, the sizing this tiny-budget assertion was written for.
+    monkeypatch.setattr("grove.wiki.provider.resolve_portal_base_url", lambda: None)
     for i in range(5):
         _write_page(tmp_path, f"researcher_brief/p{i}.md",
                     title=f"Page {i}", body=f"budgetterm body number {i}")
@@ -212,6 +216,35 @@ def test_token_budget_caps_results(tmp_path):
     # Default budget admits all five.
     provider_full = create_cellar_provider(wiki_root=tmp_path, dock_goals_loader=lambda: [])
     assert provider_full({"user_message": "budgetterm"}).text.count("### ") == 5
+
+
+def test_cellar_provider_includes_portal_link(tmp_path, monkeypatch):
+    """Each surfaced page carries a hash-routed portal deep link whose page_id
+    matches the portal.py contract (source_path, .md stripped, posix)."""
+    monkeypatch.setattr(
+        "grove.wiki.provider.resolve_portal_base_url",
+        lambda: "http://100.102.6.70:8642",
+    )
+    _write_page(tmp_path, "researcher_brief/deep-dive.md",
+                title="Deep Dive", body="linkterm body")
+    provider = create_cellar_provider(wiki_root=tmp_path, dock_goals_loader=lambda: [])
+    text = provider({"user_message": "linkterm"}).text
+    assert (
+        "[View in portal](http://100.102.6.70:8642/portal#fragments/cellar/pages/"
+        "researcher_brief/deep-dive)"
+    ) in text
+    assert "/portal/fragments" not in text  # never the bare (unstyled) URL form
+
+
+def test_cellar_provider_skips_link_when_base_url_unusable(tmp_path, monkeypatch):
+    """An empty/unusable base URL skips the link line — the render still works."""
+    monkeypatch.setattr("grove.wiki.provider.resolve_portal_base_url", lambda: "")
+    _write_page(tmp_path, "researcher_brief/plain.md",
+                title="Plain", body="linkterm body")
+    provider = create_cellar_provider(wiki_root=tmp_path, dock_goals_loader=lambda: [])
+    text = provider({"user_message": "linkterm"}).text
+    assert "### Plain" in text
+    assert "View in portal" not in text
 
 
 def test_dock_goal_boost_ranks_goal_linked_higher(tmp_path):
