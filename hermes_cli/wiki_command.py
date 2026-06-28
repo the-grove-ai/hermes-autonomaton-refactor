@@ -50,9 +50,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
 
 def cmd_ingest(args: argparse.Namespace) -> int:
     """Compact a file, scan a directory, or scan the default fleet sinks."""
-    from grove.wiki.adapters import ADAPTERS, fleet_adapter_for
-    from grove.wiki.pipeline import compact
-    from grove.wiki.watcher import scan_and_ingest
+    from grove.wiki.watcher import ingest_file, scan_and_ingest
 
     raw = getattr(args, "path", None)
     if raw is None:
@@ -62,8 +60,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         if path.is_dir():
             pages = scan_and_ingest(hermes_home=path)
         elif path.is_file():
-            adapter = fleet_adapter_for(path) or ADAPTERS["operator_curated"]
-            pages = [compact(adapter.parse(path))]
+            # R1 (compaction-ingest-contract-v1): the file-branch now funnels
+            # through the shared ingest_file gatekeeper, so it inherits the
+            # mtime-ledger idempotency the directory scan already had. INTENDED
+            # behavior change — a re-ingest of an unchanged file is now a no-op
+            # (was: always recompacted, re-running the LLM every invocation).
+            page = ingest_file(path)
+            pages = [page] if page is not None else []
         else:
             print(f"error: no such file or directory: {path}")
             return 1

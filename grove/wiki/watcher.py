@@ -6,10 +6,17 @@ hermes home, glob-matches each dir with its adapter, skips files unchanged by
 mtime (mirroring the WikiIndex meta-table pattern via a small JSON ledger), and
 compacts new/changed sources through the pipeline.
 
+Every actual ingestion — scanner, CLI, or endpoint — funnels through
+:func:`ingest_file`, the single per-file idempotency gatekeeper (Sprint R1,
+compaction-ingest-contract-v1). The scanner is a directory walker over the same
+per-file body (:func:`_ingest_one`); there is no second ingest path, so the
+mtime-ledger idempotency is uniform for every caller.
+
 Discipline:
 
 * **Lazy/poll only** — there is NO inotify/watchdog event watcher and NO
-  write_file hook. The CLI (and any future cron) drives this on demand.
+  write_file hook. The CLI, the ingest endpoint, and any future cron drive this
+  on demand.
 * **Tolerate absent dirs** — a missing sink (e.g. cultivator, which has never
   run) is skipped silently by design. An absent dir is not an error; a
   present-but-malformed file IS (the adapter raises, A2).
@@ -25,7 +32,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from grove.wiki.adapters import FLEET_ADAPTERS
+from grove.wiki.adapters import ADAPTERS, FLEET_ADAPTERS, Adapter, fleet_adapter_for
 from grove.wiki.pipeline import CanonicalPage, compact, project_dock
 
 logger = logging.getLogger(__name__)
@@ -37,6 +44,66 @@ _LEDGER_REL = Path(".index") / "ingest_state.json"
 _DOCK_REL = Path("dock") / "dock.yaml"
 
 
+def ingest_file(
+    path,
+    *,
+    wiki_root: Optional[Path] = None,
+    hermes_home: Optional[Path] = None,
+) -> Optional[CanonicalPage]:
+    """Compact ONE source file into the cellar — the universal idempotency
+    gatekeeper (Sprint R1, compaction-ingest-contract-v1).
+
+    Resolves the adapter from the declarative map (a fleet glob match, else
+    ``operator_curated``), honors the mtime ledger (a file unchanged since its
+    last ingest is a no-op returning ``None``), compacts through the pipeline,
+    and records the new mtime. The CLI file-branch and the
+    ``POST /api/substrate/ingest`` endpoint both call this — there is no
+    parallel ingest path, so idempotency is uniform across every caller.
+
+    Idempotency is the mtime ledger keyed on the source path, NOT a content
+    hash. ``hermes_home`` is accepted for caller symmetry with
+    :func:`scan_and_ingest`; a single file carries its own absolute path, so it
+    is not used to relocate the source.
+    """
+    from hermes_constants import get_wiki_path
+
+    root = Path(wiki_root) if wiki_root else get_wiki_path()
+    ledger_path = root / _LEDGER_REL
+    ledger = _load_ledger(ledger_path)
+
+    source = Path(path)
+    page = _ingest_one(source, adapter=None, wiki_root=root, ledger=ledger)
+    if page is not None:
+        _save_ledger(ledger_path, ledger)
+        logger.info("[wiki] ingested %s -> %s", source.name, page.path.name)
+    return page
+
+
+def _ingest_one(
+    source: Path,
+    *,
+    adapter: Optional[Adapter],
+    wiki_root: Path,
+    ledger: Dict[str, float],
+) -> Optional[CanonicalPage]:
+    """The shared per-file body: mtime-ledger short-circuit -> adapter.parse ->
+    compact -> ledger write. Mutates ``ledger`` in place; the caller owns its
+    load/save (one save per scan for the walker, one per file for
+    :func:`ingest_file`). ``adapter`` is supplied by the scanner (already known
+    from the glob loop) or resolved here from the declarative map for a
+    single-file caller. No skill name is branched on — the map is glob-keyed.
+    """
+    if adapter is None:
+        adapter = fleet_adapter_for(source) or ADAPTERS["operator_curated"]
+    mtime = source.stat().st_mtime
+    if ledger.get(str(source)) == mtime:
+        return None  # unchanged since last ingest
+    doc = adapter.parse(source)  # A2: fail loud on glob-match shape mismatch
+    page = compact(doc, wiki_root=wiki_root)
+    ledger[str(source)] = mtime
+    return page
+
+
 def scan_and_ingest(
     *,
     wiki_root: Optional[Path] = None,
@@ -45,8 +112,10 @@ def scan_and_ingest(
     """Scan the fleet sinks and compact new/changed docs. Return the pages
     written this scan (empty when nothing changed).
 
-    A malformed file that matches its adapter's glob raises (A2) — the scan
-    fails loud rather than skipping it.
+    The directory walker over :func:`_ingest_one` — the same per-file body
+    :func:`ingest_file` funnels through, so the scanner shares the one
+    idempotency gate rather than forking it. A malformed file that matches its
+    adapter's glob raises (A2) — the scan fails loud rather than skipping it.
     """
     from hermes_constants import get_hermes_home, get_wiki_path
 
@@ -64,14 +133,14 @@ def scan_and_ingest(
             logger.debug("[wiki] sink %s absent; skipping.", sink)
             continue
         for source in sorted(sink.glob(adapter.glob)):
-            mtime = source.stat().st_mtime
-            if ledger.get(str(source)) == mtime:
-                continue  # unchanged since last ingest
-            doc = adapter.parse(source)  # A2: fail loud on glob-match shape mismatch
-            page = compact(doc, wiki_root=root)
-            ledger[str(source)] = mtime
-            pages.append(page)
-            logger.info("[wiki] ingested %s -> %s", source.name, page.path.name)
+            page = _ingest_one(
+                source, adapter=adapter, wiki_root=root, ledger=ledger
+            )
+            if page is not None:
+                pages.append(page)
+                logger.info(
+                    "[wiki] ingested %s -> %s", source.name, page.path.name
+                )
 
     # Dock observed-target branch (Sprint K2) — parallel to the fleet loop,
     # riding the SAME ledger dict + single save. Acts ONLY when the manifest

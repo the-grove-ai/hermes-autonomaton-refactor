@@ -116,11 +116,17 @@ Write the piece applying:
 
 ### Step 5 — Write structured output
 
-**CRITICAL: Output location is ~/.grove/drafter/ — nowhere else.**
-Before writing, run: mkdir -p ~/.grove/drafter
-Write to the FULL EXPANDED PATH: e.g., /home/hermes/.grove/drafter/draft-YYYY-MM-DD-SLUG.md
-Do NOT write to the repo working directory, ~/drafts/, ~/linkedin-*.md, ~/.grove/research/, ~/.grove/researcher/, or any other location.
-The only correct base path is /home/hermes/.grove/drafter/ — not ~/.grove/research/, not ~/.grove/researcher/, not ~/.
+**CRITICAL: Output location is ~/.grove/drafter/pending_review/ — nowhere else.**
+Before writing, run: mkdir -p ~/.grove/drafter/pending_review
+Write to the FULL EXPANDED PATH: e.g., /home/hermes/.grove/drafter/pending_review/draft-YYYY-MM-DD-SLUG.md
+Do NOT write to the repo working directory, ~/drafts/, ~/linkedin-*.md, ~/.grove/research/, ~/.grove/researcher/, the canonical ~/.grove/drafter/ dir, or any other location.
+The only correct base path is /home/hermes/.grove/drafter/pending_review/ — not the canonical ~/.grove/drafter/, not ~/.grove/researcher/, not ~/.
+
+**Yellow-zone staging.** This draft is unapproved output — it stays in
+pending_review/ and does NOT flow to the cellar. The scanner walks past
+pending_review/ by construction (its sink glob is non-recursive), so there is no
+ingest trigger here. The approval move into the canonical sink is a separate,
+operator-gated step (R1.5).
 
 Write the draft as markdown with YAML frontmatter:
 
@@ -157,14 +163,14 @@ This is the Yellow-zone governance checkpoint. The draft is not done until the o
 - **jim-voice-writing-style** — voice DNA, loaded at Step 1 (mandatory)
 - **linkedin-thinkpiece** — format architecture for LinkedIn (loaded when format = linkedin)
 - **read_file** — consume Researcher briefs from ~/.grove/researcher/
-- **write_file** — stage drafts to ~/.grove/drafter/
+- **write_file** — stage drafts to ~/.grove/drafter/pending_review/
 
 ## Output location
 
-`~/.grove/drafter/draft-YYYY-MM-DD-SLUG.md`
+`~/.grove/drafter/pending_review/draft-YYYY-MM-DD-SLUG.md`
 
 Expand to full path at write time. NEVER write to the repo working
-directory or ~/drafts/. Always mkdir -p first.
+directory, ~/drafts/, or the canonical ~/.grove/drafter/ dir. Always mkdir -p first.
 
 ## Invocation
 

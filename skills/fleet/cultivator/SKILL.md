@@ -91,12 +91,18 @@ Why this works: [one sentence — what makes this outreach specific, not generic
 
 ### Step 4 — Write structured output
 
-**CRITICAL: Output location is ~/.grove/cultivator/ — nowhere else.**
-Before writing, run: mkdir -p ~/.grove/cultivator
-Write to the FULL EXPANDED PATH: e.g., /home/hermes/.grove/cultivator/prospects-YYYY-MM-DD-SLUG.json
+**CRITICAL: Output location is ~/.grove/cultivator/pending_review/ — nowhere else.**
+Before writing, run: mkdir -p ~/.grove/cultivator/pending_review
+Write to the FULL EXPANDED PATH: e.g., /home/hermes/.grove/cultivator/pending_review/prospects-YYYY-MM-DD-SLUG.json
 Do NOT write to the repo working directory or any other location.
-Do NOT write to ~/.grove/scout/, ~/.grove/researcher/, ~/.grove/drafter/, or any other ~/.grove/ subdirectory.
-The only correct base path is /home/hermes/.grove/cultivator/ — not ~/ or any other location.
+Do NOT write to ~/.grove/scout/, ~/.grove/researcher/, ~/.grove/drafter/, or the canonical ~/.grove/cultivator/ dir.
+The only correct base path is /home/hermes/.grove/cultivator/pending_review/ — not the canonical ~/.grove/cultivator/, not ~/ or any other location.
+
+**Yellow-zone staging.** This prospect list is unapproved outreach — it stays in
+pending_review/ and does NOT flow to the cellar. The scanner walks past
+pending_review/ by construction (its sink glob is non-recursive), so there is no
+ingest trigger here. The approval move into the canonical sink is a separate,
+operator-gated step (R1.5).
 
 Schema:
 
@@ -153,14 +159,14 @@ The operator reviews every outreach. This is the Yellow-zone guarantee.
 - **x_search** — find prospects on X
 - **web_search** — find prospects across platforms
 - **read_file** — consume Scout digests from ~/.grove/scout/
-- **write_file** — stage prospect lists to ~/.grove/cultivator/
+- **write_file** — stage prospect lists to ~/.grove/cultivator/pending_review/
 
 ## Output location
 
-`~/.grove/cultivator/prospects-YYYY-MM-DD-SLUG.json`
+`~/.grove/cultivator/pending_review/prospects-YYYY-MM-DD-SLUG.json`
 
 Expand to full path at write time. NEVER write to the repo working
-directory. Always mkdir -p first.
+directory or the canonical ~/.grove/cultivator/ dir. Always mkdir -p first.
 
 ## Invocation
 
