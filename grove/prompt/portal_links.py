@@ -107,11 +107,11 @@ def _render_section(base_url: str) -> str:
     """
     return (
         "## Portal Deep Links\n"
-        f"The Operator Portal is at {base_url}/portal. Link the operator to "
-        "rendered substrate artifacts using the templates below.\n"
-        "\n"
-        "Link templates (Markdown [text](url) — the # routes through the portal shell):\n"
+        f"Portal: {base_url}/portal. Hand the operator a link to any rendered "
+        "artifact (Markdown; the # routes through the shell):\n"
         f"- Cellar page: [{{title}}]({base_url}/portal#fragments/cellar/pages/{{page_id}})\n"
+        f"- Cellar by type: [Research]({base_url}/portal#fragments/cellar/pages?source_type=research)"
+        " (swap research → scout/drafter/dock/notes)\n"
         f"- Proposals: [{{count}} pending]({base_url}/portal#fragments/proposals/pending)\n"
         f"- Dock goals: [View goals]({base_url}/portal#fragments/dock/goals)\n"
         f"- Composition: [View mesh]({base_url}/portal#fragments/composition/panel)\n"
@@ -119,11 +119,10 @@ def _render_section(base_url: str) -> str:
         f"- Search: [Search: {{query}}]({base_url}/portal#fragments/search?q={{query}})\n"
         "\n"
         "Rules (ALWAYS follow):\n"
-        "- ALWAYS include a portal link when you write to or read from the cellar.\n"
-        "- ALWAYS include the review queue link when you mention pending proposals.\n"
-        "- ALWAYS include the goals link when you reference dock goals or strategy.\n"
-        "- ALWAYS include the composition link when you discuss connected nodes.\n"
-        "- Format: standard Markdown [text](url). Works on Telegram, web, CLI."
+        "- ALWAYS link the cellar page(s) when you read or write the cellar.\n"
+        "- ALWAYS link the review queue when you mention pending proposals.\n"
+        "- ALWAYS link goals when you reference dock goals or strategy.\n"
+        "- ALWAYS link composition when you discuss connected nodes."
     )
 
 

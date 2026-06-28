@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import html
 import logging
+import re
 from pathlib import Path
 
 import markdown
@@ -142,6 +143,15 @@ async def handle_cellar_listing(request: web.Request) -> web.Response:
     pages/ fall back to their frontmatter source_type, else 'uncategorized'.
     """
     pages_dir = get_wiki_path() / "pages"
+    # Optional ?source_type= filter (the portal_links deep links use it).
+    # Sanitize to alphanumerics + underscore ONLY — strip ., /, \\ and any
+    # other path character. The value is used solely for an equality match
+    # below, but hardening it defensively means a crafted value can never
+    # carry path semantics (Gemini guardrail: path-traversal). Sanitized-empty
+    # means no filter (existing behavior, full listing).
+    source_type_filter = request.query.get("source_type")
+    if source_type_filter:
+        source_type_filter = re.sub(r"[^a-zA-Z0-9_]", "", source_type_filter) or None
     groups: dict[str, list[dict]] = {}
     if pages_dir.is_dir():
         for path in sorted(pages_dir.glob("**/*.md")):
@@ -162,6 +172,10 @@ async def handle_cellar_listing(request: web.Request) -> web.Response:
             rel = path.relative_to(pages_dir)
             page_id = rel.with_suffix("").as_posix()
             source_type = meta.get("source_type")
+            # Apply the source_type filter (when set) — only pages whose
+            # frontmatter source_type matches survive; absent filter = all.
+            if source_type_filter and source_type != source_type_filter:
+                continue
             group = rel.parts[0] if len(rel.parts) > 1 else (source_type or "uncategorized")
             confidence = meta.get("confidence")
             try:
