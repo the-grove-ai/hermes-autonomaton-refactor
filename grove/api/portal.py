@@ -29,6 +29,10 @@ from aiohttp import web
 from grove.capability import CapabilityKind, LifecycleState, Zone
 from grove.capability_registry import load_capabilities
 from grove.cellar import CellarIndex
+from grove.composition.declaration import (
+    _load_zone_map_from_schema,
+    get_composition_status,
+)
 from grove.dock import load_dock
 from grove.eval import proposal_queue
 from grove.eval.proposal_queue import read_all as read_all_proposals
@@ -38,6 +42,7 @@ from grove.memory.record import DECAY_RATES
 from grove.memory.store import MemoryStore
 from grove.wiki.index import MalformedWikiPage, WikiIndex, _split_frontmatter
 from grove.wiki.watcher import ingest_file
+from grove.zones import _resolve_schema_path
 from hermes_constants import get_hermes_home, get_wiki_path
 
 logger = logging.getLogger(__name__)
@@ -115,6 +120,12 @@ def init_substrate_singletons(app: web.Application) -> None:
     # lines are logged and skipped) — _index is populated on construction.
     app["memory_store"] = MemoryStore(base_dir=get_hermes_home())
 
+    # Zone map (R2″): pre-create the holder before the app starts so the lazy
+    # first build in _get_zone_map mutates it IN PLACE rather than calling
+    # app.__setitem__ on a started app (which aiohttp deprecates). Populated +
+    # mtime-recorded on first /composition/nodes request, like the wiki index.
+    app["_zone_map"] = {}
+
     app["_substrate_mtimes"] = {
         "wiki": _path_mtime(get_wiki_path() / "pages"),
         "memory": _path_mtime(app["memory_store"].log_path),
@@ -149,6 +160,32 @@ def _check_memory_stale(app: web.Application) -> None:
     if current != app["_substrate_mtimes"].get("memory"):
         app["memory_store"].rebuild_index()
         app["_substrate_mtimes"]["memory"] = current
+
+
+def _get_zone_map(app: web.Application) -> dict:
+    """Return the cached ``{sanitized_tool_key: zone_string}`` zone map,
+    rebuilding it only when ``zones.schema.yaml``'s mtime changes.
+
+    Mirrors the ``_check_wiki_stale`` mtime-staleness pattern so the schema is
+    read ONCE per change, never per request (C3). The map is stored on app
+    state (``app["_zone_map"]``) keyed against ``_substrate_mtimes["zones"]``.
+
+    A2 (fail loud): a missing or unreadable schema raises — from
+    ``_resolve_schema_path`` (ANDON A1 message) or the ``open()`` inside
+    ``_load_zone_map_from_schema``. The granted-zone column is load-bearing for
+    the authority-inversion view, so an empty map is never silently served.
+    """
+    schema_path = _resolve_schema_path(None)
+    current = _path_mtime(schema_path)
+    mtimes = app["_substrate_mtimes"]
+    if "zones" not in mtimes or current != mtimes["zones"]:
+        fresh = _load_zone_map_from_schema(schema_path)
+        # Mutate the pre-created holder in place (see init_substrate_singletons)
+        # so we never call app.__setitem__ on a started app.
+        app["_zone_map"].clear()
+        app["_zone_map"].update(fresh)
+        mtimes["zones"] = current
+    return app["_zone_map"]
 
 
 def _check_cellar_stale(app: web.Application) -> None:
@@ -588,6 +625,39 @@ async def handle_ingest(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Composition endpoint (R2″ node-compositor-view-v1)
+# ---------------------------------------------------------------------------
+
+
+async def handle_composition_nodes(request: web.Request) -> web.Response:
+    """``GET /api/substrate/composition/nodes`` — live GRV-004 composition state.
+
+    Reports every composed node AND every dark MCP server, each tool carrying
+    both its declared ``proposed_zone`` and the engine's ``granted_zone`` (the
+    authority inversion). Reads runtime module globals via
+    :func:`get_composition_status`, NOT the static ``compose-with.json`` snapshot
+    (I2).
+
+    Both inputs to the accessor are resolved HERE, outside the engine's MCP
+    ``_lock``: the zone map from the mtime-cached :func:`_get_zone_map` (C3) and
+    the ``mcp_servers`` config from a single ``_load_mcp_config()`` read (cheap,
+    but kept off the lock path per C3). The accessor then holds the lock only for
+    its five dict-snapshot copies (C1).
+    """
+    zone_map = _get_zone_map(request.app)
+    # Lazy import: keep the heavy tools.mcp_tool subsystem off portal.py's
+    # import path. _load_mcp_config returns {} when no config is present.
+    from tools.mcp_tool import _load_mcp_config
+
+    mcp_servers_config = _load_mcp_config()
+    nodes = get_composition_status(
+        mcp_servers_config=mcp_servers_config,
+        zone_map=zone_map,
+    )
+    return _envelope(nodes, count=len(nodes))
+
+
+# ---------------------------------------------------------------------------
 # Route registration
 # ---------------------------------------------------------------------------
 
@@ -615,3 +685,5 @@ def register_portal_routes(app: web.Application) -> None:
     app.router.add_get("/api/substrate/meta", handle_meta)
     # R1 (compaction-ingest-contract-v1) — ingest write endpoint
     app.router.add_post("/api/substrate/ingest", handle_ingest)
+    # R2″ (node-compositor-view-v1) — live composition state
+    app.router.add_get("/api/substrate/composition/nodes", handle_composition_nodes)
