@@ -692,6 +692,18 @@ platform_toolsets:
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 
+# Operator Portal base URL (portal-link-provider-v1)
+# The URL operators use to reach the portal. The agent injects portal deep
+# links into its context (volatile:17) so it can hand the operator a clickable
+# link to rendered substrate artifacts (cellar pages, proposals, Dock goals).
+# Links are hash-routed ({base_url}/portal#fragments/...) so the full styled
+# shell always loads. When unset, the base URL is derived from the api_server
+# bind host+port (0.0.0.0 -> 127.0.0.1); set this to the reachable address
+# (e.g. the Tailscale mesh IP) when the gateway binds 0.0.0.0.
+#
+# portal:
+#   base_url: "http://100.102.6.70:8642"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
 #
