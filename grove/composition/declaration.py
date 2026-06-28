@@ -49,6 +49,7 @@ __all__ = [
     "fetch_node_declaration",
     "derive_compose_with",
     "publish_compose_with",
+    "get_composition_status",
 ]
 
 _WELL_KNOWN_PATH = "/.well-known/grove-autonomaton"
@@ -282,3 +283,184 @@ def publish_compose_with(
         len(derived), path,
     )
     return derived
+
+
+# ── Composition status accessor (R2″ node-compositor-view-v1 Phase 2) ─────────
+#
+# A read-only snapshot of the LIVE composition state for the Operator Portal.
+# Unlike derive_compose_with (which publishes only the health-passing
+# intersection), this reports the FULL picture: every composed node AND every
+# dark MCP server, with health, authority inversion (proposed vs. granted zone),
+# and connect/breaker state.
+#
+# Engineering constraints (Gemini review, baked into the SPEC):
+#   C1 — no disk I/O under _lock. Config and zone_map are loaded by the caller
+#        (or by this function's standalone defaults) BEFORE the lock is taken.
+#        The lock holds only for five fast dict/set snapshot copies.
+#   C2 — synchronous, sync reads only. No await, no asyncio, no ZoneClassifier
+#        call. The module globals are plain dicts; reading them under _lock is
+#        sync. The zone lookup is a flat dict get against a pre-loaded map.
+#   C3 — the API handler passes pre-loaded mcp_servers_config and zone_map, so
+#        no per-request disk read happens here. The None-defaults below exist
+#        only for standalone / test callers.
+
+
+def _zone_lookup_key(server_name: str, tool_name: str) -> str:
+    """Build the sanitized zone-schema key for a composed node's tool.
+
+    A node's declaration carries the BARE tool id (e.g. ``browser_search``),
+    but ``zones.schema.yaml`` keys tools by the engine's sanitized, prefixed
+    name (``mcp_grove_browser_browser_search``). This mirrors exactly how the
+    engine registers MCP tools — ``mcp_{server}_{tool}`` with each component run
+    through ``sanitize_mcp_name_component`` (tools/mcp_tool.py:3207) — so the
+    granted-zone lookup hits the same key the gate enforces on. Importing the
+    sanitizer is a read-only use of a pure sync function (no mcp_tool edit).
+    """
+    from tools.mcp_tool import sanitize_mcp_name_component
+
+    return (
+        f"mcp_{sanitize_mcp_name_component(server_name)}"
+        f"_{sanitize_mcp_name_component(tool_name)}"
+    )
+
+
+def _load_zone_map_from_schema(schema_path: Optional[Path] = None) -> dict:
+    """Flatten ``zones.schema.yaml``'s ``tool_zones`` to ``{key: zone_string}``.
+
+    Standalone/test default for ``get_composition_status``; the portal handler
+    supplies its own mtime-cached map (C3). Bare-string entries map directly;
+    hierarchical (dict) entries contribute their ``default_zone``. Fail loud:
+    a missing or unparseable schema raises — this map is load-bearing for I3.
+    """
+    import yaml
+
+    if schema_path is None:
+        schema_path = (
+            Path(__file__).resolve().parents[2] / "config" / "zones.schema.yaml"
+        )
+    with open(schema_path) as fh:
+        raw = yaml.safe_load(fh)
+    tool_zones = (raw or {}).get("tool_zones") or {}
+    zone_map: dict = {}
+    for key, value in tool_zones.items():
+        if isinstance(value, str):
+            zone_map[key] = value
+        elif isinstance(value, dict) and value.get("default_zone"):
+            zone_map[key] = value["default_zone"]
+    return zone_map
+
+
+def get_composition_status(
+    mcp_servers_config: Optional[dict] = None,
+    zone_map: Optional[dict] = None,
+) -> list[dict]:
+    """Snapshot the live composition state — one status dict per MCP server.
+
+    Reports the union of configured servers (``mcp_servers_config``) and
+    currently-composed nodes (``_composed_nodes``), so dark nodes (configured
+    but undeclared) appear with ``is_composed=False`` (I4). Each composed node's
+    tools carry both their declared ``proposed_zone`` and the engine's
+    ``granted_zone`` from the zone map, making the authority inversion visible
+    where they differ (I3).
+
+    Args:
+        mcp_servers_config: ``{server_name: cfg}`` from the Hermes config.
+            When None, loaded via ``tools.mcp_tool._load_mcp_config()`` (the
+            portal handler passes it pre-loaded, outside any lock — C3).
+        zone_map: flat ``{sanitized_tool_key: zone_string}`` lookup. When None,
+            loaded from ``zones.schema.yaml`` (C3: handler passes it cached).
+
+    Returns:
+        A list of status dicts, sorted by ``server_name``, each shaped::
+
+            {
+              "server_name", "node_id", "version", "grv_standard", "url",
+              "is_composed", "is_connected",
+              "health": "healthy" | "connect_failed" | "breaker_open",
+              "connect_failure_type", "error_count",
+              "tools": [{"name", "proposed_zone", "granted_zone"}],
+            }
+    """
+    import time
+
+    from tools import mcp_tool as _m
+
+    # (1) Load config + zone_map OUTSIDE the lock (C1). Defaults serve
+    # standalone/test callers; the portal handler always passes both.
+    if mcp_servers_config is None:
+        mcp_servers_config = _m._load_mcp_config()
+    if zone_map is None:
+        zone_map = _load_zone_map_from_schema()
+
+    # (2) Snapshot the five module globals under _lock — five dict/set copies,
+    # no I/O, no computation, no zone lookups (C1, A1). Release immediately.
+    with _m._lock:
+        composed_snapshot = dict(_m._composed_nodes)
+        connected_snapshot = set(_m._servers.keys())
+        connect_failed_snapshot = dict(_m._server_connect_failed)
+        error_counts_snapshot = dict(_m._server_error_counts)
+        breaker_opened_snapshot = dict(_m._server_breaker_opened_at)
+
+    # (3) Process OUTSIDE the lock. time.monotonic() and the breaker constants
+    # are read here, never under the lock.
+    now = time.monotonic()
+    threshold = _m._CIRCUIT_BREAKER_THRESHOLD
+    cooldown = _m._CIRCUIT_BREAKER_COOLDOWN_SEC
+
+    server_names = sorted(
+        set(mcp_servers_config.keys()) | set(composed_snapshot.keys())
+    )
+    result: list[dict] = []
+    for server_name in server_names:
+        decl = composed_snapshot.get(server_name)
+        error_count = error_counts_snapshot.get(server_name, 0)
+        connect_failure_type = connect_failed_snapshot.get(server_name)
+
+        # (4) Health resolution from snapshots only. connect_failed wins; then
+        # the call-time breaker (count past threshold AND still in cooldown,
+        # the same open-test the dispatch handler uses); else healthy.
+        if connect_failure_type is not None:
+            health = "connect_failed"
+        elif (
+            error_count >= threshold
+            and (now - breaker_opened_snapshot.get(server_name, 0.0)) < cooldown
+        ):
+            health = "breaker_open"
+        else:
+            health = "healthy"
+
+        # URL: live config first, declaration's self-declared edge endpoint
+        # fallback — mirrors _server_url's resolution order without reading
+        # _servers[name]._config under the lock.
+        url = (mcp_servers_config.get(server_name) or {}).get("url")
+        if not url and decl is not None:
+            edge = decl.raw.get("edge")
+            if isinstance(edge, dict) and edge.get("endpoint"):
+                url = edge.get("endpoint")
+
+        # (5) Tools with proposed + granted zone (I3). Empty for dark nodes.
+        tools: list[dict] = []
+        if decl is not None:
+            for tool in decl.proposed_tools:
+                tool_name = tool.get("name")
+                granted = zone_map.get(_zone_lookup_key(server_name, tool_name))
+                tools.append({
+                    "name": tool_name,
+                    "proposed_zone": tool.get("proposed_zone"),
+                    "granted_zone": granted,
+                })
+
+        result.append({
+            "server_name": server_name,
+            "node_id": decl.node_id if decl is not None else None,
+            "version": decl.version if decl is not None else None,
+            "grv_standard": decl.grv_standard if decl is not None else None,
+            "url": url,
+            "is_composed": decl is not None,
+            "is_connected": server_name in connected_snapshot,
+            "health": health,
+            "connect_failure_type": connect_failure_type,
+            "error_count": error_count,
+            "tools": tools,
+        })
+    return result
