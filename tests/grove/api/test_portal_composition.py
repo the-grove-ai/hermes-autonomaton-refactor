@@ -11,12 +11,14 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import grove.api.composition_fragments as composition_fragments
 import grove.api.portal as portal
 from grove.api import (
     init_substrate_singletons,
     portal_auth_middleware,
     register_portal_routes,
 )
+from grove.api.composition_fragments import register_composition_routes
 
 _FAKE_NODES = [
     {
@@ -60,6 +62,7 @@ async def client(tmp_path, monkeypatch):
     app = web.Application(middlewares=[portal_auth_middleware])
     init_substrate_singletons(app)
     register_portal_routes(app)
+    register_composition_routes(app)
     async with TestClient(TestServer(app)) as c:
         yield c
 
@@ -120,3 +123,108 @@ async def test_composition_nodes_empty(client, monkeypatch):
     body = await r.json()
     assert body["data"] == []
     assert body["meta"]["count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — composition panel HTML fragment
+# ---------------------------------------------------------------------------
+
+
+async def test_composition_panel_renders(client, monkeypatch):
+    """Composed + dark node render with health badge, tools, and the dark note."""
+    monkeypatch.setattr(
+        composition_fragments, "get_composition_status", lambda **kwargs: _FAKE_NODES
+    )
+    r = await client.get("/portal/fragments/composition/panel")
+    assert r.status == 200
+    assert r.content_type == "text/html"
+    html = await r.text()
+
+    # Section header + container.
+    assert '<h2>Composition</h2>' in html
+    assert 'id="composition-panel"' in html
+    # Composed node identity, protocol, health.
+    assert "grove-browser" in html
+    assert "GRV-004" in html
+    assert '<span class="badge badge-green">Connected</span>' in html
+    # Matching zones (green == green) -> single granted badge, no arrow on this row.
+    assert '<span class="badge badge-green">green</span>' in html
+    # Dark node: muted note (I4).
+    assert "No GRV-004 declaration" in html
+    assert "dark-node" in html
+
+
+async def test_composition_panel_authority_inversion(client, monkeypatch):
+    """proposed != granted -> 'proposed -> [granted badge]' (I3)."""
+    nodes = [{
+        "server_name": "grove-browser", "node_id": "grove-browser",
+        "version": "1.0.0", "grv_standard": "GRV-004", "url": None,
+        "is_composed": True, "is_connected": True, "health": "healthy",
+        "connect_failure_type": None, "error_count": 0,
+        "tools": [{"name": "browser_search", "proposed_zone": "green", "granted_zone": "yellow"}],
+    }]
+    monkeypatch.setattr(composition_fragments, "get_composition_status", lambda **kwargs: nodes)
+    html = await (await client.get("/portal/fragments/composition/panel")).text()
+
+    assert '<span class="tag">green</span>' in html       # proposed (subordinate)
+    assert "&rarr;" in html                                # the inversion arrow
+    assert '<span class="badge badge-yellow">yellow</span>' in html  # granted (primary)
+
+
+async def test_composition_panel_health_states(client, monkeypatch):
+    """connect_failed -> red + failure type; breaker_open -> yellow + breaker."""
+    nodes = [
+        {"server_name": "a", "node_id": "a", "version": "1", "grv_standard": "GRV-004",
+         "url": None, "is_composed": True, "is_connected": False, "health": "connect_failed",
+         "connect_failure_type": "reauth", "error_count": 0, "tools": []},
+        {"server_name": "b", "node_id": "b", "version": "1", "grv_standard": "GRV-004",
+         "url": None, "is_composed": True, "is_connected": False, "health": "breaker_open",
+         "connect_failure_type": None, "error_count": 5, "tools": []},
+    ]
+    monkeypatch.setattr(composition_fragments, "get_composition_status", lambda **kwargs: nodes)
+    html = await (await client.get("/portal/fragments/composition/panel")).text()
+
+    assert '<span class="badge badge-red">reauth</span>' in html
+    assert '<span class="badge badge-yellow">Circuit breaker open</span>' in html
+
+
+async def test_composition_panel_ordering(client, monkeypatch):
+    """Composed nodes (by node_id) precede dark nodes (by server_name)."""
+    nodes = [
+        {"server_name": "zeta-dark", "node_id": None, "version": None, "grv_standard": None,
+         "url": None, "is_composed": False, "is_connected": True, "health": "healthy",
+         "connect_failure_type": None, "error_count": 0, "tools": []},
+        {"server_name": "mid", "node_id": "mid-node", "version": "1", "grv_standard": "GRV-004",
+         "url": None, "is_composed": True, "is_connected": True, "health": "healthy",
+         "connect_failure_type": None, "error_count": 0, "tools": []},
+    ]
+    monkeypatch.setattr(composition_fragments, "get_composition_status", lambda **kwargs: nodes)
+    html = await (await client.get("/portal/fragments/composition/panel")).text()
+
+    # The composed node card appears before the dark node card.
+    assert html.index("mid-node") < html.index("zeta-dark")
+
+
+async def test_composition_panel_generic_no_node_name_branch(client, monkeypatch):
+    """I1: an arbitrary node name renders through the same template — proof the
+    rendering carries no hardcoded server/node-name conditional."""
+    nodes = [{
+        "server_name": "totally-novel-node", "node_id": "novel",
+        "version": "9.9", "grv_standard": "GRV-004", "url": "http://x",
+        "is_composed": True, "is_connected": True, "health": "healthy",
+        "connect_failure_type": None, "error_count": 0,
+        "tools": [{"name": "do_thing", "proposed_zone": "red", "granted_zone": "red"}],
+    }]
+    monkeypatch.setattr(composition_fragments, "get_composition_status", lambda **kwargs: nodes)
+    html = await (await client.get("/portal/fragments/composition/panel")).text()
+
+    assert "novel" in html
+    assert "do_thing" in html
+    assert '<span class="badge badge-red">red</span>' in html
+
+
+async def test_composition_panel_empty(client, monkeypatch):
+    """Empty list -> the 'No MCP servers configured' placeholder."""
+    monkeypatch.setattr(composition_fragments, "get_composition_status", lambda **kwargs: [])
+    html = await (await client.get("/portal/fragments/composition/panel")).text()
+    assert '<p class="placeholder">No MCP servers configured.</p>' in html
