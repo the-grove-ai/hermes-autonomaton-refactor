@@ -35,10 +35,28 @@ def test_base_url_zero_host_falls_back_to_loopback():
     assert resolve_portal_base_url(config) == "http://127.0.0.1:8642"
 
 
-def test_base_url_default_when_neither():
-    """(3) Neither source present — the sensible loopback default."""
+def test_base_url_default_when_empty_dict():
+    """(3) An explicit empty dict (no portal/api_server) — loopback default.
+    The explicit-dict path is pure: it does NOT load the sovereign config."""
     assert resolve_portal_base_url({}) == "http://127.0.0.1:8642"
-    assert resolve_portal_base_url(None) == "http://127.0.0.1:8642"
+
+
+def test_base_url_none_loads_full_sovereign_config(monkeypatch):
+    """config=None reads the FULL sovereign config via load_config() — the
+    production fix: the composer hands providers only the ``prompt`` sub-block
+    (no portal/platforms), so None must reach past it to the real config."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"portal": {"base_url": "http://100.102.6.70:8642"}},
+    )
+    assert resolve_portal_base_url() == "http://100.102.6.70:8642"
+    assert resolve_portal_base_url(None) == "http://100.102.6.70:8642"
+
+
+def test_base_url_none_loaded_config_empty_falls_to_default(monkeypatch):
+    """If the loaded config carries neither key, still the loopback default."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    assert resolve_portal_base_url() == "http://127.0.0.1:8642"
 
 
 # ── Phase 3 — provider ────────────────────────────────────────────────
@@ -72,6 +90,21 @@ def test_provider_base_url_resolved_from_config():
     text = provider({}).text
     assert "http://cfg.test:9000/portal" in text
     assert "http://cfg.test:9000/portal#fragments/cellar/pages/" in text
+
+
+def test_provider_loads_full_config_when_no_args(monkeypatch):
+    """REGRESSION (base_url-empty bug): with neither base_url nor an explicit
+    config (the live composer path), the provider resolves via the FULL
+    sovereign config — load_config() — not the prompt sub-block. The rendered
+    section must carry the sovereign portal.base_url, not a bare /portal."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"portal": {"base_url": "http://100.102.6.70:8642"}},
+    )
+    provider = build_portal_links_provider()  # no base_url, no config
+    text = provider({}).text
+    assert "http://100.102.6.70:8642/portal" in text
+    assert "http://100.102.6.70:8642/portal#fragments/cellar/pages/" in text
 
 
 def test_provider_section_under_token_budget():
