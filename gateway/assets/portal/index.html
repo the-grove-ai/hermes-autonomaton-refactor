@@ -77,5 +77,19 @@
               evt.detail.xhr.status + ': Failed to load content. Try again.</p></div>';
       });
     </script>
+    <!-- portal-link-provider-v1 — hash router. Deep links use
+         {base_url}/portal#fragments/... so the operator always lands in the
+         full styled shell; this then dispatches the fragment into #center-panel.
+         The ?q= on a search link rides the hash in the browser URL and becomes
+         a real query string when htmx.ajax sends the GET. HTMX loads with
+         `defer`, so the htmx global is available at DOMContentLoaded. -->
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var hash = window.location.hash.substring(1);
+      if (hash) {
+        htmx.ajax('GET', '/portal/' + hash, {target: '#center-panel'});
+      }
+    });
+    </script>
 </body>
 </html>
