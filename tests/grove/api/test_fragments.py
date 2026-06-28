@@ -128,6 +128,45 @@ async def test_cellar_listing_fragment_has_list_items(client):
     assert 'hx-push-url="true"' in body
 
 
+async def test_cellar_listing_source_type_filter(client):
+    """?source_type= filters to pages whose frontmatter source_type matches."""
+    r = await client.get("/portal/fragments/cellar/pages?source_type=research")
+    assert r.status == 200
+    body = await r.text()
+    # Only the research page (sov-abc123) survives; the scout_digest page drops.
+    assert "sov-abc123" in body
+    assert "gov-def456" not in body and "AI Governance" not in body
+
+
+async def test_cellar_listing_source_type_no_match_is_empty(client):
+    """A valid but unmatched source_type yields the empty-listing placeholder."""
+    r = await client.get("/portal/fragments/cellar/pages?source_type=nonesuch")
+    assert r.status == 200
+    body = await r.text()
+    assert "sov-abc123" not in body and "gov-def456" not in body
+    assert "placeholder" in body
+
+
+async def test_cellar_listing_source_type_sanitized_strips_path_chars(client):
+    """Path characters are stripped; the alphanumeric core still matches —
+    a crafted value can never carry path semantics (Gemini guardrail)."""
+    r = await client.get("/portal/fragments/cellar/pages?source_type=.research.")
+    assert r.status == 200
+    body = await r.text()
+    assert "sov-abc123" in body          # ".research." -> "research" -> matches
+    assert "gov-def456" not in body
+
+
+async def test_cellar_listing_source_type_pure_path_chars_no_filter(client):
+    """A value of only path characters sanitizes to empty -> no filter (the
+    full listing, no regression), never a filesystem reach."""
+    r = await client.get("/portal/fragments/cellar/pages?source_type=...")
+    assert r.status == 200
+    body = await r.text()
+    # Sanitized to "" -> filter disabled -> both pages present.
+    assert "sov-abc123" in body and "gov-def456" in body
+
+
 async def test_cellar_detail_renders_markdown(client):
     r = await client.get("/portal/fragments/cellar/pages/dock_goal/sov-abc123")
     assert r.status == 200
