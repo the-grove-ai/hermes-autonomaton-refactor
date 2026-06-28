@@ -37,6 +37,7 @@ from grove.memory.digest import _read_records as read_memory_records
 from grove.memory.record import DECAY_RATES
 from grove.memory.store import MemoryStore
 from grove.wiki.index import MalformedWikiPage, WikiIndex, _split_frontmatter
+from grove.wiki.watcher import ingest_file
 from hermes_constants import get_hermes_home, get_wiki_path
 
 logger = logging.getLogger(__name__)
@@ -537,6 +538,56 @@ async def handle_meta(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Ingest endpoint (Sprint R1, compaction-ingest-contract-v1)
+# ---------------------------------------------------------------------------
+
+
+async def handle_ingest(request: web.Request) -> web.Response:
+    """``POST /api/substrate/ingest`` — compact one source file into the cellar.
+
+    Body: ``{"path": "<absolute filepath>"}``. The producer's terminal act — a
+    fleet skill (or any caller) posts the path it just wrote, and the file
+    compacts through the SAME :func:`grove.wiki.watcher.ingest_file` gate the
+    CLI and scanner use. Idempotent by the mtime ledger: re-posting an unchanged
+    file returns ``ingested: false`` and writes no duplicate.
+
+    Fail loud: a glob-matched file whose shape is malformed raises inside
+    ``ingest_file`` and surfaces as a 500 (the adapter names the defect) — it is
+    never swallowed. Auth (loopback + Tailscale) is applied upstream by
+    ``portal_auth_middleware``. governance_state stays null in the standard
+    envelope (R1 scope; the write vocabulary is R1.5/P4).
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response(
+            {"error": "bad_request", "detail": "body must be JSON"}, status=400
+        )
+    raw = body.get("path") if isinstance(body, dict) else None
+    if not isinstance(raw, str) or not raw.strip():
+        return web.json_response(
+            {"error": "bad_request", "detail": "missing required string 'path'"},
+            status=400,
+        )
+    path = Path(raw)
+    if not path.is_file():
+        return web.json_response(
+            {"error": "not_found", "detail": f"no such file: {raw}"}, status=404
+        )
+
+    page = ingest_file(path)
+    if page is None:
+        return _envelope({"ingested": False, "path": str(path)})
+    return _envelope({
+        "ingested": True,
+        "source_type": page.source_type,
+        "source": page.source,
+        "title": page.title,
+        "page_path": str(page.path),
+    })
+
+
+# ---------------------------------------------------------------------------
 # Route registration
 # ---------------------------------------------------------------------------
 
@@ -562,3 +613,5 @@ def register_portal_routes(app: web.Application) -> None:
     app.router.add_get("/api/substrate/search", handle_search)
     # Phase 5 — meta
     app.router.add_get("/api/substrate/meta", handle_meta)
+    # R1 (compaction-ingest-contract-v1) — ingest write endpoint
+    app.router.add_post("/api/substrate/ingest", handle_ingest)

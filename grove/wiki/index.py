@@ -207,6 +207,39 @@ class WikiIndex:
         if needs_rebuild:
             self.build_index()
 
+    def tombstone(self, rel_path: str) -> None:
+        """Atomically retire a superseded page: unlink the file AND purge its
+        FTS + meta rows, keyed on ``rel_path`` (relative to ``pages/`` — the
+        stored ``source_path``). Reuses the stale-purge SQL of
+        :meth:`update_index`. Invoked by the pipeline Writer on a lineage
+        supersede; the FTS DB is owned here, so no caller touches it directly.
+
+        Ordering — unlink FIRST, then purge both rows in one transaction.
+        Rationale (both-or-loud, no silent partial): the dangerous residue is a
+        phantom FTS row pointing at a missing file (a search hit that 500s on
+        read). Unlinking first means a subsequent DB failure leaves at worst a
+        phantom row, which the next :meth:`update_index` stale-sweep
+        (``set(indexed) - seen``) DELETEs — it SELF-HEALS. The reverse order
+        (purge then unlink) would, on an unlink failure, leave the meta-row
+        gone but the file present, which the next refresh RE-INDEXES — a silent
+        resurrection of the superseded page. So unlink-first is fail-safe. Any
+        step that raises propagates; nothing is swallowed.
+
+        A not-yet-built index (no tables) means the page was never indexed —
+        there is nothing to purge, so the row-DELETE is skipped (not an error).
+        """
+        page_file = self._pages_dir / rel_path
+        page_file.unlink()
+        with closing(self._connect()) as conn:
+            if _index_ready(conn):
+                conn.execute(
+                    "DELETE FROM wiki_fts WHERE source_path = ?", (rel_path,)
+                )
+                conn.execute(
+                    "DELETE FROM wiki_meta WHERE source_path = ?", (rel_path,)
+                )
+                conn.commit()
+
     # ----- internals ----------------------------------------------------------
 
     def _ensure_fresh(self) -> None:

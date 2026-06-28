@@ -126,7 +126,21 @@ Write the full report as JSON to ~/.grove/scout/digest-YYYY-MM-DD.json with this
 
 Also write a human-readable summary to stdout so the operator sees the highlights immediately.
 
-### Step 5 — Surface to operator
+### Step 5 — Trigger cellar ingest
+
+Scout is a **Green-zone** capability: its output flows to the living cellar
+automatically, no operator approval. After the digest file is written, POST its
+full path to the local ingest endpoint — the producer's terminal act:
+
+```bash
+curl -s -X POST http://127.0.0.1:8642/api/substrate/ingest -H 'Content-Type: application/json' -d '{"path": "/home/hermes/.grove/scout/digest-YYYY-MM-DD.json"}'
+```
+
+The endpoint compacts the digest into a canonical, searchable wiki page through
+the shared ingest gate. It is idempotent — re-posting the same unchanged file is
+a no-op.
+
+### Step 6 — Surface to operator
 
 Present the top 5 opportunities with their best draft inline. For the remainder, point the operator to the full report file. Flag any Tier 4 items explicitly.
 

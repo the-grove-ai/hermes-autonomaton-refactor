@@ -135,6 +135,10 @@ class CanonicalPage:
     markdown: str
     editor_ran: bool
     evaluator_verdict: Dict[str, Any]
+    # Mesh-primitive lineage seam (Sprint R1): the recurrence/slug key carried
+    # from the NormalizedDoc, or None. Drives the Writer's supersede; emitted
+    # to frontmatter only when present.
+    lineage_key: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -261,6 +265,7 @@ def compact(
         markdown="",             # replaced below
         editor_ran=editor_ran,
         evaluator_verdict=verdict,
+        lineage_key=normalized.lineage_key,
     )
     markdown = _render(page)
     path = _write_page(page, markdown, wiki_root)
@@ -568,6 +573,11 @@ def _render(page: CanonicalPage) -> str:
         "topics": list(page.topics),
         "key_entities": list(page.key_entities),
     }
+    # Mesh-primitive lineage: emit the recurrence/slug key ONLY when the doc
+    # carries one. Adapters without a defined lineage key leave it None, so
+    # their pages stay clean — no null field, no supersede.
+    if page.lineage_key is not None:
+        fm["lineage_key"] = page.lineage_key
     return (
         "---\n"
         + yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
@@ -703,7 +713,70 @@ def _write_page(page: CanonicalPage, markdown: str, wiki_root: Optional[Path]) -
 
     path = out_dir / f"{_slug(page.title)}-{short_hash}.md"
     path.write_text(markdown, encoding="utf-8")
+
+    # Lineage supersede (Sprint R1) — ADDITIONAL to the same-source glob-clear
+    # above, never a replacement. Tombstone prior pages in this source_type dir
+    # that share this page's lineage_key. Generic: matches the frontmatter
+    # FIELD, never a skill name or source_type branch.
+    _supersede_prior(page, path, out_dir, root)
     return path
+
+
+def _supersede_prior(
+    page: CanonicalPage, new_path: Path, out_dir: Path, wiki_root: Path
+) -> None:
+    """Tombstone prior pages in ``out_dir`` (the doc's OWN source_type dir)
+    that share this page's ``lineage_key``. No-op when the page carries none —
+    the default for any adapter without a defined lineage key. The match is purely
+    on the emitted frontmatter FIELD; this never reads a skill name, and the
+    source_type dir comes from the doc itself (generic structural behavior).
+
+    The atomic file+FTS retirement is owned by :meth:`WikiIndex.tombstone` —
+    the Writer asks, the index executes. No DB access is duplicated here."""
+    if page.lineage_key is None:
+        return
+    from grove.wiki.index import WikiIndex
+
+    pages_root = wiki_root / "pages"
+    index = WikiIndex(wiki_root=wiki_root)
+    for prior in sorted(out_dir.glob("*.md")):
+        if prior == new_path:
+            continue
+        if _read_lineage_key(prior) == page.lineage_key:
+            rel = str(prior.relative_to(pages_root))
+            index.tombstone(rel)
+            logger.info(
+                "[wiki] superseded %s (lineage_key=%s)", rel, page.lineage_key
+            )
+
+
+def _read_lineage_key(path: Path) -> Optional[str]:
+    """The ``lineage_key`` frontmatter field of an existing page, or None when
+    the file has no frontmatter or no such field. Fail loud on a present-but-
+    corrupt frontmatter block (the WikiIndex is the broader malformed-page
+    authority; a non-canonical neighbour simply doesn't match here)."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines or not _FRONTMATTER_DELIM.match(lines[0]):
+        return None
+    close = next(
+        (i for i in range(1, len(lines)) if _FRONTMATTER_DELIM.match(lines[i])),
+        None,
+    )
+    if close is None:
+        raise MalformedWriterOutput(
+            f"prior page {path.name}: frontmatter block is not terminated"
+        )
+    try:
+        meta = yaml.safe_load("\n".join(lines[1:close]))
+    except yaml.YAMLError as exc:
+        raise MalformedWriterOutput(
+            f"prior page {path.name}: unparseable frontmatter: {exc}"
+        ) from exc
+    if not isinstance(meta, dict):
+        return None
+    key = meta.get("lineage_key")
+    return key if isinstance(key, str) else None
 
 
 _HEX_RE = re.compile(r"^[0-9a-f]+$")
@@ -767,4 +840,5 @@ def _with_output(page: CanonicalPage, *, path: Path, markdown: str) -> Canonical
         markdown=markdown,
         editor_ran=page.editor_ran,
         evaluator_verdict=page.evaluator_verdict,
+        lineage_key=page.lineage_key,
     )

@@ -143,6 +143,19 @@ Schema:
 }
 ```
 
+**Step 7b — Trigger cellar ingest**
+
+Researcher is a **Green-zone** capability: its brief flows to the living cellar
+automatically, no operator approval. After the brief JSON is written, POST its
+full path to the local ingest endpoint — the producer's terminal act:
+
+```bash
+curl -s -X POST http://127.0.0.1:8642/api/substrate/ingest -H 'Content-Type: application/json' -d '{"path": "/home/hermes/.grove/researcher/brief-YYYY-MM-DD-SLUG.json"}'
+```
+
+The endpoint compacts the brief into a canonical, searchable wiki page through
+the shared ingest gate. Idempotent — re-posting an unchanged file is a no-op.
+
 **Step 8 — Present to operator**
 
 Present the synthesis section inline — the recommended angle, key claims, and strongest counter-arguments. Point the operator to the full brief file for the complete research. Note which sources were most valuable.

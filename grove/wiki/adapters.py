@@ -30,6 +30,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,6 +38,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Researcher brief filename -> lineage slug: brief-YYYY-MM-DD-SLUG.json. The
+# slug (everything after the ISO date) is the replace-by-topic recurrence key.
+_BRIEF_SLUG_RE = re.compile(r"^brief-\d{4}-\d{2}-\d{2}-(.+)$")
 
 
 class MalformedSourceDoc(ValueError):
@@ -53,6 +58,11 @@ class NormalizedDoc:
     source_mtime: float
     dock_goal_refs: List[str]
     raw_content: str
+    # Mesh-primitive lineage seam (Sprint R1): the recurrence/slug key a
+    # superseding adapter computes, or None (the default) for adapters with no
+    # recurrence. The Writer matches on this FIELD generically — it never reads
+    # an adapter's source_type or a skill name.
+    lineage_key: Optional[str] = None
 
 
 # ── shared helpers ──────────────────────────────────────────────────────
@@ -131,6 +141,14 @@ class Adapter:
     def parse(self, path: Path) -> NormalizedDoc:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def lineage_key(self, path: Path) -> Optional[str]:
+        """The supersede key for a source at ``path`` — the mesh-primitive
+        lineage seam. ``None`` (the default) means this capability has no
+        recurrence, so its pages never supersede. ONLY adapters that define
+        recurrence override this; the Writer matches the emitted frontmatter
+        field generically and never branches on a skill or source_type."""
+        return None
+
 
 # ── four fleet adapters ─────────────────────────────────────────────────
 
@@ -152,6 +170,7 @@ class _JsonFleetAdapter(Adapter):
             source_mtime=path.stat().st_mtime,
             dock_goal_refs=_as_str_list(data.get("dock_goal_refs")),
             raw_content=_read_text(path),
+            lineage_key=self.lineage_key(path),
         )
 
 
@@ -167,6 +186,12 @@ class ScoutDigestAdapter(_JsonFleetAdapter):
         "summary",
     )
 
+    def lineage_key(self, path: Path) -> Optional[str]:
+        # Replace-by-recurrence: every scout digest shares ONE key, so a new
+        # digest supersedes all priors -> exactly one active scout_digest page.
+        # The constant source_type is the recurrence slot.
+        return self.source_type
+
 
 class ResearcherBriefAdapter(_JsonFleetAdapter):
     source_type = "researcher_brief"
@@ -179,6 +204,19 @@ class ResearcherBriefAdapter(_JsonFleetAdapter):
         "research",
         "synthesis",
     )
+
+    def lineage_key(self, path: Path) -> Optional[str]:
+        # Replace-by-topic-slug: the SLUG from brief-YYYY-MM-DD-SLUG.json. Same
+        # slug supersedes; a new slug coexists. Fail loud (A2) if the contract
+        # filename shape is violated — no silent fallback that would mis-key the
+        # recurrence.
+        match = _BRIEF_SLUG_RE.match(Path(path).stem)
+        if match is None:
+            raise MalformedSourceDoc(
+                f"researcher_brief {Path(path).name}: filename does not match "
+                "brief-YYYY-MM-DD-SLUG.json; cannot derive lineage slug"
+            )
+        return match.group(1)
 
 
 class CultivatorProspectsAdapter(_JsonFleetAdapter):
