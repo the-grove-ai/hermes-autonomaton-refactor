@@ -92,9 +92,8 @@ def _render_section(base_url: str) -> str:
     """
     return (
         "## Portal Deep Links\n"
-        f"The Operator Portal is at {base_url}/portal. When you write to or "
-        "reference substrate content, include a portal link so the operator "
-        "can view the rendered artifact directly.\n"
+        f"The Operator Portal is at {base_url}/portal. Link the operator to "
+        "rendered substrate artifacts using the templates below.\n"
         "\n"
         "Link templates (Markdown [text](url) — the # routes through the portal shell):\n"
         f"- Cellar page: [{{title}}]({base_url}/portal#fragments/cellar/pages/{{page_id}})\n"
@@ -104,12 +103,12 @@ def _render_section(base_url: str) -> str:
         f"- Dashboard: [Dashboard]({base_url}/portal#fragments/dashboard/overview)\n"
         f"- Search: [Search: {{query}}]({base_url}/portal#fragments/search?q={{query}})\n"
         "\n"
-        "Convention:\n"
-        "- After writing a cellar page, include the page link.\n"
-        "- After surfacing Kaizen proposals, include the review queue link.\n"
-        "- After referencing dock goals, include the goals link.\n"
-        "- Links are standard Markdown — works on Telegram, web, and CLI.\n"
-        "- Include links naturally in your response, not as a separate block."
+        "Rules (ALWAYS follow):\n"
+        "- ALWAYS include a portal link when you write to or read from the cellar.\n"
+        "- ALWAYS include the review queue link when you mention pending proposals.\n"
+        "- ALWAYS include the goals link when you reference dock goals or strategy.\n"
+        "- ALWAYS include the composition link when you discuss connected nodes.\n"
+        "- Format: standard Markdown [text](url). Works on Telegram, web, CLI."
     )
 
 
