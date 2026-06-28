@@ -54,6 +54,7 @@ class CellarResult:
 
     source_path: str        # path relative to the cellar root
     content_type: str       # skill | skill_proposed | identity | config | memory
+                            # | research | scout | drafter | dock | notes
     title: str
     snippet: str
     relevance_score: float  # 0.0-1.0, relative to the strongest hit in the set
@@ -191,6 +192,24 @@ class CellarIndex:
         memory = cellar / "memory.md"
         if memory.is_file():
             yield memory, "memory"
+        # Fleet + operator workspaces — each a directory of Markdown the
+        # autonomaton produces or curates. Walked recursively (mirroring the
+        # skills directory glob, including the .andon quarantine skip); each
+        # subtree is tagged with its own content_type. content_type matches
+        # the directory name so retrieval provenance is self-describing.
+        for subdir, content_type in (
+            ("research", "research"),
+            ("scout", "scout"),
+            ("drafter", "drafter"),
+            ("dock", "dock"),
+            ("notes", "notes"),
+        ):
+            workspace = cellar / subdir
+            if workspace.is_dir():
+                for md in sorted(workspace.glob("**/*.md")):
+                    if ".andon" in md.parts:
+                        continue
+                    yield md, content_type
 
     def _index_file(
         self, conn: sqlite3.Connection, path: Path, content_type: str
