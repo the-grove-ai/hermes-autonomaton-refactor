@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
+from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer, make_mocked_request
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
@@ -2645,16 +2645,85 @@ class TestChatCompletionsAgentIncomplete:
 # ---------------------------------------------------------------------------
 
 
+def _cors_req(host: str):
+    """A mocked aiohttp request carrying the given Host (scheme defaults http).
+
+    ``request.host``/``request.scheme`` are what ``_is_dynamic_same_origin``
+    reconstructs the same-origin tuple from. Tests that exercise the allowlist
+    path pass a Host deliberately FOREIGN to the Origin under test, so the new
+    same-origin branch does not short-circuit and silently stop testing the
+    allowlist.
+    """
+    return make_mocked_request("POST", "/portal/actions/x",
+                               headers={"Host": host})
+
+
 class TestCORS:
+    # --- existing allowlist-path tests (request is foreign to the origin arg
+    #     so the same-origin auto-pass cannot mask the allowlist behavior) ---
     def test_origin_allowed_for_non_browser_client(self, adapter):
-        assert adapter._origin_allowed("") is True
+        # Empty Origin short-circuits before request is read (AC-6).
+        assert adapter._origin_allowed("", _cors_req("other.invalid")) is True
 
     def test_origin_rejected_by_default(self, adapter):
-        assert adapter._origin_allowed("http://evil.example") is False
+        assert adapter._origin_allowed(
+            "http://evil.example", _cors_req("other.invalid")) is False
 
     def test_origin_allowed_for_allowlist_match(self):
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
-        assert adapter._origin_allowed("http://localhost:3000") is True
+        assert adapter._origin_allowed(
+            "http://localhost:3000", _cors_req("other.invalid")) is True
+
+    # --- AC-1/AC-2: same-origin auto-pass unblocks the portal's own actions ---
+    def test_ac1_same_origin_tailscale_post_allowed(self, adapter):
+        assert adapter._origin_allowed(
+            "http://100.102.6.70:8642", _cors_req("100.102.6.70:8642")) is True
+
+    def test_ac2_same_origin_loopback_allowed(self, adapter):
+        assert adapter._origin_allowed(
+            "http://127.0.0.1:8642", _cors_req("127.0.0.1:8642")) is True
+        assert adapter._origin_allowed(
+            "http://localhost:8642", _cors_req("localhost:8642")) is True
+
+    # --- AC-3: cross-origin attacker rejected even with NO allowlist set ---
+    def test_ac3_cross_origin_attacker_rejected_no_allowlist(self, adapter):
+        assert adapter._origin_allowed(
+            "https://malicious-site.com", _cors_req("100.102.6.70:8642")) is False
+
+    # --- AC-4: cross-origin not in the configured allowlist → rejected ---
+    def test_ac4_cross_origin_not_in_allowlist_rejected(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        assert adapter._origin_allowed(
+            "http://other.example", _cors_req("100.102.6.70:8642")) is False
+
+    # --- AC-5: legitimate cross-origin in the allowlist → allowed (intact) ---
+    def test_ac5_cross_origin_in_allowlist_allowed(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        assert adapter._origin_allowed(
+            "http://localhost:3000", _cors_req("100.102.6.70:8642")) is True
+
+    # --- AC-6: empty Origin → allowed (non-browser client, unchanged) ---
+    def test_ac6_empty_origin_allowed(self, adapter):
+        assert adapter._origin_allowed("", _cors_req("100.102.6.70:8642")) is True
+
+    # --- AC-7: default-port normalization — omitted port matches explicit ---
+    def test_ac7_default_port_normalization(self, adapter):
+        # Origin omits the (default) port; Host carries it explicitly.
+        assert adapter._origin_allowed(
+            "http://example.com", _cors_req("example.com:80")) is True
+        # ...and the reverse: Origin carries the default port, Host omits it.
+        assert adapter._origin_allowed(
+            "http://example.com:80", _cors_req("example.com")) is True
+
+    # --- AC-8: malformed / null Origin → falls to allowlist → rejected ---
+    def test_ac8_malformed_origin_fails_closed(self, adapter):
+        assert adapter._origin_allowed("null", _cors_req("100.102.6.70:8642")) is False
+        assert adapter._origin_allowed("http://", _cors_req("100.102.6.70:8642")) is False
+
+    # --- AC-8b: Origin bearing path/query/fragment → not an origin → rejected ---
+    def test_ac8b_origin_with_path_query_rejected(self, adapter):
+        assert adapter._origin_allowed(
+            "http://100.102.6.70:8642/x?y=1", _cors_req("100.102.6.70:8642")) is False
 
     def test_cors_headers_for_origin_disabled_by_default(self, adapter):
         assert adapter._cors_headers_for_origin("http://localhost:3000") is None

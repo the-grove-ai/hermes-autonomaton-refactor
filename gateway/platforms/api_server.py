@@ -38,11 +38,13 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 try:
+    import yarl
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
+    yarl = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -432,6 +434,31 @@ _CORS_HEADERS = {
 
 
 if AIOHTTP_AVAILABLE:
+    def _parsed_origin(value: str) -> "tuple[str, str, int] | None":
+        try:
+            u = yarl.URL(value)
+            if not u.scheme or not u.host:
+                return None
+            if u.path not in ("", "/"):        # RFC 6454: an Origin carries no path
+                return None
+            if u.query_string or u.fragment:   # ...no query, no fragment
+                return None
+            return (u.scheme.lower(), u.host.lower(), u.port)  # u.port fills scheme default
+        except Exception:
+            return None
+
+    def _is_dynamic_same_origin(origin: str, request: "web.Request") -> bool:
+        if not request.host:                       # malformed → fail-closed
+            return False
+        req = _parsed_origin(f"{request.scheme}://{request.host}")
+        got = _parsed_origin(origin)
+        return req is not None and got is not None and req == got
+else:
+    _parsed_origin = None  # type: ignore[assignment]
+    _is_dynamic_same_origin = None  # type: ignore[assignment]
+
+
+if AIOHTTP_AVAILABLE:
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
@@ -439,7 +466,7 @@ if AIOHTTP_AVAILABLE:
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
-            if not adapter._origin_allowed(origin):
+            if not adapter._origin_allowed(origin, request):
                 return web.Response(status=403)
             cors_headers = adapter._cors_headers_for_origin(origin)
 
@@ -793,9 +820,20 @@ class APIServerAdapter(BasePlatformAdapter):
         headers["Access-Control-Max-Age"] = "600"
         return headers
 
-    def _origin_allowed(self, origin: str) -> bool:
-        """Allow non-browser clients and explicitly configured browser origins."""
+    def _origin_allowed(self, origin: str, request: "web.Request") -> bool:
+        """Allow non-browser clients, same-origin browsers, and configured origins.
+
+        The same-origin auto-pass (dynamic scheme/host/port match against the
+        request's own host) unblocks the portal's own POST/PATCH actions, whose
+        browser-attached Origin equals the serving origin. INV-1: the gateway
+        serves HTTP directly (no TLS-terminating proxy), so request.scheme/host
+        are trustworthy. The configured-allowlist path below is unchanged and
+        still governs genuine cross-origin requests.
+        """
         if not origin:
+            return True
+
+        if _is_dynamic_same_origin(origin, request):
             return True
 
         if not self._cors_origins:
