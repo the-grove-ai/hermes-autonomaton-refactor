@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Operator Portal — Knowledge Browser</title>
     <link rel="stylesheet" href="/portal/static/style.css">
+    <!-- R2″ node-compositor-view-v1 — scoped polish for the composition panel.
+         Functional only (dim dark nodes, monospace tool rows, inversion arrow);
+         all colors reuse the existing :root palette so the dark theme holds. -->
+    <style>
+      .composition-card.dark-node { opacity: 0.6; }
+      .composition-card .dark-note { font-style: italic; }
+      .composition-card .tool-row { display: flex; align-items: center; gap: 0.5rem; }
+      .composition-card .tool-name {
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 0.85rem; color: var(--text);
+      }
+      .composition-card .zone-arrow { color: var(--text-dim); font-weight: 700; }
+    </style>
     <script src="/portal/static/htmx.min.js" defer></script>
 </head>
 <body>
@@ -38,6 +51,8 @@
                        hx-target="#center-panel" hx-push-url="true">Proposals</a></li>
                 <li><a href="#" hx-get="/portal/fragments/skills/"
                        hx-target="#center-panel" hx-push-url="true">Skills</a></li>
+                <li><a href="#" hx-get="/portal/fragments/composition/panel"
+                       hx-target="#center-panel" hx-push-url="true">Composition</a></li>
             </ul>
         </nav>
 

@@ -3841,6 +3841,7 @@ class APIServerAdapter(BasePlatformAdapter):
             from grove.api.fragments import register_fragment_routes
             from grove.api.dashboard_fragments import register_dashboard_routes
             from grove.api.actions import register_action_routes
+            from grove.api.composition_fragments import register_composition_routes
             # portal_auth_middleware first so it gates /api/substrate/ and
             # /portal before the existing middlewares run; it passes through all
             # other paths.
@@ -3886,6 +3887,10 @@ class APIServerAdapter(BasePlatformAdapter):
             # Operator Portal action surface (Sprint P4) — write endpoints under
             # /portal/actions/* (proposal approve/reject/dismiss, dock status).
             register_action_routes(self._app)
+            # Operator Portal composition panel (R2″ node-compositor-view-v1) —
+            # read-only GRV-004 composition state at
+            # /portal/fragments/composition/panel.
+            register_composition_routes(self._app)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
