@@ -43,8 +43,9 @@ routing:
       description: |
         Cheap, fast cognition — a small model for quick, well-scoped
         work, and the telemetry classifier that scores incoming requests.
-        Kept on an Anthropic-native provider: the classifier binds to the
-        Anthropic Messages protocol.
+        Kept on a dependable cloud provider so the forced-tool_choice
+        classifier call always returns; the classifier itself is
+        provider-agnostic, not bound to any one vendor.
       max_tokens: 4096
       cost_per_mtok_input: 1.0
       cost_per_mtok_output: 5.0

@@ -20,6 +20,13 @@
 #   `model` values and restart. No code change is required; nothing here is
 #   locked to one vendor.
 #
+# DEFAULT PROVIDER
+#   The tiers below ship bound to OpenRouter — an aggregator that fronts many
+#   vendors' models behind one OpenAI-compatible API (set OPENROUTER_API_KEY).
+#   Each tier shows a commented direct-Anthropic alternative. Every tier, and
+#   the telemetry classifier itself, is provider-agnostic — OpenRouter is the
+#   default, not a requirement.
+#
 # OWNERSHIP
 #   The Autonomaton seeds this file into ~/.grove/routing.config.yaml on
 #   first run. That copy is yours. The system reads it; it cannot write to
@@ -82,15 +89,11 @@ routing:
       max_latency_ms: 50
 
     T1:
-      provider: anthropic
-      # The wire protocol the runtime uses to call this tier's provider.
-      # ``anthropic_messages`` = the /v1/messages POST surface; the
-      # OpenAI-compatible /v1/chat/completions surface is the default
-      # when this field is absent, which silently 404s against
-      # api.anthropic.com. Declare it explicitly so the runtime never
-      # has to guess from the base_url.
-      api_mode: anthropic_messages
-      model: claude-haiku-4-5-20251001
+      provider: openrouter
+      # Direct Anthropic alternative (requires ANTHROPIC_API_KEY):
+      #   provider: anthropic
+      #   model: claude-haiku-4-5-20251001
+      model: anthropic/claude-haiku-4.5
       description: |
         Cheap, fast cognition — a small model for quick, well-scoped
         work: classification, triage, short transformations. Also scores
@@ -107,9 +110,11 @@ routing:
       cost_per_mtok_output: 5.0
 
     T2:
-      provider: anthropic
-      api_mode: anthropic_messages
-      model: claude-sonnet-4-6
+      provider: openrouter
+      # Direct Anthropic alternative (requires ANTHROPIC_API_KEY):
+      #   provider: anthropic
+      #   model: claude-sonnet-4-6
+      model: anthropic/claude-sonnet-4.6
       description: |
         Premium cognition — the default for most of your work: real
         reasoning, code, analysis, drafting. The balance of capability
@@ -140,18 +145,22 @@ routing:
     # different host or port, set OLLAMA_BASE_URL in the environment — the
     # tier block carries no base_url field of its own.
     #
-    # Keep T1 on an Anthropic-native provider. T1 runs the telemetry
-    # classifier, which the v0.1 build binds to the Anthropic Messages
-    # protocol; an Ollama T1 would route every request on default-tier
-    # behaviour with no classification.
+    # T1 runs the telemetry classifier. The classifier is provider-agnostic
+    # (Anthropic Messages and OpenAI-compatible chat_completions both work),
+    # so T1 is not pinned to any one vendor. The real requirement is forced
+    # tool-calls: bind T1 to a model that reliably honours a forced
+    # tool_choice, or classification fails loud and every request falls
+    # through to default-tier behaviour.
     #
     # Full walkthrough: docs/guides/local-tier-binding.md
     # ---------------------------------------------------------------------
 
     T3:
-      provider: anthropic
-      api_mode: anthropic_messages
-      model: claude-opus-4-6   # 4.6, not 4.7 — predictable tokenization
+      provider: openrouter
+      # Direct Anthropic alternative (requires ANTHROPIC_API_KEY):
+      #   provider: anthropic
+      #   model: claude-opus-4-6
+      model: anthropic/claude-opus-4.6   # 4.6, not 4.7 — predictable tokenization
       description: |
         Apex cognition — the strongest model, for the hardest problems:
         multi-step planning, novel synthesis, architecture-level
