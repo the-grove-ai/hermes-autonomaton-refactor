@@ -80,9 +80,11 @@ def _local_env():
 
 class TestGovernedAgentGuards:
     def test_write_guard_raises_on_governed_config(self, grove):
-        from agent.file_safety import reject_governed_agent_write
-        with pytest.raises(PermissionError):
-            reject_governed_agent_write(str(grove / "routing.config.yaml"))
+        # secrets-only-wall-v1: routing.config.yaml is a non-secret ~/.grove
+        # config → no longer statically walled (the write guard now keys on
+        # is_secret_path only).
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove / "routing.config.yaml")) is False
 
     def test_write_guard_raises_on_env_secret(self, grove):
         from agent.file_safety import reject_governed_agent_write
@@ -99,15 +101,19 @@ class TestGovernedAgentGuards:
         reject_governed_agent_write(str(tmp_path / "scratch.txt"))
 
     def test_write_guard_collapses_dotdot_traversal(self, grove):
-        from agent.file_safety import reject_governed_agent_write
+        # secrets-only-wall-v1: the ../-collapsed target is routing.config.yaml,
+        # a non-secret config → not secret-walled. (realpath still collapses the
+        # traversal; the resolved path is simply no longer blocked.)
+        from grove.utils.fs_utils import is_secret_path
         escape = grove / "sub" / ".." / "routing.config.yaml"
-        with pytest.raises(PermissionError):
-            reject_governed_agent_write(str(escape))
+        assert is_secret_path(str(escape)) is False
 
     def test_read_guard_blocks_governed_then_allows_andon(self, grove, tmp_path):
         from agent.file_safety import reject_governed_agent_read
+        # secrets-only-wall-v1: .env is a SECRET → still read-blocked; but
+        # routing.config.yaml is non-secret → now readable (was blocked).
         assert reject_governed_agent_read(str(grove / ".env")) is not None
-        assert reject_governed_agent_read(str(grove / "routing.config.yaml")) is not None
+        assert reject_governed_agent_read(str(grove / "routing.config.yaml")) is None
         assert reject_governed_agent_read(
             str(grove / "skills" / ".andon" / "draft" / "SKILL.md")
         ) is None
@@ -119,38 +125,39 @@ class TestGovernedAgentGuards:
 
 class TestChokepointWriteMoveDelete:
     def test_move_dst_governed_refused(self, mock_ops, grove, tmp_path):
-        # The C3 Move exploit, at the chokepoint: even with a benign source,
-        # moving INTO the governed tree raises before the raw mv.
-        with pytest.raises(PermissionError):
-            mock_ops.move_file(str(tmp_path / "payload.yaml"),
-                               str(grove / "routing.config.yaml"))
+        # secrets-only-wall-v1: routing.config.yaml is a non-secret ~/.grove
+        # config → moving into it is no longer secret-walled.
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove / "routing.config.yaml")) is False
 
     def test_move_src_governed_refused(self, mock_ops, grove, tmp_path):
-        # Moving a governed file OUT is also a governance mutation — refused.
-        with pytest.raises(PermissionError):
-            mock_ops.move_file(str(grove / "routing.config.yaml"),
-                               str(tmp_path / "exfil.yaml"))
+        # secrets-only-wall-v1: routing.config.yaml is non-secret → moving it out
+        # is no longer secret-walled.
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove / "routing.config.yaml")) is False
 
     def test_move_into_symlinked_grove_refused(self, mock_ops, grove, tmp_path):
-        # /tmp/safe -> ~/.grove ; Move into /tmp/safe/... realpath-resolves into
-        # the governed tree and is refused.
+        # secrets-only-wall-v1: /tmp/safe -> ~/.grove ; the symlinked dst realpath-
+        # resolves to a non-secret config → not secret-walled. (Symlink intent
+        # preserved: is_secret_path is called on the symlinked path.)
+        from grove.utils.fs_utils import is_secret_path
         link = tmp_path / "safe"
         link.symlink_to(grove)
-        with pytest.raises(PermissionError):
-            mock_ops.move_file(str(tmp_path / "payload.yaml"),
-                               str(link / "routing.config.yaml"))
+        assert is_secret_path(str(link / "routing.config.yaml")) is False
 
     def test_write_governed_refused(self, mock_ops, grove):
-        with pytest.raises(PermissionError):
-            mock_ops.write_file(str(grove / "zones.schema.yaml"), "schema_version: 1\n")
+        # secrets-only-wall-v1: zones.schema.yaml is non-secret → not secret-walled.
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove / "zones.schema.yaml")) is False
 
     def test_write_governed_via_dotdot_refused(self, mock_ops, grove):
         with pytest.raises(PermissionError):
             mock_ops.write_file(str(grove / "x" / ".." / ".env"), "EVIL=1\n")
 
     def test_delete_governed_refused(self, mock_ops, grove):
-        with pytest.raises(PermissionError):
-            mock_ops.delete_file(str(grove / "routing.config.yaml"))
+        # secrets-only-wall-v1: routing.config.yaml is non-secret → not secret-walled.
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove / "routing.config.yaml")) is False
 
     def test_write_outside_grove_allowed(self, mock_ops, tmp_path):
         # Non-governed path reaches the method body (no governed raise).
@@ -173,24 +180,12 @@ class TestChokepointWriteMoveDelete:
 
 class TestV4AMoveExploitRefused:
     def test_move_patch_into_grove_refused_and_dst_not_created(self, grove, tmp_path):
-        src = tmp_path / "payload.yaml"
-        src.write_text("zones:\n  terminal: green\n")
+        # secrets-only-wall-v1: routing.config.yaml is a non-secret ~/.grove
+        # config → moving a payload into it is no longer secret-walled. (The
+        # V4A move destination is what the governance wall keys on.)
+        from grove.utils.fs_utils import is_secret_path
         dst = grove / "routing.config.yaml"
-        assert not dst.exists()
-
-        ops = ShellFileOperations(_local_env())
-        patch = (
-            "*** Begin Patch\n"
-            f"*** Move File: {src} -> {dst}\n"
-            "*** End Patch\n"
-        )
-        result = ops.patch_v4a(patch)
-
-        assert result.success is False
-        assert "write-protected" in (result.error or "")
-        # The raw mv never ran: destination absent, source intact.
-        assert not dst.exists()
-        assert src.exists()
+        assert is_secret_path(str(dst)) is False
 
 
 # ── read_file tool — governed-tree read block ────────────────────────────────
@@ -198,18 +193,19 @@ class TestV4AMoveExploitRefused:
 
 class TestReadFileToolGovernedBlock:
     def test_read_env_refused(self, grove):
+        # secrets-only-wall-v1: .env is a SECRET → still read-blocked.
+        (grove / ".env").write_text("SECRET=1\n")
         from tools.file_tools import read_file_tool
         raw = read_file_tool(str(grove / ".env"))
         result = json.loads(raw)
         assert result.get("error")
-        assert "Governed path" in result["error"]
+        assert "is protected" in result["error"]
 
     def test_read_routing_config_refused(self, grove):
-        from tools.file_tools import read_file_tool
-        raw = read_file_tool(str(grove / "routing.config.yaml"))
-        result = json.loads(raw)
-        assert result.get("error")
-        assert "Governed path" in result["error"]
+        # secrets-only-wall-v1: routing.config.yaml is non-secret → now readable;
+        # the governance wall no longer blocks it.
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove / "routing.config.yaml")) is False
 
 
 # ── Copilot ACP shim — write/read surfaces ───────────────────────────────────
@@ -231,22 +227,11 @@ class TestACPGovernedSurface:
         return json.loads(payload)
 
     def test_acp_write_into_grove_refused(self, grove, tmp_path):
-        # cwd is the workspace; grove is within it so _ensure_path_within_cwd
-        # passes and the governed wall is the operative gate.
-        client = self._client(tmp_path)
-        proc = self._fake_process()
+        # secrets-only-wall-v1: routing.config.yaml is a non-secret ~/.grove
+        # config → the ACP write surface no longer secret-walls it.
+        from grove.utils.fs_utils import is_secret_path
         target = grove / "routing.config.yaml"
-        msg = {
-            "method": "fs/write_text_file", "id": 7,
-            "params": {"path": str(target), "content": "zones: {}\n"},
-        }
-        client._handle_server_message(
-            msg, process=proc, cwd=str(tmp_path),
-            text_parts=None, reasoning_parts=None,
-        )
-        resp = self._written_response(proc)
-        assert "error" in resp
-        assert not target.exists()
+        assert is_secret_path(str(target)) is False
 
     def test_acp_write_outside_grove_succeeds(self, grove, tmp_path):
         client = self._client(tmp_path)

@@ -127,11 +127,9 @@ def get_read_block_error(path: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 GOVERNED_READ_MESSAGE = (
-    "Governed path: generic file tools cannot read inside ~/.grove "
-    "(governance config, operator secrets, or the live skills tree). Use "
-    "skill_view / skills_list for skill content; governance config and secrets "
-    "are operator-only. The ~/.grove/skills/.andon/ authoring quarantine "
-    "remains readable."
+    "This path is protected: it holds operator secrets (credentials, tokens, "
+    "keys) or is a sensitive system path. It cannot be read. Everything else — "
+    "including all of ~/.grove and your project files — is readable."
 )
 
 
@@ -145,17 +143,13 @@ def reject_governed_agent_write(path: object) -> None:
     classified as an expected write denial by the file tools, so callers turn
     it into a clean tool error.
     """
-    from grove.utils.fs_utils import (
-        GOVERNED_PATH_MESSAGE,
-        is_governed_path,
-        is_granted_workspace,
-    )
+    # secrets-only-wall-v1: the SOLE static write wall is secrets + out-of-bounds
+    # (is_secret_path). Non-secret ~/.grove writes fall through to the zone /
+    # approval pipeline (write_file is yellow) — file_safety no longer statically
+    # walls governance config; the operator evolves it THROUGH the agent.
+    from grove.utils.fs_utils import GOVERNED_PATH_MESSAGE, is_secret_path
 
-    # workspace-governance-unification-v1: operator-granted workspaces are
-    # writable; the raise contract is preserved for everything else governed.
-    if is_granted_workspace(path):
-        return
-    if is_governed_path(path):
+    if is_secret_path(path):
         raise PermissionError(GOVERNED_PATH_MESSAGE)
 
 
@@ -167,12 +161,10 @@ def reject_governed_agent_read(path: object) -> Optional[str]:
     read_file tool can surface it as a tool error. Realpath-resolved via
     ``is_governed_path``.
     """
-    from grove.utils.fs_utils import is_governed_path, is_granted_workspace
+    # secrets-only-wall-v1: reads are walled ONLY for secrets + out-of-bounds
+    # (is_secret_path). Everything else under ~/.grove reads freely.
+    from grove.utils.fs_utils import is_secret_path
 
-    # workspace-governance-unification-v1: the agent may read back what it writes
-    # to an operator-granted workspace; everything else governed stays walled.
-    if is_granted_workspace(path):
-        return None
-    if is_governed_path(path):
+    if is_secret_path(path):
         return GOVERNED_READ_MESSAGE
     return None

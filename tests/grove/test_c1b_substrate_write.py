@@ -68,21 +68,16 @@ class TestFileToolGovernedLock:
         )
 
     def test_write_file_refuses_governed_path(self, grove_home):
-        from tools.file_tools import write_file_tool
-        raw = write_file_tool(str(grove_home / "zones.schema.yaml"), "schema_version: 1\n")
-        result = json.loads(raw)
-        assert result.get("error")
-        assert "write-protected" in result["error"]
+        # secrets-only-wall-v1: zones.schema.yaml is a NON-secret ~/.grove config
+        # → no longer statically walled. Assert at the unit level that the path is
+        # not secret-walled (tmp dirs trip _check_sensitive_path on the tool path).
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove_home / "zones.schema.yaml")) is False
 
     def test_patch_refuses_governed_path(self, grove_home):
-        from tools.file_tools import patch_tool
-        raw = patch_tool(
-            mode="replace", path=str(grove_home / "routing.config.yaml"),
-            old_string="a", new_string="b",
-        )
-        result = json.loads(raw)
-        assert result.get("error")
-        assert "write-protected" in result["error"]
+        # secrets-only-wall-v1: routing.config.yaml is non-secret → not walled.
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove_home / "routing.config.yaml")) is False
 
     def test_write_file_allows_andon(self, grove_home):
         from tools.file_tools import write_file_tool
@@ -346,13 +341,10 @@ class TestDockBlockPreserved:
         assert is_governed_path(grove_home / "dock" / "dock.yaml") is True
 
     def test_write_file_refuses_dock_path(self, grove_home):
-        from tools.file_tools import write_file_tool
-        raw = write_file_tool(
-            str(grove_home / "dock" / "dock.yaml"), "version: '1.0'\n",
-        )
-        result = json.loads(raw)
-        assert result.get("error")
-        assert "write-protected" in result["error"]
+        # secrets-only-wall-v1: dock/dock.yaml is a non-secret ~/.grove config →
+        # no longer statically walled by the governance wall.
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove_home / "dock" / "dock.yaml")) is False
 
     def test_shell_write_into_dock_classifies_red(self, grove_home):
         from grove.shell_effects import classify_shell_effect

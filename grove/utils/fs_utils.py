@@ -19,6 +19,7 @@ promotion); nothing else under ``~/.grove`` is writable by a generic file tool.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 from pathlib import Path
 
@@ -26,15 +27,17 @@ __all__ = [
     "is_governed_path",
     "is_scope_defining",
     "is_granted_workspace",
+    "is_secret_path",
     "GOVERNED_PATH_MESSAGE",
 ]
 
 
 GOVERNED_PATH_MESSAGE = (
-    "This path is write-protected. You can still read any file here. "
-    "To save this content, offer to write to a path the operator suggests, "
-    "or present the block and let the operator decide. "
-    "Do not attempt alternative write methods."
+    "This path is protected: it holds operator secrets (credentials, tokens, "
+    "keys) or is a sensitive system path. It cannot be written, and no approval "
+    "makes that safe. Everything else — including all of ~/.grove and your "
+    "project files — is writable through the normal flow. Do not attempt "
+    "alternative write methods."
 )
 
 
@@ -246,3 +249,105 @@ def is_granted_workspace(path: object, grove_home: object = None) -> bool:
         if rel == prefix or rel.startswith(prefix + os.sep):
             return True
     return False
+
+
+# ── secrets-only-wall-v1 (Hotfix 3) — deny-list, NOT confinement ─────────────
+#
+# Rationalized model: the agent does legitimate file work ANYWHERE (project
+# files, /tmp, IDE/ACP surfaces) — there is NO in-bounds sandbox. file_safety's
+# sole job is a DENY-LIST: refuse (a) sensitive SYSTEM roots and (b) secret files
+# WHEREVER they live. ~/.grove is deliberately NOT a sensitive root — it is the
+# operator's brain, the most readable place; only its secrets (.env, mcp-tokens/,
+# …) are walled, by the same anchors that apply everywhere.
+#
+# realpath canonicalizes the target FIRST, so a `..` traversal or a symlink that
+# resolves onto a secret / sensitive root is matched on the REAL destination —
+# that is the SOLE traversal guard now that the in-bounds check is gone.
+
+# Sensitive SYSTEM roots — absolute-prefix block. Deliberately NOT ~/.grove.
+_SENSITIVE_ROOTS = (
+    "/etc",
+    "/var/log",
+    "~/.ssh",
+    "~/.aws",
+    "~/.config/gcloud",
+)
+
+# Directory anchors — a path with a component equal to one of these is inside a
+# secret store; matched anywhere (incl. ~/.grove). NOT a substring glob, so the
+# document cache (doc_*_secret.bin) and a "debugging-mcp-credentials" skill are
+# NOT wrongly walled.
+_SECRET_DIR_ANCHORS = (
+    "mcp-tokens",
+    "pairing",
+    "secrets",
+    ".credentials",
+)
+
+# Path-suffix anchors — the basename alone ("config") is too generic, so match
+# the trailing path segment.
+_SECRET_PATH_SUFFIXES = (
+    os.path.join(".git", "config"),
+)
+
+# File-glob anchors — matched against the BASENAME via fnmatch (apply anywhere).
+_SECRET_FILE_GLOBS = (
+    ".env*",
+    "auth.json",
+    "credentials.json",
+    "google_client_secret.json",
+    "google_token.json",
+    "google_token.json.bak*",
+    "application_default_credentials.json",
+    "*service_account*.json",
+    "channel_directory.json",
+    "gateway_state.json",
+    ".npmrc",
+    "pip.conf",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+)
+
+
+def is_secret_path(path: object, grove_home: object = None) -> bool:
+    """Return ``True`` if reading OR writing *path* must be refused — the SINGLE
+    file_safety wall (secrets-only-wall-v1, deny-list model).
+
+    NO sandbox / in-bounds confinement: the agent does legitimate work on project
+    files, ``/tmp``, and IDE surfaces. This refuses only (a) sensitive SYSTEM
+    roots (``/etc``, ``~/.ssh``, …) and (b) secret files/dirs
+    (credentials/tokens/keys) WHEREVER they live — including inside ``~/.grove``
+    (so ``~/.grove`` stays broadly readable while ITS secrets stay walled).
+
+    ``realpath`` canonicalizes the target FIRST: a ``..`` traversal or a symlink
+    that resolves onto a secret or a sensitive root is matched on the REAL
+    destination — the sole traversal guard now that in-bounds is gone.
+    Unresolvable → fail closed.
+
+    ``grove_home`` is accepted for signature stability but unused — the deny-list
+    is absolute, not grove-relative.
+    """
+    try:
+        target = os.path.realpath(os.path.expanduser(str(path)))
+    except (OSError, ValueError):
+        return True  # unresolvable → fail closed
+
+    # (a) sensitive SYSTEM roots — absolute-prefix block on the resolved target.
+    for root in _SENSITIVE_ROOTS:
+        try:
+            r = os.path.realpath(os.path.expanduser(root))
+        except (OSError, ValueError):
+            return True  # a configured root we cannot resolve → fail closed
+        if target == r or target.startswith(r + os.sep):
+            return True
+
+    # (b) secret anchors — apply everywhere (dir component, path suffix, basename).
+    parts = target.split(os.sep)
+    if any(d in parts for d in _SECRET_DIR_ANCHORS):
+        return True
+    for suffix in _SECRET_PATH_SUFFIXES:
+        if target == suffix or target.endswith(os.sep + suffix):
+            return True
+    base = os.path.basename(target)
+    return any(fnmatch.fnmatch(base, g) for g in _SECRET_FILE_GLOBS)

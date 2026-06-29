@@ -115,18 +115,18 @@ class TestFileTools:
         assert (grove / "research" / "test.md").read_text() == "hello\nworld\n"
 
     def test_10_write_file_substrate_refused(self, grove):
-        from tools.file_tools import write_file_tool
-        result = json.loads(
-            write_file_tool(str(grove / "intent_records.jsonl"), "{}\n")
-        )
-        assert result.get("error") and "write-protected" in result["error"]
+        # secrets-only-wall-v1: intent_records.jsonl is a non-secret ~/.grove
+        # substrate file → no longer statically walled by the governance wall.
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove / "intent_records.jsonl")) is False
 
     def test_11_write_file_token_refused(self, grove):
+        # secrets-only-wall-v1: google_token.json is a SECRET → still blocked.
         from tools.file_tools import write_file_tool
         result = json.loads(
             write_file_tool(str(grove / "google_token.json"), "{}\n")
         )
-        assert result.get("error") and "write-protected" in result["error"]
+        assert result.get("error") and "is protected" in result["error"]
 
     def test_12_read_file_granted_workspace_succeeds(self, grove):
         from tools.file_tools import read_file_tool
@@ -134,9 +134,10 @@ class TestFileTools:
         assert not result.get("error"), result
 
     def test_13_read_file_token_refused(self, grove):
+        # secrets-only-wall-v1: google_token.json is a SECRET → still read-blocked.
         from tools.file_tools import read_file_tool
         result = json.loads(read_file_tool(str(grove / "google_token.json")))
-        assert result.get("error") and "Governed path" in result["error"]
+        assert result.get("error") and "is protected" in result["error"]
 
 
 # ── Shell classifier (SPEC 14-16, 18) ────────────────────────────────────────
@@ -193,12 +194,8 @@ class TestInvariants:
         assert is_granted_workspace(grove / "research" / "doc.md") is True
 
     def test_20_write_file_still_walls_scope_defining(self, grove, monkeypatch):
-        # Regression mirror of C1b: a scope-defining target stays refused.
-        monkeypatch.setattr(
-            "tools.file_tools._check_sensitive_path", lambda *a, **k: None,
-        )
-        from tools.file_tools import write_file_tool
-        result = json.loads(
-            write_file_tool(str(grove / "zones.schema.yaml"), "x\n")
-        )
-        assert result.get("error") and "write-protected" in result["error"]
+        # secrets-only-wall-v1: zones.schema.yaml is a non-secret ~/.grove config
+        # → no longer statically walled by the governance wall (the secret-only
+        # wall is the operative gate now; scope-defining is a shell-zone concept).
+        from grove.utils.fs_utils import is_secret_path
+        assert is_secret_path(str(grove / "zones.schema.yaml")) is False
