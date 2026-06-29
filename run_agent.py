@@ -5492,7 +5492,17 @@ class AIAgent:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[kaizen-offerings] last-offered write skipped: %r", exc)
-            offer = compose_offering(chosen, is_push=True)
+            # portal-link-reliability-v1 (P1) — resolve the portal base URL from
+            # the RESIDENT config snapshot. ``_config_load_or()`` returns
+            # ``self._runtime_ctx.config`` (the load_config() snapshot carrying
+            # top-level portal/platforms), never None. Passing the dict keeps
+            # resolve_portal_base_url off its ``config=None`` branch, which would
+            # load_config() (stat+deepcopy) on every push — the GATE-B guardrail.
+            from grove.prompt.portal_links import resolve_portal_base_url
+            _portal_base = resolve_portal_base_url(config=self._config_load_or())
+            offer = compose_offering(
+                chosen, is_push=True, portal_base_url=_portal_base
+            )
             # kaizen-push-cadence-v1.1 — persist cooldown + dedup so they survive
             # the gateway's per-turn agent rebuild. surfaced_connectors is owned
             # by the connector-offer surface (written there); preserve it as read.

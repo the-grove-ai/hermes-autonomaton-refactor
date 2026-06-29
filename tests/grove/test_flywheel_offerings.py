@@ -104,7 +104,13 @@ def test_cli_show_lead_is_composer_pull_form(tmp_path: Path, capsys) -> None:
 
 
 def _agent(session_start):
-    return SimpleNamespace(session_start=session_start)
+    # portal-link-reliability-v1 (P1): the push path now resolves the portal
+    # base URL from the agent's resident config snapshot via _config_load_or().
+    # The stub supplies it ({} → resolver falls back to the loopback default,
+    # so a Review link is appended but the substring assertions below are
+    # unaffected). Without it, AttributeError is swallowed by the push path's
+    # broad except and the offer silently vanishes.
+    return SimpleNamespace(session_start=session_start, _config_load_or=lambda: {})
 
 
 def test_past_session_proposal_does_not_push(tmp_path: Path) -> None:
