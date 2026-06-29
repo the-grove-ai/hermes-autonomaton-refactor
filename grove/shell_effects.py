@@ -404,7 +404,7 @@ def _is_andon_wrapper_sig(sig: str) -> bool:
 # ── Governed / catastrophic / skills helpers ─────────────────────────────────
 
 
-def _classify_write_zone(target_path: str) -> str:
+def _classify_write_zone(target_path: str, confine: bool = True) -> str:
     """workspace-governance-unification-v1 — positive-allowlist zone for a shell
     WRITE target.
 
@@ -413,13 +413,25 @@ def _classify_write_zone(target_path: str) -> str:
     * under ``~/.grove`` but NOT granted              -> RED (fail-closed: this
       protects substrate/secrets/tokens and closes the credential-overwrite path
       that v2's blanket-GREEN complement left open)
-    * outside ``~/.grove``                            -> YELLOW (four-choice grant)
+    * outside ``~/.grove``: write-confinement-v1 Phase 3 replaces the old blanket
+      YELLOW soft-wall with the confinement gate — a target inside the write
+      allow-list (``is_write_allowed``: declared workspaces / tmp) stays YELLOW
+      (operator-approvable); anything else hard-rejects RED.
 
     Used by the per-node classifier for redirect / mutator / find WRITE targets
     ONLY — read operands are never promoted to GREEN, so e.g. ``cat ~/.grove/.env``
     stays YELLOW.
+
+    session_cwd is NOT passed here: the shell surface is not an IDE/ACP surface
+    and carries no injected workspace cwd at classification time (Phase 3 Andon —
+    no injection mechanism is invented). Source (d) does not apply to the shell
+    path; sources (a)/(b)/(c) fully confine it.
     """
-    from grove.utils.fs_utils import is_granted_workspace, is_scope_defining
+    from grove.utils.fs_utils import (
+        is_granted_workspace,
+        is_scope_defining,
+        is_write_allowed,
+    )
     from hermes_constants import get_hermes_home
 
     if is_scope_defining(target_path):
@@ -433,7 +445,16 @@ def _classify_write_zone(target_path: str) -> str:
         return _RED  # unresolvable → fail closed
     if resolved == grove or resolved.startswith(grove + os.sep):
         return _RED  # under ~/.grove but un-granted → fail-closed RED
-    return _YELLOW
+    # Outside ~/.grove. ``confine=False`` is the legacy governed-only check used
+    # for a find SEARCH ROOT (a read-traversal locus, not a write target) — it
+    # must not hard-reject an undeclared cwd. Genuine write targets (redirects,
+    # FS-mutator positionals, the GREEN decision) confine: a target in the write
+    # allow-list stays YELLOW; anything else hard-rejects RED.
+    if not confine:
+        return _YELLOW
+    if is_write_allowed(target_path):  # session_cwd N/A on the shell surface
+        return _YELLOW
+    return _RED
 
 
 _CATASTROPHIC_TARGETS = frozenset({"/", "//", "/*", "~", "~/", "/.", "/*/"})
@@ -546,7 +567,11 @@ def _classify_find(rest: List[str]) -> Tuple[str, str]:
         if _is_catastrophic_rm(paths):
             return (_RED, "rm:catastrophic")
         for p in paths:
-            if _classify_write_zone(p) == _RED:
+            # Search ROOT is a read-traversal locus — governed-only check, not
+            # outside-union confinement (a benign `find . -exec cat` in an
+            # undeclared cwd must not hard-reject). find's own writes come via a
+            # mutator -exec (caught by exec_red) or -delete (bounded YELLOW).
+            if _classify_write_zone(p, confine=False) == _RED:
                 return (_RED, "govwrite:find")
         if exec_red is not None:
             return (_RED, exec_red)

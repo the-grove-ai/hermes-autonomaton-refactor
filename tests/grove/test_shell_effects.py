@@ -31,7 +31,10 @@ class TestBypassesDefeated:
         # B1: the comment ".grove/skills/" no longer smuggles a destructive rm to
         # GREEN. The AST sees argv [rm, -rf, ~/important]; the comment is gone.
         zr = C("rm -rf ~/important # ~/.grove/skills/")
-        assert zr.zone == "yellow"  # gated, not green
+        # write-confinement-v1: ~/important is outside the write allow-list, so
+        # the (formerly soft-YELLOW) outside-grove write now hard-rejects RED.
+        # The B1 invariant holds either way — the comment never reaches GREEN.
+        assert zr.zone == "red"
 
     def test_b1_catastrophic_still_red_despite_comment(self, grove_home):
         zr = C("rm -rf ~ # ~/.grove/skills/")

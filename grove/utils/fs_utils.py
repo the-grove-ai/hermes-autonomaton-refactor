@@ -20,14 +20,21 @@ promotion); nothing else under ``~/.grove`` is writable by a generic file tool.
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
+import tempfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "is_governed_path",
     "is_scope_defining",
     "is_granted_workspace",
     "is_secret_path",
+    "is_write_allowed",
+    "append_write_workspace",
+    "write_refused_message",
     "GOVERNED_PATH_MESSAGE",
 ]
 
@@ -96,6 +103,11 @@ _SCOPE_DEFINING_FILES = frozenset({
     # manifest is itself scope-defining. If the agent could write it, it could
     # grant itself unlimited GREEN zones, so it is never an autonomous write.
     "workspaces.yaml",
+    # write-confinement-v1 — the WRITE allow-list manifest is the same meta-wall:
+    # if the agent could write it via the generic/shell tools it could grant
+    # itself any write workspace, so it is never an autonomous write (the
+    # operator-approved grant flow applies it through a sanctioned door instead).
+    "write_workspaces.yaml",
     # GRV-001 Grant Token model — standing grant manifest is scope-defining.
     # The agent cannot write its own grants; only the operator can create or
     # revoke standing grants via authenticated grant management commands.
@@ -351,3 +363,209 @@ def is_secret_path(path: object, grove_home: object = None) -> bool:
             return True
     base = os.path.basename(target)
     return any(fnmatch.fnmatch(base, g) for g in _SECRET_FILE_GLOBS)
+
+
+# ── write-confinement-v1 — single write-confinement evaluator ────────────────
+#
+# is_write_allowed is the ONE gate every mutating surface (write_file / patch /
+# delete / move, the shell classifier, the ACP write shim) calls BEFORE
+# classification. Reads stay on the secrets-only deny-list (is_secret_path);
+# WRITES move to a positive ALLOW-list — so enumeration drift only ever affects
+# reads (recoverable), never widens the irreversible verb. A write is allowed iff
+# the canonicalized target lands in the union of four sources:
+#
+#   (a) ~/.grove EXCEPT secrets (is_secret_path still walls these)
+#   (b) declared write_workspaces.yaml — absolute directory roots, recursive
+#   (c) /tmp + the platform scratch dir
+#   (d) the live ACP session cwd (dynamic, passed by the caller)
+#
+# Anything outside the union hard-rejects. FAIL-LOUD, NEVER fail-open: a missing
+# or malformed manifest WARNS and grants nothing (it never silently allows all),
+# and an unresolvable target is refused (never silently allowed).
+
+_WRITE_WORKSPACES_MANIFEST = "write_workspaces.yaml"
+# {grove_realpath: (manifest_mtime_ns, frozenset(declared_realpath_roots))}. The
+# evaluator runs per write-target, so the parsed manifest is cached by mtime — a
+# stat is cheap, the YAML parse only re-runs when the manifest actually changes.
+_write_workspaces_cache: dict = {}
+
+
+def _tmp_roots() -> tuple:
+    """Resolved scratch roots that are always write-allowed (source c): ``/tmp``
+    and the platform temp dir. Realpath-resolved so a write to ``/tmp/x`` matches
+    even where ``/tmp`` is itself a symlink (e.g. ``/private/tmp`` on macOS)."""
+    roots = set()
+    for cand in ("/tmp", tempfile.gettempdir()):
+        try:
+            roots.add(os.path.realpath(cand))
+        except (OSError, ValueError):
+            continue
+    return tuple(roots)
+
+
+def _load_write_workspaces(grove: str) -> frozenset:
+    """Return the declared absolute write-workspace roots (realpath-resolved),
+    cached by manifest mtime.
+
+    FAIL-LOUD: a missing or unparseable manifest logs a WARNING and yields the
+    empty set — declared workspaces become unavailable, never silently allow-all
+    and never silently deny-all-without-notice."""
+    ws_path = os.path.join(grove, _WRITE_WORKSPACES_MANIFEST)
+    try:
+        mtime = os.stat(ws_path).st_mtime_ns
+    except OSError:
+        logger.warning(
+            "write_workspaces.yaml not found or unparseable — declared "
+            "workspaces unavailable (%s)",
+            ws_path,
+        )
+        return frozenset()
+    cached = _write_workspaces_cache.get(grove)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        import yaml
+
+        with open(ws_path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        roots = frozenset(
+            os.path.realpath(os.path.expanduser(p))
+            for w in data.get("write_workspaces", [])
+            if isinstance(w, dict) and (p := str(w.get("path", "")).strip())
+        )
+    except Exception:
+        logger.warning(
+            "write_workspaces.yaml not found or unparseable — declared "
+            "workspaces unavailable (%s)",
+            ws_path,
+        )
+        return frozenset()
+    _write_workspaces_cache[grove] = (mtime, roots)
+    return roots
+
+
+def _canonical_write_target(target_path: str) -> str | None:
+    """Canonicalize *target_path* for matching. For an existing path, realpath the
+    target itself; for a not-yet-existing leaf, realpath the PARENT directory and
+    rejoin the basename — the real escape is a symlinked parent
+    (``/tmp/link-to-etc/newfile``), not the leaf. Return ``None`` if the path
+    cannot be resolved (caller fails closed)."""
+    try:
+        expanded = os.path.expanduser(str(target_path))
+        if os.path.lexists(expanded):
+            return os.path.realpath(expanded)
+        parent = os.path.realpath(os.path.dirname(expanded) or os.curdir)
+        return os.path.join(parent, os.path.basename(expanded))
+    except (OSError, ValueError):
+        return None
+
+
+def is_write_allowed(target_path: str, session_cwd: str = None) -> bool:
+    """Single source of truth for write confinement (write-confinement-v1).
+
+    Return ``True`` iff the canonicalized *target_path* falls in the union of:
+      (a) ``~/.grove`` and NOT a secret,
+      (b) a declared ``write_workspaces.yaml`` root (recursive),
+      (c) ``/tmp`` / the platform scratch dir,
+      (d) *session_cwd* (when provided — the live ACP working dir).
+    Anything else hard-rejects. Unresolvable target → refuse (never allow-open).
+    """
+    from hermes_constants import get_hermes_home
+
+    resolved = _canonical_write_target(target_path)
+    if resolved is None:
+        return False  # unresolvable → loud refuse, never a silent allow
+
+    try:
+        grove = os.path.realpath(get_hermes_home())
+    except (OSError, ValueError):
+        grove = None
+
+    # (a) ~/.grove EXCEPT secrets. A secret under ~/.grove is never writable and
+    # no other source can rescue it, so decide grove paths here and return.
+    if grove is not None and (resolved == grove or resolved.startswith(grove + os.sep)):
+        return not is_secret_path(resolved)
+
+    # Secrets are refused WHEREVER they live (an .env dropped into a declared
+    # workspace, a *.pem under /tmp): apply the deny-list before the positive
+    # sources so no allow-list source can launder a secret.
+    if is_secret_path(resolved):
+        return False
+
+    # (b) declared write_workspaces.yaml — absolute directory roots, recursive.
+    if grove is not None:
+        for root in _load_write_workspaces(grove):
+            if resolved == root or resolved.startswith(root + os.sep):
+                return True
+
+    # (c) /tmp + the platform scratch dir.
+    for root in _tmp_roots():
+        if resolved == root or resolved.startswith(root + os.sep):
+            return True
+
+    # (d) live ACP session cwd (dynamic).
+    if session_cwd is not None:
+        try:
+            cwd = os.path.realpath(os.path.expanduser(str(session_cwd)))
+        except (OSError, ValueError):
+            cwd = None
+        if cwd is not None and (resolved == cwd or resolved.startswith(cwd + os.sep)):
+            return True
+
+    return False  # no source matched → hard reject
+
+
+def write_refused_message(path: object) -> str:
+    """The operator-facing refusal for an out-of-workspace write. States the
+    boundary and the remediation (declare the directory) without naming any
+    secret, zone, or enforcement mechanism (editorial register). The conversational
+    grant flow that turns this into a one-tap proposal is a fast-follow; until
+    then the directory is added to the operator's write workspaces to enable work
+    there."""
+    parent = os.path.dirname(os.path.expanduser(str(path))) or str(path)
+    return (
+        f"Write refused — {path} is outside your declared workspaces. To work "
+        f"there, {parent} must be added to your write workspaces."
+    )
+
+
+def append_write_workspace(new_path: object, grove_home: object = None) -> str:
+    """Append an absolute directory root to ``write_workspaces.yaml``
+    (comment-preserving via ruamel) and invalidate the cached manifest so the
+    next :func:`is_write_allowed` sees it immediately.
+
+    This is the apply-step of the workspace-grant flow: it runs only AFTER the
+    operator approves the grant through the existing yellow-zone pipeline. Return
+    the realpath that was granted. Idempotent: re-granting an existing root is a
+    no-op write-wise but still hot-reloads the cache."""
+    from hermes_constants import get_hermes_home
+    from ruamel.yaml import YAML
+
+    grove = os.path.realpath(
+        str(grove_home) if grove_home is not None else get_hermes_home()
+    )
+    ws_path = os.path.join(grove, _WRITE_WORKSPACES_MANIFEST)
+    abs_path = os.path.realpath(os.path.expanduser(str(new_path)))
+
+    yaml_rt = YAML()
+    yaml_rt.preserve_quotes = True
+    if os.path.exists(ws_path):
+        with open(ws_path, encoding="utf-8") as fh:
+            data = yaml_rt.load(fh) or {}
+    else:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{ws_path} is not a mapping — refusing to rewrite it")
+    if data.get("write_workspaces") is None:
+        data["write_workspaces"] = []
+    existing = {
+        str(e.get("path", ""))
+        for e in data["write_workspaces"]
+        if isinstance(e, dict)
+    }
+    if abs_path not in existing:
+        data["write_workspaces"].append({"path": abs_path})
+        with open(ws_path, "w", encoding="utf-8") as fh:
+            yaml_rt.dump(data, fh)
+    _write_workspaces_cache.pop(grove, None)  # hot-reload on next check
+    return abs_path
