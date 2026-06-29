@@ -28,8 +28,10 @@ def test_T25_grove_agent_help_has_advisor_directive():
     g = GROVE_AGENT_HELP_GUIDANCE
     assert "You are an advisor" in g
     assert "MUST emit the corresponding tool call" in g
-    assert "You never predict what the Dispatcher will do" in g
-    assert "You act; it governs." in g
+    # prompt-governance-rationalization-v1 — anti-prediction directive preserved,
+    # de-architected: "Dispatcher" naming removed, "it"→"the system".
+    assert "never predict the outcome" in g
+    assert "You act; the system governs" in g
 
 
 def test_T25_grove_agent_help_has_no_governance_prediction_language():

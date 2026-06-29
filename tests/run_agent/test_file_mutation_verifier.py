@@ -511,11 +511,15 @@ class TestGovernanceBlockReplacement:
 
 class TestGovernedMessageCascadeInstruction:
     def test_message_instructs_no_alternative_write_paths(self):
+        # prompt-governance-rationalization-v1 — the message no longer recites
+        # governance architecture (no "governance boundary", no terminal /
+        # execute_code enumeration). It states the fact, preserves read access,
+        # and still forbids rerouting to an alternative write method.
         msg = GOVERNED_PATH_MESSAGE.lower()
-        assert "do not attempt" in msg
-        assert "terminal" in msg
-        assert "execute_code" in msg
-        assert "governance boundary" in msg
+        assert "write-protected" in msg
+        assert "you can still read any file" in msg
+        assert "do not attempt alternative write methods" in msg
+        assert "governance boundary" not in msg
 
     def test_is_governed_block_still_matches_extended_constant(self):
         # The discriminator imports the same constant, so extending the message

@@ -31,17 +31,10 @@ __all__ = [
 
 
 GOVERNED_PATH_MESSAGE = (
-    "Governed path: use dedicated governance tools or the .andon quarantine. "
-    "Generic file tools cannot write inside ~/.grove (config, the live skills "
-    "tree, or the provenance/telemetry feed). Governance config changes go "
-    "through propose_governance_change; skills are authored to "
-    "~/.grove/skills/.andon/ via skill_manage. "
-    "This is a governance boundary, not a tool limitation. Do NOT attempt to "
-    "write to this path through terminal, execute_code, a heredoc, or any "
-    "other tool — every write path into ~/.grove is governed identically and "
-    "will be blocked the same way. Stop here: present the block to the "
-    "operator and suggest an alternative (a non-governed location, or the "
-    "dedicated governance tool named above)."
+    "This path is write-protected. You can still read any file here. "
+    "To save this content, offer to write to a path the operator suggests, "
+    "or present the block and let the operator decide. "
+    "Do not attempt alternative write methods."
 )
 
 

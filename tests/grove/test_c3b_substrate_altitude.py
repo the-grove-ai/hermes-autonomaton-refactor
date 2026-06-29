@@ -187,7 +187,7 @@ class TestV4AMoveExploitRefused:
         result = ops.patch_v4a(patch)
 
         assert result.success is False
-        assert "Governed path" in (result.error or "")
+        assert "write-protected" in (result.error or "")
         # The raw mv never ran: destination absent, source intact.
         assert not dst.exists()
         assert src.exists()

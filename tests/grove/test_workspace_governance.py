@@ -119,14 +119,14 @@ class TestFileTools:
         result = json.loads(
             write_file_tool(str(grove / "intent_records.jsonl"), "{}\n")
         )
-        assert result.get("error") and "Governed path" in result["error"]
+        assert result.get("error") and "write-protected" in result["error"]
 
     def test_11_write_file_token_refused(self, grove):
         from tools.file_tools import write_file_tool
         result = json.loads(
             write_file_tool(str(grove / "google_token.json"), "{}\n")
         )
-        assert result.get("error") and "Governed path" in result["error"]
+        assert result.get("error") and "write-protected" in result["error"]
 
     def test_12_read_file_granted_workspace_succeeds(self, grove):
         from tools.file_tools import read_file_tool
@@ -201,4 +201,4 @@ class TestInvariants:
         result = json.loads(
             write_file_tool(str(grove / "zones.schema.yaml"), "x\n")
         )
-        assert result.get("error") and "Governed path" in result["error"]
+        assert result.get("error") and "write-protected" in result["error"]
