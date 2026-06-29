@@ -89,7 +89,9 @@ def test_provider_base_url_resolved_from_config():
     provider = build_portal_links_provider(config=config)
     text = provider({}).text
     assert "http://cfg.test:9000/portal" in text
-    assert "http://cfg.test:9000/portal#fragments/cellar/pages/" in text
+    # portal-link-reliability-v1 (P3): cellar/pages template removed (now ready-
+    # link embedded); witness base_url resolution via a surviving standing link.
+    assert "http://cfg.test:9000/portal#fragments/dock/goals" in text
 
 
 def test_provider_loads_full_config_when_no_args(monkeypatch):
@@ -104,7 +106,8 @@ def test_provider_loads_full_config_when_no_args(monkeypatch):
     provider = build_portal_links_provider()  # no base_url, no config
     text = provider({}).text
     assert "http://100.102.6.70:8642/portal" in text
-    assert "http://100.102.6.70:8642/portal#fragments/cellar/pages/" in text
+    # portal-link-reliability-v1 (P3): witness via a surviving standing link.
+    assert "http://100.102.6.70:8642/portal#fragments/dock/goals" in text
 
 
 def test_provider_section_under_token_budget():
