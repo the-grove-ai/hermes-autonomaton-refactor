@@ -72,7 +72,7 @@ class TestFileToolGovernedLock:
         raw = write_file_tool(str(grove_home / "zones.schema.yaml"), "schema_version: 1\n")
         result = json.loads(raw)
         assert result.get("error")
-        assert "Governed path" in result["error"]
+        assert "write-protected" in result["error"]
 
     def test_patch_refuses_governed_path(self, grove_home):
         from tools.file_tools import patch_tool
@@ -82,7 +82,7 @@ class TestFileToolGovernedLock:
         )
         result = json.loads(raw)
         assert result.get("error")
-        assert "Governed path" in result["error"]
+        assert "write-protected" in result["error"]
 
     def test_write_file_allows_andon(self, grove_home):
         from tools.file_tools import write_file_tool
@@ -352,7 +352,7 @@ class TestDockBlockPreserved:
         )
         result = json.loads(raw)
         assert result.get("error")
-        assert "Governed path" in result["error"]
+        assert "write-protected" in result["error"]
 
     def test_shell_write_into_dock_classifies_red(self, grove_home):
         from grove.shell_effects import classify_shell_effect
