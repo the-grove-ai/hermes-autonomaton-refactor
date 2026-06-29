@@ -388,3 +388,37 @@ dl.frontmatter dd { margin: 0.1rem 0 0; }
     padding: 0.3rem 0.5rem;
 }
 .goal-actions select:hover { border-color: var(--accent); }
+
+/* ---- Models routing panel (portal-models-nav-v1) -------------------- */
+/* Cards stack like the other panels (Knowledge/Memory); .card already
+   carries the spacing. The intro mirrors a panel header. */
+#routing-panel h2 { margin: 0 0 0.35rem; }
+#routing-panel > .meta { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 1rem; }
+
+/* Dropdown + Swap/Revert on one row (wraps on narrow widths), not stacked. */
+.tier-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+}
+.tier-form select {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.85rem;
+    padding: 0.3rem 0.5rem;
+}
+.tier-form select:hover { border-color: var(--accent); }
+/* Revert is the secondary action — dim, matching .btn-dismiss. */
+.btn-secondary { color: var(--text-dim); }
+/* Inline swap error stays on the card; scope the red so other panels are
+   unaffected. */
+#routing-panel .meta.error { color: var(--error); }
+
+/* Model detail in the right panel — key/value like dl.frontmatter. */
+dl.model-detail { margin: 0.6rem 0; }
+dl.model-detail dt { color: var(--text-dim); font-size: 0.8rem; margin-top: 0.5rem; }
+dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
