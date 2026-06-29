@@ -1,0 +1,77 @@
+# cellar-search-tool-v1 — living-cellar search verb record (mirrors session_search).
+# family=cellar_search  zone=green  tiers=[1, 2, 3]  disclosure=proactive  trigger=analysis/research/retrieval
+id: cellar_search
+kind: verb
+trigger:
+  intents:
+  - analysis
+  - research
+  - retrieval
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - cellar_search
+  credentials: null
+  # Reuse the existing session_search CONFIGURABLE_TOOLSETS key (both are green
+  # read-search verbs) — avoids widening tools_config.py with a new toolset.
+  toolset_key: session_search
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'Native cellar_search tool (read, zone green) — searches the living
+    cellar (WikiIndex pages) and returns ready-made portal links. Tools: cellar_search.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: '2026-06-29T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-29T00:00:00+00:00'
+    from_state: migrated
+    to_state: approved
+    reason: 'cellar-search-tool-v1: admit cellar_search (read-only living-cellar
+      search) — closes the fabricated-cellar-URL bug by giving the agent a real
+      retrieval + honest-negative path'
+    evidence:
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: cellar_search'
+  - 'subsystem: native verb registry (tools.registry); living cellar (grove.wiki)'
+  - 'check: tool registered + zone mapped in zones.schema.yaml + GROVE_WIKI_PATH/pages present'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
