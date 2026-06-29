@@ -15,14 +15,17 @@ from types import SimpleNamespace
 
 from unittest.mock import MagicMock
 
-from agent.prompt_builder import GROVE_AGENT_HELP_GUIDANCE
+# prompt-dedup-v1: the post-halt (F3) directive moved from
+# GROVE_AGENT_HELP_GUIDANCE to the always-on SYSTEM_SELF_AWARENESS; the T26
+# discipline tests follow it to its new home.
+from agent.prompt_builder import SYSTEM_SELF_AWARENESS
 
 
 # ── T26: post-halt prompt discipline ──────────────────────────────────
 
 
 def test_T26_grove_agent_help_has_post_halt_directive():
-    g = GROVE_AGENT_HELP_GUIDANCE
+    g = SYSTEM_SELF_AWARENESS  # F3 directive lives here post-dedup
     # The directive is present and concrete.
     assert "paused or denied by the system" in g
     assert "do not explain the internal mechanism" in g
@@ -39,7 +42,7 @@ def test_T26_grove_agent_help_no_prediction_language():
     """The post-halt directive NAMES governance terms only to forbid them —
     that is correct. What must stay absent is language that teaches the agent
     to PREDICT or CLASSIFY governance outcomes (the Sprint 55 guarantee)."""
-    g = GROVE_AGENT_HELP_GUIDANCE.lower()
+    g = SYSTEM_SELF_AWARENESS.lower()  # F3 directive lives here post-dedup
     forbidden_prediction = [
         "yellow zone", "red zone", "green zone", "auto-allow", "auto allow",
         "requires approval", "will be allowed", "will prompt you", "zone rule",
