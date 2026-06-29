@@ -100,27 +100,29 @@ _SECTION_LABEL = "portal_links"
 def _render_section(base_url: str) -> str:
     """Render the portal deep-link guidance section.
 
-    Every link uses ``{base_url}/portal#fragments/...`` (I5: ``#``, not
-    ``/``) so the operator lands in the full styled shell. The text MUST
-    stay under 300 tokens (I4); ``{title}`` / ``{page_id}`` / ``{count}`` /
-    ``{query}`` are placeholders the agent fills per reference.
+    portal-link-reliability-v1 (P3) — TRIMMED to standing links only. Cellar
+    page links (cellar_knowledge provider) and proposal review links (the
+    Kaizen push note, P1) are now embedded MECHANICALLY as ready-made links at
+    their source, so their templates are removed here (I1: links are emitted,
+    never reconstructed by the model from a template). What remains are the
+    standing discovery surfaces with no per-reference ready-link path.
+
+    Every link uses ``{base_url}/portal#fragments/...`` (I5: ``#``, not ``/``)
+    so the operator lands in the full styled shell. ``{query}`` is the only
+    remaining placeholder the agent fills per reference.
     """
     return (
-        "## Portal Deep Links\n"
-        f"Portal: {base_url}/portal. Hand the operator a link to any rendered "
-        "artifact (Markdown; the # routes through the shell):\n"
-        f"- Cellar page: [{{title}}]({base_url}/portal#fragments/cellar/pages/{{page_id}})\n"
-        f"- Cellar by type: [Research briefs]({base_url}/portal#fragments/cellar/pages?source_type=researcher_brief)"
-        " (swap → scout_digest/drafter_draft/dock_goal)\n"
-        f"- Proposals: [{{count}} pending]({base_url}/portal#fragments/proposals/pending)\n"
+        "## Portal Links\n"
+        f"The Operator Portal is at {base_url}/portal.\n"
+        "Cellar page links and proposal review links are embedded automatically "
+        "in tool results and push notes — do not construct them manually.\n"
+        "For other panels, use these templates:\n"
         f"- Dock goals: [View goals]({base_url}/portal#fragments/dock/goals)\n"
         f"- Composition: [View mesh]({base_url}/portal#fragments/composition/panel)\n"
         f"- Dashboard: [Dashboard]({base_url}/portal#fragments/dashboard/overview)\n"
         f"- Search: [Search: {{query}}]({base_url}/portal#fragments/search?q={{query}})\n"
         "\n"
         "Rules (ALWAYS follow):\n"
-        "- ALWAYS link the cellar page(s) when you read or write the cellar.\n"
-        "- ALWAYS link the review queue when you mention pending proposals.\n"
         "- ALWAYS link goals when you reference dock goals or strategy.\n"
         "- ALWAYS link composition when you discuss connected nodes."
     )
