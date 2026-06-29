@@ -2,71 +2,166 @@
 # model-catalog.yaml — the menu of models the portal can bind to a tier
 # ============================================================================
 #
-# This is the repo-shipped SEED catalog. If ~/.grove/model-catalog.yaml exists
-# on a machine, that sovereign copy is loaded INSTEAD of this one (operator
-# wins). The Cognitive Router never reads this file — it is display metadata for
-# the portal model-swap UI only. When the operator picks a slug, the routing
-# writer validates it against routing.config.yaml, not against this catalog.
+# Repo-shipped SEED catalog. A sovereign ~/.grove/model-catalog.yaml, if present,
+# is loaded INSTEAD (operator wins). The Cognitive Router never reads this file —
+# it is the model menu for the portal swap UI only.
 #
-# COST FIELDS ARE DISPLAY-ONLY HEURISTICS (N2):
-#   input_cost_per_mtok / output_cost_per_mtok are STATIC USD-per-million-token
-#   figures taken from OpenRouter list prices at authoring time. They are NOT
-#   live billing data, carry NO accuracy guarantee, and drift as providers
-#   reprice. The router does not read them; the portal renders them as-is so the
-#   operator has a rough cost sense when swapping. Update by hand when stale.
+# EVERY slug here was verified against the live OpenRouter model list
+# (GET https://openrouter.ai/api/v1/models) at authoring time, and the costs
+# were pulled from it. A swap binds the exact slug, so a fictional id 400s at
+# call time — hence the verification. Provider prefixes matter: GLM is z-ai/*
+# (not zhipu/*), Kimi is moonshotai/*, Gemini is google/*.
+#
+# Google models route via OpenRouter using the operator's Google AI Studio BYOK
+# key configured in OpenRouter — the slug stays google/*; provider stays openrouter.
+#
+# COST FIELDS ARE DISPLAY-ONLY HEURISTICS: input_cost_per_mtok /
+# output_cost_per_mtok are USD per million tokens from OpenRouter list prices at
+# authoring time. NOT live billing data, no accuracy guarantee, they drift. The
+# router does not read them; the portal renders them as-is. Regenerate when stale.
 # ============================================================================
 models:
   - slug: "anthropic/claude-haiku-4.5"
     display_name: "Claude Haiku 4.5"
     provider: openrouter
-    input_cost_per_mtok: 1.00     # USD/Mtok — display-only heuristic, see header
-    output_cost_per_mtok: 5.00    # USD/Mtok — display-only heuristic, see header
-    notes: "Fast, cheap. Good for T1/telemetry."
+    input_cost_per_mtok: 1     # USD/Mtok — display-only, verified anthropic/claude-haiku-4.5
+    output_cost_per_mtok: 5    # USD/Mtok — display-only
+    notes: "Fast, cheap. Default T1 / telemetry."
   - slug: "anthropic/claude-sonnet-4.6"
     display_name: "Claude Sonnet 4.6"
     provider: openrouter
-    input_cost_per_mtok: 3.00     # USD/Mtok — display-only heuristic, see header
-    output_cost_per_mtok: 15.00   # USD/Mtok — display-only heuristic, see header
+    input_cost_per_mtok: 3     # USD/Mtok — display-only, verified anthropic/claude-sonnet-4.6
+    output_cost_per_mtok: 15    # USD/Mtok — display-only
     notes: "Balanced. Default T2."
   - slug: "anthropic/claude-opus-4.6"
     display_name: "Claude Opus 4.6"
     provider: openrouter
-    input_cost_per_mtok: 5.00     # USD/Mtok — display-only heuristic, see header
-    output_cost_per_mtok: 25.00   # USD/Mtok — display-only heuristic, see header
+    input_cost_per_mtok: 5     # USD/Mtok — display-only, verified anthropic/claude-opus-4.6
+    output_cost_per_mtok: 25    # USD/Mtok — display-only
     notes: "Apex reasoning. Default T3."
-  - slug: "deepseek/deepseek-v4-flash"
-    display_name: "DeepSeek V4 Flash"
+  - slug: "anthropic/claude-opus-4.8"
+    display_name: "Claude Opus 4.8"
     provider: openrouter
-    input_cost_per_mtok: 0.09     # USD/Mtok — display-only heuristic, see header
-    output_cost_per_mtok: 0.18    # USD/Mtok — display-only heuristic, see header
-    notes: "97% cheaper than Sonnet. Fleet candidate."
-  - slug: "deepseek/deepseek-v4-pro"
-    display_name: "DeepSeek V4 Pro"
+    input_cost_per_mtok: 5     # USD/Mtok — display-only, verified anthropic/claude-opus-4.8
+    output_cost_per_mtok: 25    # USD/Mtok — display-only
+    notes: "Latest Anthropic apex."
+  - slug: "google/gemini-2.5-pro"
+    display_name: "Gemini 2.5 Pro"
     provider: openrouter
-    input_cost_per_mtok: 0.44     # USD/Mtok — display-only heuristic, see header
-    output_cost_per_mtok: 0.87    # USD/Mtok — display-only heuristic, see header
-    notes: "Mid-tier DeepSeek."
+    input_cost_per_mtok: 1.25     # USD/Mtok — display-only, verified google/gemini-2.5-pro
+    output_cost_per_mtok: 10    # USD/Mtok — display-only
+    notes: "Google AI Studio BYOK. Strong for Google Research."
+  - slug: "google/gemini-2.5-flash"
+    display_name: "Gemini 2.5 Flash"
+    provider: openrouter
+    input_cost_per_mtok: 0.3     # USD/Mtok — display-only, verified google/gemini-2.5-flash
+    output_cost_per_mtok: 2.5    # USD/Mtok — display-only
+    notes: "Google AI Studio BYOK. Fast, cheap, multimodal."
+  - slug: "google/gemini-2.5-flash-lite"
+    display_name: "Gemini 2.5 Flash Lite"
+    provider: openrouter
+    input_cost_per_mtok: 0.1     # USD/Mtok — display-only, verified google/gemini-2.5-flash-lite
+    output_cost_per_mtok: 0.4    # USD/Mtok — display-only
+    notes: "Google AI Studio BYOK. Cheapest Gemini."
+  - slug: "google/gemini-3.5-flash"
+    display_name: "Gemini 3.5 Flash"
+    provider: openrouter
+    input_cost_per_mtok: 1.5     # USD/Mtok — display-only, verified google/gemini-3.5-flash
+    output_cost_per_mtok: 9    # USD/Mtok — display-only
+    notes: "Google AI Studio BYOK. Frontier flash."
+  - slug: "google/gemini-3.1-pro-preview"
+    display_name: "Gemini 3.1 Pro (preview)"
+    provider: openrouter
+    input_cost_per_mtok: 2     # USD/Mtok — display-only, verified google/gemini-3.1-pro-preview
+    output_cost_per_mtok: 12    # USD/Mtok — display-only
+    notes: "Google AI Studio BYOK. Frontier Gemini Pro."
+  - slug: "deepseek/deepseek-chat"
+    display_name: "DeepSeek V3"
+    provider: openrouter
+    input_cost_per_mtok: 0.2002     # USD/Mtok — display-only, verified deepseek/deepseek-chat
+    output_cost_per_mtok: 0.8001    # USD/Mtok — display-only
+    notes: "Very cheap general model. Fleet candidate."
   - slug: "deepseek/deepseek-v3.2"
     display_name: "DeepSeek V3.2"
     provider: openrouter
-    input_cost_per_mtok: 0.50     # USD/Mtok — display-only heuristic, see header
-    output_cost_per_mtok: 1.50    # USD/Mtok — display-only heuristic, see header
-    notes: "Legacy DeepSeek."
-  - slug: "zhipu/glm-5.2"
+    input_cost_per_mtok: 0.2288     # USD/Mtok — display-only, verified deepseek/deepseek-v3.2
+    output_cost_per_mtok: 0.3432    # USD/Mtok — display-only
+    notes: "Cheapest DeepSeek. Fleet candidate."
+  - slug: "deepseek/deepseek-r1"
+    display_name: "DeepSeek R1"
+    provider: openrouter
+    input_cost_per_mtok: 0.7     # USD/Mtok — display-only, verified deepseek/deepseek-r1
+    output_cost_per_mtok: 2.5    # USD/Mtok — display-only
+    notes: "Reasoning model, cheap."
+  - slug: "z-ai/glm-4.6"
+    display_name: "GLM 4.6"
+    provider: openrouter
+    input_cost_per_mtok: 0.43     # USD/Mtok — display-only, verified z-ai/glm-4.6
+    output_cost_per_mtok: 1.74    # USD/Mtok — display-only
+    notes: "Cheap frontier (Z.ai)."
+  - slug: "z-ai/glm-5.2"
     display_name: "GLM 5.2"
     provider: openrouter
-    input_cost_per_mtok: 1.20     # USD/Mtok — display-only heuristic, see header
-    output_cost_per_mtok: 4.10    # USD/Mtok — display-only heuristic, see header
-    notes: "Chinese frontier model."
-  - slug: "qwen/qwen-3.6-plus"
-    display_name: "Qwen 3.6 Plus"
+    input_cost_per_mtok: 0.94     # USD/Mtok — display-only, verified z-ai/glm-5.2
+    output_cost_per_mtok: 3    # USD/Mtok — display-only
+    notes: "Z.ai frontier."
+  - slug: "z-ai/glm-4.7-flash"
+    display_name: "GLM 4.7 Flash"
     provider: openrouter
-    input_cost_per_mtok: 0.33     # USD/Mtok — display-only heuristic, see header
-    output_cost_per_mtok: 1.95    # USD/Mtok — display-only heuristic, see header
-    notes: "Alibaba mid-tier."
-  - slug: "kimi/k2.6"
+    input_cost_per_mtok: 0.06     # USD/Mtok — display-only, verified z-ai/glm-4.7-flash
+    output_cost_per_mtok: 0.4    # USD/Mtok — display-only
+    notes: "Ultra-cheap (Z.ai)."
+  - slug: "moonshotai/kimi-k2.6"
     display_name: "Kimi K2.6"
     provider: openrouter
-    input_cost_per_mtok: 0.95     # USD/Mtok — display-only heuristic, see header
-    output_cost_per_mtok: 4.00    # USD/Mtok — display-only heuristic, see header
+    input_cost_per_mtok: 0.55     # USD/Mtok — display-only, verified moonshotai/kimi-k2.6
+    output_cost_per_mtok: 3.2    # USD/Mtok — display-only
     notes: "Moonshot AI."
+  - slug: "moonshotai/kimi-k2.5"
+    display_name: "Kimi K2.5"
+    provider: openrouter
+    input_cost_per_mtok: 0.375     # USD/Mtok — display-only, verified moonshotai/kimi-k2.5
+    output_cost_per_mtok: 2.025    # USD/Mtok — display-only
+    notes: "Moonshot AI, cheaper."
+  - slug: "qwen/qwen3-235b-a22b-2507"
+    display_name: "Qwen3 235B"
+    provider: openrouter
+    input_cost_per_mtok: 0.09     # USD/Mtok — display-only, verified qwen/qwen3-235b-a22b-2507
+    output_cost_per_mtok: 0.1    # USD/Mtok — display-only
+    notes: "Extremely cheap large model. Fleet candidate."
+  - slug: "qwen/qwen3-max"
+    display_name: "Qwen3 Max"
+    provider: openrouter
+    input_cost_per_mtok: 0.78     # USD/Mtok — display-only, verified qwen/qwen3-max
+    output_cost_per_mtok: 3.9    # USD/Mtok — display-only
+    notes: "Alibaba frontier."
+  - slug: "qwen/qwen3-coder"
+    display_name: "Qwen3 Coder"
+    provider: openrouter
+    input_cost_per_mtok: 0.22     # USD/Mtok — display-only, verified qwen/qwen3-coder
+    output_cost_per_mtok: 1.8    # USD/Mtok — display-only
+    notes: "Code-specialized (480B)."
+  - slug: "x-ai/grok-4.3"
+    display_name: "Grok 4.3"
+    provider: openrouter
+    input_cost_per_mtok: 1.25     # USD/Mtok — display-only, verified x-ai/grok-4.3
+    output_cost_per_mtok: 2.5    # USD/Mtok — display-only
+    notes: "xAI frontier."
+  - slug: "openai/gpt-5.1"
+    display_name: "GPT-5.1"
+    provider: openrouter
+    input_cost_per_mtok: 1.25     # USD/Mtok — display-only, verified openai/gpt-5.1
+    output_cost_per_mtok: 10    # USD/Mtok — display-only
+    notes: "OpenAI frontier."
+  - slug: "openai/gpt-5-mini"
+    display_name: "GPT-5 Mini"
+    provider: openrouter
+    input_cost_per_mtok: 0.25     # USD/Mtok — display-only, verified openai/gpt-5-mini
+    output_cost_per_mtok: 2    # USD/Mtok — display-only
+    notes: "OpenAI, cheap."
+  - slug: "openai/gpt-4o-mini"
+    display_name: "GPT-4o mini"
+    provider: openrouter
+    input_cost_per_mtok: 0.15     # USD/Mtok — display-only, verified openai/gpt-4o-mini
+    output_cost_per_mtok: 0.6    # USD/Mtok — display-only
+    notes: "OpenAI, ultra-cheap."
