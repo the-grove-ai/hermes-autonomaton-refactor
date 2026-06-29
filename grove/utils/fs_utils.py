@@ -516,16 +516,16 @@ def is_write_allowed(target_path: str, session_cwd: str = None) -> bool:
 
 
 def write_refused_message(path: object) -> str:
-    """The operator-facing refusal for an out-of-workspace write. States the
-    boundary and the remediation (declare the directory) without naming any
-    secret, zone, or enforcement mechanism (editorial register). The conversational
-    grant flow that turns this into a one-tap proposal is a fast-follow; until
-    then the directory is added to the operator's write workspaces to enable work
-    there."""
-    parent = os.path.dirname(os.path.expanduser(str(path))) or str(path)
+    """The operator-facing refusal for an out-of-workspace write — never a dead
+    end. States the boundary and an actionable next move honest about what the
+    system can do TODAY: declare the directory (hot-reloads on mtime) or redirect
+    to an already-allowed workspace. The grant-flow fast-follow upgrades this to
+    an in-conversation proposal."""
     return (
-        f"Write refused — {path} is outside your declared workspaces. To work "
-        f"there, {parent} must be added to your write workspaces."
+        f"Write refused — {path} is outside your declared write workspaces. "
+        "To work here, add the directory to ~/.grove/write_workspaces.yaml "
+        "and I'll pick it up automatically, or I can write to ~/.grove/research/ "
+        "or /tmp/ instead."
     )
 
 
