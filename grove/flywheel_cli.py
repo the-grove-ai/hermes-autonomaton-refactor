@@ -337,7 +337,12 @@ def get_renderer(type_name: str) -> Callable[[Any], str]:
         raise ValueError(f"No renderer for proposal type: {type_name!r}")
 
 
-def compose_offering(proposal: Any, *, is_push: bool) -> str:
+def compose_offering(
+    proposal: Any,
+    *,
+    is_push: bool,
+    portal_base_url: Optional[str] = None,
+) -> str:
     """The ONE in-register renderer for an offering — any KaizenRenderable.
 
     Deterministic — no model call. The factual core is the per-type body from
@@ -347,6 +352,11 @@ def compose_offering(proposal: Any, *, is_push: bool) -> str:
     * ``is_push=True`` — a conversational interrupt for the post-turn push.
     * ``is_push=False`` — the BARE inventory body (no interrupt wrapper), so a
       pull queue / ``_format_summary`` / ``cli_show`` read as a list.
+
+    ``portal_base_url`` (portal-link-reliability-v1, P1) — when set AND this is
+    a push, a ready-made review deep link is appended to the note. None/empty
+    leaves the note unchanged (I2 graceful degradation). The pull form
+    (``is_push=False``) never carries a link regardless.
     """
     core = get_renderer(proposal.type)(proposal)
     if not is_push:
@@ -356,10 +366,16 @@ def compose_offering(proposal: Any, *, is_push: bool) -> str:
     # could …"; memory: "I crystallized a domain insight …"); the shared frame +
     # approve/dismiss tail are the one Kaizen voice. The operator replies in
     # natural language; the model routes it via review_proposals -> approve.
-    return (
+    note = (
         f"{_OFFERING_PUSH_PREFIX} {proposal.push_body(core)} — {_OFFERING_PUSH_ASK} "
         f"Reply 'approve' to apply this, or 'dismiss' to skip."
     )
+    # portal-link-reliability-v1 (P1) — ready-made review deep link, embedded
+    # mechanically (never a template the model fills). Appended only when the
+    # caller resolved a base URL from the resident config (I2: missing → no link).
+    if portal_base_url:
+        note += f" 📋 [Review]({portal_base_url}/portal#fragments/proposals/pending)"
+    return note
 
 
 def _format_summary(proposal: RoutingProposal) -> str:
