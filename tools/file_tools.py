@@ -185,20 +185,18 @@ def _reject_governed_path(filepath: str, task_id: str = "default") -> None:
     already classified expected by ``_is_expected_write_exception`` below, so
     the caller's ``except`` turns it into a clean tool-error for the model.
     """
-    from grove.utils.fs_utils import (
-        GOVERNED_PATH_MESSAGE,
-        is_governed_path,
-        is_granted_workspace,
-    )
+    # secrets-only-wall-v1: the generic file tools are blinded ONLY to secrets +
+    # out-of-bounds (is_secret_path). Non-secret ~/.grove writes are no longer
+    # statically walled here — they cross the zone/approval pipeline (write_file
+    # is yellow). The path is resolved per-task FIRST, then is_secret_path
+    # realpath-canonicalizes for the in-bounds + anchor match.
+    from grove.utils.fs_utils import GOVERNED_PATH_MESSAGE, is_secret_path
+
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except Exception:
         resolved = filepath
-    # workspace-governance-unification-v1: an operator-granted workspace passes
-    # the positive allowlist; everything else under ~/.grove hits the wall.
-    if is_granted_workspace(resolved):
-        return
-    if is_governed_path(resolved):
+    if is_secret_path(resolved):
         raise PermissionError(GOVERNED_PATH_MESSAGE)
 
 

@@ -89,9 +89,11 @@ def test_system_self_awareness_architecture_vocab_only_in_f3():
 
 
 def test_governed_path_message_rewritten_without_architecture():
+    # secrets-only-wall-v1: the message now states the protected-secret fact and
+    # affirms that everything else (incl. all of ~/.grove) is writable.
     low = GOVERNED_PATH_MESSAGE.lower()
-    assert "write-protected" in low
-    assert "you can still read any file" in low
+    assert "is protected" in low
+    assert "cannot be written" in low
     assert "do not attempt alternative write methods" in low
     # Removed: architecture framing + the SPEC's own confabulated command.
     assert "governance boundary" not in low
@@ -123,11 +125,14 @@ def test_governed_write_still_blocked_with_new_message():
     # GROVE_HOME to a tmp tree), so the check fires regardless of where home is.
     # A scope-defining surface is never a granted workspace (defense-in-depth),
     # so this is deterministically governed regardless of workspaces.yaml.
-    governed = os.path.join(get_hermes_home(), "zones.schema.yaml")
+    # secrets-only-wall-v1: zones.schema.yaml is now non-secret (writable), so to
+    # exercise the still-blocked wall we target a SECRET under the active grove
+    # home (.env) — operator credentials remain protected with no approval path.
+    governed = os.path.join(get_hermes_home(), ".env")
     with pytest.raises(PermissionError) as exc:
         reject_governed_agent_write(governed)
     assert str(exc.value) == GOVERNED_PATH_MESSAGE
-    assert "write-protected" in str(exc.value)
+    assert "is protected" in str(exc.value)
 
 
 # ── Composed prompt: agent-architecture sections free of the SPEC's forbidden

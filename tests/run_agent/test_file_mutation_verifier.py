@@ -515,9 +515,10 @@ class TestGovernedMessageCascadeInstruction:
         # governance architecture (no "governance boundary", no terminal /
         # execute_code enumeration). It states the fact, preserves read access,
         # and still forbids rerouting to an alternative write method.
+        # secrets-only-wall-v1: message states the protected-secret fact and
+        # forbids rerouting; still no governance-architecture recitation.
         msg = GOVERNED_PATH_MESSAGE.lower()
-        assert "write-protected" in msg
-        assert "you can still read any file" in msg
+        assert "is protected" in msg
         assert "do not attempt alternative write methods" in msg
         assert "governance boundary" not in msg
 
