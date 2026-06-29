@@ -19,7 +19,7 @@ import logging
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import yaml
 from aiohttp import web
@@ -579,6 +579,31 @@ async def handle_meta(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+def _build_portal_url(
+    page: Any, config: Optional[Dict[str, Any]] = None
+) -> Optional[str]:
+    """portal-link-reliability-v1 (P2) — a ready-made cellar deep link for a
+    freshly ingested page, or ``None`` when no base URL resolves (I2).
+
+    page_id parity with ``wiki/provider._format_result`` is MANDATORY (I3):
+    ``page.path`` from ``ingest_file`` is ABSOLUTE
+    (``get_wiki_path()/pages/<source_type>/<slug>-<hash>.md``), so the id is
+    derived RELATIVE to the pages root — the exact contract
+    ``handle_cellar_page_detail`` (``pages_dir`` at line 333) and the cellar
+    listing (line 316) use. ``config`` is the resident snapshot when the caller
+    has one; ``None`` falls back to ``load_config()`` inside
+    ``resolve_portal_base_url`` (tolerable on the infrequent ingest path).
+    """
+    from grove.prompt.portal_links import resolve_portal_base_url
+
+    base = resolve_portal_base_url(config=config)
+    if not base:
+        return None
+    pages_root = get_wiki_path() / "pages"
+    page_id = page.path.relative_to(pages_root).with_suffix("").as_posix()
+    return f"{base}/portal#fragments/cellar/pages/{page_id}"
+
+
 async def handle_ingest(request: web.Request) -> web.Response:
     """``POST /api/substrate/ingest`` — compact one source file into the cellar.
 
@@ -615,13 +640,20 @@ async def handle_ingest(request: web.Request) -> web.Response:
     page = ingest_file(path)
     if page is None:
         return _envelope({"ingested": False, "path": str(path)})
-    return _envelope({
+    # portal-link-reliability-v1 (P2) — enrich with a ready-made cellar deep
+    # link. Prefer the app's resident config snapshot; None falls back to
+    # load_config() (Decision 2, documented deviation — ingest is infrequent).
+    portal_url = _build_portal_url(page, config=request.app.get("config"))
+    envelope = {
         "ingested": True,
         "source_type": page.source_type,
         "source": page.source,
         "title": page.title,
         "page_path": str(page.path),
-    })
+    }
+    if portal_url:
+        envelope["portal_url"] = portal_url
+    return _envelope(envelope)
 
 
 # ---------------------------------------------------------------------------
