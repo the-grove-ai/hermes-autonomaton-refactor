@@ -1,0 +1,77 @@
+# workspace_grant_write.yaml — in-conversation write-workspace grant verb record.
+# write-workspace-grant-flow-v1: add_write_workspace appends a directory root to
+# write_workspaces.yaml so a refused write can proceed. Yellow zone: the grant is
+# a governed config mutation gated by the Sovereign Prompt (the operator's
+# approval of THAT prompt is the grant — no second confirmation). always:true so
+# the recovery path is admitted whenever a write is refused.
+# family=workspace_grant  zone=yellow  tiers=[1,2,3]  disclosure=proactive  trigger=always
+id: workspace_grant_write
+kind: verb
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - add_write_workspace
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'In-conversation write-workspace grant (governed, zone yellow). Tools:
+    add_write_workspace.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: '2026-06-29T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-06-29T00:00:00+00:00'
+    from_state: new
+    to_state: approved
+    reason: 'write-workspace-grant-flow-v1: admit add_write_workspace through a
+      capability record; tool registered in tools.workspace_grant_tool but needs a
+      record or get_admitted_tools() filters it out'
+    evidence:
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: workspace_grant_write'
+  - 'subsystem: write-workspace grant (tools.workspace_grant_tool)'
+  - 'check: tool registered + default-yellow classification + write_workspaces.yaml writable via append_write_workspace'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

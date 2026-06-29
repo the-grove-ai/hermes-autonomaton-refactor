@@ -516,16 +516,16 @@ def is_write_allowed(target_path: str, session_cwd: str = None) -> bool:
 
 
 def write_refused_message(path: object) -> str:
-    """The operator-facing refusal for an out-of-workspace write — never a dead
-    end. States the boundary and an actionable next move honest about what the
-    system can do TODAY: declare the directory (hot-reloads on mtime) or redirect
-    to an already-allowed workspace. The grant-flow fast-follow upgrades this to
-    an in-conversation proposal."""
+    """The agent-facing refusal for an out-of-workspace write — never a dead end.
+    Names the in-conversation recovery path (the add_write_workspace tool, gated
+    by the sovereignty prompt) plus the always-allowed fallbacks, so the agent
+    can offer the next move conversationally and retry after approval."""
+    parent = os.path.dirname(os.path.realpath(os.path.expanduser(str(path)))) or str(path)
     return (
         f"Write refused — {path} is outside your declared write workspaces. "
-        "To work here, add the directory to ~/.grove/write_workspaces.yaml "
-        "and I'll pick it up automatically, or I can write to ~/.grove/research/ "
-        "or /tmp/ instead."
+        f"You can call add_write_workspace to propose adding {parent} — the "
+        "operator will be asked to approve. Alternatively, you can write to "
+        "~/.grove/research/ or /tmp/ instead."
     )
 
 
