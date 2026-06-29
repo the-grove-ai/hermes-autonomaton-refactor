@@ -26,6 +26,7 @@ tracker follows the binding automatically.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -168,6 +169,21 @@ _CLASSIFY_TOOL = {
             },
         },
         "required": ["routing_envelope", "learning_envelope"],
+    },
+}
+
+
+# classifier-provider-agnostic-v1: the same classification tool in OpenAI /
+# chat_completions wire format. Same name, description, and JSON Schema as
+# _CLASSIFY_TOOL above — only the envelope differs (OpenAI nests the schema
+# under "function"."parameters" where Anthropic uses top-level "input_schema").
+# Every field is sourced from _CLASSIFY_TOOL so the two shapes can never drift.
+_CLASSIFY_TOOL_OPENAI = {
+    "type": "function",
+    "function": {
+        "name": _CLASSIFY_TOOL["name"],
+        "description": _CLASSIFY_TOOL["description"],
+        "parameters": _CLASSIFY_TOOL["input_schema"],
     },
 }
 
@@ -474,11 +490,11 @@ def _telemetry_tier_runtime():
         raise RuntimeError("no Cognitive Router; cannot resolve the telemetry tier")
     tier_config = router.get_tier_config(router.get_telemetry_tier())
     runtime = resolve_tier_to_runtime(tier_config)
-    if runtime.get("api_mode") != "anthropic_messages":
-        raise RuntimeError(
-            f"telemetry tier resolves api_mode {runtime.get('api_mode')!r}; "
-            f"the v0.1 classifier requires an Anthropic-native tier"
-        )
+    # classifier-provider-agnostic-v1: the pre-call identity guard (api_mode
+    # must be anthropic_messages) is retired. _call_classifier now speaks both
+    # anthropic_messages and chat_completions, and fails loud POST-call on a
+    # structural failure (the forced tool call did not come back) rather than
+    # on what the provider IS. An unsupported api_mode still raises there.
     return runtime, tier_config
 
 
@@ -495,6 +511,15 @@ def _call_classifier(
     by the API contract rather than by prompt instruction. The model
     returns a ``tool_use`` block whose ``input`` is the structured
     classification — no prefill, no freeform JSON, no bracket hunting.
+
+    classifier-provider-agnostic-v1: this call branches on the telemetry
+    tier's resolved ``api_mode``. ``anthropic_messages`` uses the Messages
+    API and parses ``tool_use`` content blocks (preserved exactly);
+    ``chat_completions`` uses the OpenAI-compatible Chat Completions API
+    (OpenRouter, Ollama, vLLM, …) and parses
+    ``message.tool_calls[0].function.arguments``. Both force the
+    ``classify_intent`` tool, so the schema is API-enforced on either
+    surface; any other ``api_mode`` fails loud.
 
     ``tier_config`` is the T-telemetry ``TierConfig`` resolved by
     ``_telemetry_tier_runtime``; its ``cost_per_mtok_input`` /
@@ -519,45 +544,112 @@ def _call_classifier(
     operator inspecting routing telemetry can see which path the
     classifier took without inspecting the token itself.
     """
-    from agent.anthropic_adapter import build_anthropic_client
-
     api_key = runtime.get("api_key") or ""
     auth_type = runtime.get("auth_type") or "unspecified"
+    api_mode = runtime.get("api_mode")
     logger.debug(
-        "[classify] T-telemetry runtime: model=%r base_url=%r auth_type=%r",
+        "[classify] T-telemetry runtime: model=%r base_url=%r api_mode=%r "
+        "auth_type=%r",
         runtime.get("model"),
         runtime.get("base_url"),
+        api_mode,
         auth_type,
-    )
-    client = build_anthropic_client(
-        api_key=api_key,
-        base_url=runtime.get("base_url") or None,
     )
     # Sprint 28 Phase 2: build the system prompt per-call so a goals.md
     # edit takes effect on the next classify without restarting the
     # process. The file is small and the cost is trivial against the
     # T-telemetry classifier's existing baseline.
     system_prompt = _build_classification_system_prompt(_read_goals_content())
-    response = client.messages.create(
-        model=runtime["model"],
-        max_tokens=_MAX_OUTPUT_TOKENS,
-        system=system_prompt,
-        tools=[_CLASSIFY_TOOL],
-        tool_choice={"type": "tool", "name": "classify_intent"},
-        messages=[{"role": "user", "content": message}],
-    )
-    _track_cost(response.usage, tier_config=tier_config)
-    for block in response.content:
-        if getattr(block, "type", None) == "tool_use" and \
-                getattr(block, "name", None) == "classify_intent":
-            return block.input
-    # tool_choice forces the call, so this should never fire. If it does,
-    # raise loudly — classify_for_routing's except logs it at ERROR and
-    # routes on default-tier behaviour (the commanded Sprint 12 D4
-    # degradation). A silent None would discard the diagnostic.
-    raise ValueError(
-        "classifier returned no classify_intent tool_use block: "
-        f"{getattr(response, 'content', None)!r}"
+
+    # classifier-provider-agnostic-v1: branch on the wire protocol the
+    # telemetry tier resolves to. The Anthropic Messages path is preserved
+    # exactly; the chat_completions path drives any OpenAI-compatible
+    # provider (OpenRouter, Ollama, vLLM, …). The forced tool call — the
+    # contract that makes the classifier robust — holds on both surfaces.
+    if api_mode == "chat_completions":
+        # Lazy import keeps the ~800ms openai/pydantic load off the
+        # module-import critical path, matching the Anthropic branch's
+        # local import below.
+        from openai import OpenAI
+
+        client = OpenAI(
+            base_url=runtime.get("base_url") or None,
+            api_key=api_key,
+        )
+        response = client.chat.completions.create(
+            model=runtime["model"],
+            max_tokens=_MAX_OUTPUT_TOKENS,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message},
+            ],
+            tools=[_CLASSIFY_TOOL_OPENAI],
+            tool_choice={
+                "type": "function",
+                "function": {"name": "classify_intent"},
+            },
+        )
+        _track_cost(response.usage, tier_config=tier_config)
+        # Structural Andon — deterministic, no LLM evaluation. Forced
+        # tool_choice should guarantee a classify_intent call; if the bound
+        # model cannot honour it, fail loud rather than route blind. The
+        # except in classify_for_routing logs at ERROR and degrades to
+        # default-tier behaviour (the commanded Sprint 12 D4 degradation).
+        if (
+            not response.choices
+            or not response.choices[0].message.tool_calls
+            or not response.choices[0].message.tool_calls[0].function
+        ):
+            raise RuntimeError(
+                f"classifier: model {runtime['model']!r} returned no "
+                f"tool_calls; forced tool_choice failed — model may not "
+                f"support function calling"
+            )
+        raw = response.choices[0].message.tool_calls[0].function
+        if raw.name != "classify_intent":
+            raise RuntimeError(
+                f"classifier: model {runtime['model']!r} returned tool "
+                f"{raw.name!r}, expected 'classify_intent'"
+            )
+        return json.loads(raw.arguments)
+
+    elif api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import build_anthropic_client
+
+        client = build_anthropic_client(
+            api_key=api_key,
+            base_url=runtime.get("base_url") or None,
+        )
+        response = client.messages.create(
+            model=runtime["model"],
+            max_tokens=_MAX_OUTPUT_TOKENS,
+            system=system_prompt,
+            tools=[_CLASSIFY_TOOL],
+            tool_choice={"type": "tool", "name": "classify_intent"},
+            messages=[{"role": "user", "content": message}],
+        )
+        _track_cost(response.usage, tier_config=tier_config)
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use" and \
+                    getattr(block, "name", None) == "classify_intent":
+                return block.input
+        # tool_choice forces the call, so this should never fire. If it does,
+        # raise loudly — classify_for_routing's except logs it at ERROR and
+        # routes on default-tier behaviour (the commanded Sprint 12 D4
+        # degradation). A silent None would discard the diagnostic.
+        raise ValueError(
+            "classifier returned no classify_intent tool_use block: "
+            f"{getattr(response, 'content', None)!r}"
+        )
+
+    # Any other api_mode (bedrock_converse, codex_responses, …) is not a
+    # surface this classifier speaks. Fail loud rather than silently issue a
+    # mis-shaped call (fail-fast, no silent fallback). classify_for_routing's
+    # except catches this and degrades to default-tier behaviour.
+    raise RuntimeError(
+        f"classifier: unsupported telemetry api_mode {api_mode!r} "
+        f"(model={runtime.get('model')!r}); bind the telemetry tier to an "
+        f"anthropic_messages or chat_completions provider"
     )
 
 
@@ -716,8 +808,19 @@ def _track_cost(usage, *, tier_config) -> None:
     never silently stop.
     """
     global _cumulative_cost_usd, _budget_warned, _missing_cost_warned
-    input_tokens = getattr(usage, "input_tokens", 0) or 0
-    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    # classifier-provider-agnostic-v1: Anthropic usage exposes
+    # input_tokens/output_tokens; OpenAI-compatible (chat_completions /
+    # OpenRouter) usage exposes prompt_tokens/completion_tokens. Read whichever
+    # the bound provider returned — the Anthropic path is unchanged (its
+    # input_tokens is present, so the prompt_tokens fallback never fires).
+    input_tokens = getattr(usage, "input_tokens", None)
+    if input_tokens is None:
+        input_tokens = getattr(usage, "prompt_tokens", 0)
+    input_tokens = input_tokens or 0
+    output_tokens = getattr(usage, "output_tokens", None)
+    if output_tokens is None:
+        output_tokens = getattr(usage, "completion_tokens", 0)
+    output_tokens = output_tokens or 0
 
     cost_in = getattr(tier_config, "cost_per_mtok_input", None)
     cost_out = getattr(tier_config, "cost_per_mtok_output", None)
