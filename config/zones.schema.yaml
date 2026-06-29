@@ -330,6 +330,7 @@ tool_zones:
   ha_list_services:                          green
   kanban_list:                               green
   kanban_show:                               green
+  cellar_search:                             green
   memory:                                    green
   read_file:                                 green
   search_files:                              green
