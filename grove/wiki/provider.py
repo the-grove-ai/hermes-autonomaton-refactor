@@ -40,12 +40,12 @@ turn-start query does not stat the pages tree every turn.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from grove.prompt.composer import SectionResult
 from grove.prompt.portal_links import resolve_portal_base_url
 from grove.wiki.index import WikiIndex, WikiResult
+from grove.wiki.links import cellar_page_portal_link
 
 __all__ = ["create_cellar_provider"]
 
@@ -87,10 +87,9 @@ def _format_result(result: WikiResult, base_url: Optional[str] = None) -> str:
     if result.topics:
         lines.append(f"Topics: {', '.join(result.topics[:_TOPICS_SHOWN])}")
     if base_url:
-        page_id = Path(result.source_path).with_suffix("").as_posix()
-        lines.append(
-            f"📄 [View in portal]({base_url}/portal#fragments/cellar/pages/{page_id})"
-        )
+        # cellar-search-tool-v1 — shared builder (byte-identical to the prior
+        # inline f-string); the search tool emits the SAME link.
+        lines.append(cellar_page_portal_link(result.source_path, base_url))
     lines.append(result.snippet)
     return "\n".join(lines)
 
