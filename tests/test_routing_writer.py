@@ -44,27 +44,27 @@ def writer(tmp_path):
 async def test_swap_sets_model_and_previous(writer):
     w, cfg = writer
     before, _ = _model(cfg, "T2")
-    await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")
+    await w.swap_tier_model("T2", "deepseek/deepseek-chat")
     model, prev = _model(cfg, "T2")
-    assert model == "deepseek/deepseek-v4-flash"
+    assert model == "deepseek/deepseek-chat"
     assert prev == before
 
 
 async def test_revert_toggles_model_and_previous(writer):
     w, cfg = writer
     orig, _ = _model(cfg, "T2")
-    await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")
+    await w.swap_tier_model("T2", "deepseek/deepseek-chat")
     await w.revert_tier_model("T2")
     model, prev = _model(cfg, "T2")
     assert model == orig
     # one-level undo: previous now points at the model we reverted away from
-    assert prev == "deepseek/deepseek-v4-flash"
+    assert prev == "deepseek/deepseek-chat"
 
 
 async def test_swap_preserves_comments(writer):
     w, cfg = writer
     assert "# DEFAULT PROVIDER" in cfg.read_text()
-    await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")
+    await w.swap_tier_model("T2", "deepseek/deepseek-chat")
     after = cfg.read_text()
     assert "# DEFAULT PROVIDER" in after  # AC-8
     assert "THE FOUR TIERS" in after
@@ -76,15 +76,15 @@ async def test_swap_preserves_comments(writer):
 async def test_concurrent_swaps_no_corruption(writer):
     w, cfg = writer
     await asyncio.gather(
-        w.swap_tier_model("T1", "deepseek/deepseek-v4-flash"),
-        w.swap_tier_model("T2", "deepseek/deepseek-v4-pro"),
-        w.swap_tier_model("T3", "zhipu/glm-5.2"),
+        w.swap_tier_model("T1", "deepseek/deepseek-chat"),
+        w.swap_tier_model("T2", "deepseek/deepseek-v3.2"),
+        w.swap_tier_model("T3", "z-ai/glm-4.6"),
     )
     data = ruamel.yaml.YAML().load(cfg.read_text(encoding="utf-8"))
     tiers = data["routing"]["tier_preferences"]
-    assert tiers["T1"]["model"] == "deepseek/deepseek-v4-flash"
-    assert tiers["T2"]["model"] == "deepseek/deepseek-v4-pro"
-    assert tiers["T3"]["model"] == "zhipu/glm-5.2"
+    assert tiers["T1"]["model"] == "deepseek/deepseek-chat"
+    assert tiers["T2"]["model"] == "deepseek/deepseek-v3.2"
+    assert tiers["T3"]["model"] == "z-ai/glm-4.6"
 
 
 # ----- writer: validation (fail loud, file untouched) -----------------------
@@ -111,7 +111,7 @@ async def test_invalid_tier_raises(writer):
     # handler-backed T0 (no model) all fail loud.
     for bad in ("T9", "telemetry", "T0"):
         with pytest.raises(ConfigValidationError):
-            await w.swap_tier_model(bad, "deepseek/deepseek-v4-flash")
+            await w.swap_tier_model(bad, "deepseek/deepseek-chat")
 
 
 async def test_revert_without_previous_raises(writer):
@@ -126,7 +126,10 @@ async def test_revert_without_previous_raises(writer):
 def test_catalog_loads_repo_seed():
     catalog = load_catalog()
     assert len(catalog) >= 9
-    assert "deepseek/deepseek-v4-flash" in {m["slug"] for m in catalog}
+    slugs = {m["slug"] for m in catalog}
+    # stable anchors: the default tier models + a Google AI Studio entry
+    assert "anthropic/claude-sonnet-4.6" in slugs
+    assert "google/gemini-2.5-pro" in slugs
 
 
 def test_catalog_sovereign_override(tmp_path, monkeypatch):

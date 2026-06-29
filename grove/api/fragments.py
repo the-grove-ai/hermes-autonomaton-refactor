@@ -925,7 +925,10 @@ def render_tier_card(tier: str, config, catalog: list, error: str | None = None)
         f'<div class="meta">{_esc(cost)}</div>'
         f'<form class="tier-form">'
         f'<input type="hidden" name="tier" value="{tier_e}">'
-        f'<select name="model_slug">{_model_options_html(catalog, current)}</select>'
+        f'<select name="model_slug" '
+        f'hx-get="/portal/fragments/routing/model" hx-trigger="change" '
+        f'hx-target="#right-panel" hx-swap="outerHTML">'
+        f'{_model_options_html(catalog, current)}</select>'
         f'<button type="button" class="btn" '
         f'hx-post="/portal/actions/routing/swap" hx-include="closest form" '
         f'hx-target="#tier-{tier_e}" hx-swap="outerHTML">Swap</button>'
@@ -936,13 +939,34 @@ def render_tier_card(tier: str, config, catalog: list, error: str | None = None)
     )
 
 
-def render_routing_page(config, catalog: list) -> str:
-    """The full ``/portal/routing`` page: T1/T2/T3 cards in a standalone HTML
-    shell that loads the same stylesheet and HTMX runtime as the portal SPA.
-    ``config`` is the tier_preferences mapping. R3: no telemetry card."""
+def render_routing_fragment(config, catalog: list) -> str:
+    """The model-routing cards as a self-contained fragment for ``#center-panel``.
+
+    Wrapped in ``<div id="routing-panel">`` so the portal nav can swap the whole
+    panel, while each tier card keeps its own ``#tier-{tier}`` id for in-place
+    swap (the swap/revert handlers target those directly). ``config`` is the
+    tier_preferences mapping. R3: T1/T2/T3 only. This is the single source of the
+    card markup — ``render_routing_page`` wraps it for the standalone page (A2).
+    """
     cards = "".join(
         render_tier_card(t, (config or {}).get(t), catalog) for t in _ROUTING_TIERS
     )
+    return (
+        '<div id="routing-panel">'
+        "<h2>Tier model bindings</h2>"
+        '<p class="meta">Swap the model bound to a tier. The change is validated '
+        "and hot-reloaded; the next turn uses the new model. Costs are "
+        "display-only heuristics.</p>"
+        f'<div class="tier-cards">{cards}</div>'
+        "</div>"
+    )
+
+
+def render_routing_page(config, catalog: list) -> str:
+    """The standalone ``/portal/routing`` page — the routing fragment in a full
+    HTML shell that loads the same stylesheet and HTMX runtime as the portal SPA.
+    Kept for direct full-page access; the in-shell path loads
+    ``render_routing_fragment`` via the Models nav item."""
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n<head>\n'
@@ -955,11 +979,7 @@ def render_routing_page(config, catalog: list) -> str:
         '<header class="topbar"><div class="brand">grove-autonomaton '
         '<span class="brand-sub">Model Routing</span></div></header>\n'
         '<main class="layout"><section class="center-panel">'
-        "<h2>Tier model bindings</h2>"
-        '<p class="meta">Swap the model bound to a tier. The change is validated '
-        "and hot-reloaded; the next turn uses the new model. Costs are "
-        "display-only heuristics.</p>"
-        f'<div class="tier-cards">{cards}</div>'
+        f"{render_routing_fragment(config, catalog)}"
         "</section></main>\n</body>\n</html>\n"
     )
 
@@ -973,6 +993,72 @@ async def handle_routing_page(request: web.Request) -> web.Response:
         text=render_routing_page(_live_tier_preferences(), load_catalog()),
         content_type="text/html",
     )
+
+
+async def handle_routing_panel(request: web.Request) -> web.Response:
+    """The Models nav panel — routing cards as a fragment for ``#center-panel``.
+
+    Same content as ``/portal/routing`` minus the standalone shell, so the portal
+    SPA loads it like every other category. Reachable via the hash router at
+    ``/portal#fragments/routing/panel``.
+    """
+    from grove.config.model_catalog import load_catalog
+
+    return _html_fragment(
+        render_routing_fragment(_live_tier_preferences(), load_catalog())
+    )
+
+
+def render_model_context(slug: str, catalog: list) -> str:
+    """The ``#right-panel`` detail for one catalog model — display name, slug,
+    provider, display-only cost, notes, and which tiers currently bind it.
+
+    Returned as a full ``<div id="right-panel">`` for an outerHTML swap (the same
+    convention as ``handle_context``). Every value is ``_esc``'d (C4). Lets the
+    operator read cost/notes before committing a swap.
+    """
+    entry = next((m for m in catalog if m.get("slug") == slug), None)
+    bound = [
+        t for t, e in (_live_tier_preferences() or {}).items()
+        if isinstance(e, dict) and e.get("model") == slug
+    ]
+    bound_html = (
+        f'<div class="meta">Currently bound to: {_esc(", ".join(sorted(bound)))}</div>'
+        if bound else '<div class="meta">Not currently bound to any tier.</div>'
+    )
+    if entry is None:
+        body = (
+            f"<h3>{_esc(slug) or 'No model selected'}</h3>"
+            f'<div class="meta error">Not in the model catalog.</div>'
+            f"{bound_html}"
+        )
+    else:
+        body = (
+            f'<h3>{_esc(entry["display_name"])}</h3>'
+            f"<div class=\"meta\"><code>{_esc(slug)}</code></div>"
+            f'<dl class="model-detail">'
+            f"<dt>Provider</dt><dd>{_esc(entry.get('provider'))}</dd>"
+            f"<dt>Input</dt><dd>${_esc(entry.get('input_cost_per_mtok'))} / Mtok</dd>"
+            f"<dt>Output</dt><dd>${_esc(entry.get('output_cost_per_mtok'))} / Mtok</dd>"
+            f"</dl>"
+            f"<p class=\"meta\">{_esc(entry.get('notes') or '')}</p>"
+            f'<p class="meta">Costs are display-only heuristics.</p>'
+            f"{bound_html}"
+        )
+    return f'<div id="right-panel" class="right-panel">{body}</div>'
+
+
+async def handle_model_context(request: web.Request) -> web.Response:
+    """Right-panel detail for the model named by ``?model_slug``.
+
+    Loaded when the operator changes a tier's model dropdown (HTMX sends the
+    select's value as the ``model_slug`` query param), so cost/provider/notes are
+    visible before the swap is committed.
+    """
+    from grove.config.model_catalog import load_catalog
+
+    slug = request.query.get("model_slug", "")
+    return _html_fragment(render_model_context(slug, load_catalog()))
 
 
 # ---------------------------------------------------------------------------
@@ -1008,3 +1094,7 @@ def register_fragment_routes(app: web.Application) -> None:
     app.router.add_get("/portal/fragments/search", handle_search)
     # portal-model-swap-v1 — standalone model-routing page (full HTML)
     app.router.add_get("/portal/routing", handle_routing_page)
+    # portal-models-nav-v1 — Models nav panel (fragment for #center-panel)
+    app.router.add_get("/portal/fragments/routing/panel", handle_routing_panel)
+    # portal-models-nav-v1 — model detail for the right-panel (?model_slug=...)
+    app.router.add_get("/portal/fragments/routing/model", handle_model_context)
