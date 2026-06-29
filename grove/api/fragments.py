@@ -43,7 +43,7 @@ from grove.capability_registry import load_capabilities
 from grove.dock import _VALID_STATUSES, load_dock
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.wiki.index import MalformedWikiPage
-from hermes_constants import get_wiki_path
+from hermes_constants import get_hermes_home, get_wiki_path
 
 logger = logging.getLogger(__name__)
 
@@ -841,6 +841,141 @@ async def handle_search(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Routing model-swap page (portal-model-swap-v1)
+# ---------------------------------------------------------------------------
+
+# R3: the operator manages T1/T2/T3 from the portal. The telemetry tier is a
+# pointer (routing.telemetry.tier -> T1), not a tier_preferences entry, so it
+# gets no card — it inherits whatever T1 is bound to.
+_ROUTING_TIERS = ("T1", "T2", "T3")
+
+
+def _live_tier_preferences() -> dict:
+    """Re-read tier_preferences from the operator routing.config.yaml (N2).
+
+    Read path, so ``yaml.safe_load`` (comments irrelevant once parsed). Returns
+    the tier->entry mapping, or ``{}`` when the file is absent/malformed. The
+    portal renders ``previous_model`` from here — the live router's frozen
+    TierConfig does not carry it, so the file is the source of truth for the
+    card and for the post-swap re-render."""
+    path = Path(get_hermes_home()) / "routing.config.yaml"
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    tier_prefs = ((data or {}).get("routing") or {}).get("tier_preferences")
+    return tier_prefs if isinstance(tier_prefs, dict) else {}
+
+
+def _model_options_html(catalog: list, current_slug) -> str:
+    """``<option>`` set for the model dropdown, current model selected. A current
+    slug that is off-catalog renders as a selected leading option so the operator
+    sees the truth (mirrors the dock status-select idiom)."""
+    slugs = {m["slug"] for m in catalog}
+    options: list[str] = []
+    if current_slug and current_slug not in slugs:
+        options.append(
+            f'<option value="{_esc(current_slug)}" selected>'
+            f'{_esc(current_slug)} (not in catalog)</option>'
+        )
+    for m in catalog:
+        sel = " selected" if m["slug"] == current_slug else ""
+        options.append(
+            f'<option value="{_esc(m["slug"])}"{sel}>{_esc(m["display_name"])}</option>'
+        )
+    return "".join(options)
+
+
+def render_tier_card(tier: str, config, catalog: list, error: str | None = None) -> str:
+    """One routing-tier card — a self-contained ``<div id="tier-{tier}">`` so
+    HTMX swaps it alone (N1). Shows the current model (catalog display name), a
+    display-only cost, a model dropdown, a Swap button, and a Revert button shown
+    only when ``previous_model`` is on record (AC-6). Every interpolated value
+    passes through ``_esc`` (C4). ``error``, when set, renders inline so a failed
+    swap keeps the card and shows why (C3)."""
+    config = config or {}
+    current = config.get("model")
+    previous = config.get("previous_model")
+    by_slug = {m["slug"]: m for m in catalog}
+    entry = by_slug.get(current)
+    display = entry["display_name"] if entry else (current or "(unbound)")
+    if entry:
+        cost = (
+            f'${entry["input_cost_per_mtok"]} in / '
+            f'${entry["output_cost_per_mtok"]} out per Mtok (display-only)'
+        )
+    else:
+        cost = "cost unknown — model not in catalog"
+
+    tier_e = _esc(tier)
+    revert_btn = ""
+    if previous:
+        prev_disp = by_slug.get(previous, {}).get("display_name", previous)
+        revert_btn = (
+            f'<button type="button" class="btn btn-secondary" '
+            f'hx-post="/portal/actions/routing/revert" hx-include="closest form" '
+            f'hx-target="#tier-{tier_e}" hx-swap="outerHTML">'
+            f'Revert to {_esc(prev_disp)}</button>'
+        )
+    error_html = f'<div class="meta error">{_esc(error)}</div>' if error else ""
+
+    return (
+        f'<div class="card" id="tier-{tier_e}">'
+        f'<h4>{tier_e} <span class="badge">{_esc(display)}</span></h4>'
+        f'<div class="meta">{_esc(cost)}</div>'
+        f'<form class="tier-form">'
+        f'<input type="hidden" name="tier" value="{tier_e}">'
+        f'<select name="model_slug">{_model_options_html(catalog, current)}</select>'
+        f'<button type="button" class="btn" '
+        f'hx-post="/portal/actions/routing/swap" hx-include="closest form" '
+        f'hx-target="#tier-{tier_e}" hx-swap="outerHTML">Swap</button>'
+        f'{revert_btn}'
+        f'</form>'
+        f'{error_html}'
+        f'</div>'
+    )
+
+
+def render_routing_page(config, catalog: list) -> str:
+    """The full ``/portal/routing`` page: T1/T2/T3 cards in a standalone HTML
+    shell that loads the same stylesheet and HTMX runtime as the portal SPA.
+    ``config`` is the tier_preferences mapping. R3: no telemetry card."""
+    cards = "".join(
+        render_tier_card(t, (config or {}).get(t), catalog) for t in _ROUTING_TIERS
+    )
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>Operator Portal — Model Routing</title>\n"
+        '<link rel="stylesheet" href="/portal/static/style.css">\n'
+        '<script src="/portal/static/htmx.min.js" defer></script>\n'
+        "</head>\n<body>\n"
+        '<header class="topbar"><div class="brand">grove-autonomaton '
+        '<span class="brand-sub">Model Routing</span></div></header>\n'
+        '<main class="layout"><section class="center-panel">'
+        "<h2>Tier model bindings</h2>"
+        '<p class="meta">Swap the model bound to a tier. The change is validated '
+        "and hot-reloaded; the next turn uses the new model. Costs are "
+        "display-only heuristics.</p>"
+        f'<div class="tier-cards">{cards}</div>'
+        "</section></main>\n</body>\n</html>\n"
+    )
+
+
+async def handle_routing_page(request: web.Request) -> web.Response:
+    """Serve the standalone ``/portal/routing`` page (full HTML, opened directly
+    in a browser). Reads the live tier_preferences and the model catalog."""
+    from grove.config.model_catalog import load_catalog
+
+    return web.Response(
+        text=render_routing_page(_live_tier_preferences(), load_catalog()),
+        content_type="text/html",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Route registration
 # ---------------------------------------------------------------------------
 
@@ -871,3 +1006,5 @@ def register_fragment_routes(app: web.Application) -> None:
     )
     # Phase 5 — search
     app.router.add_get("/portal/fragments/search", handle_search)
+    # portal-model-swap-v1 — standalone model-routing page (full HTML)
+    app.router.add_get("/portal/routing", handle_routing_page)
