@@ -26,13 +26,18 @@ import logging
 from aiohttp import web
 
 from grove.api.fragments import (
+    _ROUTING_TIERS,
     _esc,
     _html_fragment,
+    _live_tier_preferences,
     _proposal_actions_html,
     _short_id,
     render_goal_card,
+    render_tier_card,
 )
 from grove.api.portal import _memory_proposals_path
+from grove.config.model_catalog import load_catalog
+from grove.config.routing_writer import ConfigValidationError, get_writer
 from grove.dock import _VALID_STATUSES, load_dock
 from grove.dock.writer import update_dock_goal_status
 from grove.eval import proposal_queue
@@ -315,6 +320,88 @@ async def handle_dock_goal_update(request: web.Request) -> web.Response:
     return _html_fragment(render_goal_card(goal))
 
 
+# ---------------------------------------------------------------------------
+# Routing tier model-swap (portal-model-swap-v1)
+# ---------------------------------------------------------------------------
+
+
+def _unknown_tier_card(tier: str) -> web.Response:
+    return _html_fragment(
+        f'<div class="card"><p class="error">Unknown tier {_esc(tier)} — the '
+        f'operator manages {_esc(", ".join(_ROUTING_TIERS))} from the portal.'
+        f'</p></div>',
+        status=400,
+    )
+
+
+async def handle_tier_model_swap(request: web.Request) -> web.Response:
+    """Swap the model bound to a tier. Form body: ``tier`` (T1/T2/T3, R3) and
+    ``model_slug`` (must be in the catalog). Calls the sole routing writer, then
+    returns the re-rendered tier card reflecting the POST-write state (N2). An
+    off-catalog slug or a ``ConfigValidationError`` re-renders the SAME card with
+    the error inline — the card stays, no 500 (C3)."""
+    data = await request.post()
+    tier = str(data.get("tier") or "")
+    model_slug = str(data.get("model_slug") or "")
+
+    if tier not in _ROUTING_TIERS:
+        return _unknown_tier_card(tier)
+
+    catalog = load_catalog()
+    if model_slug not in {m["slug"] for m in catalog}:
+        return _html_fragment(
+            render_tier_card(
+                tier, _live_tier_preferences().get(tier), catalog,
+                error=f"Model {model_slug!r} is not in the catalog.",
+            ),
+            status=400,
+        )
+
+    try:
+        await get_writer().swap_tier_model(tier, model_slug)
+    except ConfigValidationError as exc:
+        return _html_fragment(
+            render_tier_card(
+                tier, _live_tier_preferences().get(tier), catalog, error=str(exc)
+            ),
+            status=422,
+        )
+
+    logger.info("[portal.actions] tier %s swapped to %s", tier, model_slug)
+    # N2 — render the live, post-write state (re-read after the writer committed).
+    return _html_fragment(
+        render_tier_card(tier, _live_tier_preferences().get(tier), catalog)
+    )
+
+
+async def handle_tier_model_revert(request: web.Request) -> web.Response:
+    """Revert a tier to its ``previous_model`` — one-level undo (AC-6). Form body:
+    ``tier``. Same write path and N2 re-read as swap; a ``ConfigValidationError``
+    (e.g. no previous_model on record) re-renders the card with the error
+    inline."""
+    data = await request.post()
+    tier = str(data.get("tier") or "")
+
+    if tier not in _ROUTING_TIERS:
+        return _unknown_tier_card(tier)
+
+    catalog = load_catalog()
+    try:
+        await get_writer().revert_tier_model(tier)
+    except ConfigValidationError as exc:
+        return _html_fragment(
+            render_tier_card(
+                tier, _live_tier_preferences().get(tier), catalog, error=str(exc)
+            ),
+            status=422,
+        )
+
+    logger.info("[portal.actions] tier %s reverted", tier)
+    return _html_fragment(
+        render_tier_card(tier, _live_tier_preferences().get(tier), catalog)
+    )
+
+
 def register_action_routes(app: web.Application) -> None:
     """Register the portal's write endpoints. Wired at gateway connect() time,
     after the read-only portal/fragment/dashboard routes. portal_auth_middleware
@@ -331,3 +418,6 @@ def register_action_routes(app: web.Application) -> None:
     app.router.add_patch(
         "/portal/actions/dock/goals/{goal_id}", handle_dock_goal_update
     )
+    # portal-model-swap-v1 — tier model swap + revert
+    app.router.add_post("/portal/actions/routing/swap", handle_tier_model_swap)
+    app.router.add_post("/portal/actions/routing/revert", handle_tier_model_revert)

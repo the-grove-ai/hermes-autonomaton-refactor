@@ -1177,17 +1177,19 @@ def _approve_consolidation(
 ) -> Tuple[Path, Dict[str, Any]]:
     """Graduate a sink intent to permanent operator policy — two-file atomic.
 
-    BACKUP both files → VALIDATE the proposed operator config in a sandbox
-    CognitiveRouter → ruamel round-trip WRITE (temp + atomic replace,
-    comments preserved) → CLEANUP the machine sink → HOT-RELOAD. Any failure
-    after backup restores BOTH files and re-raises (fail loud, no partial
-    state). Per GRV-008 § III this is the one sanctioned writer of
-    ``routing.config.yaml``; it only writes when the operator approves.
+    The operator-file write — BACKUP → ruamel round-trip → sandbox-VALIDATE →
+    atomic REPLACE → HOT-RELOAD — is delegated to the one sanctioned writer of
+    ``routing.config.yaml`` (``grove.config.routing_writer``; C1 / GRV-008 § III).
+    This function owns only the SECOND file: it cleans the graduated intent out
+    of the machine sink, with its own backup/restore (R2). The machine sink is
+    cleaned FIRST so the writer's sandbox validation and hot-reload observe the
+    final merged state (operator gains the rule, machine drops the sink) and so
+    the reload — the last step, inside the writer — never runs ahead of the
+    machine edit. Any failure restores BOTH files and re-raises (fail loud, no
+    partial state): the writer restores the operator file on its own failure;
+    this function restores the machine sink it touched.
     """
-    import os
-    import tempfile
-
-    from ruamel.yaml import YAML
+    from grove.config.routing_writer import RoutingConfigWriter
 
     payload = proposal.payload
     intent_class = payload["intent_class"]
@@ -1202,19 +1204,8 @@ def _approve_consolidation(
             f"a policy without the operator root (GRV-008 § III)"
         )
 
-    # Step 1 — BACKUP both files (bytes; machine may be absent).
-    op_backup = op_path.read_bytes()
-    op_bak_path = op_path.with_suffix(op_path.suffix + ".bak")
-    op_bak_path.write_bytes(op_backup)
-    mac_backup = mac_path.read_bytes() if mac_path.exists() else None
-
-    try:
-        yaml_rt = YAML()
-        yaml_rt.preserve_quotes = True
-        yaml_rt.indent(mapping=2, sequence=4, offset=2)
-        yaml_rt.width = 100
-        with open(op_path, encoding="utf-8") as fh:
-            data = yaml_rt.load(fh)
+    def _graduate(data: Any) -> None:
+        """Add the graduated intent's rule to the operator routing_rules."""
         if not isinstance(data, dict) or "routing" not in data:
             raise ValueError(f"{op_path} has no 'routing' mapping to graduate into")
         routing_rules = data["routing"].setdefault("routing_rules", {})
@@ -1224,33 +1215,27 @@ def _approve_consolidation(
             "target_tier": target_tier,
         }
 
-        # Step 2 — VALIDATE in a sandbox before touching the live file (D9).
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".yaml", delete=False, encoding="utf-8"
-        ) as tmp:
-            yaml_rt.dump(data, tmp)
-            sandbox_path = tmp.name
-        try:
-            from grove.router import CognitiveRouter
+    # R2 — this function owns the machine-sink file's backup/restore; the
+    # operator file's backup/restore lives inside the writer.
+    mac_backup = mac_path.read_bytes() if mac_path.exists() else None
+    writer = RoutingConfigWriter(
+        op_path,
+        machine_path=mac_path,
+        reload_fn=reload_fn or _reload_default_router,
+    )
 
-            CognitiveRouter(Path(sandbox_path), machine_path=mac_path)
-        finally:
-            os.unlink(sandbox_path)
-
-        # Step 3 — WRITE the operator file (temp + atomic replace).
-        op_tmp = op_path.with_suffix(op_path.suffix + ".tmp")
-        with open(op_tmp, "w", encoding="utf-8") as fh:
-            yaml_rt.dump(data, fh)
-        os.replace(op_tmp, op_path)
-
-        # Step 4 — CLEANUP the machine sink (intent now lives in operator policy).
+    try:
+        # Step 1 — CLEANUP the machine sink first (the intent now lives in
+        # operator policy), so the writer validates and reloads the final state.
         _remove_intent_from_machine_sink(mac_path, source_sink, intent_class)
-
-        # Step 5 — HOT-RELOAD the live router (A7).
-        (reload_fn or _reload_default_router)()
+        # Step 2 — operator-file write through the sole sanctioned writer:
+        # BACKUP → ruamel mutate → sandbox-VALIDATE → atomic REPLACE → HOT-RELOAD.
+        writer.apply_mutation(
+            _graduate, label=f"graduate {intent_class} -> {target_tier}"
+        )
     except Exception:
-        # Restore BOTH files to the pre-apply state, then fail loud.
-        op_path.write_bytes(op_backup)
+        # The writer restored the operator file on its own failure; restore the
+        # machine sink this function touched, then fail loud (no partial state).
         if mac_backup is not None:
             mac_path.write_bytes(mac_backup)
         elif mac_path.exists():
