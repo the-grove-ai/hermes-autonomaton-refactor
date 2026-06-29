@@ -28,6 +28,7 @@ from agent.file_safety import (
     reject_governed_agent_write,
 )
 from agent.redact import redact_sensitive_text
+from grove.utils.fs_utils import is_write_allowed, write_refused_message
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -666,13 +667,23 @@ class CopilotACPClient:
                 response = _jsonrpc_error(message_id, -32602, str(exc))
         elif method == "fs/write_text_file":
             try:
-                path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
+                raw = str(params.get("path") or "")
+                candidate = Path(raw)
+                if not raw or not candidate.is_absolute():
+                    raise PermissionError("ACP file-system paths must be absolute.")
+                # write-confinement-v1 Phase 4 — ONE evaluator on every surface.
+                # The live IDE session cwd is source (d); ACP also gains
+                # ~/.grove-non-secret + declared workspaces + tmp. Out-of-union →
+                # hard reject (with remediation), before any write.
+                if not is_write_allowed(raw, session_cwd=cwd):
+                    raise PermissionError(write_refused_message(raw))
+                path = candidate.resolve()
+                # Defense-in-depth: the legacy secret/system walls still fire
+                # (e.g. GROVE_WRITE_SAFE_ROOT, which is_write_allowed does not know).
                 if is_write_denied(str(path)):
                     raise PermissionError(
                         f"Write denied: '{path}' is a protected system/credential file."
                     )
-                # GRV-010 C3b — governed-tree wall on the ACP write surface,
-                # before the raw write_text (realpath-resolved, .andon allowed).
                 reject_governed_agent_write(str(path))
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(str(params.get("content") or ""))

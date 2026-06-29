@@ -1,0 +1,38 @@
+# write-confinement-v1 — declarative WRITE allow-list.
+#
+# The positive allowlist of directory roots the autonomaton may WRITE to outside
+# its own brain. Consulted by the single write-confinement evaluator
+# (grove/utils/fs_utils.py:is_write_allowed) BEFORE any classification or
+# approval prompt — a write outside the union of allowed sources is hard-rejected
+# with an in-conversation offer to add the directory here.
+#
+# This is the WRITE companion to the secrets-only READ wall (secrets-only-wall-v1):
+# reads stay broad (deny-list); writes are narrow (this allow-list), so the agent
+# reads widely to be useful and writes narrowly to be safe.
+#
+# The evaluator allows a write if the canonicalized target falls in ANY of:
+#   (a) ~/.grove except secrets        — the agent's brain (always; not listed here)
+#   (b) a root declared below          — operator-granted project workspaces
+#   (c) /tmp + the platform scratch dir — always
+#   (d) the live ACP/IDE session cwd   — dynamic, injected by the editor surface
+#
+# Operator-managed. The runtime copy lives at $GROVE_HOME/write_workspaces.yaml
+# and is hand-provisioned at deploy (deploy does NOT copy config/ → ~/.grove).
+# It is itself scope-defining — the agent cannot grant itself workspaces; only
+# the operator can, by approving a workspace-grant proposal through the normal
+# sovereignty prompt (which appends here, comment-preserving, and hot-reloads).
+#
+# Format (fail-closed, NO interpolation, NO glob):
+#   * each entry is an ABSOLUTE directory root
+#   * matching is recursive via startswith(root + os.sep) — everything under a
+#     declared root is writable. Directory roots are recursive boundaries, NOT
+#     pattern matches: list the project root, not every subdirectory.
+#   * paths are realpath-canonicalized at load (symlinks/.. collapsed)
+#   * a missing or malformed manifest grants NOTHING and logs a WARNING
+#
+# Example:
+# write_workspaces:
+#   - path: "/Users/jim/GitHub/grove-autonomaton"
+#   - path: "/Users/jim/clients/acme"
+
+write_workspaces: []

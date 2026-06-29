@@ -1742,6 +1742,14 @@ class Dispatcher:
                                 "tool": _name,
                                 "args": getattr(_intent, "arguments", None),
                             })
+                    # write-confinement-v1 Phase 2 — hard-reject out-of-workspace
+                    # writes BEFORE classification, so an out-of-remit write is
+                    # refused (with remediation) WITHOUT ever firing the
+                    # sovereignty prompt. The batch is the unit of disposition.
+                    _wc_obs = self._enforce_write_confinement(_batch, agent, ledger)
+                    if _wc_obs is not None:
+                        yielded = gen.send(_wc_obs)
+                        continue
                     # Phase 4 — classify the batch at intent-yield
                     try:
                         self._classify_intents_batch_and_halt_or_raise(_batch)
@@ -4315,6 +4323,91 @@ class Dispatcher:
                 zone_results=zone_results,
                 triggering_index=triggering_index,
             )
+
+    def _enforce_write_confinement(
+        self, intents: List[Any], agent: Any, ledger: Any = None,
+    ) -> Optional[List[Any]]:
+        """write-confinement-v1 Phase 2 — hard-reject out-of-workspace writes
+        BEFORE classification.
+
+        Every write-family intent (``write_file`` / ``patch``, the latter
+        covering delete/move verbs and BOTH endpoints of a Move) must pass
+        :func:`grove.utils.fs_utils.is_write_allowed`. The generic tool path
+        carries no IDE session cwd, so ``session_cwd`` is ``None`` here (the ACP
+        surface passes its own — Phase 4). If ANY target is refused, the whole
+        batch is denied with the remediation message and is NEVER classified,
+        prompted, or executed (the batch is the unit of disposition). Returns the
+        refusal Observations to feed the generator, or ``None`` to proceed to
+        classification.
+        """
+        from grove.utils.fs_utils import is_write_allowed, write_refused_message
+        from tools.file_tools import extract_write_targets
+
+        refusals: Dict[Optional[str], str] = {}
+        for intent in intents:
+            tool_name = getattr(intent, "tool_name", "") or ""
+            args = getattr(intent, "arguments", None) or {}
+            for target in extract_write_targets(tool_name, args):
+                # session_cwd is None on the generic tool path (no IDE surface).
+                if not is_write_allowed(target):
+                    refusals[intent.call_id] = write_refused_message(target)
+                    break  # one refused target suffices to deny this intent
+        if not refusals:
+            return None
+
+        if ledger is not None:
+            try:
+                ledger.record(
+                    "write_confinement_refusal",
+                    refused=[
+                        {"tool_name": i.tool_name, "call_id": i.call_id}
+                        for i in intents
+                        if i.call_id in refusals
+                    ],
+                    batch=[
+                        {"tool_name": i.tool_name, "call_id": i.call_id}
+                        for i in intents
+                    ],
+                )
+            except Exception as _exc:  # observability only — never block the refusal
+                logger.warning(
+                    "[grove.dispatcher] write_confinement_refusal ledger write "
+                    "failed: %r", _exc,
+                )
+        return self._build_write_refusal_observations(agent, intents, refusals)
+
+    def _build_write_refusal_observations(
+        self, agent: Any, intents: List[Any], refusals: Dict[Optional[str], str],
+    ) -> List[Any]:
+        """Build deny Observations for a write-confinement-refused batch and
+        append the paired tool messages (every assistant tool_call needs a tool
+        response). The refused write(s) carry the remediation message; any
+        sibling in the same batch is skipped with a brief note."""
+        from grove.intents import Observation
+
+        msgs = getattr(agent, "_current_messages", None)
+        if msgs is None:
+            msgs = []
+        observations: List[Any] = []
+        for intent in intents:
+            body = refusals.get(intent.call_id)
+            if body is None:
+                body = (
+                    "Skipped — a sibling write in this batch was refused "
+                    "(outside your declared workspaces)."
+                )
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": intent.call_id or "",
+                "content": body,
+            })
+            observations.append(Observation(
+                intent_id=intent.call_id,
+                success=False,
+                value=body,
+                metadata={"disposition": "deny", "reason": "write_confinement"},
+            ))
+        return observations
 
     @staticmethod
     def _classify_one_intent(intent: Any, _grove_dispatch: Any) -> Any:

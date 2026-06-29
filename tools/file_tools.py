@@ -887,25 +887,56 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         return tool_error(str(e))
 
 
+def extract_write_targets(tool_name: str, args: dict) -> list:
+    """Single source of truth for the filesystem paths a write-family tool call
+    would mutate — used by the dispatcher's pre-classification write-confinement
+    gate (write-confinement-v1) AND by ``patch_tool`` itself, so the two can
+    never drift.
+
+    ``write_file`` → ``[path]``. ``patch`` → the replace ``path`` plus every V4A
+    ``Update``/``Add``/``Delete File`` target and BOTH endpoints of each
+    ``Move File: a -> b`` verb (delete/move are patch verbs; a move's src AND dst
+    are both checked). Any other tool → ``[]``.
+    """
+    import re as _re
+
+    if not isinstance(args, dict):
+        return []
+    targets: list = []
+    if tool_name == "write_file":
+        p = args.get("path")
+        if isinstance(p, str) and p:
+            targets.append(p)
+    elif tool_name == "patch":
+        p = args.get("path")
+        if isinstance(p, str) and p:
+            targets.append(p)
+        patch = args.get("patch")
+        if args.get("mode") == "patch" and isinstance(patch, str):
+            for _m in _re.finditer(
+                r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE
+            ):
+                targets.append(_m.group(1).strip())
+            # BOTH endpoints of a Move verb (src AND dst).
+            for _m in _re.finditer(
+                r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE
+            ):
+                targets.append(_m.group(1).strip())
+                targets.append(_m.group(2).strip())
+    return targets
+
+
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default") -> str:
     """Patch a file using replace mode or V4A patch format."""
-    # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
-    _paths_to_check = []
-    if path:
-        _paths_to_check.append(path)
-    if mode == "patch" and patch:
-        import re as _re
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            _paths_to_check.append(_m.group(1).strip())
-        # GRV-010 C3b — also extract BOTH endpoints of a Move verb. Belt-and-
-        # suspenders: the load-bearing Move closure is the ShellFileOperations
-        # chokepoint, but surfacing the Move paths here lets the governed-path
-        # and sensitive-path walls refuse them early too.
-        for _m in _re.finditer(r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE):
-            _paths_to_check.append(_m.group(1).strip())
-            _paths_to_check.append(_m.group(2).strip())
+    # Check sensitive paths for both replace (explicit path) and V4A patch.
+    # GRV-010 C3b — Move endpoints (src + dst) are surfaced here too so the
+    # governed-path and sensitive-path walls refuse them early. Shared with the
+    # dispatcher's pre-classification gate via extract_write_targets.
+    _paths_to_check = extract_write_targets(
+        "patch", {"mode": mode, "path": path, "patch": patch}
+    )
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
