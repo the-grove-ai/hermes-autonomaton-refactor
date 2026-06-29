@@ -123,10 +123,12 @@ routing:
     # different host or port, set OLLAMA_BASE_URL in the environment — the
     # tier block carries no base_url field of its own.
     #
-    # Keep T1 on an Anthropic-native provider. T1 runs the telemetry
-    # classifier, which the v0.1 build binds to the Anthropic Messages
-    # protocol; an Ollama T1 would route every request on default-tier
-    # behaviour with no classification.
+    # T1 runs the telemetry classifier. The classifier is provider-agnostic
+    # (Anthropic Messages and OpenAI-compatible chat_completions both work),
+    # so T1 is not pinned to any one vendor. The real requirement is forced
+    # tool-calls: bind T1 to a model that reliably honours a forced
+    # tool_choice, or classification fails loud and every request falls
+    # through to default-tier behaviour.
     #
     # Full walkthrough: docs/guides/local-tier-binding.md
     # ---------------------------------------------------------------------

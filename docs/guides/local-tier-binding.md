@@ -120,16 +120,16 @@ shape:
 
 ```yaml
     T1:
-      provider: anthropic
-      model: claude-haiku-4-5-20251001
+      provider: openrouter
+      model: anthropic/claude-haiku-4.5
       max_tokens: 4096
     T2:
       provider: ollama
       model: gemma4
       max_tokens: 8192
     T3:
-      provider: anthropic
-      model: claude-opus-4-6
+      provider: openrouter
+      model: anthropic/claude-opus-4.6
       max_tokens: 16384
 ```
 
@@ -174,11 +174,17 @@ Put that line in your shell profile to make it persistent. When
 ## What stays in the cloud, and why
 
 **Tier 1 — classification.** T1 scores every incoming request: what kind
-of work it is, and how confident that judgment is. The v0.1 classifier
-is built on the Anthropic Messages protocol, so T1 must stay on an
-Anthropic-native provider. Bind T1 to Ollama and classification stops:
+of work it is, and how confident that judgment is. The classifier is
+provider-agnostic — it speaks both the Anthropic Messages and the
+OpenAI-compatible chat_completions protocols — so T1 is not locked to any
+one vendor. What it does require is forced tool-calls: T1's model must
+reliably honour a forced `tool_choice` so the classifier always gets a
+structured `classify_intent` call back. Many small local models do not do
+this dependably; bind T1 to one that cannot and classification fails loud,
 every request falls through to default-tier behavior, and the router's
-escalation rules never fire. Keep T1 on Haiku.
+escalation rules never fire. That is why this guide keeps T1 on a
+dependable cloud classifier while moving only the daily driver on-device —
+a pragmatic default, not an architectural requirement.
 
 **Tier 3 — apex cognition.** Hard problems — multi-step planning, novel
 synthesis, architecture-level reasoning — escalate to T3. A local model
