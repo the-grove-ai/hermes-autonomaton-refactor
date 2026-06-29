@@ -105,7 +105,9 @@ def test_out_of_confinement_write_refused_before_prompt(tmp_path, monkeypatch):
     assert prompted == []  # no sovereignty prompt fired (refused pre-classification)
     tool_msgs = [m for m in msgs if m.get("role") == "tool"]
     assert any(
-        "outside your declared workspaces" in (m.get("content") or "") for m in tool_msgs
+        "outside your declared write workspaces" in (m.get("content") or "")
+        and "write_workspaces.yaml" in (m.get("content") or "")
+        for m in tool_msgs
     )
 
 
