@@ -165,7 +165,9 @@ GROVE_AGENT_HELP_GUIDANCE = (
     "called skill_view in this turn, you do not have the invocation command. "
     "Do not guess. Do not use bare command names from your training data. "
     "Call skill_view first, read the exact command from the SKILL.md, then "
-    "execute it."
+    "execute it.\n"
+    "To find or link local research, you MUST call cellar_search. Never write a "
+    "cellar or portal URL yourself — only relay links returned by the tool."
 )
 
 SYSTEM_SELF_AWARENESS = (
