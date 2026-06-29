@@ -209,6 +209,13 @@ class RoutingProposal:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.timestamp()
 
+    @property
+    def requires_portal_review(self) -> bool:
+        """Consolidation (policy-graduation) proposals review in the portal, not
+        in chat (portal-reader-contract-fix-v1). Routing/zone/skill/pattern and
+        dock-mutation proposals keep their in-chat approve/dismiss affordance."""
+        return self.type == PROPOSAL_TYPE_CONSOLIDATION
+
     def is_push_eligible(self, session_start: Optional["datetime"]) -> bool:
         """Routing proposals push only when created THIS session (the
         anti-nag current-session rule). No anchor -> not eligible."""

@@ -361,6 +361,26 @@ def compose_offering(
     core = get_renderer(proposal.type)(proposal)
     if not is_push:
         return core
+
+    # portal-reader-contract-fix-v1 — memory (all voices) and consolidation
+    # proposals review in the PORTAL, not in chat: for them the conversation
+    # surface is a notification channel, not a review surface. A compact
+    # one-line push replaces the full-content dump + in-chat approve/dismiss.
+    # The opt-in is the renderable's ``requires_portal_review`` property (no
+    # type-checking here — the CLI layer stays ignorant of specific types).
+    # Gated on a RESOLVED base URL: a compact note with a dead link would
+    # strand the operator, so a missing URL falls back — LOUDLY — to the
+    # verbose in-chat form rather than emit an unreachable notification.
+    if proposal.requires_portal_review:
+        if portal_base_url:
+            return (
+                f"📋 New proposals await your review → "
+                f"{portal_base_url}/portal#fragments/proposals/pending"
+            )
+        logger.warning(
+            "portal_base_url unresolved — falling back to verbose Kaizen rendering"
+        )
+
     # kaizen-voice — conversational register, no CLI syntax / no id. The
     # type-specific clause comes from the renderable (routing: "I noticed I
     # could …"; memory: "I crystallized a domain insight …"); the shared frame +

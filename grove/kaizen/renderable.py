@@ -30,6 +30,18 @@ class KaizenRenderable(Protocol):
     @property
     def sort_key(self) -> float: ...
 
+    @property
+    def requires_portal_review(self) -> bool:
+        """True → the post-turn push is a COMPACT, portal-only notification;
+        review/approve happens in the Operator Portal, not in chat. False → the
+        full in-chat offering with the 'reply approve/dismiss' affordance.
+
+        Memory (all voices) and consolidation proposals opt in
+        (portal-reader-contract-fix-v1) — the conversation surface is a
+        notification channel for them, not a review surface;
+        routing/zone/skill/pattern and dock-mutation keep the chat surface."""
+        ...
+
     def is_push_eligible(self, session_start: Optional[datetime]) -> bool: ...
 
     def push_body(self, core: str) -> str:
@@ -56,6 +68,12 @@ class MemoryProposalRenderable:
     @property
     def type(self) -> str:
         return "memory_context"
+
+    @property
+    def requires_portal_review(self) -> bool:
+        # All memory voices (crystallize / graduate / deprecate) review in the
+        # portal, not in chat (portal-reader-contract-fix-v1).
+        return True
 
     @property
     def proposal_dict(self) -> Dict[str, Any]:

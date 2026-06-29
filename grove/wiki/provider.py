@@ -64,24 +64,35 @@ def _approx_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+_TOPICS_SHOWN = 5  # cap injected topics — semantic signal plateaus; avoid tag bloat
+
+
 def _format_result(result: WikiResult, base_url: Optional[str] = None) -> str:
-    """Render one cellar page block. When ``base_url`` is set, a portal deep
-    link follows the title so the agent hands the operator the exact rendered
-    page — it can't reconstruct the hash-suffixed page_id otherwise.
+    """Render one cellar page block. A ``Topics:`` line (portal-reader-contract-
+    fix-v1) follows the title so the agent can reference the page by its real
+    subject matter, not a path. When ``base_url`` is set, a portal deep link
+    follows so the agent hands the operator the exact rendered page — it can't
+    reconstruct the hash-suffixed page_id otherwise.
+
+    Topics are sliced to the first ``_TOPICS_SHOWN`` (tag bloat would burn
+    context across a k-result fill); the line is omitted entirely when the page
+    carries no topics (graceful — never ``Topics: ``).
 
     ``page_id`` follows the SAME contract as ``handle_cellar_page_detail`` in
     grove/api/portal.py: ``source_path`` (already relative to the pages root),
     ``.md`` stripped, posix slashes. Hash-routed (``#fragments``) so the link
     lands in the full styled shell.
     """
-    header = f"### {result.title} ({result.source_type})"
+    lines = [f"### {result.title} ({result.source_type})"]
+    if result.topics:
+        lines.append(f"Topics: {', '.join(result.topics[:_TOPICS_SHOWN])}")
     if base_url:
         page_id = Path(result.source_path).with_suffix("").as_posix()
-        link = (
+        lines.append(
             f"📄 [View in portal]({base_url}/portal#fragments/cellar/pages/{page_id})"
         )
-        return f"{header}\n{link}\n{result.snippet}"
-    return f"{header}\n{result.snippet}"
+    lines.append(result.snippet)
+    return "\n".join(lines)
 
 
 def _synthetic_query(goals: List[Dict[str, Any]]) -> str:
