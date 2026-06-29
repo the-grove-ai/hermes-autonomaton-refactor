@@ -88,11 +88,12 @@ def test_token_counts_reflect_real_dedup() -> None:
     # ~279 tokens/turn saved — the deleted Block 5 catalog. F3 + HARD RULE are
     # relocated between two always-on blocks (net-zero).
     assert g < 500, f"GROVE_AGENT_HELP should be trimmed to Blocks 1-3: {g}"
-    # prompt-governance-rationalization-v1 added the always-on broad-read +
-    # act-don't-predict directive (~84 tok), legitimately lifting S past the
-    # dedup sprint's 760 ceiling. The dedup invariant (no Block-5 catalog bloat)
-    # still holds via the g + s < 1200 guard below.
-    assert 600 < s < 800, f"SYSTEM_SELF_AWARENESS carries F3+HARD RULE+read directive: {s}"
+    # prompt-governance-rationalization-v1 (+ hotfix) added the always-on
+    # act-don't-predict directive and the absolute NEVER-refuse-a-read directive,
+    # legitimately lifting S past the dedup sprint's 760 ceiling. The dedup
+    # invariant (no Block-5 catalog bloat) still holds via the g + s < 1200 guard
+    # below (g stays ~336, well-trimmed).
+    assert 600 < s < 850, f"SYSTEM_SELF_AWARENESS carries F3+HARD RULE+read directive: {s}"
     assert g + s < 1200, f"combined should be below the ~1390 original: {g + s}"
 
 

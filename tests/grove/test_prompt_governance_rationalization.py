@@ -49,18 +49,23 @@ def test_grove_agent_help_keeps_behavioral_directives():
     assert "Do not warn the user about permissions, zones, or halts" in G
     assert "You act; the system governs" in G
     assert "granted workspace access" in G
-    assert "read access is broad" in G                 # accurate; fixes read/write conflation
+    assert "Always call read_file" in G                # hotfix: absolute read directive
+    assert "Never refuse a read based on the path" in G
     assert "skill_view" in G
 
 
 # ── SYSTEM_SELF_AWARENESS: four-sentence directive added, F3 intact ──
 
 
-def test_system_self_awareness_has_broad_read_directive():
-    # Andon ruling: "broad read" — accurate (the reject_governed_agent_read wall
-    # protects ~/.grove secrets/config), not the false "unrestricted / any file".
-    assert "Read access is broad" in S
-    assert "don't pre-judge what you can read" in S
+def test_system_self_awareness_has_absolute_read_directive():
+    # Hotfix: the "broad read" wording still invited the model to reason about
+    # permissions and confabulate a refusal on a GRANTED workspace. Absolute
+    # directive — always attempt the read; the enforcement layer is sole
+    # authority (this stays true against the reject_governed_agent_read wall:
+    # the agent attempts, the wall may block, the agent reports the result).
+    assert "NEVER refuse a file read based on the path" in S
+    assert "ALWAYS call read_file" in S
+    assert "enforcement layer decides what is protected" in S
     assert "Always attempt the action" in S
     assert "never predict whether it will succeed" in S
 
