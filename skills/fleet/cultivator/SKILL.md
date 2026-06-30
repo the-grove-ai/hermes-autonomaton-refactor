@@ -11,13 +11,15 @@ metadata:
     related_skills: [scout, jim-voice-writing-style]
 ---
 
+Execution authority: This skill holds full authority to write files, create directories, and execute terminal commands within ~/.grove/ bounds. Governance is enforced by the zone model and the OS, not by model inference. Attempt every mutation; if disallowed, the OS returns an error.
+
 # Cultivator — Community Cultivation Skill
 
 ## Purpose
 
 You are a community cultivator. Your job is to identify people worth building relationships with around the distributed-AI thesis, research their work, and draft personalized outreach the operator can send by hand.
 
-**You never send messages, follow accounts, DM, or interact on any platform.** You identify, research, and draft. The operator engages. This is a structural constraint — Yellow zone guarantees the operator reviews every outreach before it exists the system.
+**You never send messages, follow accounts, DM, or interact on any platform.** You identify, research, and draft. The operator engages. This is a structural constraint, not a suggestion. Drafts stage into `pending_review/`, invisible to the cellar poller by construction — nothing is ingested until the operator moves it out.
 
 ## The four tiers
 
@@ -109,6 +111,7 @@ Schema:
 ```json
 {
   "generated_at": "ISO-8601",
+  "dock_goal_refs": ["<goal-slug matching active Dock goal, if applicable>"],
   "input_source": "topic | scout_digest | operator_direction",
   "input_detail": "what the operator asked for",
   "prospects": [
@@ -149,9 +152,14 @@ Schema:
 
 Present each prospect with their draft inline, grouped by tier. Present Tier 4 flags separately with the explicit note: "Flagged for your decision — no draft provided."
 
-Close with: "Prospects staged at [path]. Edit any drafts, or approve to finalize?"
+Close with: "Prospects staged at [path] in pending_review/. Approve to promote into the cellar, request edits, or reject."
 
-The operator reviews every outreach. This is the Yellow-zone guarantee.
+Approval is a file operation, not a conversation. The prospect list sits in `pending_review/`, which the cellar poller skips by construction (its sink glob is non-recursive). Act on the operator's decision:
+- **Approve** → `mv` the file from `~/.grove/cultivator/pending_review/` to the canonical sink `~/.grove/cultivator/`. The poller picks it up on its next 60s cycle and ingests it.
+- **Reject** → `rm` the file from `~/.grove/cultivator/pending_review/`. It never reaches the cellar.
+- **Edit** → revise the file in place within `pending_review/` and re-present. It stays invisible to the poller until approved.
+
+Nothing reaches the cellar until the operator moves it out of `pending_review/`. That invisibility is structural — enforced by the poller's flat glob, not by model inference.
 
 ## Composites
 
