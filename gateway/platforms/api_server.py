@@ -3946,6 +3946,23 @@ class APIServerAdapter(BasePlatformAdapter):
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
 
+            # Living-cellar auto-ingest poller (cellar-link-resolution-v1 Scope 2)
+            # — the autonomous trigger that compacts new fleet sink writes so a
+            # capability's output becomes browsable/searchable without a manual
+            # `hermes wiki ingest`. 60s interval; 30s mtime debounce guards
+            # partial writes. Runs the (blocking) compaction in a thread executor
+            # so it never stalls this event loop.
+            from grove.wiki.watcher import poll_forever as _wiki_poll_forever
+            wiki_poller_task = asyncio.create_task(
+                _wiki_poll_forever(interval_seconds=60.0, debounce_seconds=30.0)
+            )
+            try:
+                self._background_tasks.add(wiki_poller_task)
+            except TypeError:
+                pass
+            if hasattr(wiki_poller_task, "add_done_callback"):
+                wiki_poller_task.add_done_callback(self._background_tasks.discard)
+
             # Refuse to start network-accessible without authentication
             if is_network_accessible(self._host) and not self._api_key:
                 logger.error(

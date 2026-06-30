@@ -10,9 +10,11 @@ watcher / NO write_file hook — lazy/poll only.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import os
+import time
 
 import pytest
 import yaml
@@ -307,3 +309,107 @@ def test_dock_and_fleet_share_one_ledger(monkeypatch, tmp_path):
     ledger = json.loads((wiki / ".index" / "ingest_state.json").read_text())
     assert str(dp) in ledger
     assert any("brief-2026-06-25-x.json" in k for k in ledger)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# cellar-link-resolution-v1 Scope 2 — mtime debounce + background poller.
+#
+# The debounce is a PARTIAL-WRITE guard for the autonomous poller only. It
+# defaults OFF (0.0) so every explicit caller (the `hermes wiki ingest` CLI, the
+# /api/substrate/ingest endpoint, and the pre-existing tests above) still
+# ingests a freshly-written file immediately. Only the background poller passes
+# a non-zero window (30s), so a sink file caught mid-write is deferred to the
+# next cycle instead of compacting a torn read.
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _age_all_sink_files(home, seconds=120.0):
+    """Backdate every fleet sink file's mtime so it clears a debounce window."""
+    old = time.time() - seconds
+    for sub in ("scout", "researcher", "drafter", "cultivator"):
+        d = home / sub
+        if not d.is_dir():
+            continue
+        for f in d.iterdir():
+            if f.is_file():
+                os.utime(f, (old, old))
+
+
+def test_debounce_defers_fresh_file(monkeypatch, tmp_path):
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)  # freshly written, mtime ~ now
+    pages = scan_and_ingest(wiki_root=wiki, hermes_home=home, debounce_seconds=30)
+    assert pages == []  # all younger than the debounce window → deferred
+
+
+def test_debounce_ingests_aged_file(monkeypatch, tmp_path):
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)
+    _age_all_sink_files(home, seconds=120)
+    pages = scan_and_ingest(wiki_root=wiki, hermes_home=home, debounce_seconds=30)
+    assert {p.source_type for p in pages} == {
+        "scout_digest", "researcher_brief", "drafter_draft"
+    }
+
+
+def test_debounce_default_off_ingests_fresh(monkeypatch, tmp_path):
+    """Backward-compat guard: the default (no debounce arg) ingests a fresh file
+    immediately — existing CLI/endpoint/test behavior is unchanged."""
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)
+    pages = scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert len(pages) == 3
+
+
+def test_debounce_does_not_reingest_ledgered_aged_file(monkeypatch, tmp_path):
+    """An aged file already in the ledger (unchanged mtime) stays skipped — the
+    debounce gate never causes a re-ingest; the mtime ledger still wins."""
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)
+    _age_all_sink_files(home, seconds=120)
+    first = scan_and_ingest(wiki_root=wiki, hermes_home=home, debounce_seconds=30)
+    assert len(first) == 3
+    second = scan_and_ingest(wiki_root=wiki, hermes_home=home, debounce_seconds=30)
+    assert second == []
+
+
+# ── background poller (poll_forever) ────────────────────────────────────
+
+
+async def test_poller_invokes_scan_with_configured_debounce(monkeypatch):
+    calls = []
+
+    def _fake_scan(*, wiki_root=None, hermes_home=None, debounce_seconds=0.0):
+        calls.append(debounce_seconds)
+        return []
+
+    monkeypatch.setattr(watcher, "scan_and_ingest", _fake_scan)
+    task = asyncio.create_task(
+        watcher.poll_forever(interval_seconds=0.01, debounce_seconds=30)
+    )
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert calls  # scanned at least once
+    assert all(d == 30 for d in calls)
+
+
+async def test_poller_survives_scan_exception(monkeypatch):
+    calls = []
+
+    def _fake_scan(**_kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("malformed sink file")
+        return []
+
+    monkeypatch.setattr(watcher, "scan_and_ingest", _fake_scan)
+    task = asyncio.create_task(
+        watcher.poll_forever(interval_seconds=0.01, debounce_seconds=30)
+    )
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(calls) >= 2  # first cycle raised, the loop continued

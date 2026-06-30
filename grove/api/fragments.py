@@ -43,6 +43,7 @@ from grove.capability_registry import load_capabilities
 from grove.dock import _VALID_STATUSES, load_dock
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.wiki.index import MalformedWikiPage
+from grove.wiki.links import cellar_page_id
 from hermes_constants import get_hermes_home, get_wiki_path
 
 logger = logging.getLogger(__name__)
@@ -170,7 +171,7 @@ async def handle_cellar_listing(request: web.Request) -> web.Response:
                 )
                 continue
             rel = path.relative_to(pages_dir)
-            page_id = rel.with_suffix("").as_posix()
+            page_id = cellar_page_id(rel)
             source_type = meta.get("source_type")
             # Apply the source_type filter (when set) — only pages whose
             # frontmatter source_type matches survive; absent filter = all.
