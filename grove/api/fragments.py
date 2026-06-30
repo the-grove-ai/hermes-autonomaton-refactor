@@ -864,10 +864,26 @@ async def handle_search(request: web.Request) -> web.Response:
 # Routing model-swap page (portal-model-swap-v1)
 # ---------------------------------------------------------------------------
 
-# R3: the operator manages T1/T2/T3 from the portal. The telemetry tier is a
-# pointer (routing.telemetry.tier -> T1), not a tier_preferences entry, so it
-# gets no card — it inherits whatever T1 is bound to.
-_ROUTING_TIERS = ("T1", "T2", "T3")
+# telemetry-tier-decoupling-v1: the operator manages every model-bound tier from
+# the portal — T1/T2/T3 plus the now-separate Telemetry tier (and any future
+# operator-added tier). The list is read LIVE from tier_preferences rather than
+# hardcoded, so adding a tier in routing.config.yaml surfaces a card with no code
+# change. Handler-backed tiers (T0 pattern_cache) carry no model and get no card.
+_TIER_SORT_ORDER = {"Telemetry": 0, "T1": 1, "T2": 2, "T3": 3}
+
+
+def _swappable_tiers() -> tuple[str, ...]:
+    """Return the model-bound tiers from tier_preferences, ordered for the portal
+    swap panel: Telemetry first (the classifier), then T1-T3 in canonical order,
+    then any operator-added tiers alphabetically. Excludes handler-backed tiers
+    (T0 pattern_cache) that carry no model field."""
+    prefs = _live_tier_preferences()
+    tiers = [
+        name for name, entry in prefs.items()
+        if isinstance(entry, dict) and "model" in entry
+    ]
+    tiers.sort(key=lambda t: (_TIER_SORT_ORDER.get(t, 100), t))
+    return tuple(tiers)
 
 
 def _live_tier_preferences() -> dict:
@@ -965,11 +981,13 @@ def render_routing_fragment(config, catalog: list) -> str:
     Wrapped in ``<div id="routing-panel">`` so the portal nav can swap the whole
     panel, while each tier card keeps its own ``#tier-{tier}`` id for in-place
     swap (the swap/revert handlers target those directly). ``config`` is the
-    tier_preferences mapping. R3: T1/T2/T3 only. This is the single source of the
+    tier_preferences mapping. Tiers are read live via ``_swappable_tiers()``
+    (Telemetry + T1-T3 + any operator-added). This is the single source of the
     card markup — ``render_routing_page`` wraps it for the standalone page (A2).
     """
     cards = "".join(
-        render_tier_card(t, (config or {}).get(t), catalog) for t in _ROUTING_TIERS
+        render_tier_card(t, (config or {}).get(t), catalog)
+        for t in _swappable_tiers()
     )
     return (
         '<div id="routing-panel">'

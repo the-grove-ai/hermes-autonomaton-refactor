@@ -340,3 +340,30 @@ async def test_auth_allows_tailscale_on_portal_static():
     resp = await portal_auth_middleware(
         _FakeReq("/portal/static/htmx.min.js", "100.100.1.1"), _ok_handler)
     assert resp.status == 200
+
+
+# ── telemetry-tier-decoupling-v1 — dynamic swappable tier list ──────────
+
+
+def test_swappable_tiers_orders_telemetry_first_then_t1_t2_t3(monkeypatch):
+    import grove.api.fragments as frag
+
+    monkeypatch.setattr(frag, "_live_tier_preferences", lambda: {
+        "T0": {"handler": "pattern_cache"},            # no model -> excluded
+        "T2": {"model": "anthropic/claude-sonnet-4.6"},
+        "Telemetry": {"model": "google/gemini-2.5-flash"},
+        "T1": {"model": "anthropic/claude-haiku-4.5"},
+        "T3": {"model": "anthropic/claude-opus-4.6"},
+        "Custom": {"model": "x-ai/grok-4.3"},          # unknown -> after T3, alpha
+    })
+    assert frag._swappable_tiers() == ("Telemetry", "T1", "T2", "T3", "Custom")
+
+
+def test_swappable_tiers_excludes_handler_tiers_without_model(monkeypatch):
+    import grove.api.fragments as frag
+
+    monkeypatch.setattr(frag, "_live_tier_preferences", lambda: {
+        "T0": {"handler": "pattern_cache"},
+        "T1": {"model": "anthropic/claude-haiku-4.5"},
+    })
+    assert frag._swappable_tiers() == ("T1",)
