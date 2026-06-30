@@ -240,6 +240,29 @@ def resolve_tier_to_runtime(tier_config: TierConfig) -> dict:
     }
 
 
+def openrouter_provider_pref(runtime: dict) -> Optional[dict]:
+    """The OpenRouter ``provider`` routing mapping for this call, or ``None``.
+
+    openrouter-zero-retention-routing-v1. Reads ``routing.provider_routing.
+    openrouter`` from the live router and returns it VERBATIM — the operator owns
+    the whole object (provider ``order`` for latency, ``data_collection: deny``
+    for privacy, ``allow_fallbacks``, and any other OpenRouter provider field).
+    This never names a provider or interprets a field; it is a pass-through.
+
+    Returns ``None`` (so callers attach nothing) when the call is NOT
+    OpenRouter-bound or when no provider routing is configured. The
+    OpenRouter-only guard prevents sending the field to a direct Anthropic /
+    Ollama / vLLM endpoint that would not understand it.
+    """
+    base_url = runtime.get("base_url") or ""
+    if runtime.get("provider") != "openrouter" and "openrouter.ai" not in base_url:
+        return None
+    # Local import mirrors this module's pattern and avoids an import cycle.
+    from grove.router import get_provider_routing
+
+    return (get_provider_routing() or {}).get("openrouter") or None
+
+
 # ----- internals --------------------------------------------------------------
 
 

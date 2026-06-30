@@ -11407,6 +11407,17 @@ class AIAgent:
         if self.provider_data_collection:
             _prefs["data_collection"] = self.provider_data_collection
 
+        # openrouter-zero-retention-routing-v1: merge the GLOBAL OpenRouter
+        # provider routing (routing.config.yaml provider_routing.openrouter)
+        # UNDER any agent-level fields, so an agent record can still override a
+        # specific key. Pass-through: whatever the operator put in the YAML flows
+        # through unchanged. Only for OpenRouter calls.
+        if _is_or:
+            from grove.router import get_provider_routing
+            _global_or = (get_provider_routing() or {}).get("openrouter") or {}
+            if _global_or:
+                _prefs = {**_global_or, **_prefs}
+
         # Claude max-output override on aggregators
         _ant_max = None
         if (_is_or or _is_nous) and "claude" in (self.model or "").lower():

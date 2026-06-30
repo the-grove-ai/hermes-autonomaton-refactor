@@ -311,7 +311,10 @@ class _FakeOAIResponse:
         self.usage = usage or _FakeOAIUsage()
 
 
-def _install_openai(monkeypatch, *, response, tier_config=None):
+def _install_openai(
+    monkeypatch, *, response, tier_config=None,
+    provider="openrouter", base_url="https://openrouter.ai/api/v1",
+):
     """Wire t1_call's seams for the chat_completions branch: tier config,
     runtime (api_mode=chat_completions, OpenRouter creds), and a fake
     ``openai.OpenAI`` whose ``chat.completions.create`` returns ``response`` and
@@ -325,9 +328,9 @@ def _install_openai(monkeypatch, *, response, tier_config=None):
 
     runtime = {
         "model": tc.model,
-        "provider": "openrouter",
+        "provider": provider,
         "api_key": "or-test",
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": base_url,
         "api_mode": "chat_completions",
         "credential_pool": None,
         "auth_type": "api_key",
@@ -472,3 +475,37 @@ def test_anthropic_path_preserved_after_provider_branch(monkeypatch):
     kw = captured["create_kwargs"]
     assert kw["messages"] == [{"role": "user", "content": "p"}]
     assert kw["system"] == "s"
+
+
+# ── openrouter-zero-retention-routing-v1 — provider pass-through ─────────
+
+
+def test_chat_completions_attaches_openrouter_provider(monkeypatch):
+    import grove.router as gr
+    pref = {"order": ["DeepInfra"], "allow_fallbacks": True, "data_collection": "deny"}
+    monkeypatch.setattr(gr, "get_provider_routing", lambda: {"openrouter": pref})
+    captured = _install_openai(monkeypatch, response=_oai_text("ok"))
+    t1_call.call_t1("p")
+    assert captured["oai_create_kwargs"].get("extra_body") == {"provider": pref}
+
+
+def test_chat_completions_no_provider_when_routing_unset(monkeypatch):
+    import grove.router as gr
+    monkeypatch.setattr(gr, "get_provider_routing", lambda: {})
+    captured = _install_openai(monkeypatch, response=_oai_text("ok"))
+    t1_call.call_t1("p")
+    assert "extra_body" not in captured["oai_create_kwargs"]
+
+
+def test_chat_completions_no_provider_when_not_openrouter(monkeypatch):
+    import grove.router as gr
+    monkeypatch.setattr(gr, "get_provider_routing",
+                        lambda: {"openrouter": {"order": ["DeepInfra"]}})
+    # A non-OpenRouter chat_completions provider (e.g. Ollama) must NOT receive
+    # the OpenRouter-specific provider field.
+    captured = _install_openai(
+        monkeypatch, response=_oai_text("ok"),
+        provider="ollama", base_url="http://localhost:11434/v1",
+    )
+    t1_call.call_t1("p")
+    assert "extra_body" not in captured["oai_create_kwargs"]
