@@ -86,11 +86,32 @@
          a real query string when htmx.ajax sends the GET. HTMX loads with
          `defer`, so the htmx global is available at DOMContentLoaded. -->
     <script>
-    document.addEventListener('DOMContentLoaded', function() {
+    // cellar-link-resolution-v1 (Scope 1) — hash routing fires on BOTH the
+    // initial load AND every subsequent hashchange. A deep link activated while
+    // the portal is already open (a push note, a pasted link, an in-shell
+    // [View in portal] citation) changes only the URL hash; DOMContentLoaded
+    // alone never fired again, so the fragment silently failed to load. The
+    // hashchange binding closes that gap. Dispatch is identical to the original
+    // cold-load path — same htmx.ajax GET, same target — no new routing logic.
+    var _lastRoutedHash = null;
+    function handleHashRoute() {
       var hash = window.location.hash.substring(1);
-      if (hash) {
-        htmx.ajax('GET', '/portal/' + hash, {target: '#center-panel'});
-      }
+      if (!hash) { return; }
+      // Double-fire guard: a single hash value is dispatched once. Protects the
+      // cold-load case where DOMContentLoaded and an immediate hashchange can
+      // both observe the same initial hash.
+      if (hash === _lastRoutedHash) { return; }
+      _lastRoutedHash = hash;
+      htmx.ajax('GET', '/portal/' + hash, {target: '#center-panel'});
+    }
+    document.addEventListener('DOMContentLoaded', handleHashRoute);
+    window.addEventListener('hashchange', handleHashRoute);
+    // A path-routed nav click pushes a hash-less URL via pushState (no
+    // hashchange event), so the guard would otherwise keep the stale value and
+    // suppress a later A→B→A re-activation of the same deep link. Reset on each
+    // history push so re-clicking a previously-viewed link always re-dispatches.
+    document.body.addEventListener('htmx:pushedIntoHistory', function() {
+      _lastRoutedHash = null;
     });
     </script>
 </body>

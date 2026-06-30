@@ -41,6 +41,7 @@ from grove.memory.digest import _read_records as read_memory_records
 from grove.memory.record import DECAY_RATES
 from grove.memory.store import MemoryStore
 from grove.wiki.index import MalformedWikiPage, WikiIndex, _split_frontmatter
+from grove.wiki.links import cellar_page_id
 from grove.wiki.watcher import ingest_file
 from grove.zones import _resolve_schema_path
 from hermes_constants import get_hermes_home, get_wiki_path
@@ -600,7 +601,7 @@ def _build_portal_url(
     if not base:
         return None
     pages_root = get_wiki_path() / "pages"
-    page_id = page.path.relative_to(pages_root).with_suffix("").as_posix()
+    page_id = cellar_page_id(page.path.relative_to(pages_root))
     return f"{base}/portal#fragments/cellar/pages/{page_id}"
 
 

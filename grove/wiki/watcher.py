@@ -27,8 +27,11 @@ Discipline:
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -108,6 +111,7 @@ def scan_and_ingest(
     *,
     wiki_root: Optional[Path] = None,
     hermes_home: Optional[Path] = None,
+    debounce_seconds: float = 0.0,
 ) -> List[CanonicalPage]:
     """Scan the fleet sinks and compact new/changed docs. Return the pages
     written this scan (empty when nothing changed).
@@ -116,6 +120,15 @@ def scan_and_ingest(
     :func:`ingest_file` funnels through, so the scanner shares the one
     idempotency gate rather than forking it. A malformed file that matches its
     adapter's glob raises (A2) — the scan fails loud rather than skipping it.
+
+    ``debounce_seconds`` is a partial-write guard for the autonomous poller
+    (cellar-link-resolution-v1 Scope 2): a fleet sink file whose mtime is
+    younger than the window is DEFERRED to a later scan, so a file caught
+    mid-write is never compacted as a torn read. It defaults to ``0.0`` (off) so
+    every explicit caller — the CLI, the ingest endpoint — ingests a freshly
+    written file immediately; only the background poller passes a non-zero
+    window. The Dock manifest is exempt: it is written atomically, so it is not
+    subject to the partial-write guard.
     """
     from hermes_constants import get_hermes_home, get_wiki_path
 
@@ -124,6 +137,7 @@ def scan_and_ingest(
 
     ledger_path = root / _LEDGER_REL
     ledger = _load_ledger(ledger_path)
+    now = time.time()
 
     pages: List[CanonicalPage] = []
     for adapter in FLEET_ADAPTERS:
@@ -133,6 +147,17 @@ def scan_and_ingest(
             logger.debug("[wiki] sink %s absent; skipping.", sink)
             continue
         for source in sorted(sink.glob(adapter.glob)):
+            if debounce_seconds > 0:
+                age = now - source.stat().st_mtime
+                if age < debounce_seconds:
+                    # Younger than the debounce window — likely still being
+                    # written. Defer to the next scan rather than compact a torn
+                    # read. (No ledger write; it is reconsidered next cycle.)
+                    logger.debug(
+                        "[wiki] %s age %.1fs < debounce %.0fs; deferring.",
+                        source.name, age, debounce_seconds,
+                    )
+                    continue
             page = _ingest_one(
                 source, adapter=adapter, wiki_root=root, ledger=ledger
             )
@@ -161,6 +186,49 @@ def scan_and_ingest(
 
     _save_ledger(ledger_path, ledger)
     return pages
+
+
+async def poll_forever(
+    *,
+    interval_seconds: float = 60.0,
+    debounce_seconds: float = 30.0,
+    wiki_root: Optional[Path] = None,
+    hermes_home: Optional[Path] = None,
+) -> None:
+    """Background poll loop (cellar-link-resolution-v1 Scope 2) — the autonomous
+    trigger that makes a capability's sink write discoverable without a manual
+    ``hermes wiki ingest``. Every ``interval_seconds`` it runs
+    :func:`scan_and_ingest` with the partial-write ``debounce_seconds`` guard.
+
+    The scan drives the compaction pipeline (model calls, blocking I/O), so it
+    runs in a thread executor — a slow compaction never stalls the gateway event
+    loop.
+
+    Resilience vs. fail-loud: a malformed sink file makes one scan raise. The
+    loop logs it loudly (``logger.exception``) and continues to the next cycle —
+    letting the exception kill the task would silently end ALL future ingests,
+    the worse failure. ``CancelledError`` (a ``BaseException``) is not caught, so
+    the loop tears down cleanly on shutdown.
+    """
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            pages = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    scan_and_ingest,
+                    wiki_root=wiki_root,
+                    hermes_home=hermes_home,
+                    debounce_seconds=debounce_seconds,
+                ),
+            )
+            if pages:
+                logger.info("[wiki] poller compacted %d page(s).", len(pages))
+        except Exception:
+            logger.exception(
+                "[wiki] poller scan failed; continuing next cycle."
+            )
 
 
 # ── ledger (mtime state; mirrors the index meta-table intent) ───────────
