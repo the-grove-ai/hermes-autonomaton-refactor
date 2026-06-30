@@ -1,8 +1,8 @@
 """propose_governance_change — the sole Stage-04 door for governance-config writes.
 
-GRV-010 C1b Phase 3 (Option A, sole-path). Generic file tools are structurally
-blinded to ``~/.grove`` (see ``grove/utils/fs_utils.is_governed_path``); this
-tool is the ONLY authorized writer of governance configuration.
+GRV-010 C1b Phase 3 (Option A, sole-path). Post secrets-only-wall-v1, generic
+file tools can write non-secret ``~/.grove`` paths through Yellow-zone approval.
+This tool is the ONLY authorized writer of governance configuration.
 
 It is a *target-classified intent*: the Dispatcher classifies a
 ``propose_governance_change`` call by its ``target_file`` at Stage 04 —
@@ -82,7 +82,7 @@ def classify_governance_target(target_file: object) -> Optional[str]:
         return "yellow"
     # GRV-010 GOV-WRITE — admit the Dock tree (``~/.grove/dock/``) at YELLOW.
     # The Dock is operator-governed strategic config the agent edits through
-    # this door (not via the substrate-blinded generic file tools). Containment
+    # this door, which target-classifies and logs the change. Containment
     # is anchored to the RESOLVED Dock root via ``is_relative_to`` — NOT
     # ``str.startswith`` or parts-membership, either of which a sibling
     # ``dock-evil/`` or a stray ``dock`` path component would defeat;
@@ -195,15 +195,17 @@ GOVERNANCE_CHANGE_SCHEMA = {
     "name": "propose_governance_change",
     "description": (
         "Propose a change to a GOVERNANCE config file — the ONLY way to modify "
-        "~/.grove governance configuration (generic file tools cannot write "
-        "there). Targets: .env (operator-only — sovereign/RED), or the YAML "
+        "~/.grove governance configuration. Targets: .env (operator-only — "
+        "sovereign/RED), or the YAML "
         "configs zones.schema.yaml / routing.config.yaml / "
         "routing.autonomaton.yaml / routing profiles, or a .yaml/.md file in "
         "the Dock tree ~/.grove/dock/ (e.g. dock.yaml or goals/*.md) "
         "(operator-approved — YELLOW). Use THIS tool — not write_file/patch — "
         "to edit the Dock. The change is classified by target at Stage 04 and applied "
         "only after the operator approves; the write and its rationale are "
-        "logged. Provide the FULL new file content."
+        "logged. Provide the FULL new file content. For fleet output directories "
+        "(~/.grove/scout/, ~/.grove/drafter/, etc.) use write_file directly — "
+        "those are not governance config."
     ),
     "parameters": {
         "type": "object",

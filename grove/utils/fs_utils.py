@@ -1,10 +1,12 @@
 """Filesystem governance helpers — GRV-010 C1b (conformance-substrate-write-v1).
 
 ``is_governed_path`` is the single source of truth for "does this path resolve
-into the ``~/.grove`` governance tree?" — the structural wall that generic file
-tools (``write_file`` / ``patch``) bounce off under Option A (sole-path). The
-ONLY governance-config write path is the dedicated ``propose_governance_change``
-door, which crosses Stage 04; everything else is blinded to the boundary.
+into the ``~/.grove`` governance tree?" Post secrets-only-wall-v1 the generic
+file tools (``write_file`` / ``patch``) wall on ``is_secret_path`` (operator
+secrets + system paths), not on this check — which now backs
+``skill_manager_tool``'s ``~/.grove`` boundary. The dedicated
+``propose_governance_change`` door, which crosses Stage 04, remains the
+sanctioned writer of governance config.
 
 Canonicalization is load-bearing. Both the target and ``GROVE_HOME`` are passed
 through ``os.path.realpath`` (collapsing symlinks AND ``..``) BEFORE matching, so
@@ -81,9 +83,11 @@ def is_governed_path(path: object) -> bool:
 # ── GRV-001 v2.0 — scope-keyed surface (SHELL governance path ONLY) ───────────
 #
 # is_scope_defining is DELIBERATELY SEPARATE from is_governed_path above and
-# serves a different contract. is_governed_path stays the blanket ~/.grove wall
-# for the GENERIC FILE TOOLS (write_file / patch, the agent read/write
-# chokepoint, skill_manage) — that contract is unchanged. is_scope_defining
+# serves a different contract. Post secrets-only-wall-v1, is_governed_path no
+# longer walls the generic file tools — write_file / patch and the agent
+# read/write chokepoint wall on is_secret_path (secrets + system paths only).
+# is_governed_path now backs skill_manager_tool's ~/.grove boundary check
+# (.andon allowlisted). is_scope_defining
 # answers the narrower v2.0 question used ONLY by the shell-effect classifier:
 # "would mutating this path redefine the agent's own authority?" It lets the
 # shell path treat granted workspaces under ~/.grove as autonomous (GREEN) while
@@ -143,8 +147,9 @@ def is_scope_defining(path: object, grove_home: object = None) -> bool:
     caught on the resolved target. An unresolvable path fails closed (treated as
     scope-defining) — the wall never errs open.
 
-    GRV-001 v2.0 scope-keyed check for the SHELL path ONLY; generic file tools
-    keep the blanket :func:`is_governed_path` wall.
+    GRV-001 v2.0 scope-keyed check for the SHELL path ONLY; post
+    secrets-only-wall-v1 the generic file tools wall on
+    :func:`is_secret_path` (secrets + system paths), not on this check.
     """
     from hermes_constants import get_hermes_home
 

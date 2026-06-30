@@ -657,7 +657,7 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
 
 
 def _is_governed_block(result: Any) -> bool:
-    """Return True when *result* is the governed-path wall's rejection.
+    """Return True when *result* is the secrets-path wall's rejection.
 
     The wall (``agent/file_safety.reject_governed_agent_write`` /
     ``tools.file_tools._reject_governed_path``) returns
@@ -7419,7 +7419,7 @@ class AIAgent:
         succeeded: List[str],
     ) -> str:
         """Compose the operator-facing replacement when a write was blocked by
-        the governed-path wall (governance-representation-v1, Option C).
+        the secrets-path wall (governance-representation-v1, Option C).
 
         The model's text is premised on a write that did not happen, so it is
         replaced WHOLESALE with an honest summary built from the turn's actual
@@ -7439,17 +7439,20 @@ class AIAgent:
         lines: List[str] = []
 
         if len(governed) == 1:
-            lines.append(f"⛔ Write blocked — {governed[0]} is a governed path.")
+            lines.append(f"⛔ Write blocked — {governed[0]} is a protected secret or system path.")
         else:
             lines.append(
-                f"⛔ Write blocked — {len(governed)} file(s) are governed "
-                "paths and were not written:"
+                f"⛔ Write blocked — {len(governed)} file(s) are protected "
+                "secret or system paths and were not written:"
             )
             for path in governed:
                 lines.append(f"  • {path}")
         lines.append(
-            "Generic file tools cannot write inside ~/.grove (config, the live "
-            "skills tree, or the provenance/telemetry feed)."
+            "Only protected paths are blocked — operator secrets (credentials, "
+            "tokens, keys) and sensitive system paths. Everything else, "
+            "including fleet output directories under ~/.grove "
+            "(e.g. ~/.grove/scout/, ~/.grove/drafter/), is writable through "
+            "the normal flow."
         )
 
         if other:
@@ -7478,7 +7481,7 @@ class AIAgent:
 
         lines.append("")
         lines.append("To proceed:")
-        lines.append("  • Save to a non-governed location (e.g. ~/Documents/…)")
+        lines.append("  • For fleet output, write directly to the skill's output directory under ~/.grove/ — it's allowed")
         lines.append("  • Grant the path as a workspace (edit ~/.grove/workspaces.yaml)")
         lines.append("  • Author governance changes via propose_governance_change / skill_manage")
         lines.append("  • Or handle the write yourself")

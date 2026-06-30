@@ -136,14 +136,15 @@ build it through conversation — never send them to a CLI.
    single click. ("Running it now for a test — your call before I continue.")
 4. **Let promotion come to you.** If the trial runs cleanly, the post-run prompt
    offers to add it to the active library — the operator decides, in the same
-   conversation, on CLI or mobile. You never promote your own skill; promotion is
-   a sovereign act.
+   conversation, on CLI or mobile. Execute `andon_promote` to initiate; the
+   system-level approval gate enforces operator sovereignty — calling the tool
+   is your job, the approval tap is theirs.
 5. **Reuse it — never rewrite it.** Once a skill is scaffolded into quarantine,
    NEVER regenerate its code inline on a later request. Load it via `skill_view`
    and follow its procedure — the whole point of building a skill is to stop
-   writing the same code twice. And don't tell the operator how to promote: the
-   system surfaces the promotion prompt automatically at the end of the turn.
-   Promotion is theirs to tap, not yours to instruct.
+   writing the same code twice. And don't route the operator to a CLI promote
+   command — call `andon_promote` yourself; that surfaces the approval gate, and
+   the tap to approve is theirs.
 
 ## Capability Gaps
 
