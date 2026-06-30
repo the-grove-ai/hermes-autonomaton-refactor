@@ -204,13 +204,17 @@ def test_builds_client_with_runtime_credentials(monkeypatch):
     assert captured["client_kwargs"]["base_url"] is None
 
 
-def test_fails_loud_when_tier_not_anthropic_messages(monkeypatch):
+def test_unsupported_api_mode_fails_loud(monkeypatch):
+    # provider-agnostic-v1: chat_completions is now supported (see the
+    # chat_completions section below). An api_mode that is NEITHER
+    # anthropic_messages nor chat_completions must still fail loud — no silent
+    # mis-shaped call.
     _install(
         monkeypatch,
         blocks=[_FakeTextBlock("ok")],
-        api_mode="ollama_chat",
+        api_mode="bedrock_converse",
     )
-    with pytest.raises(RuntimeError, match="anthropic"):
+    with pytest.raises(RuntimeError, match="unsupported"):
         t1_call.call_t1("p")
 
 
@@ -261,3 +265,210 @@ def test_missing_cost_does_not_crash(monkeypatch):
     )
     # Must complete normally — surface the gap (warn), never hard-fail the call.
     assert t1_call.call_t1("p") == "ok"
+
+
+# ── chat_completions (OpenAI-compatible) path — provider-agnostic-v1 ──────
+#
+# call_t1 now speaks chat_completions as well as anthropic_messages, so the wiki
+# pipeline runs on an OpenRouter-bound T1 (the same tier the telemetry classifier
+# already uses). The Anthropic path above is unchanged (I1). These cases cover
+# the new branch: plain-text + forced-tool, the GENERIC Anthropic→OpenAI tool
+# reshape, fail-loud on a missing tool_call / empty content, and OpenAI-named
+# usage fields for cost.
+
+
+class _FakeOAIFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _FakeOAIToolCall:
+    def __init__(self, name, arguments):
+        self.function = _FakeOAIFunction(name, arguments)
+
+
+class _FakeOAIMessage:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _FakeOAIChoice:
+    def __init__(self, message):
+        self.message = message
+
+
+class _FakeOAIUsage:
+    def __init__(self, prompt_tokens=100, completion_tokens=50):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
+class _FakeOAIResponse:
+    def __init__(self, choices, usage=None):
+        self.choices = choices
+        self.usage = usage or _FakeOAIUsage()
+
+
+def _install_openai(monkeypatch, *, response, tier_config=None):
+    """Wire t1_call's seams for the chat_completions branch: tier config,
+    runtime (api_mode=chat_completions, OpenRouter creds), and a fake
+    ``openai.OpenAI`` whose ``chat.completions.create`` returns ``response`` and
+    records its kwargs in the returned ``captured`` dict."""
+    captured: dict = {}
+    tc = tier_config if tier_config is not None else _FakeTierConfig()
+
+    def _fake_get_tier_config(tier):
+        captured["tier_name"] = tier
+        return tc
+
+    runtime = {
+        "model": tc.model,
+        "provider": "openrouter",
+        "api_key": "or-test",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+        "credential_pool": None,
+        "auth_type": "api_key",
+    }
+
+    def _fake_resolve(cfg):
+        captured["resolved_from"] = cfg
+        return runtime
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured["oai_create_kwargs"] = kwargs
+            return response
+
+    class _FakeChat:
+        def __init__(self):
+            self.completions = _FakeCompletions()
+
+    class _FakeOpenAIClient:
+        def __init__(self):
+            self.chat = _FakeChat()
+
+    def _fake_ctor(**kwargs):
+        captured["oai_client_kwargs"] = kwargs
+        return _FakeOpenAIClient()
+
+    monkeypatch.setattr("grove.router.get_tier_config", _fake_get_tier_config)
+    monkeypatch.setattr("grove.providers.resolve_tier_to_runtime", _fake_resolve)
+    monkeypatch.setattr("openai.OpenAI", _fake_ctor)
+    return captured
+
+
+def _oai_text(content):
+    return _FakeOAIResponse([_FakeOAIChoice(_FakeOAIMessage(content=content))])
+
+
+def _oai_tool(name, arguments):
+    msg = _FakeOAIMessage(tool_calls=[_FakeOAIToolCall(name, arguments)])
+    return _FakeOAIResponse([_FakeOAIChoice(msg)])
+
+
+def test_chat_completions_plaintext_returns_content(monkeypatch):
+    _install_openai(monkeypatch, response=_oai_text("hello from openrouter"))
+    assert t1_call.call_t1("write a page") == "hello from openrouter"
+
+
+def test_chat_completions_threads_model_system_messages(monkeypatch):
+    captured = _install_openai(monkeypatch, response=_oai_text("ok"))
+    t1_call.call_t1("the prompt", system="be terse", max_tokens=321)
+    kw = captured["oai_create_kwargs"]
+    assert kw["model"] == "claude-haiku-4-5-20251001"
+    assert kw["max_tokens"] == 321
+    assert kw["messages"] == [
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "the prompt"},
+    ]
+    assert "tools" not in kw and "tool_choice" not in kw
+
+
+def test_chat_completions_no_system_omits_system_message(monkeypatch):
+    captured = _install_openai(monkeypatch, response=_oai_text("ok"))
+    t1_call.call_t1("p")
+    assert captured["oai_create_kwargs"]["messages"] == [
+        {"role": "user", "content": "p"}
+    ]
+
+
+def test_chat_completions_builds_client_with_runtime_credentials(monkeypatch):
+    captured = _install_openai(monkeypatch, response=_oai_text("ok"))
+    t1_call.call_t1("p")
+    assert captured["oai_client_kwargs"]["api_key"] == "or-test"
+    assert (
+        captured["oai_client_kwargs"]["base_url"]
+        == "https://openrouter.ai/api/v1"
+    )
+
+
+def test_chat_completions_plaintext_fails_loud_on_empty_content(monkeypatch):
+    _install_openai(monkeypatch, response=_oai_text(None))
+    with pytest.raises((ValueError, RuntimeError), match="(?i)empty|content"):
+        t1_call.call_t1("p")
+
+
+def test_chat_completions_tool_returns_parsed_dict(monkeypatch):
+    _install_openai(monkeypatch, response=_oai_tool("verdict", '{"ok": true}'))
+    assert t1_call.call_t1("evaluate", tool=_TOOL) == {"ok": True}
+
+
+def test_chat_completions_tool_reshapes_anthropic_tool_to_openai(monkeypatch):
+    captured = _install_openai(
+        monkeypatch, response=_oai_tool("verdict", '{"ok": false}')
+    )
+    t1_call.call_t1("evaluate", tool=_TOOL)
+    kw = captured["oai_create_kwargs"]
+    assert kw["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "verdict",
+                "description": "structured verdict",
+                "parameters": _TOOL["input_schema"],
+            },
+        }
+    ]
+    assert kw["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "verdict"},
+    }
+
+
+def test_chat_completions_tool_fails_loud_when_no_tool_calls(monkeypatch):
+    _install_openai(
+        monkeypatch,
+        response=_FakeOAIResponse(
+            [_FakeOAIChoice(_FakeOAIMessage(content="I refuse"))]
+        ),
+    )
+    with pytest.raises((ValueError, RuntimeError), match="(?i)tool"):
+        t1_call.call_t1("evaluate", tool=_TOOL)
+
+
+def test_chat_completions_cost_reads_openai_token_fields(monkeypatch):
+    # OpenAI usage uses prompt_tokens/completion_tokens. The tracker must read
+    # them — Anthropic field names would silently accumulate zero.
+    _install_openai(
+        monkeypatch,
+        response=_FakeOAIResponse(
+            [_FakeOAIChoice(_FakeOAIMessage(content="ok"))],
+            usage=_FakeOAIUsage(prompt_tokens=1000, completion_tokens=500),
+        ),
+    )
+    before = t1_call.cumulative_cost_usd()
+    t1_call.call_t1("p")
+    assert t1_call.cumulative_cost_usd() > before
+
+
+def test_anthropic_path_preserved_after_provider_branch(monkeypatch):
+    # I1 regression guard: the anthropic_messages path still returns text and
+    # still forces tools exactly as before the provider branch was added.
+    captured = _install(monkeypatch, blocks=[_FakeTextBlock("anthropic ok")])
+    assert t1_call.call_t1("p", system="s") == "anthropic ok"
+    kw = captured["create_kwargs"]
+    assert kw["messages"] == [{"role": "user", "content": "p"}]
+    assert kw["system"] == "s"
