@@ -109,6 +109,20 @@ routing:
       cost_per_mtok_input: 1.0
       cost_per_mtok_output: 5.0
 
+    Telemetry:
+      provider: openrouter
+      model: google/gemini-2.5-flash
+      description: |
+        Telemetry classifier — scores every incoming request to decide
+        which tier handles it. High-volume, structured output (forced
+        tool call). Bound separately from T1 so the operator can
+        optimize classification and compaction independently.
+        Speed: fastest tier.
+        Price: ~$0.15 / ~$0.60 per million input / output tokens.
+      max_tokens: 4096
+      cost_per_mtok_input: 0.15
+      cost_per_mtok_output: 0.60
+
     T2:
       provider: openrouter
       # Direct Anthropic alternative (requires ANTHROPIC_API_KEY):
@@ -145,12 +159,10 @@ routing:
     # different host or port, set OLLAMA_BASE_URL in the environment — the
     # tier block carries no base_url field of its own.
     #
-    # T1 runs the telemetry classifier. The classifier is provider-agnostic
-    # (Anthropic Messages and OpenAI-compatible chat_completions both work),
-    # so T1 is not pinned to any one vendor. The real requirement is forced
-    # tool-calls: bind T1 to a model that reliably honours a forced
-    # tool_choice, or classification fails loud and every request falls
-    # through to default-tier behaviour.
+    # Telemetry runs on its own dedicated tier (routing.telemetry.tier).
+    # It is independent of T1 — rebinding T1 does not affect classification,
+    # and rebinding Telemetry does not affect compaction or agent dispatch.
+    # Both require reliable forced tool_choice from the bound model.
     #
     # Full walkthrough: docs/guides/local-tier-binding.md
     # ---------------------------------------------------------------------
@@ -250,7 +262,7 @@ routing:
       enabled: false
 
   telemetry:
-    tier: T1
+    tier: Telemetry
     description: |
       Which tier scores incoming requests — judging what kind of work
       each one is, and how confident that judgment is. T1 is the natural
@@ -375,6 +387,10 @@ tier_budgets:
   T1:                       # Cheap Cognition — the floor. Minimal prefill.
     context: [cellar_context]  # K6 (A-D3): minimal but non-zero cellar grounding
     cellar_context_ceiling: 1000
+
+  Telemetry:                # Classifier tier — a forced-tool classification call
+    context: []             # that composes no agent prefill, so no heavy blocks
+                            # (exact-cover D7: provider-backed tier needs an entry)
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -26,12 +26,12 @@ import logging
 from aiohttp import web
 
 from grove.api.fragments import (
-    _ROUTING_TIERS,
     _esc,
     _html_fragment,
     _live_tier_preferences,
     _proposal_actions_html,
     _short_id,
+    _swappable_tiers,
     render_goal_card,
     render_tier_card,
 )
@@ -328,7 +328,7 @@ async def handle_dock_goal_update(request: web.Request) -> web.Response:
 def _unknown_tier_card(tier: str) -> web.Response:
     return _html_fragment(
         f'<div class="card"><p class="error">Unknown tier {_esc(tier)} — the '
-        f'operator manages {_esc(", ".join(_ROUTING_TIERS))} from the portal.'
+        f'operator manages {_esc(", ".join(_swappable_tiers()))} from the portal.'
         f'</p></div>',
         status=400,
     )
@@ -344,7 +344,7 @@ async def handle_tier_model_swap(request: web.Request) -> web.Response:
     tier = str(data.get("tier") or "")
     model_slug = str(data.get("model_slug") or "")
 
-    if tier not in _ROUTING_TIERS:
+    if tier not in _swappable_tiers():
         return _unknown_tier_card(tier)
 
     catalog = load_catalog()
@@ -382,7 +382,7 @@ async def handle_tier_model_revert(request: web.Request) -> web.Response:
     data = await request.post()
     tier = str(data.get("tier") or "")
 
-    if tier not in _ROUTING_TIERS:
+    if tier not in _swappable_tiers():
         return _unknown_tier_card(tier)
 
     catalog = load_catalog()
