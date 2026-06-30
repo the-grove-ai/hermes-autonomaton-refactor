@@ -452,7 +452,15 @@ if AIOHTTP_AVAILABLE:
             return False
         req = _parsed_origin(f"{request.scheme}://{request.host}")
         got = _parsed_origin(origin)
-        return req is not None and got is not None and req == got
+        # Compare scheme + host only, dropping the port (tuple index 2): iOS
+        # Safari sends an Origin without the non-default port (it defaults to
+        # 80), which fails an exact (scheme, host, port) match against the
+        # serving port and 403s legitimate same-host mobile requests. Same host
+        # is same-origin here; the real boundary is portal_auth_middleware
+        # (Tailscale-mesh membership), not this CORS check. Foreign origins
+        # still mismatch on scheme/host and fall through to the _cors_origins
+        # allowlist below.
+        return req is not None and got is not None and req[:2] == got[:2]
 else:
     _parsed_origin = None  # type: ignore[assignment]
     _is_dynamic_same_origin = None  # type: ignore[assignment]
