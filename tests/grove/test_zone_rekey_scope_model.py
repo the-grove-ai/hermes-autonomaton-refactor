@@ -166,11 +166,14 @@ class TestClassifyShellEffectScope:
         assert zr.zone == "yellow"
 
     # ── Inline-amendment + safety regression guards ──
-    def test_read_secrets_stays_yellow_not_green(self, grove_home):
-        # Reads never become GREEN — only WRITE targets do.
+    def test_read_secrets_is_red(self, grove_home):
+        # shell-grove-access-v1: secret reads via shell are RED (parity with the
+        # file tools' reject_governed_agent_read). Closes the secret-read hole —
+        # was YELLOW (operator-approvable), now hard RED.
         from grove.shell_effects import classify_shell_effect
         zr = classify_shell_effect(f"cat {grove_home / '.env'}")
-        assert zr.zone == "yellow"
+        assert zr.zone == "red"
+        assert "secret" in (zr.pattern_key or "")
 
     def test_overwrite_secrets_is_red(self, grove_home):
         # Amendment #2: `echo x > ~/.grove/.env` must stay RED (was RED in v1).
@@ -187,14 +190,19 @@ class TestClassifyShellEffectScope:
         zr = classify_shell_effect(f"python3 -c 'print(1)' > {grove_home / 'research' / 'x'}")
         assert zr.zone == "yellow"
 
-    def test_code_interp_redirect_into_ungranted_grove_path_is_red(self, grove_home):
-        # The "redirect does not mask" protection still fires where it matters:
-        # an UNGRANTED path under ~/.grove (memory/ is not in workspaces.yaml) is
-        # fail-closed RED via the redirect check, which runs BEFORE the code-interp
-        # branch — so a benign-looking `python -c` cannot smuggle a write there.
+    def test_code_interp_redirect_into_grove_path(self, grove_home):
+        # shell-grove-access-v1: a redirect into a NON-SECRET ~/.grove path is now
+        # YELLOW (operator-approvable), matching write_file — the old blanket
+        # "ungranted ~/.grove → RED" is gone. A redirect into a SECRET stays RED:
+        # the secret wall runs before any benign-zone shortcut, so a benign-looking
+        # `python -c` still cannot smuggle a write to a secret.
         from grove.shell_effects import classify_shell_effect
-        zr = classify_shell_effect(f"python3 -c 'print(1)' > {grove_home / 'memory' / 'x'}")
-        assert zr.zone == "red"
+        assert classify_shell_effect(
+            f"python3 -c 'print(1)' > {grove_home / 'memory' / 'x'}"
+        ).zone == "yellow"
+        assert classify_shell_effect(
+            f"python3 -c 'print(1)' > {grove_home / '.env'}"
+        ).zone == "red"
 
     def test_rm_rf_grove_root_is_red(self, grove_home):
         # Deleting the grove root as a unit destroys scope-defining surfaces.
