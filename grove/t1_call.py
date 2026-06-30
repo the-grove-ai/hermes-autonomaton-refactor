@@ -17,14 +17,22 @@ both ``sk-ant-api*`` keys and OAuth bearer tokens).
 
 Two modes:
 
-* ``tool`` given — a forced ``tool_use`` call (``tool_choice`` pins that tool),
+* ``tool`` given — a forced tool call (``tool_choice`` pins that tool),
   returning the validated structured ``input`` dict. Use for the Evaluator's
   verdict.
 * ``tool`` absent — a plain-text completion, returning the concatenated text.
   Use for the Writer / Editor prose.
 
-Fail loud (Digital Jidoka): a non-anthropic_messages tier, a missing tool_use
-block, or an empty text response each raise — never a silent default. Cost is
+Provider-agnostic (wiki-pipeline-provider-agnostic-v1): the call branches on the
+T1 tier's resolved ``api_mode``. ``anthropic_messages`` uses the Messages API
+(preserved byte-for-byte); ``chat_completions`` uses the OpenAI-compatible Chat
+Completions API (OpenRouter, Ollama, vLLM, …) — the SAME tier the telemetry
+classifier already runs on. A passed Anthropic-style ``tool`` is reshaped to the
+OpenAI function shape generically, so no consumer maintains a parallel constant.
+Either surface forces the tool, so the structured contract holds on both.
+
+Fail loud (Digital Jidoka): an unrecognized api_mode, a missing tool call, or an
+empty text response each raise — never a silent default. Cost is
 tracked by replicating the ``cost_per_mtok_*`` field read from the resolved
 ``TierConfig`` (no import of classify's private spend tracker); an undeclared
 cost surfaces one loud warning per process and skips accumulation rather than
@@ -33,6 +41,7 @@ defaulting to zero.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, Optional, Union
 
@@ -60,36 +69,86 @@ def call_t1(
 ) -> Union[str, Dict[str, Any]]:
     """Make one T1 call and return its result.
 
-    ``tool`` present → forced ``tool_use``; returns the tool's structured
+    ``tool`` present → forced tool call; returns the tool's structured
     ``input`` dict. ``tool`` absent → plain-text completion; returns the
-    concatenated text. Raises loudly on a malformed response or a
-    non-anthropic_messages tier.
+    concatenated text. Branches on the T1 tier's ``api_mode``
+    (``anthropic_messages`` | ``chat_completions``); any other value raises.
+    Raises loudly on a malformed response.
     """
-    from agent.anthropic_adapter import build_anthropic_client
-
     runtime, tier_config = _resolve_t1_runtime()
-    client = build_anthropic_client(
-        api_key=runtime.get("api_key") or "",
-        base_url=runtime.get("base_url") or None,
+    api_mode = runtime.get("api_mode")
+
+    # wiki-pipeline-provider-agnostic-v1: branch on the wire protocol the T1
+    # tier resolves to. The anthropic_messages path is preserved byte-for-byte
+    # (I1); chat_completions drives any OpenAI-compatible provider (the same
+    # tier the telemetry classifier already runs on). Both honour a plain-text
+    # OR a forced-tool call, so the Writer/Editor/Evaluator are transport-blind.
+    if api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import build_anthropic_client
+
+        client = build_anthropic_client(
+            api_key=runtime.get("api_key") or "",
+            base_url=runtime.get("base_url") or None,
+        )
+
+        kwargs: Dict[str, Any] = {
+            "model": runtime["model"],
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system:
+            kwargs["system"] = system
+        if tool is not None:
+            kwargs["tools"] = [tool]
+            kwargs["tool_choice"] = {"type": "tool", "name": tool["name"]}
+
+        response = client.messages.create(**kwargs)
+        _track_cost(getattr(response, "usage", None), tier_config)
+
+        if tool is not None:
+            return _extract_tool_input(response, tool["name"])
+        return _extract_text(response)
+
+    if api_mode == "chat_completions":
+        # Lazy import keeps the ~800ms openai/pydantic load off the module-import
+        # path, matching the Anthropic branch's local import.
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=runtime.get("api_key") or "",
+            base_url=runtime.get("base_url") or None,
+        )
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        kwargs = {
+            "model": runtime["model"],
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if tool is not None:
+            kwargs["tools"] = [_to_openai_tool(tool)]
+            kwargs["tool_choice"] = {
+                "type": "function",
+                "function": {"name": tool["name"]},
+            }
+
+        response = client.chat.completions.create(**kwargs)
+        _track_cost(getattr(response, "usage", None), tier_config)
+
+        if tool is not None:
+            return _extract_openai_tool_input(response, tool["name"])
+        return _extract_openai_text(response)
+
+    # Any other api_mode (bedrock_converse, codex_responses, …) is not a surface
+    # this primitive speaks. Fail loud rather than issue a mis-shaped call.
+    raise RuntimeError(
+        f"call_t1: unsupported T1 api_mode {api_mode!r} "
+        f"(model={runtime.get('model')!r}); bind T1 to an anthropic_messages "
+        f"or chat_completions provider in routing.config.yaml."
     )
-
-    kwargs: Dict[str, Any] = {
-        "model": runtime["model"],
-        "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if system:
-        kwargs["system"] = system
-    if tool is not None:
-        kwargs["tools"] = [tool]
-        kwargs["tool_choice"] = {"type": "tool", "name": tool["name"]}
-
-    response = client.messages.create(**kwargs)
-    _track_cost(getattr(response, "usage", None), tier_config)
-
-    if tool is not None:
-        return _extract_tool_input(response, tool["name"])
-    return _extract_text(response)
 
 
 # ── tier resolution (public API, by name) ──────────────────────────────
@@ -100,8 +159,13 @@ def _resolve_t1_runtime():
 
     A1: no import of the private ``_telemetry_tier_runtime``. A fresh CLI
     process may not have initialized the module router yet — initialize it
-    via the public :func:`grove.router.initialize` and retry once. Asserts
-    the resolved tier speaks anthropic_messages; raises otherwise.
+    via the public :func:`grove.router.initialize` and retry once.
+
+    wiki-pipeline-provider-agnostic-v1: the pre-call ``anthropic_messages``
+    guard is retired. :func:`call_t1` now speaks both anthropic_messages and
+    chat_completions, branching on the resolved ``api_mode`` and failing loud
+    POST-call on a structural failure (missing tool call / empty text) or on an
+    unrecognized api_mode — never on what the provider IS.
     """
     from grove import router as grove_router
     from grove.providers import resolve_tier_to_runtime
@@ -114,14 +178,7 @@ def _resolve_t1_runtime():
         grove_router.initialize()
         tier_config = grove_router.get_tier_config(_T1_TIER)
 
-    runtime = resolve_tier_to_runtime(tier_config)
-    if runtime.get("api_mode") != "anthropic_messages":
-        raise RuntimeError(
-            f"T1 tier resolves api_mode {runtime.get('api_mode')!r}; "
-            f"the wiki pipeline requires an Anthropic-native (anthropic_messages) "
-            f"tier. Rebind T1 in routing.config.yaml."
-        )
-    return runtime, tier_config
+    return resolve_tier_to_runtime(tier_config), tier_config
 
 
 # ── response extraction (fail loud) ────────────────────────────────────
@@ -153,6 +210,59 @@ def _extract_text(response) -> str:
     return "".join(parts)
 
 
+# ── chat_completions extraction (OpenAI-compatible, fail loud) ──────────
+
+
+def _to_openai_tool(tool: Dict[str, Any]) -> Dict[str, Any]:
+    """Reshape an Anthropic-style tool (``{name, description, input_schema}``)
+    into the OpenAI function-tool shape. Generic — :func:`call_t1` reshapes
+    whatever tool it is passed, so no consumer maintains a parallel constant."""
+    return {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool["input_schema"],
+        },
+    }
+
+
+def _extract_openai_tool_input(response, tool_name: str) -> Dict[str, Any]:
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        raise ValueError(
+            f"T1 (chat_completions) returned no choices: {response!r}"
+        )
+    message = choices[0].message
+    tool_calls = getattr(message, "tool_calls", None) or []
+    if not tool_calls or not getattr(tool_calls[0], "function", None):
+        raise ValueError(
+            f"T1 (chat_completions) returned no tool_calls; forced tool_choice "
+            f"failed — the model may not support function calling: {message!r}"
+        )
+    fn = tool_calls[0].function
+    if fn.name != tool_name:
+        raise ValueError(
+            f"T1 (chat_completions) returned tool {fn.name!r}, expected "
+            f"{tool_name!r}"
+        )
+    return json.loads(fn.arguments)
+
+
+def _extract_openai_text(response) -> str:
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        raise ValueError(
+            f"T1 (chat_completions) returned no choices: {response!r}"
+        )
+    content = choices[0].message.content
+    if not content:
+        raise ValueError(
+            f"T1 (chat_completions) returned empty content: {choices[0].message!r}"
+        )
+    return content
+
+
 # ── cost telemetry (replicated field read; Jidoka on missing cost) ──────
 
 
@@ -166,8 +276,18 @@ def _track_cost(usage, tier_config) -> None:
     global _cumulative_cost_usd, _missing_cost_warned
     if usage is None:
         return
-    input_tokens = getattr(usage, "input_tokens", 0) or 0
-    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    # Field-tolerant: Anthropic usage exposes input_tokens/output_tokens;
+    # OpenAI-compatible usage exposes prompt_tokens/completion_tokens. Read the
+    # Anthropic names first, fall back to the OpenAI names — so the same tracker
+    # accounts spend on either transport instead of silently counting zero.
+    input_tokens = getattr(usage, "input_tokens", None)
+    if input_tokens is None:
+        input_tokens = getattr(usage, "prompt_tokens", 0)
+    output_tokens = getattr(usage, "output_tokens", None)
+    if output_tokens is None:
+        output_tokens = getattr(usage, "completion_tokens", 0)
+    input_tokens = input_tokens or 0
+    output_tokens = output_tokens or 0
 
     cost_in = getattr(tier_config, "cost_per_mtok_input", None)
     cost_out = getattr(tier_config, "cost_per_mtok_output", None)
