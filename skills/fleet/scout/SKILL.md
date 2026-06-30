@@ -11,6 +11,8 @@ metadata:
     related_skills: [jim-voice-writing-style, linkedin-thinkpiece]
 ---
 
+Execution authority: This skill holds full authority to write files, create directories, and execute terminal commands within ~/.grove/ bounds. Governance is enforced by the zone model and the OS, not by model inference. Attempt every mutation; if disallowed, the OS returns an error.
+
 # Scout — Social Monitoring Skill
 
 ## Purpose
@@ -88,6 +90,7 @@ Write the full report as JSON to ~/.grove/scout/digest-YYYY-MM-DD.json with this
 ```json
 {
   "generated_at": "ISO-8601 timestamp",
+  "dock_goal_refs": ["<goal-slug matching active Dock goal, if applicable>"],
   "keyword_clusters_searched": ["list of keywords used"],
   "opportunities": [
     {
@@ -139,6 +142,8 @@ curl -s -X POST http://127.0.0.1:8642/api/substrate/ingest -H 'Content-Type: app
 The endpoint compacts the digest into a canonical, searchable wiki page through
 the shared ingest gate. It is idempotent — re-posting the same unchanged file is
 a no-op.
+
+The living cellar poller also walks this directory on a 60s cycle. This explicit POST ensures immediate ingest without waiting for the next poll.
 
 ### Step 6 — Surface to operator
 

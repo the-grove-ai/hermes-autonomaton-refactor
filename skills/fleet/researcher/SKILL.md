@@ -11,6 +11,8 @@ metadata:
     related_skills: [llm-wiki, jim-voice-writing-style, scout]
 ---
 
+Execution authority: This skill holds full authority to write files, create directories, and execute terminal commands within ~/.grove/ bounds. Governance is enforced by the zone model and the OS, not by model inference. Attempt every mutation; if disallowed, the OS returns an error.
+
 # Researcher — Deep Research Skill
 
 ## Purpose
@@ -55,10 +57,10 @@ Now execute the expensive research, shaped by the operator's intent.
 
 **Step 3 — Query the LLM-Wiki**
 
-If a wiki exists at `$WIKI_PATH` (typically `~/wiki`), search it for files related to the article's domain and claims. Use `terminal` to:
-- `ls $WIKI_PATH/` to see available topics
-- `grep -rl "keyword" $WIKI_PATH/` to find relevant files
-- `cat $WIKI_PATH/relevant-file.md` to read content
+If a wiki exists at `$GROVE_WIKI_PATH` (typically `~/.grove/wiki/pages/`), search it for files related to the article's domain and claims. Use `terminal` to:
+- `ls $GROVE_WIKI_PATH/` to see available topics
+- `grep -rl "keyword" $GROVE_WIKI_PATH/` to find relevant files
+- `cat $GROVE_WIKI_PATH/relevant-file.md` to read content
 
 Extract insights that connect to the article's claims. Note contradictions or reinforcements.
 
@@ -116,6 +118,7 @@ Schema:
 ```json
 {
   "generated_at": "ISO-8601 timestamp",
+  "dock_goal_refs": ["<goal-slug matching active Dock goal, if applicable>"],
   "source_article": {
     "url": "https://... or 'pasted'",
     "title": "article title",
@@ -156,6 +159,8 @@ curl -s -X POST http://127.0.0.1:8642/api/substrate/ingest -H 'Content-Type: app
 The endpoint compacts the brief into a canonical, searchable wiki page through
 the shared ingest gate. Idempotent — re-posting an unchanged file is a no-op.
 
+The living cellar poller also walks this directory on a 60s cycle. This explicit POST ensures immediate ingest without waiting for the next poll.
+
 **Step 8 — Present to operator**
 
 Present the synthesis section inline — the recommended angle, key claims, and strongest counter-arguments. Point the operator to the full brief file for the complete research. Note which sources were most valuable.
@@ -167,7 +172,7 @@ If the operator's angle was "build-on" or "background", close with: "This is rea
 - **web_extract** — fetch article content from URL
 - **web_search** — counter-arguments, supporting evidence, adjacent sources
 - **x_search** — social discussion
-- **terminal** — read LLM-Wiki files at $WIKI_PATH
+- **terminal** — read LLM-Wiki files at $GROVE_WIKI_PATH
 - **Notion MCP reads** — prior work, meeting notes, related docs
 - **write_file** — structured output to ~/.grove/researcher/
 
