@@ -157,17 +157,23 @@ class TestShellClassifier:
             f"echo x > {grove / 'research' / 'test.md'}"
         ).zone == "green"
 
-    def test_16_shell_substrate_write_is_red(self, grove):
+    def test_16_shell_substrate_write_is_yellow(self, grove):
+        # shell-grove-access-v1: non-secret ~/.grove writes are YELLOW
+        # (operator-approvable), matching write_file. Was blanket RED. To keep a
+        # specific path RED, add it to _SCOPE_DEFINING_FILES (operator lever).
         from grove.shell_effects import classify_shell_effect
         assert classify_shell_effect(
             f"echo x > {grove / 'memory' / 'records.jsonl'}"
-        ).zone == "red"
+        ).zone == "yellow"
 
-    def test_config_write_is_red(self, grove):
+    def test_config_write_is_yellow(self, grove):
+        # shell-grove-access-v1: config.yaml is non-secret (api-key slots empty) →
+        # YELLOW shell write, matching write_file. Was blanket RED. Lever to keep
+        # it RED is _SCOPE_DEFINING_FILES.
         from grove.shell_effects import classify_shell_effect
         assert classify_shell_effect(
             f"echo x > {grove / 'config.yaml'}"
-        ).zone == "red"
+        ).zone == "yellow"
 
     def test_18_heredoc_opacity_fires_before_workspace(self, grove):
         # Opacity is about content visibility, not path authorization: a heredoc

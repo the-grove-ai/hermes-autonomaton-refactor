@@ -83,6 +83,44 @@ class TestEvalBuiltinsYellow:
         assert C(cmd).zone == "yellow", cmd
 
 
+class TestGroveAccessSecretWall:
+    """shell-grove-access-v1: is_secret_path is the SOLE RED boundary under
+    ~/.grove on the shell surface (parity with the file tools). Verifies the two
+    audit-found holes are closed — secret READS via shell, and ``sed -i`` on a
+    secret — and that non-secret reads → GREEN, non-secret writes → YELLOW, and
+    a /dev/null redirect never forces RED."""
+
+    def test_secret_read_is_red(self, grove_home):
+        # HOLE #1 (closed): a secret read via shell was YELLOW; now hard RED.
+        zr = C(f"cat {grove_home / '.env'}")
+        assert zr.zone == "red"
+        assert "secret" in (zr.pattern_key or "")
+
+    @pytest.mark.parametrize("name", [".env", "mcp-tokens/notion.json"])
+    def test_secret_operand_red_read_write_and_inplace(self, name, grove_home):
+        target = grove_home / name
+        assert C(f"grep TOKEN {target}").zone == "red"          # read
+        assert C(f"sed -i 's/a/b/' {target}").zone == "red"     # HOLE #2 (closed): sed -i on a secret
+        assert C(f"echo x > {target}").zone == "red"            # write redirect
+        assert C(f"source {target}").zone == "red"              # sourcing a secret
+
+    def test_nonsecret_grove_read_is_green(self, grove_home):
+        assert C(f"cat {grove_home / 'wiki' / 'page.md'}").zone == "green"
+        assert C(f"grep x {grove_home / 'memory_records.jsonl'}").zone == "green"
+        assert C(f"ls {grove_home / 'scout'}").zone == "green"
+
+    def test_nonsecret_grove_write_is_yellow(self, grove_home):
+        assert C(f"echo x > {grove_home / 'sub' / 'f.json'}").zone == "yellow"
+        assert C(f"mkdir -p {grove_home / 'sub' / 'nested'}").zone == "yellow"
+        assert C(f"sed -i 's/a/b/' {grove_home / 'sub' / 'f.md'}").zone == "yellow"
+        assert C(f"chmod +x {grove_home / 'scripts' / 'x.sh'}").zone == "yellow"
+
+    def test_devnull_redirect_never_red(self, grove_home):
+        assert C(f"ls {grove_home / 'wiki'} 2>/dev/null && echo ok || echo no").zone != "red"
+        assert C("echo hi 2>/dev/null").zone != "red"
+        assert C(f"cat {grove_home / 'sub' / 'x.json'} 2>/dev/null").zone != "red"
+
+
 class TestCodeInterpYellow:
     """operational-toolkit-v1 (Gemini GATE-B): code interpreters with inline
     -c / -e are YELLOW (operator-approvable) with a per-payload disposition hash,

@@ -76,6 +76,18 @@ _FS_MUTATORS = frozenset({
     "rm", "mv", "cp", "tee", "dd", "truncate", "install", "ln", "mkdir", "rmdir",
     "touch", "chmod", "chown", "chgrp", "unlink", "shred", "rsync",
 })
+# shell-grove-access-v1: pure-read tools — an allowlist so a non-secret ~/.grove
+# read operand promotes to GREEN (parity with read_file). Anything NOT here keeps
+# its existing classification: interpreters/eval execute (YELLOW), sed/awk may
+# write in place (YELLOW), mutators write (YELLOW). The allowlist never opens a
+# write or execution path.
+_READ_ONLY_TOOLS = frozenset({
+    "cat", "less", "more", "head", "tail", "ls", "grep", "egrep", "fgrep", "rg",
+    "wc", "stat", "file", "diff", "cmp", "jq", "yq", "md5sum", "sha1sum",
+    "sha256sum", "cksum", "od", "xxd", "hexdump", "strings", "nl", "column",
+    "sort", "uniq", "cut", "comm", "readlink", "realpath", "basename", "dirname",
+    "du", "tree",
+})
 
 # Google-Workspace read subcommands (read → GREEN; everything else → YELLOW).
 _GAPI_READ = frozenset({
@@ -206,6 +218,43 @@ def _basename(token: str) -> str:
 
 def _positionals(args: List[str]) -> List[str]:
     return [a for a in args if not a.startswith("-")]
+
+
+# ── shell-grove-access-v1: ~/.grove secrets-only access model ─────────────────
+# The shell surface now mirrors the file tools: is_secret_path is the SOLE RED
+# boundary under ~/.grove (and at the system sensitive roots it already covers).
+# Non-secret ~/.grove reads → GREEN, non-secret writes → YELLOW, secrets (read OR
+# write) → RED, granted workspaces stay GREEN. Benign sinks are never governed.
+_BENIGN_WRITE_SINKS = frozenset({
+    "/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr", "/dev/tty",
+})
+
+
+def _path_like(tok: str) -> bool:
+    """True iff *tok* denotes a filesystem path — not a flag, mode spec, or bare
+    word. Secrets always carry a ``/`` or ``~`` so this never misses one, while
+    avoiding false positives on bare args (``echo .env``, ``chmod +x``)."""
+    return bool(tok) and not tok.startswith("-") and ("/" in tok or tok.startswith("~"))
+
+
+def _is_secret_operand(tok: str) -> bool:
+    from grove.utils.fs_utils import is_secret_path
+    return is_secret_path(os.path.expanduser(tok))
+
+
+def _under_grove(tok: str) -> bool:
+    from hermes_constants import get_hermes_home
+    try:
+        resolved = os.path.realpath(os.path.expanduser(tok))
+        grove = os.path.realpath(get_hermes_home())
+    except (OSError, ValueError):
+        return False
+    return resolved == grove or resolved.startswith(grove + os.sep)
+
+
+def _is_benign_sink(tok: str) -> bool:
+    t = os.path.normpath(os.path.expanduser(tok))
+    return t in _BENIGN_WRITE_SINKS or t.startswith("/dev/fd/")
 
 
 # ── Execution-modifier wrappers (C3a) ────────────────────────────────────────
@@ -430,6 +479,7 @@ def _classify_write_zone(target_path: str, confine: bool = True) -> str:
     from grove.utils.fs_utils import (
         is_granted_workspace,
         is_scope_defining,
+        is_secret_path,
         is_write_allowed,
     )
     from hermes_constants import get_hermes_home
@@ -444,7 +494,14 @@ def _classify_write_zone(target_path: str, confine: bool = True) -> str:
     except (OSError, ValueError):
         return _RED  # unresolvable → fail closed
     if resolved == grove or resolved.startswith(grove + os.sep):
-        return _RED  # under ~/.grove but un-granted → fail-closed RED
+        # shell-grove-access-v1: secrets-only wall under ~/.grove. Scope-defining
+        # surfaces already returned RED above; a secret → RED; every other
+        # non-secret ~/.grove write is operator-approvable (YELLOW), matching the
+        # file tools (write_file is YELLOW under ~/.grove). Replaces the old
+        # blanket "under ~/.grove ungranted → RED" — the last blanket wall.
+        if is_secret_path(target_path):
+            return _RED
+        return _YELLOW
     # Outside ~/.grove. ``confine=False`` is the legacy governed-only check used
     # for a find SEARCH ROOT (a read-traversal locus, not a write target) — it
     # must not hard-reject an undeclared cwd. Genuine write targets (redirects,
@@ -452,6 +509,10 @@ def _classify_write_zone(target_path: str, confine: bool = True) -> str:
     # allow-list stays YELLOW; anything else hard-rejects RED.
     if not confine:
         return _YELLOW
+    # shell-grove-access-v1: benign write sinks (/dev/null, std streams, /dev/fd)
+    # are never governed — a redirect to them must not force govwrite RED.
+    if _is_benign_sink(target_path):
+        return _GREEN
     if is_write_allowed(target_path):  # session_cwd N/A on the shell surface
         return _YELLOW
     return _RED
@@ -581,7 +642,11 @@ def _classify_find(rest: List[str]) -> Tuple[str, str]:
         ).hexdigest()[:16]
         return (_YELLOW, f"cmd:find:{sig}")
 
-    # Filters only → read.
+    # Filters only → read. shell-grove-access-v1: a read traversal rooted in
+    # non-secret ~/.grove is GREEN (a secret root already returned RED at the
+    # secret wall in _classify_argv, before find is dispatched here).
+    if paths and any(_path_like(p) and _under_grove(p) for p in paths):
+        return (_GREEN, "govread:find")
     sig = "argv:" + hashlib.sha1(
         json.dumps(["find"] + rest, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
@@ -626,6 +691,18 @@ def _classify_argv(
     # External coding agents (B5).
     if exe in _EXTERNAL_AGENTS:
         return (_RED, f"external:{exe}")
+
+    # shell-grove-access-v1 — SECRET WALL. is_secret_path is the SOLE RED boundary
+    # under ~/.grove (and the system sensitive roots it covers) on the shell
+    # surface — parity with the file tools' reject_governed_agent_read. ANY
+    # path-like operand (READ or WRITE; positional or redirect) that resolves to a
+    # secret → RED. Runs before the eval/benign-zone shortcuts so a 2>/dev/null,
+    # a granted-workspace sibling, or `source` can never mask a secret. Closes the
+    # secret-read hole (cat ~/.grove/.env) and the sed -i hole (sed -i ~/.grove/.env).
+    for tok in [a for a in rest if _path_like(a)] + list(redirects):
+        if _is_secret_operand(tok):
+            return (_RED, "secret:operand")
+
     # eval / source / exec — opaque payload; YELLOW (operator-approvable per-payload
     # disposition), not hard-RED (shell-source-yellow-v1). The operator still gates
     # it; it no longer crosses a non-grantable boundary the model parrots as refusal.
@@ -669,13 +746,18 @@ def _classify_argv(
     if exe == "rm" and _is_catastrophic_rm(rest):
         return (_RED, "rm:catastrophic")
 
-    # Filesystem mutators.
+    # Filesystem mutators. chmod/chown/chgrp lead with a mode/owner spec
+    # (+x, 755, user:group) that is NOT a path — drop it so it is not
+    # mis-classified as a governed write target (shell-grove-access-v1).
+    mutator_targets = _positionals(rest)
+    if exe in ("chmod", "chown", "chgrp") and mutator_targets:
+        mutator_targets = mutator_targets[1:]
     if exe in _FS_MUTATORS:
         # Targets fed from stdin (xargs rm / xargs mv) are unbounded and not
         # statically resolvable → fail closed (RED). xargs echo stays benign.
         if dynamic_targets:
             return (_RED, f"mutation:dynamic:{exe}")
-        for t in _positionals(rest):
+        for t in mutator_targets:
             if _classify_write_zone(t) == _RED:
                 return (_RED, f"govwrite:{exe}")
 
@@ -702,11 +784,23 @@ def _classify_argv(
     # (so ``cat ~/.grove/.env`` stays YELLOW, never GREEN).
     write_targets: List[str] = list(redirects)
     if exe in _FS_MUTATORS:
-        write_targets.extend(_positionals(rest))
+        write_targets.extend(mutator_targets)
     if write_targets and all(
         _classify_write_zone(t) == _GREEN for t in write_targets
     ):
         return (_GREEN, f"workspace:{exe}")
+
+    # shell-grove-access-v1: a pure READ tool (allowlist) whose path operands
+    # touch non-secret ~/.grove → GREEN (the operator's brain is readable; parity
+    # with read_file). Secrets already returned RED at the secret wall; writes,
+    # interpreters, and in-place editors are NOT in _READ_ONLY_TOOLS so they never
+    # reach here as GREEN.
+    if (
+        exe in _READ_ONLY_TOOLS
+        and all(_is_benign_sink(r) for r in redirects)  # a real > write → not a pure read
+        and any(_path_like(t) and _under_grove(t) for t in _positionals(rest))
+    ):
+        return (_GREEN, f"govread:{exe}")
 
     # Default: a parsed-argv-derived signature (comment/whitespace immune).
     sig = "argv:" + hashlib.sha1(
