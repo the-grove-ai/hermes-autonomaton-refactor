@@ -626,9 +626,11 @@ def _classify_argv(
     # External coding agents (B5).
     if exe in _EXTERNAL_AGENTS:
         return (_RED, f"external:{exe}")
-    # eval / source — opaque.
+    # eval / source / exec — opaque payload; YELLOW (operator-approvable per-payload
+    # disposition), not hard-RED (shell-source-yellow-v1). The operator still gates
+    # it; it no longer crosses a non-grantable boundary the model parrots as refusal.
     if exe in _EVAL_BUILTINS:
-        return (_RED, f"opacity:{exe}")
+        return (_YELLOW, f"opacity:{exe}")
 
     # Scope-defining redirect target → RED (short-circuit). Granted-workspace and
     # outside-tree redirects are resolved with the other write targets at the
