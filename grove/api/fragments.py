@@ -439,8 +439,27 @@ def render_goal_card(goal) -> str:
 
 
 async def handle_dock_goals(request: web.Request) -> web.Response:
-    """List Dock goals as cards, or a 'not installed' message when absent."""
-    dock = load_dock()
+    """List Dock goals as cards, or a 'not installed' message when absent.
+
+    A malformed/incompatible dock.yaml (load_dock raises ValueError per the
+    Architectural Prime Directive) surfaces as a readable error fragment in the
+    panel rather than a raw 500 — consistent with the portal's "visible error
+    fragment, never a blank panel" rule. The operator sees the exact reason
+    (e.g. unsupported version, or goal entries missing required keys)."""
+    try:
+        dock = load_dock()
+    except ValueError as exc:
+        logger.warning("[portal] dock manifest unreadable: %r", exc)
+        return _html_fragment(
+            f'<div id="dock-listing"><div class="error-card">'
+            f"<h3>Dock manifest unreadable</h3>"
+            f"<p>{_esc(str(exc))}</p>"
+            f'<p class="meta">The portal reads grove Dock v1 '
+            f"(version: 1; goals with name / vector / status / "
+            f"definition_of_done / keywords / context_sources / "
+            f"unlocked_skills). Reconcile ~/.grove/dock/dock.yaml to that "
+            f"schema to restore the panel.</p></div></div>"
+        )
     if dock is None:
         return _html_fragment(
             '<div id="dock-listing"><p class="placeholder">'
