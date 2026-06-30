@@ -270,6 +270,32 @@ routing:
       cheap model keeps the overhead negligible.
 
   # ────────────────────────────────────────────────────────────────────────
+  # PROVIDER ROUTING (openrouter-zero-retention-routing-v1)
+  # ────────────────────────────────────────────────────────────────────────
+  # Operator-owned OpenRouter request shaping, passed through VERBATIM to every
+  # OpenRouter call's `provider` field (agent turns, telemetry classifier, wiki
+  # compaction). The code never names a provider — edit this block to change
+  # routing, no code change. (The autonomaton can edit it on request.)
+  #
+  #   order            — preferred providers, in order. NAMES the fast provider
+  #                      (DeepInfra) so we get its latency; without it, `deny`
+  #                      alone routes to any zero-retention provider.
+  #   data_collection  — `deny` = only providers that DON'T retain/train on
+  #                      prompts. The privacy floor, applied to order AND
+  #                      fallbacks. A hard filter: a model with no deny-compliant
+  #                      endpoint 404s (loud) rather than leaking to a retainer.
+  #   allow_fallbacks  — if none of `order` serve a model, use other eligible
+  #                      (deny-compliant) providers instead of failing.
+  #
+  # Any other OpenRouter provider field (only / ignore / sort / quantizations /
+  # future knobs) added here flows through unchanged. Remove the block to disable.
+  provider_routing:
+    openrouter:
+      order: [DeepInfra]
+      allow_fallbacks: true
+      data_collection: deny
+
+  # ────────────────────────────────────────────────────────────────────────
   # ESCALATION POLICY (Sprint 30 — escalation-signal-v1)
   # ────────────────────────────────────────────────────────────────────────
   # Distinct from routing_rules.escalation above. That block is the

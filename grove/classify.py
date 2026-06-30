@@ -576,7 +576,7 @@ def _call_classifier(
             base_url=runtime.get("base_url") or None,
             api_key=api_key,
         )
-        response = client.chat.completions.create(
+        _create_kwargs = dict(
             model=runtime["model"],
             max_tokens=_MAX_OUTPUT_TOKENS,
             messages=[
@@ -589,6 +589,14 @@ def _call_classifier(
                 "function": {"name": "classify_intent"},
             },
         )
+        # openrouter-zero-retention-routing-v1: attach the operator's OpenRouter
+        # provider routing verbatim when this telemetry call is OpenRouter-bound.
+        from grove.providers import openrouter_provider_pref
+
+        _pp = openrouter_provider_pref(runtime)
+        if _pp:
+            _create_kwargs["extra_body"] = {"provider": _pp}
+        response = client.chat.completions.create(**_create_kwargs)
         _track_cost(response.usage, tier_config=tier_config)
         # Structural Andon — deterministic, no LLM evaluation. Forced
         # tool_choice should guarantee a classify_intent call; if the bound

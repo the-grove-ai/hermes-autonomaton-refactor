@@ -135,6 +135,15 @@ def call_t1(
                 "function": {"name": tool["name"]},
             }
 
+        # openrouter-zero-retention-routing-v1: attach the operator's OpenRouter
+        # provider routing (order/data_collection/fallbacks) verbatim, when this
+        # is an OpenRouter call and routing is configured. No-op otherwise.
+        from grove.providers import openrouter_provider_pref
+
+        _pp = openrouter_provider_pref(runtime)
+        if _pp:
+            kwargs["extra_body"] = {"provider": _pp}
+
         response = client.chat.completions.create(**kwargs)
         _track_cost(getattr(response, "usage", None), tier_config)
 

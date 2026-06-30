@@ -140,6 +140,10 @@ class CognitiveRouter:
         # Default disabled — vanilla installs see the legacy step_up path
         # only. Parsed from routing.escalation_policy in _load_into_self.
         self._escalation_policy: EscalationPolicy = EscalationPolicy()
+        # openrouter-zero-retention-routing-v1: operator-owned OpenRouter request
+        # shaping (provider order / data_collection / fallbacks), passed through
+        # verbatim at the call sites. Empty mapping ⇒ feature off.
+        self._provider_routing: dict = {}
         # Fault attribution (router-merge-wiring-v1): sha256 of the source
         # files at the last successful load. Empty until the first load;
         # used by reload() to attribute a kept-last-known-good outcome.
@@ -168,6 +172,14 @@ class CognitiveRouter:
 
     def get_telemetry_tier(self) -> str:
         return self._telemetry_tier
+
+    def get_provider_routing(self) -> dict:
+        """The ``routing.provider_routing`` mapping (or ``{}`` when unset).
+
+        Operator-owned, provider-specific request shaping (e.g. the OpenRouter
+        ``provider`` object). Returned verbatim — the router never interprets it;
+        the call sites attach it to the matching provider's request."""
+        return self._provider_routing
 
     def model_to_tier(self, model: str) -> Optional[str]:
         """Return the tier whose binding is ``model``, or None if no tier
@@ -479,6 +491,17 @@ class CognitiveRouter:
                 f"routing config at {self._config_path} missing 'telemetry.tier'"
             )
 
+        # openrouter-zero-retention-routing-v1: optional, operator-owned. Absent
+        # ⇒ {} (feature off). Present ⇒ must be a mapping; the inner objects
+        # (e.g. provider_routing.openrouter) are passed through verbatim, so we
+        # validate only the container shape, not provider field names.
+        provider_routing = routing.get("provider_routing") or {}
+        if not isinstance(provider_routing, dict):
+            raise ValueError(
+                f"routing config at {self._config_path}: 'provider_routing' must"
+                f" be a mapping (got {type(provider_routing).__name__})"
+            )
+
         # Declarative routing rules. Optional: a config predating this
         # section yields downward/upward absent and a synthesized
         # escalation rule carrying the top-level escalation.threshold.
@@ -507,6 +530,7 @@ class CognitiveRouter:
         self._escalation_threshold = float(threshold)
         self._telemetry_tier = telemetry_tier
         self._escalation_policy = escalation_policy
+        self._provider_routing = provider_routing
 
         # Fault attribution (router-merge-wiring-v1): record the source-file
         # hashes that produced this merged state and emit a loaded event,
@@ -770,6 +794,18 @@ def get_tier_config(tier: str) -> TierConfig:
             "grove.router is not initialized; call grove.router.initialize() first."
         )
     return _default_router.get_tier_config(tier)
+
+
+def get_provider_routing() -> dict:
+    """Module-level: the ``routing.provider_routing`` mapping, or ``{}``.
+
+    Unlike :func:`get_tier_config`, this does NOT raise when the router is
+    uninitialized — provider routing is an OPTIONAL feature, so absence (or an
+    uninitialized router) means simply "no routing configured", never an error.
+    """
+    if _default_router is None:
+        return {}
+    return _default_router.get_provider_routing()
 
 
 def _resolve_config_path(explicit: Optional[Path]) -> Path:
