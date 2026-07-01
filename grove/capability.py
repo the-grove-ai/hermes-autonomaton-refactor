@@ -310,6 +310,23 @@ class Failure:
     circuit_breaker: CircuitBreaker = field(default_factory=CircuitBreaker)
 
 
+# ── R5 (browser-read-surface-v1) — per-skill model binding ──────────────────
+# Polymorphic: ``tier_override`` forces a skill's reasoning tier; ``specialty``
+# is validated-but-honored-no-op (reserved for the Auxiliary Inference sprint,
+# Andon A7 — the resolver falls through to the turn default). Precedence is
+# operator routing.config.yaml > this binding > turn default; operator config is
+# inviolate at the top. tier_override targets the inference tiers only (T0 is the
+# Pattern Cache, Telemetry is the classifier — neither is a skill reasoning tier).
+_MODEL_BINDING_TYPES: frozenset[str] = frozenset({"tier_override", "specialty"})
+_MODEL_BINDING_TIERS: frozenset[str] = frozenset({"T1", "T2", "T3"})
+
+
+@dataclass
+class ModelBinding:
+    type: str
+    tier: str | None = None
+
+
 # ── The Capability record ────────────────────────────────────────────────────
 # kw_only so the governance-bearing fields (no default) may sit after fields
 # that carry defaults without violating dataclass ordering.
@@ -343,6 +360,10 @@ class Capability:
     # through from_dict/to_dict so a lifecycle write (transition_record) never
     # erases it.
     governance: dict | None = None
+    # R5 (browser-read-surface-v1) — per-skill model binding. None for the 92
+    # existing records (present-key-only round-trip: serialization is
+    # byte-identical when absent). Only valid on kind=skill records (validate()).
+    model_binding: "ModelBinding | None" = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -473,6 +494,36 @@ class Capability:
         else:
             raise ValueError(f"platform must be 'all' or a list of strings; got {type(p)!r}")
 
+        # R5 — per-skill model binding. Only meaningful on kind=skill (the
+        # rebind fires on invoke_skill); a binding elsewhere would silently never
+        # apply, so fail loud. Polymorphic type: tier_override live, specialty
+        # validated-but-no-op. Unknown type / bad tier -> fail loud.
+        mb = self.model_binding
+        if mb is not None:
+            if self.kind is not CapabilityKind.SKILL:
+                raise ValueError(
+                    f"model_binding is only valid on kind=skill records "
+                    f"(this record is kind={self.kind.value}) — a binding on a "
+                    f"non-skill capability would never apply"
+                )
+            if mb.type not in _MODEL_BINDING_TYPES:
+                raise ValueError(
+                    f"model_binding.type must be one of {sorted(_MODEL_BINDING_TYPES)}; "
+                    f"got {mb.type!r}"
+                )
+            if mb.type == "tier_override":
+                if mb.tier not in _MODEL_BINDING_TIERS:
+                    raise ValueError(
+                        f"model_binding.type=tier_override requires tier in "
+                        f"{sorted(_MODEL_BINDING_TIERS)}; got {mb.tier!r}"
+                    )
+            else:  # specialty — reserved, honored-no-op; carries no tier
+                if mb.tier is not None:
+                    raise ValueError(
+                        "model_binding.type=specialty carries no tier "
+                        "(validated-but-no-op, reserved for Auxiliary Inference)"
+                    )
+
     # ── Lifecycle state machine ──────────────────────────────────────────────
 
     def transition(
@@ -594,6 +645,12 @@ class Capability:
         # the skill/platform blocks) and the block survives a to_yaml round-trip.
         if self.governance is not None:
             d["governance"] = self.governance
+        # R5 — emit only when present, so the 92 existing records are byte-identical.
+        if self.model_binding is not None:
+            mb: dict = {"type": self.model_binding.type}
+            if self.model_binding.tier is not None:
+                mb["tier"] = self.model_binding.tier
+            d["model_binding"] = mb
         return d
 
     @classmethod
@@ -712,6 +769,11 @@ class Capability:
         # shape, so the loader stays a pass-through and validate() never touches it.
         if "governance" in d:
             kwargs["governance"] = d["governance"]
+
+        # R5 — per-skill model binding (present-key only; absent -> None default).
+        if "model_binding" in d and d["model_binding"] is not None:
+            mb = d["model_binding"]
+            kwargs["model_binding"] = ModelBinding(type=mb.get("type"), tier=mb.get("tier"))
 
         if "failure" in d:
             f = d["failure"]

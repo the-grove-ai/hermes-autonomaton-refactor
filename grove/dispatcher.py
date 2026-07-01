@@ -1511,6 +1511,10 @@ class Dispatcher:
         self._current_turn_start = _time.monotonic()
         self._current_turn_tools_yielded = []
         self._current_turn_tool_invocations = []
+        # R5 — trailing-tier marker (telemetry-only, NOT the binding value): the
+        # tier the last invoke_skill rebound the agent to, which subsequent
+        # reasoning holds until the next routing event / turn end. Reset per turn.
+        self._current_turn_skill_bound_tier = None
         self._current_turn_user_message = user_message
         self._current_turn_outcome_written = False
         # Sprint 30 — reset per-turn escalation counter + events list.
@@ -1965,6 +1969,12 @@ class Dispatcher:
                         agent._apply_execution_results_to_messages(
                             _exec_results, msgs, _batch_effective_task_id,
                         )
+                        # R5 (browser-read-surface-v1) — per-skill tier rebind.
+                        # If this batch invoked a skill, rebind the agent to the
+                        # skill's resolved tier BEFORE its next completion reasons
+                        # over the skill. Fires on every invoke_skill (bindingless
+                        # -> turn default) so skill A's tier cannot leak to skill B.
+                        self._apply_skill_tier_binding(agent, _batch)
                     else:
                         _exec_results = []
                     # GRV-009 E3 C4 — tool_batch_executed retired. The unified
@@ -3193,6 +3203,77 @@ class Dispatcher:
                 "for %s: %r (pattern is already suspended)",
                 getattr(pattern, "pattern_id", "?"), exc,
             )
+
+    def _capability_for_skill(self, skill_name: str) -> Any:
+        """The kind=skill capability record for an invoke_skill name, or None."""
+        try:
+            from grove.capability_registry import skill_record_for_name
+            return skill_record_for_name(skill_name)
+        except Exception:
+            return None
+
+    def _rebind_agent_for_skill(self, agent: Any, skill_name: str) -> Optional[str]:
+        """R5 — re-resolve precedence for an invoked skill and rebind the agent's
+        tier (operator > skill model_binding > turn default). Resolves fresh from
+        the skill's capability every call and never persists the binding on turn
+        state, so skill A's tier cannot leak to skill B. Returns the resolved tier
+        (or None on a vanilla install with no routing config)."""
+        turn_decision = self._current_turn_routing_decision
+        if turn_decision is None:
+            return None  # vanilla install / no routing config — nothing to rebind
+        turn_tier = turn_decision.tier
+
+        cap = self._capability_for_skill(skill_name)
+        model_binding = getattr(cap, "model_binding", None) if cap is not None else None
+
+        from grove.skill_binding import resolve_skill_tier
+        from grove.providers import (
+            _resolve_operator_tier,
+            _resolve_operator_model,
+            resolve_tier_to_runtime,
+        )
+        operator_active = bool(_resolve_operator_tier(None) or _resolve_operator_model(None))
+        res = resolve_skill_tier(
+            operator_active=operator_active, model_binding=model_binding, turn_tier=turn_tier,
+        )
+
+        # Build a decision at the resolved tier directly (no re-classification);
+        # get_tier_config fails loud if the tier is not configured.
+        from grove.router import get_tier_config, RoutingDecision
+        decision = RoutingDecision(
+            tier=res.tier,
+            tier_config=get_tier_config(res.tier),
+            reason=res.reason,
+            confidence=None,
+            pattern_cache_hit=False,
+        )
+        self._bind_agent_to_tier(agent, decision, resolve_tier_to_runtime)
+        # Trailing-tier marker (telemetry-only): subsequent reasoning holds this
+        # tier until the next routing event / turn end. NOT the binding value.
+        self._current_turn_skill_bound_tier = res.tier
+        try:
+            from grove.telemetry import log_routing_decision
+            log_routing_decision(
+                tier=res.tier,
+                reason=res.reason,
+                model=decision.tier_config.model,
+                action=f"invoke_skill:{skill_name}",
+            )
+        except Exception:
+            pass  # telemetry must never break a turn
+        return res.tier
+
+    def _apply_skill_tier_binding(self, agent: Any, batch: Any) -> None:
+        """If this executed batch invoked a skill, rebind for the last such skill
+        so the agent's next completion reasons over it at its resolved tier."""
+        last_skill: Optional[str] = None
+        for intent in batch:
+            if getattr(intent, "tool_name", None) == "invoke_skill":
+                a = getattr(intent, "arguments", None)
+                if isinstance(a, dict) and isinstance(a.get("name"), str) and a["name"].strip():
+                    last_skill = a["name"].strip()
+        if last_skill is not None:
+            self._rebind_agent_for_skill(agent, last_skill)
 
     @staticmethod
     def _bind_agent_to_tier(
