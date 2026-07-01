@@ -164,7 +164,7 @@ Nothing reaches the cellar until the operator moves it out of `pending_review/`.
 ## Output presentation
 
 After writing the artifact to pending_review/, respond to the operator with:
-1. A two-sentence summary of what was produced (topic, word count, approach)
+1. A two-sentence summary of what was produced (topic, word count, approach), noting it is staged in pending_review/ for your review — not yet promoted to the cellar
 2. A portal link: http://100.102.6.70:8642/portal/fleet/{skill_name}/{filename}
    (substitute the actual skill name and filename you wrote)
 3. Ask: "Approve, or send edits?"
