@@ -252,3 +252,17 @@ failure:
     window_seconds: 300
 skill:
   category: fleet
+governance:
+  write_zone:
+    staging_dir: "cultivator/pending_review"
+    canonical_dir: "cultivator"
+    promotion: operator_approval
+  emission_preconditions:
+    required_tool_classes:
+      - class: retrieval
+        min_calls: 2
+    terminal_artifact:
+      tool: write_file
+      path_pattern: "prospects-*.json"
+  approval_handoff:
+    mode: forced_exit

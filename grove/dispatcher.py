@@ -4324,6 +4324,45 @@ class Dispatcher:
                 triggering_index=triggering_index,
             )
 
+    def _fleet_governance(self) -> List[tuple]:
+        """The fleet governance blocks — ``(capability_id, governance_dict)`` for
+        every kind=skill record whose ``governance`` key is set — cached for the
+        process (structural-review-gate-v1).
+
+        Capability records do not change within a process lifetime
+        (capability-hot-reload is a separate sprint), so a one-time load is safe.
+        FAIL-LOUD, never silently allow-all: an unloadable registry logs a
+        prominent WARNING and disables the capability gates for this process (the
+        base is_write_allowed / is_secret_path stack still fully applies) rather
+        than raising and bricking every write on one malformed record."""
+        cache = getattr(self, "_fleet_governance_cache", None)
+        if cache is None:
+            from grove.capability import CapabilityKind
+            from grove.capability_registry import (
+                CapabilityLoadError,
+                load_capabilities,
+            )
+
+            try:
+                caps = load_capabilities()
+            except CapabilityLoadError as exc:
+                logger.warning(
+                    "[grove.dispatcher] structural-review-gate: capability "
+                    "registry failed to load — per-capability write gates "
+                    "DISABLED for this process (base write confinement still "
+                    "applies): %r",
+                    exc,
+                )
+                cache = []
+            else:
+                cache = [
+                    (cid, cap.governance)
+                    for cid, cap in caps.items()
+                    if cap.kind is CapabilityKind.SKILL and cap.governance
+                ]
+            self._fleet_governance_cache = cache
+        return cache
+
     def _enforce_write_confinement(
         self, intents: List[Any], agent: Any, ledger: Any = None,
     ) -> Optional[List[Any]]:
@@ -4340,8 +4379,21 @@ class Dispatcher:
         refusal Observations to feed the generator, or ``None`` to proceed to
         classification.
         """
-        from grove.utils.fs_utils import is_write_allowed, write_refused_message
+        from grove.utils.fs_utils import (
+            is_write_allowed,
+            write_refused_message,
+            is_capability_write_allowed,
+            capability_emission_precondition,
+        )
+        from grove.tool_classes import count_tool_classes
         from tools.file_tools import extract_write_targets
+
+        # structural-review-gate-v1 — the fleet governance blocks (kind=skill
+        # records with a governance key), loaded + cached for this process. The
+        # per-capability gates below are additive: a target that no fleet record
+        # claims passes them untouched, so verb-kind / non-fleet writes are
+        # unaffected.
+        fleet_governance = self._fleet_governance()
 
         refusals: Dict[Optional[str], str] = {}
         for intent in intents:
@@ -4352,6 +4404,23 @@ class Dispatcher:
                 if not is_write_allowed(target):
                     refusals[intent.call_id] = write_refused_message(target)
                     break  # one refused target suffices to deny this intent
+                if fleet_governance:
+                    # WHERE — per-capability write-zone confinement (canonical-sink
+                    # and cross-capability writes are refused here).
+                    ok, reason = is_capability_write_allowed(target, fleet_governance)
+                    if not ok:
+                        refusals[intent.call_id] = reason
+                        break
+                    # WHETHER — emission precondition on the governing capability's
+                    # terminal artifact, counting this turn's tool-class activity
+                    # from the invocation ledger (accumulated across all batches).
+                    counts = count_tool_classes(self._current_turn_tool_invocations)
+                    ok, reason = capability_emission_precondition(
+                        target, fleet_governance, counts
+                    )
+                    if not ok:
+                        refusals[intent.call_id] = reason
+                        break
         if not refusals:
             return None
 

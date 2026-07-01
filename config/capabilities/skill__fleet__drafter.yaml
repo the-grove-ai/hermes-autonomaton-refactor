@@ -252,3 +252,17 @@ failure:
     window_seconds: 300
 skill:
   category: fleet
+governance:
+  write_zone:
+    staging_dir: "drafter/pending_review"
+    canonical_dir: "drafter"
+    promotion: operator_approval
+  emission_preconditions:
+    required_tool_classes:
+      - class: skill_invocation
+        min_calls: 1
+    terminal_artifact:
+      tool: write_file
+      path_pattern: "draft-*.md"
+  approval_handoff:
+    mode: forced_exit

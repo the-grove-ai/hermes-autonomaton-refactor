@@ -335,6 +335,14 @@ class Capability:
     # receives this capability. A list restricts delivery to the named surfaces.
     # Valid values: telegram, cli, api, web, discord, cron.
     platform: list[str] | str = "all"
+    # structural-review-gate-v1 — per-capability governance block (write-zone
+    # confinement + emission preconditions + promotion policy). Opaque pass-through
+    # dict: additive, None default so the 92 existing records load unchanged, and
+    # NOT governance-bearing at construction (validate() does not read it — the
+    # enforcement seams consume it, failing closed on a malformed block). Carried
+    # through from_dict/to_dict so a lifecycle write (transition_record) never
+    # erases it.
+    governance: dict | None = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -581,6 +589,11 @@ class Capability:
             d["skill"] = {"category": self.skill.category}
         if self.platform != "all":
             d["platform"] = list(self.platform) if isinstance(self.platform, list) else self.platform
+        # structural-review-gate-v1 — emit the governance block only when present,
+        # so every non-fleet record's serialized shape is unchanged (parity with
+        # the skill/platform blocks) and the block survives a to_yaml round-trip.
+        if self.governance is not None:
+            d["governance"] = self.governance
         return d
 
     @classmethod
@@ -692,6 +705,13 @@ class Capability:
 
         if "platform" in d:
             kwargs["platform"] = d["platform"]
+
+        # structural-review-gate-v1 — carry the governance block through verbatim
+        # (present-key only; absent -> None default). Opaque dict, not cast into a
+        # nested record: the enforcement seams read it and fail closed on malformed
+        # shape, so the loader stays a pass-through and validate() never touches it.
+        if "governance" in d:
+            kwargs["governance"] = d["governance"]
 
         if "failure" in d:
             f = d["failure"]
