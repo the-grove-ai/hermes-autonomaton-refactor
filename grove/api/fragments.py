@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import html
+import json
 import logging
 import re
 from pathlib import Path
@@ -34,6 +35,9 @@ from grove.api.portal import (
     _check_cellar_stale,
     _check_memory_stale,
     _check_wiki_stale,
+    _fleet_skill_records,
+    _list_fleet_artifacts,
+    _read_fleet_artifact,
     _read_page,
     _serialize_capability,
     pending_memory_proposal_items,
@@ -1104,6 +1108,199 @@ async def handle_model_context(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Fleet artifact pages (fleet-artifact-viewer-v1)
+# ---------------------------------------------------------------------------
+#
+# STANDALONE full-HTML pages (the /portal/routing model), NOT hash-routed SPA
+# fragments: a Telegram deep link to /portal/fleet/{skill}/{filename} must land
+# on a rendered page without JS. They read through the shared portal.py fleet
+# readers (_fleet_skill_records / _list_fleet_artifacts / _read_fleet_artifact),
+# never the filesystem. Navigation between pages is via plain breadcrumb links.
+
+
+def _fleet_page(title: str, breadcrumb: str, body: str) -> str:
+    """Wrap fleet content in a full HTML shell — same stylesheet + topbar as the
+    standalone /portal/routing page. No HTMX runtime: these pages are static and
+    directly tappable."""
+    return (
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+        "<meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        f"<title>{_esc(title)}</title>\n"
+        '<link rel="stylesheet" href="/portal/static/style.css">\n'
+        "</head>\n<body>\n"
+        '<header class="topbar"><div class="brand">grove-autonomaton '
+        '<span class="brand-sub">Fleet</span></div></header>\n'
+        '<main class="layout"><section class="center-panel">'
+        f"{breadcrumb}{body}"
+        "</section></main>\n</body>\n</html>\n"
+    )
+
+
+def _fleet_breadcrumb(skill: str = "", filename: str = "") -> str:
+    """``Fleet > {skill} > {filename}`` — each ancestor a link, the leaf plain."""
+    crumbs = ['<a href="/portal/fleet/">Fleet</a>']
+    if skill:
+        crumbs.append(f'<a href="/portal/fleet/{_esc(skill)}/">{_esc(skill)}</a>')
+    if filename:
+        crumbs.append(_esc(filename))
+    return f'<p class="meta">{" &rsaquo; ".join(crumbs)}</p>'
+
+
+def _fleet_zone_badge(zone: str) -> str:
+    return f'<span class="badge {_ZONE_BADGE.get(zone, "badge")}">{_esc(zone)}</span>'
+
+
+def _fleet_state_badge(state: str) -> str:
+    """canonical -> green, pending_review -> yellow ('pending review' label)."""
+    if state == "pending_review":
+        return '<span class="badge badge-yellow">pending review</span>'
+    if state == "canonical":
+        return '<span class="badge badge-green">canonical</span>'
+    return f'<span class="badge">{_esc(state)}</span>'
+
+
+def _fleet_json_card(raw: str) -> str:
+    """Structured card for a JSON artifact: top-level keys with scalar values
+    inline (lists/objects summarized), plus the full raw JSON in a collapsible
+    <details>. A parse failure surfaces the error and the raw text (fail loud,
+    never a blank card)."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return (
+            '<div class="card"><h4>Malformed JSON</h4>'
+            f'<div class="meta error">{_esc(str(exc))}</div>'
+            f"<pre>{_esc(raw)}</pre></div>"
+        )
+    rows = []
+    if isinstance(data, dict):
+        for key, val in data.items():
+            if isinstance(val, dict):
+                summary = f"{{{len(val)} field(s)}}"
+            elif isinstance(val, list):
+                summary = f"[{len(val)} item(s)]"
+            else:
+                summary = str(val)
+            rows.append(
+                f"<dt>{_esc(key)}</dt><dd>{_esc(summary)}</dd>"
+            )
+        fields = f'<dl class="model-detail">{"".join(rows)}</dl>' if rows else (
+            '<p class="meta">Empty object.</p>'
+        )
+    else:
+        fields = f'<p class="meta">Top-level JSON is a {_esc(type(data).__name__)}.</p>'
+    pretty = json.dumps(data, indent=2, ensure_ascii=False)
+    return (
+        f'<div class="card">{fields}</div>'
+        f"<details><summary>Raw JSON</summary><pre>{_esc(pretty)}</pre></details>"
+    )
+
+
+async def handle_fleet_overview(request: web.Request) -> web.Response:
+    """``GET /portal/fleet/`` — the fleet overview: one card per skill."""
+    records = _fleet_skill_records()
+    cards = []
+    for name in sorted(records):
+        cap = records[name]
+        try:
+            arts = _list_fleet_artifacts(cap)
+        except KeyError:
+            # Parity with the API index: skip a malformed record, don't blank all.
+            logger.warning("[portal] fleet skill %s malformed, skipping card", name)
+            continue
+        latest = arts[0]["mtime"] if arts else "—"
+        cards.append(
+            f'<div class="card"><h4>'
+            f'<a href="/portal/fleet/{_esc(name)}/">{_esc(name)}</a> '
+            f'{_fleet_zone_badge(cap.zone.value)}</h4>'
+            f'<div class="meta">{len(arts)} artifact(s) &middot; '
+            f'latest {_esc(latest)}</div></div>'
+        )
+    body = "<h2>Fleet artifacts</h2>" + (
+        "".join(cards) if cards
+        else '<p class="placeholder">No fleet skills with artifacts yet.</p>'
+    )
+    return web.Response(
+        text=_fleet_page("Fleet — grove-autonomaton", _fleet_breadcrumb(), body),
+        content_type="text/html",
+    )
+
+
+async def handle_fleet_skill_page(request: web.Request) -> web.Response:
+    """``GET /portal/fleet/{skill_name}/`` — one skill's artifact list. Unknown
+    skill -> 404 (full HTML page)."""
+    skill_name = request.match_info["skill_name"]
+    cap = _fleet_skill_records().get(skill_name)
+    if cap is None:
+        return web.Response(
+            text=_fleet_page(
+                "Fleet — not found", _fleet_breadcrumb(),
+                f'<p class="placeholder">Unknown fleet skill: {_esc(skill_name)}</p>',
+            ),
+            status=404, content_type="text/html",
+        )
+    arts = _list_fleet_artifacts(cap)
+    cards = []
+    for a in arts:
+        cards.append(
+            f'<div class="card"><h4>'
+            f'<a href="/portal/fleet/{_esc(skill_name)}/{_esc(a["filename"])}">'
+            f'{_esc(a["filename"])}</a> {_fleet_state_badge(a["governance_state"])}'
+            f'</h4><div class="meta">{a["size"]} bytes &middot; '
+            f'{_esc(a["mtime"])}</div></div>'
+        )
+    body = (
+        f"<h2>{_esc(skill_name)} {_fleet_zone_badge(cap.zone.value)}</h2>"
+        + ("".join(cards) if cards
+           else '<p class="placeholder">No artifacts yet.</p>')
+    )
+    return web.Response(
+        text=_fleet_page(
+            f"Fleet — {skill_name}", _fleet_breadcrumb(skill_name), body,
+        ),
+        content_type="text/html",
+    )
+
+
+async def handle_fleet_artifact_page(request: web.Request) -> web.Response:
+    """``GET /portal/fleet/{skill_name}/{filename}`` — the full artifact view:
+    rendered markdown for ``.md``, a structured card + collapsible raw for
+    ``.json``. Unknown skill or missing artifact -> 404 (full HTML page)."""
+    skill_name = request.match_info["skill_name"]
+    filename = request.match_info["filename"]
+    cap = _fleet_skill_records().get(skill_name)
+    read = _read_fleet_artifact(cap, filename) if cap is not None else None
+    if read is None:
+        return web.Response(
+            text=_fleet_page(
+                "Fleet — not found", _fleet_breadcrumb(skill_name or ""),
+                f'<p class="placeholder">Artifact not found: '
+                f'{_esc(skill_name)}/{_esc(filename)}</p>',
+            ),
+            status=404, content_type="text/html",
+        )
+    raw, suffix, state = read
+    if suffix == ".md":
+        content = f'<article class="cellar-body">{_render_md(raw)}</article>'
+    elif suffix == ".json":
+        content = _fleet_json_card(raw)
+    else:
+        content = f"<pre>{_esc(raw)}</pre>"
+    header = (
+        f"<h2>{_esc(filename)}</h2>"
+        f'<p class="meta">{_esc(skill_name)} &middot; {_fleet_state_badge(state)}</p>'
+    )
+    body = header + content
+    return web.Response(
+        text=_fleet_page(
+            f"Fleet — {filename}", _fleet_breadcrumb(skill_name, filename), body,
+        ),
+        content_type="text/html",
+    )
+
+
 def register_fragment_routes(app: web.Application) -> None:
     """Register the portal shell + ``/portal/fragments/*`` routes.
 
@@ -1136,3 +1333,8 @@ def register_fragment_routes(app: web.Application) -> None:
     app.router.add_get("/portal/fragments/routing/panel", handle_routing_panel)
     # portal-models-nav-v1 — model detail for the right-panel (?model_slug=...)
     app.router.add_get("/portal/fragments/routing/model", handle_model_context)
+    # fleet-artifact-viewer-v1 — standalone full-HTML fleet pages (directly
+    # tappable from a Telegram deep link; not hash-routed SPA fragments).
+    app.router.add_get("/portal/fleet/", handle_fleet_overview)
+    app.router.add_get("/portal/fleet/{skill_name}/", handle_fleet_skill_page)
+    app.router.add_get("/portal/fleet/{skill_name}/{filename}", handle_fleet_artifact_page)

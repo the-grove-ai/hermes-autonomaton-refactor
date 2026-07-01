@@ -161,6 +161,17 @@ Approval is a file operation, not a conversation. The draft sits in `pending_rev
 
 Nothing reaches the cellar until the operator moves it out of `pending_review/`. That invisibility is structural — enforced by the poller's flat glob, not by model inference.
 
+## Output presentation
+
+After writing the artifact to pending_review/, respond to the operator with:
+1. A two-sentence summary of what was produced (topic, word count, approach)
+2. A portal link: http://100.102.6.70:8642/portal/fleet/{skill_name}/{filename}
+   (substitute the actual skill name and filename you wrote)
+3. Ask: "Approve, or send edits?"
+
+Do NOT paste the full artifact content into the response. The operator
+reads the full draft on the portal and approves or provides feedback.
+
 ## Composites
 
 - **jim-voice-writing-style** — voice DNA, loaded at Step 1 (mandatory)
