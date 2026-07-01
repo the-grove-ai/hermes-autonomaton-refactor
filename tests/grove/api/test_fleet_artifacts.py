@@ -139,7 +139,8 @@ async def test_portal_skill_page_lists_artifacts_with_state_badges(client):
     # governance state badges — pending review (yellow) + canonical (green)
     assert "pending review" in html and "badge-yellow" in html
     assert "canonical" in html and "badge-green" in html
-    assert "&rsaquo;" in html  # breadcrumb separator
+    assert "&rsaquo;" in html                 # breadcrumb separator
+    assert 'class="meta breadcrumb"' in html  # breadcrumb carries the class token
 
 
 async def test_portal_artifact_view_renders_markdown(client):
@@ -162,10 +163,20 @@ async def test_portal_artifact_view_renders_json_card(client):
 async def test_portal_unknown_skill_404(client):
     resp = await client.get("/portal/fleet/nonesuch/")
     assert resp.status == 404
-    assert "Unknown fleet skill" in await resp.text()
+    body = await resp.text()
+    assert "Unknown fleet skill" in body
+    assert "404" in body  # styled 404 page carries the status token
 
 
 async def test_portal_missing_artifact_404(client):
     resp = await client.get("/portal/fleet/scout/missing.json")
     assert resp.status == 404
-    assert "not found" in (await resp.text()).lower()
+    body = await resp.text()
+    assert "not found" in body.lower()
+    assert "404" in body
+
+
+async def test_portal_trailing_slash_redirects_to_shell(client):
+    resp = await client.get("/portal/", allow_redirects=False)
+    assert resp.status == 302
+    assert resp.headers["Location"] == "/portal"

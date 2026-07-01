@@ -1145,7 +1145,7 @@ def _fleet_breadcrumb(skill: str = "", filename: str = "") -> str:
         crumbs.append(f'<a href="/portal/fleet/{_esc(skill)}/">{_esc(skill)}</a>')
     if filename:
         crumbs.append(_esc(filename))
-    return f'<p class="meta">{" &rsaquo; ".join(crumbs)}</p>'
+    return f'<p class="meta breadcrumb">{" &rsaquo; ".join(crumbs)}</p>'
 
 
 def _fleet_zone_badge(zone: str) -> str:
@@ -1237,6 +1237,7 @@ async def handle_fleet_skill_page(request: web.Request) -> web.Response:
         return web.Response(
             text=_fleet_page(
                 "Fleet — not found", _fleet_breadcrumb(),
+                "<h2>404 — not found</h2>"
                 f'<p class="placeholder">Unknown fleet skill: {_esc(skill_name)}</p>',
             ),
             status=404, content_type="text/html",
@@ -1276,6 +1277,7 @@ async def handle_fleet_artifact_page(request: web.Request) -> web.Response:
         return web.Response(
             text=_fleet_page(
                 "Fleet — not found", _fleet_breadcrumb(skill_name or ""),
+                "<h2>404 — not found</h2>"
                 f'<p class="placeholder">Artifact not found: '
                 f'{_esc(skill_name)}/{_esc(filename)}</p>',
             ),
@@ -1301,6 +1303,15 @@ async def handle_fleet_artifact_page(request: web.Request) -> web.Response:
     )
 
 
+async def handle_portal_slash_redirect(request: web.Request) -> web.Response:
+    """Redirect the trailing-slash ``/portal/`` to the canonical ``/portal`` shell.
+
+    The shell route is registered at ``/portal`` (no trailing slash) and aiohttp
+    does not auto-match the slash variant, so a user typing ``/portal/`` used to
+    get a bare 404. Canonicalize it here (fleet-artifact-viewer-v1 smoke)."""
+    raise web.HTTPFound("/portal")
+
+
 def register_fragment_routes(app: web.Application) -> None:
     """Register the portal shell + ``/portal/fragments/*`` routes.
 
@@ -1310,6 +1321,8 @@ def register_fragment_routes(app: web.Application) -> None:
     """
     # Phase 1 — shell
     app.router.add_get("/portal", handle_portal_shell)
+    # fleet-artifact-viewer-v1 — canonicalize the trailing-slash variant.
+    app.router.add_get("/portal/", handle_portal_slash_redirect)
     # Phase 2 — cellar (listing + detail). {page_id:.+} carries the subdir-
     # qualified id (e.g. dock_goal/foo); the handler's containment guard blocks
     # path traversal.
