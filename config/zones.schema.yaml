@@ -463,9 +463,14 @@ tool_zones:
   # grove-browser node tools — engine authority over node-proposed Green
   # Authority inversion (GRV-004): the node proposes Green in its served
   # declaration; the engine's zone entry here is the authority. Absent
-  # these entries, both tools default Yellow (zones.py:266).
+  # these entries, the tool defaults Yellow (zones.py:266). The read
+  # surface is five Green read-only tools (browser-read-surface-v1): no
+  # write capability exists on this node.
   mcp_grove_browser_browser_search: green
-  mcp_grove_browser_browser_fetch_page: green
+  mcp_grove_browser_browser_read_page: green
+  mcp_grove_browser_browser_extract: green
+  mcp_grove_browser_browser_screenshot: green
+  mcp_grove_browser_browser_session: green
 
   # ── Google Workspace native verbs: READ → GREEN (workspace-first-class-capability-v1) ──
   # First-class native tools wrapping google_api.py. Classified by the bare

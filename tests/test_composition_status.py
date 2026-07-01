@@ -10,6 +10,7 @@ passes ``mcp_servers_config`` + ``zone_map`` explicitly so no disk read fires.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +20,9 @@ from grove.composition.declaration import (
     _zone_lookup_key,
     get_composition_status,
 )
+from grove.zones import ZoneClassifier
+
+_REPO_ZONES_SCHEMA = Path(__file__).resolve().parent.parent / "config" / "zones.schema.yaml"
 
 
 def _decl(node_id: str = "grove-browser", tools=None, endpoint="http://node:8830/mcp") -> NodeDeclaration:
@@ -57,16 +61,22 @@ def _reset_globals():
 # ── Composed + healthy node with tools ───────────────────────────────────────
 
 
+# The five-tool read surface (browser-read-surface-v1), all node-proposed Green.
+_READ_TOOLS = [
+    "browser_search",
+    "browser_read_page",
+    "browser_extract",
+    "browser_screenshot",
+    "browser_session",
+]
+
+
 def test_composed_healthy_node_with_tools():
     mt._composed_nodes["grove-browser"] = _decl(tools=[
-        {"name": "browser_search", "proposed_zone": "green"},
-        {"name": "browser_fetch_page", "proposed_zone": "green"},
+        {"name": t, "proposed_zone": "green"} for t in _READ_TOOLS
     ])
     mt._servers["grove-browser"] = object()  # presence = connected
-    zone_map = {
-        "mcp_grove_browser_browser_search": "green",
-        "mcp_grove_browser_browser_fetch_page": "green",
-    }
+    zone_map = {f"mcp_grove_browser_{t}": "green" for t in _READ_TOOLS}
     config = {"grove-browser": {"url": "http://100.80.12.118:8830/mcp"}}
 
     out = get_composition_status(mcp_servers_config=config, zone_map=zone_map)
@@ -83,13 +93,26 @@ def test_composed_healthy_node_with_tools():
     assert node["connect_failure_type"] is None
     assert node["error_count"] == 0
     assert node["url"] == "http://100.80.12.118:8830/mcp"
-    assert len(node["tools"]) == 2
-    assert node["tools"][0] == {
-        "name": "browser_search", "proposed_zone": "green", "granted_zone": "green",
-    }
+    assert len(node["tools"]) == 5
+    assert [t["name"] for t in node["tools"]] == _READ_TOOLS
+    # Every read tool: node proposes Green and the engine grants Green.
+    for t in node["tools"]:
+        assert t["proposed_zone"] == "green"
+        assert t["granted_zone"] == "green"
 
 
 # ── Dark node (in config, no declaration) — I4 ───────────────────────────────
+
+
+def test_repo_zones_schema_grants_all_five_read_tools_green():
+    """Engine confirms: the real repo zones.schema.yaml is the zone authority,
+    and it grants every grove-browser read tool Green (browser-read-surface-v1).
+    A missing entry would default Yellow (zones.py:266) — so this guards the
+    authority-inversion grant, not just the node's proposal."""
+    classifier = ZoneClassifier(_REPO_ZONES_SCHEMA)
+    for t in _READ_TOOLS:
+        key = f"mcp_grove_browser_{t}"
+        assert classifier.classify(key).zone == "green", f"{key} not granted green"
 
 
 def test_dark_node_in_config_no_declaration():
