@@ -38,6 +38,9 @@ __all__ = [
     "append_write_workspace",
     "write_refused_message",
     "GOVERNED_PATH_MESSAGE",
+    "is_capability_write_allowed",
+    "capability_emission_precondition",
+    "promote_artifact",
 ]
 
 
@@ -574,3 +577,285 @@ def append_write_workspace(new_path: object, grove_home: object = None) -> str:
             yaml_rt.dump(data, fh)
     _write_workspaces_cache.pop(grove, None)  # hot-reload on next check
     return abs_path
+
+
+# ── structural-review-gate-v1 — per-capability write governance ───────────────
+#
+# Two additive gates that sit ABOVE the is_write_allowed / is_secret_path stack.
+# They constrain ONLY paths a fleet capability record claims (via its
+# governance.write_zone); every other path falls through untouched — a verb-kind
+# or non-fleet write is never affected. Governance is resolved by MATCHING the
+# write target against the loaded fleet records (no active-capability turn state):
+# the artifact's declared destination selects its governing record, so the
+# guarantee lives in the path the model writes to, not in prompt adherence.
+#
+# The `fleet_governance` argument both gates take is an iterable of
+# ``(capability_id, governance_dict)`` — the dispatcher builds it from every
+# kind=skill record whose governance block is non-None. Keeping the loading in
+# the caller keeps these functions pure and unit-testable.
+
+
+def _grove_subdir_realpath(rel: str, grove: str) -> str:
+    """Resolve a write_zone dir declared relative to ``$GROVE_HOME`` to an
+    absolute realpath. ``realpath`` normalizes even a not-yet-created dir (it
+    resolves the existing prefix and appends the rest), so a staging/canonical
+    dir that does not exist on disk yet still matches correctly."""
+    return os.path.realpath(os.path.join(grove, rel))
+
+
+def _path_within(child: str, parent: str) -> bool:
+    """Component-boundary-safe containment: ``child`` IS ``parent`` or lives
+    under ``parent/`` — so ``drafter`` never matches ``drafter_backup``."""
+    return child == parent or child.startswith(parent + os.sep)
+
+
+def _grove_home_realpath() -> str | None:
+    from hermes_constants import get_hermes_home
+
+    try:
+        return os.path.realpath(get_hermes_home())
+    except (OSError, ValueError):
+        return None
+
+
+def _staging_owner(resolved: str, fleet_governance, grove: str):
+    """The single fleet record whose ``write_zone.staging_dir`` contains
+    *resolved*, as ``(capability_id, governance_dict)``, or ``None``.
+
+    Staging dirs are disjoint across the fleet (scout / researcher /
+    drafter/pending_review / cultivator/pending_review), so at most one owns a
+    given target."""
+    for cid, gov in fleet_governance:
+        wz = (gov or {}).get("write_zone") or {}
+        sd = wz.get("staging_dir")
+        if not sd:
+            continue
+        if _path_within(resolved, _grove_subdir_realpath(sd, grove)):
+            return (cid, gov)
+    return None
+
+
+def is_capability_write_allowed(target_path: str, fleet_governance) -> "tuple[bool, str]":
+    """WHERE gate — per-capability write-zone confinement (structural-review-gate-v1).
+
+    Returns ``(True, "")`` when the write is permitted and ``(False, reason)``
+    when it must be refused. A target that lands in NO fleet capability's
+    governed zone passes through ``(True, "")`` — this gate is purely additive.
+
+    Refusal cases (the WHERE failure this sprint closes):
+      * **canonical-sink write** — the target is inside a record's canonical
+        umbrella but NOT inside its staging dir (e.g. a draft written straight to
+        ``~/.grove/drafter/`` instead of ``~/.grove/drafter/pending_review/``).
+      * **cross-capability write** — the target is inside one record's staging
+        dir but ALSO inside a *different* record's governed zone.
+
+    Fail-closed on an unresolvable target; inert (allow) only when GROVE_HOME
+    itself cannot be resolved (a grove-relative gate cannot apply, and the base
+    is_write_allowed stack has already run)."""
+    resolved = _canonical_write_target(target_path)
+    if resolved is None:
+        return (
+            False,
+            f"Capability write gate: refusing {target_path} — the target path "
+            f"could not be canonicalized (fail-closed).",
+        )
+    grove = _grove_home_realpath()
+    if grove is None:
+        return (True, "")  # cannot anchor a grove-relative gate → does not apply
+
+    zone_hits: list[str] = []  # capability_ids whose zone (canonical umbrella OR staging) contains the target
+    for cid, gov in fleet_governance:
+        wz = (gov or {}).get("write_zone") or {}
+        sd, cd = wz.get("staging_dir"), wz.get("canonical_dir")
+        if not sd or not cd:
+            continue
+        staging_abs = _grove_subdir_realpath(sd, grove)
+        canonical_abs = _grove_subdir_realpath(cd, grove)
+        if _path_within(resolved, canonical_abs) or _path_within(resolved, staging_abs):
+            zone_hits.append(cid)
+
+    if not zone_hits:
+        return (True, "")  # non-fleet path — additive gate does not constrain it
+
+    owner = _staging_owner(resolved, fleet_governance, grove)
+    if owner is None:
+        # In a governed umbrella but in no staging dir → written to the canonical
+        # sink instead of the staging dir. This is the WHERE failure, structural.
+        return (
+            False,
+            f"Write refused — {target_path} lands in the canonical sink governed "
+            f"by capability {zone_hits[0]!r}. Fleet artifacts must be written to "
+            f"that capability's staging dir, never its canonical sink; the "
+            f"promotion into the canonical dir is a separate operator-gated step.",
+        )
+
+    owner_cid = owner[0]
+    foreign = [cid for cid in zone_hits if cid != owner_cid]
+    if foreign:
+        return (
+            False,
+            f"Write refused — {target_path} is inside {owner_cid!r}'s staging dir "
+            f"but also inside {foreign[0]!r}'s governed zone. A capability may "
+            f"only write into its own staging dir.",
+        )
+    return (True, "")
+
+
+def capability_emission_precondition(
+    target_path: str, fleet_governance, turn_tool_counts: dict
+) -> "tuple[bool, str]":
+    """WHETHER gate — emission precondition on a capability's terminal artifact
+    (structural-review-gate-v1).
+
+    Returns ``(True, "")`` unless *target_path* IS the terminal artifact of the
+    fleet record that governs its staging dir AND the turn's tool-class counts
+    fall below that record's declared minimums — in which case ``(False, reason)``.
+
+    Skipped (``True``) for: a non-fleet target, a governing record with no
+    ``emission_preconditions``/``terminal_artifact.path_pattern``, and any
+    non-terminal write inside the staging dir (basename does not match the
+    pattern). Fail-closed on an unresolvable target.
+
+    *turn_tool_counts* is a ``{class: count}`` dict the caller derives from the
+    turn's invocation ledger via :func:`grove.tool_classes.count_tool_classes`."""
+    resolved = _canonical_write_target(target_path)
+    if resolved is None:
+        return (
+            False,
+            f"Capability emission gate: refusing {target_path} — the target path "
+            f"could not be canonicalized (fail-closed).",
+        )
+    grove = _grove_home_realpath()
+    if grove is None:
+        return (True, "")
+
+    owner = _staging_owner(resolved, fleet_governance, grove)
+    if owner is None:
+        return (True, "")  # non-fleet write — no precondition to enforce
+
+    cid, gov = owner
+    pre = (gov or {}).get("emission_preconditions") or {}
+    ta = pre.get("terminal_artifact") or {}
+    pattern = ta.get("path_pattern")
+    if not pattern:
+        return (True, "")  # this capability declares no terminal artifact
+    if not fnmatch.fnmatch(os.path.basename(resolved), str(pattern)):
+        return (True, "")  # a non-terminal write within staging — not gated
+
+    # This IS the governing capability's terminal artifact: enforce that the
+    # required tool work actually happened this turn (the WHETHER failure — a
+    # hollow artifact emitted without the tool calls it presupposes).
+    shortfalls = []
+    for req in pre.get("required_tool_classes", []) or []:
+        cls = req.get("class")
+        need = int(req.get("min_calls", 0) or 0)
+        have = int(turn_tool_counts.get(cls, 0))
+        if have < need:
+            shortfalls.append((cls, have, need))
+    if shortfalls:
+        detail = "; ".join(f"{cls} {have}/{need}" for cls, have, need in shortfalls)
+        return (
+            False,
+            f"Write refused — {os.path.basename(resolved)} is capability "
+            f"{cid!r}'s terminal artifact, but the required tool activity for "
+            f"this turn is incomplete ({detail}; have/need by tool class). Do the "
+            f"outstanding work (searches / skill loads) before emitting the "
+            f"artifact — an artifact written without it would be hollow.",
+        )
+    return (True, "")
+
+
+def promote_artifact(source_path: str, governance: dict) -> str:
+    """Deterministic promotion of an approved artifact from a capability's
+    staging dir to its canonical sink (structural-review-gate-v1).
+
+    ORCHESTRATOR-ONLY — this is NOT a tool and is unreachable by the model. The
+    model's terminal act is writing into the staging dir (gated by
+    :func:`is_capability_write_allowed`); moving the approved artifact into the
+    canonical sink, where the cellar poller ingests it, is the ENVIRONMENT's job,
+    performed only AFTER operator approval. That the model has no path to this
+    function is the structural guarantee — approval cannot be self-served.
+
+    CORE, not surface: the signature is surface-agnostic (``source_path`` +
+    ``governance`` only — no session, platform, or surface identifier). Every
+    approval surface (Telegram button, CLI prompt, portal card) supplies its own
+    UX shim but calls THIS one function — the single door from staging to
+    canonical.
+
+    Behavior:
+      * Validates *source_path* resolves strictly INSIDE
+        ``governance.write_zone.staging_dir`` (relative to ``$GROVE_HOME``,
+        realpath-resolved, component-boundary safe — same discipline as the
+        WHERE gate).
+      * Creates ``canonical_dir`` if absent (the poller expects it), then
+        atomically ``os.rename``s the file under its own basename into the
+        canonical sink. ``~/.grove`` is one mount, so the rename is atomic.
+      * If ``write_zone.promotion`` is ``auto_ingest``, immediately funnels the
+        canonical path through :func:`grove.wiki.watcher.ingest_file` (the
+        universal idempotency gatekeeper). For ``operator_approval`` the move
+        ITSELF is the approval effect — the 60s poller picks it up next cycle,
+        so no inline ingest is triggered.
+
+    Returns the canonical path. The atomic move is the primary guarantee; the
+    inline ingest is a best-effort immediate trigger with the poller as backstop,
+    so an ingest failure is logged LOUDLY but does not unwind a completed move
+    (re-raising would misreport a successful promotion and invite a retry that
+    then fails on the already-moved source).
+
+    Raises ``ValueError`` when: governance declares no ``write_zone`` /
+    ``staging_dir`` / ``canonical_dir``; ``$GROVE_HOME`` or the source cannot be
+    resolved; or the source does not resolve strictly inside the staging dir
+    (never promotes an out-of-staging path)."""
+    wz = (governance or {}).get("write_zone") or {}
+    staging = wz.get("staging_dir")
+    canonical = wz.get("canonical_dir")
+    if not staging or not canonical:
+        raise ValueError(
+            "promote_artifact: governance.write_zone must declare both "
+            "staging_dir and canonical_dir"
+        )
+
+    grove = _grove_home_realpath()
+    if grove is None:
+        raise ValueError("promote_artifact: could not resolve GROVE_HOME")
+
+    try:
+        source_real = os.path.realpath(os.path.expanduser(str(source_path)))
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"promote_artifact: source path {source_path!r} could not be "
+            f"resolved ({exc})"
+        ) from exc
+
+    staging_abs = _grove_subdir_realpath(staging, grove)
+    # STRICTLY inside — the staging dir itself is not a promotable artifact, and
+    # the trailing os.sep keeps the boundary component-safe (staging never
+    # matches staging_evil).
+    if source_real == staging_abs or not source_real.startswith(staging_abs + os.sep):
+        raise ValueError(
+            f"promote_artifact: source {source_path!r} does not resolve inside "
+            f"the declared staging dir {staging!r} ({staging_abs}) — refusing to "
+            f"promote"
+        )
+
+    canonical_abs = _grove_subdir_realpath(canonical, grove)
+    os.makedirs(canonical_abs, exist_ok=True)
+    target = os.path.join(canonical_abs, os.path.basename(source_real))
+    os.rename(source_real, target)
+
+    # auto_ingest — trigger the universal ingest gate immediately. operator_
+    # approval capabilities skip this: the move is the approval effect and the
+    # poller ingests on its next cycle. The move already succeeded, so an ingest
+    # fault is logged loud (never swallowed) but does not unwind the promotion.
+    if wz.get("promotion") == "auto_ingest":
+        try:
+            from grove.wiki.watcher import ingest_file
+
+            ingest_file(target)
+        except Exception as exc:  # noqa: BLE001 — surfaced loud; poller is the backstop
+            logger.warning(
+                "promote_artifact: auto_ingest of %s FAILED (%r) — the move "
+                "succeeded; the cellar poller will re-ingest on its next cycle.",
+                target, exc,
+            )
+    return target

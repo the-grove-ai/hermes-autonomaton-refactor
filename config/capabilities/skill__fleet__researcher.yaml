@@ -251,3 +251,17 @@ failure:
     window_seconds: 300
 skill:
   category: fleet
+governance:
+  write_zone:
+    staging_dir: "researcher"
+    canonical_dir: "researcher"
+    promotion: auto_ingest
+  emission_preconditions:
+    required_tool_classes:
+      - class: retrieval
+        min_calls: 3
+    terminal_artifact:
+      tool: write_file
+      path_pattern: "brief-*.json"
+  approval_handoff:
+    mode: ingest_post
