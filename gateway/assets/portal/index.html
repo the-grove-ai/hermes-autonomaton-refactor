@@ -43,6 +43,10 @@
                        hx-target="#center-panel" hx-push-url="true">Dashboard</a></li>
                 <li><a href="#" hx-get="/portal/fragments/cellar/pages"
                        hx-target="#center-panel" hx-push-url="true">Knowledge</a></li>
+                <!-- Fleet artifacts are standalone full-HTML pages (directly
+                     tappable from a Telegram deep link), so this is a plain
+                     full-navigation link, not an in-shell hx-get fragment swap. -->
+                <li><a href="/portal/fleet/">Fleet</a></li>
                 <li><a href="#" hx-get="/portal/fragments/memory/records"
                        hx-target="#center-panel" hx-push-url="true">Memory</a></li>
                 <li><a href="#" hx-get="/portal/fragments/dock/goals"

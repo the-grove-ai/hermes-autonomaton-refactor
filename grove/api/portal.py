@@ -691,6 +691,195 @@ async def handle_composition_nodes(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Fleet artifact endpoints (fleet-artifact-viewer-v1)
+# ---------------------------------------------------------------------------
+#
+# Serve the RAW fleet skill outputs (~/.grove/{scout,researcher,drafter,
+# cultivator}/) — distinct from the compacted cellar pages the cellar endpoints
+# serve. Fleet membership is structural: a kind=skill capability record carrying
+# a governance block (structural-review-gate-v1) IS a fleet skill; its
+# write_zone declares the staging/canonical dirs and its terminal_artifact the
+# filename pattern. The reader helpers are shared with the P2 portal fragments.
+
+
+def _fleet_skill_records() -> Dict[str, Any]:
+    """``{skill_name: Capability}`` for every kind=skill record carrying a
+    governance block (the fleet capabilities). ``skill_name`` is the record id's
+    trailing segment (``skill.fleet.scout`` -> ``scout``)."""
+    out: Dict[str, Any] = {}
+    for cid, cap in load_capabilities().items():
+        if cap.kind == CapabilityKind.SKILL and cap.governance:
+            out[cid.rsplit(".", 1)[-1]] = cap
+    return out
+
+
+def _fleet_zone_dirs(cap: Any) -> tuple:
+    """``(zone_str, staging_dir: Path, canonical_dir: Path, pattern: str)`` for a
+    fleet capability. Dirs resolve relative to ``$GROVE_HOME``. Raises
+    ``KeyError`` if the governance block omits write_zone dirs (a malformed
+    record — surfaced, never silently defaulted)."""
+    grove = Path(get_hermes_home())
+    wz = cap.governance["write_zone"]
+    staging = grove / wz["staging_dir"]
+    canonical = grove / wz["canonical_dir"]
+    pattern = (
+        (cap.governance.get("emission_preconditions") or {})
+        .get("terminal_artifact", {})
+        .get("path_pattern", "*")
+    )
+    return cap.zone.value, staging, canonical, pattern
+
+
+def _fleet_mtime_iso(mtime: float) -> str:
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _list_fleet_artifacts(cap: Any) -> list:
+    """List a fleet skill's artifacts, newest-first, each tagged with its
+    governance_state.
+
+    A Yellow-zone skill's staging dir (``<skill>/pending_review``) is distinct
+    from its canonical dir (``<skill>``): staging files are ``pending_review``,
+    canonical files are ``canonical``. The canonical glob is NON-recursive, so it
+    never descends into the ``pending_review`` subdir (no double count). A
+    Green-zone skill has staging == canonical, so there is no pending tier.
+    """
+    _zone, staging, canonical, pattern = _fleet_zone_dirs(cap)
+    found: list = []  # (mtime_float, Path, state)
+    has_pending = staging.resolve() != canonical.resolve()
+    if has_pending and staging.is_dir():
+        for p in staging.glob(pattern):
+            if p.is_file():
+                found.append((p.stat().st_mtime, p, "pending_review"))
+    if canonical.is_dir():
+        for p in canonical.glob(pattern):  # non-recursive: skips pending_review/
+            if p.is_file():
+                found.append((p.stat().st_mtime, p, "canonical"))
+    found.sort(key=lambda t: t[0], reverse=True)
+    return [
+        {
+            "filename": p.name,
+            "size": p.stat().st_size,
+            "mtime": _fleet_mtime_iso(mt),
+            "governance_state": state,
+        }
+        for mt, p, state in found
+    ]
+
+
+async def handle_fleet_index(request: web.Request) -> web.Response:
+    """``GET /api/substrate/fleet/`` — one row per fleet skill with aggregated
+    artifact metadata (counts split pending vs canonical, latest mtime)."""
+    records = _fleet_skill_records()
+    skills = []
+    for name in sorted(records):
+        try:
+            arts = _list_fleet_artifacts(records[name])
+        except KeyError as exc:
+            # Parity with the cellar listing's commanded skip: one malformed
+            # record must not blank the whole index. Logged loud, not swallowed.
+            logger.warning(
+                "[portal] fleet skill %s has a malformed governance block, "
+                "skipping: %r", name, exc,
+            )
+            continue
+        pending = sum(1 for a in arts if a["governance_state"] == "pending_review")
+        skills.append({
+            "name": name,
+            "zone": records[name].zone.value,
+            "artifact_count": len(arts),
+            "latest_mtime": arts[0]["mtime"] if arts else None,
+            "pending_count": pending,
+            "canonical_count": len(arts) - pending,
+        })
+    return _envelope({"skills": skills}, count=len(skills))
+
+
+async def handle_fleet_skill(request: web.Request) -> web.Response:
+    """``GET /api/substrate/fleet/{skill_name}/`` — the artifact list for one
+    fleet skill, newest-first. Unknown skill -> 404."""
+    skill_name = request.match_info["skill_name"]
+    cap = _fleet_skill_records().get(skill_name)
+    if cap is None:
+        return web.json_response(
+            {"error": "not_found", "detail": f"unknown fleet skill: {skill_name}"},
+            status=404,
+        )
+    return _envelope({"artifacts": _list_fleet_artifacts(cap)})
+
+
+def _resolve_fleet_artifact(cap: Any, filename: str) -> Optional[tuple]:
+    """Resolve ``filename`` to ``(path, governance_state)`` for a fleet skill,
+    honoring the Yellow-zone lookup order (``pending_review/`` first, then the
+    canonical dir). Returns ``None`` when neither holds the file OR a containment
+    guard rejects a candidate that resolves outside its intended dir. Shared by
+    the JSON content endpoint and the P2 portal artifact page (single resolver,
+    no duplicated lookup)."""
+    _zone, staging, canonical, _pattern = _fleet_zone_dirs(cap)
+    search: list = []
+    if staging.resolve() != canonical.resolve():
+        search.append((staging, "pending_review"))  # pending_review first
+    search.append((canonical, "canonical"))
+    for base, state in search:
+        candidate = base / filename
+        try:
+            candidate.resolve().relative_to(base.resolve())
+        except ValueError:
+            continue  # traversal-guarded out
+        if candidate.is_file():
+            return candidate, state
+    return None
+
+
+async def handle_fleet_artifact(request: web.Request) -> web.Response:
+    """``GET /api/substrate/fleet/{skill_name}/{filename}`` — raw artifact content
+    with the appropriate Content-Type.
+
+    Lookup order for a Yellow-zone skill: ``pending_review/`` first, then the
+    canonical dir, else 404. ``.md`` renders to sanitized HTML via the P2
+    markdown renderer; ``.json`` returns the file verbatim as application/json;
+    anything else falls back to text/plain. The ``{filename}`` route segment
+    cannot carry a slash, and a containment guard rejects any candidate that
+    resolves outside its intended dir.
+    """
+    skill_name = request.match_info["skill_name"]
+    filename = request.match_info["filename"]
+    cap = _fleet_skill_records().get(skill_name)
+    if cap is None:
+        return web.json_response(
+            {"error": "not_found", "detail": f"unknown fleet skill: {skill_name}"},
+            status=404,
+        )
+    read = _read_fleet_artifact(cap, filename)
+    if read is None:
+        return web.json_response(
+            {"error": "not_found",
+             "detail": f"artifact {filename} not found for skill {skill_name}"},
+            status=404,
+        )
+    raw, suffix, _state = read
+    if suffix == ".md":
+        # Lazy import: grove.api.fragments imports this module, so a top-level
+        # import would be circular. The renderer is only needed at request time.
+        from grove.api.fragments import _render_md
+        return web.Response(text=_render_md(raw), content_type="text/html")
+    if suffix == ".json":
+        return web.Response(text=raw, content_type="application/json")
+    return web.Response(text=raw, content_type="text/plain")
+
+
+def _read_fleet_artifact(cap: Any, filename: str) -> Optional[tuple]:
+    """Read a fleet artifact through the shared resolver: ``(raw, suffix, state)``
+    or ``None`` if not found. The single content reader both the JSON endpoint and
+    the P2 portal page funnel through — neither re-scans the filesystem."""
+    resolved = _resolve_fleet_artifact(cap, filename)
+    if resolved is None:
+        return None
+    target, state = resolved
+    return target.read_text(encoding="utf-8"), target.suffix, state
+
+
+# ---------------------------------------------------------------------------
 # Route registration
 # ---------------------------------------------------------------------------
 
@@ -720,3 +909,9 @@ def register_portal_routes(app: web.Application) -> None:
     app.router.add_post("/api/substrate/ingest", handle_ingest)
     # R2″ (node-compositor-view-v1) — live composition state
     app.router.add_get("/api/substrate/composition/nodes", handle_composition_nodes)
+    # fleet-artifact-viewer-v1 — raw fleet skill artifacts (index, per-skill
+    # list, artifact content). Registration order is unambiguous — the three
+    # patterns differ in segment count / trailing slash.
+    app.router.add_get("/api/substrate/fleet/", handle_fleet_index)
+    app.router.add_get("/api/substrate/fleet/{skill_name}/", handle_fleet_skill)
+    app.router.add_get("/api/substrate/fleet/{skill_name}/{filename}", handle_fleet_artifact)
