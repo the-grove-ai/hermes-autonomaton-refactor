@@ -1,0 +1,90 @@
+# grove-browser node MCP — READ capability (browser-read-surface-v1).
+# Admission layer (distinct from the zones.schema.yaml zone grant): this
+# kind=mcp record is the SOLE authority on whether the grove-browser server's
+# tools are offered on the gateway path. No record -> the tools are in the
+# registry but NEVER surface (_compute_mcp_allow fail-loud warning). One record
+# owns the whole read-side toolset (notion_read precedent; strict 1:1 tool
+# ownership). Read-only: no write_zone, no emission_preconditions.
+#
+# SERVER-ID NOTE: the engine's runtime MCP server id is _mcp_server_of(tool),
+# which splits the sanitized tool name on the first underscore. The five tools
+# register as mcp_grove_browser_* (config key "grove-browser" sanitizes to
+# "grove_browser"), so _mcp_server_of returns "grove". Admission
+# (_compute_mcp_allow) and telemetry attribution (_mcp_attribution_map) both key
+# on that value, so the mcp_schema pointer MUST be "grove" to bind. (Zone
+# classification is orthogonal — it keys on the full mcp_grove_browser_* tool
+# names in zones.schema.yaml::tool_zones, set in R2.)
+id: grove_browser_read
+kind: mcp
+trigger:
+  # Green-zone read surface, always admitted (no intent/keyword gate): the
+  # ungated read control surface (Amendment A4). always > intent > keyword > dock.
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+bindings:
+  # Strict 1:1 tool ownership: this record owns all five grove-browser read
+  # tools by their gateway-registered mcp_grove_browser_* names. toolset_key is
+  # null (hosted/tailnet MCP, schema pulled live from the connection — not a
+  # CONFIGURABLE_TOOLSETS key). No credentials: tailnet-scoped, no OAuth.
+  tools:
+    - mcp_grove_browser_browser_search
+    - mcp_grove_browser_browser_read_page
+    - mcp_grove_browser_browser_extract
+    - mcp_grove_browser_browser_screenshot
+    - mcp_grove_browser_browser_session
+  credentials: null
+  toolset_key: null
+tier_rule:
+  # Tier ceiling is neutered (neuter-tier-eligible-gate) — inert documentation.
+  # Eligible on every tier so the read surface discloses on the T1 default.
+  eligible: [1, 2, 3]
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed
+  track: [invocation, result, cost, latency, confidence, human_feedback]
+context:
+  disclosure: eager
+  dock_composition: none
+  payload: |
+    mcp_schema:grove
+
+    Grove Browser node MCP (tailnet read substrate, GRV-004) — READ operations.
+    Schema is pulled live from the connected grove-browser server; this pointer
+    binds the record to that server. Read tools (Green): search the web, read a
+    page (accessibility tree or plain text), extract a region by CSS selector,
+    capture a viewport screenshot, report session health. No write capability
+    exists on this node.
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: "2026-07-01T00:00:00+00:00"
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+    - actor: operator
+      timestamp: "2026-07-01T00:00:00+00:00"
+      from_state: migrated
+      to_state: approved
+      reason: "browser-read-surface-v1 R3 — admission record for the five Green grove-browser read tools at the operator-locked gate; distinct from the R2 zones.schema.yaml zone grant"
+      evidence: ["config/zones.schema.yaml#tool_zones", "config/capabilities/notion_read.yaml"]
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+    - "capability: grove_browser_read"
+    - "subsystem: grove-browser node MCP (tailnet endpoint) via tools/mcp_tool.py"
+    - "check: grove-browser MCP server reachable in mcp_servers config and responding"
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
