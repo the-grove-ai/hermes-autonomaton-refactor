@@ -99,6 +99,9 @@ _OVERRIDES = [
     ("Alex Sidorenko", "OperatorPreference"),
     ("Rachel Johnson", "OperatorPreference"),
     ("Felipe Zubia", "OperatorPreference"),
+    # Time-bound status — MUST decay; pin ProjectState against T1 non-determinism.
+    ("Currently in Indiana", "ProjectState"),
+    ("Bounteous", "ProjectState"),
 ]
 
 # Retry budget for the forced tool call — deepseek-v4-pro on OpenRouter
