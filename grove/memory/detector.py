@@ -338,33 +338,71 @@ class ContextPersistenceDetector:
         commanded graceful degradation is malformed JSON (handled in
         :meth:`_parse_proposals`).
         """
-        from agent.anthropic_adapter import build_anthropic_client
         from grove.classify import _telemetry_tier_runtime, _track_cost
 
         runtime, tier_config = _telemetry_tier_runtime()
-        client = build_anthropic_client(
-            api_key=runtime.get("api_key") or "",
-            base_url=runtime.get("base_url") or None,
-        )
+        api_mode = runtime.get("api_mode")
         user_payload = json.dumps({
             "transcript": filtered_transcript,
             "active_memory_index": active_memory_index,
             "active_dock_goals": active_dock_goals,
             "recently_rejected_proposals": recently_rejected_proposals,
         })
-        response = client.messages.create(
-            model=runtime["model"],
-            max_tokens=_MAX_OUTPUT_TOKENS,
-            system=DETECTOR_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_payload}],
+
+        # detector-provider-agnostic-v1: branch on the telemetry tier's wire
+        # protocol, mirroring call_t1 / _call_classifier. anthropic_messages is
+        # preserved byte-for-byte; chat_completions drives the OpenAI-compatible
+        # provider (the OpenRouter telemetry tier the classifier already runs on)
+        # — without it, messages.create hits /v1/messages and gets an HTML error.
+        if api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client
+
+            client = build_anthropic_client(
+                api_key=runtime.get("api_key") or "",
+                base_url=runtime.get("base_url") or None,
+            )
+            response = client.messages.create(
+                model=runtime["model"],
+                max_tokens=_MAX_OUTPUT_TOKENS,
+                system=DETECTOR_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_payload}],
+            )
+            _track_cost(response.usage, tier_config=tier_config)
+            texts = [
+                getattr(block, "text", "")
+                for block in response.content
+                if getattr(block, "type", None) == "text"
+            ]
+            return "".join(texts)
+
+        if api_mode == "chat_completions":
+            from openai import OpenAI
+            from grove.providers import openrouter_provider_pref
+
+            client = OpenAI(
+                api_key=runtime.get("api_key") or "",
+                base_url=runtime.get("base_url") or None,
+            )
+            kwargs: Dict[str, Any] = {
+                "model": runtime["model"],
+                "max_tokens": _MAX_OUTPUT_TOKENS,
+                "messages": [
+                    {"role": "system", "content": DETECTOR_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_payload},
+                ],
+            }
+            _pp = openrouter_provider_pref(runtime)
+            if _pp:
+                kwargs["extra_body"] = {"provider": _pp}
+            response = client.chat.completions.create(**kwargs)
+            _track_cost(getattr(response, "usage", None), tier_config=tier_config)
+            return response.choices[0].message.content or ""
+
+        raise RuntimeError(
+            f"_call_detector: unsupported telemetry api_mode {api_mode!r} "
+            f"(model={runtime.get('model')!r}); bind the telemetry tier to an "
+            f"anthropic_messages or chat_completions provider."
         )
-        _track_cost(response.usage, tier_config=tier_config)
-        texts = [
-            getattr(block, "text", "")
-            for block in response.content
-            if getattr(block, "type", None) == "text"
-        ]
-        return "".join(texts)
 
     # ── parse ────────────────────────────────────────────────────────────
 
