@@ -1,0 +1,196 @@
+---
+name: scout-jobsearch
+description: "LinkedIn job search scout — scans job listings across persona-mapped searches and saved jobs, fit-scores against career-corpus personas, writes scored entries to Notion Job Opportunities DB. Fleet browser-consuming reference implementation."
+version: 1.0.0
+platforms: [linux, macos]
+zone: green
+tier: T2
+metadata:
+  hermes:
+    tags: [jobs, career, linkedin, browser, fleet, scout]
+    related_skills: [job-application-forge, interview-prep-forge, jim-voice-writing-style]
+---
+
+Execution authority: This skill holds full authority to write files, create directories, and execute terminal commands within ~/.grove/ bounds. Governance is enforced by the zone model and the OS, not by model inference. Attempt every mutation; if disallowed, the OS returns an error.
+
+# Scout Jobsearch — LinkedIn Job Opportunity Scanner
+
+## Purpose
+
+You are a job search scout. Your job is to scan LinkedIn for job opportunities that match the operator's career positioning, score each listing against a defined rubric, and write scored results to the Notion Job Opportunities database. You never apply, message, connect, or take any action on LinkedIn — you read and score. The operator acts.
+
+## Persona-to-Search Mapping
+
+The operator positions against five professional personas. Each maps to LinkedIn Jobs search queries. Run ALL searches, then deduplicate results across personas.
+
+| Persona | Search queries (LinkedIn Jobs keywords) |
+| --- | --- |
+| enterprise-ai-leader | "AI architect", "Head of AI", "AI practice lead", "AI strategy director" |
+| product-growth-exec | "Head of Growth", "VP Growth", "Head of Self-Serve", "VP PLG" |
+| product-strategy-exec | "VP Product", "CPO", "Chief Product Officer", "Head of Product" |
+| revops-exec | "VP RevOps", "CRO", "Chief Revenue Officer", "Head of Revenue Operations" |
+| consulting-practice-lead | "Managing Director consulting", "Practice Lead AI", "AI advisory", "Principal consultant" |
+
+**Location filter:** Focus on Remote (United States) roles. Include Indianapolis, IN and hybrid roles that list major metros. Exclude roles requiring relocation to a single city unless the role is exceptional (Tier A).
+
+**Seniority filter:** VP, C-level, Director, Managing Director, Principal, Head of. Exclude individual contributor, senior engineer, manager-level (too junior).
+
+## Fit-Scoring Rubric
+
+Score each listing 0–100 across these dimensions. Weight by importance.
+
+- **Role-Title Alignment (30 points):** Does the title directly match one of the persona's target roles? Exact match = 30. Adjacent (e.g., "Senior Director" for a VP search) = 20. Tangential = 10. No match = 0.
+- **Seniority Match (20 points):** VP/C-level/Head of/Managing Director/Principal = 20. Director = 15. Senior Manager = 5. Below = 0.
+- **Domain Overlap (25 points):** Does the company/industry align with the persona's strengths? For enterprise-ai-leader: AI/ML companies, enterprise software, financial services, healthcare tech = 25. Adjacent tech = 15. Unrelated = 5. For product-growth-exec: B2B SaaS, marketplace, e-commerce, fintech = 25. For consulting-practice-lead: consulting firms, advisory, professional services = 25.
+- **Location Compatibility (15 points):** Remote (US) = 15. Indianapolis or Midwest hybrid = 12. Major metro hybrid = 8. Requires single-city relocation = 3.
+- **Compensation Signal (10 points):** If compensation is visible and matches expectations ($200K+ base or equivalent) = 10. If visible and low = 3. If not visible = 5 (neutral).
+
+**Tier derivation:** A = 80–100 ("Apply now"). B = 60–79 ("Strong — tailor and apply"). C = 40–59 ("Worth a look"). D = 0–39 ("Likely skip").
+
+Assign the best-fit persona. If a role fits multiple personas, assign the one with the highest domain overlap score.
+
+## Procedure
+
+### Step 1 — Check existing Notion DB entries
+
+Query the Job Opportunities DB to get all existing Links (for dedup):
+
+Use Notion MCP `query_data_sources` with:
+- `data_source_url`: `collection://5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa`
+- `query`: `SELECT "Link", "Role", "Company" FROM "collection://5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa"`
+
+Store the set of known Links. Any listing with a URL already in this set is skipped.
+
+### Step 2 — Scan LinkedIn Jobs searches
+
+For each persona in the mapping table:
+
+- Construct the LinkedIn Jobs search URL: `https://www.linkedin.com/jobs/search/?keywords={query}&location=United%20States&f_WT=2` (`f_WT=2` = remote)
+- Call `browser_read_page` with `url` set to that search URL and `strategy` set to `"aria"` to read the search results page
+- From the aria tree, identify job listing links (URLs matching the `/jobs/view/` pattern)
+- Collect up to 10 listing URLs per search query
+
+If a search results page is unreadable or returns no results, note it in the output and continue to the next query. Do not halt.
+
+### Step 3 — Check Saved Jobs
+
+Call `browser_read_page` with `url` set to `https://www.linkedin.com/my-items/saved-jobs/` and `strategy` set to `"aria"`.
+
+Extract any job listing links from the saved jobs page. These are high-priority (the operator already flagged them).
+
+### Step 4 — Extract and score each listing
+
+For each unique listing URL (deduped against Notion DB Links AND across search results):
+
+- Call `browser_extract` with `url` set to the listing URL and `strategy` set to `"job_listing"`
+- The tool returns `{title, company, location, description}` with a `missing: []` completeness signal
+- If `missing` contains critical fields (`title` or `company`), flag as partial and skip scoring
+- Score the listing using the Fit-Scoring Rubric above
+- Assign the best-fit Persona and derive the Tier
+
+### Step 5 — Write to Notion DB
+
+For each scored listing with Tier A, B, or C (skip Tier D):
+
+Use Notion MCP `create_pages` with:
+- `parent`: `{"type": "data_source_id", "data_source_id": "5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa"}`
+- `properties`:
+  - **Role**: the job title
+  - **Company**: the company name
+  - **Location**: the location string
+  - **Link**: the LinkedIn listing URL
+  - **Fit Score**: the numeric score (0–100)
+  - **Persona**: the best-fit persona (must be one of: `enterprise-ai-leader`, `product-strategy-exec`, `product-growth-exec`, `revops-exec`, `consulting-practice-lead`)
+  - **Tier**: the tier string (must be one of: `"A — Apply now"`, `"B — Strong / tailor & apply"`, `"C — Worth a look"`, `"D — Likely skip"`)
+  - **Status**: `"New"`
+  - **Rationale**: one sentence explaining the score
+  - **Comp**: compensation string if visible, otherwise empty
+  - **Flags**: any concerns (partial extraction, unusual requirements, etc.) or empty
+
+Write in batches. Do not create pages for listings that already exist in the DB (dedup from Step 1).
+
+### Step 6 — Write structured scan digest
+
+Create the output directory: `mkdir -p ~/.grove/scout-jobsearch`
+
+Write the full scan digest as JSON to `~/.grove/scout-jobsearch/scan-YYYY-MM-DD.json` using the expanded path `/home/hermes/.grove/scout-jobsearch/scan-YYYY-MM-DD.json`:
+
+```json
+{
+  "generated_at": "ISO-8601 timestamp",
+  "dock_goal_refs": ["career-transition"],
+  "searches_executed": [
+    {"persona": "enterprise-ai-leader", "query": "AI architect", "results_found": 0, "results_extracted": 0}
+  ],
+  "saved_jobs_checked": true,
+  "listings": [
+    {
+      "url": "https://linkedin.com/jobs/view/...",
+      "title": "VP Product",
+      "company": "Acme Corp",
+      "location": "Remote",
+      "persona": "product-strategy-exec",
+      "fit_score": 82,
+      "tier": "A",
+      "rationale": "Direct title match, remote, AI-adjacent SaaS company",
+      "comp": "$220K-$280K",
+      "flags": [],
+      "source": "search",
+      "written_to_notion": true
+    }
+  ],
+  "summary": {
+    "total_searches": 0,
+    "total_listings_found": 0,
+    "total_extracted": 0,
+    "total_scored": 0,
+    "total_written_to_notion": 0,
+    "by_tier": {"A": 0, "B": 0, "C": 0, "D": 0},
+    "by_persona": {},
+    "skipped_dedup": 0,
+    "skipped_partial": 0
+  }
+}
+```
+
+(`comp` is `null` when compensation is not visible; `source` is `"search"` or `"saved"`.)
+
+### Step 7 — Trigger cellar ingest
+
+Scout-jobsearch is a Green-zone capability: its output flows to the living cellar automatically. After the digest is written, POST its path to the local ingest endpoint:
+
+```bash
+curl -s -X POST http://127.0.0.1:8642/api/substrate/ingest -H 'Content-Type: application/json' -d '{"path": "/home/hermes/.grove/scout-jobsearch/scan-YYYY-MM-DD.json"}'
+```
+
+Idempotent — re-posting an unchanged file is a no-op.
+
+### Step 8 — Surface to operator
+
+Present:
+- Total listings scanned, scored, written to Notion
+- Top 5 opportunities with Tier, Fit Score, Company, Role, and Rationale inline
+- Any saved jobs that were new (high-signal — operator already flagged them)
+- Portal link: `http://100.102.6.70:8642/portal/fleet/scout-jobsearch/scan-YYYY-MM-DD.json`
+- Any flags (partial extractions, unreadable search pages)
+
+Do NOT paste the full JSON. The operator reads the full output on the portal.
+
+## Composites
+
+- **browser_read_page** — read LinkedIn search results and saved jobs pages (`url` + `strategy: "aria"`)
+- **browser_extract** — extract individual job listings (`url` + `strategy: "job_listing"`)
+- **browser_search** — web search fallback if LinkedIn pages are inaccessible (`query`)
+- **Notion MCP query_data_sources** — dedup query against existing DB entries
+- **Notion MCP create_pages** — write scored entries to Job Opportunities DB
+- **write_file** — structured scan digest to ~/.grove/scout-jobsearch/
+
+## Output location
+
+`~/.grove/scout-jobsearch/scan-YYYY-MM-DD.json`
+
+Expand to full path at write time. NEVER write to the repo working directory. Always `mkdir -p` first.
+
+## Invocation
+
+The operator says: "Scan LinkedIn for jobs", "Run the job search", "Find new opportunities", "What's new on LinkedIn jobs?"
