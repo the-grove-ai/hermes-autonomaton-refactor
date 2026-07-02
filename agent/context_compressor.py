@@ -312,10 +312,6 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         question = args.get("question", "")[:50]
         return f"[vision_analyze] '{question}' ({content_len:,} chars)"
 
-    if tool_name == "memory":
-        action = args.get("action", "?")
-        target = args.get("target", "?")
-        return f"[memory] {action} on {target}"
 
     if tool_name == "todo":
         return "[todo] updated task list"

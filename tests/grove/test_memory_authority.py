@@ -60,144 +60,19 @@ class TestMemoryOwnership:
 # ── Pre-construction read (THE Sprint 35 precondition) ─────────────────
 
 
-class TestHydrateMemoryContextPreConstruction:
-    def test_hydrate_memory_context_returns_three_blocks(
-        self, mock_memory_store, mock_memory_manager, mock_runtime_ctx
-    ):
-        # Configure the store + manager to return distinct prompt
-        # blocks; assert hydrate_memory_context() returns them keyed
-        # correctly, WITHOUT an Agent existing.
-        def _store_block(target: str) -> str:
-            return f"<<{target.upper()}>>"
-        mock_memory_store.format_for_system_prompt.side_effect = _store_block
-        mock_memory_manager.build_system_prompt.return_value = "<<EXTERNAL>>"
-        d = Dispatcher(
-            runtime_ctx=mock_runtime_ctx,
-            memory_store=mock_memory_store,
-            memory_manager=mock_memory_manager,
-        )
-        # Flip on the read flags (open_memory would set these from
-        # config; we set them directly for the isolation test).
-        d._memory_enabled = True
-        d._user_profile_enabled = True
-
-        assert d.agent is None  # THE Sprint 35 precondition under test
-        ctx = d.hydrate_memory_context()
-        assert ctx == {
-            "memory": "<<MEMORY>>",
-            "user": "<<USER>>",
-            "external": "<<EXTERNAL>>",
-        }
-
-    def test_hydrate_memory_context_handles_missing_store(
-        self, mock_memory_manager, mock_runtime_ctx
-    ):
-        mock_memory_manager.build_system_prompt.return_value = "ext"
-        d = Dispatcher(
-            runtime_ctx=mock_runtime_ctx,
-            memory_manager=mock_memory_manager,
-        )
-        ctx = d.hydrate_memory_context()
-        assert ctx == {"memory": "", "user": "", "external": "ext"}
-
-    def test_hydrate_memory_context_handles_missing_manager(
-        self, mock_memory_store, mock_runtime_ctx
-    ):
-        mock_memory_store.format_for_system_prompt.side_effect = (
-            lambda target: "mem" if target == "memory" else ""
-        )
-        d = Dispatcher(
-            runtime_ctx=mock_runtime_ctx,
-            memory_store=mock_memory_store,
-        )
-        d._memory_enabled = True
-        ctx = d.hydrate_memory_context()
-        assert ctx == {"memory": "mem", "user": "", "external": ""}
-
-    def test_hydrate_memory_context_empty_when_no_handles(self, mock_runtime_ctx):
-        d = Dispatcher(runtime_ctx=mock_runtime_ctx)
-        assert d.hydrate_memory_context() == {
-            "memory": "", "user": "", "external": "",
-        }
+# hydrate_memory_context() removed by legacy-memory-tool-retirement-v1
+# (no production caller; the classifier no longer reads a legacy memory block).
+# The external-manager hydration it also did is exercised via the composer's
+# _external_memory_provider, not this deleted pre-Agent path.
 
 
 # ── MemoryWriteIntent round-trip ───────────────────────────────────────
 
 
 class TestMemoryWriteIntentRoundTrip:
-    def test_builtin_memory_yield_returns_write_result(
-        self, dispatcher_with_memory, mock_memory_store, mock_memory_manager,
-        monkeypatch,
-    ):
-        # Stub the standalone memory_tool function so the Dispatcher's
-        # execute_memory_write calls it and we can assert the wiring.
-        captured: dict = {}
-
-        def fake_memory_tool(*, action, target, content, old_text, store):
-            captured["action"] = action
-            captured["target"] = target
-            captured["content"] = content
-            captured["store"] = store
-            return "ok-builtin"
-        monkeypatch.setattr(
-            "tools.memory_tool.memory_tool", fake_memory_tool,
-        )
-
-        d = dispatcher_with_memory
-        observed: dict = {}
-
-        def gen():
-            result = yield MemoryWriteIntent(
-                kind="builtin_memory",
-                action="add",
-                target="memory",
-                content="some fact",
-                metadata={"task_id": "t1"},
-            )
-            observed["result"] = result
-            yield FinalResponse(content="done")
-
-        agent = MagicMock()
-        ledger = MagicMock()
-        d._drive_generator(agent, gen(), ledger)
-
-        # The memory_tool was called with the intent's fields.
-        assert captured == {
-            "action": "add",
-            "target": "memory",
-            "content": "some fact",
-            "store": mock_memory_store,
-        }
-        # The Dispatcher injected a MemoryWriteResult back into the
-        # generator (Sprint 26 bidirectional protocol applied to memory).
-        assert isinstance(observed["result"], MemoryWriteResult)
-        assert observed["result"].success is True
-        assert observed["result"].value == "ok-builtin"
-        # The bridge fired: external provider sees the write.
-        mock_memory_manager.on_memory_write.assert_called_once_with(
-            "add", "memory", "some fact", metadata={"task_id": "t1"},
-        )
-
-    def test_builtin_memory_bridge_skipped_when_action_not_add_or_replace(
-        self, dispatcher_with_memory, mock_memory_manager, monkeypatch,
-    ):
-        monkeypatch.setattr(
-            "tools.memory_tool.memory_tool",
-            lambda **_: "show-result",
-        )
-        d = dispatcher_with_memory
-
-        def gen():
-            yield MemoryWriteIntent(
-                kind="builtin_memory",
-                action="show",  # not add/replace
-                target="memory",
-            )
-            yield FinalResponse(content="done")
-
-        d._drive_generator(MagicMock(), gen(), MagicMock())
-        # No bridge notification when action isn't add/replace.
-        mock_memory_manager.on_memory_write.assert_not_called()
+    # builtin_memory round-trip tests removed by legacy-memory-tool-retirement-v1
+    # (the legacy `memory` tool + its on_memory_write bridge are gone). Only the
+    # provider_tool path remains below.
 
     def test_provider_tool_routes_to_manager_handle_tool_call(
         self, dispatcher_with_memory, mock_memory_manager,
@@ -223,26 +98,6 @@ class TestMemoryWriteIntentRoundTrip:
         )
         assert observed["result"].success is True
         assert observed["result"].value == "provider-said-ok"
-
-    def test_builtin_memory_returns_failure_when_store_absent(
-        self, mock_runtime_ctx, mock_memory_manager,
-    ):
-        d = Dispatcher(
-            runtime_ctx=mock_runtime_ctx,
-            memory_manager=mock_memory_manager,
-        )
-        observed: dict = {}
-
-        def gen():
-            observed["result"] = yield MemoryWriteIntent(
-                kind="builtin_memory", action="add",
-                target="memory", content="x",
-            )
-            yield FinalResponse(content="done")
-
-        d._drive_generator(MagicMock(), gen(), MagicMock())
-        assert observed["result"].success is False
-        assert "store" in (observed["result"].error or "")
 
     def test_unknown_kind_returns_failure_result(
         self, dispatcher_with_memory,
@@ -379,26 +234,8 @@ class TestOpenMemoryFromConfig:
         assert d._memory_enabled is False
         assert d._user_profile_enabled is False
 
-    def test_open_memory_builds_store_when_memory_enabled(
-        self, mock_runtime_ctx, monkeypatch,
-    ):
-        built: dict = {}
-
-        class FakeStore:
-            def __init__(self, **kw):
-                built.update(kw)
-            def load_from_disk(self):
-                built["loaded"] = True
-
-        monkeypatch.setattr("tools.memory_tool.MemoryStore", FakeStore)
-        d = Dispatcher(runtime_ctx=mock_runtime_ctx)
-        d.open_memory(memory_config={
-            "memory_enabled": True,
-            "memory_char_limit": 999,
-            "user_char_limit": 100,
-        })
-        assert isinstance(d.memory_store, FakeStore)
-        assert built["memory_char_limit"] == 999
-        assert built["user_char_limit"] == 100
-        assert built["loaded"] is True
-        assert d._memory_enabled is True
+    # test_open_memory_builds_store_when_memory_enabled removed by
+    # legacy-memory-tool-retirement-v1 — open_memory no longer builds a legacy
+    # MemoryStore (self.memory_store stays None); it builds only the external
+    # MemoryManager, covered by test_open_memory_skips_when_neither_enabled and
+    # the TestMemoryLifecycleIntent suite.

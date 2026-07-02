@@ -5,6 +5,8 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tools.registry import (
     ToolRegistry,
     _module_exposes_register,
@@ -618,3 +620,39 @@ class TestThreadSafety:
         toolsets = result_holder["value"]
         assert "gated" in toolsets
         assert toolsets["gated"]["available"] is True
+
+
+class TestLegacyMemoryInvariantGuard:
+    """legacy-memory-tool-retirement-v1 — the builtin surface must never carry a
+    `memory`/`remember` tool again; register_builtin_tools fails loud if it does."""
+
+    def test_real_registry_has_no_legacy_memory_tool(self):
+        reg = ToolRegistry()
+        register_builtin_tools(reg)
+        assert reg.get_entry("memory") is None
+        assert reg.get_entry("remember") is None
+
+    def test_guard_fails_loud_on_reintroduced_memory(self, tmp_path):
+        reg = ToolRegistry()
+        # Simulate a resurrected legacy `memory` tool on the surface.
+        reg.register(
+            name="memory",
+            toolset="memory",
+            schema=_make_schema("memory"),
+            handler=_dummy_handler,
+        )
+        # Empty tools_dir → discovery adds nothing, but the guard still inspects
+        # the registry and must refuse to start.
+        with pytest.raises(RuntimeError, match="invariant violated"):
+            register_builtin_tools(reg, tools_dir=tmp_path)
+
+    def test_guard_also_blocks_remember(self, tmp_path):
+        reg = ToolRegistry()
+        reg.register(
+            name="remember",
+            toolset="memory",
+            schema=_make_schema("remember"),
+            handler=_dummy_handler,
+        )
+        with pytest.raises(RuntimeError, match="invariant violated"):
+            register_builtin_tools(reg, tools_dir=tmp_path)

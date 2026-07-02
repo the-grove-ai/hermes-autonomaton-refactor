@@ -692,8 +692,9 @@ def mock_memory_store():
     refinement.
     """
     from unittest.mock import MagicMock
-    from tools.memory_tool import MemoryStore
-    store = MagicMock(spec=MemoryStore)
+    # legacy-memory-tool-retirement-v1: tools.memory_tool.MemoryStore is retired;
+    # a plain duck-typed mock preserves the surface these tests inspect.
+    store = MagicMock()
     store.format_for_system_prompt.return_value = ""
     return store
 

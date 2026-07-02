@@ -292,20 +292,6 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         query = _oneline(args.get("query", ""))
         return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
 
-    if tool_name == "memory":
-        action = args.get("action", "")
-        target = args.get("target", "")
-        if action == "add":
-            content = _oneline(args.get("content", ""))
-            return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
-        elif action == "replace":
-            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
-            return f"~{target}: \"{old[:20]}\""
-        elif action == "remove":
-            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
-            return f"-{target}: \"{old[:20]}\""
-        return action
-
     if tool_name == "send_message":
         target = args.get("target", "?")
         msg = _oneline(args.get("message", ""))
@@ -951,14 +937,6 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 return True, f"{badge} {diag}" if diag else badge
         return False, ""
 
-    # Memory-specific: distinguish "full" from real errors
-    if tool_name == "memory":
-        data = safe_json_loads(result)
-        if isinstance(data, dict):
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
-                diag = _extract_tool_error_diagnostic(result)
-                return True, f" [full] {diag}" if diag else " [full]"
-
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
     # treat them as successes since failures would be JSON-encoded strings.
@@ -1075,29 +1053,6 @@ def get_cute_tool_message(
             return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
     if tool_name == "session_search":
         return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
-    if tool_name == "memory":
-        action = args.get("action")
-        # Sprint 32.x bugfix — when the renderer is called without an
-        # ``action`` key in ``args`` (callers that lost the args dict
-        # on the way to the renderer; the executor-callback path that
-        # used to pass ``{}``), emit an empty line rather than the
-        # misleading literal "?" placeholder. The empty return surfaces
-        # the omission to the caller; the operator never sees a stale
-        # preview that contradicts the actual tool result.
-        if not action:
-            return ""
-        target = args.get("target", "")
-        if action == "add":
-            return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
-        elif action == "replace":
-            old = args.get("old_text") or ""
-            old = old if old else "<missing old_text>"
-            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
-        elif action == "remove":
-            old = args.get("old_text") or ""
-            old = old if old else "<missing old_text>"
-            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
-        return _wrap(f"┊ 🧠 memory    {action}  {dur}")
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":

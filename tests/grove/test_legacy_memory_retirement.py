@@ -23,11 +23,7 @@ from grove.identity import _IDENTITY_FILES, _resolve_raw, load_identity
 from grove.memory.events import MemoryCreated
 from grove.memory.provider import _DEFAULT_TOKEN_BUDGET, create_memory_provider
 from grove.memory.store import MemoryStore
-from grove.prompt.composer import (
-    PromptComposer,
-    _memory_provider,
-    _user_profile_provider,
-)
+from grove.prompt.composer import PromptComposer, _DEFAULT_SECTIONS
 
 _REPO = Path(__file__).resolve().parents[2]
 _TS = "2026-06-01T00:00:00+00:00"
@@ -47,13 +43,14 @@ def test_config_defaults_legacy_memory_off():
 # ── M2: prompt.config.yaml section gating ────────────────────────────────
 
 
-def test_prompt_config_disables_legacy_sections():
+def test_prompt_config_removes_legacy_sections():
+    # legacy-memory-tool-retirement-v1: the memory + user_profile sections are
+    # fully REMOVED (not merely disabled).
     cfg = yaml.safe_load((_REPO / "config" / "prompt.config.yaml").read_text())
     sections = cfg["prompt"]["sections"]
-    assert sections["memory"]["enabled"] is False
-    assert sections["user_profile"]["enabled"] is False
-    # The Grove substrate section is NOT disabled here (it has no entry, so it
-    # rides the in-code default) — guard against an accidental future gate.
+    assert "memory" not in sections
+    assert "user_profile" not in sections
+    # The Grove substrate section rides the in-code default (no gating entry).
     assert "accumulated_domain_memory" not in sections or \
         sections["accumulated_domain_memory"].get("enabled", True) is not False
 
@@ -86,32 +83,16 @@ def test_provider_default_budget_caps_at_1000(tmp_path):
 # ── Legacy sections suppressed when toggles off ──────────────────────────
 
 
-class _FakeLegacyStore:
-    """Minimal stand-in for tools.memory_tool.MemoryStore — only the system
-    prompt surface the composer providers touch."""
-
-    def format_for_system_prompt(self, target: str):
-        return f"LEGACY-{target.upper()}-CONTENT"
-
-
-def test_legacy_memory_section_none_when_toggle_off():
-    ctx = {"memory_store": _FakeLegacyStore(), "memory_enabled": False}
-    assert _memory_provider(ctx) is None
-
-
-def test_legacy_user_profile_section_none_when_toggle_off():
-    ctx = {"memory_store": _FakeLegacyStore(), "user_profile_enabled": False}
-    assert _user_profile_provider(ctx) is None
-
-
-def test_legacy_sections_gate_is_the_toggle():
-    # Sanity: the ONLY thing suppressing them is the toggle — flip it on and
-    # the (legacy) content returns. Proves the retirement is the toggle, and
-    # that nothing else is accidentally masking a still-live legacy surface.
-    store = _FakeLegacyStore()
-    assert _memory_provider({"memory_store": store, "memory_enabled": True}) is not None
-    assert _user_profile_provider(
-        {"memory_store": store, "user_profile_enabled": True}) is not None
+def test_legacy_providers_fully_removed():
+    # legacy-memory-tool-retirement-v1: the _memory_provider / _user_profile_provider
+    # functions are DELETED (not merely toggled off), and no default section
+    # references them.
+    import grove.prompt.composer as composer_mod
+    assert not hasattr(composer_mod, "_memory_provider")
+    assert not hasattr(composer_mod, "_user_profile_provider")
+    section_names = [name for name, *_ in _DEFAULT_SECTIONS]
+    assert "memory" not in section_names
+    assert "user_profile" not in section_names
 
 
 # ── Full composer integration: legacy off, Grove on ──────────────────────
@@ -128,13 +109,10 @@ def _grove_store(tmp_path):
     return store
 
 
-def test_composer_suppresses_legacy_keeps_grove(tmp_path):
-    """End-to-end: with toggles off, neither legacy section composes, while the
-    Grove accumulated_domain_memory section DOES — at context:15, 1000 cap."""
+def test_composer_keeps_grove_no_legacy(tmp_path):
+    """End-to-end: no legacy section composes (they are removed), while the Grove
+    accumulated_domain_memory section DOES — at context:15, 1000 cap."""
     composer = PromptComposer(config=None)
-    composer.register_section("memory", _memory_provider, order=10, tier="volatile")
-    composer.register_section(
-        "user_profile", _user_profile_provider, order=20, tier="volatile")
     composer.register_section(
         "accumulated_domain_memory",
         create_memory_provider(store=_grove_store(tmp_path), dock_goals_loader=lambda: []),
@@ -142,16 +120,12 @@ def test_composer_suppresses_legacy_keeps_grove(tmp_path):
     )
 
     composed = composer.compose(
-        memory_store=_FakeLegacyStore(),
-        memory_enabled=False,
-        user_profile_enabled=False,
         session_id="s",
         intent_class="conversation",
     )
 
     assert "memory" not in composed.sections          # legacy MEMORY.md gone
     assert "user_profile" not in composed.sections    # legacy USER.md gone
-    assert "LEGACY-" not in composed.text             # no legacy content at all
     assert "accumulated_domain_memory" in composed.sections   # Grove composes
     assert "Grove substrate fact." in composed.text
 
@@ -189,10 +163,9 @@ def test_resolve_raw_no_longer_reads_legacy_memory(tmp_path, monkeypatch):
     mem_dir = home / "memories"
     mem_dir.mkdir()
     (mem_dir / "MEMORY.md").write_text("LEGACY-IDENTITY-SENTINEL", encoding="utf-8")
-    # Point the (now-removed) legacy path resolver's source at our tmp, to prove
-    # it is never consulted.
-    import tools.memory_tool as mt
-    monkeypatch.setattr(mt, "get_memory_dir", lambda: mem_dir)
+    # tools.memory_tool.get_memory_dir is fully removed (legacy-memory-tool-
+    # retirement-v1); the legacy memories/MEMORY.md on disk must simply never be
+    # consulted by the resolver.
 
     result = _resolve_raw(home, "memory.md", "MEMORY.md", None, tmp_path / "ref")
     assert result is None
