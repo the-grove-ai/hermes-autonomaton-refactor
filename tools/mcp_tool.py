@@ -2531,6 +2531,47 @@ def _interpolate_env_vars(value):
     return value
 
 
+class McpServerKeyCollision(ValueError):
+    """Two configured mcp_servers derive the same admission key (their sanitized
+    names collide before the first underscore), so one server's tools would
+    silently admit/attribute under the other's id. Fail loud — never swallow.
+    Interim guard from mcp-server-id-roundtrip-v1."""
+
+
+def _derived_admission_key(server_name: str) -> Optional[str]:
+    """The MCP server id the LIVE admission path derives for a configured server.
+
+    Computed by the SAME functions admission uses — ``sanitize_mcp_name_component``
+    (as ``_convert_mcp_schema`` builds the registered tool name) then
+    ``_mcp_server_of`` (as ``_partition_tools`` / ``_compute_mcp_allow`` key on
+    it) — so the guard cannot drift from real admission. Returns None if the name
+    yields no derivable key.
+    """
+    from grove.context_budget import _mcp_server_of
+    safe = sanitize_mcp_name_component(server_name)
+    # A representative registered tool name, exactly as _convert_mcp_schema forms
+    # it: mcp_<sanitized-server>_<tool>. _mcp_server_of extracts the server id.
+    return _mcp_server_of(f"mcp_{safe}_probe")
+
+
+def _assert_no_derived_key_collision(servers: Dict[str, dict]) -> None:
+    """Fail loud if two configured mcp_servers derive the same admission key."""
+    seen: Dict[str, str] = {}
+    for name in servers:
+        key = _derived_admission_key(name)
+        if key is None:
+            continue
+        if key in seen:
+            raise McpServerKeyCollision(
+                f"mcp_servers config collision: '{name}' and '{seen[key]}' both "
+                f"derive admission key '{key}'. Their sanitized names are identical "
+                f"before the first underscore, so admission (_mcp_server_of) and "
+                f"telemetry attribution cannot tell them apart. Rename one server "
+                f"(see mcp-server-id-roundtrip-v1)."
+            )
+        seen[key] = name
+
+
 def _load_mcp_config() -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
@@ -2548,6 +2589,10 @@ def _load_mcp_config() -> Dict[str, dict]:
         servers = config.get("mcp_servers")
         if not servers or not isinstance(servers, dict):
             return {}
+        # Fail loud on a derived-admission-key collision (mcp-server-id-roundtrip-v1
+        # interim guard). Re-raised past the broad except below — a config
+        # collision must never silently degrade to an empty server set.
+        _assert_no_derived_key_collision(servers)
         # Ensure .env vars are available for interpolation
         try:
             from hermes_cli.env_loader import load_hermes_dotenv
@@ -2555,6 +2600,8 @@ def _load_mcp_config() -> Dict[str, dict]:
         except Exception:
             pass
         return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
+    except McpServerKeyCollision:
+        raise  # config collision is fail-loud — never swallowed
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}
