@@ -117,10 +117,9 @@ class RuntimeContext:
     #: quiet_mode) matches; the Dispatcher's cache keys by that tuple.
     tools: Optional[List[Dict[str, Any]]] = None
 
-    #: Pre-loaded memory store. Cost when rebuilt: 10-50ms (disk read of
-    #: ``~/.grove/MEMORY.md`` + USER.md). Type is Any to avoid importing
-    #: ``tools.memory_tool.MemoryStore`` here (the tools package depends
-    #: on grove modules transitively in some paths).
+    #: Reserved, always None. The legacy operator-memory store (MEMORY.md/
+    #: USER.md) was retired by legacy-memory-tool-retirement-v1; this generic
+    #: Optional[Any] pass-through is kept for RuntimeContext contract stability.
     memory_store: Optional[Any] = None
 
     #: Per-model context-length cache keyed by model name (e.g.
@@ -594,7 +593,6 @@ class Dispatcher:
         # tool-admission-unification: platform drives admission via
         # grove.tool_admission.get_admitted_tools() in get_authorized_tools().
         self._platform: str = platform
-        self._memory_store_cache: Optional[Any] = None
         self._anthropic_client_cache: Dict[tuple, Any] = {}
         self._context_length_cache: Dict[str, int] = {}
         self._compression_probe_cache: Optional[CompressionProbe] = None
@@ -802,9 +800,7 @@ class Dispatcher:
         # explicitly.
         if agent_kwargs is not None:
             _skip_memory = bool(agent_kwargs.get("skip_memory", False))
-            if not _skip_memory and (
-                self.memory_store is None or self.memory_manager is None
-            ):
+            if not _skip_memory and self.memory_manager is None:
                 self.open_memory(
                     platform=agent_kwargs.get("platform"),
                     provider_init_kwargs=self._collect_provider_init_kwargs(
@@ -1102,9 +1098,10 @@ class Dispatcher:
                 enabled_toolsets, disabled_toolsets, quiet_mode,
             )
 
+        # Legacy operator-memory store retired (legacy-memory-tool-retirement-v1).
+        # RuntimeContext.memory_store is now always None (vestigial field); the
+        # Grove substrate's accumulated_domain_memory is the memory voice.
         memory_store = None
-        if not skip_memory:
-            memory_store = self._get_or_build_memory_store()
 
         anthropic_client = None
         context_length_by_model: Dict[str, int] = dict(self._context_length_cache)
@@ -1247,49 +1244,6 @@ class Dispatcher:
 
         self._tools_cache[key] = result
         return result
-
-    def _get_or_build_memory_store(self) -> Optional[Any]:
-        """Build (or return cached) memory store with disk content pre-loaded.
-
-        Single session-scoped singleton — memory is operator-owned, not
-        per-turn. Saves the 10-50ms load_from_disk cost on per-turn
-        ephemeral Agent construction.
-
-        Reads memory configuration from the snapshot's ``config`` dict.
-        Returns ``None`` when memory is disabled in config or when
-        construction fails (graceful — the Agent's existing fallback
-        path handles a missing memory store cleanly).
-        """
-        if self._memory_store_cache is not None:
-            return self._memory_store_cache
-        mem_cfg = (self._base_runtime_ctx.config or {}).get("memory") or {}
-        if not isinstance(mem_cfg, dict):
-            return None
-        if not (mem_cfg.get("memory_enabled") or mem_cfg.get("user_profile_enabled")):
-            return None
-        try:
-            from tools.memory_tool import MemoryStore
-        except ImportError as exc:
-            logger.warning(
-                "[grove.dispatcher] memory_tool unavailable (%r); skipping cache",
-                exc,
-            )
-            return None
-        try:
-            store = MemoryStore(
-                memory_char_limit=mem_cfg.get("memory_char_limit", 2200),
-                user_char_limit=mem_cfg.get("user_char_limit", 1375),
-            )
-            store.load_from_disk()
-        except Exception as exc:
-            logger.warning(
-                "[grove.dispatcher] memory store construction failed (%r); "
-                "Agent will fall back to its own construction path",
-                exc,
-            )
-            return None
-        self._memory_store_cache = store
-        return store
 
     def _get_or_build_anthropic_client(
         self,
@@ -3769,13 +3723,11 @@ class Dispatcher:
 
         After this returns:
 
-        * ``self.memory_store`` is a ``MemoryStore`` (or stays ``None``
-          when neither MEMORY.md nor USER.md is enabled in config).
+        * ``self.memory_store`` is retired (always ``None``) —
+          legacy-memory-tool-retirement-v1.
         * ``self.memory_manager`` is a ``MemoryManager`` with its
           providers added and initialized (or stays ``None`` when
           config has no ``memory.provider`` set).
-        * Sprint 35 can call ``hydrate_memory_context()`` to read the
-          three system-prompt blocks the classifier needs.
         """
         if memory_config is None:
             cfg = self._base_runtime_ctx.config or {}
@@ -3784,27 +3736,10 @@ class Dispatcher:
         self._memory_enabled = bool(memory_config.get("memory_enabled", False))
         self._user_profile_enabled = bool(memory_config.get("user_profile_enabled", False))
 
-        # MemoryStore — built only when at least one of the two operator-
-        # memory surfaces (MEMORY.md or USER.md) is enabled. Honors the
-        # Sprint 26 Phase 1b cache on runtime_ctx.
-        if self.memory_store is None and (self._memory_enabled or self._user_profile_enabled):
-            cached = getattr(self._base_runtime_ctx, "memory_store", None)
-            if cached is not None:
-                self.memory_store = cached
-            else:
-                try:
-                    from tools.memory_tool import MemoryStore
-                    self.memory_store = MemoryStore(
-                        memory_char_limit=memory_config.get("memory_char_limit", 2200),
-                        user_char_limit=memory_config.get("user_char_limit", 1375),
-                    )
-                    self.memory_store.load_from_disk()
-                except Exception as exc:
-                    logger.debug(
-                        "Dispatcher.open_memory: MemoryStore build failed: %s",
-                        exc,
-                    )
-                    self.memory_store = None
+        # Legacy operator-memory MemoryStore (MEMORY.md/USER.md) retired by
+        # legacy-memory-tool-retirement-v1 — self.memory_store stays None; the
+        # Grove substrate is the memory voice. The external MemoryManager below
+        # is unaffected.
 
         # MemoryManager — built only when an external provider is
         # configured. Same flow the Agent used pre-Sprint-40.
@@ -3849,41 +3784,6 @@ class Dispatcher:
                         exc,
                     )
                     self.memory_manager = None
-
-    def hydrate_memory_context(self) -> Dict[str, str]:
-        """Return the three memory system-prompt blocks — pre-Agent.
-
-        Sprint 35 calls this before constructing the Agent so the
-        classifier can see operator memory + user profile + external
-        provider context. Missing blocks default to empty strings.
-        """
-        result = {"memory": "", "user": "", "external": ""}
-        if self.memory_store is not None:
-            try:
-                if self._memory_enabled:
-                    block = self.memory_store.format_for_system_prompt("memory")
-                    if block:
-                        result["memory"] = block
-                if self._user_profile_enabled:
-                    block = self.memory_store.format_for_system_prompt("user")
-                    if block:
-                        result["user"] = block
-            except Exception as exc:
-                logger.debug(
-                    "Dispatcher.hydrate_memory_context: store read failed: %s",
-                    exc,
-                )
-        if self.memory_manager is not None:
-            try:
-                ext = self.memory_manager.build_system_prompt()
-                if ext:
-                    result["external"] = ext
-            except Exception as exc:
-                logger.debug(
-                    "Dispatcher.hydrate_memory_context: manager read failed: %s",
-                    exc,
-                )
-        return result
 
     def _inject_memory_tool_schemas(self) -> None:
         """Inject memory-provider tool schemas into ``self.agent.tools``.
@@ -4160,14 +4060,10 @@ class Dispatcher:
     def execute_memory_write(self, intent: "MemoryWriteIntent") -> "MemoryWriteResult":
         """Handle a ``MemoryWriteIntent`` — synchronous return.
 
-        Routes by ``intent.kind``:
+        Routes by ``intent.kind``. The ``"builtin_memory"`` kind (the legacy
+        file-store ``memory`` tool + its on_memory_write bridge) was retired by
+        legacy-memory-tool-retirement-v1; only ``"provider_tool"`` remains:
 
-        * ``"builtin_memory"`` — executes the built-in ``memory`` tool
-          against ``self.memory_store`` (``add`` or ``replace``), then
-          fires the bridge notification to
-          ``self.memory_manager.on_memory_write(...)`` so external
-          providers stay in sync. Sprint 40 owns the bridge — Phase 2
-          deletes the Agent-side call.
         * ``"provider_tool"`` — delegates to
           ``self.memory_manager.handle_tool_call(...)``.
 
@@ -4176,40 +4072,9 @@ class Dispatcher:
         tool's LLM-visible result string.
         """
         from grove.intents import MemoryWriteResult
-        if intent.kind == "builtin_memory":
-            if self.memory_store is None:
-                return MemoryWriteResult(
-                    success=False, value="",
-                    error="memory store not available",
-                )
-            try:
-                from tools.memory_tool import memory_tool as _memory_tool
-                value = _memory_tool(
-                    action=intent.action,
-                    target=intent.target or "memory",
-                    content=intent.content,
-                    old_text=intent.old_text,
-                    store=self.memory_store,
-                )
-            except Exception as exc:
-                return MemoryWriteResult(
-                    success=False, value="", error=str(exc),
-                )
-            # Bridge: notify external memory provider of built-in writes.
-            if (
-                self.memory_manager is not None
-                and intent.action in {"add", "replace"}
-            ):
-                try:
-                    self.memory_manager.on_memory_write(
-                        intent.action or "",
-                        intent.target or "memory",
-                        intent.content or "",
-                        metadata=dict(intent.metadata),
-                    )
-                except Exception:
-                    pass
-            return MemoryWriteResult(success=True, value=str(value))
+        # builtin_memory branch retired by legacy-memory-tool-retirement-v1
+        # (the legacy file-store `memory` tool is gone; its on_memory_write
+        # bridge went with it). The provider_tool branch is preserved.
         if intent.kind == "provider_tool":
             if self.memory_manager is None:
                 return MemoryWriteResult(

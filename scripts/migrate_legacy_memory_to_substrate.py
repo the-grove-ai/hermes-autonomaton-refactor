@@ -125,16 +125,19 @@ def _override(entry: str) -> Optional[Dict[str, str]]:
 
 def _legacy_entries() -> List[Tuple[str, str]]:
     """Return (source_label, entry_text) for every legacy MEMORY.md + USER.md entry."""
-    from tools.memory_tool import get_memory_dir, ENTRY_DELIMITER
+    # Self-contained (legacy-memory-tool-retirement-v1 Phase 2 Step 0): no
+    # dependency on the doomed tools.memory_tool module.
+    from hermes_constants import get_hermes_home
 
-    mem_dir = get_memory_dir()
+    _ENTRY_DELIMITER = "\n§\n"  # the legacy MEMORY.md/USER.md entry delimiter
+    mem_dir = get_hermes_home() / "memories"
     out: List[Tuple[str, str]] = []
     for fname, label in (("MEMORY.md", "MEMORY.md"), ("USER.md", "USER.md")):
         path = mem_dir / fname
         if not path.exists():
             continue
         raw = path.read_text(encoding="utf-8")
-        for chunk in raw.split(ENTRY_DELIMITER):
+        for chunk in raw.split(_ENTRY_DELIMITER):
             entry = chunk.strip()
             if entry:
                 out.append((label, entry))

@@ -854,26 +854,6 @@ def _context_files_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     return SectionResult(label="context_files", text=text)
 
 
-def _memory_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
-    store = ctx.get("memory_store")
-    if store is None or not ctx.get("memory_enabled"):
-        return None
-    text = store.format_for_system_prompt("memory")
-    if not text:
-        return None
-    return SectionResult(label="memory", text=text)
-
-
-def _user_profile_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
-    store = ctx.get("memory_store")
-    if store is None or not ctx.get("user_profile_enabled"):
-        return None
-    text = store.format_for_system_prompt("user")
-    if not text:
-        return None
-    return SectionResult(label="user_profile", text=text)
-
-
 def _external_memory_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     manager = ctx.get("memory_manager")
     if manager is None:
@@ -885,10 +865,10 @@ def _external_memory_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     if not text:
         return None
     # GRV-001 Principle IV: external-provider memory is recalled prose too —
-    # fence it as data so it cannot assert authority or change a zone. Same
-    # shared seam as the built-in memory/user-profile blocks. Local import
-    # avoids a tools<->grove.prompt import cycle.
-    from tools.memory_tool import fence_memory_block
+    # fence it as data so it cannot assert authority or change a zone. The fence
+    # lives in grove.memory.fence (relocated from the retired tools.memory_tool
+    # by legacy-memory-tool-retirement-v1).
+    from grove.memory.fence import fence_memory_block
 
     return SectionResult(
         label="external_memory",
@@ -943,8 +923,9 @@ _DEFAULT_SECTIONS: Tuple[Tuple[str, SectionProvider, int, str], ...] = (
     ("system_message",                 _system_message_provider,                 10, "context"),
     ("context_files",                  _context_files_provider,                  20, "context"),
     # volatile
-    ("memory",                         _memory_provider,                         10, "volatile"),
-    ("user_profile",                   _user_profile_provider,                   20, "volatile"),
+    # ("memory") + ("user_profile") retired by legacy-memory-tool-retirement-v1
+    # (the legacy file-store providers; already disabled via config). The Grove
+    # substrate's accumulated_domain_memory is the sole memory voice.
     ("external_memory",                _external_memory_provider,                30, "volatile"),
     ("timestamp",                      _timestamp_provider,                      100, "volatile"),
 )

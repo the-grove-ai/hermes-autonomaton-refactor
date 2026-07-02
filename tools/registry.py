@@ -117,6 +117,19 @@ def register_builtin_tools(reg: "ToolRegistry", tools_dir: Optional[Path] = None
                 "Tool module %s register(reg) raised: %s — skipping",
                 mod_name, exc,
             )
+    # legacy-memory-tool-retirement-v1 — invariant guard (Digital Jidoka).
+    # The legacy hermes file-store `memory` tool is retired; memory flows only
+    # through the Grove Kaizen substrate (accumulated_domain_memory). Refuse to
+    # start if a `memory`/`remember` tool is ever reintroduced onto the builtin
+    # surface (e.g. tools/memory_tool.py restored) — fail loud, not silent drift.
+    for _forbidden in ("memory", "remember"):
+        if reg.get_entry(_forbidden) is not None:
+            raise RuntimeError(
+                f"legacy-memory-tool-retirement-v1 invariant violated: a builtin "
+                f"tool named {_forbidden!r} is registered. The legacy hermes memory "
+                f"tool is retired; memory flows through the Grove substrate only. "
+                f"Remove the reintroduced tool (do not resurrect tools/memory_tool.py)."
+            )
     return registered
 
 
