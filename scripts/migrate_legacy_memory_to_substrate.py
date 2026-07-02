@@ -45,6 +45,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Run-from-anywhere: ensure the repo root (not scripts/) is importable so
+# `grove.*` and `tools.*` resolve when invoked as `python scripts/<this>.py`.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 # Closed substrate entity_type set (grove/memory/record.py DECAY_RATES).
 _ENTITY_TYPES = ("DomainFact", "OperatorPreference", "ProjectState", "ArchitecturalRule")
 _MIGRATION_SESSION_ID = "memory-md-migration"
@@ -58,8 +64,27 @@ Definitions (choose the single best fit):
 - ArchitecturalRule: a rule, constraint, or invariant about the system's architecture. Zero decay.
 - ProjectState: time-bound status of ongoing work (a sprint, a task, a "currently" fact). Decays daily — use ONLY for genuinely transient state.
 
-Bias: when an entry is a fact/preference about the operator, prefer OperatorPreference.
-Return STRICT JSON, no prose: {"entity_type": "<one of the four>", "justification": "<one short clause>"}"""
+Bias: when an entry is a fact/preference about the operator, prefer OperatorPreference. Call the classify_entry tool with your decision."""
+
+_CLASSIFY_TOOL = {
+    "name": "classify_entry",
+    "description": "Record the single best-fit Grove entity_type for the operator-memory entry.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "entity_type": {
+                "type": "string",
+                "enum": list(_ENTITY_TYPES),
+                "description": "The single best-fit type for this entry.",
+            },
+            "justification": {
+                "type": "string",
+                "description": "One short clause explaining the choice.",
+            },
+        },
+        "required": ["entity_type", "justification"],
+    },
+}
 
 
 def _now_iso() -> str:
@@ -85,31 +110,23 @@ def _legacy_entries() -> List[Tuple[str, str]]:
 
 
 def _classify(entry: str) -> Dict[str, str]:
-    """T1-classify one entry. Fail loud on an out-of-set type (caller skips + reports)."""
-    from grove.classify import _telemetry_tier_runtime
-    from agent.anthropic_adapter import build_anthropic_client
+    """T1-classify one entry via the provider-agnostic ``call_t1`` forced-tool path.
 
-    runtime, _tier = _telemetry_tier_runtime()
-    client = build_anthropic_client(
-        api_key=runtime.get("api_key") or "",
-        base_url=runtime.get("base_url") or None,
-    )
-    resp = client.messages.create(
-        model=runtime["model"],
-        max_tokens=200,
-        system=_CLASSIFY_SYSTEM,
-        messages=[{"role": "user", "content": entry}],
-    )
-    text = "".join(getattr(b, "text", "") for b in resp.content).strip()
-    # Tolerate a ```json fence.
-    if text.startswith("```"):
-        text = text.strip("`")
-        text = text[text.find("{"):]
-    parsed = json.loads(text[text.find("{"): text.rfind("}") + 1])
-    etype = parsed.get("entity_type")
+    Uses the T1 tier (operator-directed) through ``grove.t1_call.call_t1``, which
+    branches on the tier's ``api_mode`` — so it works against an OpenRouter/
+    chat_completions provider, unlike a raw ``messages.create``. The tool schema's
+    enum constrains the output to the closed set. Fail loud on an out-of-set or
+    missing result (caller skips + reports).
+    """
+    from grove.t1_call import call_t1
+
+    result = call_t1(prompt=entry, system=_CLASSIFY_SYSTEM, tool=_CLASSIFY_TOOL, max_tokens=200)
+    if not isinstance(result, dict):
+        raise ValueError(f"T1 returned no structured tool call for entry: {entry[:60]!r}")
+    etype = result.get("entity_type")
     if etype not in _ENTITY_TYPES:
         raise ValueError(f"T1 returned out-of-set entity_type {etype!r} for entry: {entry[:60]!r}")
-    return {"entity_type": etype, "justification": str(parsed.get("justification", "")).strip()}
+    return {"entity_type": etype, "justification": str(result.get("justification", "")).strip()}
 
 
 def _staged_record(entry: str, source_label: str, classified: Dict[str, str]) -> Dict[str, Any]:
