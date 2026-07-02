@@ -1,4 +1,4 @@
-id: skill.fleet.scout_jobsearch
+id: skill.fleet.scout-jobsearch
 kind: skill
 trigger:
   intents: [research]
@@ -251,7 +251,7 @@ lineage:
 failure:
   fallback: halt_and_surface
   diagnostic_context:
-  - 'capability: skill.fleet.scout_jobsearch'
+  - 'capability: skill.fleet.scout-jobsearch'
   - 'subsystem: skill registry (kind=skill)'
   - 'check: record loads + zone signed'
   circuit_breaker:
