@@ -30,6 +30,9 @@ TOOL_CLASS_MAP: Dict[str, str] = {
     "write_file": "file_write",
     "patch": "file_write",
     "terminal": "terminal",
+    "mcp_grove_browser_browser_extract": "retrieval",
+    "mcp_grove_browser_browser_search": "retrieval",
+    "mcp_grove_browser_browser_read_page": "retrieval",
 }
 
 
