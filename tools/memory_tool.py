@@ -240,9 +240,14 @@ class MemoryStore:
         return len(ENTRY_DELIMITER.join(entries))
 
     def _char_limit(self, target: str) -> int:
-        if target == "user":
-            return self.user_char_limit
-        return self.memory_char_limit
+        """Char budget for *target*; 0 is the unlimited sentinel.
+
+        A non-positive or unset configured limit (e.g. ``memory_char_limit: 0``
+        in config) normalizes to 0 — the operator's declarative lever for an
+        uncapped store. Callers treat a 0 limit as "no ceiling".
+        """
+        limit = self.user_char_limit if target == "user" else self.memory_char_limit
+        return limit if isinstance(limit, int) and limit > 0 else 0
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -270,7 +275,8 @@ class MemoryStore:
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
-            if new_total > limit:
+            # limit == 0 -> unlimited (operator-configured); skip the ceiling.
+            if limit and new_total > limit:
                 current = self._char_count(target)
                 return {
                     "success": False,
@@ -332,7 +338,8 @@ class MemoryStore:
             test_entries[idx] = new_content
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
-            if new_total > limit:
+            # limit == 0 -> unlimited (operator-configured); skip the ceiling.
+            if limit and new_total > limit:
                 return {
                     "success": False,
                     "error": (
@@ -400,13 +407,17 @@ class MemoryStore:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
-        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+        if limit > 0:
+            pct = min(100, int((current / limit) * 100))
+            usage = f"{pct}% — {current:,}/{limit:,} chars"
+        else:
+            usage = f"{current:,} chars (unlimited)"
 
         resp = {
             "success": True,
             "target": target,
             "entries": entries,
-            "usage": f"{pct}% — {current:,}/{limit:,} chars",
+            "usage": usage,
             "entry_count": len(entries),
         }
         if message:
