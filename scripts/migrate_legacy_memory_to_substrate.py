@@ -100,8 +100,10 @@ _OVERRIDES = [
     ("Rachel Johnson", "OperatorPreference"),
     ("Felipe Zubia", "OperatorPreference"),
     # Time-bound status — MUST decay; pin ProjectState against T1 non-determinism.
+    # "role at Bounteous" (not bare "Bounteous") so it matches the exploration
+    # entry only, not the durable systems-thinking trait that also names Bounteous.
     ("Currently in Indiana", "ProjectState"),
-    ("Bounteous", "ProjectState"),
+    ("role at Bounteous", "ProjectState"),
 ]
 
 # Retry budget for the forced tool call — deepseek-v4-pro on OpenRouter
