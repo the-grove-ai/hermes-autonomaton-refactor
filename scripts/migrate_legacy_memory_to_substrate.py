@@ -87,8 +87,35 @@ _CLASSIFY_TOOL = {
 }
 
 
+# Operator-directed reclassifications (applied instead of T1, deterministically).
+# Matched by a distinctive content substring. Rationale:
+#   - HERMES_HOME infra path is a stable fact — ProjectState decay would erode it.
+#   - People/connections are entities the operator VALUES/follows, not neutral
+#     world-facts; unify them as OperatorPreference for consistent routing.
+_OVERRIDES = [
+    ("HERMES_HOME", "ArchitecturalRule"),
+    ("Cory Doctorow", "OperatorPreference"),
+    ("Roger Miles", "OperatorPreference"),
+    ("Alex Sidorenko", "OperatorPreference"),
+    ("Rachel Johnson", "OperatorPreference"),
+    ("Felipe Zubia", "OperatorPreference"),
+]
+
+# Retry budget for the forced tool call — deepseek-v4-pro on OpenRouter
+# intermittently emits reasoning text instead of honouring tool_choice.
+_CLASSIFY_ATTEMPTS = 3
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _override(entry: str) -> Optional[Dict[str, str]]:
+    """Operator-directed type for *entry*, or None to let T1 classify."""
+    for sub, etype in _OVERRIDES:
+        if sub in entry:
+            return {"entity_type": etype, "justification": "operator-directed reclassification"}
+    return None
 
 
 def _legacy_entries() -> List[Tuple[str, str]]:
@@ -120,13 +147,22 @@ def _classify(entry: str) -> Dict[str, str]:
     """
     from grove.t1_call import call_t1
 
-    result = call_t1(prompt=entry, system=_CLASSIFY_SYSTEM, tool=_CLASSIFY_TOOL, max_tokens=200)
-    if not isinstance(result, dict):
-        raise ValueError(f"T1 returned no structured tool call for entry: {entry[:60]!r}")
-    etype = result.get("entity_type")
-    if etype not in _ENTITY_TYPES:
-        raise ValueError(f"T1 returned out-of-set entity_type {etype!r} for entry: {entry[:60]!r}")
-    return {"entity_type": etype, "justification": str(result.get("justification", "")).strip()}
+    last_exc: Optional[Exception] = None
+    for _attempt in range(_CLASSIFY_ATTEMPTS):
+        try:
+            result = call_t1(prompt=entry, system=_CLASSIFY_SYSTEM, tool=_CLASSIFY_TOOL, max_tokens=200)
+            if not isinstance(result, dict):
+                raise ValueError("no structured tool call returned")
+            etype = result.get("entity_type")
+            if etype not in _ENTITY_TYPES:
+                raise ValueError(f"out-of-set entity_type {etype!r}")
+            return {"entity_type": etype, "justification": str(result.get("justification", "")).strip()}
+        except Exception as exc:  # transient forced-tool miss / malformed — retry
+            last_exc = exc
+    raise ValueError(
+        f"T1 classification failed after {_CLASSIFY_ATTEMPTS} attempts for entry: "
+        f"{entry[:60]!r} -- {last_exc}"
+    )
 
 
 def _staged_record(entry: str, source_label: str, classified: Dict[str, str]) -> Dict[str, Any]:
@@ -195,8 +231,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     skipped: List[Tuple[str, str]] = []
     by_type: Dict[str, int] = {}
     for i, (label, entry) in enumerate(entries, 1):
+        override = _override(entry)
         try:
-            classified = _classify(entry)
+            classified = override or _classify(entry)
         except Exception as exc:  # fail loud per entry; skip, report, keep going
             skipped.append((entry[:70], str(exc)))
             print(f"  [{i:>2}] SKIP  ({label})  {entry[:60]!r}  -- {exc}")
@@ -204,7 +241,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         et = classified["entity_type"]
         by_type[et] = by_type.get(et, 0) + 1
         staged.append(_staged_record(entry, label, classified))
-        print(f"  [{i:>2}] {et:<18} ({label})  {entry[:56]!r}")
+        tag = "  *override" if override else ""
+        print(f"  [{i:>2}] {et:<18} ({label})  {entry[:54]!r}{tag}")
 
     print(f"\nClassified: {len(staged)}   Skipped: {len(skipped)}   By type: {by_type}")
 
