@@ -213,6 +213,26 @@ dl.frontmatter dd { margin: 0.1rem 0 0; }
 }
 .error-card h3 { margin: 0 0 0.4rem; color: var(--error); }
 
+/* ---- Alert banner (portal-action-error-surfacing-v1 P2) -------------- */
+/* Persistent OOB slot between the topbar and the layout. Empty [hidden] takes
+   no space; populated on an action failure WITHOUT touching #center-panel. */
+.alert-banner { margin: 0; }
+.alert-banner[hidden] { display: none; }
+.alert-banner .alert {
+    border-radius: var(--radius);
+    padding: 0.75rem 1.25rem;
+    margin: 0.5rem 1rem 0;
+}
+.alert-banner .alert-error {
+    border: 2px solid var(--error);
+    background: rgba(207, 75, 75, 0.12);
+    color: var(--text);
+}
+.alert-banner .alert-error strong { color: var(--error); }
+.alert-banner .alert-detail {
+    margin: 0.35rem 0 0; color: var(--text-dim); font-size: 0.85rem;
+}
+
 /* ---- Loading indicator ----------------------------------------------- */
 .htmx-indicator { display: none; }
 .htmx-request .htmx-indicator,

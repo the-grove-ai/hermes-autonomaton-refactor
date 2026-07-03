@@ -134,6 +134,32 @@ def _html_fragment(markup: str, status: int = 200) -> web.Response:
     return web.Response(text=markup, status=status, content_type="text/html")
 
 
+def render_alert_banner(
+    message: str, *, status: int | None = None, detail: str | None = None,
+) -> str:
+    """OOB fragment that drives the persistent ``#alert-banner`` slot
+    NON-DESTRUCTIVELY (portal-action-error-surfacing-v1 P2).
+
+    Returns a ``<div id="alert-banner" hx-swap-oob="true">`` replacement carrying
+    one alert. It targets the banner slot ONLY — never ``#center-panel`` — so
+    surfacing an action failure never wipes what the operator is reading. P3's
+    ``_loud_action_failure`` appends this to failure responses; the base
+    template's ``htmx:responseError`` handler lifts its content into the live
+    banner (htmx does not swap 4xx bodies itself). Every interpolated value passes
+    through ``_esc``."""
+    status_txt = f"{_esc(status)}: " if status is not None else ""
+    detail_html = f'<p class="alert-detail">{_esc(detail)}</p>' if detail else ""
+    return (
+        f'<div id="alert-banner" class="alert-banner" role="alert" '
+        f'aria-live="assertive" hx-swap-oob="true">'
+        f'<div class="alert alert-error">'
+        f'<strong>Action failed.</strong> {status_txt}{_esc(message)}'
+        f'{detail_html}'
+        f'</div>'
+        f'</div>'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cellar fragments (Phase 2)
 # ---------------------------------------------------------------------------
