@@ -162,25 +162,48 @@ class TestRenderRegistration:
         # The type-ignorant opt-out the composer branches on.
         assert self._proposal().offers_approve is False
 
-    def test_approve_offered_types_keep_approve(self):
-        # Regression: a normal routing proposal still offers approve — the
-        # dismiss-only branch is scoped to render-only types.
-        from grove.eval.proposal_queue import PROPOSAL_TYPE_ROUTING_ADJUSTMENT
-
-        payload = {"rule": "downward", "add_intents": ["conversation"]}
-        routing = RoutingProposal(
-            proposal_id=compute_proposal_id(
-                type=PROPOSAL_TYPE_ROUTING_ADJUSTMENT, payload=payload, evidence=("t",)
-            ),
-            type=PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
+    # Regression: offers_approve now gates approve visibility for the WHOLE
+    # surface, so handler-backed types must still resolve True AND render the
+    # approve tail — the dismiss-only branch is scoped to render-only types only.
+    @pytest.mark.parametrize(
+        "ptype, payload",
+        [
+            ("routing_adjustment", {"rule": "downward", "add_intents": ["conversation"]}),
+            ("skill_synthesis", {"skill_name": "foo"}),
+            ("zone_promotion", {"tool": "read_file", "pattern": "*.md"}),
+            ("skill_promotion", {"skill_name": "bar"}),
+            ("pattern_promotion", {"intent_class": "x", "cacheable_type": "y"}),
+        ],
+    )
+    def test_handler_backed_types_keep_approve(self, ptype, payload):
+        proposal = RoutingProposal(
+            proposal_id=compute_proposal_id(type=ptype, payload=payload, evidence=("t",)),
+            type=ptype,
             payload=payload,
             evidence=("t",),
             eval_hash="",
             created_at="2026-07-03T00:00:00+00:00",
         )
-        assert routing.offers_approve is True
-        note = flywheel_cli.compose_offering(routing, is_push=True)
+        assert proposal.offers_approve is True
+        note = flywheel_cli.compose_offering(proposal, is_push=True)
         assert "approve" in note.lower()
+        assert "dismiss" in note.lower()
+
+    def test_all_proposal_handlers_rows_resolve_offers_approve_true(self):
+        # Surface-wide invariant: NO type with an apply handler is silently
+        # stripped of approve by the render-only denylist.
+        from grove.flywheel_cli import PROPOSAL_HANDLERS
+
+        for ptype in PROPOSAL_HANDLERS:
+            proposal = RoutingProposal(
+                proposal_id=compute_proposal_id(type=ptype, payload={}, evidence=("t",)),
+                type=ptype,
+                payload={},
+                evidence=("t",),
+                eval_hash="",
+                created_at="2026-07-03T00:00:00+00:00",
+            )
+            assert proposal.offers_approve is True, f"{ptype} lost approve"
 
     def test_not_portal_review_gated(self):
         # Phase-1 decision: in-chat offering, NOT a portal-only review type.
