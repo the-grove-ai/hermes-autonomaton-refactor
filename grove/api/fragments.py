@@ -38,6 +38,7 @@ from grove.api.portal import (
     _fleet_skill_records,
     _list_fleet_artifacts,
     _read_fleet_artifact,
+    _read_forge_slug,
     _read_page,
     _serialize_capability,
     pending_memory_proposal_items,
@@ -1303,6 +1304,95 @@ async def handle_fleet_artifact_page(request: web.Request) -> web.Response:
     )
 
 
+def render_forge_publish_card(
+    slug: str, *, published: bool = False, error: str | None = None,
+    folder_link: str | None = None,
+) -> str:
+    """The forge Publish card — a self-contained ``<div id="forge-publish-{slug}">``
+    so HTMX swaps it alone (mirrors render_tier_card). Default state shows a
+    Publish button; ``error`` renders inline and KEEPS the button (retry-safe —
+    the orchestrator's exists-guard makes a re-tap idempotent); ``published``
+    renders the terminal success state (folder link + Status->Drafted), no
+    button. Every interpolated value passes through ``_esc``."""
+    slug_e = _esc(slug)
+    if published:
+        link = _esc(folder_link or "")
+        return (
+            f'<div class="card card-resolved" id="forge-publish-{slug_e}">'
+            f'<h4>Published <span class="badge badge-green">Drafted</span></h4>'
+            f'<div class="meta">Application package created; the Notion row was '
+            f'updated (Status &rarr; Drafted).</div>'
+            f'<div class="meta"><a href="{link}" target="_blank" rel="noopener">'
+            f'Open the Drive folder</a></div></div>'
+        )
+    error_html = ""
+    if error:
+        error_html = f'<div class="meta error">{_esc(error)}</div>'
+    if folder_link:
+        error_html += (
+            f'<div class="meta"><a href="{_esc(folder_link)}" target="_blank" '
+            f'rel="noopener">Drive folder (already created)</a></div>'
+        )
+    return (
+        f'<div class="card" id="forge-publish-{slug_e}">'
+        f'<h4>Publish application package</h4>'
+        f'<div class="meta">Creates a Drive folder with the two Docs, writes the '
+        f'link to the Notion row, and flips Status to Drafted.</div>'
+        f'{error_html}'
+        f'<button type="button" class="btn" '
+        f'hx-post="/portal/actions/forge/{slug_e}/publish" '
+        f'hx-target="#forge-publish-{slug_e}" hx-swap="outerHTML">Publish</button>'
+        f'</div>'
+    )
+
+
+async def handle_forge_slug_dir(request: web.Request) -> web.Response:
+    """``GET /portal/fleet/forge-jobsearch/{slug}/`` — render a forge draft dir:
+    both markdown assets on one page plus a Publish affordance. The forge stages
+    a slug DIRECTORY (two ``.md`` files + a ``meta.json`` sidecar), which the
+    single-file fleet-artifact viewer cannot address. Missing dir/drafts -> 404."""
+    slug = request.match_info["slug"]
+    read = _read_forge_slug(slug)
+    if read is None:
+        return web.Response(
+            text=_fleet_page(
+                "Fleet — not found", _fleet_breadcrumb("forge-jobsearch"),
+                "<h2>404 — not found</h2>"
+                f'<p class="placeholder">No forge draft dir: {_esc(slug)}</p>',
+            ),
+            status=404, content_type="text/html",
+        )
+    meta = read["meta"]
+    if meta and all(meta.get(k) for k in ("row_id", "company", "role")):
+        publish = render_forge_publish_card(slug)
+        subtitle = f'{_esc(meta.get("company", ""))} &mdash; {_esc(meta.get("role", ""))}'
+    else:
+        why = read["meta_error"] or "meta.json is missing row_id/company/role"
+        publish = (
+            f'<div class="card" id="forge-publish-{_esc(slug)}">'
+            f'<h4>Publish unavailable</h4>'
+            f'<div class="meta error">{_esc(why)} — cannot publish without the '
+            f'row identity.</div></div>'
+        )
+        subtitle = "(meta.json incomplete)"
+    body = (
+        f'<h2>{_esc(slug)} {_fleet_zone_badge("yellow")}</h2>'
+        f'<p class="meta">forge-jobsearch &middot; {subtitle}</p>'
+        f"{publish}"
+        f"<h3>resume.md</h3>"
+        f'<article class="cellar-body">{_render_md(read["resume_md"])}</article>'
+        f"<h3>cover-letter.md</h3>"
+        f'<article class="cellar-body">{_render_md(read["cover_md"])}</article>'
+    )
+    return web.Response(
+        text=_fleet_page(
+            f"Fleet — forge-jobsearch/{slug}",
+            _fleet_breadcrumb("forge-jobsearch"), body,
+        ),
+        content_type="text/html",
+    )
+
+
 async def handle_portal_slash_redirect(request: web.Request) -> web.Response:
     """Redirect the trailing-slash ``/portal/`` to the canonical ``/portal`` shell.
 
@@ -1349,5 +1439,8 @@ def register_fragment_routes(app: web.Application) -> None:
     # fleet-artifact-viewer-v1 — standalone full-HTML fleet pages (directly
     # tappable from a Telegram deep link; not hash-routed SPA fragments).
     app.router.add_get("/portal/fleet/", handle_fleet_overview)
+    # forge-jobsearch-v1 — slug-DIR viewer (two .md + meta.json). Registered
+    # before the generic single-file routes so the literal path wins.
+    app.router.add_get("/portal/fleet/forge-jobsearch/{slug}/", handle_forge_slug_dir)
     app.router.add_get("/portal/fleet/{skill_name}/", handle_fleet_skill_page)
     app.router.add_get("/portal/fleet/{skill_name}/{filename}", handle_fleet_artifact_page)
