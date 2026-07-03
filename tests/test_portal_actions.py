@@ -324,3 +324,181 @@ async def test_dock_goal_not_found(client, grove_home):
     )
     assert r.status == 404
     assert "not found" in (await r.text())
+
+
+# ---------------------------------------------------------------------------
+# portal-action-error-surfacing-v1 P3 — _loud_action_failure + wiring
+# ---------------------------------------------------------------------------
+
+
+def _paf(home=None):
+    """The portal_action_failure proposals filed in the (temp) queue."""
+    return [
+        p for p in proposal_queue.read_all()
+        if p.type == "portal_action_failure"
+    ]
+
+
+# — Helper contract: fail-safe, card+banner, status preserved ————————
+
+
+async def test_loud_helper_returns_card_and_banner_when_kaizen_raises(monkeypatch):
+    sent = []
+
+    async def _fake_broadcast(content, **kw):
+        sent.append(content)
+        return {"logged": True}
+
+    def _boom(**kw):
+        raise RuntimeError("queue down")
+
+    monkeypatch.setattr(actions_mod, "broadcast_to_operator", _fake_broadcast)
+    monkeypatch.setattr(proposal_queue, "file_agentless_proposal", _boom)
+
+    resp = await actions_mod._loud_action_failure(
+        '<div class="card" id="inline-x">inline</div>',
+        failure_class="fc", action="act", message="it broke", status=422,
+    )
+    # Status preserved; card + banner both in the body despite the kaizen throw.
+    assert resp.status == 422
+    body = resp.text
+    assert 'id="inline-x">inline' in body            # inline card preserved
+    assert 'id="alert-banner"' in body               # banner appended
+    assert 'hx-swap-oob="true"' in body
+    assert "it broke" in body
+    # Broadcast still fired even though filing raised (P1 discipline in the helper).
+    assert sent == ["Portal action 'act' failed: it broke"]
+
+
+async def test_loud_helper_file_kaizen_false_skips_filing(monkeypatch):
+    calls = []
+
+    async def _noop_broadcast(content, **kw):
+        return {}
+
+    monkeypatch.setattr(actions_mod, "broadcast_to_operator", _noop_broadcast)
+    monkeypatch.setattr(
+        proposal_queue, "file_agentless_proposal",
+        lambda **kw: calls.append(kw),
+    )
+
+    resp = await actions_mod._loud_action_failure(
+        "<div>x</div>", failure_class="fc", action="act", message="m",
+        status=400, file_kaizen=False,
+    )
+    assert resp.status == 400
+    assert 'id="alert-banner"' in resp.text
+    assert calls == []  # filing gated off → nothing queued
+
+
+# — Per-branch wiring: status + banner + failure_class/action ——————————
+
+
+def _capture_broadcast(monkeypatch):
+    """Record broadcast_to_operator calls (the loud always-on leg)."""
+    sent = []
+
+    async def _rec(content, **kw):
+        sent.append(content)
+        return {"logged": True}
+
+    monkeypatch.setattr(actions_mod, "broadcast_to_operator", _rec)
+    return sent
+
+
+# — SUPPRESSED sites (file_kaizen=False): loud everywhere, but NOT queued ——
+# UI structurally cannot produce these, so a Kaizen proposal has no fix to
+# recommend and would be queue noise. Broadcast + banner + 4xx stay unconditional.
+
+
+async def test_dock_invalid_status_loud_but_not_filed(client, grove_home, monkeypatch):
+    sent = _capture_broadcast(monkeypatch)
+    _write_dock(grove_home)
+    r = await client.patch(
+        "/portal/actions/dock/goals/grove-foundation", data={"status": "bogus"}
+    )
+    assert r.status == 400
+    body = await r.text()
+    assert 'id="alert-banner"' in body and 'hx-swap-oob="true"' in body
+    assert "Invalid status" in body           # inline card preserved
+    assert len(sent) == 1 and "dock_update" in sent[0]   # broadcast fired (loud)
+    assert _paf() == []                       # SUPPRESSED — nothing queued
+
+
+async def test_tier_swap_unknown_tier_loud_but_not_filed(client, grove_home, monkeypatch):
+    sent = _capture_broadcast(monkeypatch)
+    r = await client.post(
+        "/portal/actions/routing/swap", data={"tier": "BOGUS", "model_slug": "x/y"}
+    )
+    assert r.status == 400
+    assert 'id="alert-banner"' in (await r.text())
+    assert len(sent) == 1 and "tier_swap" in sent[0]
+    assert _paf() == []                       # SUPPRESSED
+
+
+async def test_tier_revert_unknown_tier_loud_but_not_filed(client, grove_home, monkeypatch):
+    sent = _capture_broadcast(monkeypatch)
+    r = await client.post("/portal/actions/routing/revert", data={"tier": "BOGUS"})
+    assert r.status == 400
+    assert 'id="alert-banner"' in (await r.text())
+    assert len(sent) == 1 and "tier_revert" in sent[0]
+    assert _paf() == []                       # SUPPRESSED
+
+
+async def test_forge_no_draft_dir(client, grove_home):
+    r = await client.post("/portal/actions/forge/nope/publish")
+    assert r.status == 404
+    assert 'id="alert-banner"' in (await r.text())
+    assert any(
+        p.payload == {"failure_class": "forge_no_draft_dir", "action": "forge_publish"}
+        for p in _paf()
+    )
+
+
+# — Dedup at call sites ————————————————————————————————————————————
+
+
+async def test_forge_no_dir_dedups_on_repeat(client, grove_home):
+    # Same failure_class + action across 3 taps → ONE queue entry (flood-guard).
+    for _ in range(3):
+        r = await client.post("/portal/actions/forge/nope/publish")
+        assert r.status == 404
+    paf = _paf()
+    assert len(paf) == 1
+    assert paf[0].payload == {
+        "failure_class": "forge_no_draft_dir", "action": "forge_publish"
+    }
+
+
+async def test_proposal_not_found_files_one_group_per_action(client, grove_home):
+    # SAME proposal id across all three actions — the id is ephemeral (excluded
+    # from the dedup key), so the action alone splits them into 3 groups.
+    for action in ("approve", "reject", "dismiss"):
+        r = await client.post(f"/portal/actions/proposals/ghost/{action}")
+        assert r.status == 404
+        assert 'id="alert-banner"' in (await r.text())
+    groups = {(p.payload["failure_class"], p.payload["action"]) for p in _paf()}
+    assert groups == {
+        ("proposal_not_found", "proposal_approve"),
+        ("proposal_not_found", "proposal_reject"),
+        ("proposal_not_found", "proposal_dismiss"),
+    }
+    assert len(_paf()) == 3
+
+
+# — Success-path non-regression ————————————————————————————————————
+
+
+async def test_success_path_has_no_banner(client, grove_home, monkeypatch):
+    # The async _apply_routing refactor must not perturb the 200 success path:
+    # a routing reject still returns its resolved card, no banner, no filing.
+    _append_routing("routing_adjustment:ok999")
+    monkeypatch.setattr(
+        actions_mod, "_record_kaizen_disposition", lambda p, **kw: None
+    )
+    r = await client.post("/portal/actions/proposals/routing_adjustment:ok999/reject")
+    assert r.status == 200
+    body = await r.text()
+    assert "rejected" in body
+    assert "alert-banner" not in body
+    assert _paf() == []
