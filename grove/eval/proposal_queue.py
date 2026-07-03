@@ -236,13 +236,27 @@ class RoutingProposal:
     def offers_approve(self) -> bool:
         """Whether the in-chat push may offer an ``approve`` affordance.
 
-        portal-action-error-surfacing-v1 — a ``portal_action_failure`` is
-        RENDER-ONLY: it has no ``PROPOSAL_HANDLERS`` row, so ``cli_approve`` ->
-        ``_handler_for`` dead-ends on it. The push must never offer an affordance
-        the apply path can't honor, so approve is withheld for this type;
-        ``dismiss`` stays (``cli_reject`` is tolerant of handler-less types).
-        Every other routing/zone/skill/pattern/dock type keeps approve."""
-        return self.type != PROPOSAL_TYPE_PORTAL_ACTION_FAILURE
+        COMPUTED from apply-handler presence — structural, NOT an enumerated
+        denylist. Approve is offered iff this type resolves to a
+        ``PROPOSAL_HANDLERS`` row (the registry ``cli_approve`` -> ``_handler_for``
+        dispatches through). A render-only type — no handler row — resolves False
+        automatically, so approve is never offered where the apply path would
+        dead-end, and a FUTURE render-only type self-enforces with no code edit
+        here. ``dismiss`` always stays (``cli_reject`` is tolerant of handler-less
+        types).
+
+        The import is deferred: ``flywheel_cli`` imports this module at load, so
+        resolving ``_handler_for`` at module scope would cycle; by call time both
+        modules are loaded. ``_handler_for`` raises ``ValueError`` on an unknown
+        type (its contract, no silent fallback) and honors the legacy
+        ``routing_update`` alias — so a legacy routing proposal still resolves
+        True."""
+        from grove.flywheel_cli import _handler_for
+        try:
+            _handler_for(self.type)
+            return True
+        except ValueError:
+            return False
 
     def is_push_eligible(self, session_start: Optional["datetime"]) -> bool:
         """Routing proposals push only when created THIS session (the

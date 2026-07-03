@@ -162,6 +162,28 @@ class TestRenderRegistration:
         # The type-ignorant opt-out the composer branches on.
         assert self._proposal().offers_approve is False
 
+    def test_offers_approve_self_enforces_from_handler_table(self):
+        # STRUCTURAL, not enumerated: a type with NO PROPOSAL_HANDLERS row
+        # resolves False purely from apply-handler absence — no denylist entry
+        # exists for it, yet approve is withheld. A future render-only type
+        # cannot ship approve-True silently.
+        from grove.flywheel_cli import PROPOSAL_HANDLERS
+
+        ghost = "some_future_render_only_type"
+        assert ghost not in PROPOSAL_HANDLERS
+        proposal = RoutingProposal(
+            proposal_id=compute_proposal_id(type=ghost, payload={}, evidence=("t",)),
+            type=ghost,
+            payload={},
+            evidence=("t",),
+            eval_hash="",
+            created_at="2026-07-03T00:00:00+00:00",
+        )
+        assert proposal.offers_approve is False
+        # portal_action_failure resolves False for the SAME structural reason —
+        # not because it is named anywhere.
+        assert self._proposal().offers_approve is False
+
     # Regression: offers_approve now gates approve visibility for the WHOLE
     # surface, so handler-backed types must still resolve True AND render the
     # approve tail — the dismiss-only branch is scoped to render-only types only.

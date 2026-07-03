@@ -44,11 +44,11 @@ class KaizenRenderable(Protocol):
 
     @property
     def offers_approve(self) -> bool:
-        """Whether the in-chat push may offer an ``approve`` affordance.
-
-        portal-action-error-surfacing-v1 — False for RENDER-ONLY types (no apply
-        handler), so the push never offers an affordance the apply path can't
-        honor. True for every type whose approve is honored. Dismiss is always
+        """Whether the in-chat push may offer an ``approve`` affordance — True iff
+        this type's apply path exists. RoutingProposal COMPUTES this from the
+        ``PROPOSAL_HANDLERS`` table (render-only types self-resolve False, no
+        enumeration); MemoryProposalRenderable is always True (its apply path is
+        the separate memory registry, not that table). Dismiss is always
         available (``cli_reject`` is tolerant of handler-less types)."""
         ...
 
@@ -87,8 +87,10 @@ class MemoryProposalRenderable:
 
     @property
     def offers_approve(self) -> bool:
-        # Memory proposals HAVE an apply path (MemoryProposalHandler on approve),
-        # so approve is honored — offered in the in-chat fallback form.
+        # Memory proposals apply through their OWN registry (MemoryProposalHandler
+        # on approve), NOT the routing PROPOSAL_HANDLERS table — so the apply path
+        # is structurally guaranteed and cannot be computed from that table. There
+        # is no render-only memory type, so this is unconditionally True.
         return True
 
     @property
