@@ -45,6 +45,7 @@ __all__ = [
     "PROPOSAL_TYPE_MEMORY_CONTEXT",
     "PROPOSAL_TYPE_CONSOLIDATION",
     "PROPOSAL_TYPE_DOCK_MUTATION",
+    "PROPOSAL_TYPE_PORTAL_ACTION_FAILURE",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -52,6 +53,7 @@ __all__ = [
     "read_all",
     "read",
     "remove",
+    "file_agentless_proposal",
 ]
 
 
@@ -131,6 +133,20 @@ PROPOSAL_TYPE_CONSOLIDATION = "consolidation_proposal"
 #    "goal": {"id", "name", "keywords", "vector", "status", "definition_of_done",
 #             "source_record_ids"}}
 PROPOSAL_TYPE_DOCK_MUTATION = "dock_mutation"
+# portal-action-error-surfacing-v1 (Phase 1) — a portal action handler's failure
+# disposition, filed AGENTLESSLY (no LLM turn) straight from the handler's error
+# branch via :func:`file_agentless_proposal`, so the Kaizen flywheel can
+# recommend the structural fix for a recurring failure. Payload shape (the STABLE
+# dedup key — hashed by :func:`compute_proposal_id`):
+#   {"failure_class": str, "action": str}
+# The ephemeral per-instance data (timestamp, slug, folder link, exact error)
+# rides in ``semantic_justification`` — an EXCLUDED field — so every recurrence of
+# the same failure_class+action collapses to ONE queue entry (the flood-guard).
+# Render-only for Phase 1: registered in ``flywheel_cli.RENDER_REGISTRY`` but NOT
+# in ``PROPOSAL_HANDLERS`` (no apply path yet — approve/apply wiring is a later
+# phase), matching how ``memory_context`` surfaces without a RoutingProposal
+# apply handler.
+PROPOSAL_TYPE_PORTAL_ACTION_FAILURE = "portal_action_failure"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 
@@ -216,6 +232,18 @@ class RoutingProposal:
         dock-mutation proposals keep their in-chat approve/dismiss affordance."""
         return self.type == PROPOSAL_TYPE_CONSOLIDATION
 
+    @property
+    def offers_approve(self) -> bool:
+        """Whether the in-chat push may offer an ``approve`` affordance.
+
+        portal-action-error-surfacing-v1 — a ``portal_action_failure`` is
+        RENDER-ONLY: it has no ``PROPOSAL_HANDLERS`` row, so ``cli_approve`` ->
+        ``_handler_for`` dead-ends on it. The push must never offer an affordance
+        the apply path can't honor, so approve is withheld for this type;
+        ``dismiss`` stays (``cli_reject`` is tolerant of handler-less types).
+        Every other routing/zone/skill/pattern/dock type keeps approve."""
+        return self.type != PROPOSAL_TYPE_PORTAL_ACTION_FAILURE
+
     def is_push_eligible(self, session_start: Optional["datetime"]) -> bool:
         """Routing proposals push only when created THIS session (the
         anti-nag current-session rule). No anchor -> not eligible."""
@@ -243,6 +271,12 @@ class RoutingProposal:
         # could'. Its own frame.
         if self.type == PROPOSAL_TYPE_DOCK_MUTATION:
             return f"I've observed a pattern worth tracking — {core}"
+        # portal-action-error-surfacing-v1 — an incident report, not an
+        # opportunistic 'I could'. The summary core is already a full clause
+        # (``portal action 'x' keeps failing …``), so it stands on its own —
+        # wrapping it in 'I noticed I could' would read as broken grammar.
+        if self.type == PROPOSAL_TYPE_PORTAL_ACTION_FAILURE:
+            return core
         return f"I noticed I could {core}"
 
 
@@ -435,3 +469,71 @@ def remove(
         else:
             target.unlink()
     return True
+
+
+# ── Agentless filing (portal-action-error-surfacing-v1) ──────────────
+
+
+def file_agentless_proposal(
+    *,
+    failure_class: str,
+    action: str,
+    evidence: str,
+    justification: str,
+    instance: Optional[Dict[str, Any]] = None,
+    path: Optional[Path] = None,
+) -> Tuple[str, bool]:
+    """File a ``portal_action_failure`` proposal from a NON-agent caller.
+
+    The public agentless entry point (portal-action-error-surfacing-v1): an
+    aiohttp handler's failure branch — no LLM turn, no detector, no Dispatcher
+    context — constructs and enqueues a RoutingProposal so the Kaizen flywheel
+    can recommend the structural fix.
+
+    Dedup is content-addressable on the STABLE fields only. ``failure_class``
+    and ``action`` (the payload) plus ``evidence`` feed
+    :func:`compute_proposal_id`; ``justification`` and the ephemeral ``instance``
+    data land in ``semantic_justification`` — a field :func:`compute_proposal_id`
+    does NOT hash — so every recurrence of the same class collapses to one queue
+    entry. ``evidence`` must therefore be a stable *class-level* descriptor
+    (e.g. the failure signature), NOT a per-instance turn id.
+
+    Args:
+        failure_class: Stable failure category (e.g. ``"notion_cold_session"``).
+        action: The portal action that failed (e.g. ``"forge_publish"``).
+        evidence: Stable class-level evidence string (hashed into the id).
+        justification: Operator-facing rationale for the recommended fix.
+        instance: Optional ephemeral per-occurrence detail (timestamp, slug,
+            folder link, exact error). Folded into ``semantic_justification``
+            (an EXCLUDED field) so it never perturbs proposal identity.
+        path: Optional queue path override (defaults to the standard queue);
+            present for isolated testing, mirroring :func:`append`.
+
+    Returns:
+        ``(proposal_id, was_appended)``. ``was_appended`` is ``False`` when an
+        identical proposal already sits in the queue — the flood-guard.
+    """
+    payload: Dict[str, Any] = {"failure_class": failure_class, "action": action}
+    evidence_tuple: Tuple[str, ...] = (evidence,)
+
+    rationale = justification
+    if instance:
+        detail = "; ".join(f"{k}={instance[k]}" for k in sorted(instance))
+        rationale = f"{justification} [{detail}]" if justification else detail
+
+    proposal_id = compute_proposal_id(
+        type=PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
+        payload=payload,
+        evidence=evidence_tuple,
+    )
+    proposal = RoutingProposal(
+        proposal_id=proposal_id,
+        type=PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
+        payload=payload,
+        evidence=evidence_tuple,
+        eval_hash="",
+        created_at=_now_iso(),
+        semantic_justification=rationale,
+    )
+    was_appended = append(proposal, path=path)
+    return proposal_id, was_appended
