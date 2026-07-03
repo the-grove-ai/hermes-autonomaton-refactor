@@ -879,6 +879,41 @@ def _read_fleet_artifact(cap: Any, filename: str) -> Optional[tuple]:
     return target.read_text(encoding="utf-8"), target.suffix, state
 
 
+def _read_forge_slug(slug: str) -> Optional[dict]:
+    """Read a forge ``pending_review/<slug>/`` draft dir (forge-jobsearch-v1).
+
+    The forge stages a DIRECTORY (``resume.md`` + ``cover-letter.md`` + a
+    ``meta.json`` sidecar carrying ``{row_id, company, role, slug}``), unlike the
+    single-file fleet artifacts. Returns
+    ``{"slug","meta","meta_error","resume_md","cover_md"}`` or ``None`` when the
+    dir or either draft is absent. Path-safe: a ``slug`` that escapes the forge
+    staging dir (traversal) resolves to ``None`` (fail-closed)."""
+    staging = (Path(get_hermes_home()) / "forge" / "pending_review").resolve()
+    slug_dir = (staging / slug).resolve()
+    if not slug_dir.is_relative_to(staging) or not slug_dir.is_dir():
+        return None
+    resume, cover = slug_dir / "resume.md", slug_dir / "cover-letter.md"
+    if not resume.is_file() or not cover.is_file():
+        return None
+    meta: Optional[dict] = None
+    meta_error: Optional[str] = None
+    meta_path = slug_dir / "meta.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            meta_error = f"meta.json is unreadable: {exc}"
+    else:
+        meta_error = "meta.json not found in the slug dir"
+    return {
+        "slug": slug,
+        "meta": meta,
+        "meta_error": meta_error,
+        "resume_md": resume.read_text(encoding="utf-8"),
+        "cover_md": cover.read_text(encoding="utf-8"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Route registration
 # ---------------------------------------------------------------------------

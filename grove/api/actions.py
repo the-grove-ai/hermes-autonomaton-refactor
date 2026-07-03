@@ -21,7 +21,10 @@ is a 400; an apply/write failure surfaces with context — it is not swallowed.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+from pathlib import Path
 
 from aiohttp import web
 
@@ -32,10 +35,12 @@ from grove.api.fragments import (
     _proposal_actions_html,
     _short_id,
     _swappable_tiers,
+    render_forge_publish_card,
     render_goal_card,
     render_tier_card,
 )
-from grove.api.portal import _memory_proposals_path
+from grove.api.portal import _memory_proposals_path, _read_forge_slug
+from grove.forge import PublishError, publish_application_package
 from grove.config.model_catalog import load_catalog
 from grove.config.routing_writer import ConfigValidationError, get_writer
 from grove.dock import _VALID_STATUSES, load_dock
@@ -52,8 +57,15 @@ from grove.flywheel_cli import (
 )
 from grove.memory import digest
 from grove.memory.digest import MemoryProposalHandler
+from hermes_constants import get_hermes_home
+from tools import mcp_tool
 
 logger = logging.getLogger(__name__)
+
+# forge-jobsearch-v1 — the raw MCP tool name the gateway notion OAuth session
+# advertises for a page-property write (sanitized registry name:
+# mcp_notion_notion_update_page).
+_NOTION_UPDATE_TOOL = "notion-update-page"
 
 # Operator-facing disposition label (what the resolved card shows) per action.
 _DISPOSITION_LABEL = {
@@ -402,6 +414,123 @@ async def handle_tier_model_revert(request: web.Request) -> web.Response:
     )
 
 
+async def handle_forge_publish(request: web.Request) -> web.Response:
+    """``POST /portal/actions/forge/{slug}/publish`` — the operator's Publish tap
+    (forge-jobsearch-v1). Mirrors ``handle_tier_model_swap``: validate -> apply in
+    a try -> re-render the SAME card with an inline error (4xx, never 500) ->
+    success render + ``logger.info``.
+
+    Order is load-bearing: DRIVE first (create-once, idempotency-guarded INSIDE
+    the orchestrator, so a retry after a failed Notion write does not duplicate
+    the folder), NOTION last (the retryable tail). A cold notion session fails
+    LOUD with the partial state — the portal is a CONSUMER of the MCP substrate,
+    never a manager, so it never connects or wakes the server."""
+    slug = request.match_info["slug"]
+
+    # 1. meta.json sidecar -> row_id, company, role (missing/malformed -> inline).
+    read = _read_forge_slug(slug)
+    if read is None:
+        return _html_fragment(
+            render_forge_publish_card(slug, error=f"No forge draft dir for {slug!r}."),
+            status=404,
+        )
+    meta = read["meta"]
+    if not meta or not all(meta.get(k) for k in ("row_id", "company", "role")):
+        why = read["meta_error"] or "meta.json is missing row_id/company/role"
+        return _html_fragment(
+            render_forge_publish_card(slug, error=f"Cannot publish: {why}."),
+            status=400,
+        )
+    row_id, company, role = meta["row_id"], meta["company"], meta["role"]
+    slug_dir = Path(get_hermes_home()) / "forge" / "pending_review" / slug
+    resume_path = str(slug_dir / "resume.md")
+    cover_path = str(slug_dir / "cover-letter.md")
+
+    loop = asyncio.get_running_loop()
+
+    # 2. DRIVE — create-once, guarded inside the orchestrator. Run in an executor
+    #    so the blocking subprocess / network calls never stall the event loop.
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: publish_application_package(
+                row_id, company, role, resume_path, cover_path
+            ),
+        )
+    except PublishError as exc:
+        return _html_fragment(
+            render_forge_publish_card(
+                slug,
+                error=(
+                    "Drive publish failed — no Notion write attempted. "
+                    f"Partial state: {json.dumps(exc.partial_state)}"
+                ),
+            ),
+            status=422,
+        )
+    folder_link = result.get("folder_link")
+
+    # 3. NOTION — the retryable tail, only after Drive success. Look up the LIVE
+    #    gateway notion OAuth session (the same one scout writes rows through).
+    #    Cold -> fail loud; do NOT connect or manage it.
+    with mcp_tool._lock:
+        server = mcp_tool._servers.get("notion")
+    if server is None or not getattr(server, "session", None):
+        return _html_fragment(
+            render_forge_publish_card(
+                slug,
+                folder_link=folder_link,
+                error=(
+                    "Drive package created. Notion MCP is cold — ping the agent "
+                    "in chat to wake it, then tap Publish again."
+                ),
+            ),
+            status=400,
+        )
+    notion_call = mcp_tool._make_tool_handler(
+        "notion", _NOTION_UPDATE_TOOL, mcp_tool._DEFAULT_TOOL_TIMEOUT
+    )
+    # Hosted mcp.notion.com update-page: command=update_properties with a FLAT
+    # {property: scalar} map (Status is a select -> its option name as a string;
+    # Application Package is a url -> the link as a string).
+    args = {
+        "page_id": row_id,
+        "command": "update_properties",
+        "properties": {
+            "Application Package": folder_link,
+            "Status": "Drafted",
+        },
+    }
+    raw = await loop.run_in_executor(None, lambda: notion_call(args))
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        parsed = {"error": f"unparseable notion response: {raw!r}"}
+    if "error" in parsed:
+        return _html_fragment(
+            render_forge_publish_card(
+                slug,
+                folder_link=folder_link,
+                error=(
+                    f"Drive package created. Notion update failed: {parsed['error']}. "
+                    "Tap Publish again to retry."
+                ),
+            ),
+            status=400,
+        )
+
+    # 4. SUCCESS — Drive folder + row updated. The orchestrator audited Drive;
+    #    log the row completion here for audit completeness.
+    logger.info(
+        "[portal.actions] forge %s published: folder=%s row=%s Status->Drafted",
+        slug, folder_link, row_id,
+    )
+    return _html_fragment(
+        render_forge_publish_card(slug, published=True, folder_link=folder_link),
+        status=200,
+    )
+
+
 def register_action_routes(app: web.Application) -> None:
     """Register the portal's write endpoints. Wired at gateway connect() time,
     after the read-only portal/fragment/dashboard routes. portal_auth_middleware
@@ -421,3 +550,5 @@ def register_action_routes(app: web.Application) -> None:
     # portal-model-swap-v1 — tier model swap + revert
     app.router.add_post("/portal/actions/routing/swap", handle_tier_model_swap)
     app.router.add_post("/portal/actions/routing/revert", handle_tier_model_revert)
+    # forge-jobsearch-v1 — operator Publish tap (Drive-first, Notion-last)
+    app.router.add_post("/portal/actions/forge/{slug}/publish", handle_forge_publish)
