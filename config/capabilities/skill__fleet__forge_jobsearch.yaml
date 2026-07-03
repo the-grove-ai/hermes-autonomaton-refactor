@@ -1,0 +1,179 @@
+id: skill.fleet.forge-jobsearch
+kind: skill
+trigger:
+  intents: [creative_writing]
+  keywords: [forge, tailor resume, cover letter, job application, application package, forge the application]
+  dock_affinity: [career-transition]
+  always: false
+  disclosure: proactive
+bindings:
+  tools: []
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: pull
+  payload: |
+    ---
+    name: forge-jobsearch
+    description: "Job application forge — reads a To Apply row from the Notion Job Opportunities DB, tailors a resume and cover letter against the row's assigned persona and career-corpus, and stages them for operator review. Yellow zone: output is the operator's application materials. Publishing to Google Docs is the operator's explicit action-surface tap, never this skill. Fleet reference implementation."
+    version: 1.0.0
+    platforms: [linux, macos]
+    zone: yellow
+    tier: T2
+    metadata:
+      hermes:
+        tags: [jobs, career, resume, cover-letter, forge, fleet, yellow]
+        related_skills: [scout-jobsearch, jim-voice-writing-style, interview-prep-forge]
+    ---
+
+    Execution authority: This skill writes files and creates directories within ~/.grove/ bounds. Governance is enforced by the zone model and the OS, not by model inference. This skill does NOT publish to Google Docs, does NOT write to the Notion database, and holds no external-write tools — publishing is a separate operator-gated action on the portal.
+
+    # Forge Jobsearch — Resume & Cover Letter Tailoring
+
+    ## Purpose
+    You tailor a resume and cover letter for a job the operator has already decided to pursue. Stage 2 of the job-search pipeline: the scout finds and scores (Status="New"), the operator triages to Status="To Apply" (that triage IS the pursue decision), and you tailor the assets. You STAGE drafts for review — you never publish, never submit, never write to the job database. The operator reviews on the portal and taps Publish to finalize as a Google Doc package; that tap is a separate step you do not perform.
+
+    ## What you do NOT do
+    - No Fit Brief, no PURSUE/STRETCH/PASS verdict — "To Apply" already settled that. Go straight to tailoring.
+    - No Google Docs, no Drive upload, no Application Package link — that is the operator's Publish tap.
+    - No writes to the Notion row (Status or any field). You READ the row only.
+    - No invented facts. career-corpus.md is the ONLY source of facts about the operator.
+
+    ## Required input
+    - The corpus snapshot at /home/hermes/.grove/forge/career-corpus.md — the ONLY permitted source of facts about the operator. If absent or unreadable, HALT (Andon) and tell the operator to push it. Never fabricate corpus content to proceed.
+    - A target "To Apply" row (Step 2).
+
+    ## Procedure
+
+    ### Step 1 — Load corpus and voice
+    1. read_file /home/hermes/.grove/forge/career-corpus.md. If absent → HALT: "career-corpus.md snapshot not found at ~/.grove/forge/ — push it before forging." Do not proceed.
+    2. invoke_skill jim-voice-writing-style — the voice contract for the cover letter and resume summary. Read it fully before drafting.
+
+    ### Step 2 — Identify the target row
+    Query the Notion Job Opportunities DB (collection://5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa) for Status="To Apply" (read only):
+    - If the operator named a company/role, match it.
+    - Otherwise present the To Apply rows (Company — Role — Tier — Persona) and ask which ONE to forge. (v1 is one row per run; batch is out of scope.)
+    Read the chosen row's Role, Company, Location, Persona, Tier, Fit Score, Rationale, Link, Comp.
+
+    The row's Persona is your positioning lens (the scout assigned it): one of enterprise-ai-leader, product-strategy-exec, product-growth-exec, revops-exec, consulting-practice-lead. The Rationale captures why the role fits. Do not re-derive the persona — use the row's.
+
+    Optional deeper tailoring: if the operator pastes the job-description text, use it for ATS keyword targeting. If not, tailor from the row (Persona, Role, Company, Rationale) + the corpus. (Reading the JD from the row's Link via the browser surface is a v1.1 enhancement — not v1.)
+
+    ### Step 3 — Build the positioning
+    From the row's Persona + Rationale + the corpus persona framing:
+    - Positioning thesis: 2–3 sentences — why the operator wins this role.
+    - Proof points (ranked, 5–7): each = a corpus fact + the requirement it answers, citing the role it comes from.
+    - ATS keywords: terms that must appear verbatim, marked ✓ (covered by corpus) or ✗ (cannot truthfully claim). Never claim a ✗.
+
+    ### Step 4 — Generate the two assets
+    1. Tailored resume (markdown, ATS-safe single column): headline matched to the target role; summary rewritten around the positioning thesis (3–4 sentences, no fluff); corpus roles reverse-chronological, bullets reordered to lead with the proof points, irrelevant bullets cut; skills tuned to ✓ ATS keywords only; Grove Foundation as a Projects entry for AI-facing roles, omitted for pure revenue/product roles unless it strengthens the thesis.
+    2. Cover letter (markdown, ≤350 words): jim-voice applies. Open with a company-specific hook, not "I am excited to apply." Three short paragraphs: why them, why the operator (two strongest proof points with numbers), close with specific value in the first 90 days. AP style. No corporate filler.
+
+    (v1 stops here. Executive-summary blurb and LinkedIn outreach note are out of scope.)
+
+    ### Step 5 — Cold-Reader QA (mandatory, before staging)
+    Critique in a separate pass — never approve in the pass that generated. Read as a skeptical recruiter skimming for eight seconds:
+    1. Self-containment: every resume bullet stands alone — no dangling "the decline," "the company," "this."
+    2. Skeptic check: any striking claim (large %, fast turnaround, big multiple) carries mechanism and bounds — what changed, over what period, from what base. If the corpus lacks the bound, bound it with known corpus facts or cut the claim. Never ship a naked claim.
+    3. Relevance: each bullet answers a specific role requirement. Cut or reframe orphans.
+    4. Voice: jim-voice. Hunt passive voice — flag every "was/were/been + verb," "by [actor]," agentless construction. The operator owns the verb in every bullet: built, sold, negotiated, reversed, secured. Passive survives only when the actor is genuinely unknown.
+    Apply fixes before staging.
+
+    ## Hard Rules (non-negotiable — verbatim from the corpus contract)
+    - Every factual claim traces to career-corpus.md. No invented metrics, clients, dates, titles, or domain experience.
+    - Items marked [VERIFY] in the corpus are unusable until the operator resolves them.
+    - Never attribute Nectar9 facts to Tynker.
+    - "Ghost-wrote Lean AI" — never claim named authorship.
+    - Gaps are bridged honestly with adjacent evidence, or acknowledged — never papered over with fabrication.
+
+    ### Step 6 — Stage the drafts (Yellow, pending_review)
+    CRITICAL: output location is /home/hermes/.grove/forge/pending_review/<slug>/ — nowhere else.
+    - slug = YYMMDD-company-role (e.g., 260702-lilly-ai-orch-pm), lowercase, hyphenated.
+    - Before writing: mkdir -p /home/hermes/.grove/forge/pending_review/<slug>
+    - Write two files: resume.md and cover-letter.md (markdown — the publish step converts them to Google Docs).
+    - Do NOT write to the repo, ~/, the canonical ~/.grove/forge/ dir, or any cellar sink. Only pending_review/<slug>/.
+    These drafts are unapproved output. They stay in pending_review/ and never reach the cellar or Google Drive until the operator taps Publish on the portal. That gate is structural.
+
+    ### Step 7 — Surface to operator
+    Respond with:
+    1. A two-sentence summary: the role, the positioning thesis in one line, and that resume + cover letter are staged for review.
+    2. The portal link: http://100.102.6.70:8642/portal/fleet/forge-jobsearch/<slug>/
+    3. "Review the drafts and tap Publish to finalize them as a Google Doc package (it writes the folder link to the row and flips Status to Drafted), or send edits."
+    Do NOT paste the full assets into the response. Do NOT publish. Do NOT touch the Notion row.
+
+    ## Composites
+    - jim-voice-writing-style — voice DNA for the cover letter + resume summary (loaded at Step 1)
+    - invoke_skill — load jim-voice at Step 1
+    - Notion MCP query_data_sources — read the To Apply row (read only)
+    - read_file — the corpus snapshot
+    - write_file — stage drafts to ~/.grove/forge/pending_review/<slug>/
+
+    ## Output location
+    ~/.grove/forge/pending_review/<slug>/{resume.md, cover-letter.md}
+
+    ## Invocation
+    "Forge the application for [company]", "Tailor the resume for the [role]", "Run the forge on my To Apply list", "Make the application package for [company]."
+  dock_composition: none
+lifecycle:
+  state: active
+  provenance: operator_authored
+  created_at: '2026-07-02T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-07-02T00:00:00+00:00'
+    from_state: new
+    to_state: active
+    reason: 'forge-jobsearch-v1: Yellow-zone resume/cover-letter forge, operator-installed'
+    evidence:
+    - skills/fleet/forge-jobsearch/SKILL.md
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: skill.fleet.forge-jobsearch'
+  - 'subsystem: skill registry (kind=skill)'
+  - 'check: record loads + zone signed'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
+skill:
+  category: fleet
+governance:
+  write_zone:
+    staging_dir: "forge/pending_review"
+    canonical_dir: "forge"
+    promotion: operator_approval
+  emission_preconditions:
+    required_tool_classes:
+    - class: skill_invocation
+      min_calls: 1
+    terminal_artifact:
+      tool: write_file
+      path_pattern: "*.md"
+  approval_handoff:
+    mode: action_surface_publish
