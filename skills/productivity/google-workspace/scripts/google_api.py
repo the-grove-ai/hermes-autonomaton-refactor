@@ -671,7 +671,14 @@ def drive_get(args):
 
 def drive_upload(args):
     """Upload a local file to Drive. Falls through to Python client even when gws
-    is installed, because gws doesn't do multipart uploads."""
+    is installed, because gws doesn't do multipart uploads.
+
+    With ``--convert-to-doc`` the created file is imported into a native Google
+    Doc: Drive renders the media (source defaults to ``text/markdown`` — what the
+    forge emits and what Drive converts cleanly: headings/bold/lists/links; an
+    explicit ``--mime-type`` still wins, e.g. ``text/html``) because the created
+    file's own mimeType is set to the Docs type. Without the flag, behaviour is
+    unchanged — a raw upload under the detected/overridden mime."""
     import mimetypes
     from googleapiclient.http import MediaFileUpload
 
@@ -680,10 +687,17 @@ def drive_upload(args):
         print(f"ERROR: file not found: {local_path}", file=sys.stderr)
         sys.exit(1)
 
-    mime = args.mime_type or mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
     metadata = {"name": args.name or local_path.name}
     if args.parent:
         metadata["parents"] = [args.parent]
+
+    if args.convert_to_doc:
+        # Opt-in native-Doc conversion (forge-jobsearch-v1 Phase 1). Source mime
+        # defaults to text/markdown; an explicit --mime-type overrides it.
+        mime = args.mime_type or "text/markdown"
+        metadata["mimeType"] = "application/vnd.google-apps.document"
+    else:
+        mime = args.mime_type or mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
 
     service = build_service("drive", "v3")
     media = MediaFileUpload(str(local_path), mimetype=mime, resumable=True)
@@ -1200,6 +1214,8 @@ def main():
     p.add_argument("--name", default="", help="Override file name in Drive (defaults to local filename)")
     p.add_argument("--parent", default="", help="Parent folder ID")
     p.add_argument("--mime-type", default="", help="Override MIME type (auto-detected if omitted)")
+    p.add_argument("--convert-to-doc", action="store_true",
+                   help="Import the file into a native Google Doc (source defaults to text/markdown; --mime-type overrides)")
     p.set_defaults(func=drive_upload)
 
     p = drv_sub.add_parser("download")
