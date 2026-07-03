@@ -35,6 +35,7 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_DOCK_MUTATION,
     PROPOSAL_TYPE_PATTERN_DEMOTION,
     PROPOSAL_TYPE_PATTERN_PROMOTION,
+    PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
     PROPOSAL_TYPE_SKILL_PROMOTION,
     PROPOSAL_TYPE_SKILL_SYNTHESIS,
@@ -253,6 +254,20 @@ def _summary_skill_synthesis(proposal: RoutingProposal) -> str:
     return f"stage drafted skill {name!r} → quarantine for review"
 
 
+def _summary_portal_action_failure(proposal: RoutingProposal) -> str:
+    """portal-action-error-surfacing-v1 — a repeatedly-failing portal action,
+    surfaced so the operator can approve a structural fix. The stable class is
+    the body; the memory-enriched rationale (the ephemeral instance detail rides
+    here per file_agentless_proposal) is appended when present."""
+    action = proposal.payload.get("action", "?")
+    failure_class = proposal.payload.get("failure_class", "?")
+    base = f"portal action {action!r} keeps failing ({failure_class})"
+    justification = getattr(proposal, "semantic_justification", "") or ""
+    if justification:
+        return f"{base} — {justification}"
+    return base
+
+
 # ── offering composer (kaizen-offerings Cut B — one voice chokepoint) ─
 #
 # C1 — deterministic on-register prefixes, hardcoded in Python. NO markdown
@@ -269,6 +284,11 @@ _OFFERING_PUSH_ASK = "want me to stage it for your review?"  # the foreman's off
 # Unknown types sort last.
 _PUSH_PRIORITY = {
     PROPOSAL_TYPE_SKILL_SYNTHESIS: 0,
+    # portal-action-error-surfacing-v1 — an actively-failing portal action is an
+    # incident, not an opportunistic optimization: it surfaces AHEAD of a memory
+    # insight and every mechanical tweak. Fractional slot keeps the
+    # contract-tested integers intact. (Proposed default; PM rules the rank.)
+    PROPOSAL_TYPE_PORTAL_ACTION_FAILURE: 0.5,
     "memory_context": 1,                      # == PROPOSAL_TYPE_MEMORY_CONTEXT
     # consolidation-ratchet-v1 — a permanent-policy graduation outranks a
     # transient routing tweak but yields to a fresh memory insight. A fractional
@@ -386,10 +406,22 @@ def compose_offering(
     # could …"; memory: "I crystallized a domain insight …"); the shared frame +
     # approve/dismiss tail are the one Kaizen voice. The operator replies in
     # natural language; the model routes it via review_proposals -> approve.
-    note = (
-        f"{_OFFERING_PUSH_PREFIX} {proposal.push_body(core)} — {_OFFERING_PUSH_ASK} "
-        f"Reply 'approve' to apply this, or 'dismiss' to skip."
-    )
+    # portal-action-error-surfacing-v1 — offer only affordances the apply path
+    # honors. A render-only type (offers_approve False) drops the approve reply
+    # AND the stage-for-review ask (there is nothing to stage): it is a
+    # notification the operator can dismiss, routed through the tolerant
+    # cli_reject. The opt-out is the renderable's ``offers_approve`` property — no
+    # type-checking here (the CLI layer stays ignorant of specific types).
+    if proposal.offers_approve:
+        note = (
+            f"{_OFFERING_PUSH_PREFIX} {proposal.push_body(core)} — {_OFFERING_PUSH_ASK} "
+            f"Reply 'approve' to apply this, or 'dismiss' to skip."
+        )
+    else:
+        note = (
+            f"{_OFFERING_PUSH_PREFIX} {proposal.push_body(core)} — "
+            f"reply 'dismiss' to skip."
+        )
     # portal-link-reliability-v1 (P1) — ready-made review deep link, embedded
     # mechanically (never a template the model fills). Appended only when the
     # caller resolved a base URL from the resident config (I2: missing → no link).
@@ -1991,6 +2023,14 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
 # now decoupled from apply — the two registries are separate by design.
 for _type_name, _handler in PROPOSAL_HANDLERS.items():
     register_renderer(_type_name, _handler.summary_renderer)
+
+# portal-action-error-surfacing-v1 (Phase 1) — a RENDER-ONLY type: it composes
+# and pushes like any Kaizen offering, but has no apply handler yet (approve/apply
+# wiring is a later phase), so it is registered straight into RENDER_REGISTRY
+# rather than seeded from PROPOSAL_HANDLERS — the same shape memory_context uses.
+register_renderer(
+    PROPOSAL_TYPE_PORTAL_ACTION_FAILURE, _summary_portal_action_failure
+)
 
 
 def _handler_for(proposal_type: str) -> ProposalHandler:

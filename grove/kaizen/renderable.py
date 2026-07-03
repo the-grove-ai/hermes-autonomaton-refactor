@@ -42,6 +42,16 @@ class KaizenRenderable(Protocol):
         routing/zone/skill/pattern and dock-mutation keep the chat surface."""
         ...
 
+    @property
+    def offers_approve(self) -> bool:
+        """Whether the in-chat push may offer an ``approve`` affordance.
+
+        portal-action-error-surfacing-v1 — False for RENDER-ONLY types (no apply
+        handler), so the push never offers an affordance the apply path can't
+        honor. True for every type whose approve is honored. Dismiss is always
+        available (``cli_reject`` is tolerant of handler-less types)."""
+        ...
+
     def is_push_eligible(self, session_start: Optional[datetime]) -> bool: ...
 
     def push_body(self, core: str) -> str:
@@ -73,6 +83,12 @@ class MemoryProposalRenderable:
     def requires_portal_review(self) -> bool:
         # All memory voices (crystallize / graduate / deprecate) review in the
         # portal, not in chat (portal-reader-contract-fix-v1).
+        return True
+
+    @property
+    def offers_approve(self) -> bool:
+        # Memory proposals HAVE an apply path (MemoryProposalHandler on approve),
+        # so approve is honored — offered in the in-chat fallback form.
         return True
 
     @property
