@@ -146,13 +146,20 @@ def render_alert_banner(
     ``_loud_action_failure`` appends this to failure responses; the base
     template's ``htmx:responseError`` handler lifts its content into the live
     banner (htmx does not swap 4xx bodies itself). Every interpolated value passes
-    through ``_esc``."""
+    through ``_esc``.
+
+    Carries a ``.alert-dismiss`` control (portal-action-error-surfacing-v1 P3.5) —
+    the base template's DELEGATED click listener clears + hides the banner on tap
+    (survives innerHTML replacement). No auto-timeout — an error banner only
+    clears on manual dismiss or a subsequent successful action."""
     status_txt = f"{_esc(status)}: " if status is not None else ""
     detail_html = f'<p class="alert-detail">{_esc(detail)}</p>' if detail else ""
     return (
         f'<div id="alert-banner" class="alert-banner" role="alert" '
         f'aria-live="assertive" hx-swap-oob="true">'
         f'<div class="alert alert-error">'
+        f'<button type="button" class="alert-dismiss" aria-label="Dismiss">'
+        f'&times;</button>'
         f'<strong>Action failed.</strong> {status_txt}{_esc(message)}'
         f'{detail_html}'
         f'</div>'

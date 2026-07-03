@@ -41,6 +41,12 @@ class TestAlertBannerFragment:
         # No "None:" leaking when status is unset.
         assert "None" not in html
 
+    def test_fragment_carries_dismiss_control(self):
+        # P3.5 — the banner is manually dismissable (delegated listener keys on it).
+        html = render_alert_banner("boom", status=422)
+        assert 'class="alert-dismiss"' in html
+        assert 'type="button"' in html
+
 
 class TestResponseErrorRepoint:
     def _index(self) -> str:
@@ -74,6 +80,37 @@ class TestResponseErrorRepoint:
         assert "banner.innerHTML = lifted || fallback" in idx  # floor guaranteed
         assert "oob.innerHTML.trim()" in idx                    # empty lift excluded
         assert "try { status = evt.detail.xhr.status" in idx    # status read guarded
+
+
+class TestBannerLifecycle:
+    def _index(self) -> str:
+        return _INDEX.read_text(encoding="utf-8")
+
+    def test_manual_dismiss_delegated_listener(self):
+        idx = self._index()
+        # Delegated on document (survives innerHTML replacement), keyed on the
+        # dismiss control, clears + hides the banner.
+        assert "document.addEventListener('click'" in idx
+        assert "closest('.alert-dismiss')" in idx
+
+    def test_auto_clear_hooks_afterOnLoad_only(self):
+        idx = self._index()
+        # Auto-clear rides htmx:afterOnLoad (2xx-only), NOT afterRequest (fires on
+        # errors too) — so it can never clear the banner a fresh error just set.
+        assert "htmx:afterOnLoad" in idx
+        assert "htmx:afterRequest" not in idx
+
+    def test_no_auto_timeout(self):
+        idx = self._index()
+        # An error banner must never vanish on a timer.
+        assert "setTimeout" not in idx
+        assert "setInterval" not in idx
+
+    def test_lifecycle_does_not_touch_the_floor(self):
+        idx = self._index()
+        # The P2 responseError floor is intact — the lifecycle paths are additive.
+        assert "banner.innerHTML = lifted || fallback" in idx
+        assert "banner.hidden = false;" in idx  # fresh error still shows uncond.
 
 
 class TestInlinePathNonRegression:

@@ -103,8 +103,11 @@
           // so a malformed event can never suppress the floor.
           var status = '';
           try { status = evt.detail.xhr.status; } catch (e) { status = ''; }
-          var fallback = '<div class="alert alert-error"><strong>Action failed.'
-              + '</strong> ' + (status ? status + ': ' : '') + 'Check the logs.</div>';
+          var fallback = '<div class="alert alert-error">'
+              + '<button type="button" class="alert-dismiss" aria-label="Dismiss">'
+              + '&times;</button>'
+              + '<strong>Action failed.</strong> ' + (status ? status + ': ' : '')
+              + 'Check the logs.</div>';
           // Upgrade branch (dormant until P3): lift the server-rendered
           // #alert-banner OOB fragment when the failure response carried one. ANY
           // failure to extract a NON-EMPTY fragment — a throw, a missing node, or
@@ -120,6 +123,29 @@
           banner.innerHTML = lifted || fallback;
           banner.hidden = false;
       });
+
+      // portal-action-error-surfacing-v1 P3.5 — banner lifecycle. Two clear
+      // paths, NEITHER touches the responseError floor above: a fresh failure
+      // still sets banner unconditionally (lifted || fallback, hidden=false), so
+      // neither path can suppress the next error. Within one request only one of
+      // {afterOnLoad, responseError} fires (htmx gates afterOnLoad on shouldSwap
+      // = 2xx; responseError on isError = 4xx/5xx), so a fresh error always wins
+      // its own request.
+      function _clearAlertBanner() {
+          var banner = document.getElementById('alert-banner');
+          if (banner) { banner.innerHTML = ''; banner.hidden = true; }
+      }
+      // 1. Manual dismiss — DELEGATED on document so it survives the banner's
+      //    innerHTML being replaced by each new alert. Clears the CURRENT banner.
+      document.addEventListener('click', function(evt) {
+          if (evt.target.closest && evt.target.closest('.alert-dismiss')) {
+              _clearAlertBanner();
+          }
+      });
+      // 2. Auto-clear-on-success — htmx:afterOnLoad fires ONLY on a 2xx (verified
+      //    against the bundled htmx: it lives inside the shouldSwap block). A
+      //    subsequent successful action clears a stale error banner. NO timer.
+      document.body.addEventListener('htmx:afterOnLoad', _clearAlertBanner);
     </script>
     <!-- portal-link-provider-v1 — hash router. Deep links use
          {base_url}/portal#fragments/... so the operator always lands in the
