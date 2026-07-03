@@ -35,6 +35,7 @@ from grove.api.fragments import (
     _proposal_actions_html,
     _short_id,
     _swappable_tiers,
+    render_alert_banner,
     render_forge_publish_card,
     render_goal_card,
     render_tier_card,
@@ -57,6 +58,7 @@ from grove.flywheel_cli import (
 )
 from grove.memory import digest
 from grove.memory.digest import MemoryProposalHandler
+from grove.notify import broadcast_to_operator
 from hermes_constants import get_hermes_home
 from tools import mcp_tool
 
@@ -101,13 +103,76 @@ def _resolved_card(short_id: str, type_label: str, disposition: str, summary: st
     )
 
 
-def _not_found_card(proposal_id: str) -> web.Response:
-    return _html_fragment(
+def _not_found_card_html(proposal_id: str) -> str:
+    return (
         f'<div class="card card-resolved">'
         f'<p>Proposal <code>{_esc(proposal_id)}</code> not found — it may have '
-        f'already been resolved.</p></div>',
-        status=404,
+        f'already been resolved.</p></div>'
     )
+
+
+# ---------------------------------------------------------------------------
+# Loud disposition (portal-action-error-surfacing-v1 P3, Option A)
+# ---------------------------------------------------------------------------
+
+
+async def _loud_action_failure(
+    inline_card_html: str,
+    *,
+    failure_class: str,
+    action: str,
+    message: str,
+    status: int,
+    detail: str | None = None,
+    file_kaizen: bool = True,
+) -> web.Response:
+    """The shared loud-disposition path for a portal action failure (Option A).
+
+    Runs BOTH side-effects BEFORE assembling the response so neither can prevent
+    the return, then returns the handler's EXISTING failure status — 4xx/5xx
+    UNCHANGED. Option A preserves HTTP honesty: a failed action still speaks a
+    failure code to any monitor/curl; the operator-facing surface is the banner,
+    not a status flip.
+
+    Body = the inline card the handler already built PLUS the OOB ``#alert-banner``
+    (render_alert_banner). On the 4xx/5xx htmx does not swap the body, so the
+    original action card survives in the DOM for retry while the base template's
+    ``responseError`` listener lifts the banner (P2) — the failure is unmissable.
+
+    Fail-safe (the P1 reporter discipline applied to the helper): both
+    side-effects run and are swallowed on error so the card + banner ALWAYS
+    return. ``broadcast_to_operator`` is P1-internally-safe (never raises);
+    ``file_agentless_proposal`` does file I/O and is wrapped here.
+
+    ``file_kaizen`` gates only the Kaizen filing (the broadcast + banner always
+    fire): a pure client-input failure with no conceivable structural fix can set
+    it False so the review queue is not fed noise."""
+    logger.error(
+        "[portal.actions] %s failed (%s): %s", action, failure_class, message
+    )
+
+    # Side-effect 1 — reach the operator on every connected surface (P1 fail-safe).
+    await broadcast_to_operator(f"Portal action '{action}' failed: {message}")
+
+    # Side-effect 2 — file a Kaizen proposal so a RECURRING failure earns a
+    # structural fix. Wrapped: a queue write must never block the card + banner.
+    if file_kaizen:
+        try:
+            proposal_queue.file_agentless_proposal(
+                failure_class=failure_class,
+                action=action,
+                evidence=failure_class,          # stable → dedup on (class, action)
+                justification=message,           # excluded from id; ephemeral-safe
+                instance={"detail": detail} if detail else None,
+            )
+        except Exception as exc:  # noqa: BLE001 — reporter path: log, never raise
+            logger.error(
+                "[portal.actions] kaizen filing failed for %s/%s: %r",
+                action, failure_class, exc,
+            )
+
+    banner = render_alert_banner(message, status=status, detail=detail)
+    return _html_fragment(inline_card_html + banner, status=status)
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +180,7 @@ def _not_found_card(proposal_id: str) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
-def _apply_routing(proposal, action: str, full_id: str, short_id: str, reason):
+async def _apply_routing(proposal, action: str, full_id: str, short_id: str, reason):
     """Apply a routing proposal action. Mirrors grove.flywheel_cli.cli_approve /
     cli_reject: approve runs the registry apply_callback + remove + disposition;
     reject/dismiss remove + record (routing has no soft-dismiss — dismiss is a
@@ -127,29 +192,35 @@ def _apply_routing(proposal, action: str, full_id: str, short_id: str, reason):
         try:
             handler = _handler_for(proposal.type)
         except ValueError:
-            return _html_fragment(
+            msg = f"Cannot approve proposal type {proposal.type} from the portal."
+            return await _loud_action_failure(
                 f'<div class="card" id="proposal-{short_id}">'
                 f'<h4><span class="badge">{_esc(type_label)}</span> '
                 f'<span class="badge badge-yellow">refused</span></h4>'
                 f'<p>{_esc(summary)}</p>'
-                f'<div class="meta error">Cannot approve proposal type '
-                f'{_esc(proposal.type)} from the portal.</div>'
+                f'<div class="meta error">{_esc(msg)}</div>'
                 f'{_proposal_actions_html(full_id, short_id)}'
                 f'</div>',
+                failure_class="proposal_type_not_approvable",
+                action="proposal_approve",
+                message=msg,
                 status=422,
             )
         # B2 no-cluster-no-proposal gate — always on, scoped to rows that
         # declare requires_source_patterns (today: routing_adjustment).
         if handler.requires_source_patterns and not proposal.source_patterns:
-            return _html_fragment(
+            msg = "Cannot approve: no source_patterns (B2 no-cluster-no-proposal gate)."
+            return await _loud_action_failure(
                 f'<div class="card" id="proposal-{short_id}">'
                 f'<h4><span class="badge">{_esc(type_label)}</span> '
                 f'<span class="badge badge-yellow">refused</span></h4>'
                 f'<p>{_esc(summary)}</p>'
-                f'<div class="meta error">Cannot approve: no source_patterns '
-                f'(B2 no-cluster-no-proposal gate).</div>'
+                f'<div class="meta error">{_esc(msg)}</div>'
                 f'{_proposal_actions_html(full_id, short_id)}'
                 f'</div>',
+                failure_class="proposal_missing_source_patterns",
+                action="proposal_approve",
+                message=msg,
                 status=409,
             )
         target, applied = handler.apply_callback(
@@ -258,7 +329,7 @@ async def _dispatch_proposal_action(request: web.Request, action: str) -> web.Re
     # backing files, so a routing hit is unambiguous.
     routing = proposal_queue.read(proposal_id)
     if routing is not None:
-        return _apply_routing(routing, action, proposal_id, short_id, reason)
+        return await _apply_routing(routing, action, proposal_id, short_id, reason)
 
     # Then memory crystallizations.
     store = request.app["memory_store"]
@@ -266,7 +337,15 @@ async def _dispatch_proposal_action(request: web.Request, action: str) -> web.Re
     if resolved is not None:
         return resolved
 
-    return _not_found_card(proposal_id)
+    return await _loud_action_failure(
+        _not_found_card_html(proposal_id),
+        failure_class="proposal_not_found",
+        action=f"proposal_{action}",
+        message=(
+            f"Proposal {proposal_id} not found — it may have already been resolved."
+        ),
+        status=404,
+    )
 
 
 async def handle_proposal_approve(request: web.Request) -> web.Response:
@@ -294,26 +373,40 @@ async def handle_dock_goal_update(request: web.Request) -> web.Response:
         status = data.get("status")
 
     if status not in _VALID_STATUSES:
-        return _html_fragment(
+        # file_kaizen=False — the dock status control is closed to _VALID_STATUSES,
+        # so a 400 here is a hand-crafted request the UI cannot produce: no
+        # structural fix exists, filing would only pollute the queue. Broadcast +
+        # banner + log + 400 stay unconditional.
+        return await _loud_action_failure(
             f'<div class="card"><p class="error">Invalid status: '
             f'{_esc(str(status))}. Expected one of '
             f'{_esc(", ".join(sorted(_VALID_STATUSES)))}.</p></div>',
+            failure_class="dock_invalid_status",
+            action="dock_update",
+            message=f"Invalid dock status: {status!r}.",
             status=400,
+            file_kaizen=False,
         )
 
     try:
         updated = update_dock_goal_status(goal_id, status)
     except FileNotFoundError:
-        return _html_fragment(
+        return await _loud_action_failure(
             '<div class="card"><p class="error">Dock not installed — no '
             'dock.yaml to update.</p></div>',
+            failure_class="dock_not_installed",
+            action="dock_update",
+            message="Dock not installed — no dock.yaml to update.",
             status=404,
         )
 
     if not updated:
-        return _html_fragment(
+        return await _loud_action_failure(
             f'<div class="card"><p class="error">Goal '
             f'<code>{_esc(goal_id)}</code> not found.</p></div>',
+            failure_class="dock_goal_not_found",
+            action="dock_update",
+            message=f"Dock goal {goal_id!r} not found.",
             status=404,
         )
 
@@ -322,11 +415,16 @@ async def handle_dock_goal_update(request: web.Request) -> web.Response:
     dock = load_dock()
     goal = next((g for g in dock.goals if g.id == goal_id), None) if dock else None
     if goal is None:
-        # The write succeeded but the goal vanished on reload — fail loud.
-        return _html_fragment(
+        # The write succeeded but the goal vanished on reload — fail loud. Status
+        # STAYS 500 (Option A: a real server error keeps its honest code); the
+        # banner lifts on 5xx exactly as on 4xx.
+        return await _loud_action_failure(
             f'<div class="card"><p class="error">Goal '
             f'<code>{_esc(goal_id)}</code> updated but could not be reloaded.'
             f'</p></div>',
+            failure_class="dock_reload_vanished",
+            action="dock_update",
+            message=f"Dock goal {goal_id!r} updated but vanished on reload.",
             status=500,
         )
     return _html_fragment(render_goal_card(goal))
@@ -337,12 +435,11 @@ async def handle_dock_goal_update(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
-def _unknown_tier_card(tier: str) -> web.Response:
-    return _html_fragment(
+def _unknown_tier_card_html(tier: str) -> str:
+    return (
         f'<div class="card"><p class="error">Unknown tier {_esc(tier)} — the '
         f'operator manages {_esc(", ".join(_swappable_tiers()))} from the portal.'
-        f'</p></div>',
-        status=400,
+        f'</p></div>'
     )
 
 
@@ -357,25 +454,41 @@ async def handle_tier_model_swap(request: web.Request) -> web.Response:
     model_slug = str(data.get("model_slug") or "")
 
     if tier not in _swappable_tiers():
-        return _unknown_tier_card(tier)
+        # file_kaizen=False — the UI only offers swappable tiers, so an unknown
+        # tier is a hand-crafted request with no structural fix. Loud everywhere
+        # (broadcast + banner + log + 400), just not queued.
+        return await _loud_action_failure(
+            _unknown_tier_card_html(tier),
+            failure_class="tier_unknown",
+            action="tier_swap",
+            message=f"Unknown tier {tier!r}.",
+            status=400,
+            file_kaizen=False,
+        )
 
     catalog = load_catalog()
     if model_slug not in {m["slug"] for m in catalog}:
-        return _html_fragment(
+        return await _loud_action_failure(
             render_tier_card(
                 tier, _live_tier_preferences().get(tier), catalog,
                 error=f"Model {model_slug!r} is not in the catalog.",
             ),
+            failure_class="tier_model_off_catalog",
+            action="tier_swap",
+            message=f"Model {model_slug!r} is not in the catalog.",
             status=400,
         )
 
     try:
         await get_writer().swap_tier_model(tier, model_slug)
     except ConfigValidationError as exc:
-        return _html_fragment(
+        return await _loud_action_failure(
             render_tier_card(
                 tier, _live_tier_preferences().get(tier), catalog, error=str(exc)
             ),
+            failure_class="tier_config_invalid",
+            action="tier_swap",
+            message=str(exc),
             status=422,
         )
 
@@ -395,16 +508,28 @@ async def handle_tier_model_revert(request: web.Request) -> web.Response:
     tier = str(data.get("tier") or "")
 
     if tier not in _swappable_tiers():
-        return _unknown_tier_card(tier)
+        # file_kaizen=False — same as swap: an unknown tier is UI-impossible, so
+        # no structural fix; loud everywhere but not queued.
+        return await _loud_action_failure(
+            _unknown_tier_card_html(tier),
+            failure_class="tier_unknown",
+            action="tier_revert",
+            message=f"Unknown tier {tier!r}.",
+            status=400,
+            file_kaizen=False,
+        )
 
     catalog = load_catalog()
     try:
         await get_writer().revert_tier_model(tier)
     except ConfigValidationError as exc:
-        return _html_fragment(
+        return await _loud_action_failure(
             render_tier_card(
                 tier, _live_tier_preferences().get(tier), catalog, error=str(exc)
             ),
+            failure_class="tier_config_invalid",
+            action="tier_revert",
+            message=str(exc),
             status=422,
         )
 
@@ -430,15 +555,23 @@ async def handle_forge_publish(request: web.Request) -> web.Response:
     # 1. meta.json sidecar -> row_id, company, role (missing/malformed -> inline).
     read = _read_forge_slug(slug)
     if read is None:
-        return _html_fragment(
-            render_forge_publish_card(slug, error=f"No forge draft dir for {slug!r}."),
+        msg = f"No forge draft dir for {slug!r}."
+        return await _loud_action_failure(
+            render_forge_publish_card(slug, error=msg),
+            failure_class="forge_no_draft_dir",
+            action="forge_publish",
+            message=msg,
             status=404,
         )
     meta = read["meta"]
     if not meta or not all(meta.get(k) for k in ("row_id", "company", "role")):
         why = read["meta_error"] or "meta.json is missing row_id/company/role"
-        return _html_fragment(
-            render_forge_publish_card(slug, error=f"Cannot publish: {why}."),
+        msg = f"Cannot publish: {why}."
+        return await _loud_action_failure(
+            render_forge_publish_card(slug, error=msg),
+            failure_class="forge_meta_invalid",
+            action="forge_publish",
+            message=msg,
             status=400,
         )
     row_id, company, role = meta["row_id"], meta["company"], meta["role"]
@@ -458,15 +591,20 @@ async def handle_forge_publish(request: web.Request) -> web.Response:
             ),
         )
     except PublishError as exc:
-        return _html_fragment(
+        partial = json.dumps(exc.partial_state)
+        return await _loud_action_failure(
             render_forge_publish_card(
                 slug,
                 error=(
                     "Drive publish failed — no Notion write attempted. "
-                    f"Partial state: {json.dumps(exc.partial_state)}"
+                    f"Partial state: {partial}"
                 ),
             ),
+            failure_class="forge_drive_publish_error",
+            action="forge_publish",
+            message="Drive publish failed — no Notion write attempted.",
             status=422,
+            detail=partial,
         )
     folder_link = result.get("folder_link")
 
@@ -476,15 +614,15 @@ async def handle_forge_publish(request: web.Request) -> web.Response:
     with mcp_tool._lock:
         server = mcp_tool._servers.get("notion")
     if server is None or not getattr(server, "session", None):
-        return _html_fragment(
-            render_forge_publish_card(
-                slug,
-                folder_link=folder_link,
-                error=(
-                    "Drive package created. Notion MCP is cold — ping the agent "
-                    "in chat to wake it, then tap Publish again."
-                ),
-            ),
+        msg = (
+            "Drive package created. Notion MCP is cold — ping the agent "
+            "in chat to wake it, then tap Publish again."
+        )
+        return await _loud_action_failure(
+            render_forge_publish_card(slug, folder_link=folder_link, error=msg),
+            failure_class="forge_notion_cold",
+            action="forge_publish",
+            message=msg,
             status=400,
         )
     notion_call = mcp_tool._make_tool_handler(
@@ -507,15 +645,15 @@ async def handle_forge_publish(request: web.Request) -> web.Response:
     except (json.JSONDecodeError, TypeError):
         parsed = {"error": f"unparseable notion response: {raw!r}"}
     if "error" in parsed:
-        return _html_fragment(
-            render_forge_publish_card(
-                slug,
-                folder_link=folder_link,
-                error=(
-                    f"Drive package created. Notion update failed: {parsed['error']}. "
-                    "Tap Publish again to retry."
-                ),
-            ),
+        msg = (
+            f"Drive package created. Notion update failed: {parsed['error']}. "
+            "Tap Publish again to retry."
+        )
+        return await _loud_action_failure(
+            render_forge_publish_card(slug, folder_link=folder_link, error=msg),
+            failure_class="forge_notion_update_error",
+            action="forge_publish",
+            message=msg,
             status=400,
         )
 
