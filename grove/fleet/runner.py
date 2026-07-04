@@ -140,7 +140,10 @@ class KanbanRunner:
             cmd,
             cwd=str(_repo_root()),
             preexec_fn=build_preexec(
-                mem_mb=limits.get("mem_mb"), nice_increment=limits.get("nice")
+                mem_mb=limits.get("mem_mb"),
+                nice_increment=limits.get("nice"),
+                fsize_mb=limits.get("fsize_mb"),
+                nofile=limits.get("nofile"),
             ),
         )
 

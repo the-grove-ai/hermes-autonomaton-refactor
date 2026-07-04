@@ -64,15 +64,17 @@ def remove_pidfile(worker_id: str) -> None:
         pass
 
 
-def sweep_orphans() -> List[Dict[str, Any]]:
+def sweep_orphans(loop: Optional[Any] = None) -> List[Dict[str, Any]]:
     """Startup reap. Must run BEFORE the cron ticker thread starts.
 
     For every ``$GROVE_HOME/fleet/<id>/worker.pid``: a live group is an orphan
     (no ticker owns it after a gateway restart) -> SIGKILL the group and remove
     the pidfile; a dead one is stale -> just remove. Returns the reaped records.
 
-    Per-pidfile defensive: a malformed/unreadable pidfile is logged loudly and
-    skipped so one bad file cannot abort the whole sweep or block startup.
+    Per-pidfile defensive: a malformed/unreadable pidfile is a possible UNREAPED
+    orphan, so it is routed to the observed-event bus (operator visibility, with
+    go-forward options) AND left in place for inspection — never silently
+    skipped, and one bad file never aborts the sweep or blocks startup.
     """
     reaped: List[Dict[str, Any]] = []
     root = paths.fleet_root()
@@ -83,8 +85,22 @@ def sweep_orphans() -> List[Dict[str, Any]]:
             rec = json.loads(pidfile.read_text(encoding="utf-8"))
             pid, pgid = int(rec["pid"]), int(rec["pgid"])
         except Exception as exc:  # malformed pidfile — surface, do not crash
+            worker_id = pidfile.parent.name
             logger.error("[fleet.reap] unreadable pidfile %s: %s", pidfile, exc)
-            continue
+            try:
+                from grove.fleet.observability import surface_fleet_andon
+
+                surface_fleet_andon(
+                    worker_id,
+                    "unknown",
+                    f"unreadable worker pidfile {pidfile} ({exc}) — a prior "
+                    f"worker's process group may be unreaped",
+                    check="orphan_pidfile_malformed",
+                    loop=loop,
+                )
+            except Exception as surf_exc:  # noqa: BLE001 — visibility is best-effort
+                logger.error("[fleet.reap] could not surface malformed pidfile: %r", surf_exc)
+            continue  # leave the malformed file in place for inspection
         if group_alive(pid, pgid):
             logger.warning(
                 "[fleet.reap] orphaned worker %s (pid=%s pgid=%s) survived a "

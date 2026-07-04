@@ -25,27 +25,54 @@ except ImportError:  # pragma: no cover - non-POSIX
     _resource = None
 
 
+# Belt-and-suspenders storage/fd caps (Phase-2 amendment). RLIMIT_AS bounds
+# process-tree memory but NOT disk-fill or fd-exhaustion; a worker self-writes
+# until Phase-4 Option 2 drops its write tool, so cap those cheaply and always.
+# Generous documented defaults (backstops, not tuning targets) — overridable per
+# worker via limits.fsize_mb / limits.nofile.
+DEFAULT_FSIZE_MB = 256   # per-file write cap — bounds one runaway file.
+DEFAULT_NOFILE = 512     # open-fd cap — bounds fd exhaustion.
+
+
 def build_preexec(
-    mem_mb: Optional[int] = None, nice_increment: Optional[int] = None
+    mem_mb: Optional[int] = None,
+    nice_increment: Optional[int] = None,
+    fsize_mb: Optional[int] = None,
+    nofile: Optional[int] = None,
 ) -> Callable[[], None]:
     """Return a ``preexec_fn`` that runs in the child after fork, before exec:
 
     1. ``os.setsid()`` — the child becomes a session/group leader; its pgid
        equals its pid and is distinct from the gateway's group.
-    2. ``RLIMIT_AS`` set to ``mem_mb`` (virtual address-space ceiling) when given.
-    3. ``os.nice(nice_increment)`` when given.
+    2. ``RLIMIT_AS`` = ``mem_mb`` when given. NOTE: this caps VIRTUAL
+       address space, not RSS — allocator arenas / mmap reservations count
+       against it, so ``mem_mb`` is a VA ceiling that must carry headroom over
+       the worker's real RSS, NOT an RSS target.
+    3. ``RLIMIT_FSIZE`` = ``fsize_mb`` (default DEFAULT_FSIZE_MB) — per-file cap.
+    4. ``RLIMIT_NOFILE`` = ``nofile`` (default DEFAULT_NOFILE) — open-fd cap.
+    5. ``os.nice(nice_increment)`` when given.
+
+    Storage/fd caps are always applied (belt-and-suspenders); the memory ceiling
+    only when ``mem_mb`` is declared.
     """
+    eff_fsize = DEFAULT_FSIZE_MB if fsize_mb is None else int(fsize_mb)
+    eff_nofile = DEFAULT_NOFILE if nofile is None else int(nofile)
 
     def _preexec() -> None:
         os.setsid()
+        if _resource is None:
+            # A limit was requested but the platform cannot enforce it — fail
+            # loud rather than silently run an unbounded worker.
+            raise RuntimeError(
+                "resource.setrlimit unavailable on this platform — the fleet "
+                "runtime requires POSIX to enforce worker resource limits"
+            )
         if mem_mb is not None:
-            if _resource is None:
-                raise RuntimeError(
-                    "resource.setrlimit unavailable on this platform — the fleet "
-                    "runtime requires POSIX to enforce the memory ceiling"
-                )
             nbytes = int(mem_mb) * 1024 * 1024
             _resource.setrlimit(_resource.RLIMIT_AS, (nbytes, nbytes))
+        fbytes = eff_fsize * 1024 * 1024
+        _resource.setrlimit(_resource.RLIMIT_FSIZE, (fbytes, fbytes))
+        _resource.setrlimit(_resource.RLIMIT_NOFILE, (eff_nofile, eff_nofile))
         if nice_increment:
             os.nice(int(nice_increment))
 
