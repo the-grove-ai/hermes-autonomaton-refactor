@@ -48,6 +48,7 @@ __all__ = [
     "Lineage",
     "CircuitBreaker",
     "Failure",
+    "READ_SURFACE_VOCABULARY",
     "Capability",
     "IllegalTransitionError",
     "LEGAL_TRANSITIONS",
@@ -59,6 +60,25 @@ __all__ = [
 # Public constant — downstream subsystems (gateway filter, tool-admission
 # checks) enumerate valid surfaces from here rather than duplicating the list.
 VALID_PLATFORMS: frozenset = frozenset({"telegram", "cli", "api", "web", "discord", "cron"})
+
+
+# ── read_surfaces vocabulary (background-worker-runtime-v1) ───────────────────
+# The canonical set of data-surface tokens a capability's skill may touch. A
+# fleet background worker enforces this list generically: it may read only the
+# surfaces its record declares. Structural / fail-loud — an unknown token would
+# let a worker silently touch an unenforced surface, so validate() rejects it at
+# LOAD (dry-run validation), never at runtime. Extend this set (not a record's
+# ad-hoc string) before a new surface may be declared.
+#
+#   corpus_file  — plain files the skill reads (e.g. career-corpus.md).
+#   cellar       — the living-cellar FTS index (grove/cellar.py).
+#   wiki         — the wiki FTS index (grove/wiki/index.py).
+#
+# The index surfaces (cellar, wiki) require a collision-safe injected SQLite
+# connection; both index opens are bare today (discovery: cellar.py:168,
+# wiki/index.py:253), so the fleet runtime raises a loud Andon for any worker
+# that declares them until that connection is wired. corpus_file is unaffected.
+READ_SURFACE_VOCABULARY: frozenset = frozenset({"corpus_file", "cellar", "wiki"})
 
 
 # ── Enums (str-valued; serialize as lowercase strings) ───────────────────────
@@ -364,6 +384,13 @@ class Capability:
     # existing records (present-key-only round-trip: serialization is
     # byte-identical when absent). Only valid on kind=skill records (validate()).
     model_binding: "ModelBinding | None" = None
+    # background-worker-runtime-v1 — the data surfaces this capability's skill
+    # may touch when run as a fleet background worker. Empty for every existing
+    # record (present-key-only round-trip: serialization is byte-identical when
+    # empty). Validated against READ_SURFACE_VOCABULARY at construction — an
+    # unknown token fails loud. The fleet runtime enforces this list generically;
+    # the record itself carries no runtime code, only the declaration.
+    read_surfaces: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.validate()
@@ -524,6 +551,26 @@ class Capability:
                         "(validated-but-no-op, reserved for Auxiliary Inference)"
                     )
 
+        # background-worker-runtime-v1 — read_surfaces vocabulary. An unknown or
+        # malformed token would let a fleet worker declare (and the runtime fail
+        # to enforce) a surface that does not exist; reject at load. Empty is the
+        # default and valid (a record that is never run as a worker declares no
+        # surfaces). Duplicates are a copy-paste defect — fail loud, not dedupe.
+        rs = self.read_surfaces
+        if not isinstance(rs, list):
+            raise ValueError(f"read_surfaces must be a list; got {type(rs)!r}")
+        for token in rs:
+            if not isinstance(token, str) or not token:
+                raise ValueError("read_surfaces entries must be non-empty strings")
+            if token not in READ_SURFACE_VOCABULARY:
+                raise ValueError(
+                    f"read_surfaces token {token!r} is not in the known "
+                    f"vocabulary {sorted(READ_SURFACE_VOCABULARY)} — declare it "
+                    f"in grove/capability.py READ_SURFACE_VOCABULARY before use"
+                )
+        if len(set(rs)) != len(rs):
+            raise ValueError("read_surfaces must not repeat a token")
+
     # ── Lifecycle state machine ──────────────────────────────────────────────
 
     def transition(
@@ -651,6 +698,12 @@ class Capability:
             if self.model_binding.tier is not None:
                 mb["tier"] = self.model_binding.tier
             d["model_binding"] = mb
+        # background-worker-runtime-v1 — emit only when non-empty, so every
+        # existing record's serialized shape is unchanged (parity with the
+        # governance/model_binding blocks) and the list survives a to_yaml
+        # round-trip.
+        if self.read_surfaces:
+            d["read_surfaces"] = list(self.read_surfaces)
         return d
 
     @classmethod
@@ -774,6 +827,12 @@ class Capability:
         if "model_binding" in d and d["model_binding"] is not None:
             mb = d["model_binding"]
             kwargs["model_binding"] = ModelBinding(type=mb.get("type"), tier=mb.get("tier"))
+
+        # background-worker-runtime-v1 — read_surfaces (present-key only; absent
+        # -> empty-list default). Carried verbatim; validate() checks the
+        # vocabulary so a round-trip never silently drops or mangles a token.
+        if "read_surfaces" in d:
+            kwargs["read_surfaces"] = list(d["read_surfaces"])
 
         if "failure" in d:
             f = d["failure"]
