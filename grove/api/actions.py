@@ -24,7 +24,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from aiohttp import web
 
@@ -48,6 +50,7 @@ from grove.dock import _VALID_STATUSES, load_dock
 from grove.dock.writer import update_dock_goal_status
 from grove.eval import proposal_queue
 from grove.eval.proposal_queue import (
+    PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
     PROPOSAL_TYPE_MEMORY_CONTEXT,
     compute_proposal_id,
 )
@@ -109,6 +112,30 @@ def _not_found_card_html(proposal_id: str) -> str:
         f'<p>Proposal <code>{_esc(proposal_id)}</code> not found — it may have '
         f'already been resolved.</p></div>'
     )
+
+
+def _archive_forge_slug(proposal) -> Optional[str]:
+    """Move a rejected forge draft OUT of pending_review into
+    ``~/.grove/forge/.archive/<slug>-<ts>/`` (fleet-pipeline-v1 P3 / Gemini D+B1).
+
+    One atomic ``rename`` within ``~/.grove`` (a single mount) both retains the
+    trainable package AND clears the skip-already-staged marker (the one-level
+    ``pending_review/*/meta.json`` glob no longer sees it), so the row becomes
+    re-draftable. Returns the archive path, or None when the dir is already gone
+    (published/removed). The CALLER archives BEFORE finalize so a crash between
+    leaves the proposal live."""
+    slug = (proposal.payload or {}).get("slug")
+    if not slug:
+        return None
+    home = Path(get_hermes_home())
+    src = home / "forge" / "pending_review" / slug
+    if not src.is_dir():
+        return None
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = home / "forge" / ".archive" / f"{slug}-{ts}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dest)  # atomic within the one ~/.grove mount
+    return str(dest)
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +262,21 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str, rea
             proposal.proposal_id, handler.apply_label_prefix, target,
         )
         return _resolved_card(short_id, type_label, "approved", summary)
+
+    # fleet-pipeline-v1 P3 — forge-type-aware reject: archive-then-clear. Move the
+    # staged package OUT of pending_review (atomically clearing the skip-already-
+    # staged marker AND retaining the trainable corpus), THEN finalize. Order is
+    # load-bearing: archive BEFORE finalize, so a crash between them leaves the
+    # proposal LIVE (re-rejectable), never a cleared-proposal-with-unarchived-dir.
+    if proposal.type == PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING:
+        archive_path = _archive_forge_slug(proposal)
+        proposal_queue.finalize_proposal_state(
+            proposal.proposal_id, "rejected",
+            {"archive_path": archive_path}, reason=reason,
+        )
+        return _resolved_card(
+            short_id, type_label, _DISPOSITION_LABEL[action], summary
+        )
 
     # reject + dismiss both dequeue; dismiss records a rejection disposition
     # (routing has no distinct dismiss concept — SPEC 1c).
@@ -539,50 +581,37 @@ async def handle_tier_model_revert(request: web.Request) -> web.Response:
     )
 
 
-async def handle_forge_publish(request: web.Request) -> web.Response:
-    """``POST /portal/actions/forge/{slug}/publish`` — the operator's Publish tap
-    (forge-jobsearch-v1). Mirrors ``handle_tier_model_swap``: validate -> apply in
-    a try -> re-render the SAME card with an inline error (4xx, never 500) ->
-    success render + ``logger.info``.
+# fleet-pipeline-v1 P3 — bounded publish. A hang beyond this becomes an in-process
+# TimeoutError; the promote route then KEEPS the lease held (the run_in_executor
+# thread survives wait_for cancel and would double-write if a re-tap started).
+_FORGE_PUBLISH_TIMEOUT = 90.0
 
-    Order is load-bearing: DRIVE first (create-once, idempotency-guarded INSIDE
-    the orchestrator, so a retry after a failed Notion write does not duplicate
-    the folder), NOTION last (the retryable tail). A cold notion session fails
-    LOUD with the partial state — the portal is a CONSUMER of the MCP substrate,
-    never a manager, so it never connects or wakes the server."""
-    slug = request.match_info["slug"]
 
-    # 1. meta.json sidecar -> row_id, company, role (missing/malformed -> inline).
+async def _forge_publish_core(slug: str, loop) -> dict:
+    """Shared publish mechanics: meta.json -> Drive (contents-aware) -> Notion.
+    DRIVE first (idempotent, contents-aware — never publishes a partial folder),
+    NOTION last, and only AFTER Drive contents are verified complete.
+
+    Returns a discriminated dict — ``{"ok": True, "folder_link", "row_id"}`` on
+    success, or ``{"ok": False, "kind", "status", "message", "folder_link"?,
+    "detail"?}`` on an EXPECTED failure. An UNEXPECTED exception propagates. The
+    portal is a CONSUMER of the MCP substrate: a cold notion session fails LOUD,
+    never connecting or waking the server. Shared by /publish (renders forge
+    cards) and /promote (lease + finalize)."""
     read = _read_forge_slug(slug)
     if read is None:
-        msg = f"No forge draft dir for {slug!r}."
-        return await _loud_action_failure(
-            render_forge_publish_card(slug, error=msg),
-            failure_class="forge_no_draft_dir",
-            action="forge_publish",
-            message=msg,
-            status=404,
-        )
+        return {"ok": False, "kind": "forge_no_draft_dir", "status": 404,
+                "message": f"No forge draft dir for {slug!r}."}
     meta = read["meta"]
     if not meta or not all(meta.get(k) for k in ("row_id", "company", "role")):
         why = read["meta_error"] or "meta.json is missing row_id/company/role"
-        msg = f"Cannot publish: {why}."
-        return await _loud_action_failure(
-            render_forge_publish_card(slug, error=msg),
-            failure_class="forge_meta_invalid",
-            action="forge_publish",
-            message=msg,
-            status=400,
-        )
+        return {"ok": False, "kind": "forge_meta_invalid", "status": 400,
+                "message": f"Cannot publish: {why}."}
     row_id, company, role = meta["row_id"], meta["company"], meta["role"]
     slug_dir = Path(get_hermes_home()) / "forge" / "pending_review" / slug
     resume_path = str(slug_dir / "resume.md")
     cover_path = str(slug_dir / "cover-letter.md")
 
-    loop = asyncio.get_running_loop()
-
-    # 2. DRIVE — create-once, guarded inside the orchestrator. Run in an executor
-    #    so the blocking subprocess / network calls never stall the event loop.
     try:
         result = await loop.run_in_executor(
             None,
@@ -591,53 +620,25 @@ async def handle_forge_publish(request: web.Request) -> web.Response:
             ),
         )
     except PublishError as exc:
-        partial = json.dumps(exc.partial_state)
-        return await _loud_action_failure(
-            render_forge_publish_card(
-                slug,
-                error=(
-                    "Drive publish failed — no Notion write attempted. "
-                    f"Partial state: {partial}"
-                ),
-            ),
-            failure_class="forge_drive_publish_error",
-            action="forge_publish",
-            message="Drive publish failed — no Notion write attempted.",
-            status=422,
-            detail=partial,
-        )
+        return {"ok": False, "kind": "forge_drive_publish_error", "status": 422,
+                "message": "Drive publish failed — no Notion write attempted.",
+                "detail": json.dumps(exc.partial_state)}
     folder_link = result.get("folder_link")
 
-    # 3. NOTION — the retryable tail, only after Drive success. Look up the LIVE
-    #    gateway notion OAuth session (the same one scout writes rows through).
-    #    Cold -> fail loud; do NOT connect or manage it.
     with mcp_tool._lock:
         server = mcp_tool._servers.get("notion")
     if server is None or not getattr(server, "session", None):
-        msg = (
-            "Drive package created. Notion MCP is cold — ping the agent "
-            "in chat to wake it, then tap Publish again."
-        )
-        return await _loud_action_failure(
-            render_forge_publish_card(slug, folder_link=folder_link, error=msg),
-            failure_class="forge_notion_cold",
-            action="forge_publish",
-            message=msg,
-            status=400,
-        )
+        return {"ok": False, "kind": "forge_notion_cold", "status": 400,
+                "message": ("Drive package created. Notion MCP is cold — ping the "
+                            "agent in chat to wake it, then tap Publish again."),
+                "folder_link": folder_link}
     notion_call = mcp_tool._make_tool_handler(
         "notion", _NOTION_UPDATE_TOOL, mcp_tool._DEFAULT_TOOL_TIMEOUT
     )
-    # Hosted mcp.notion.com update-page: command=update_properties with a FLAT
-    # {property: scalar} map (Status is a select -> its option name as a string;
-    # Application Package is a url -> the link as a string).
     args = {
         "page_id": row_id,
         "command": "update_properties",
-        "properties": {
-            "Application Package": folder_link,
-            "Status": "Drafted",
-        },
+        "properties": {"Application Package": folder_link, "Status": "Drafted"},
     }
     raw = await loop.run_in_executor(None, lambda: notion_call(args))
     try:
@@ -645,27 +646,145 @@ async def handle_forge_publish(request: web.Request) -> web.Response:
     except (json.JSONDecodeError, TypeError):
         parsed = {"error": f"unparseable notion response: {raw!r}"}
     if "error" in parsed:
-        msg = (
-            f"Drive package created. Notion update failed: {parsed['error']}. "
-            "Tap Publish again to retry."
-        )
-        return await _loud_action_failure(
-            render_forge_publish_card(slug, folder_link=folder_link, error=msg),
-            failure_class="forge_notion_update_error",
-            action="forge_publish",
-            message=msg,
-            status=400,
-        )
-
-    # 4. SUCCESS — Drive folder + row updated. The orchestrator audited Drive;
-    #    log the row completion here for audit completeness.
+        return {"ok": False, "kind": "forge_notion_update_error", "status": 400,
+                "message": (f"Drive package created. Notion update failed: "
+                            f"{parsed['error']}. Tap Publish again to retry."),
+                "folder_link": folder_link}
     logger.info(
         "[portal.actions] forge %s published: folder=%s row=%s Status->Drafted",
         slug, folder_link, row_id,
     )
-    return _html_fragment(
-        render_forge_publish_card(slug, published=True, folder_link=folder_link),
-        status=200,
+    return {"ok": True, "folder_link": folder_link, "row_id": row_id}
+
+
+async def handle_forge_publish(request: web.Request) -> web.Response:
+    """``POST /portal/actions/forge/{slug}/publish`` — the operator's Publish tap
+    (forge-jobsearch-v1). Thin over :func:`_forge_publish_core`; renders the SAME
+    forge card + inline error (4xx, never 500) on failure, success card on ok."""
+    slug = request.match_info["slug"]
+    res = await _forge_publish_core(slug, asyncio.get_running_loop())
+    if res.get("ok"):
+        return _html_fragment(
+            render_forge_publish_card(slug, published=True, folder_link=res["folder_link"]),
+            status=200,
+        )
+    if res["kind"] == "forge_drive_publish_error":
+        card_error = ("Drive publish failed — no Notion write attempted. "
+                      f"Partial state: {res['detail']}")
+    else:
+        card_error = res["message"]
+    return await _loud_action_failure(
+        render_forge_publish_card(slug, folder_link=res.get("folder_link"), error=card_error),
+        failure_class=res["kind"], action="forge_publish",
+        message=res["message"], status=res["status"], detail=res.get("detail"),
+    )
+
+
+def _forge_promote_error_card(proposal_id: str, short_id: str, ptype: str,
+                              message: str, *, retappable: bool) -> str:
+    """A promote-failure card. Re-renders the verb buttons ONLY when the draft is
+    re-tappable (completed-failure cleared the lease); a held lease (timeout /
+    in-flight) shows no buttons so the operator does not re-tap into the race."""
+    actions = ""
+    if retappable:
+        from grove.api.fragments import _verb_actions_html
+        from grove.eval.proposal_queue import PROPOSAL_VERBS
+        actions = _verb_actions_html(proposal_id, short_id, PROPOSAL_VERBS.get(ptype, ()))
+    return (
+        f'<div class="card" id="proposal-{short_id}">'
+        f'<h4><span class="badge">{_esc(ptype)}</span> '
+        f'<span class="badge badge-yellow">error</span></h4>'
+        f'<div class="meta error">{_esc(message)}</div>{actions}</div>'
+    )
+
+
+async def handle_forge_promote(request: web.Request) -> web.Response:
+    """``POST /portal/actions/proposals/{proposal_id}/promote`` — the bespoke async
+    Promote tap for a forge_artifact_pending proposal (fleet-pipeline-v1 P3).
+
+    Sequence (Gemini 1c, verbatim): set_lease -> bounded publish -> finalize. The
+    proposal is NEVER removed until finalize; there is no re-enqueue.
+
+    TWO failure dispositions (Gemini 1a'): a COMPLETED failure (the executor future
+    RETURNED) clears the lease — the record stays, re-tappable. A TIMEOUT (wait_for
+    cancels the await but the run_in_executor thread STAYS LIVE) KEEPS the lease
+    held — clearing it would let a re-tap double-write against the concurrent-racy
+    Drive guard; only the startup sweep or a manual clear releases it."""
+    proposal_id = request.match_info["proposal_id"]
+    short_id = _short_id(proposal_id)
+
+    proposal = proposal_queue.read(proposal_id)
+    if proposal is None:
+        return await _loud_action_failure(
+            _not_found_card_html(proposal_id), failure_class="proposal_not_found",
+            action="forge_promote", message="Proposal already resolved.", status=404,
+        )
+    ptype = proposal.type
+    slug = (proposal.payload or {}).get("slug")
+    if not slug:
+        return await _loud_action_failure(
+            _forge_promote_error_card(proposal_id, short_id, ptype,
+                                      "Proposal carries no slug — cannot publish.",
+                                      retappable=False),
+            failure_class="forge_promote_no_slug", action="forge_promote",
+            message="Proposal carries no slug — cannot publish.", status=400,
+        )
+
+    lease = proposal_queue.set_lease(proposal_id, holder="portal_promote")
+    if lease == proposal_queue.LEASE_NOT_FOUND:
+        return await _loud_action_failure(
+            _not_found_card_html(proposal_id), failure_class="proposal_not_found",
+            action="forge_promote", message="Proposal already resolved.", status=404,
+        )
+    if lease == proposal_queue.LEASE_ALREADY_HELD:
+        return await _loud_action_failure(
+            _forge_promote_error_card(proposal_id, short_id, ptype,
+                                      "A publish is already in flight for this draft.",
+                                      retappable=False),
+            failure_class="forge_promote_in_flight", action="forge_promote",
+            message="A publish is already in flight for this draft.", status=409,
+        )
+
+    loop = asyncio.get_running_loop()
+    try:
+        res = await asyncio.wait_for(
+            _forge_publish_core(slug, loop), timeout=_FORGE_PUBLISH_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        # TIMEOUT — executor thread STILL LIVE. KEEP the lease held.
+        msg = ("Publish timed out — still processing. The lease is HELD; it will "
+               "release on the next gateway restart (or a manual clear). Do NOT "
+               "re-tap yet.")
+        return await _loud_action_failure(
+            _forge_promote_error_card(proposal_id, short_id, ptype, msg, retappable=False),
+            failure_class="forge_promote_timeout", action="forge_promote",
+            message=msg, status=504,
+        )
+    except Exception as exc:  # noqa: BLE001 — future RETURNED an error -> completed failure
+        proposal_queue.clear_lease(proposal_id)
+        msg = f"Publish failed unexpectedly: {exc}. Re-tap to retry."
+        return await _loud_action_failure(
+            _forge_promote_error_card(proposal_id, short_id, ptype, msg, retappable=True),
+            failure_class="forge_promote_error", action="forge_promote",
+            message=msg, status=500,
+        )
+
+    if not res.get("ok"):
+        # COMPLETED failure (discriminated) — clear the lease, record untouched.
+        proposal_queue.clear_lease(proposal_id)
+        return await _loud_action_failure(
+            _forge_promote_error_card(proposal_id, short_id, ptype, res["message"],
+                                      retappable=True),
+            failure_class=res["kind"], action="forge_promote",
+            message=res["message"], status=res["status"], detail=res.get("detail"),
+        )
+
+    # SUCCESS — finalize (the single disposition path): remove + kaizen ledger.
+    proposal_queue.finalize_proposal_state(
+        proposal_id, "applied", {"folder_link": res["folder_link"]}
+    )
+    return _resolved_card(
+        short_id, ptype, "promoted", f"Published — {res['folder_link']}"
     )
 
 
@@ -690,3 +809,8 @@ def register_action_routes(app: web.Application) -> None:
     app.router.add_post("/portal/actions/routing/revert", handle_tier_model_revert)
     # forge-jobsearch-v1 — operator Publish tap (Drive-first, Notion-last)
     app.router.add_post("/portal/actions/forge/{slug}/publish", handle_forge_publish)
+    # fleet-pipeline-v1 P3 — bespoke async Promote tap (set_lease -> bounded
+    # publish -> finalize) for a forge_artifact_pending proposal.
+    app.router.add_post(
+        "/portal/actions/proposals/{proposal_id}/promote", handle_forge_promote
+    )
