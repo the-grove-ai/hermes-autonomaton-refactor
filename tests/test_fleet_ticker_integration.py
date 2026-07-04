@@ -8,6 +8,7 @@ go-forward options. GROVE_HOME is per-test isolated by the autouse fixture.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, time as dtime, timedelta, timezone
 
 import pytest
@@ -32,22 +33,36 @@ def test_resolve_unknown_type_andons():
     assert ei.value.check == "resolver_failed"
 
 
-def test_notion_query_returns_matching_rows(monkeypatch):
-    rows = {"result": {"rows": [
-        {"properties": {"Status": "To Apply", "Company": "Acme"}},
-        {"properties": {"Status": "New", "Company": "Beta"}},
-    ]}}
-    monkeypatch.setattr(resolvers, "_mcp_call", lambda *a, **k: rows)
+def test_notion_query_returns_rows_and_builds_sql(monkeypatch):
+    # Live shape: server WHERE filters; result is DOUBLE-encoded with FLAT rows.
+    seen = {}
+
+    def _fake_mcp(server, tool, args, timeout):
+        seen["server"], seen["tool"], seen["args"] = server, tool, args
+        return {"result": json.dumps({"results": [
+            {"Company": "Acme", "Role": "Head of Product", "Status": "To Apply", "id": "pg1"},
+        ]})}
+
+    monkeypatch.setattr(resolvers, "_mcp_call", _fake_mcp)
     out = resolvers.resolve_input_state(
-        {"type": "notion_query", "data_source": "collection://x", "filter": {"Status": "To Apply"}},
+        {"type": "notion_query", "data_source": "5eb5630d-x", "filter": {"Status": "To Apply"}},
         "forge",
     )
-    assert out is not None
-    assert [r["properties"]["Company"] for r in out["rows"]] == ["Acme"]
+    # correct tool name + data-wrapped SQL args + collection:// prefix + params
+    assert seen["tool"] == "notion-query-data-sources"
+    d = seen["args"]["data"]
+    assert d["mode"] == "sql"
+    assert d["data_source_urls"] == ["collection://5eb5630d-x"]
+    assert '"Status" = ?' in d["query"] and "collection://5eb5630d-x" in d["query"]
+    assert d["params"] == ["To Apply"]
+    # flat rows returned (no "properties" wrapper)
+    assert out is not None and out["rows"][0]["Company"] == "Acme"
+    assert out["data_source"] == "collection://5eb5630d-x"
 
 
 def test_notion_query_no_match_is_no_work(monkeypatch):
-    monkeypatch.setattr(resolvers, "_mcp_call", lambda *a, **k: {"result": {"rows": []}})
+    monkeypatch.setattr(resolvers, "_mcp_call",
+                        lambda *a, **k: {"result": json.dumps({"results": []})})
     out = resolvers.resolve_input_state(
         {"type": "notion_query", "data_source": "collection://x", "filter": {"Status": "To Apply"}},
         "forge",

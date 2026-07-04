@@ -57,10 +57,23 @@ def resolve_input_state(input_state: Dict[str, Any], worker_id: str) -> Optional
 # ── notion_query ─────────────────────────────────────────────────────────────
 
 NOTION_SERVER = "notion"
-# Notion's query tool name is version-dependent; overridable via input_state.tool
-# and pinned against live /mcp in Phase 5 (the first live Notion read).
-NOTION_QUERY_TOOL = "notion_query_data_sources"
-_RESOLVER_TIMEOUT_SECS = 15.0
+# Pinned against live mcp.notion.com in Phase 5 (first live read). The tool is
+# HYPHENATED and takes a SQL-mode payload wrapped under a top-level `data` key:
+#   {"data": {"mode": "sql",
+#             "data_source_urls": ["collection://<id>"],
+#             "query": 'SELECT * FROM "collection://<id>" WHERE "Col" = ?',
+#             "params": ["<value>"]}}
+# The result is DOUBLE-ENCODED: {"result": "<json string of {\"results\": [rows]}>"}
+# and each row is FLAT (properties are direct keys, no "properties" wrapper).
+# Overridable via input_state.tool.
+NOTION_QUERY_TOOL = "notion-query-data-sources"
+_RESOLVER_TIMEOUT_SECS = 30.0
+
+
+def _collection_url(data_source: str) -> str:
+    """Notion SQL mode addresses a data source as ``collection://<id>``."""
+    ds = str(data_source).strip()
+    return ds if ds.startswith("collection://") else f"collection://{ds}"
 
 
 def _mcp_call(server: str, tool: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
@@ -81,13 +94,21 @@ def _mcp_call(server: str, tool: str, args: Dict[str, Any], timeout: float) -> D
         ) from exc
 
 
-def _row_matches(row: Dict[str, Any], filter_: Dict[str, Any]) -> bool:
-    """Generic equality match of a normalized row's properties against filter."""
-    props = row.get("properties", row)
-    for key, expected in (filter_ or {}).items():
-        if props.get(key) != expected:
-            return False
-    return True
+def _build_sql(ds_url: str, filter_: Dict[str, Any]) -> "tuple[str, list]":
+    """Build a parameterized SELECT for the data source from an equality filter.
+
+    Column names are quoted (Notion columns contain spaces, e.g. "Fit Score").
+    Values are bound as ``?`` params (SQL-injection-safe). An empty filter
+    returns every row. Checkbox columns want "__YES__"/"__NO__" as the value —
+    the caller supplies those; equality on select/text uses the literal string.
+    """
+    if not filter_:
+        return f'SELECT * FROM "{ds_url}"', []
+    clauses, params = [], []
+    for col, val in filter_.items():
+        clauses.append(f'"{col}" = ?')
+        params.append(val)
+    return f'SELECT * FROM "{ds_url}" WHERE ' + " AND ".join(clauses), params
 
 
 def resolve_notion_query(input_state: Dict[str, Any], worker_id: str) -> Optional[Any]:
@@ -108,11 +129,13 @@ def resolve_notion_query(input_state: Dict[str, Any], worker_id: str) -> Optiona
     filter_ = input_state.get("filter") or {}
     server = input_state.get("server", NOTION_SERVER)
     tool = input_state.get("tool", NOTION_QUERY_TOOL)
+    ds_url = _collection_url(data_source)
+    query, params = _build_sql(ds_url, filter_)
 
     result = _mcp_call(
         server,
         tool,
-        {"data_source": data_source, "filter": filter_},
+        {"data": {"mode": "sql", "data_source_urls": [ds_url], "query": query, "params": params}},
         _RESOLVER_TIMEOUT_SECS,
     )
     if isinstance(result, dict) and result.get("error"):
@@ -124,19 +147,28 @@ def resolve_notion_query(input_state: Dict[str, Any], worker_id: str) -> Optiona
             check="resolver_cold_mcp",
         )
 
+    # Server-side WHERE already filtered; rows are the matches.
     rows = _extract_rows(result)
-    matched = [r for r in rows if _row_matches(r, filter_)]
-    if not matched:
+    if not rows:
         return None  # legitimate no_work
-    return {"rows": matched, "data_source": data_source, "filter": filter_}
+    return {"rows": rows, "data_source": ds_url, "filter": filter_}
 
 
 def _extract_rows(result: Any) -> List[Dict[str, Any]]:
-    """Pull the row list out of a Notion query result. Defensive across the
-    common envelope shapes; the exact live shape is pinned in Phase 5."""
+    """Pull the flat row list out of a notion-query-data-sources result.
+
+    The handler wraps the tool output as ``{"result": <text>}``; the text is a
+    JSON STRING of ``{"results": [ {flat row}, ... ]}`` (double-encoded). Parse
+    the string, then read ``results``. Defensive across the near-shapes.
+    """
     payload = result.get("result", result) if isinstance(result, dict) else result
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            return []
     if isinstance(payload, dict):
-        for key in ("rows", "results", "pages", "data"):
+        for key in ("results", "rows", "pages", "data"):
             val = payload.get(key)
             if isinstance(val, list):
                 return [r for r in val if isinstance(r, dict)]
