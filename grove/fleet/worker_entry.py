@@ -24,12 +24,52 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 WORKER_MAX_ITERATIONS = 50
+
+
+def _corpus_only_admission(cap, worker_id: str, config: dict) -> Optional[list]:
+    """Corpus-only per-tool admission (fleet-pipeline-v1 P5 — the SOLE structural
+    control). If the record declares required_tools:
+
+      1. ASSERT they are all in the LIVE admitted set (declared ⊄ admitted is a
+         config error -> loud Andon, refuse spawn). This is NON-VACUOUS: the
+         DECLARED list and the RESOLVED admitted set come from DIFFERENT sources
+         (the hand-authored record vs get_admitted_tools), so it is a real check,
+         not a tautology.
+      2. Return the deny-complement (admitted − required_tools) — the tools to
+         block so the agent is offered ONLY required_tools.
+
+    Returns None when no required_tools are declared (no per-tool restriction —
+    full toolset, for non-corpus-only workers). Computed at SPAWN against the live
+    config: a hot-reloaded green tool lands in the complement and is denied."""
+    required = list(cap.required_tools or [])
+    if not required:
+        return None
+    from grove.tool_admission import get_admitted_tools
+    from tools.registry import ToolRegistry, register_builtin_tools
+
+    reg = ToolRegistry()
+    register_builtin_tools(reg)
+    admitted = get_admitted_tools(reg, "fleet", config)
+    missing = sorted(t for t in required if t not in admitted)
+    if missing:
+        from grove.fleet.errors import FleetWorkerAndon
+
+        raise FleetWorkerAndon(
+            f"worker {worker_id!r}: declared required_tools {missing} are NOT "
+            f"admitted for platform 'fleet' (declared ⊄ admitted) — a config "
+            f"error. Refusing to spawn; fix the record's required_tools or the "
+            f"platform admission, never silently strip.",
+            worker_id=worker_id,
+            check="required_tool_unadmitted",
+        )
+    return sorted(admitted - set(required))
 
 
 def _now_iso() -> str:
@@ -236,6 +276,13 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         # Load record + enforce read_surfaces BEFORE running anything (item 3).
         cap = _load_capability_for(worker_id)
         enforce_declared_surfaces(cap, worker_id)  # index surface -> loud Andon
+        # (P5) corpus-only per-tool admission — PRE-DISPATCHER assertion (refuse
+        # spawn if declared required_tools ⊄ live-admitted) + deny-complement to
+        # inject below so the agent is offered ONLY required_tools.
+        from hermes_cli.config import load_config
+
+        worker_config = load_config()
+        blocked_tools = _corpus_only_admission(cap, worker_id, worker_config)
         sink = _resolve_declared_sink(cap, worker_id)
         sink.mkdir(parents=True, exist_ok=True)
 
@@ -249,7 +296,20 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         session_db = SessionDB(db_path=paths.session_db_path(worker_id))
         skill_name = _derive_skill_name(cap, worker_id)
         model, max_tokens, runtime = _resolve_worker_runtime(cap, worker_id)
+
+        # (P5) inject the deny-complement via a PER-SPAWN RuntimeContext so the
+        # Dispatcher's live admission (get_admitted_tools -> minus blocked_tools)
+        # offers the agent ONLY the record's required_tools. The Dispatcher's
+        # _tools_cache is per-instance, and this is a fresh subprocess per dispatch,
+        # so the complement is never boot-cached.
+        from grove.dispatcher import RuntimeContext
+
+        if blocked_tools is not None:
+            _bt = dict(worker_config.get("blocked_tools") or {})
+            _bt["fleet"] = sorted(set(_bt.get("fleet") or []) | set(blocked_tools))
+            worker_config = {**worker_config, "blocked_tools": _bt}
         dispatcher = Dispatcher(
+            runtime_ctx=RuntimeContext(env=dict(os.environ), config=worker_config),
             session_db=session_db,
             sovereign_prompt_handler=non_interactive_deny_handler,
             agent_kwargs=dict(
