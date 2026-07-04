@@ -18,6 +18,13 @@ Execution authority: This skill writes files and creates directories within ~/.g
 ## Purpose
 You tailor a resume and cover letter for a job the operator has already decided to pursue. Stage 2 of the job-search pipeline: the scout finds and scores (Status="New"), the operator triages to Status="To Apply" (that triage IS the pursue decision), and you tailor the assets. You STAGE drafts for review — you never publish, never submit, never write to the job database. The operator reviews on the portal and taps Publish to finalize as a Google Doc package; that tap is a separate step you do not perform.
 
+## Execution mode — HEADLESS (fleet worker) vs INTERACTIVE
+This skill runs two ways. Read your invoking prompt to tell which:
+- **HEADLESS (fleet background worker):** the prompt declares you are a non-interactive fleet worker. The target row is ALREADY RESOLVED and handed to you in the input payload — do NOT query Notion. Do NOT call write_file. Your read surface is ONLY career-corpus.md (plus the jim-voice skill). Your FINAL message is a single JSON object `{"fleet_package": {"slug": "<slug>", "files": {"resume.md": "...", "cover-letter.md": "...", "meta.json": "..."}}}` — the RUNTIME stages those files atomically to pending_review. You never touch the filesystem or the portal yourself.
+- **INTERACTIVE (operator-invoked):** follow the steps exactly as written below — query Notion for the row, write the files with write_file, and surface the portal link.
+
+Everything else (positioning, drafting, QA, hard rules) is identical in both modes.
+
 ## What you do NOT do
 - No Fit Brief, no PURSUE/STRETCH/PASS verdict — "To Apply" already settled that. Go straight to tailoring.
 - No Google Docs, no Drive upload, no Application Package link — that is the operator's Publish tap.
@@ -35,7 +42,9 @@ You tailor a resume and cover letter for a job the operator has already decided 
 2. invoke_skill jim-voice-writing-style — the voice contract for the cover letter and resume summary. Read it fully before drafting.
 
 ### Step 2 — Identify the target row
-Query the Notion Job Opportunities DB (collection://5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa) for Status="To Apply" (read only):
+**HEADLESS:** the row is in your input payload (the fleet runtime already read it — do NOT query Notion). Take Role, Company, Location, Persona, Tier, Fit Score, Rationale, Link, Comp, and the Notion page id straight from the payload row.
+
+**INTERACTIVE:** Query the Notion Job Opportunities DB (collection://5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa) for Status="To Apply" (read only):
 - If the operator named a company/role, match it.
 - Otherwise present the To Apply rows (Company — Role — Tier — Persona) and ask which ONE to forge. (v1 is one row per run; batch is out of scope.)
 Read the chosen row's Role, Company, Location, Persona, Tier, Fit Score, Rationale, Link, Comp.
@@ -71,17 +80,19 @@ Apply fixes before staging.
 - "Ghost-wrote Lean AI" — never claim named authorship.
 - Gaps are bridged honestly with adjacent evidence, or acknowledged — never papered over with fabrication.
 
-### Step 6 — Stage the drafts (Yellow, pending_review)
-CRITICAL: output location is /home/hermes/.grove/forge/pending_review/<slug>/ — nowhere else.
-- slug = YYMMDD-company-role (e.g., 260702-lilly-ai-orch-pm), lowercase, hyphenated.
-- Before writing: mkdir -p /home/hermes/.grove/forge/pending_review/<slug>
-- Write two files: resume.md and cover-letter.md (markdown — the publish step converts them to Google Docs).
-- Also write meta.json in the same slug dir — the row identity the Publish step needs: {"row_id": "<the Notion page id of the To Apply row>", "company": "<Company>", "role": "<Role>", "slug": "<slug>"}. You already have all four from the Step-2 row read. The Publish handler reads row_id from meta.json to update the Notion row; without it, Publish cannot proceed. meta.json is not a draft asset — only resume.md and cover-letter.md are published as Google Docs.
-- Do NOT write to the repo, ~/, the canonical ~/.grove/forge/ dir, or any cellar sink. Only pending_review/<slug>/.
+### Step 6 — Emit the package (Yellow, pending_review)
+The slug is `YYMMDD-company-role` (e.g., 260702-lilly-ai-orch-pm), lowercase, hyphenated. The three assets are the same in both modes: `resume.md` and `cover-letter.md` (markdown — the publish step converts them to Google Docs), and `meta.json` = the row identity the Publish step needs: `{"row_id": "<the Notion page id of the To Apply row>", "company": "<Company>", "role": "<Role>", "slug": "<slug>"}`. The Publish handler reads row_id from meta.json to update the Notion row; without it, Publish cannot proceed. meta.json is not a draft asset — only resume.md and cover-letter.md are published as Google Docs.
+
+**HEADLESS:** do NOT call write_file and do NOT mkdir. Your FINAL message is exactly `{"fleet_package": {"slug": "<slug>", "files": {"resume.md": "<content>", "cover-letter.md": "<content>", "meta.json": "<content>"}}}` — nothing else. The runtime writes these atomically to pending_review/<slug>/.
+
+**INTERACTIVE:** output location is /home/hermes/.grove/forge/pending_review/<slug>/ — nowhere else. mkdir -p it, then write resume.md, cover-letter.md, and meta.json there with write_file. Do NOT write to the repo, ~/, the canonical ~/.grove/forge/ dir, or any cellar sink. Only pending_review/<slug>/.
+
 These drafts are unapproved output. They stay in pending_review/ and never reach the cellar or Google Drive until the operator taps Publish on the portal. That gate is structural.
 
-### Step 7 — Surface to operator
-Respond with:
+### Step 7 — Surface to operator (INTERACTIVE only)
+**HEADLESS:** you are done at Step 6 — the fleet runtime records the run and surfaces it. Do NOT emit prose after the fleet_package JSON.
+
+**INTERACTIVE:** Respond with:
 1. A two-sentence summary: the role, the positioning thesis in one line, and that resume + cover letter are staged for review.
 2. The portal link: http://100.102.6.70:8642/portal/fleet/forge-jobsearch/<slug>/
 3. "Review the drafts and tap Publish to finalize them as a Google Doc package (it writes the folder link to the row and flips Status to Drafted), or send edits."
@@ -90,9 +101,9 @@ Do NOT paste the full assets into the response. Do NOT publish. Do NOT touch the
 ## Composites
 - jim-voice-writing-style — voice DNA for the cover letter + resume summary (loaded at Step 1)
 - invoke_skill — load jim-voice at Step 1
-- Notion MCP query_data_sources — read the To Apply row (read only)
-- read_file — the corpus snapshot
-- write_file — stage drafts to ~/.grove/forge/pending_review/<slug>/
+- read_file — the corpus snapshot (the ONLY declared read surface: corpus_file)
+- Notion MCP query_data_sources — INTERACTIVE only: read the To Apply row (read only). HEADLESS receives the row in its payload.
+- write_file — INTERACTIVE only: stage drafts to ~/.grove/forge/pending_review/<slug>/. HEADLESS returns a fleet_package and the runtime stages it.
 
 ## Output location
 ~/.grove/forge/pending_review/<slug>/{resume.md, cover-letter.md}

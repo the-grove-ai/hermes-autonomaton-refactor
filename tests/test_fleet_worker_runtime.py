@@ -28,12 +28,13 @@ def _forge_record() -> Capability:
 
 
 def test_read_surfaces_defaults_empty_and_serializes_byte_identical():
-    forge = _forge_record()
-    assert forge.read_surfaces == []
-    # absent -> not emitted (existing records unchanged)
-    assert "read_surfaces" not in forge.to_dict()
-    # round-trip preserves absence
-    assert Capability.from_yaml(forge.to_yaml()).read_surfaces == []
+    # A record that declares no read_surfaces (a plain verb) stays empty and is
+    # serialized byte-identically — the additive field is invisible when unused.
+    # (forge now declares [corpus_file] as of Phase 4, so use read_file here.)
+    rec = load_capabilities()["read_file"]
+    assert rec.read_surfaces == []
+    assert "read_surfaces" not in rec.to_dict()  # absent -> not emitted
+    assert Capability.from_yaml(rec.to_yaml()).read_surfaces == []
 
 
 def test_read_surfaces_present_key_round_trip():
@@ -68,9 +69,12 @@ def test_all_existing_records_still_load():
 # ── Condition 1: fleet_workers.yaml loader + loud dup-id guard ────────────────
 
 
-def test_shipped_template_is_empty_registry():
-    # The committed repo template loads to an empty registry.
-    assert config.load_fleet_workers(config.default_fleet_workers_path()) == {}
+def test_shipped_registry_has_only_the_disabled_forge_worker():
+    # As of Phase 4 the committed registry declares one worker — forge, disabled
+    # until the Phase-5 smoke authorizes it. It must load cleanly and stay off.
+    workers = config.load_fleet_workers(config.default_fleet_workers_path())
+    assert set(workers) == {"forge"}
+    assert workers["forge"].enabled is False
 
 
 def _write(tmp_path: Path, text: str) -> Path:

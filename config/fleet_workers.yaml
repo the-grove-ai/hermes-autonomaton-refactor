@@ -22,7 +22,29 @@
 # added in Phase 4 with enabled: false.
 # ─────────────────────────────────────────────────────────────────────────────
 
-workers: []
+workers:
+  # First worker (background-worker-runtime-v1 Phase 4). enabled: false until the
+  # Phase-5 smoke authorizes it; the ticker skips a disabled worker entirely.
+  - id: forge
+    skill: skill.fleet.forge-jobsearch   # capability-record id (read_surfaces: [corpus_file])
+    enabled: false
+    cadence: "*/30 * * * *"               # at most one spawn per 30 min
+    input_state:
+      type: notion_query
+      data_source: 5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa   # Job Opportunities DB
+      filter:
+        Status: "To Apply"
+    budget:
+      per_run_tokens: 120000
+      daily_tokens: 600000
+    limits:
+      wall_clock_secs: 900               # REQUIRED — absolute group-kill timeout
+      mem_mb: 1536                        # RLIMIT_AS VA ceiling (headroom over RSS)
+      fsize_mb: 64                        # per-file cap (drafts are small markdown)
+      nofile: 512
+    quiet_hours:
+      start: "22:00"
+      end: "07:00"
 
 # ── Worker entry schema (commented template — copy an entry, uncomment, fill) ─
 #
