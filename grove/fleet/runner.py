@@ -16,14 +16,18 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from grove.fleet.config import WorkerConfig
 from grove.fleet.errors import FleetWorkerAndon
+from grove.fleet.limits import build_preexec
 from grove.fleet.paths import event_path, inbox_path, worker_dir
+from grove.fleet.reap import write_pidfile
 
 
 def _repo_root() -> Path:
@@ -32,12 +36,20 @@ def _repo_root() -> Path:
 
 @dataclass
 class WorkerHandle:
-    """What the ticker holds after a dispatch: the process + where to reap it."""
+    """What the ticker holds after a dispatch: the process + where to reap it.
+
+    ``pgid`` and ``deadline_monotonic`` are the Phase-2 hardening contract — the
+    ticker enforces the absolute wall-clock timeout by group-killing ``pgid``
+    once ``time.monotonic()`` passes ``deadline_monotonic``.
+    """
 
     worker_id: str
     run_id: str
     proc: subprocess.Popen
     event_path: Path
+    pgid: int
+    wall_clock_secs: int
+    deadline_monotonic: float
 
 
 class KanbanRunner:
@@ -71,14 +83,48 @@ class KanbanRunner:
                 check="inbox_unwritable",
             ) from exc
 
-        proc = self._spawn(wid, rid)
+        # A kanban worker MUST carry an absolute wall-clock bound — an unbounded
+        # background process is a runaway risk. Fail loud rather than spawn one.
+        limits = worker_cfg.limits or {}
+        wall_clock_secs = limits.get("wall_clock_secs")
+        if not isinstance(wall_clock_secs, int) or wall_clock_secs <= 0:
+            raise FleetWorkerAndon(
+                f"worker {wid!r}: limits.wall_clock_secs must be a positive int "
+                f"(a background worker requires an absolute wall-clock bound); "
+                f"got {wall_clock_secs!r}",
+                worker_id=wid,
+                check="missing_wall_clock",
+            )
+
+        proc = self._spawn(wid, rid, limits)
+        write_pidfile(
+            wid,
+            rid,
+            pid=proc.pid,
+            pgid=proc.pid,  # setsid makes the child a group leader: pgid == pid
+            wall_clock_secs=wall_clock_secs,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
         return WorkerHandle(
-            worker_id=wid, run_id=rid, proc=proc, event_path=event_path(wid, rid)
+            worker_id=wid,
+            run_id=rid,
+            proc=proc,
+            event_path=event_path(wid, rid),
+            pgid=proc.pid,
+            wall_clock_secs=wall_clock_secs,
+            deadline_monotonic=time.monotonic() + wall_clock_secs,
         )
 
-    def _spawn(self, worker_id: str, run_id: str) -> subprocess.Popen:
-        """Launch the worker process. Phase 2 hardens THIS method (setsid,
-        setrlimit, PID/PGID file); the dispatch contract above is unchanged."""
+    def _spawn(
+        self, worker_id: str, run_id: str, limits: Optional[dict] = None
+    ) -> subprocess.Popen:
+        """Launch the worker in its OWN process group with resource limits.
+
+        ``preexec_fn`` runs setsid (own group -> group-killable), the memory
+        ceiling (RLIMIT_AS from limits.mem_mb), and niceness (limits.nice). The
+        dispatch contract above (inbox + handle) is unchanged from Phase 1.
+        """
+        limits = limits or {}
         cmd = [
             sys.executable,
             "-m",
@@ -90,7 +136,13 @@ class KanbanRunner:
         ]
         # Ensure the private subtree exists before the child writes into it.
         worker_dir(worker_id).mkdir(parents=True, exist_ok=True)
-        return subprocess.Popen(cmd, cwd=str(_repo_root()))
+        return subprocess.Popen(
+            cmd,
+            cwd=str(_repo_root()),
+            preexec_fn=build_preexec(
+                mem_mb=limits.get("mem_mb"), nice_increment=limits.get("nice")
+            ),
+        )
 
 
 # Module-level default runner + thin functional seam. Swapping isolation = swap
