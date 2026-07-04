@@ -191,3 +191,6 @@ governance:
     mode: action_surface_publish
 read_surfaces:
 - corpus_file
+required_tools:
+- read_file
+- invoke_skill
