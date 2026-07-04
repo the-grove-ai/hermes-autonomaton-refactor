@@ -17375,6 +17375,40 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as _reap_exc:
         logger.error("Fleet orphan-reap sweep failed at startup: %r", _reap_exc)
 
+    # Stuck-lease sweep (fleet-pipeline-v1 P1). A crash mid-publish strands a
+    # proposal's operator-tap lease. STARTUP-ONLY reversion is safe: no live tap
+    # can own a lease before the ticker starts, so any lease held at boot is
+    # definitionally orphaned. MUST run in this pre-ticker slot (never
+    # periodically — that would race a live in-flight publish). Each reverted
+    # lease is surfaced as an Andon; the proposal returns to actionable.
+    try:
+        from grove.eval.proposal_queue import sweep_stuck_leases
+        _reverted = sweep_stuck_leases()
+        if _reverted:
+            logger.warning(
+                "Stuck-lease sweep reverted %d held proposal lease(s) at startup: %s",
+                len(_reverted), [p.proposal_id for p in _reverted],
+            )
+            from agent.async_utils import safe_schedule_threadsafe
+            from grove.notify import broadcast_to_operator
+            for _p in _reverted:
+                safe_schedule_threadsafe(
+                    broadcast_to_operator(
+                        f"Proposal {_p.short_id} was mid-publish when the gateway "
+                        f"restarted; its lease was reverted and it is actionable "
+                        f"again. Re-tap to retry (publish is idempotent by "
+                        f"row-keyed Drive folder).",
+                        severity="warning",
+                        metadata={"proposal_id": _p.proposal_id,
+                                  "check": "stuck_lease_reverted"},
+                    ),
+                    asyncio.get_running_loop(),
+                    logger=logger,
+                    log_message="stuck-lease Andon broadcast scheduling failed",
+                )
+    except Exception as _lease_exc:
+        logger.error("Stuck-lease sweep failed at startup: %r", _lease_exc)
+
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
     cron_stop = threading.Event()

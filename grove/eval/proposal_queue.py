@@ -26,7 +26,7 @@ import hashlib
 import json
 import logging
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -229,11 +229,23 @@ class RoutingProposal:
     # old ``proposals.jsonl`` records written before this field deserialize to
     # the default "" (no coercion needed — it is a plain string).
     semantic_justification: str = ""
+    # fleet-pipeline-v1 P1 — operator-tap LEASE. id-EXCLUDED: compute_proposal_id
+    # hashes only type|payload|evidence (:319-323), so leasing never changes a
+    # proposal's identity, and records written before this field deserialize to
+    # None. A non-None lease marks the proposal as being processed by an in-flight
+    # operator tap; ``set_lease`` is a CAS (409 on a held lease) and the
+    # startup-only ``sweep_stuck_leases`` reverts any lease still held at boot.
+    lease: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         data["evidence"] = list(data["evidence"])
         data["source_patterns"] = list(data["source_patterns"])
+        # Present-key only: an UNHELD proposal serializes exactly as before (no
+        # ``lease`` key), so existing records are byte-identical and no golden
+        # snapshot churns. A held proposal carries its lease dict.
+        if data.get("lease") is None:
+            data.pop("lease", None)
         return data
 
     # ── KaizenRenderable (kaizen-proposal-surface-unification-v1) ─────────
@@ -502,6 +514,146 @@ def remove(
         else:
             target.unlink()
     return True
+
+
+# ── Lease + finalize (fleet-pipeline-v1 P1, safety-critical) ─────────
+#
+# The operator-tap lease serializes concurrent Promote taps on ONE proposal.
+# set_lease / clear_lease / finalize / sweep_stuck_leases ALL mutate the queue
+# under the SAME synchronous ``_lock`` (no await inside the critical section), so
+# two taps racing on the event loop serialize: the second observes the held lease
+# and is refused (409). There is NO wall-clock TTL — the startup-only sweep is the
+# sole recoverer of a lease stranded by a crash (a lease held at boot is
+# definitionally orphaned because the ticker has not yet spawned anything).
+
+LEASE_ACQUIRED = "acquired"
+LEASE_ALREADY_HELD = "already_held"
+LEASE_NOT_FOUND = "not_found"
+
+
+def _write_records(target: Path, records: List["RoutingProposal"]) -> None:
+    """Atomically rewrite the queue from *records* (tmp + os.replace), or unlink
+    when empty. Mirrors :func:`remove`'s rewrite; the CALLER must hold ``_lock``."""
+    if records:
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for proposal in records:
+                fh.write(
+                    json.dumps(proposal.to_dict(), sort_keys=True, default=str) + "\n"
+                )
+        tmp.replace(target)
+    else:
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def set_lease(
+    proposal_id: str,
+    *,
+    holder: str = "",
+    at: Optional[str] = None,
+    path: Optional[Path] = None,
+) -> str:
+    """Compare-and-set the lease on one proposal. Returns ``LEASE_ACQUIRED``,
+    ``LEASE_ALREADY_HELD`` (a tap already holds it → the route 409s), or
+    ``LEASE_NOT_FOUND`` (already disposed / never existed → the route 404s).
+
+    The read → check → set → rewrite runs under ``_lock`` with NO ``await``, so a
+    second concurrent tap observes the first tap's lease and is refused — the
+    double-tap guard."""
+    target = Path(path) if path is not None else default_queue_path()
+    stamp = at or datetime.now(timezone.utc).isoformat()
+    with _lock:
+        records = _read_records(target)
+        for i, p in enumerate(records):
+            if p.proposal_id == proposal_id:
+                if p.lease is not None:
+                    return LEASE_ALREADY_HELD
+                records[i] = replace(p, lease={"held_by": holder, "held_at": stamp})
+                _write_records(target, records)
+                return LEASE_ACQUIRED
+    return LEASE_NOT_FOUND
+
+
+def clear_lease(proposal_id: str, *, path: Optional[Path] = None) -> bool:
+    """Drop the lease, reverting the proposal to actionable. Used by the
+    completed-failure path (future returned → thread dead → safe to re-tap) and by
+    the startup sweep. Returns True iff a held lease was cleared. NOT called on
+    TIMEOUT (the executor thread survives; clearing would let a re-tap double-write)."""
+    target = Path(path) if path is not None else default_queue_path()
+    with _lock:
+        records = _read_records(target)
+        for i, p in enumerate(records):
+            if p.proposal_id == proposal_id:
+                if p.lease is None:
+                    return False
+                records[i] = replace(p, lease=None)
+                _write_records(target, records)
+                return True
+    return False
+
+
+def finalize_proposal_state(
+    proposal_id: str,
+    status: str,
+    applied_result: Optional[Dict[str, Any]] = None,
+    *,
+    reason: Optional[str] = None,
+    path: Optional[Path] = None,
+    ledger_dir: Optional[Path] = None,
+) -> bool:
+    """The SINGLE disposition path for BOTH operator verbs (approve → "applied",
+    reject → "rejected"). Atomically pops the proposal from the queue under
+    ``_lock``, then records ONE ``kaizen_disposition`` ledger event (outside the
+    queue lock — the ledger has its own). ``applied_result`` rides the ledger
+    verbatim (folder_link / archive_path). Returns True on disposition, False if
+    the proposal was already gone (idempotent — a double-finalize is a no-op)."""
+    target = Path(path) if path is not None else default_queue_path()
+    with _lock:
+        records = _read_records(target)
+        proposal = next((p for p in records if p.proposal_id == proposal_id), None)
+        if proposal is None:
+            return False
+        keep = [p for p in records if p.proposal_id != proposal_id]
+        _write_records(target, keep)
+    from grove.flywheel_cli import _record_kaizen_disposition
+
+    _record_kaizen_disposition(
+        proposal,
+        disposition=status,
+        applied_result=applied_result,
+        reason=reason,
+        ledger_dir=ledger_dir,
+    )
+    return True
+
+
+def sweep_stuck_leases(*, path: Optional[Path] = None) -> List["RoutingProposal"]:
+    """STARTUP-ONLY reap of stranded leases. Runs in the pre-ticker slot (before
+    the cron thread spawns anything), so ANY lease still held is definitionally
+    orphaned — no live tap could own it. Reverts each to pending (clears the
+    lease) and returns them (with their original lease) for the caller to Andon.
+    NEVER call this periodically — that would race a live in-flight publish."""
+    target = Path(path) if path is not None else default_queue_path()
+    reverted: List["RoutingProposal"] = []
+    with _lock:
+        records = _read_records(target)
+        changed = False
+        for i, p in enumerate(records):
+            if p.lease is not None:
+                reverted.append(p)  # keep the ORIGINAL (lease intact) for the Andon
+                records[i] = replace(p, lease=None)
+                changed = True
+        if changed:
+            _write_records(target, records)
+    for p in reverted:
+        logger.warning(
+            "[proposal_queue] stuck lease reverted at startup: %s (was %r)",
+            p.proposal_id, p.lease,
+        )
+    return reverted
 
 
 # ── Agentless filing (portal-action-error-surfacing-v1) ──────────────
