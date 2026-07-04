@@ -66,7 +66,14 @@ def _load_capability(skill_id: str, worker_id: str):
 
 
 def _derive_skill_name(cap, worker_id: str) -> str:
-    """The invoke_skill name from the record id: skill.<category>.<name>."""
+    """The invoke_skill name from the record id.
+
+    Skills live category-nested at ``~/.grove/skills/<category>/<name>/`` and
+    ``invoke_skill`` resolves ``active_path(name) = skills_dir()/name`` — so the
+    invoke name is the CATEGORY-QUALIFIED path ``<category>/<name>``, NOT the bare
+    name (which resolves to a nonexistent flat dir). id ``skill.<category>.<name>``
+    -> ``<category>/<name>``.
+    """
     from grove.fleet.errors import FleetWorkerAndon
 
     parts = cap.id.split(".")
@@ -77,7 +84,8 @@ def _derive_skill_name(cap, worker_id: str) -> str:
             worker_id=worker_id,
             check="bad_skill_id",
         )
-    return ".".join(parts[2:])
+    category, name = parts[1], ".".join(parts[2:])
+    return f"{category}/{name}"
 
 
 def _resolve_declared_sink(cap, worker_id: str) -> Path:
