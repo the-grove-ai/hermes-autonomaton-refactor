@@ -134,11 +134,43 @@ def _build_worker_prompt(skill_name: str, payload: Any) -> str:
         f"You are running as an autonomous, non-interactive fleet background "
         f"worker. Invoke the '{skill_name}' skill using the invoke_skill tool and "
         f"carry it out to completion against the resolved input below. Do NOT ask "
-        f"clarifying questions — no operator is present this turn. Stage every "
-        f"artifact to your pending_review sink; do not publish or write "
-        f"externally.\n\nRESOLVED INPUT:\n"
+        f"clarifying questions — no operator is present this turn. Do NOT call "
+        f"write_file, do NOT publish, do NOT read external sources beyond your "
+        f"declared read surfaces — the RUNTIME stages your output.\n\n"
+        f"When finished, your FINAL message MUST be a single JSON object and "
+        f"nothing else:\n"
+        f'{{"fleet_package": {{"slug": "<short-kebab-slug>", "files": '
+        f'{{"<filename>": "<full file content>", ...}}}}}}\n'
+        f"The runtime writes each file atomically into your pending_review sink "
+        f"under the slug directory.\n\nRESOLVED INPUT:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
+
+
+def _extract_fleet_package(messages) -> Optional[Dict[str, Any]]:
+    """Parse the skill's returned ``fleet_package`` from its final message.
+
+    Accepts either a bare JSON object or a ```json fenced block containing
+    ``{"fleet_package": {"slug": ..., "files": {...}}}``. Returns
+    ``{"slug", "files"}`` or None when no valid package is present.
+    """
+    import re
+
+    text = _final_assistant_text(messages)
+    if not text:
+        return None
+    candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    candidates.append(text)
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("fleet_package"), dict):
+            fp = obj["fleet_package"]
+            if fp.get("slug") and isinstance(fp.get("files"), dict) and fp["files"]:
+                return {"slug": fp["slug"], "files": fp["files"]}
+    return None
 
 
 def _final_assistant_text(messages) -> str:
@@ -172,7 +204,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
     from grove.dispatcher import Dispatcher
     from grove.fleet import paths
     from grove.fleet.read_surfaces import enforce_declared_surfaces
-    from grove.fleet.staging import stage_draft
+    from grove.fleet.staging import stage_package
     from grove.grants import get_grant_store
     from grove.governance_halt import TerminalGovernanceHalt
     from grove.sovereign_prompt_handlers import non_interactive_deny_handler
@@ -244,20 +276,32 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 check="governed_denial",
             )
 
-        # (f) stage the run's terminal draft to the declared sink via an atomic,
-        # path-jailed write. Runtime-owned artifact (not a governed tool write);
-        # the skill's own in-loop artifacts, if any, land through governed
-        # write_file into the same sink.
-        draft_text = _final_assistant_text(result.get("messages"))
-        staged = stage_draft(sink, f"draft-{run_id}.md", draft_text)
-
+        # (f) Option 2: the RUNTIME stages the skill's returned package. The
+        # skill returns a fleet_package (slug + files); the runtime writes each
+        # file atomically into the declared sink under the slug dir, jailed by
+        # is_relative_to(sink). The skill never self-writes — so a wall-clock kill
+        # cannot leave a half-written file the portal reads.
+        package = _extract_fleet_package(result.get("messages"))
+        if package is None:
+            return _event(
+                worker_id,
+                run_id,
+                cap.id,
+                "failed",
+                detail=(
+                    "skill returned no valid fleet_package (expected a final "
+                    "JSON object {\"fleet_package\": {\"slug\", \"files\"}})"
+                ),
+                check="no_package",
+            )
+        staged = stage_package(sink, package["slug"], package["files"])
         return _event(
             worker_id,
             run_id,
             cap.id,
             "success",
-            detail=f"completed={result.get('completed')}",
-            staged=[str(staged)],
+            detail=f"completed={result.get('completed')}; slug={package['slug']}",
+            staged=[str(p) for p in staged],
         )
     finally:
         clear_session_vars(tokens)
