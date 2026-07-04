@@ -15,7 +15,9 @@ cold read never stalls the 60s tick.
 
 from __future__ import annotations
 
+import functools
 import json
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from grove.fleet.errors import FleetWorkerAndon
@@ -151,6 +153,11 @@ def resolve_notion_query(input_state: Dict[str, Any], worker_id: str) -> Optiona
     rows = _extract_rows(result)
     if not rows:
         return None  # legitimate no_work
+    # Single-unit selection (fleet-pipeline-v1 P4) — generic, blind to field
+    # meaning: skip rows already staged, rank by the declared order_by, yield one.
+    rows = _select_units(rows, input_state, worker_id)
+    if not rows:
+        return None  # every matching row already has a staged draft -> no_work
     return {"rows": rows, "data_source": ds_url, "filter": filter_}
 
 
@@ -176,6 +183,105 @@ def _extract_rows(result: Any) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         return [r for r in payload if isinstance(r, dict)]
     return []
+
+
+# ── single-unit selection (fleet-pipeline-v1 P4, generic) ────────────────────
+#
+# All three steps are DRIVEN BY CONFIG and blind to meaning: the resolver does not
+# know "Fit Score" is a fitness or "id" is a Notion page — it globs the worker's
+# DECLARED staging_dir for staged row ids, filters, sorts by the declared order_by,
+# and yields one. No skill name appears here.
+
+
+def _worker_staging_dir(worker_id: str) -> Optional[Path]:
+    """Resolve the worker's DECLARED staging sink (governance.write_zone.staging_dir
+    on its capability record) to an absolute path — the same resolution the worker
+    stages into. None when the worker / record / sink cannot be resolved."""
+    from grove.capability_registry import load_capabilities
+    from grove.fleet.config import load_fleet_workers
+    from grove.utils.fs_utils import _grove_home_realpath, _grove_subdir_realpath
+
+    cfg = load_fleet_workers().get(worker_id)
+    if cfg is None:
+        return None
+    cap = load_capabilities().get(cfg.skill)
+    if cap is None:
+        return None
+    gov = cap.governance if isinstance(cap.governance, dict) else {}
+    staging = ((gov.get("write_zone") or {}).get("staging_dir"))
+    grove = _grove_home_realpath()
+    if not staging or grove is None:
+        return None
+    return Path(_grove_subdir_realpath(staging, grove))
+
+
+def _staged_row_ids(worker_id: str) -> set:
+    """The set of row_ids that already have a staged draft. Non-recursive glob of
+    ``staging_dir/*/meta.json`` (the watcher.py:151 shape — one level; the atomic
+    tmp->rename stage means the glob matches only a FINAL meta.json, never a
+    ``.tmp``). A bare read is safe (rename is atomic); an unreadable/malformed
+    meta.json fails LOUD — we must NOT silently treat its row as un-staged, which
+    would re-draft a row that IS staged."""
+    sink = _worker_staging_dir(worker_id)
+    if sink is None or not sink.is_dir():
+        return set()  # no sink yet -> nothing staged
+    staged: set = set()
+    for meta_path in sorted(sink.glob("*/meta.json")):
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            raise FleetWorkerAndon(
+                f"worker {worker_id!r}: staged meta.json unreadable/malformed at "
+                f"{meta_path} ({exc}) — cannot tell if its row is staged; refusing "
+                f"to risk re-drafting a staged row",
+                worker_id=worker_id,
+                check="staged_meta_unreadable",
+            )
+        rid = data.get("row_id") if isinstance(data, dict) else None
+        if rid:
+            staged.add(rid)
+    return staged
+
+
+def _order_by_key(order_by: List[Dict[str, Any]]):
+    """A cmp_to_key sort key honoring a multi-field order_by with per-field
+    direction and NULLS-LAST (always, regardless of direction) so a missing value
+    has a defined position, never an arbitrary one."""
+
+    def _cmp(a: Dict[str, Any], b: Dict[str, Any]) -> int:
+        for spec in order_by:
+            field = spec.get("field")
+            desc = spec.get("direction", "asc") == "desc"
+            va, vb = a.get(field), b.get(field)
+            if va is None and vb is None:
+                continue
+            if va is None:
+                return 1  # nulls last
+            if vb is None:
+                return -1
+            if va == vb:
+                continue
+            c = -1 if va < vb else 1
+            return -c if desc else c
+        return 0
+
+    return functools.cmp_to_key(_cmp)
+
+
+def _select_units(rows: List[Dict[str, Any]], input_state: Dict[str, Any], worker_id: str):
+    """Apply the declared skip-already-staged filter, order_by ranking, and
+    select_one — all read from input_state (P0 config), applied blind."""
+    if input_state.get("skip_already_staged"):
+        staged = _staged_row_ids(worker_id)  # may raise a loud Andon
+        rows = [r for r in rows if r.get("id") not in staged]
+    if not rows:
+        return []
+    order_by = input_state.get("order_by") or []
+    if order_by:
+        rows = sorted(rows, key=_order_by_key(order_by))
+    if input_state.get("select_one"):
+        return rows[:1]
+    return rows
 
 
 register_resolver("notion_query", resolve_notion_query)
