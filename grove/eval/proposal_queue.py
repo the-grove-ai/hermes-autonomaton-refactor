@@ -147,6 +147,21 @@ PROPOSAL_TYPE_DOCK_MUTATION = "dock_mutation"
 # phase), matching how ``memory_context`` surfaces without a RoutingProposal
 # apply handler.
 PROPOSAL_TYPE_PORTAL_ACTION_FAILURE = "portal_action_failure"
+# fleet-pipeline-v1 P2 — a fleet worker staged a Yellow Option-2 package into
+# pending_review; the operator must promote (publish) or reject it. Emitted
+# agentlessly from the ticker reap SUCCESS branch (manager.py). Payload:
+#   {"slug": str, "row_id": str, "skill_id": str, "fit_score": int|None}
+# RENDER-ONLY w.r.t. the generic SYNC approve machinery (deliberately NOT a
+# PROPOSAL_HANDLERS row → _type_offers_approve is False → no generic Approve
+# button). The promote tap is the bespoke async route (P3); the affordances are
+# the verb set below, not approve/reject/dismiss.
+PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING = "forge_artifact_pending"
+# Verb affordances per proposal type. The portal iterates this to render action
+# buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
+# to the iterator — the shape is deliberately open.
+PROPOSAL_VERBS: Dict[str, Tuple[str, ...]] = {
+    PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING: ("promote", "reject"),
+}
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 
@@ -698,27 +713,51 @@ def file_agentless_proposal(
         ``(proposal_id, was_appended)``. ``was_appended`` is ``False`` when an
         identical proposal already sits in the queue — the flood-guard.
     """
-    payload: Dict[str, Any] = {"failure_class": failure_class, "action": action}
-    evidence_tuple: Tuple[str, ...] = (evidence,)
+    # portal_action_failure is now a thin convenience over the generic emission
+    # path — one path, type + payload parameterized (fleet-pipeline-v1 P2).
+    return file_agentless(
+        type=PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
+        payload={"failure_class": failure_class, "action": action},
+        evidence=(evidence,),
+        justification=justification,
+        instance=instance,
+        path=path,
+    )
 
+
+def file_agentless(
+    *,
+    type: str,
+    payload: Dict[str, Any],
+    evidence: Tuple[str, ...],
+    justification: str = "",
+    instance: Optional[Dict[str, Any]] = None,
+    path: Optional[Path] = None,
+) -> Tuple[str, bool]:
+    """The ONE agentless emission path (P2 generalization of
+    file_agentless_proposal — do not fork). Builds a RoutingProposal of *type*
+    with *payload* and enqueues it: no LLM turn, no detector, no Dispatcher.
+
+    Identity is content-addressable on ``type|payload|evidence``
+    (:func:`compute_proposal_id`); *justification* + the ephemeral *instance*
+    ride ``semantic_justification`` (id-excluded), so recurrences of the same
+    logical proposal collapse to one queue entry. Returns
+    ``(proposal_id, was_appended)``; ``was_appended`` is False on a duplicate
+    (the flood-guard)."""
     rationale = justification
     if instance:
         detail = "; ".join(f"{k}={instance[k]}" for k in sorted(instance))
         rationale = f"{justification} [{detail}]" if justification else detail
 
-    proposal_id = compute_proposal_id(
-        type=PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
-        payload=payload,
-        evidence=evidence_tuple,
-    )
+    evidence_tuple = tuple(evidence)
+    proposal_id = compute_proposal_id(type=type, payload=payload, evidence=evidence_tuple)
     proposal = RoutingProposal(
         proposal_id=proposal_id,
-        type=PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
+        type=type,
         payload=payload,
         evidence=evidence_tuple,
         eval_hash="",
         created_at=_now_iso(),
         semantic_justification=rationale,
     )
-    was_appended = append(proposal, path=path)
-    return proposal_id, was_appended
+    return proposal_id, append(proposal, path=path)

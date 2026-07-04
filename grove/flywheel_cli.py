@@ -33,6 +33,7 @@ import yaml
 from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_CONSOLIDATION,
     PROPOSAL_TYPE_DOCK_MUTATION,
+    PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
     PROPOSAL_TYPE_PATTERN_DEMOTION,
     PROPOSAL_TYPE_PATTERN_PROMOTION,
     PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
@@ -2030,6 +2031,27 @@ for _type_name, _handler in PROPOSAL_HANDLERS.items():
 # rather than seeded from PROPOSAL_HANDLERS — the same shape memory_context uses.
 register_renderer(
     PROPOSAL_TYPE_PORTAL_ACTION_FAILURE, _summary_portal_action_failure
+)
+
+
+def _summary_forge_artifact_pending(proposal: "RoutingProposal") -> str:
+    """fleet-pipeline-v1 P2 — a fleet worker staged a draft package for operator
+    review. RENDER-ONLY w.r.t. the generic SYNC approve machinery (no
+    PROPOSAL_HANDLERS row); the promote tap is the bespoke async route. The verb
+    affordances (promote/reject) are rendered by the portal from the type's verb
+    set, not from here."""
+    pl = proposal.payload or {}
+    slug = pl.get("slug", "?")
+    fit = pl.get("fit_score")
+    base = f"fleet draft staged for review: {slug}"
+    if fit is not None:
+        base += f" (fit {fit})"
+    justification = getattr(proposal, "semantic_justification", "") or ""
+    return f"{base} — {justification}" if justification and justification != base else base
+
+
+register_renderer(
+    PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING, _summary_forge_artifact_pending
 )
 
 

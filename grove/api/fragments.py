@@ -46,7 +46,7 @@ from grove.api.portal import (
 from grove.capability import CapabilityKind
 from grove.capability_registry import load_capabilities
 from grove.dock import _VALID_STATUSES, load_dock
-from grove.eval.proposal_queue import _type_offers_approve
+from grove.eval.proposal_queue import PROPOSAL_VERBS, _type_offers_approve
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.wiki.index import MalformedWikiPage
 from grove.wiki.links import cellar_page_id
@@ -553,6 +553,41 @@ def _proposal_actions_html(
     )
 
 
+# fleet-pipeline-v1 P2 — verb-bearing proposal types render their OWN action set
+# by iterating the type's verb tuple (PROPOSAL_VERBS), not the generic
+# approve/reject/dismiss. verb -> (route template, label, css, confirm-or-None).
+# Adding a verb (e.g. "suggest_revision") is one dict entry + one tuple element.
+_PROPOSAL_VERB_ROUTES = {
+    "promote": (
+        "/portal/actions/proposals/{pid}/promote", "Promote", "btn-approve",
+        "Promote this draft — publish to Drive and update the row?",
+    ),
+    "reject": (
+        "/portal/actions/proposals/{pid}/reject", "Reject", "btn-reject", None,
+    ),
+}
+
+
+def _verb_actions_html(proposal_id: str, short_id: str, verbs) -> str:
+    """Render action buttons by iterating a proposal type's verb set. Unknown
+    verbs (shaped-for but not yet routed, e.g. suggest_revision) are skipped."""
+    pid = _esc(proposal_id)
+    buttons = []
+    for verb in verbs:
+        spec = _PROPOSAL_VERB_ROUTES.get(verb)
+        if spec is None:
+            continue
+        route, label, css, confirm = spec
+        confirm_attr = f' hx-confirm="{_esc(confirm)}"' if confirm else ""
+        buttons.append(
+            f'<button class="btn {css}" '
+            f'hx-post="{route.format(pid=pid)}" '
+            f'hx-target="#proposal-{short_id}" hx-swap="outerHTML"'
+            f"{confirm_attr}>{label}</button>"
+        )
+    return f'<div class="proposal-actions">{"".join(buttons)}</div>'
+
+
 async def handle_proposals_pending(request: web.Request) -> web.Response:
     """List pending Kaizen proposals as cards with approve/reject/dismiss (P4).
 
@@ -579,13 +614,23 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
             ev_summary = str(evidence) if evidence else ""
         pid = p.get("proposal_id", "")
         short_id = _short_id(pid)
+        ptype = p.get("type")
+        # Verb-bearing types (P2) render their own action set; everything else
+        # keeps the generic approve/reject/dismiss row.
+        verbs = PROPOSAL_VERBS.get(ptype)
+        actions = (
+            _verb_actions_html(pid, short_id, verbs) if verbs
+            else _proposal_actions_html(
+                pid, short_id, offers_approve=_type_offers_approve(ptype)
+            )
+        )
         parts.append(
             f'<div class="card" id="proposal-{short_id}">'
-            f'<h4><span class="badge">{_esc(p.get("type"))}</span></h4>'
+            f'<h4><span class="badge">{_esc(ptype)}</span></h4>'
             f'<p>{_esc(p.get("semantic_justification"))}</p>'
             f'<div class="meta">evidence: {_esc(ev_summary)}</div>'
             f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
-            f'{_proposal_actions_html(pid, short_id, offers_approve=_type_offers_approve(p.get("type")))}'
+            f'{actions}'
             f'</div>'
         )
     for m in memory_items:
