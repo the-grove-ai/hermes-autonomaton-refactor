@@ -150,6 +150,38 @@ PROPOSAL_TYPE_PORTAL_ACTION_FAILURE = "portal_action_failure"
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
 
+# ── Approve-affordance resolver (portal-action-error-surfacing-v1 P3.6) ──
+
+
+def _type_offers_approve(proposal_type: str) -> bool:
+    """Single source of truth: does an ``approve`` affordance have an HONORED
+    apply path for this proposal type?
+
+    Both the in-chat push gate (:meth:`RoutingProposal.offers_approve`) and the
+    portal pending-proposals card gate (``_proposal_actions_html``) resolve
+    through here — one rule, no drift.
+
+    * A ``PROPOSAL_HANDLERS`` row (``_handler_for`` resolves, legacy alias
+      honored) → True.
+    * ``memory_context`` → True: memory applies through ``MemoryProposalHandler``,
+      a SEPARATE registry that is deliberately NOT in ``PROPOSAL_HANDLERS``. This
+      branch is the TEMPORARY bridge for the forked memory registry; the queued
+      memory-into-kaizen-protocol sprint folds memory into ``PROPOSAL_HANDLERS``
+      and collapses this to pure ``_handler_for``.
+    * Everything else — render-only types like ``portal_action_failure`` — → False
+      (approve would dead-end at ``_handler_for``, so no affordance is offered).
+
+    Deferred import: ``flywheel_cli`` imports this module at load, so resolving
+    ``_handler_for`` at module scope would cycle; by call time both are loaded."""
+    from grove.flywheel_cli import _handler_for
+    try:
+        _handler_for(proposal_type)
+        return True
+    except ValueError:
+        pass
+    return proposal_type == PROPOSAL_TYPE_MEMORY_CONTEXT
+
+
 # ── Public dataclass ─────────────────────────────────────────────────
 
 
@@ -236,27 +268,14 @@ class RoutingProposal:
     def offers_approve(self) -> bool:
         """Whether the in-chat push may offer an ``approve`` affordance.
 
-        COMPUTED from apply-handler presence — structural, NOT an enumerated
-        denylist. Approve is offered iff this type resolves to a
-        ``PROPOSAL_HANDLERS`` row (the registry ``cli_approve`` -> ``_handler_for``
-        dispatches through). A render-only type — no handler row — resolves False
-        automatically, so approve is never offered where the apply path would
-        dead-end, and a FUTURE render-only type self-enforces with no code edit
-        here. ``dismiss`` always stays (``cli_reject`` is tolerant of handler-less
-        types).
-
-        The import is deferred: ``flywheel_cli`` imports this module at load, so
-        resolving ``_handler_for`` at module scope would cycle; by call time both
-        modules are loaded. ``_handler_for`` raises ``ValueError`` on an unknown
-        type (its contract, no silent fallback) and honors the legacy
-        ``routing_update`` alias — so a legacy routing proposal still resolves
-        True."""
-        from grove.flywheel_cli import _handler_for
-        try:
-            _handler_for(self.type)
-            return True
-        except ValueError:
-            return False
+        Delegates to :func:`_type_offers_approve` — the ONE source of truth
+        shared with the portal pending-proposals card gate (portal-action-error-
+        surfacing-v1 P3.6), so the two surfaces can never drift. Structural, not
+        an enumerated denylist: approve is offered iff this type has an honored
+        apply path (a ``PROPOSAL_HANDLERS`` row). Behavior-preserving for every
+        routing/zone/skill/pattern/dock type (all resolve True) and
+        ``portal_action_failure`` (False)."""
+        return _type_offers_approve(self.type)
 
     def is_push_eligible(self, session_start: Optional["datetime"]) -> bool:
         """Routing proposals push only when created THIS session (the

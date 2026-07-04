@@ -502,3 +502,64 @@ async def test_success_path_has_no_banner(client, grove_home, monkeypatch):
     assert "rejected" in body
     assert "alert-banner" not in body
     assert _paf() == []
+
+
+# ---------------------------------------------------------------------------
+# P3.6 — portal pending-proposals card gates Approve for render-only types
+# ---------------------------------------------------------------------------
+
+
+async def test_portal_card_omits_approve_for_render_only_type(client, grove_home):
+    # A portal_action_failure proposal surfaces in the pending list, but WITHOUT
+    # an Approve button (approve dead-ends at _handler_for). Reject + Dismiss stay
+    # — the portal reject/dismiss path is honored for every type.
+    proposal_queue.file_agentless_proposal(
+        failure_class="forge_notion_cold", action="forge_publish",
+        evidence="e", justification="Notion cold at publish.",
+    )
+    r = await client.get("/portal/fragments/proposals/pending")
+    assert r.status == 200
+    body = await r.text()
+    assert "portal_action_failure" in body        # it surfaces (unfiltered)
+    assert "btn-reject" in body and "btn-dismiss" in body
+    assert "btn-approve" not in body              # dead affordance gated out
+
+
+async def test_portal_card_keeps_approve_for_memory(client, grove_home):
+    # REGRESSION GUARD: memory cards keep Approve — memory applies via its own
+    # registry (not PROPOSAL_HANDLERS); the resolver's bridge branch returns True.
+    _write_memory(grove_home, [_memory_record("a recurring domain fact")])
+    r = await client.get("/portal/fragments/proposals/pending")
+    assert r.status == 200
+    body = await r.text()
+    assert "memory_context" in body
+    assert "btn-approve" in body
+
+
+async def test_portal_card_keeps_approve_for_routing(client, grove_home):
+    _append_routing("routing_adjustment:keepapprove")
+    r = await client.get("/portal/fragments/proposals/pending")
+    assert r.status == 200
+    assert "btn-approve" in (await r.text())
+
+
+async def test_portal_reject_honored_for_render_only(client, grove_home):
+    pid, _ = proposal_queue.file_agentless_proposal(
+        failure_class="forge_notion_cold", action="forge_publish",
+        evidence="e", justification="cold",
+    )
+    r = await client.post(f"/portal/actions/proposals/{pid}/reject")
+    assert r.status == 200                         # honored, not a dead-end
+    assert "rejected" in (await r.text())
+    assert proposal_queue.read(pid) is None        # dequeued
+
+
+async def test_portal_dismiss_honored_for_render_only(client, grove_home):
+    pid, _ = proposal_queue.file_agentless_proposal(
+        failure_class="forge_notion_cold", action="forge_publish",
+        evidence="e", justification="cold",
+    )
+    r = await client.post(f"/portal/actions/proposals/{pid}/dismiss")
+    assert r.status == 200
+    assert "dismissed" in (await r.text())
+    assert proposal_queue.read(pid) is None
