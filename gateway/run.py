@@ -17341,6 +17341,25 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         return True
     
+    # Fleet orphan-reap (background-worker-runtime-v1 Phase 2). A hard gateway
+    # kill strands any running fleet worker's process group; this sweep reads the
+    # persisted PID/PGID files and SIGKILLs any group still alive from a prior
+    # gateway life. MUST run BEFORE the cron ticker starts so a reaped worker's
+    # slot is clean before the ticker could dispatch a new run into it. Mirrors
+    # mcp-orphan-reaping-v1. Loud on reap; a sweep glitch must not block startup.
+    try:
+        from grove.fleet.reap import sweep_orphans
+        _reaped = sweep_orphans()
+        if _reaped:
+            logger.warning(
+                "Fleet orphan-reap: SIGKILLed %d worker group(s) stranded by a "
+                "prior gateway: %s",
+                len(_reaped),
+                [r.get("worker_id") for r in _reaped],
+            )
+    except Exception as _reap_exc:
+        logger.error("Fleet orphan-reap sweep failed at startup: %r", _reap_exc)
+
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
     cron_stop = threading.Event()
