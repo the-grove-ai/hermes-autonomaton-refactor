@@ -107,9 +107,15 @@ class FleetManager:
                 )
                 return
             status = event.get("status")
-            if status in ("success", "no_work"):
-                logger.info("[fleet.manager] worker %s run %s -> %s", wid, run_id, status)
-                return  # the quiet paths
+            if status == "no_work":
+                logger.info("[fleet.manager] worker %s run %s -> no_work", wid, run_id)
+                return  # silent — nothing staged, nothing to promote
+            if status == "success":
+                logger.info("[fleet.manager] worker %s run %s -> success", wid, run_id)
+                # fleet-pipeline-v1 P2 — the ONLY branch that emits an
+                # approve-artifact proposal. no_work + every failure emit nothing.
+                self._maybe_emit_artifact_proposal(wid, run_id, event)
+                return
             # exit-0 but a non-terminal status — the worker exits nonzero on
             # failure, so this is anomalous; surface it.
             surface_fleet_andon(
@@ -126,6 +132,65 @@ class FleetManager:
         surface_fleet_andon(
             wid, run_id, f"worker exited {rc}: {detail}", check=check, loop=self._loop
         )
+
+    def _maybe_emit_artifact_proposal(self, wid: str, run_id: str, event: dict) -> None:
+        """On a fleet worker SUCCESS, emit a forge_artifact_pending proposal so the
+        operator can promote (publish) or reject the staged draft — but ONLY when
+        the skill's approval_handoff is an action-surface publish (an ingest_post
+        worker auto-ingests and needs no operator promote). Reads slug/row_id/
+        fit_score OFF the event fields (never parsed from detail/paths). Defensive:
+        an emit failure surfaces an Andon, never crashes the tick."""
+        try:
+            skill_id = event.get("skill")
+            from grove.capability_registry import load_capabilities
+
+            cap = load_capabilities().get(skill_id)
+            gov = (cap.governance or {}) if cap is not None else {}
+            mode = ((gov.get("approval_handoff") or {}).get("mode")) if isinstance(gov, dict) else None
+            if mode != "action_surface_publish":
+                return  # ingest_post / other — no operator-promote proposal
+
+            slug = event.get("slug")
+            row_id = event.get("row_id")
+            fit_score = event.get("fit_score")
+            if not slug:
+                surface_fleet_andon(
+                    wid, run_id,
+                    "success event carries no slug — cannot emit a promote proposal "
+                    "for the staged draft",
+                    check="event_missing_slug", loop=self._loop,
+                )
+                return
+
+            from grove.eval.proposal_queue import (
+                PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
+                file_agentless,
+            )
+
+            payload = {
+                "slug": slug,
+                "row_id": row_id,
+                "skill_id": skill_id,
+                "fit_score": fit_score,
+            }
+            justification = "Draft staged for review: " + slug + (
+                f" (fit {fit_score})" if fit_score is not None else ""
+            )
+            pid, appended = file_agentless(
+                type=PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
+                payload=payload,
+                evidence=(row_id or slug,),  # stable per-unit dedup key
+                justification=justification,
+            )
+            logger.info(
+                "[fleet.manager] emitted %s proposal %s (appended=%s) for %s",
+                PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING, pid, appended, slug,
+            )
+        except Exception as exc:  # noqa: BLE001 — emit must never crash the tick
+            surface_fleet_andon(
+                wid, run_id, f"failed to emit artifact proposal: {exc}",
+                check="artifact_emit_failed", loop=self._loop,
+            )
 
     # ── dispatch ───────────────────────────────────────────────────────────────
 

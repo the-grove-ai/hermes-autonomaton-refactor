@@ -303,6 +303,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 check="no_package",
             )
         staged = stage_package(sink, package["slug"], package["files"])
+        row_id, fit_score = _row_identity(package, payload)
         return _event(
             worker_id,
             run_id,
@@ -310,6 +311,9 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             "success",
             detail=f"completed={result.get('completed')}; slug={package['slug']}",
             staged=[str(p) for p in staged],
+            slug=package["slug"],
+            row_id=row_id,
+            fit_score=fit_score,
         )
     finally:
         clear_session_vars(tokens)
@@ -342,7 +346,14 @@ def _event(
     detail: str = "",
     staged: Optional[list] = None,
     check: Optional[str] = None,
+    slug: Optional[str] = None,
+    row_id: Optional[str] = None,
+    fit_score: Optional[Any] = None,
 ) -> Dict[str, Any]:
+    # fleet-pipeline-v1 P2 (A1) — additive fields the reap emitter reads OFF the
+    # event (never parsed from detail/paths). None for workers that don't produce
+    # them; the terminal-state reap keys on presence-of-status, not exact shape,
+    # so these additions are tolerated (manager.py:98,109-110).
     return {
         "worker_id": worker_id,
         "run_id": run_id,
@@ -351,8 +362,38 @@ def _event(
         "detail": detail,
         "staged": staged or [],
         "check": check,
+        "slug": slug,
+        "row_id": row_id,
+        "fit_score": fit_score,
         "ts": _now_iso(),
     }
+
+
+def _row_identity(package: Dict[str, Any], payload: Any) -> "tuple":
+    """Best-effort (row_id, fit_score) for the P2 proposal payload.
+
+    row_id is authoritative from the skill's own meta.json (what it published for
+    the row it chose); fit_score comes from the matching input row. Both None when
+    absent — additive event fields, never load-bearing for the run itself.
+    """
+    row_id = None
+    meta_txt = (package.get("files") or {}).get("meta.json")
+    if isinstance(meta_txt, str):
+        try:
+            row_id = json.loads(meta_txt).get("row_id")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            row_id = None
+    fit_score = None
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if isinstance(rows, list):
+        match = next(
+            (r for r in rows if isinstance(r, dict) and r.get("id") == row_id), None
+        )
+        if match is None and len(rows) == 1 and isinstance(rows[0], dict):
+            match = rows[0]
+        if isinstance(match, dict):
+            fit_score = match.get("Fit Score")
+    return row_id, fit_score
 
 
 def _read_inbox_payload(worker_id: str, run_id: str) -> Any:
