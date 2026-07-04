@@ -46,6 +46,7 @@ from grove.api.portal import (
 from grove.capability import CapabilityKind
 from grove.capability_registry import load_capabilities
 from grove.dock import _VALID_STATUSES, load_dock
+from grove.eval.proposal_queue import _type_offers_approve
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.wiki.index import MalformedWikiPage
 from grove.wiki.links import cellar_page_id
@@ -520,16 +521,28 @@ def _short_id(proposal_id: str) -> str:
     return proposal_id.split(":")[-1][:12]
 
 
-def _proposal_actions_html(proposal_id: str, short_id: str) -> str:
+def _proposal_actions_html(
+    proposal_id: str, short_id: str, *, offers_approve: bool = True
+) -> str:
     """The approve/reject/dismiss button row. The full ``proposal_id`` rides the
-    hx-post URL; the ``short_id`` targets the card for outerHTML replacement."""
+    hx-post URL; the ``short_id`` targets the card for outerHTML replacement.
+
+    ``offers_approve`` (portal-action-error-surfacing-v1 P3.6) omits the Approve
+    button for a render-only type whose approve dead-ends at ``_handler_for``
+    (e.g. ``portal_action_failure``) — mirroring the in-chat push gate, one
+    resolver (``_type_offers_approve``). Reject + Dismiss always stay: the portal
+    reject/dismiss path dequeues + records disposition WITHOUT ``_handler_for``,
+    so both are honored for every type."""
     pid = _esc(proposal_id)
-    return (
-        f'<div class="proposal-actions">'
+    approve = (
         f'<button class="btn btn-approve" '
         f'hx-post="/portal/actions/proposals/{pid}/approve" '
         f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
         f'hx-confirm="Approve this proposal?">Approve</button>'
+    ) if offers_approve else ""
+    return (
+        f'<div class="proposal-actions">'
+        f'{approve}'
         f'<button class="btn btn-reject" '
         f'hx-post="/portal/actions/proposals/{pid}/reject" '
         f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">Reject</button>'
@@ -572,7 +585,7 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
             f'<p>{_esc(p.get("semantic_justification"))}</p>'
             f'<div class="meta">evidence: {_esc(ev_summary)}</div>'
             f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
-            f'{_proposal_actions_html(pid, short_id)}'
+            f'{_proposal_actions_html(pid, short_id, offers_approve=_type_offers_approve(p.get("type")))}'
             f'</div>'
         )
     for m in memory_items:
@@ -587,7 +600,7 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
             f'<span class="badge">{_esc(m.get("action"))}</span></h4>'
             f'<p>{_esc(m.get("semantic_justification"))}</p>'
             f'<div class="meta">created {_esc(m.get("created_at"))}</div>'
-            f'{_proposal_actions_html(pid, short_id)}'
+            f'{_proposal_actions_html(pid, short_id, offers_approve=_type_offers_approve(m.get("type")))}'
             f'</div>'
         )
     parts.append('</div>')

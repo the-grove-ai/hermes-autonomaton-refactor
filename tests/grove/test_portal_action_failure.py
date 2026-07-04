@@ -272,3 +272,39 @@ class TestMemoryPushFallbackLandmine:
         monkeypatch.delattr(MemoryProposalRenderable, "offers_approve")
         with pytest.raises(AttributeError):
             flywheel_cli.compose_offering(rend, is_push=True, portal_base_url=None)
+
+
+class TestTypeOffersApproveResolver:
+    """P3.6 — _type_offers_approve is the ONE source both the in-chat push gate
+    and the portal card gate resolve through."""
+
+    def test_resolver_agrees_with_routingproposal_property(self):
+        from grove.eval.proposal_queue import _type_offers_approve
+        from grove.flywheel_cli import PROPOSAL_HANDLERS
+
+        types = list(PROPOSAL_HANDLERS) + [
+            "memory_context", "portal_action_failure", "routing_update",
+        ]
+        for t in types:
+            prop = RoutingProposal(
+                proposal_id=compute_proposal_id(type=t, payload={}, evidence=("e",)),
+                type=t, payload={}, evidence=("e",), eval_hash="",
+                created_at="2026-07-03T00:00:00+00:00",
+            ).offers_approve
+            assert _type_offers_approve(t) == prop, f"{t} disagrees"
+
+    def test_memory_context_true_the_bridge(self):
+        from grove.eval.proposal_queue import _type_offers_approve
+        from grove.flywheel_cli import PROPOSAL_HANDLERS
+
+        # Load-bearing: memory is NOT in PROPOSAL_HANDLERS, so a pure _handler_for
+        # gate would strip its Approve. The bridge branch keeps it True.
+        assert "memory_context" not in PROPOSAL_HANDLERS
+        assert _type_offers_approve("memory_context") is True
+
+    def test_render_only_false_handler_backed_true(self):
+        from grove.eval.proposal_queue import _type_offers_approve
+
+        assert _type_offers_approve("portal_action_failure") is False
+        assert _type_offers_approve("routing_adjustment") is True
+        assert _type_offers_approve("skill_synthesis") is True
