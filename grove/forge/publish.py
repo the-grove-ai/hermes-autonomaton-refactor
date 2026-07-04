@@ -97,6 +97,50 @@ def _audit_path() -> Path:
     return get_hermes_home() / "forge" / "published.jsonl"
 
 
+def _ensure_doc(gapi, folder_id, title, path, label, state):
+    """Verify a native Doc named *title* exists in *folder_id*; upsert if missing.
+
+    Returns ``({"id","link"}, was_uploaded)``. Drive ``files.create`` is atomic, so
+    a Doc present under its deterministic title is COMPLETE — title-presence is a
+    sound completeness check (P3 / Gemini 1b'). Fail loud on a real search or
+    upload error; NEVER silently treat a partial folder as done."""
+    q = (
+        f"{_q(folder_id)} in parents and name = {_q(title)} "
+        f"and mimeType = '{_DOC_MIME}' and trashed = false"
+    )
+    found = gapi("drive", "search", [q], {"--raw-query": True, "--max": 5})
+    if isinstance(found, dict) and found.get("error"):
+        raise PublishError(
+            f"doc verify search failed for {title!r}: {found['error']}", state
+        )
+    for hit in found if isinstance(found, list) else []:
+        if hit.get("name") == title:
+            return {"id": hit.get("id"), "link": hit.get("webViewLink")}, False
+    # missing -> upload (atomic; the Doc appears only on a completed upload)
+    result = _require_file(
+        gapi(
+            "drive",
+            "upload",
+            [str(Path(path).expanduser())],
+            {
+                "--parent": folder_id,
+                "--name": title,
+                "--convert-to-doc": True,
+                "--mime-type": "text/markdown",
+            },
+        ),
+        f"upload_{label}",
+        state,
+    )
+    if result.get("mimeType") != _DOC_MIME:
+        raise PublishError(
+            f"upload_{label} did not convert to a native Doc "
+            f"(mimeType={result.get('mimeType')!r})",
+            state,
+        )
+    return {"id": result["id"], "link": result.get("webViewLink")}, True
+
+
 def publish_application_package(
     row_id: str,
     company: str,
@@ -142,63 +186,64 @@ def publish_application_package(
             raise PublishError(f"{label} file not found: {path}", state)
 
     name = folder_name(company, role, row_id)
-
-    # 1. IDEMPOTENCY GUARD — exact row-keyed folder, not trashed. No destructive
-    #    verb on the happy path: an existing package is reported, never replaced.
-    raw_q = f"name = {_q(name)} and mimeType = '{_FOLDER_MIME}' and trashed = false"
-    found = gapi("drive", "search", [raw_q], {"--raw-query": True, "--max": 5})
-    if isinstance(found, dict) and found.get("error"):
-        raise PublishError(f"idempotency search failed: {found['error']}", state)
-    for hit in found if isinstance(found, list) else []:
-        if hit.get("name") == name:
-            return {
-                "status": "exists",
-                "created": False,
-                "row_id": row_id,
-                "folder_id": hit.get("id"),
-                "folder_link": hit.get("webViewLink"),
-            }
-
-    # 2. Create the row-keyed folder.
-    folder = _require_file(
-        gapi("drive", "create-folder", [name], {}), "create_folder", state
-    )
-    state["folder_id"] = folder["id"]
-    state["folder_link"] = folder.get("webViewLink")
-
-    # 3. Each asset -> native Google Doc inside the folder (Phase-1 mechanism).
     titles = {
         "resume": f"{company} — {role} — Resume",
         "cover_letter": f"{company} — {role} — Cover Letter",
     }
-    for label, path in assets:
-        result = _require_file(
-            gapi(
-                "drive",
-                "upload",
-                [str(Path(path).expanduser())],
-                {
-                    "--parent": state["folder_id"],
-                    "--name": titles[label],
-                    "--convert-to-doc": True,
-                    "--mime-type": "text/markdown",
-                },
-            ),
-            f"upload_{label}",
-            state,
+
+    # 1. Folder guard — find the exact row-keyed folder, not trashed.
+    raw_q = f"name = {_q(name)} and mimeType = '{_FOLDER_MIME}' and trashed = false"
+    found = gapi("drive", "search", [raw_q], {"--raw-query": True, "--max": 5})
+    if isinstance(found, dict) and found.get("error"):
+        raise PublishError(f"idempotency search failed: {found['error']}", state)
+    folder_hit = next(
+        (h for h in (found if isinstance(found, list) else []) if h.get("name") == name),
+        None,
+    )
+
+    # 2. CONTENTS-AWARE guard (fleet-pipeline-v1 P3 / Gemini 1b'). A folder-name
+    #    hit is NOT proof the package is complete: a crash between folder-create and
+    #    the doc uploads leaves a folder with missing docs, and returning "exists"
+    #    there would flip the Notion Status to Drafted over an empty package. So we
+    #    NEVER short-circuit on a bare name hit — we verify each expected doc and
+    #    upsert the missing ones. Soundness rests on Drive atomicity: files.create
+    #    is server-side atomic (a Doc appears under its deterministic title ONLY on
+    #    a completed upload; an interrupted upload creates nothing — no truncated
+    #    named file), so title-presence == complete, no size/checksum needed.
+    created_folder = folder_hit is None
+    if folder_hit is not None:
+        state["folder_id"] = folder_hit.get("id")
+        state["folder_link"] = folder_hit.get("webViewLink")
+    else:
+        folder = _require_file(
+            gapi("drive", "create-folder", [name], {}), "create_folder", state
         )
-        if result.get("mimeType") != _DOC_MIME:
-            raise PublishError(
-                f"upload_{label} did not convert to a native Doc "
-                f"(mimeType={result.get('mimeType')!r})",
-                state,
-            )
-        state["docs"][label] = {"id": result["id"], "link": result.get("webViewLink")}
+        state["folder_id"] = folder["id"]
+        state["folder_link"] = folder.get("webViewLink")
 
-    # 4. Notion state update is handler-owned (Phase 4, live MCP) — not here.
+    uploaded_any = False
+    for label, path in assets:
+        doc, was_uploaded = _ensure_doc(
+            gapi, state["folder_id"], titles[label], path, label, state
+        )
+        state["docs"][label] = doc
+        uploaded_any = uploaded_any or was_uploaded
 
-    # 5. AUDIT — append-only structured record. This is the audit trail, NOT a
-    #    Kaizen proposal-ledger entry.
+    # 3. Notion state update is handler-owned (P3 route) — attempted ONLY after the
+    #    folder contents are verified complete above.
+
+    # A pure no-op (folder + all docs already present) reports "exists" and writes
+    # no audit; any create/upsert reports "published" and appends the audit trail.
+    if not created_folder and not uploaded_any:
+        return {
+            "status": "exists",
+            "created": False,
+            "row_id": row_id,
+            "folder_id": state["folder_id"],
+            "folder_link": state["folder_link"],
+            "docs": state["docs"],
+        }
+
     audit = {
         "operator_initiated": True,
         "row_id": row_id,
@@ -215,7 +260,7 @@ def publish_application_package(
 
     return {
         "status": "published",
-        "created": True,
+        "created": created_folder,
         "row_id": row_id,
         "folder_id": state["folder_id"],
         "folder_link": state["folder_link"],
