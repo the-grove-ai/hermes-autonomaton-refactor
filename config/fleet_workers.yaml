@@ -34,6 +34,17 @@ workers:
       data_source: 5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa   # Job Opportunities DB
       filter:
         Status: "To Apply"
+      # Phase-4 single-unit selection (generic — the resolver reads these keys;
+      # no skill name or per-skill logic in the resolver). skip_already_staged
+      # drops rows whose row_id already has a draft in the worker's staging_dir;
+      # order_by ranks the remainder; select_one yields exactly ONE per dispatch.
+      select_one: true
+      skip_already_staged: true
+      order_by:                            # deterministic ranking + stable tiebreak
+        - field: "Fit Score"
+          direction: desc                  # highest fit first
+        - field: id                        # Notion page id — stable tiebreak
+          direction: asc
     budget:
       per_run_tokens: 120000
       daily_tokens: 600000

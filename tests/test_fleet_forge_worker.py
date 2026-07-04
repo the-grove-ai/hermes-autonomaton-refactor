@@ -68,11 +68,16 @@ def test_forge_worker_entry_disabled_and_correct():
     w = load_fleet_workers(default_fleet_workers_path())["forge"]
     assert w.enabled is False  # not enabled until Phase-5 smoke authorizes it
     assert w.skill == "skill.fleet.forge-jobsearch"
-    assert w.input_state == {
-        "type": "notion_query",
-        "data_source": "5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa",
-        "filter": {"Status": "To Apply"},
-    }
+    ist = w.input_state
+    assert ist["type"] == "notion_query"
+    assert ist["data_source"] == "5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa"
+    assert ist["filter"] == {"Status": "To Apply"}
+    # fleet-pipeline-v1 P0 — declarative single-unit selection + ranking
+    assert ist["select_one"] is True and ist["skip_already_staged"] is True
+    assert ist["order_by"] == [
+        {"field": "Fit Score", "direction": "desc"},
+        {"field": "id", "direction": "asc"},
+    ]
     assert w.limits["wall_clock_secs"] == 900
 
 
