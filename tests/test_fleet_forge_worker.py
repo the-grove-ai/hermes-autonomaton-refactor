@@ -40,6 +40,12 @@ def test_forge_sink_is_pending_review():
     assert gov["write_zone"]["staging_dir"] == "forge/pending_review"
 
 
+def test_derive_skill_name_is_category_qualified():
+    # Skills are category-nested; invoke_skill needs "<category>/<name>", not the
+    # bare name (which resolves to a nonexistent flat dir). Pinned by the live run.
+    assert worker_entry._derive_skill_name(_forge(), "forge") == "fleet/forge-jobsearch"
+
+
 def test_guard_fires_if_forge_reaches_an_index():
     # A forge that declared cellar/wiki must Andon — it must NOT be able to reach one.
     d = _forge().to_dict()
