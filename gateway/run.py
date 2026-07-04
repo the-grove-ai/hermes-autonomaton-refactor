@@ -16907,11 +16907,17 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
     from hermes_cli.debug import _sweep_expired_pastes
+    from grove.fleet.manager import FleetManager
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
+
+    # Fleet-worker manager (background-worker-runtime-v1 Phase 3). Holds the
+    # running worker handles + last-dispatch state across ticks; its tick()
+    # reaps finished workers and dispatches due ones off-thread.
+    fleet_manager = FleetManager(loop=loop)
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -16920,6 +16926,15 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
+
+        # Fleet-worker check — DELIBERATELY OUTSIDE the cron_tick swallow above.
+        # FleetManager.tick() is fully defensive (every Andon routes to the
+        # observed-event bus; no_work is the only quiet path), so this guard is a
+        # last resort and logs LOUDLY (error, not debug) if it ever fires.
+        try:
+            fleet_manager.tick()
+        except Exception as e:
+            logger.error("Fleet manager tick crashed: %r", e)
 
         tick_count += 1
 
@@ -17349,7 +17364,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # mcp-orphan-reaping-v1. Loud on reap; a sweep glitch must not block startup.
     try:
         from grove.fleet.reap import sweep_orphans
-        _reaped = sweep_orphans()
+        _reaped = sweep_orphans(loop=asyncio.get_running_loop())
         if _reaped:
             logger.warning(
                 "Fleet orphan-reap: SIGKILLed %d worker group(s) stranded by a "

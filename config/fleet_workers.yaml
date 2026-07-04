@@ -56,8 +56,14 @@ workers: []
 #       daily_tokens: 400000         # rolling 24h cap across all runs of this worker.
 #
 #     limits:                        # OS resource ceilings enforced on the process.
-#       wall_clock_secs: 900         # absolute timeout; the process GROUP is killed.
-#       mem_mb: 1024                 # resident-memory ceiling (resource.setrlimit).
+#       wall_clock_secs: 900         # REQUIRED. absolute timeout; the process
+#                                    #   GROUP is killed (no unbounded workers).
+#       mem_mb: 1024                 # RLIMIT_AS VIRTUAL-address-space ceiling — NOT
+#                                    #   an RSS target. Allocator arenas / mmap count
+#                                    #   against it, so leave headroom over real RSS.
+#       fsize_mb: 256                # per-file write cap (RLIMIT_FSIZE). Default 256.
+#       nofile: 512                  # open-fd cap (RLIMIT_NOFILE). Default 512.
+#       nice: 5                      # scheduling niceness (os.nice increment).
 #
 #     quiet_hours:                   # local-time window during which the worker never
 #       start: "22:00"               #   spawns (operator rest / cost control). Omit the
