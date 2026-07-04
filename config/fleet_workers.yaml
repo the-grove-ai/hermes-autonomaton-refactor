@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# config/fleet_workers.yaml — Fleet Background-Worker OPERATIONAL registry
+#
+# background-worker-runtime-v1 (Fleet Background-Worker EPIC, Sprint 1).
+#
+# LAYER: OPERATIONAL only — WHEN and HOW-MUCH a worker runs. The STRUCTURAL
+# contract (zone / trigger / bindings / tier_rule / read_surfaces / declared
+# staging sink / governance) lives in the worker's CAPABILITY RECORD at
+# config/capabilities/<skill-record-id>.yaml, NOT here. The layers do not cross:
+# no zone, no read surface, no skill I/O shape ever appears in this file.
+#
+# The in-gateway cron ticker reads this registry each tick, evaluates each
+# enabled worker's input_state predicate, and — when work exists — spawns a
+# short-lived worker PROCESS that runs the pinned skill (resolved from `skill`)
+# via the Dispatcher, drafts into the record's Yellow pending_review sink, writes
+# a terminal-state event, and exits. The operator publish tap is the sole
+# external-write gate.
+#
+# A worker is defined by (a) its operational entry here and (b) its capability
+# record. The runtime never hard-codes a skill — it reads `skill` and loads the
+# record. This file ships with NO seeded worker; the first worker (forge) is
+# added in Phase 4 with enabled: false.
+# ─────────────────────────────────────────────────────────────────────────────
+
+workers: []
+
+# ── Worker entry schema (commented template — copy an entry, uncomment, fill) ─
+#
+# workers:
+#   - id: <slug>                     # unique worker id; also the isolation key
+#                                    #   (~/.grove/fleet/<id>/ session db + pid file).
+#     skill: <capability-record-id>  # e.g. skill.fleet.forge-jobsearch — the `id:`
+#                                    #   of a config/capabilities/*.yaml record. The
+#                                    #   runtime loads THIS record for zone /
+#                                    #   read_surfaces / declared sink. Fail-loud if
+#                                    #   the id resolves to no record.
+#     enabled: false                 # master switch. false = ticker skips entirely.
+#
+#     cadence: "*/30 * * * *"        # 5-field cron expression — the MINIMUM spacing
+#                                    #   between spawns. A tick spawns only when the
+#                                    #   cadence is due AND input_state reports work.
+#
+#     input_state:                   # work-detection predicate, dispatched on `type`.
+#       type: notion_query           #   notion_query | file_glob | ...  (resolvers are
+#                                    #   generic; add types as workers require them).
+#       # --- notion_query fields (read via the gateway's WARM MCP session) ---
+#       data_source: <collection-id> # Notion data source / collection to query.
+#       filter:                      # equality predicate over row properties.
+#         Status: "To Apply"
+#       # --- file_glob fields (alternative predicate type) ---
+#       # root: <dir>                # directory to scan.
+#       # glob: "*.md"               # filename pattern; presence of a match = work.
+#
+#     budget:                        # token ceilings — fail-loud when exceeded.
+#       per_run_tokens: 60000        # hard cap for a single worker run.
+#       daily_tokens: 400000         # rolling 24h cap across all runs of this worker.
+#
+#     limits:                        # OS resource ceilings enforced on the process.
+#       wall_clock_secs: 900         # absolute timeout; the process GROUP is killed.
+#       mem_mb: 1024                 # resident-memory ceiling (resource.setrlimit).
+#
+#     quiet_hours:                   # local-time window during which the worker never
+#       start: "22:00"               #   spawns (operator rest / cost control). Omit the
+#       end: "07:00"                 #   whole block for a 24h worker.
+# ─────────────────────────────────────────────────────────────────────────────
