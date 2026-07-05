@@ -164,6 +164,20 @@ def test_extract_missing_package_returns_none():
     assert worker_entry._extract_fleet_package(_msgs(bad)) is None
 
 
+def test_extract_tolerates_raw_control_char_in_string():
+    # forge-package-extraction strict=False floor. Run 6df68cd8: minimax-m3 emitted a
+    # complete, correct fleet_package but with a RAW newline (0x0A) inside a string
+    # value (byte 6350) instead of an escaped ``\n`` — invalid to strict json.loads,
+    # which defeated extraction and produced a no_package failure. The extractor must
+    # tolerate the control char and return the package. The literal ``\n`` below is a
+    # real 0x0A byte in the JSON string, exactly reproducing the observed slip.
+    raw = '{"fleet_package": {"slug": "s", "files": {"cover-letter.md": "para one\npara two"}}}'
+    out = worker_entry._extract_fleet_package(_msgs(raw))
+    assert out is not None, "a raw control char in a string value must not defeat extraction"
+    assert out["slug"] == "s"
+    assert out["files"]["cover-letter.md"] == "para one\npara two"
+
+
 # ── re-dispatch cycle: not-running gate clears on exit (gate confirmation) ────
 
 
