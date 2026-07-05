@@ -3236,20 +3236,36 @@ class AIAgent:
         # it is free — the override's job for the floor tools is CONFINEMENT). The
         # allow-list is a SEPARATE trust root from L2's platform-hardcoded floor
         # (Dispatcher) — two independent inputs, no common-mode SPOF.
-        _override = None
-        _rt_ctx = getattr(self, "_runtime_ctx", None)
-        if _rt_ctx is not None:
-            _cfg = getattr(_rt_ctx, "config", None) or {}
-            _override = _cfg.get("fleet_offered_allowlist")
-        if _override is not None:
+        # ROUTE on the STRUCTURAL fleet platform identity (the same key as the L2
+        # floor), NOT on config-key presence. A fleet worker must NEVER fall through
+        # to the interactive resolver: that path would re-offer disclosure-core
+        # write_file and strip the surface back toward core (skill_view survives only
+        # because it is core) — re-triggering the founding confinement bug. So a
+        # MISSING allow-list is FATAL for a fleet worker, not a silent degrade.
+        # DECOUPLING PRESERVED: routing gate = platform (structural); payload source
+        # = the per-spawn RuntimeContext.config allow-list — distinct, not a
+        # common-mode collapse.
+        if getattr(self, "_platform", None) == "fleet":
             from grove.context_budget import _name_of
             from grove.fleet.errors import FleetWorkerAndon
 
+            _rt_ctx = getattr(self, "_runtime_ctx", None)
+            _cfg = (getattr(_rt_ctx, "config", None) if _rt_ctx is not None else None) or {}
+            _allow = _cfg.get("fleet_offered_allowlist")
+            # MANDATORY-PRESENT: absence must halt, never fall through to interactive.
+            if _allow is None:
+                raise FleetWorkerAndon(
+                    "fleet worker has NO fleet_offered_allowlist on its RuntimeContext "
+                    "config — a fleet worker must never fall through to the interactive "
+                    "resolver (which would re-offer write_file and dissolve the "
+                    "corpus-only surface). The allow-list is mandatory; provision it at "
+                    "spawn.",
+                    surface="fleet",
+                    check="fleet_allowlist_absent",
+                )
             # FAIL-LOUD-ON-EMPTY: an empty allow-list would emit an empty
-            # _tools_for_turn, which SEAM5 reads as admit-ALL (run_agent.py:12418) —
-            # the exact fail-OPEN this control exists to prevent. Independent of L2's
-            # empty-check (different layer, different input).
-            if not _override:
+            # _tools_for_turn, which SEAM5 reads as admit-ALL (run_agent.py:12418).
+            if not _allow:
                 raise FleetWorkerAndon(
                     "fleet offered-surface allow-list is EMPTY — refusing to emit an "
                     "empty _tools_for_turn (SEAM5 would then admit ALL tools). Fix "
@@ -3260,10 +3276,10 @@ class AIAgent:
             _by_name = {
                 _name_of(t): t for t in (self.tools or []) if isinstance(t, dict)
             }
-            _missing = [n for n in _override if n not in _by_name]
+            _missing = [n for n in _allow if n not in _by_name]
             if _missing:
                 raise FleetWorkerAndon(
-                    f"fleet offered-surface allow-list {sorted(_override)} is NOT a "
+                    f"fleet offered-surface allow-list {sorted(_allow)} is NOT a "
                     f"subset of the construction surface (missing {sorted(_missing)}) "
                     f"— the L2 floor and the L1 allow-list disagree. Refusing to "
                     f"offer a tool the agent does not hold.",
@@ -3275,12 +3291,12 @@ class AIAgent:
             self._tool_resolution = None
             self._disclosure_log = []
             self._disclosure_manifest = None
-            self._tools_for_turn = [_by_name[n] for n in _override]
+            self._tools_for_turn = [_by_name[n] for n in _allow]
             self._last_tool_selection = {
                 "fleet_offered_override": True,
                 "selected_count": len(self._tools_for_turn),
                 "full_count": len(self.tools or []),
-                "tools": sorted(_override),
+                "tools": sorted(_allow),
             }
             return
 
