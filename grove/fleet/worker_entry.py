@@ -205,6 +205,27 @@ def _final_assistant_text(messages) -> str:
     return ""
 
 
+def _persist_raw_output(worker_id: str, run_id: str, text: str) -> Optional[str]:
+    """Sidecar a failed run's raw final assistant text next to its terminal event.
+
+    fleet-failure-forensics-v1 — a ``no_package`` failure discards the model's
+    actual output, leaving zero diagnostic. Persist that output verbatim to
+    ``events/<run_id>.raw.txt`` (sibling of the event JSON) so the failure is
+    inspectable. Best-effort BY CONTRACT: any write error is swallowed and None is
+    returned — a forensic sidecar must NEVER mask the original failure with a
+    second one. Returns the path on success, None on any write failure.
+    """
+    from grove.fleet import paths
+
+    try:
+        raw_path = paths.event_path(worker_id, run_id).with_suffix(".raw.txt")
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(text or "", encoding="utf-8")
+        return str(raw_path)
+    except Exception:  # noqa: BLE001 — sidecar never masks the real terminal failure
+        return None
+
+
 def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
     """Execute one worker run and return its terminal-state event dict.
 
@@ -324,6 +345,16 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         # cannot leave a half-written file the portal reads.
         package = _extract_fleet_package(result.get("messages"))
         if package is None:
+            # fleet-failure-forensics-v1 — the model produced output but it did not
+            # parse as a fleet_package; today that output is discarded, leaving zero
+            # diagnostic. Enrich detail with a bounded preview and persist the FULL
+            # raw text to an events/<run_id>.raw.txt sidecar. status + check are
+            # preserved EXACTLY (reap keys on them); only detail is enriched and the
+            # additive raw_text_path is added.
+            final_text = _final_assistant_text(result.get("messages") or [])
+            preview = (
+                (final_text[:800] + "…") if len(final_text) > 800 else final_text
+            ).strip()
             return _event(
                 worker_id,
                 run_id,
@@ -331,9 +362,11 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 "failed",
                 detail=(
                     "skill returned no valid fleet_package (expected a final "
-                    "JSON object {\"fleet_package\": {\"slug\", \"files\"}})"
+                    "JSON object {\"fleet_package\": {\"slug\", \"files\"}}); "
+                    f"final assistant message was: {preview!r}"
                 ),
                 check="no_package",
+                raw_text_path=_persist_raw_output(worker_id, run_id, final_text),
             )
         staged = stage_package(sink, package["slug"], package["files"])
         row_id, fit_score = _row_identity(package, payload)
@@ -382,11 +415,14 @@ def _event(
     slug: Optional[str] = None,
     row_id: Optional[str] = None,
     fit_score: Optional[Any] = None,
+    raw_text_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     # fleet-pipeline-v1 P2 (A1) — additive fields the reap emitter reads OFF the
     # event (never parsed from detail/paths). None for workers that don't produce
     # them; the terminal-state reap keys on presence-of-status, not exact shape,
-    # so these additions are tolerated (manager.py:98,109-110).
+    # so these additions are tolerated (manager.py:98,109-110). raw_text_path
+    # (fleet-failure-forensics-v1) follows the same additive precedent — the path
+    # to a failed run's persisted raw output, or None.
     return {
         "worker_id": worker_id,
         "run_id": run_id,
@@ -398,6 +434,7 @@ def _event(
         "slug": slug,
         "row_id": row_id,
         "fit_score": fit_score,
+        "raw_text_path": raw_text_path,
         "ts": _now_iso(),
     }
 
