@@ -19,6 +19,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 import markdown
 import nh3
@@ -624,12 +625,33 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
                 pid, short_id, offers_approve=_type_offers_approve(ptype)
             )
         )
+        # forge-review-surface-v1 P2 (M2) — the JOIN. Verb-bearing (forge) cards
+        # carry a "View details" link into the in-shell draft render, threading pid
+        # so the render can offer disposition. Fail loud PER-CARD: a verb card whose
+        # payload lacks slug shows a VISIBLE non-actionable marker, never a silent
+        # omission (the .get chain cannot raise, so a bad card degrades in place and
+        # never crashes the feed). Generic/memory cards get nothing — slug-absence is
+        # correct there. Fast-path promote/reject (``actions``) is unchanged.
+        view_html = ""
+        if verbs:
+            slug = (p.get("payload") or {}).get("slug")
+            if slug:
+                href = f"/portal/fragments/forge/{quote(str(slug))}/?pid={quote(str(pid))}"
+                view_html = (
+                    f'<div class="meta"><a hx-get="{_esc(href)}" '
+                    f'hx-target="#center-panel" hx-push-url="true">View details</a></div>'
+                )
+            else:
+                view_html = (
+                    '<div class="meta error">view unavailable — missing payload.slug</div>'
+                )
         parts.append(
             f'<div class="card" id="proposal-{short_id}">'
             f'<h4><span class="badge">{_esc(ptype)}</span></h4>'
             f'<p>{_esc(p.get("semantic_justification"))}</p>'
             f'<div class="meta">evidence: {_esc(ev_summary)}</div>'
             f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
+            f'{view_html}'
             f'{actions}'
             f'</div>'
         )
@@ -1499,14 +1521,41 @@ async def handle_forge_slug_dir(request: web.Request) -> web.Response:
     )
 
 
+def _forge_kaizen_div(pid: str) -> str:
+    """Inline Kaizen disposition affordance for the in-shell forge fragment — the
+    SAME pid-keyed routes the proposal card's fast-path uses (Kaizen Voice: two
+    entry points, one protocol). Promote / Reject are live; suggest-revision is a
+    rendered-but-inert slot (routed by forge-review-surface-v1 P3). The swap target
+    (#center-panel / innerHTML) is PROVISIONAL — P3/M4 finalizes the return-to-queue
+    behavior once the disposition routes' return shape is wired through."""
+    pe = _esc(pid)
+    return (
+        f'<div class="proposal-actions kaizen-disposition" id="forge-kaizen-{pe}">'
+        f'<button class="btn btn-approve" '
+        f'hx-post="/portal/actions/proposals/{pe}/promote" '
+        f'hx-target="#center-panel" hx-swap="innerHTML" '
+        f'hx-confirm="Promote this draft — publish to Drive and update the row?">'
+        f'Promote</button>'
+        f'<button class="btn btn-reject" '
+        f'hx-post="/portal/actions/proposals/{pe}/reject" '
+        f'hx-target="#center-panel" hx-swap="innerHTML">Reject</button>'
+        f'<button class="btn" disabled '
+        f'title="Suggest revision — routed in the next sprint">Suggest revision</button>'
+        f'</div>'
+    )
+
+
 async def handle_forge_slug_fragment(request: web.Request) -> web.Response:
-    """``GET /portal/fragments/forge/{slug}/`` — the forge draft body ONLY (no
-    ``_fleet_page`` chrome), for an in-shell load into ``#center-panel``. Same slug
-    load path as ``handle_forge_slug_dir`` (``_read_forge_slug``); the Publish card
-    is omitted (``include_publish=False``). An optional ``?pid=`` is threaded into
-    the body for a future disposition affordance (P2/P3) but not consumed here.
-    Missing / unreadable slug dir -> 404 with an explicit error body (fail loud;
-    never a silent empty 200)."""
+    """``GET /portal/fragments/forge/{slug}/`` — the forge draft body (no
+    ``_fleet_page`` chrome) for an in-shell load into ``#center-panel``, followed by
+    an inline Kaizen disposition div. Same slug load path as ``handle_forge_slug_dir``
+    (``_read_forge_slug``); the Publish card is omitted (``include_publish=False``).
+
+    ``?pid=`` drives disposition (P2/M3): present → the Kaizen div (promote / reject
+    + a disabled suggest-revision slot) is appended, keyed on that pid. FAIL LOUD:
+    absent pid → the draft still renders (reading is fine) but a VISIBLE
+    "disposition unavailable — no pid" notice replaces the buttons, never a silent
+    omission. Missing / unreadable slug dir -> 404 with an explicit error body."""
     slug = request.match_info["slug"]
     read = _read_forge_slug(slug)
     if read is None:
@@ -1516,7 +1565,17 @@ async def handle_forge_slug_fragment(request: web.Request) -> web.Response:
             status=404,
         )
     pid = request.query.get("pid")
-    return _html_fragment(_forge_slug_body(slug, read, pid=pid, include_publish=False))
+    body = _forge_slug_body(slug, read, pid=pid, include_publish=False)
+    # M3 — Kaizen div assembled HERE (not in _forge_slug_body, which stays a pure
+    # draft body so the standalone page is unaffected). pid gate + fail loud.
+    if pid:
+        disposition = _forge_kaizen_div(pid)
+    else:
+        disposition = (
+            '<div class="meta error" id="forge-kaizen-none">'
+            'disposition unavailable — no pid</div>'
+        )
+    return _html_fragment(body + disposition)
 
 
 async def handle_portal_slash_redirect(request: web.Request) -> web.Response:
