@@ -175,7 +175,11 @@ def _extract_fleet_package(messages) -> Optional[Dict[str, Any]]:
     candidates.append(text)
     for cand in candidates:
         try:
-            obj = json.loads(cand)
+            # strict=False tolerates RAW control chars (0x0A/0x09/0x0D) inside string
+            # values — LLMs (observed: minimax-m3) intermittently emit an unescaped
+            # newline mid-string, which strict json.loads rejects, defeating an
+            # otherwise-complete package (forge-package-extraction floor; run 6df68cd8).
+            obj = json.loads(cand, strict=False)
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(obj, dict) and isinstance(obj.get("fleet_package"), dict):
