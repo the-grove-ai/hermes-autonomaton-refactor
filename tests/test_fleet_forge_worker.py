@@ -9,6 +9,7 @@ path-jail) and _extract_fleet_package — and the gate-requested re-dispatch cyc
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -223,3 +224,127 @@ def test_worker_redispatches_after_exit(monkeypatch, tmp_path):
     m.tick()                              # tick 3: reap clears running, then re-dispatch
     assert dispatched == ["forge", "forge"]  # re-dispatched — gate cleared
     assert "forge" in m._running
+
+
+# ── fleet-failure-forensics-v1: raw output on the no_package failed terminal ──
+
+
+_NO_PACKAGE_DETAIL_PREFIX = (
+    "skill returned no valid fleet_package (expected a final "
+    "JSON object {\"fleet_package\": {\"slug\", \"files\"}})"
+)
+
+
+class _FakeSessionDB:
+    def __init__(self, *a, **k):
+        pass
+
+
+def _drive_no_package(monkeypatch, tmp_path, messages, run_id="rid0"):
+    """Drive the REAL run_worker to the no_package branch.
+
+    ``run_conversation`` returns ``messages`` that are NOT a fleet_package, so the
+    REAL ``_extract_fleet_package`` (untouched by this sprint) returns None and the
+    branch fires. Everything upstream is stubbed at clean seams; ``get_hermes_home``
+    points the events/ sink (and the raw sidecar) at ``tmp_path``.
+    """
+    from grove.fleet import paths as _paths
+
+    class _Cap:
+        id = "skill.fleet.forge-jobsearch"
+
+    class _Agent:
+        def run_conversation(self, prompt, task_id=None):
+            return {"messages": messages, "completed": True}
+
+    class _Dispatcher:
+        def __init__(self, *a, **k):
+            self.agent = _Agent()
+
+    monkeypatch.setattr(_paths, "get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(worker_entry, "_load_capability_for", lambda wid: _Cap())
+    monkeypatch.setattr(
+        worker_entry, "_resolve_declared_sink", lambda cap, wid: tmp_path / "sink"
+    )
+    monkeypatch.setattr(
+        worker_entry, "_derive_skill_name", lambda cap, wid: "fleet/forge-jobsearch"
+    )
+    monkeypatch.setattr(
+        worker_entry, "_resolve_worker_runtime",
+        lambda cap, wid: ("m", 100, {"provider": "p"}),
+    )
+    # function-local imports resolve from their origin modules at call time
+    monkeypatch.setattr("gateway.session_context.set_session_vars", lambda **k: object())
+    monkeypatch.setattr("gateway.session_context.clear_session_vars", lambda *a, **k: None)
+    monkeypatch.setattr("grove.grants.get_grant_store", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "grove.fleet.read_surfaces.enforce_declared_surfaces", lambda *a, **k: []
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: {})
+    monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("grove.dispatcher.Dispatcher", _Dispatcher)
+    monkeypatch.setattr("grove.dispatcher.RuntimeContext", lambda **k: object())
+    return worker_entry.run_worker("forge", run_id, {"rows": [{"id": "r1"}]})
+
+
+def test_no_package_event_carries_preview_and_raw_path(monkeypatch, tmp_path):
+    # (a) the discarded model output is now BOTH previewed in detail AND persisted.
+    text = "I reviewed the corpus but produced prose, not a fleet_package."
+    ev = _drive_no_package(
+        monkeypatch, tmp_path, [{"role": "assistant", "content": text}]
+    )
+    assert ev["status"] == "failed"
+    assert ev["check"] == "no_package"
+    assert text in ev["detail"]                       # preview embedded in detail
+    assert ev["raw_text_path"] is not None
+    raw = Path(ev["raw_text_path"])
+    assert raw.name == "rid0.raw.txt"
+    assert raw.parent.name == "events"                # sibling of the event JSON
+    assert raw.read_text(encoding="utf-8") == text    # FULL raw text, not truncated
+
+
+def test_no_package_regression_status_check_detail_prefix(monkeypatch, tmp_path):
+    # (e) REGRESSION GUARD — reap-relevant fields byte-identical to pre-change; the
+    # detail is APPEND-ONLY (original message preserved verbatim as the prefix).
+    ev = _drive_no_package(
+        monkeypatch, tmp_path, [{"role": "assistant", "content": "prose"}]
+    )
+    assert ev["status"] == "failed"
+    assert ev["check"] == "no_package"
+    assert ev["detail"].startswith(_NO_PACKAGE_DETAIL_PREFIX)
+    assert "raw_text_path" in ev                       # additive field present
+
+
+def test_event_accepts_additive_raw_text_path():
+    # (e) the additive field is keyword-only + back-compatible (None when omitted).
+    ev = worker_entry._event(
+        "forge", "r", "sk", "failed",
+        detail="d", check="no_package", raw_text_path="/x/r.raw.txt",
+    )
+    assert ev["raw_text_path"] == "/x/r.raw.txt"
+    assert worker_entry._event("forge", "r", "sk", "success")["raw_text_path"] is None
+
+
+def test_persist_raw_output_writes_exact_text(monkeypatch, tmp_path):
+    # (c) the sidecar holds the exact bytes, at events/<run_id>.raw.txt.
+    from grove.fleet import paths as _paths
+
+    monkeypatch.setattr(_paths, "get_hermes_home", lambda: str(tmp_path))
+    p = worker_entry._persist_raw_output("forge", "runX", "line1\nline2\n")
+    assert p is not None
+    rp = Path(p)
+    assert rp.read_text(encoding="utf-8") == "line1\nline2\n"
+    assert rp.name == "runX.raw.txt"
+    assert rp.parent.name == "events"
+
+
+def test_persist_raw_output_unwritable_returns_none(monkeypatch, tmp_path):
+    # (d) an un-writable sink is swallowed — best-effort NEVER masks the real
+    # failure with a second one. A FILE where the home dir should be makes the
+    # events/ mkdir raise; the helper must return None, not propagate.
+    bogus = tmp_path / "home-is-a-file"
+    bogus.write_text("x")
+    from grove.fleet import paths as _paths
+
+    monkeypatch.setattr(_paths, "get_hermes_home", lambda: str(bogus))
+    assert worker_entry._persist_raw_output("forge", "runY", "data") is None
