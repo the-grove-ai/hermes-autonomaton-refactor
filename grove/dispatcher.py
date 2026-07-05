@@ -1197,8 +1197,44 @@ class Dispatcher:
         if cached is not None:
             return cached
 
-        from grove.tool_admission import get_admitted_tools
         from model_tools import get_tool_definitions
+
+        # ── fleet-corpus-only-offering-v1 P1 — L2 STRUCTURAL FLOOR (config-BLIND) ──
+        # A fleet worker is a grant-less background principal. Its tool surface is a
+        # HARDCODED corpus-only floor — NOT derived from worker_config or capability
+        # records. This is the DECOUPLED TRUST ROOT: a malformed or adversarial
+        # config can never widen it. Both floor tools are Green + disclosure-core, so
+        # they execute grant-free under non_interactive_deny_handler (invoke_skill is
+        # Yellow → the sovereign wall, so skill_view is the sanctioned skill-load
+        # door). This RETIRES P5's config-derived deny-complement, which keyed on the
+        # 'fleet' platform the Dispatcher never actually carried (default 'cli') and
+        # so silently never applied — the leg-1 write_file escape. L1
+        # (fleet-corpus-only-offering-v1 P2) confines the per-turn OFFERED surface;
+        # this L2 floor is the fail-safe ceiling beneath it.
+        if self._platform == "fleet":
+            _FLEET_FLOOR = ("read_file", "skill_view")
+            all_defs = get_tool_definitions(
+                self.registry, enabled_toolsets=None, quiet_mode=quiet_mode,
+            )
+            result = [d for d in all_defs if d["function"]["name"] in _FLEET_FLOOR]
+            # Init-time fail-loud-on-empty: an empty fleet surface makes SEAM5
+            # admit-ALL (run_agent.py:12418 — an empty surface imposes no
+            # constraint), the exact fail-OPEN the floor exists to prevent. Refuse
+            # construction (this runs inside AIAgent.__init__ via get_available_tools).
+            if not result:
+                from grove.fleet.errors import FleetWorkerAndon
+
+                raise FleetWorkerAndon(
+                    f"fleet L2 tool floor resolved to ZERO tools — the registry is "
+                    f"missing {_FLEET_FLOOR!r}; refusing to construct a fleet "
+                    f"Dispatcher with an empty (SEAM5 admit-all) tool surface.",
+                    surface="fleet",
+                    check="fleet_floor_empty",
+                )
+            self._tools_cache[key] = result
+            return result
+
+        from grove.tool_admission import get_admitted_tools
 
         config = self._base_runtime_ctx.config
         admitted_names = get_admitted_tools(self.registry, self._platform, config)
