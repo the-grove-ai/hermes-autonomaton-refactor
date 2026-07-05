@@ -1,8 +1,8 @@
 """fleet-corpus-only-offering-v1 P2 — L1 OFFERING OVERRIDE (enforced control).
 
 The L1 short-circuit at the ABSOLUTE TOP of ``_maybe_apply_tool_filter`` ROUTES on
-the agent's structural fleet platform identity (``self._platform == "fleet"``, the
-same key as L2's floor), NOT on config-key presence. For a fleet worker it REPLACES
+the agent's structural fleet platform identity (``self.platform == "fleet"`` — the
+AGENT's attr, run_agent.py:1452), NOT on config-key presence. For a fleet worker it REPLACES
 the whole per-turn offered surface with the per-spawn allow-list read from
 ``RuntimeContext.config`` (route gate and payload source decoupled — no common-mode
 SPOF). REPLACE, not union: it drops disclosure-core write_file / terminal / patch
@@ -39,7 +39,7 @@ def _agent(allowlist, tools=None, platform="fleet"):
     a._tools_for_turn = None
     a._disclosure_manifest = None
     if platform is not None:
-        a._platform = platform
+        a.platform = platform  # the AGENT's attr (run_agent.py:1452), not _platform
     cfg = {} if allowlist is _ABSENT else {"fleet_offered_allowlist": allowlist}
     a._runtime_ctx = SimpleNamespace(config=cfg)
     return a
