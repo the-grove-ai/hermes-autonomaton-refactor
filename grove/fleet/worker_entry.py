@@ -33,45 +33,6 @@ from typing import Any, Dict, Optional
 WORKER_MAX_ITERATIONS = 50
 
 
-def _corpus_only_admission(cap, worker_id: str, config: dict) -> Optional[list]:
-    """Corpus-only per-tool admission (fleet-pipeline-v1 P5 — the SOLE structural
-    control). If the record declares required_tools:
-
-      1. ASSERT they are all in the LIVE admitted set (declared ⊄ admitted is a
-         config error -> loud Andon, refuse spawn). This is NON-VACUOUS: the
-         DECLARED list and the RESOLVED admitted set come from DIFFERENT sources
-         (the hand-authored record vs get_admitted_tools), so it is a real check,
-         not a tautology.
-      2. Return the deny-complement (admitted − required_tools) — the tools to
-         block so the agent is offered ONLY required_tools.
-
-    Returns None when no required_tools are declared (no per-tool restriction —
-    full toolset, for non-corpus-only workers). Computed at SPAWN against the live
-    config: a hot-reloaded green tool lands in the complement and is denied."""
-    required = list(cap.required_tools or [])
-    if not required:
-        return None
-    from grove.tool_admission import get_admitted_tools
-    from tools.registry import ToolRegistry, register_builtin_tools
-
-    reg = ToolRegistry()
-    register_builtin_tools(reg)
-    admitted = get_admitted_tools(reg, "fleet", config)
-    missing = sorted(t for t in required if t not in admitted)
-    if missing:
-        from grove.fleet.errors import FleetWorkerAndon
-
-        raise FleetWorkerAndon(
-            f"worker {worker_id!r}: declared required_tools {missing} are NOT "
-            f"admitted for platform 'fleet' (declared ⊄ admitted) — a config "
-            f"error. Refusing to spawn; fix the record's required_tools or the "
-            f"platform admission, never silently strip.",
-            worker_id=worker_id,
-            check="required_tool_unadmitted",
-        )
-    return sorted(admitted - set(required))
-
-
 def _now_iso() -> str:
     # Runtime process (not a resumable workflow script) — wall clock is fine.
     from datetime import datetime, timezone
@@ -276,13 +237,14 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         # Load record + enforce read_surfaces BEFORE running anything (item 3).
         cap = _load_capability_for(worker_id)
         enforce_declared_surfaces(cap, worker_id)  # index surface -> loud Andon
-        # (P5) corpus-only per-tool admission — PRE-DISPATCHER assertion (refuse
-        # spawn if declared required_tools ⊄ live-admitted) + deny-complement to
-        # inject below so the agent is offered ONLY required_tools.
+        # fleet-corpus-only-offering-v1 P1 — the corpus-only tool surface is now a
+        # config-BLIND L2 floor hardcoded in the Dispatcher (platform=='fleet' ->
+        # {read_file, skill_view}); this worker no longer computes or injects a
+        # deny-complement. worker_config is passed through UNMODIFIED — the floor
+        # ignores it (decoupled trust root).
         from hermes_cli.config import load_config
 
         worker_config = load_config()
-        blocked_tools = _corpus_only_admission(cap, worker_id, worker_config)
         sink = _resolve_declared_sink(cap, worker_id)
         sink.mkdir(parents=True, exist_ok=True)
 
@@ -297,21 +259,21 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         skill_name = _derive_skill_name(cap, worker_id)
         model, max_tokens, runtime = _resolve_worker_runtime(cap, worker_id)
 
-        # (P5) inject the deny-complement via a PER-SPAWN RuntimeContext so the
-        # Dispatcher's live admission (get_admitted_tools -> minus blocked_tools)
-        # offers the agent ONLY the record's required_tools. The Dispatcher's
-        # _tools_cache is per-instance, and this is a fresh subprocess per dispatch,
-        # so the complement is never boot-cached.
+        # The per-spawn RuntimeContext carries the base config; the fleet L2 floor
+        # (Dispatcher.get_authorized_tools, platform=='fleet') is config-blind, so no
+        # deny-complement injection happens here. platform='fleet' is passed to the
+        # DISPATCHER itself (not only agent_kwargs) so self._platform=='fleet' and the
+        # L2 floor fires — the prior code set platform ONLY in agent_kwargs, leaving
+        # the Dispatcher default 'cli', which is why P5's 'fleet'-keyed deny-complement
+        # silently never applied (the leg-1 write_file escape). agent_kwargs keeps
+        # platform='fleet' too, for AIAgent.platform.
         from grove.dispatcher import RuntimeContext
 
-        if blocked_tools is not None:
-            _bt = dict(worker_config.get("blocked_tools") or {})
-            _bt["fleet"] = sorted(set(_bt.get("fleet") or []) | set(blocked_tools))
-            worker_config = {**worker_config, "blocked_tools": _bt}
         dispatcher = Dispatcher(
             runtime_ctx=RuntimeContext(env=dict(os.environ), config=worker_config),
             session_db=session_db,
             sovereign_prompt_handler=non_interactive_deny_handler,
+            platform="fleet",
             agent_kwargs=dict(
                 model=model,
                 max_tokens=max_tokens,
