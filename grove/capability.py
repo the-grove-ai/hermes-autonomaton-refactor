@@ -391,16 +391,13 @@ class Capability:
     # unknown token fails loud. The fleet runtime enforces this list generically;
     # the record itself carries no runtime code, only the declaration.
     read_surfaces: list = field(default_factory=list)
-    # fleet-pipeline-v1 P5 — the tools a fleet worker running this skill actually
-    # NEEDS. DECLARED here, independent of read_surfaces (not derived from it — the
-    # spawn assertion `required_tools ⊆ live-admitted` is non-vacuous precisely
-    # because the two sides come from DIFFERENT sources: this hand-authored list vs
-    # get_admitted_tools). The worker computes the deny-complement (admitted −
-    # required_tools) at spawn so the agent is offered ONLY these. Empty = no
-    # per-tool restriction (present-key round-trip; byte-identical when empty). No
-    # fixed vocabulary (tool names are dynamic) — validated structurally here and
-    # fail-loud against the live admitted set at spawn.
-    required_tools: list = field(default_factory=list)
+    # NOTE: the fleet-pipeline-v1 P5 ``required_tools`` field was RETIRED in
+    # fleet-corpus-only-offering-v1 P2. It had no runtime consumer once the L2
+    # config-blind tool floor (Dispatcher, platform=='fleet' -> {read_file,
+    # skill_view}) replaced the config-derived deny-complement — a dead-and-wrong
+    # declaration (it named the walled Yellow invoke_skill). The corpus-only surface
+    # is now a code-hardcoded floor (L2) plus a per-spawn allow-list on the
+    # RuntimeContext config (L1), neither derived from the record.
 
     def __post_init__(self) -> None:
         self.validate()
@@ -581,19 +578,6 @@ class Capability:
         if len(set(rs)) != len(rs):
             raise ValueError("read_surfaces must not repeat a token")
 
-        # fleet-pipeline-v1 P5 — required_tools. STRUCTURAL validation only (no
-        # fixed vocabulary — tool names are dynamic); the semantic fail-loud is the
-        # spawn assertion `required_tools ⊆ live-admitted`. Empty is valid (no
-        # per-tool restriction). Non-empty strings, no duplicates.
-        rt = self.required_tools
-        if not isinstance(rt, list):
-            raise ValueError(f"required_tools must be a list; got {type(rt)!r}")
-        for tool in rt:
-            if not isinstance(tool, str) or not tool:
-                raise ValueError("required_tools entries must be non-empty strings")
-        if len(set(rt)) != len(rt):
-            raise ValueError("required_tools must not repeat a tool")
-
     # ── Lifecycle state machine ──────────────────────────────────────────────
 
     def transition(
@@ -727,9 +711,6 @@ class Capability:
         # round-trip.
         if self.read_surfaces:
             d["read_surfaces"] = list(self.read_surfaces)
-        # fleet-pipeline-v1 P5 — present-key only (byte-identical when empty).
-        if self.required_tools:
-            d["required_tools"] = list(self.required_tools)
         return d
 
     @classmethod
@@ -859,9 +840,6 @@ class Capability:
         # vocabulary so a round-trip never silently drops or mangles a token.
         if "read_surfaces" in d:
             kwargs["read_surfaces"] = list(d["read_surfaces"])
-        # fleet-pipeline-v1 P5 — required_tools (present-key only; absent -> []).
-        if "required_tools" in d:
-            kwargs["required_tools"] = list(d["required_tools"])
 
         if "failure" in d:
             f = d["failure"]
