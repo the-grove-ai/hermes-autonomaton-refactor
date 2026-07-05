@@ -159,33 +159,85 @@ def _build_worker_prompt(skill_name: str, payload: Any) -> str:
     )
 
 
+def _valid_fleet_package(obj: Any) -> Optional[Dict[str, Any]]:
+    """Return ``{"slug", "files"}`` when *obj* is a shape-valid fleet_package, else
+    None. Guards every access — never raises. A valid package is a dict carrying a
+    ``fleet_package`` dict whose ``slug`` is a non-empty str and whose ``files`` is
+    a non-empty dict mapping non-empty str filenames to non-empty str content. The
+    deep check keeps a partial/garbled package out of ``stage_package`` — a clean
+    None routes it to the no_package path instead of staging a guess or KeyError-ing.
+    """
+    if not isinstance(obj, dict):
+        return None
+    fp = obj.get("fleet_package")
+    if not isinstance(fp, dict):
+        return None
+    slug = fp.get("slug")
+    files = fp.get("files")
+    if not (isinstance(slug, str) and slug):
+        return None
+    if not (isinstance(files, dict) and files):
+        return None
+    for name, content in files.items():
+        if not (isinstance(name, str) and name and isinstance(content, str) and content):
+            return None
+    return {"slug": slug, "files": files}
+
+
 def _extract_fleet_package(messages) -> Optional[Dict[str, Any]]:
     """Parse the skill's returned ``fleet_package`` from its final message.
 
-    Accepts either a bare JSON object or a ```json fenced block containing
-    ``{"fleet_package": {"slug": ..., "files": {...}}}``. Returns
-    ``{"slug", "files"}`` or None when no valid package is present.
+    Accepts a bare JSON object, a ```json fenced block, or a bare fleet_package
+    object embedded in surrounding prose (selected unambiguously; empty / partial
+    / ambiguous → None), containing
+    ``{"fleet_package": {"slug": ..., "files": {...}}}``. Returns ``{"slug",
+    "files"}`` or None when no single shape-valid package is present.
     """
     import re
 
     text = _final_assistant_text(messages)
     if not text:
         return None
+
+    # Candidates 1+2 (existing): ```json fenced blocks + the whole message.
     candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     candidates.append(text)
+
+    parsed = []
     for cand in candidates:
         try:
             # strict=False tolerates RAW control chars (0x0A/0x09/0x0D) inside string
             # values — LLMs (observed: minimax-m3) intermittently emit an unescaped
             # newline mid-string, which strict json.loads rejects, defeating an
             # otherwise-complete package (forge-package-extraction floor; run 6df68cd8).
-            obj = json.loads(cand, strict=False)
+            parsed.append(json.loads(cand, strict=False))
         except (json.JSONDecodeError, TypeError):
             continue
-        if isinstance(obj, dict) and isinstance(obj.get("fleet_package"), dict):
-            fp = obj["fleet_package"]
-            if fp.get("slug") and isinstance(fp.get("files"), dict) and fp["files"]:
-                return {"slug": fp["slug"], "files": fp["files"]}
+
+    # Candidate 3 (peel): a valid package may be embedded in prose — Sonnet narrates
+    # a preamble, THEN appends the bare JSON (run 6df68cd8 re-dispatch). Anchor on
+    # each ``{"fleet_package"`` and raw_decode ONE value from there: string/escape-
+    # aware, ignores trailing text, no manual brace-counting.
+    decoder = json.JSONDecoder(strict=False)
+    for m in re.finditer(r'\{\s*"fleet_package"', text):
+        try:
+            obj, _end = decoder.raw_decode(text, m.start())
+        except (json.JSONDecodeError, ValueError):
+            continue
+        parsed.append(obj)
+
+    # Deep shape-check every candidate; keep only DISTINCT shape-valid packages
+    # (the whole-text candidate and an anchor commonly decode to the same object).
+    # Exactly one → return it. Zero or more-than-one (ambiguous) → None: never stage
+    # a guess or a partial. The caller's no_package path + shipped raw.txt sidecar
+    # preserve the full output so ambiguous / malformed / garbled stay distinguishable.
+    distinct = []
+    for obj in parsed:
+        fp = _valid_fleet_package(obj)
+        if fp is not None and fp not in distinct:
+            distinct.append(fp)
+    if len(distinct) == 1:
+        return distinct[0]
     return None
 
 
