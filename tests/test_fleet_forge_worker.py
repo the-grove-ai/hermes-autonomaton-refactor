@@ -178,6 +178,108 @@ def test_extract_tolerates_raw_control_char_in_string():
     assert out["files"]["cover-letter.md"] == "para one\npara two"
 
 
+# ── forge-extraction-peel-v1: bare fleet_package embedded in prose ────────────
+
+# A shape-valid package: non-empty slug, non-empty files of non-empty str->str.
+_VALID_PKG = {
+    "fleet_package": {
+        "slug": "260705-acme-vp",
+        "files": {
+            "resume.md": "# Jane Doe\njane@example.com\n\n## VP Systems\nBuilt platforms.",
+            "cover-letter.md": "Dear Acme,\n\nI would be a strong fit.\n\nJane",
+            "meta.json": '{"row_id": "row-123", "company": "Acme", "role": "VP", "slug": "260705-acme-vp"}',
+        },
+    }
+}
+
+
+def _prose_preamble():
+    # The theater-test shape (run 6df68cd8): Sonnet narrates a multi-paragraph
+    # preamble, THEN appends the bare JSON. Sanitized — no operator PII.
+    return (
+        "I have the corpus and voice guide loaded. Now generating the package for "
+        "Acme VP Systems, row id row-123.\n\n"
+        "Positioning thesis: candidate leads enterprise systems architecture.\n\n"
+        "Proof points: 1) built platforms; 2) scaled revenue; 3) shipped governance.\n\n"
+        "ATS keywords: architecture, governance, P&L.\n\n"
+    )
+
+
+def test_peel_prose_preamble_then_bare_json():
+    # (a) STRUCTURAL analog of run 6df68cd8: prose preamble + a bare fleet_package
+    # object (no fence, not the whole message). Identical code path to the real
+    # 9,346-byte Sonnet output; sanitized fixture keeps operator PII out of git.
+    text = _prose_preamble() + json.dumps(_VALID_PKG)
+    out = worker_entry._extract_fleet_package(_msgs(text))
+    assert out is not None, "a bare package after prose must be peeled, not dropped"
+    assert out["slug"] == "260705-acme-vp"
+    assert set(out["files"]) == {"resume.md", "cover-letter.md", "meta.json"}
+
+
+def test_peel_synthetic_prose_then_json():
+    # (b)
+    text = "Here is my reasoning about the role.\n\n" + json.dumps(_VALID_PKG)
+    out = worker_entry._extract_fleet_package(_msgs(text))
+    assert out is not None and out["slug"] == "260705-acme-vp"
+
+
+def test_peel_fenced_still_extracts():
+    # (c) regression: ```json fenced block
+    body = "Here you go:\n```json\n" + json.dumps(_VALID_PKG) + "\n```\n"
+    out = worker_entry._extract_fleet_package(_msgs(body))
+    assert out is not None and out["slug"] == "260705-acme-vp"
+
+
+def test_peel_whole_message_still_extracts():
+    # (d) regression: whole message is the JSON
+    out = worker_entry._extract_fleet_package(_msgs(json.dumps(_VALID_PKG)))
+    assert out is not None and out["slug"] == "260705-acme-vp"
+
+
+def test_peel_decoy_example_then_real_returns_real():
+    # (e) a prose EXAMPLE with empty files (fails shape-check) precedes the real
+    # package → the real one is selected, the decoy discarded.
+    decoy = '{"fleet_package": {"slug": "example", "files": {}}}'
+    text = (
+        "For example a package looks like " + decoy
+        + "\n\nHere is the real one:\n\n" + json.dumps(_VALID_PKG)
+    )
+    out = worker_entry._extract_fleet_package(_msgs(text))
+    assert out is not None and out["slug"] == "260705-acme-vp"
+
+
+def test_peel_two_full_valid_packages_is_ambiguous_none():
+    # (f) two DISTINCT valid packages → ambiguous → None (never guess)
+    pkg2 = {"fleet_package": {"slug": "other-slug", "files": {"a.md": "x"}}}
+    text = json.dumps(_VALID_PKG) + "\n\nand also\n\n" + json.dumps(pkg2)
+    assert worker_entry._extract_fleet_package(_msgs(text)) is None
+
+
+def test_peel_empty_slug_is_none():
+    # (g)
+    bad = {"fleet_package": {"slug": "", "files": {"a.md": "x"}}}
+    assert worker_entry._extract_fleet_package(_msgs(json.dumps(bad))) is None
+
+
+def test_peel_empty_files_is_none():
+    # (h)
+    bad = {"fleet_package": {"slug": "s", "files": {}}}
+    assert worker_entry._extract_fleet_package(_msgs(json.dumps(bad))) is None
+
+
+def test_peel_missing_files_key_is_none():
+    # (i) previously risked a downstream KeyError; now a clean None
+    bad = {"fleet_package": {"slug": "s"}}
+    assert worker_entry._extract_fleet_package(_msgs(json.dumps(bad))) is None
+
+
+def test_peel_garbled_prose_only_is_none():
+    # (j) prose, no JSON at all
+    assert worker_entry._extract_fleet_package(
+        _msgs("I thought about it but produced only prose.")
+    ) is None
+
+
 # ── re-dispatch cycle: not-running gate clears on exit (gate confirmation) ────
 
 
