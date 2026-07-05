@@ -3236,16 +3236,18 @@ class AIAgent:
         # it is free — the override's job for the floor tools is CONFINEMENT). The
         # allow-list is a SEPARATE trust root from L2's platform-hardcoded floor
         # (Dispatcher) — two independent inputs, no common-mode SPOF.
-        # ROUTE on the STRUCTURAL fleet platform identity (the same key as the L2
-        # floor), NOT on config-key presence. A fleet worker must NEVER fall through
-        # to the interactive resolver: that path would re-offer disclosure-core
-        # write_file and strip the surface back toward core (skill_view survives only
-        # because it is core) — re-triggering the founding confinement bug. So a
-        # MISSING allow-list is FATAL for a fleet worker, not a silent degrade.
-        # DECOUPLING PRESERVED: routing gate = platform (structural); payload source
-        # = the per-spawn RuntimeContext.config allow-list — distinct, not a
-        # common-mode collapse.
-        if getattr(self, "_platform", None) == "fleet":
+        # ROUTE on the STRUCTURAL fleet platform identity, NOT on config-key
+        # presence. A fleet worker must NEVER fall through to the interactive
+        # resolver: that path would re-offer disclosure-core write_file and strip the
+        # surface back toward core (skill_view survives only because it is core) —
+        # re-triggering the founding confinement bug. So a MISSING allow-list is
+        # FATAL for a fleet worker, not a silent degrade. DECOUPLING PRESERVED:
+        # routing gate = platform (structural); payload source = the per-spawn
+        # RuntimeContext.config allow-list — distinct, not a common-mode collapse.
+        # NOTE: the AGENT's attribute is ``self.platform`` (run_agent.py:1452), set
+        # from agent_kwargs(platform="fleet"); ``_platform`` is the DISPATCHER's name
+        # — reading it here would make the override a SILENT no-op in production.
+        if getattr(self, "platform", None) == "fleet":
             from grove.context_budget import _name_of
             from grove.fleet.errors import FleetWorkerAndon
 
