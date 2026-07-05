@@ -1,16 +1,18 @@
 """fleet-corpus-only-offering-v1 P2 — L1 OFFERING OVERRIDE (enforced control).
 
-A per-spawn allow-list on the RuntimeContext config REPLACES the whole per-turn
-offered surface at the ABSOLUTE TOP of ``_maybe_apply_tool_filter``, before all
-five contributors. REPLACE (not union): it drops disclosure-core write_file /
-terminal / patch and offers exactly {read_file, skill_view}. Fail-loud on an empty
-or unsatisfiable allow-list — never emit an empty ``_tools_for_turn`` (SEAM5 reads
-empty as admit-ALL, run_agent.py:12418). Its trust root is the config key, SEPARATE
-from L2's platform-hardcoded floor (no common-mode SPOF).
+The L1 short-circuit at the ABSOLUTE TOP of ``_maybe_apply_tool_filter`` ROUTES on
+the agent's structural fleet platform identity (``self._platform == "fleet"``, the
+same key as L2's floor), NOT on config-key presence. For a fleet worker it REPLACES
+the whole per-turn offered surface with the per-spawn allow-list read from
+``RuntimeContext.config`` (route gate and payload source decoupled — no common-mode
+SPOF). REPLACE, not union: it drops disclosure-core write_file / terminal / patch
+and offers exactly {read_file, skill_view}.
 
-The interactive none-branch (no allow-list key) is byte-identical: the override is
-a pure prepend that returns early ONLY when the key is present; the resolver itself
-is untouched, guarded by ``tests/grove/test_offer_parity_snapshot.py``.
+A fleet worker NEVER falls through to the interactive resolver: a MISSING allow-list
+is fatal (fleet_allowlist_absent), not a silent degrade to core (which would re-offer
+write_file — the founding confinement bug). Empty and ⊄-self.tools also halt. A
+non-fleet / bare agent takes the unchanged none-branch (interactive byte-identical,
+guarded by test_offer_parity_snapshot / test_disclosure_split_records).
 """
 
 from __future__ import annotations
@@ -31,11 +33,13 @@ def _tool(name):
     return {"type": "function", "function": {"name": name}}
 
 
-def _agent(allowlist, tools=None):
+def _agent(allowlist, tools=None, platform="fleet"):
     a = object.__new__(run_agent.AIAgent)
     a.tools = [_tool(n) for n in (_CORE_ISH if tools is None else tools)]
     a._tools_for_turn = None
     a._disclosure_manifest = None
+    if platform is not None:
+        a._platform = platform
     cfg = {} if allowlist is _ABSENT else {"fleet_offered_allowlist": allowlist}
     a._runtime_ctx = SimpleNamespace(config=cfg)
     return a
@@ -62,6 +66,16 @@ def test_override_drops_core_write_tools():
         assert banned not in offered
 
 
+def test_missing_allowlist_andons():
+    # THE new coverage (Gemini GATE-B): a fleet worker whose config lacks the key
+    # must HALT, not fall through to the interactive resolver (which would re-offer
+    # write_file and dissolve the corpus-only surface — the founding bug).
+    a = _agent(_ABSENT)  # platform=='fleet' but NO fleet_offered_allowlist key
+    with pytest.raises(FleetWorkerAndon) as ei:
+        a._maybe_apply_tool_filter("x")
+    assert ei.value.check == "fleet_allowlist_absent"
+
+
 def test_empty_allowlist_andons():
     # Present-but-empty allow-list would emit an empty surface -> SEAM5 admit-all.
     a = _agent([])
@@ -79,11 +93,20 @@ def test_allowlist_not_subset_andons():
     assert ei.value.check == "fleet_allowlist_unsatisfiable"
 
 
-def test_override_absent_does_not_fire():
-    # None-branch: no allow-list key -> override skipped, control flows to the
-    # unchanged resolver path. With self.tools empty the normal path early-returns
-    # and the override marker is never set.
-    a = _agent(_ABSENT, tools=[])
+def test_non_fleet_platform_takes_none_branch():
+    # A non-fleet platform NEVER enters the override — control flows to the
+    # unchanged resolver path. With self.tools empty the normal path early-returns;
+    # the override marker is never set. Even a fleet-style allow-list in config is
+    # IGNORED when the platform is not 'fleet' (routing is structural, not config).
+    a = _agent(["read_file", "skill_view"], tools=[], platform="cli")
+    a._maybe_apply_tool_filter("x")
+    assert not getattr(a, "_last_tool_selection", None)
+
+
+def test_bare_agent_no_platform_takes_none_branch():
+    # A bare agent with no _platform attr must not raise (getattr default) and must
+    # not fire the override — the interactive none-branch.
+    a = _agent(_ABSENT, tools=[], platform=None)  # no _platform set at all
     a._maybe_apply_tool_filter("x")
     assert not getattr(a, "_last_tool_selection", None)
 
