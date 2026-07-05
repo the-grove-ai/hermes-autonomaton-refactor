@@ -1437,6 +1437,42 @@ def render_forge_publish_card(
     )
 
 
+def _forge_slug_body(
+    slug: str, read: dict, *, pid: str | None = None, include_publish: bool = True
+) -> str:
+    """Inner HTML for a forge draft dir — the h2 + zone badge + subtitle, an
+    OPTIONAL Publish card, and the resume.md / cover-letter.md rendered-markdown
+    articles. Shared by the standalone page (``handle_forge_slug_dir``,
+    ``include_publish=True``) and the in-shell fragment (``handle_forge_slug_fragment``,
+    ``include_publish=False``). ``pid`` is threaded for a future disposition
+    affordance (forge-review-surface-v1 P2/P3) but is NOT consumed here. With
+    ``include_publish=True`` the returned string is byte-identical to the
+    pre-refactor body."""
+    meta = read["meta"]
+    if meta and all(meta.get(k) for k in ("row_id", "company", "role")):
+        publish = render_forge_publish_card(slug)
+        subtitle = f'{_esc(meta.get("company", ""))} &mdash; {_esc(meta.get("role", ""))}'
+    else:
+        why = read["meta_error"] or "meta.json is missing row_id/company/role"
+        publish = (
+            f'<div class="card" id="forge-publish-{_esc(slug)}">'
+            f'<h4>Publish unavailable</h4>'
+            f'<div class="meta error">{_esc(why)} — cannot publish without the '
+            f'row identity.</div></div>'
+        )
+        subtitle = "(meta.json incomplete)"
+    publish_html = publish if include_publish else ""
+    return (
+        f'<h2>{_esc(slug)} {_fleet_zone_badge("yellow")}</h2>'
+        f'<p class="meta">forge-jobsearch &middot; {subtitle}</p>'
+        f"{publish_html}"
+        f"<h3>resume.md</h3>"
+        f'<article class="cellar-body">{_render_md(read["resume_md"])}</article>'
+        f"<h3>cover-letter.md</h3>"
+        f'<article class="cellar-body">{_render_md(read["cover_md"])}</article>'
+    )
+
+
 async def handle_forge_slug_dir(request: web.Request) -> web.Response:
     """``GET /portal/fleet/forge-jobsearch/{slug}/`` — render a forge draft dir:
     both markdown assets on one page plus a Publish affordance. The forge stages
@@ -1453,28 +1489,7 @@ async def handle_forge_slug_dir(request: web.Request) -> web.Response:
             ),
             status=404, content_type="text/html",
         )
-    meta = read["meta"]
-    if meta and all(meta.get(k) for k in ("row_id", "company", "role")):
-        publish = render_forge_publish_card(slug)
-        subtitle = f'{_esc(meta.get("company", ""))} &mdash; {_esc(meta.get("role", ""))}'
-    else:
-        why = read["meta_error"] or "meta.json is missing row_id/company/role"
-        publish = (
-            f'<div class="card" id="forge-publish-{_esc(slug)}">'
-            f'<h4>Publish unavailable</h4>'
-            f'<div class="meta error">{_esc(why)} — cannot publish without the '
-            f'row identity.</div></div>'
-        )
-        subtitle = "(meta.json incomplete)"
-    body = (
-        f'<h2>{_esc(slug)} {_fleet_zone_badge("yellow")}</h2>'
-        f'<p class="meta">forge-jobsearch &middot; {subtitle}</p>'
-        f"{publish}"
-        f"<h3>resume.md</h3>"
-        f'<article class="cellar-body">{_render_md(read["resume_md"])}</article>'
-        f"<h3>cover-letter.md</h3>"
-        f'<article class="cellar-body">{_render_md(read["cover_md"])}</article>'
-    )
+    body = _forge_slug_body(slug, read, include_publish=True)
     return web.Response(
         text=_fleet_page(
             f"Fleet — forge-jobsearch/{slug}",
@@ -1482,6 +1497,26 @@ async def handle_forge_slug_dir(request: web.Request) -> web.Response:
         ),
         content_type="text/html",
     )
+
+
+async def handle_forge_slug_fragment(request: web.Request) -> web.Response:
+    """``GET /portal/fragments/forge/{slug}/`` — the forge draft body ONLY (no
+    ``_fleet_page`` chrome), for an in-shell load into ``#center-panel``. Same slug
+    load path as ``handle_forge_slug_dir`` (``_read_forge_slug``); the Publish card
+    is omitted (``include_publish=False``). An optional ``?pid=`` is threaded into
+    the body for a future disposition affordance (P2/P3) but not consumed here.
+    Missing / unreadable slug dir -> 404 with an explicit error body (fail loud;
+    never a silent empty 200)."""
+    slug = request.match_info["slug"]
+    read = _read_forge_slug(slug)
+    if read is None:
+        return _html_fragment(
+            f'<div class="error-card"><h3>404 — forge draft not found</h3>'
+            f'<p class="placeholder">No forge draft dir: {_esc(slug)}</p></div>',
+            status=404,
+        )
+    pid = request.query.get("pid")
+    return _html_fragment(_forge_slug_body(slug, read, pid=pid, include_publish=False))
 
 
 async def handle_portal_slash_redirect(request: web.Request) -> web.Response:
@@ -1513,6 +1548,11 @@ def register_fragment_routes(app: web.Application) -> None:
     app.router.add_get("/portal/fragments/memory/records", handle_memory_records)
     app.router.add_get("/portal/fragments/dock/goals", handle_dock_goals)
     app.router.add_get("/portal/fragments/proposals/pending", handle_proposals_pending)
+    # forge-review-surface-v1 P1 — the forge draft body as an in-shell fragment
+    # (body-only, no _fleet_page chrome) for load into #center-panel. The standalone
+    # /portal/fleet/forge-jobsearch/{slug}/ page is unchanged; this shares its load
+    # path (_read_forge_slug) and body builder (_forge_slug_body).
+    app.router.add_get("/portal/fragments/forge/{slug}/", handle_forge_slug_fragment)
     app.router.add_get("/portal/fragments/skills/", handle_skills)
     # Phase 4 — context sidebar. {entity_id:.+} carries slash-bearing cellar
     # page_ids; entity_type is a single non-slash segment.
