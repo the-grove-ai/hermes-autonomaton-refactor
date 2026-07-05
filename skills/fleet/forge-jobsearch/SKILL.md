@@ -60,7 +60,7 @@ From the row's Persona + Rationale + the corpus persona framing:
 - ATS keywords: terms that must appear verbatim, marked ✓ (covered by corpus) or ✗ (cannot truthfully claim). Never claim a ✗.
 
 ### Step 4 — Generate the two assets
-1. Tailored resume (markdown, ATS-safe single column): headline matched to the target role; summary rewritten around the positioning thesis (3–4 sentences, no fluff); corpus roles reverse-chronological, bullets reordered to lead with the proof points, irrelevant bullets cut; skills tuned to ✓ ATS keywords only; Grove Foundation as a Projects entry for AI-facing roles, omitted for pure revenue/product roles unless it strengthens the thesis.
+1. Tailored resume (markdown, ATS-safe single column): headline matched to the target role; summary rewritten around the positioning thesis (3–4 sentences, no fluff); lead the Experience section with the two current roles in this EXACT order — Take Flight Advisors, then The Grove Foundation — never re-sorted by start date; remaining roles reverse-chronological; bullets reordered to lead with the proof points, irrelevant bullets cut; skills tuned to ✓ ATS keywords only; For pure revenue/product roles, The Grove Foundation may drop to a Projects entry or be omitted if it doesn’t strengthen the thesis; where it appears as Experience, it follows Take Flight Advisors per the lead order.
 2. Cover letter (markdown, ≤350 words): jim-voice applies. Open with a company-specific hook, not "I am excited to apply." Three short paragraphs: why them, why the operator (two strongest proof points with numbers), close with specific value in the first 90 days. AP style. No corporate filler.
 
 (v1 stops here. Executive-summary blurb and LinkedIn outreach note are out of scope.)
