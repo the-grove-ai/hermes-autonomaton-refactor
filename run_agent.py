@@ -3227,6 +3227,63 @@ class AIAgent:
         tier's prefill ceiling. The legacy (no-budget) path keeps the
         best-effort degrade so a cloud turn never crashes on an optimizer error.
         """
+        # ── fleet-corpus-only-offering-v1 P2 — L1 OFFERING OVERRIDE (enforced) ──
+        # ABSOLUTE TOP, before all five contributors (intent resolver, disclosure,
+        # T1/else, carry-forward, pull-splice). A per-spawn allow-list on the
+        # RuntimeContext CONFIG REPLACES the entire per-turn offered surface with
+        # exactly its tools. REPLACE, not union: this drops write_file/terminal/patch
+        # even though they are disclosure-core (skill_view is core too, so ENABLING
+        # it is free — the override's job for the floor tools is CONFINEMENT). The
+        # allow-list is a SEPARATE trust root from L2's platform-hardcoded floor
+        # (Dispatcher) — two independent inputs, no common-mode SPOF.
+        _override = None
+        _rt_ctx = getattr(self, "_runtime_ctx", None)
+        if _rt_ctx is not None:
+            _cfg = getattr(_rt_ctx, "config", None) or {}
+            _override = _cfg.get("fleet_offered_allowlist")
+        if _override is not None:
+            from grove.context_budget import _name_of
+            from grove.fleet.errors import FleetWorkerAndon
+
+            # FAIL-LOUD-ON-EMPTY: an empty allow-list would emit an empty
+            # _tools_for_turn, which SEAM5 reads as admit-ALL (run_agent.py:12418) —
+            # the exact fail-OPEN this control exists to prevent. Independent of L2's
+            # empty-check (different layer, different input).
+            if not _override:
+                raise FleetWorkerAndon(
+                    "fleet offered-surface allow-list is EMPTY — refusing to emit an "
+                    "empty _tools_for_turn (SEAM5 would then admit ALL tools). Fix "
+                    "the worker's fleet_offered_allowlist.",
+                    surface="fleet",
+                    check="fleet_allowlist_empty",
+                )
+            _by_name = {
+                _name_of(t): t for t in (self.tools or []) if isinstance(t, dict)
+            }
+            _missing = [n for n in _override if n not in _by_name]
+            if _missing:
+                raise FleetWorkerAndon(
+                    f"fleet offered-surface allow-list {sorted(_override)} is NOT a "
+                    f"subset of the construction surface (missing {sorted(_missing)}) "
+                    f"— the L2 floor and the L1 allow-list disagree. Refusing to "
+                    f"offer a tool the agent does not hold.",
+                    surface="fleet",
+                    check="fleet_allowlist_unsatisfiable",
+                )
+            # REPLACE the offered surface. Reset the fresh-per-turn disclosure state
+            # too so no stale manifest/log leaks into a downstream reader.
+            self._tool_resolution = None
+            self._disclosure_log = []
+            self._disclosure_manifest = None
+            self._tools_for_turn = [_by_name[n] for n in _override]
+            self._last_tool_selection = {
+                "fleet_offered_override": True,
+                "selected_count": len(self._tools_for_turn),
+                "full_count": len(self.tools or []),
+                "tools": sorted(_override),
+            }
+            return
+
         self._tool_resolution = None
         self._disclosure_log = []  # Phase 4 — fresh disclosure ledger per turn.
         # Skip when self.tools is empty/missing — nothing to filter.

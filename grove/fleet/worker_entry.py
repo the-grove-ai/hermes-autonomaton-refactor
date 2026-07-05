@@ -140,18 +140,21 @@ def _resolve_worker_runtime(cap, worker_id: str):
 
 def _build_worker_prompt(skill_name: str, payload: Any) -> str:
     return (
-        f"You are running as an autonomous, non-interactive fleet background "
-        f"worker. Invoke the '{skill_name}' skill using the invoke_skill tool and "
-        f"carry it out to completion against the resolved input below. Do NOT ask "
-        f"clarifying questions — no operator is present this turn. Do NOT call "
-        f"write_file, do NOT publish, do NOT read external sources beyond your "
-        f"declared read surfaces — the RUNTIME stages your output.\n\n"
-        f"When finished, your FINAL message MUST be a single JSON object and "
-        f"nothing else:\n"
+        f"You are an autonomous, non-interactive fleet background worker. You are "
+        f"EXECUTING a job, not describing one. Your FIRST step is to call "
+        f"skill_view('{skill_name}'): what it returns is your OPERATING PROCEDURE "
+        f"to carry out, NOT reference material to summarize or report on. Then "
+        f"perform that procedure to completion against the resolved input below.\n\n"
+        f"No operator is present — do NOT ask clarifying questions. You have NO "
+        f"write tool and you do NOT publish; the RUNTIME stages your output. Read "
+        f"only your declared read surfaces.\n\n"
+        f"Your job is COMPLETE ONLY when your FINAL message is a single JSON object "
+        f"and nothing else:\n"
         f'{{"fleet_package": {{"slug": "<short-kebab-slug>", "files": '
         f'{{"<filename>": "<full file content>", ...}}}}}}\n'
         f"The runtime writes each file atomically into your pending_review sink "
-        f"under the slug directory.\n\nRESOLVED INPUT:\n"
+        f"under the slug directory. A message that summarizes the procedure instead "
+        f"of returning the fleet_package is an INCOMPLETE run.\n\nRESOLVED INPUT:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -237,14 +240,22 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         # Load record + enforce read_surfaces BEFORE running anything (item 3).
         cap = _load_capability_for(worker_id)
         enforce_declared_surfaces(cap, worker_id)  # index surface -> loud Andon
-        # fleet-corpus-only-offering-v1 P1 — the corpus-only tool surface is now a
-        # config-BLIND L2 floor hardcoded in the Dispatcher (platform=='fleet' ->
-        # {read_file, skill_view}); this worker no longer computes or injects a
-        # deny-complement. worker_config is passed through UNMODIFIED — the floor
-        # ignores it (decoupled trust root).
+        # fleet-corpus-only-offering-v1 P1/P2 — the corpus-only tool surface is
+        # enforced by TWO independent controls with SEPARATE trust roots (no
+        # common-mode SPOF):
+        #   L2 (P1): a config-BLIND floor hardcoded in the Dispatcher, keyed on
+        #            platform=='fleet' -> {read_file, skill_view} (the ceiling).
+        #   L1 (P2): a per-spawn allow-list on the RuntimeContext CONFIG, read at the
+        #            top of run_agent._maybe_apply_tool_filter, which REPLACES the
+        #            whole per-turn offered surface with exactly these tools (the
+        #            enforced offering). Its trust root is this config key, NOT the
+        #            platform hardcode — deliberately decoupled from L2.
         from hermes_cli.config import load_config
 
-        worker_config = load_config()
+        worker_config = {
+            **load_config(),
+            "fleet_offered_allowlist": ["read_file", "skill_view"],
+        }
         sink = _resolve_declared_sink(cap, worker_id)
         sink.mkdir(parents=True, exist_ok=True)
 
