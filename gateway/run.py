@@ -17345,7 +17345,31 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.debug("MCP orphan reap at startup failed: %s", _reap_exc)
         await _loop.run_in_executor(None, discover_mcp_tools)
     except Exception as e:
-        logger.debug("MCP tool discovery failed: %s", e)
+        # G4 (fleet-mcp-warm-unification-v1 P1) — FAIL LOUD, non-fatal. The startup
+        # MCP warm is latency amortization only; the per-dispatch ensure_mcp_warm is
+        # the correctness guarantee, so a warm failure here must NOT kill the gateway
+        # or the ticker. But it must never be a silent DEBUG swallow: a cold registry
+        # at boot is exactly what strands a fleet-only window until an interactive turn
+        # re-warms it (the bug this sprint closes). Loud log + an operator Andon;
+        # startup continues.
+        logger.error(
+            "Startup MCP tool discovery failed (non-fatal; per-dispatch warm will "
+            "self-heal on the next fleet cadence): %s",
+            e,
+            exc_info=True,
+        )
+        try:
+            from grove.notify import broadcast_to_operator
+
+            await broadcast_to_operator(
+                f"Startup MCP warm failed: {e}. The gateway is up; MCP-backed tools "
+                f"are COLD until the per-dispatch warm self-heals on the next fleet "
+                f"cadence (or an interactive turn re-warms them).",
+                severity="error",
+                metadata={"check": "startup_mcp_warm_failed"},
+            )
+        except Exception as _andon_exc:  # noqa: BLE001 — the Andon surface must never make a warm failure fatal
+            logger.error("Startup MCP warm Andon broadcast failed: %r", _andon_exc)
 
     # Start the gateway
     success = await runner.start()

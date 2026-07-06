@@ -407,3 +407,58 @@ def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatc
         "host-visible output mount" in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_startup_mcp_warm_failure_is_loud_and_nonfatal(monkeypatch, tmp_path, caplog):
+    """fleet-mcp-warm-unification-v1 P1 (G4): a failing startup MCP warm must FAIL
+    LOUD (logger.error + operator Andon) but stay NON-FATAL — the gateway comes up
+    and the per-dispatch warm self-heals. Guards against the prior silent DEBUG
+    swallow that hid a cold registry until an interactive turn re-warmed it."""
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+
+    class _CleanExitRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            return True
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+
+    # The startup warm raises; the orphan reap is a harmless no-op for isolation.
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated MCP warm failure")
+
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", _boom)
+    monkeypatch.setattr("tools.mcp_tool.reap_dead_owner_children", lambda *a, **k: 0)
+
+    andon = AsyncMock(return_value={"logged": True})
+    monkeypatch.setattr("grove.notify.broadcast_to_operator", andon)
+
+    from gateway.run import start_gateway
+
+    with caplog.at_level("ERROR"):
+        ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=1)
+
+    # Non-fatal: the gateway still came up (loop not killed by the warm failure).
+    assert ok is True
+    # Loud: a logger.error names the startup-warm failure (no silent DEBUG swallow).
+    assert any(
+        "Startup MCP tool discovery failed" in record.message and record.levelname == "ERROR"
+        for record in caplog.records
+    )
+    # Andon surfaced to the operator with the diagnostic check tag.
+    andon.assert_awaited_once()
+    _, kwargs = andon.call_args
+    assert kwargs.get("metadata", {}).get("check") == "startup_mcp_warm_failed"
