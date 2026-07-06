@@ -1525,8 +1525,8 @@ def _forge_kaizen_div(pid: str) -> str:
     """Inline Kaizen disposition affordance for the in-shell forge fragment — the
     SAME pid-keyed routes the proposal card's fast-path uses (Kaizen Voice: two
     entry points, one protocol). Promote / Reject POST to those routes and land
-    their response in ``#kaizen-result``; suggest-revision is a rendered-but-inert
-    slot (routed next sprint).
+    their response in ``#kaizen-result``; suggest-revision is an enabled textarea +
+    submit POSTing to /portal/actions/proposals/{pid}/suggest_revision (routed at P2).
 
     M4 return-to-queue + fail-loud guard, on ``hx-on::after-request`` (core HTMX
     2.0.6 — reliable in swapped-in content; an inline <script> would not run):
@@ -1541,6 +1541,13 @@ def _forge_kaizen_div(pid: str) -> str:
     no double quotes, so it is embedded raw in the attribute; only the pid-bearing
     id / hx-post URLs pass through ``_esc``."""
     pe = _esc(pid)
+    # DEVIATION (P1 Andon): the CC-PROMPT's literal id/hx-include="#rev-{pid}" breaks —
+    # compute_proposal_id yields "sha256:<hex>" (proposal_queue.py:366), and a colon in a
+    # CSS #id selector is a parse error, so htmx's querySelectorAll(hx-include) would never
+    # match the textarea → suggest_revision submits empty. Use the codebase's colon-free
+    # DOM-id convention _short_id(pid) (fragments.py:518, the same tail #proposal-{short_id}
+    # uses). hx-post keeps the raw pid (path segment — colon is URL-legal).
+    rev_id = "rev-" + _short_id(pid)
     on_after = (
         "if(event.detail.successful){"
         "htmx.ajax('GET','/portal/fragments/proposals/pending',{target:'#center-panel'});"
@@ -1561,8 +1568,12 @@ def _forge_kaizen_div(pid: str) -> str:
         f'<button class="btn btn-reject" '
         f'hx-post="/portal/actions/proposals/{pe}/reject" '
         f'hx-target="#kaizen-result" hx-swap="innerHTML">Reject</button>'
-        f'<button class="btn" disabled '
-        f'title="Suggest revision — routed in the next sprint">Suggest revision</button>'
+        f'<textarea id="{rev_id}" name="revision_text" class="revision-text" rows="3" '
+        f'placeholder="Revision guidance for the next draft (what to change)."></textarea>'
+        f'<button class="btn btn-secondary" '
+        f'hx-post="/portal/actions/proposals/{pe}/suggest_revision" '
+        f'hx-target="#kaizen-result" hx-swap="innerHTML" '
+        f'hx-include="#{rev_id}">Suggest revision</button>'
         f'<div id="kaizen-result"></div>'
         f'</div>'
     )
