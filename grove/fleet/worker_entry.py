@@ -28,7 +28,7 @@ import os
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 WORKER_MAX_ITERATIONS = 50
 
@@ -175,86 +175,129 @@ def _build_worker_prompt(skill_name: str, payload: Any) -> str:
     )
 
 
-def _valid_fleet_package(obj: Any) -> Optional[Dict[str, Any]]:
-    """Return ``{"slug", "files"}`` when *obj* is a shape-valid fleet_package, else
-    None. Guards every access — never raises. A valid package is a dict carrying a
-    ``fleet_package`` dict whose ``slug`` is a non-empty str and whose ``files`` is
-    a non-empty dict mapping non-empty str filenames to non-empty str content. The
-    deep check keeps a partial/garbled package out of ``stage_package`` — a clean
-    None routes it to the no_package path instead of staging a guess or KeyError-ing.
+def _strip_fences(lines: List[str]) -> str:
+    """Drop a single leading fence line and a single trailing fence line, then join.
+
+    The producer contract forbids markdown fences, but a model may still wrap a body
+    in ``` ```markdown ``` / ``` ```text ``` / ``` ```json ``` (or a bare ``` ``` ```).
+    A leading line whose first non-space chars are ``` ``` ``` is dropped, and a
+    trailing line that is a bare fence is dropped, BEFORE the body is recorded. The
+    caller ``.strip()``s the result; an empty body then fails loud.
     """
-    if not isinstance(obj, dict):
-        return None
-    fp = obj.get("fleet_package")
-    if not isinstance(fp, dict):
-        return None
-    slug = fp.get("slug")
-    files = fp.get("files")
-    if not (isinstance(slug, str) and slug):
-        return None
-    if not (isinstance(files, dict) and files):
-        return None
-    for name, content in files.items():
-        if not (isinstance(name, str) and name and isinstance(content, str) and content):
-            return None
-    return {"slug": slug, "files": files}
+    buf = list(lines)
+    if buf and buf[0].lstrip().startswith("```"):
+        buf = buf[1:]
+    if buf and buf[-1].strip().startswith("```"):
+        buf = buf[:-1]
+    return "\n".join(buf)
 
 
-def _extract_fleet_package(messages) -> Optional[Dict[str, Any]]:
-    """Parse the skill's returned ``fleet_package`` from its final message.
+def _is_safe_basename(name: str, sink: Any) -> bool:
+    """True iff *name* is one safe path component that cannot escape *sink*.
 
-    Accepts a bare JSON object, a ```json fenced block, or a bare fleet_package
-    object embedded in surrounding prose (selected unambiguously; empty / partial
-    / ambiguous → None), containing
-    ``{"fleet_package": {"slug": ..., "files": {...}}}``. Returns ``{"slug",
-    "files"}`` or None when no single shape-valid package is present.
+    Basename jail (BEFORE any Path/write): reject empty, ``.``/``..``, or any OS
+    separator. Then a resolved sink-prefix check (``realpath(join(sink, name))``
+    within ``realpath(sink)``) as the ratified second layer — parity with the
+    write-side ``is_relative_to`` jail in ``stage_package``.
     """
-    import re
+    if not name or name in (".", "..") or os.sep in name or (os.altsep and os.altsep in name):
+        return False
+    sink_real = os.path.realpath(str(sink))
+    dest_real = os.path.realpath(os.path.join(sink_real, name))
+    return dest_real == sink_real or dest_real.startswith(sink_real + os.sep)
+
+
+def _extract_fleet_package(messages, tag: str, sink: Any, required_files):
+    """Parse the worker's delimited, sentinel-framed per-file emit (Path B).
+
+    Returns ``({"slug": ..., "files": {...}}, None)`` on a clean parse, else
+    ``(None, reason)`` — every malformed transition fails LOUD to the no_package
+    path (never a partial/garbled stage). Delimited-ONLY: there is no JSON transport
+    fallback (it masked forensics and produced the unescaped-quote failure class
+    this sprint kills — byte-confirmed on run f157eb558b + 5 siblings).
+
+    The per-run *tag* (caller passes ``run_id[:8]``) frames the sentinels so a body
+    line that spoofs a marker with a DIFFERENT tag is treated as text, not a marker.
+    ``required_files`` is the caller-supplied set (forge names its own set; the parser
+    stays generic — a second fleet worker will have a different set). The slug is
+    recovered from ``meta.json``'s own body: ALL files, meta included, travel the SAME
+    protocol; reading meta.json's JSON body for the slug is reading one file, not a
+    transport fallback.
+    """
+    from grove.fleet.staging import _SLUG_RE
 
     text = _final_assistant_text(messages)
     if not text:
-        return None
+        return None, "no-files"
 
-    # Candidates 1+2 (existing): ```json fenced blocks + the whole message.
-    candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    candidates.append(text)
+    start_prefix = "@@@FILE_START: "
+    end_prefix = "@@@FILE_END: "
+    suffix = f" [{tag}]@@@"
 
-    parsed = []
-    for cand in candidates:
-        try:
-            # strict=False tolerates RAW control chars (0x0A/0x09/0x0D) inside string
-            # values — LLMs (observed: minimax-m3) intermittently emit an unescaped
-            # newline mid-string, which strict json.loads rejects, defeating an
-            # otherwise-complete package (forge-package-extraction floor; run 6df68cd8).
-            parsed.append(json.loads(cand, strict=False))
-        except (json.JSONDecodeError, TypeError):
-            continue
+    def is_start(line: str) -> bool:
+        s = line.rstrip()
+        return s.startswith(start_prefix) and s.endswith(suffix)
 
-    # Candidate 3 (peel): a valid package may be embedded in prose — Sonnet narrates
-    # a preamble, THEN appends the bare JSON (run 6df68cd8 re-dispatch). Anchor on
-    # each ``{"fleet_package"`` and raw_decode ONE value from there: string/escape-
-    # aware, ignores trailing text, no manual brace-counting.
-    decoder = json.JSONDecoder(strict=False)
-    for m in re.finditer(r'\{\s*"fleet_package"', text):
-        try:
-            obj, _end = decoder.raw_decode(text, m.start())
-        except (json.JSONDecodeError, ValueError):
-            continue
-        parsed.append(obj)
+    def is_end(line: str) -> bool:
+        s = line.rstrip()
+        return s.startswith(end_prefix) and s.endswith(suffix)
 
-    # Deep shape-check every candidate; keep only DISTINCT shape-valid packages
-    # (the whole-text candidate and an anchor commonly decode to the same object).
-    # Exactly one → return it. Zero or more-than-one (ambiguous) → None: never stage
-    # a guess or a partial. The caller's no_package path + shipped raw.txt sidecar
-    # preserve the full output so ambiguous / malformed / garbled stay distinguishable.
-    distinct = []
-    for obj in parsed:
-        fp = _valid_fleet_package(obj)
-        if fp is not None and fp not in distinct:
-            distinct.append(fp)
-    if len(distinct) == 1:
-        return distinct[0]
-    return None
+    def name_of(line: str, prefix: str) -> str:
+        return line.rstrip()[len(prefix):-len(suffix)].strip()
+
+    files: Dict[str, str] = {}
+    cur: Optional[str] = None  # None == WAITING_FOR_START; else IN_FILE(cur)
+    buf: List[str] = []
+
+    for line in text.splitlines():
+        if cur is None:  # WAITING_FOR_START
+            if is_start(line):
+                nm = name_of(line, start_prefix)
+                if not nm:
+                    return None, "empty-filename"
+                if not _is_safe_basename(nm, sink):
+                    return None, f"unsafe-filename:{nm}"
+                if nm in files:
+                    return None, f"duplicate-file:{nm}"
+                cur, buf = nm, []
+            elif is_end(line):
+                return None, "end-without-start"
+            # else: prose OUTSIDE any block (e.g. a preamble) → ignored
+        else:  # IN_FILE(cur)
+            if is_start(line):
+                return None, f"missing-end:{cur}"
+            elif is_end(line):
+                if name_of(line, end_prefix) != cur:
+                    return None, f"mismatched-end:{cur}"
+                body = _strip_fences(buf).strip()
+                if not body:
+                    return None, f"empty-body:{cur}"
+                files[cur] = body
+                cur, buf = None, []
+            else:
+                buf.append(line)
+
+    if cur is not None:
+        return None, f"unterminated:{cur}"
+    if not files:
+        return None, "no-files"
+
+    missing = set(required_files) - set(files)
+    if missing:
+        return None, f"missing-required-files:{sorted(missing)}"
+
+    meta_raw = files.get("meta.json")
+    if meta_raw is None:
+        return None, "bad-meta"
+    try:
+        meta = json.loads(meta_raw)
+    except (json.JSONDecodeError, TypeError):
+        return None, "bad-meta"
+    slug = meta.get("slug") if isinstance(meta, dict) else None
+    if not (isinstance(slug, str) and _SLUG_RE.match(slug)):
+        return None, "bad-meta"
+
+    return {"slug": slug, "files": files}, None
 
 
 def _final_assistant_text(messages) -> str:
@@ -410,19 +453,26 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 check="governed_denial",
             )
 
-        # (f) Option 2: the RUNTIME stages the skill's returned package. The
-        # skill returns a fleet_package (slug + files); the runtime writes each
-        # file atomically into the declared sink under the slug dir, jailed by
-        # is_relative_to(sink). The skill never self-writes — so a wall-clock kill
-        # cannot leave a half-written file the portal reads.
-        package = _extract_fleet_package(result.get("messages"))
+        # (f) Option 2: the RUNTIME stages the skill's delimited per-file emit. The
+        # skill emits each file inside sentinel-framed blocks (forge-fleet-package-
+        # emission-v1, Path B); the parser's state machine recovers {slug, files},
+        # and the runtime writes each file atomically into the declared sink under the
+        # slug dir, jailed by is_relative_to(sink). The skill never self-writes — so a
+        # wall-clock kill cannot leave a half-written file the portal reads. The
+        # per-run tag (run_id[:8]) frames the sentinels; forge names its required set.
+        package, reason = _extract_fleet_package(
+            result.get("messages"),
+            run_id[:8],
+            sink,
+            {"resume.md", "cover-letter.md", "meta.json"},
+        )
         if package is None:
             # fleet-failure-forensics-v1 — the model produced output but it did not
-            # parse as a fleet_package; today that output is discarded, leaving zero
-            # diagnostic. Enrich detail with a bounded preview and persist the FULL
-            # raw text to an events/<run_id>.raw.txt sidecar. status + check are
-            # preserved EXACTLY (reap keys on them); only detail is enriched and the
-            # additive raw_text_path is added.
+            # parse to a valid package; that output is discarded, leaving zero
+            # diagnostic without this. Enrich detail with the fail-loud reason + a
+            # bounded preview and persist the FULL raw text to an events/<run_id>.raw.txt
+            # sidecar. status + check are preserved EXACTLY (reap keys on them); only
+            # detail is enriched and the additive raw_text_path is added.
             final_text = _final_assistant_text(result.get("messages") or [])
             preview = (
                 (final_text[:800] + "…") if len(final_text) > 800 else final_text
@@ -433,9 +483,8 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 cap.id,
                 "failed",
                 detail=(
-                    "skill returned no valid fleet_package (expected a final "
-                    "JSON object {\"fleet_package\": {\"slug\", \"files\"}}); "
-                    f"final assistant message was: {preview!r}"
+                    "delimited emit did not parse to a valid fleet_package "
+                    f"(reason: {reason}); final assistant message was: {preview!r}"
                 ),
                 check="no_package",
                 raw_text_path=_persist_raw_output(worker_id, run_id, final_text),
