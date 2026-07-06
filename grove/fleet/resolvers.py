@@ -158,7 +158,15 @@ def resolve_notion_query(input_state: Dict[str, Any], worker_id: str) -> Optiona
     rows = _select_units(rows, input_state, worker_id)
     if not rows:
         return None  # every matching row already has a staged draft -> no_work
-    return {"rows": rows, "data_source": ds_url, "filter": filter_}
+    payload = {"rows": rows, "data_source": ds_url, "filter": filter_}
+    # suggest-revision-verb-v1 P3 — host-side revision fold. Surface the selected
+    # row's accumulated operator guidance as an explicit, framed revision_directive
+    # so the re-draft satisfies it (the worker prompt lifts it OUT of the json blob).
+    # FAIL-LOUD: a corrupt store entry raises (never draft feedback-blind).
+    directive = _revision_directive(rows[0].get("id"), worker_id)
+    if directive:
+        payload["revision_directive"] = directive
+    return payload
 
 
 def _extract_rows(result: Any) -> List[Dict[str, Any]]:
@@ -268,9 +276,70 @@ def _order_by_key(order_by: List[Dict[str, Any]]):
     return functools.cmp_to_key(_cmp)
 
 
+def _read_feedback_or_andon(row_id: Optional[str], worker_id: str):
+    """``feedback_store.read(row_id)`` with a corrupt entry converted to a LOUD
+    Andon (B7): a present-but-unreadable revision entry must NEVER be swallowed into
+    a feedback-blind re-draft. Returns the entry dict or None."""
+    if not row_id:
+        return None
+    from grove.forge import feedback_store
+
+    try:
+        return feedback_store.read(row_id)
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        raise FleetWorkerAndon(
+            f"revision feedback store unreadable for row {row_id!r} ({exc}) — refusing "
+            f"to re-draft feedback-blind",
+            worker_id=worker_id,
+            check="revision_store_unreadable",
+        ) from exc
+
+
+def _has_revision_priority(row_id: Optional[str], worker_id: str) -> bool:
+    """True iff row_id carries NON-TERMINAL operator revision guidance — the row that
+    jumps the fresh-fit queue. terminal_skip rows (P4) do NOT get priority, so P4's
+    exclusion composes cleanly on top of this ``not terminal_skip`` gate."""
+    entry = _read_feedback_or_andon(row_id, worker_id)
+    return bool(entry and not entry.get("terminal_skip") and entry.get("history"))
+
+
+def _revision_directive(row_id: Optional[str], worker_id: str) -> Optional[str]:
+    """Build the framed revision directive for row_id from the Path-B store, or None
+    when there is no non-terminal guidance. Operator feedback is DELIMITED (<<< >>>)
+    as guidance the fresh, corpus-only worker must satisfy — it has no prior draft in
+    context, so this is draft-fresh-with-constraints, NOT a diff-edit. Accumulated
+    revisions are chronological with the LATEST authoritative and priors as context,
+    so a contradictory accumulation cannot crowd out the latest directive (B2).
+    FAIL-LOUD on a corrupt entry (via _read_feedback_or_andon)."""
+    entry = _read_feedback_or_andon(row_id, worker_id)
+    if not entry or entry.get("terminal_skip"):
+        return None
+    notes = [
+        h.get("revision_note")
+        for h in (entry.get("history") or [])
+        if h.get("revision_note")
+    ]
+    if not notes:
+        return None
+    directive = (
+        "The operator reviewed a prior draft and rejected it with this guidance: "
+        f"<<<{notes[-1]}>>>. Produce a NEW draft that satisfies this guidance."
+    )
+    if len(notes) > 1:
+        priors = "; ".join(notes[:-1])
+        directive += (
+            " Earlier revision guidance, for context only (the guidance above is "
+            f"authoritative if any conflict): <<<{priors}>>>."
+        )
+    return directive
+
+
 def _select_units(rows: List[Dict[str, Any]], input_state: Dict[str, Any], worker_id: str):
-    """Apply the declared skip-already-staged filter, order_by ranking, and
-    select_one — all read from input_state (P0 config), applied blind."""
+    """Apply the declared skip-already-staged filter, order_by ranking, the
+    revision-priority tier, and select_one — read from input_state (P0 config),
+    applied blind. suggest-revision-verb-v1 P3: rows carrying non-terminal operator
+    revision guidance sort BEFORE the fresh-fit order_by tier, so a re-draft-with-
+    guidance is serviced ahead of a never-drafted row (stable within each tier)."""
     if input_state.get("skip_already_staged"):
         staged = _staged_row_ids(worker_id)  # may raise a loud Andon
         rows = [r for r in rows if r.get("id") not in staged]
@@ -279,6 +348,12 @@ def _select_units(rows: List[Dict[str, Any]], input_state: Dict[str, Any], worke
     order_by = input_state.get("order_by") or []
     if order_by:
         rows = sorted(rows, key=_order_by_key(order_by))
+    # Revision-priority tier — stable partition, revision-pending first (order_by
+    # preserved within each tier). Empty pending -> rows unchanged (byte-identical).
+    pending, rest = [], []
+    for r in rows:
+        (pending if _has_revision_priority(r.get("id"), worker_id) else rest).append(r)
+    rows = pending + rest
     if input_state.get("select_one"):
         return rows[:1]
     return rows
