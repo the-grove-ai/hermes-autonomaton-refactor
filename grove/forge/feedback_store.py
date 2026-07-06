@@ -79,3 +79,52 @@ def write(row_id: str, revision_note: str) -> Dict[str, Any]:
         json.dumps(entry, ensure_ascii=False, indent=2).encode("utf-8"),
     )
     return entry
+
+
+def set_terminal_skip(row_id: str) -> None:
+    """Mark row_id won't-converge — the N-breaker terminal state. The resolver
+    EXCLUDES a terminal_skip row from re-selection entirely (not merely
+    de-prioritizes). Idempotent; a no-op when the entry is absent (nothing to
+    skip) or already terminal. Atomic ``tmp -> os.rename``."""
+    entry = read(row_id)
+    if entry is None or entry.get("terminal_skip"):
+        return
+    entry["terminal_skip"] = True
+    _atomic_write_bytes(
+        _entry_path(row_id),
+        json.dumps(entry, ensure_ascii=False, indent=2).encode("utf-8"),
+    )
+
+
+def gc(ttl_seconds: int) -> list:
+    """Reclaim (delete) store entries whose ``written_at`` is older than
+    ``ttl_seconds``, EXEMPTING ``terminal_skip`` entries — a won't-converge row must
+    NOT resurrect after TTL. Timestamp-only (no Notion — safe at cold-MCP boot). A
+    malformed/unreadable entry is LEFT in place (never delete blind). Returns the
+    reclaimed row_ids for the caller to log."""
+    store = _store_dir()
+    if not store.is_dir():
+        return []
+    now = datetime.now(timezone.utc)
+    reclaimed = []
+    for path in sorted(store.glob("*.json")):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue  # leave unreadable entries in place — never delete blind
+        if not isinstance(entry, dict) or entry.get("terminal_skip"):
+            continue  # EXEMPT terminal_skip (the livelock-resurrection guard)
+        written_at = entry.get("written_at")
+        try:
+            ts = datetime.fromisoformat(written_at) if written_at else None
+            age = (now - ts).total_seconds() if ts is not None else None
+        except (TypeError, ValueError):
+            age = None
+        if age is None or age <= ttl_seconds:
+            continue  # no/invalid timestamp or still fresh -> keep (conservative)
+        try:
+            path.unlink()
+            reclaimed.append(path.stem)
+        except OSError:
+            pass
+    return reclaimed

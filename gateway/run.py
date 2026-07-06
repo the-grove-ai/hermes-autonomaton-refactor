@@ -17409,6 +17409,28 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as _lease_exc:
         logger.error("Stuck-lease sweep failed at startup: %r", _lease_exc)
 
+    # suggest-revision-verb-v1 P4 — startup reconciliation for the revision loop, in
+    # the SAME pre-ticker slot (safe: no live tap/tick yet). Timestamp/filesystem
+    # only — no Notion (cold-MCP at boot). GC exempts terminal_skip; the orphan sweep
+    # archives ONLY .archive-pending-marked crash residuals (false-positive guarded).
+    try:
+        from grove.forge import feedback_store as _fb
+        _reclaimed = _fb.gc(30 * 24 * 3600)  # 30-day TTL; terminal_skip entries exempt
+        if _reclaimed:
+            logger.info(
+                "Feedback-store GC reclaimed %d stale revision entry(ies): %s",
+                len(_reclaimed), _reclaimed,
+            )
+        from grove.api.actions import _sweep_orphan_staged
+        _swept = _sweep_orphan_staged()
+        if _swept:
+            logger.warning(
+                "Orphan-staged sweep archived %d crash-residual draft(s): %s",
+                len(_swept), _swept,
+            )
+    except Exception as _recon_exc:
+        logger.error("Revision-loop startup reconciliation failed: %r", _recon_exc)
+
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
     cron_stop = threading.Event()
