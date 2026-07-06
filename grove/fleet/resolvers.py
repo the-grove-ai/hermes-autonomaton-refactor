@@ -303,6 +303,13 @@ def _has_revision_priority(row_id: Optional[str], worker_id: str) -> bool:
     return bool(entry and not entry.get("terminal_skip") and entry.get("history"))
 
 
+def _is_terminal_skip(row_id: Optional[str], worker_id: str) -> bool:
+    """True iff row_id's store entry is terminal_skip (won't-converge, the N-breaker
+    terminal state). Reads via the fail-loud path (corrupt -> Andon)."""
+    entry = _read_feedback_or_andon(row_id, worker_id)
+    return bool(entry and entry.get("terminal_skip"))
+
+
 def _revision_directive(row_id: Optional[str], worker_id: str) -> Optional[str]:
     """Build the framed revision directive for row_id from the Path-B store, or None
     when there is no non-terminal guidance. Operator feedback is DELIMITED (<<< >>>)
@@ -348,6 +355,12 @@ def _select_units(rows: List[Dict[str, Any]], input_state: Dict[str, Any], worke
     order_by = input_state.get("order_by") or []
     if order_by:
         rows = sorted(rows, key=_order_by_key(order_by))
+    # suggest-revision-verb-v1 P4 — N-breaker terminal EXCLUSION: a won't-converge
+    # (terminal_skip) row is removed from re-selection ENTIRELY, not merely
+    # de-prioritized (the placebo-livelock fix). Composes with the P3 `not
+    # terminal_skip` priority gate: a terminal_skip row is neither prioritized nor
+    # selected.
+    rows = [r for r in rows if not _is_terminal_skip(r.get("id"), worker_id)]
     # Revision-priority tier — stable partition, revision-pending first (order_by
     # preserved within each tier). Empty pending -> rows unchanged (byte-identical).
     pending, rest = [], []

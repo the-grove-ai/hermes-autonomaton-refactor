@@ -792,6 +792,11 @@ async def handle_forge_promote(request: web.Request) -> web.Response:
 # suggest-revision-verb-v1 — the informed-path loop-back tap
 # ---------------------------------------------------------------------------
 
+# N-breaker: after this many operator revisions on one row, the row is marked
+# won't-converge (terminal_skip) and excluded from re-selection — the placebo-
+# livelock fix. A small module constant this sprint (no ~/.grove config touch).
+_REVISION_MAX = 3
+
 
 async def _suggest_revision_text(request: web.Request):
     """Parse ``revision_text`` from the request body (handle_dock_goal_update
@@ -899,10 +904,33 @@ async def handle_forge_suggest_revision(request: web.Request) -> web.Response:
 
     # (4) ORDERING — finalize-success-gated. Fast local ops.
     lease_released = False
+    wont_converge = False
     try:
         # a. store durable FIRST (accumulate). Harmless pre-write: if finalize fails
         #    below, the skip-marker is NEVER cleared, so the row is not re-selected.
-        feedback_store.write(row_id, revision_text)
+        entry = feedback_store.write(row_id, revision_text)
+        # N-BREAKER — the tap crossing N terminally excludes the row (won't converge)
+        # and fires a LOUD out-of-band Andon. The disposition still proceeds (the
+        # current draft is recorded + archived); the row simply will not re-draft.
+        wont_converge = int(entry.get("count", 0)) >= _REVISION_MAX
+        if wont_converge:
+            feedback_store.set_terminal_skip(row_id)
+            wc_msg = (
+                f"Revision limit reached ({entry.get('count')}) for row {row_id} "
+                f"(slug {slug}) — marked WON'T-CONVERGE; it will no longer re-draft. "
+                f"Manual attention needed."
+            )
+            logger.error("[portal.actions] suggest_revision won't-converge: %s", wc_msg)
+            await broadcast_to_operator(wc_msg)
+            try:
+                proposal_queue.file_agentless_proposal(
+                    failure_class="revision_wont_converge",
+                    action="forge_suggest_revision", evidence=row_id, justification=wc_msg,
+                )
+            except Exception:  # noqa: BLE001 — reporter path, never blocks the disposition
+                logger.error(
+                    "[portal.actions] won't-converge kaizen filing failed", exc_info=True
+                )
 
         # b. finalize (ledger audit + pop). If THIS fails -> NO archive.
         try:
@@ -956,12 +984,49 @@ async def handle_forge_suggest_revision(request: web.Request) -> web.Response:
             proposal_queue.clear_lease(proposal_id)
 
     # SUCCESS — resolved card. revision_note is passed RAW; _resolved_card HTML-
-    # escapes the summary at render (store keeps raw).
+    # escapes the summary at render (store keeps raw). The won't-converge tap
+    # succeeded (recorded + archived + terminally excluded) — a distinct card, not a
+    # failure; the loud Andon fired out-of-band above.
+    if wont_converge:
+        return _resolved_card(
+            short_id, ptype, "won't converge",
+            f"Revision limit reached ({_REVISION_MAX}) — recorded and archived, but this "
+            f"row is marked WON'T-CONVERGE and will no longer re-draft. Needs manual "
+            f"attention.",
+        )
     return _resolved_card(
         short_id, ptype, "revision requested",
         f"Revision guidance recorded — the row will re-draft with your notes: "
         f"{revision_text}",
     )
+
+
+def _sweep_orphan_staged() -> list:
+    """Archive ``pending_review/*/`` dirs carrying the ``.archive-pending`` marker —
+    the finalize-before-archive crash residual (suggest-revision-verb-v1 P2/P4). A
+    healthy or actively-staging draft lacks the marker and is NOT swept (the
+    false-positive guard: bare 'staged dir + no proposal' is banned). Reuses
+    ``_archive_forge_slug`` via a slug-carrying stand-in; idempotent (an
+    already-archived / missing dir yields None). Startup-only (pre-ticker slot).
+    Returns the swept slugs. Co-located with ``_archive_forge_slug`` (its
+    dependency) so it is unit-testable without importing the gateway."""
+    from types import SimpleNamespace
+
+    pending = Path(get_hermes_home()) / "forge" / "pending_review"
+    if not pending.is_dir():
+        return []
+    swept = []
+    for slug_dir in sorted(pending.iterdir()):
+        if not slug_dir.is_dir() or not (slug_dir / ".archive-pending").is_file():
+            continue  # false-positive guard — only marked (crash-residual) dirs
+        try:
+            _archive_forge_slug(SimpleNamespace(payload={"slug": slug_dir.name}))
+            swept.append(slug_dir.name)
+        except Exception:  # noqa: BLE001 — one bad dir must not block startup
+            logger.error(
+                "[startup] orphan-staged sweep failed for %s", slug_dir.name, exc_info=True
+            )
+    return swept
 
 
 def register_action_routes(app: web.Application) -> None:
