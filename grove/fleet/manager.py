@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional
 from grove.fleet import runner
 from grove.fleet.cadence import cadence_due, in_quiet_hours
 from grove.fleet.config import WorkerConfig, load_fleet_workers
-from grove.fleet.errors import FleetWorkerAndon
+from grove.fleet.errors import FleetWorkerAndon, OperatorActionRequired
 from grove.fleet.observability import surface_fleet_andon
 from grove.fleet.reap import enforce_wall_clock, remove_pidfile
 from grove.fleet.resolvers import resolve_input_state
@@ -214,9 +214,22 @@ class FleetManager:
                 continue
             try:
                 self._maybe_dispatch_one(wid, cfg, now)
-            except FleetWorkerAndon as exc:
+            except OperatorActionRequired as exc:
+                # ensure_mcp_warm auth-dead halt (P3/P5). HONOR the broadcast flag:
+                # broadcast=True is the loud-once operator alert; broadcast=False is
+                # the latch-suppressed repeat (still recorded in logs + Kaizen, just
+                # not re-pinged) — G5.
                 surface_fleet_andon(
-                    wid, "dispatch", str(exc), check=exc.check, loop=self._loop
+                    wid, "dispatch", str(exc), check=exc.check, loop=self._loop,
+                    broadcast=exc.broadcast,
+                )
+            except FleetWorkerAndon as exc:
+                # HONOR the broadcast flag: a breaker-open warm halt is broadcast=False
+                # (G3 — no cadence storm), a genuine fault is broadcast=True. Existing
+                # resolver Andons default broadcast=True (unchanged).
+                surface_fleet_andon(
+                    wid, "dispatch", str(exc), check=exc.check, loop=self._loop,
+                    broadcast=exc.broadcast,
                 )
             except Exception as exc:  # noqa: BLE001 — one worker's failure is isolated
                 surface_fleet_andon(
@@ -229,6 +242,14 @@ class FleetManager:
             return
         if not cadence_due(cfg.cadence, self._last_dispatch.get(wid), now):
             return
+        # fleet-mcp-warm-unification-v1 P5 — warm the resolver's MCP server ONCE per
+        # dispatch (placed BEFORE resolve_input_state, so never per-RPC), so a
+        # fleet-only cold window self-heals with NO interactive turn. Server derived
+        # from input_state (locked ruling: no requires_mcp field; default 'notion').
+        # The ordered check's Andons (OperatorActionRequired / FleetWorkerAndon, each
+        # carrying broadcast) propagate to the dispatch surfacer above.
+        target_server = cfg.input_state.get("server", "notion")
+        self._ensure_mcp_warm_sync(target_server, wid)
         payload = resolve_input_state(cfg.input_state, wid)  # None -> no work; raises -> Andon
         if payload is None:
             return  # legitimate no_work — the quiet path
@@ -236,3 +257,27 @@ class FleetManager:
         self._running[wid] = handle
         self._last_dispatch[wid] = now
         logger.info("[fleet.manager] dispatched worker %s run %s", wid, handle.run_id)
+
+    def _ensure_mcp_warm_sync(self, server_id: str, wid: str) -> None:
+        """Drive the async ``ensure_mcp_warm`` from this SYNC ticker-thread call.
+
+        In production the ticker thread holds ``self._loop`` (the gateway loop): the
+        coroutine is scheduled onto it via ``run_coroutine_threadsafe`` and this thread
+        blocks on ``.result()`` — so the ordered check's exceptions (OperatorActionRequired
+        / FleetWorkerAndon) propagate straight into ``_maybe_dispatch``'s surfacer, exactly
+        as a synchronous raise would. The MCP work itself hops to the dedicated MCP loop
+        regardless of which loop runs the coroutine, so the loop choice is immaterial to
+        correctness. Without a loop (out-of-band / tests) a fresh ``asyncio.run`` loop is
+        used. Blocking is by design: only a genuinely COLD warm blocks (Check-4), and the
+        plausibly-warm fast-path returns instantly with no RPC.
+        """
+        import asyncio
+
+        from tools.mcp_tool import ensure_mcp_warm
+
+        coro = ensure_mcp_warm(server_id, {"wid": wid})
+        loop = self._loop
+        if loop is not None:
+            asyncio.run_coroutine_threadsafe(coro, loop).result()
+        else:
+            asyncio.run(coro)
