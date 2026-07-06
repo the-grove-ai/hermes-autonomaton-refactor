@@ -136,148 +136,148 @@ def test_stage_package_empty_files_andons(tmp_path):
     assert ei.value.check == "empty_package"
 
 
-# ── fleet_package extraction ─────────────────────────────────────────────────
+# ── fleet_package extraction (delimited, forge-fleet-package-emission-v1) ─────
+#
+# MIGRATED from the retired JSON-transport contract. The worker no longer emits a
+# single hand-authored JSON blob (byte-confirmed to fail no_package whenever the
+# résumé/cover prose carried an unescaped ``"`` — "god-object" / "Lean AI"); it emits
+# each file inside sentinel-framed delimited blocks parsed by the P1 state machine.
+# These cases feed DELIMITED text and assert the (package{slug,files} | None, reason)
+# contract. Pure-parser coverage lives comprehensively in test_fleet_delimited_parser.py;
+# these preserve the forge-context regressions the old JSON cases guarded.
+#
+# Two old JSON cases were DELETED as now-meaningless (reported in HANDOFF): the
+# ```json-fenced and whole-message-is-JSON variants — both were JSON *transport-shape*
+# tests whose only delimited analog is "a clean parse," already covered by
+# test_extract_clean_delimited_package below (keeping them would be three identical
+# clean-parse tests). Fence *stripping* — the delimited feature that shares the word
+# "fence" — is a DIFFERENT behavior and is migrated (test_extract_strips_markdown_fences).
+
+_TAG = "abc12345"           # a per-run short-hex tag (run_id[:8])
+_SINK = "/tmp/forge-sink"
+_REQUIRED = {"resume.md", "cover-letter.md", "meta.json"}
 
 
 def _msgs(text):
     return [{"role": "assistant", "content": text}]
 
 
-def test_extract_bare_json_package():
-    pkg = {"fleet_package": {"slug": "s", "files": {"a.md": "x"}}}
-    out = worker_entry._extract_fleet_package(_msgs(json.dumps(pkg)))
-    assert out == {"slug": "s", "files": {"a.md": "x"}}
+def _blk(name, body, tag=_TAG):
+    return f"@@@FILE_START: {name} [{tag}]@@@\n{body}\n@@@FILE_END: {name} [{tag}]@@@"
 
 
-def test_extract_fenced_json_package():
-    body = "Here you go:\n```json\n" + json.dumps(
-        {"fleet_package": {"slug": "s", "files": {"a.md": "x"}}}
-    ) + "\n```\n"
-    out = worker_entry._extract_fleet_package(_msgs(body))
-    assert out["slug"] == "s"
+def _meta_body(slug="260705-acme-vp"):
+    return json.dumps({"row_id": "row-123", "company": "Acme", "role": "VP", "slug": slug})
 
 
-def test_extract_missing_package_returns_none():
-    assert worker_entry._extract_fleet_package(_msgs("no package here")) is None
-    # a package with no files is invalid
-    bad = json.dumps({"fleet_package": {"slug": "s", "files": {}}})
-    assert worker_entry._extract_fleet_package(_msgs(bad)) is None
+def _emit(resume="# Jane Doe\nBuilt platforms.", cover="Dear Acme,\n\nStrong fit.\n\nJane",
+          meta=None, tag=_TAG):
+    return "\n".join(
+        [_blk("resume.md", resume, tag), _blk("cover-letter.md", cover, tag),
+         _blk("meta.json", meta if meta is not None else _meta_body(), tag)]
+    )
 
 
-def test_extract_tolerates_raw_control_char_in_string():
-    # forge-package-extraction strict=False floor. Run 6df68cd8: minimax-m3 emitted a
-    # complete, correct fleet_package but with a RAW newline (0x0A) inside a string
-    # value (byte 6350) instead of an escaped ``\n`` — invalid to strict json.loads,
-    # which defeated extraction and produced a no_package failure. The extractor must
-    # tolerate the control char and return the package. The literal ``\n`` below is a
-    # real 0x0A byte in the JSON string, exactly reproducing the observed slip.
-    raw = '{"fleet_package": {"slug": "s", "files": {"cover-letter.md": "para one\npara two"}}}'
-    out = worker_entry._extract_fleet_package(_msgs(raw))
-    assert out is not None, "a raw control char in a string value must not defeat extraction"
-    assert out["slug"] == "s"
-    assert out["files"]["cover-letter.md"] == "para one\npara two"
+def _extract(text):
+    return worker_entry._extract_fleet_package(_msgs(text), _TAG, _SINK, _REQUIRED)
 
 
-# ── forge-extraction-peel-v1: bare fleet_package embedded in prose ────────────
-
-# A shape-valid package: non-empty slug, non-empty files of non-empty str->str.
-_VALID_PKG = {
-    "fleet_package": {
-        "slug": "260705-acme-vp",
-        "files": {
-            "resume.md": "# Jane Doe\njane@example.com\n\n## VP Systems\nBuilt platforms.",
-            "cover-letter.md": "Dear Acme,\n\nI would be a strong fit.\n\nJane",
-            "meta.json": '{"row_id": "row-123", "company": "Acme", "role": "VP", "slug": "260705-acme-vp"}',
-        },
-    }
-}
+def test_extract_clean_delimited_package():
+    # (← bare_json) a clean multi-file emit → {slug (from meta.json), files}, reason None.
+    pkg, reason = _extract(_emit())
+    assert reason is None
+    assert pkg["slug"] == "260705-acme-vp"          # recovered from meta.json's body
+    assert set(pkg["files"]) == _REQUIRED
 
 
-def _prose_preamble():
-    # The theater-test shape (run 6df68cd8): Sonnet narrates a multi-paragraph
-    # preamble, THEN appends the bare JSON. Sanitized — no operator PII.
-    return (
+def test_extract_strips_markdown_fences():
+    # (← fenced_json) a body wrapped in ```markdown fences is stripped to clean content.
+    body = "```markdown\n# Jane Doe\nBuilt platforms.\n```"
+    pkg, reason = _extract(_emit(resume=body))
+    assert reason is None
+    assert pkg["files"]["resume.md"] == "# Jane Doe\nBuilt platforms."
+
+
+def test_extract_no_blocks_is_no_files():
+    # (← missing_package) prose with no delimited blocks → fail-loud no-files.
+    pkg, reason = _extract("no package here, just prose")
+    assert pkg is None and reason == "no-files"
+
+
+def test_extract_body_preserves_literal_quotes_and_newlines():
+    # (← tolerates_raw_control_char) THE regression the sprint kills: a body with literal
+    # double-quotes AND raw newlines is transported verbatim — no JSON escaping to break.
+    quoted = 'Re-architected the harness, removing a "god-object" defect.\nGhost-authored "Lean AI".'
+    pkg, reason = _extract(_emit(resume=quoted))
+    assert reason is None
+    assert pkg["files"]["resume.md"] == quoted       # bytes intact, quotes and all
+
+
+def test_prose_preamble_before_blocks_is_ignored():
+    # (← peel_prose_preamble) the founding failure shape: "I have everything needed.
+    # Building the fleet package now.\n\nRow: …" preamble. Prose OUTSIDE any block is
+    # structurally ignored; the delimited blocks parse.
+    preamble = (
         "I have the corpus and voice guide loaded. Now generating the package for "
-        "Acme VP Systems, row id row-123.\n\n"
-        "Positioning thesis: candidate leads enterprise systems architecture.\n\n"
-        "Proof points: 1) built platforms; 2) scaled revenue; 3) shipped governance.\n\n"
-        "ATS keywords: architecture, governance, P&L.\n\n"
+        "Acme VP Systems, row id row-123.\n\nPositioning thesis: leads architecture.\n\n"
     )
+    pkg, reason = _extract(preamble + _emit())
+    assert reason is None and pkg["slug"] == "260705-acme-vp"
+    assert set(pkg["files"]) == _REQUIRED
 
 
-def test_peel_prose_preamble_then_bare_json():
-    # (a) STRUCTURAL analog of run 6df68cd8: prose preamble + a bare fleet_package
-    # object (no fence, not the whole message). Identical code path to the real
-    # 9,346-byte Sonnet output; sanitized fixture keeps operator PII out of git.
-    text = _prose_preamble() + json.dumps(_VALID_PKG)
-    out = worker_entry._extract_fleet_package(_msgs(text))
-    assert out is not None, "a bare package after prose must be peeled, not dropped"
-    assert out["slug"] == "260705-acme-vp"
-    assert set(out["files"]) == {"resume.md", "cover-letter.md", "meta.json"}
-
-
-def test_peel_synthetic_prose_then_json():
-    # (b)
-    text = "Here is my reasoning about the role.\n\n" + json.dumps(_VALID_PKG)
-    out = worker_entry._extract_fleet_package(_msgs(text))
-    assert out is not None and out["slug"] == "260705-acme-vp"
-
-
-def test_peel_fenced_still_extracts():
-    # (c) regression: ```json fenced block
-    body = "Here you go:\n```json\n" + json.dumps(_VALID_PKG) + "\n```\n"
-    out = worker_entry._extract_fleet_package(_msgs(body))
-    assert out is not None and out["slug"] == "260705-acme-vp"
-
-
-def test_peel_whole_message_still_extracts():
-    # (d) regression: whole message is the JSON
-    out = worker_entry._extract_fleet_package(_msgs(json.dumps(_VALID_PKG)))
-    assert out is not None and out["slug"] == "260705-acme-vp"
-
-
-def test_peel_decoy_example_then_real_returns_real():
-    # (e) a prose EXAMPLE with empty files (fails shape-check) precedes the real
-    # package → the real one is selected, the decoy discarded.
-    decoy = '{"fleet_package": {"slug": "example", "files": {}}}'
-    text = (
-        "For example a package looks like " + decoy
-        + "\n\nHere is the real one:\n\n" + json.dumps(_VALID_PKG)
+def test_prose_between_blocks_is_ignored():
+    # (← peel_synthetic_prose) narration BETWEEN blocks (WAITING_FOR_START) is ignored.
+    text = "\n".join(
+        [_blk("resume.md", "# R"), "Here is my reasoning about the role.",
+         _blk("cover-letter.md", "C"), _blk("meta.json", _meta_body())]
     )
-    out = worker_entry._extract_fleet_package(_msgs(text))
-    assert out is not None and out["slug"] == "260705-acme-vp"
+    pkg, reason = _extract(text)
+    assert reason is None and pkg["slug"] == "260705-acme-vp"
 
 
-def test_peel_two_full_valid_packages_is_ambiguous_none():
-    # (f) two DISTINCT valid packages → ambiguous → None (never guess)
-    pkg2 = {"fleet_package": {"slug": "other-slug", "files": {"a.md": "x"}}}
-    text = json.dumps(_VALID_PKG) + "\n\nand also\n\n" + json.dumps(pkg2)
-    assert worker_entry._extract_fleet_package(_msgs(text)) is None
+def test_wrong_tag_decoy_marker_is_ignored_real_parses():
+    # (← peel_decoy) a prose EXAMPLE that shows a marker with the WRONG tag is treated as
+    # text (not a marker); the real, correctly-tagged blocks parse.
+    decoy = "For example a block looks like @@@FILE_START: example.md [deadbeef]@@@"
+    pkg, reason = _extract(decoy + "\n\n" + _emit())
+    assert reason is None and pkg["slug"] == "260705-acme-vp"
 
 
-def test_peel_empty_slug_is_none():
-    # (g)
-    bad = {"fleet_package": {"slug": "", "files": {"a.md": "x"}}}
-    assert worker_entry._extract_fleet_package(_msgs(json.dumps(bad))) is None
+def test_duplicate_file_fails_loud():
+    # (← peel_two_full_valid ambiguity) the delimited analog of "ambiguous → never guess":
+    # two blocks naming the same file → fail-loud duplicate-file.
+    text = "\n".join([_blk("resume.md", "a"), _blk("resume.md", "b"), _blk("meta.json", _meta_body())])
+    pkg, reason = _extract(text)
+    assert pkg is None and reason.startswith("duplicate-file")
 
 
-def test_peel_empty_files_is_none():
-    # (h)
-    bad = {"fleet_package": {"slug": "s", "files": {}}}
-    assert worker_entry._extract_fleet_package(_msgs(json.dumps(bad))) is None
+def test_empty_slug_in_meta_is_bad_meta():
+    # (← peel_empty_slug) slug is recovered from meta.json; an empty/invalid slug there
+    # fails loud bad-meta (was: empty top-level slug → None).
+    pkg, reason = _extract(_emit(meta=_meta_body(slug="")))
+    assert pkg is None and reason == "bad-meta"
 
 
-def test_peel_missing_files_key_is_none():
-    # (i) previously risked a downstream KeyError; now a clean None
-    bad = {"fleet_package": {"slug": "s"}}
-    assert worker_entry._extract_fleet_package(_msgs(json.dumps(bad))) is None
+def test_empty_body_fails_loud():
+    # (← peel_empty_files) an empty file body → fail-loud empty-body (was: empty files dict).
+    text = "\n".join([f"@@@FILE_START: resume.md [{_TAG}]@@@", "   ", f"@@@FILE_END: resume.md [{_TAG}]@@@"])
+    pkg, reason = _extract(text)
+    assert pkg is None and reason.startswith("empty-body")
 
 
-def test_peel_garbled_prose_only_is_none():
-    # (j) prose, no JSON at all
-    assert worker_entry._extract_fleet_package(
-        _msgs("I thought about it but produced only prose.")
-    ) is None
+def test_missing_required_file_fails_loud():
+    # (← peel_missing_files_key) a required file absent → fail-loud missing-required-files
+    # (was: missing "files" key → None). cover-letter.md omitted here.
+    text = "\n".join([_blk("resume.md", "a"), _blk("meta.json", _meta_body())])
+    pkg, reason = _extract(text)
+    assert pkg is None and reason.startswith("missing-required-files")
+
+
+def test_garbled_prose_only_is_no_files():
+    # (← peel_garbled) prose, no blocks at all → no-files.
+    pkg, reason = _extract("I thought about it but produced only prose.")
+    assert pkg is None and reason == "no-files"
 
 
 # ── re-dispatch cycle: not-running gate clears on exit (gate confirmation) ────
@@ -346,8 +346,7 @@ def test_worker_redispatches_after_exit(monkeypatch, tmp_path):
 
 
 _NO_PACKAGE_DETAIL_PREFIX = (
-    "skill returned no valid fleet_package (expected a final "
-    "JSON object {\"fleet_package\": {\"slug\", \"files\"}})"
+    "delimited emit did not parse to a valid fleet_package (reason: "
 )
 
 
@@ -359,8 +358,8 @@ class _FakeSessionDB:
 def _drive_no_package(monkeypatch, tmp_path, messages, run_id="rid0"):
     """Drive the REAL run_worker to the no_package branch.
 
-    ``run_conversation`` returns ``messages`` that are NOT a fleet_package, so the
-    REAL ``_extract_fleet_package`` (untouched by this sprint) returns None and the
+    ``run_conversation`` returns ``messages`` that carry no delimited blocks, so the
+    REAL ``_extract_fleet_package`` returns ``(None, "no-files")`` and the no_package
     branch fires. Everything upstream is stubbed at clean seams; ``get_hermes_home``
     points the events/ sink (and the raw sidecar) at ``tmp_path``.
     """
@@ -420,14 +419,17 @@ def test_no_package_event_carries_preview_and_raw_path(monkeypatch, tmp_path):
 
 
 def test_no_package_regression_status_check_detail_prefix(monkeypatch, tmp_path):
-    # (e) REGRESSION GUARD — reap-relevant fields byte-identical to pre-change; the
-    # detail is APPEND-ONLY (original message preserved verbatim as the prefix).
+    # (e) REGRESSION GUARD — reap-relevant fields (status/check) byte-identical to
+    # pre-change; the detail now folds in the delimited-parse fail-loud reason (a
+    # forensics upgrade over the old opaque JSON message). "prose" has no blocks →
+    # the parser returns (None, "no-files").
     ev = _drive_no_package(
         monkeypatch, tmp_path, [{"role": "assistant", "content": "prose"}]
     )
     assert ev["status"] == "failed"
     assert ev["check"] == "no_package"
     assert ev["detail"].startswith(_NO_PACKAGE_DETAIL_PREFIX)
+    assert "reason: no-files" in ev["detail"]          # the fail-loud reason is surfaced
     assert "raw_text_path" in ev                       # additive field present
 
 

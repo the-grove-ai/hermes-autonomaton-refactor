@@ -227,7 +227,9 @@ def test_worker_prompt_surfaces_directive_out_of_json():
     from grove.fleet import worker_entry
 
     payload = {"rows": [{"id": "r1"}], "revision_directive": "Produce a NEW draft."}
-    prompt = worker_entry._build_worker_prompt("job-application-forge", payload)
+    # forge-fleet-package-emission-v1 P2 added the per-run `tag` param (run_id[:8]);
+    # the directive-lift behavior this asserts is unchanged by that sprint.
+    prompt = worker_entry._build_worker_prompt("job-application-forge", payload, "abc12345")
     # explicit directive segment, before RESOLVED INPUT
     assert "REVISION DIRECTIVE" in prompt
     assert "Produce a NEW draft." in prompt
@@ -241,7 +243,8 @@ def test_worker_prompt_byte_identical_without_directive():
     from grove.fleet import worker_entry
 
     payload = {"rows": [{"id": "r1"}]}
-    prompt = worker_entry._build_worker_prompt("job-application-forge", payload)
+    # forge-fleet-package-emission-v1 P2 added the per-run `tag` param (run_id[:8]).
+    prompt = worker_entry._build_worker_prompt("job-application-forge", payload, "abc12345")
     assert "REVISION DIRECTIVE" not in prompt
     assert "RESOLVED INPUT:" in prompt
 
