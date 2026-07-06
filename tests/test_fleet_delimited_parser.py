@@ -219,3 +219,76 @@ def test_same_line_start_and_fence_is_not_a_start():
     # the same line) → is_start False → the line is ignored prose → no blocks → no-files.
     text = f"@@@FILE_START: resume.md [{TAG}]@@@```markdown"
     assert _reason(text) == "no-files"
+
+
+# ── Phase 2: producer side (emit contract + tag threading) ───────────────────
+
+
+def _prompt(tag: str = TAG, payload=None):
+    if payload is None:
+        payload = {"rows": [{"id": "r1"}]}
+    return worker_entry._build_worker_prompt("fleet/forge-jobsearch", payload, tag)
+
+
+def test_prompt_contains_tagged_start_and_end_markers():
+    p = _prompt("abc12345")
+    assert "@@@FILE_START: <filename> [abc12345]@@@" in p
+    assert "@@@FILE_END: <filename> [abc12345]@@@" in p
+
+
+def test_prompt_tag_matches_parser_suffix_for_a_run_id():
+    # Parity guarantee: the prompt must tell the model to use the EXACT tagged suffix
+    # the P1 parser accepts. Both sides derive the tag from run_id[:8]; a drift here
+    # would make every run fail no-files.
+    run_id = "f157eb558bff4d5fbd127e898426ca01"
+    tag = run_id[:8]
+    p = _prompt(tag)
+    parser_suffix = f" [{tag}]@@@"       # the exact SUFFIX _extract_fleet_package builds
+    assert parser_suffix in p, "prompt does not advertise the suffix the parser accepts"
+
+
+def test_prompt_round_trips_through_the_parser():
+    # End-to-end shape parity: build the prompt for a run_id, emit a package using the
+    # SAME marker shape the prompt advertises, and parse with the SAME tag → clean parse.
+    run_id = "0011223344556677aabbccddeeff0011"
+    tag = run_id[:8]
+    p = _prompt(tag)
+    assert f" [{tag}]@@@" in p
+    emit = "\n".join(
+        [_block("resume.md", "# R", tag), _block("cover-letter.md", "C", tag), _block("meta.json", _meta(), tag)]
+    )
+    pkg, reason = worker_entry._extract_fleet_package(_msgs(emit), tag, "/tmp/sink", REQUIRED)
+    assert reason is None and pkg["slug"] == "260706-acme-vp"
+
+
+def test_prompt_carries_generic_delimited_contract():
+    p = _prompt()
+    assert "meta.json" in p                       # meta.json is protocol-mandatory
+    assert "slug" in p                             # meta.json must carry a slug key
+    assert "no JSON escaping" in p                 # the whole point: raw content, literal quotes
+    assert "INCOMPLETE" in p                       # omit/unterminated/empty-body = incomplete run
+
+
+def test_prompt_stays_skill_agnostic_no_forge_filenames():
+    # The shared worker prompt must NOT name forge's specific files — the skill
+    # (skill_view) names them. Hardcoding here would re-introduce the graft P1 avoided.
+    p = _prompt()
+    assert "resume.md" not in p
+    assert "cover-letter.md" not in p
+
+
+def test_prompt_keeps_framing_and_resolved_input():
+    p = _prompt(payload={"rows": [{"id": "r1"}], "note": "hi"})
+    assert "EXECUTING a job, not describing one" in p        # :156-164 framing kept
+    assert "skill_view('fleet/forge-jobsearch')" in p
+    assert "RESOLVED INPUT:" in p                            # :172-174 kept
+    assert '"note": "hi"' in p                               # payload still json-dumped
+
+
+def test_prompt_preserves_revision_directive_lift():
+    # The :142-155 revision_directive lift is untouched: an explicit directive block is
+    # surfaced and the key is stripped from the json payload.
+    p = _prompt(payload={"rows": [], "revision_directive": "tighten the summary"})
+    assert "REVISION DIRECTIVE" in p
+    assert "tighten the summary" in p
+    assert "revision_directive" not in p.split("RESOLVED INPUT:")[1]   # lifted out of the json blob

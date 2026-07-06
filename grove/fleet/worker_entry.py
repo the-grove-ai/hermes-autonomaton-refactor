@@ -138,7 +138,7 @@ def _resolve_worker_runtime(cap, worker_id: str):
     return routed.tier_config.model, routed.tier_config.max_tokens, runtime
 
 
-def _build_worker_prompt(skill_name: str, payload: Any) -> str:
+def _build_worker_prompt(skill_name: str, payload: Any, tag: str) -> str:
     # suggest-revision-verb-v1 P3 (B1 attention fix) — a host-side revision_directive
     # is surfaced as an EXPLICIT turn instruction (its OWN segment, before RESOLVED
     # INPUT) and LIFTED OUT of the json.dumps blob: a passive json key is ambient
@@ -153,6 +153,14 @@ def _build_worker_prompt(skill_name: str, payload: Any) -> str:
     else:
         directive_block = ""
         json_payload = payload
+    # forge-fleet-package-emission-v1 P2 — the emit contract is the DELIMITED protocol
+    # the P1 parser consumes. *tag* is the per-run short-hex (run_id[:8]) that frames the
+    # sentinels; the SAME tag reaches _extract_fleet_package, so the markers the model is
+    # told to write are exactly the ones the parser accepts (a drift = every run
+    # no-files). The block is SKILL-AGNOSTIC: it never names resume.md/cover-letter.md —
+    # the skill (skill_view) names the specific files. Delimited-only: no JSON envelope,
+    # so a body full of literal quotes/newlines transports verbatim (this kills the
+    # unescaped-quote no_package class byte-confirmed on run f157eb558b).
     return (
         f"You are an autonomous, non-interactive fleet background worker. You are "
         f"EXECUTING a job, not describing one. Your FIRST step is to call "
@@ -162,13 +170,16 @@ def _build_worker_prompt(skill_name: str, payload: Any) -> str:
         f"No operator is present — do NOT ask clarifying questions. You have NO "
         f"write tool and you do NOT publish; the RUNTIME stages your output. Read "
         f"only your declared read surfaces.\n\n"
-        f"Your job is COMPLETE ONLY when your FINAL message is a single JSON object "
-        f"and nothing else:\n"
-        f'{{"fleet_package": {{"slug": "<short-kebab-slug>", "files": '
-        f'{{"<filename>": "<full file content>", ...}}}}}}\n'
-        f"The runtime writes each file atomically into your pending_review sink "
-        f"under the slug directory. A message that summarizes the procedure instead "
-        f"of returning the fleet_package is an INCOMPLETE run.\n\n"
+        f"Your job is COMPLETE ONLY when you emit EACH file your procedure produces, "
+        f"each inside its OWN delimited block, using this EXACT protocol:\n"
+        f"@@@FILE_START: <filename> [{tag}]@@@\n"
+        f"<full raw file content — no JSON escaping; quotes and newlines are literal>\n"
+        f"@@@FILE_END: <filename> [{tag}]@@@\n"
+        f"One file MUST be meta.json — valid JSON carrying a \"slug\" key plus your "
+        f"routing metadata; the runtime stages your output under that slug. Do NOT wrap "
+        f"bodies in markdown fences. Prose outside blocks is ignored, but a run that "
+        f"omits a required file, leaves a block unterminated, or emits an empty body is "
+        f"an INCOMPLETE run.\n\n"
         f"{directive_block}"
         f"RESOLVED INPUT:\n"
         f"{json.dumps(json_payload, ensure_ascii=False, indent=2)}"
@@ -437,7 +448,9 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         )
         agent = dispatcher.agent
 
-        prompt = _build_worker_prompt(skill_name, payload)
+        # The prompt-side tag and the parser-side tag MUST be the identical run_id[:8]
+        # (a mismatch = the model writes markers the parser rejects = every run no-files).
+        prompt = _build_worker_prompt(skill_name, payload, run_id[:8])
         try:
             result = agent.run_conversation(prompt, task_id=run_id)
         except TerminalGovernanceHalt as tgh:
