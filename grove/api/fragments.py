@@ -1524,23 +1524,46 @@ async def handle_forge_slug_dir(request: web.Request) -> web.Response:
 def _forge_kaizen_div(pid: str) -> str:
     """Inline Kaizen disposition affordance for the in-shell forge fragment — the
     SAME pid-keyed routes the proposal card's fast-path uses (Kaizen Voice: two
-    entry points, one protocol). Promote / Reject are live; suggest-revision is a
-    rendered-but-inert slot (routed by forge-review-surface-v1 P3). The swap target
-    (#center-panel / innerHTML) is PROVISIONAL — P3/M4 finalizes the return-to-queue
-    behavior once the disposition routes' return shape is wired through."""
+    entry points, one protocol). Promote / Reject POST to those routes and land
+    their response in ``#kaizen-result``; suggest-revision is a rendered-but-inert
+    slot (routed next sprint).
+
+    M4 return-to-queue + fail-loud guard, on ``hx-on::after-request`` (core HTMX
+    2.0.6 — reliable in swapped-in content; an inline <script> would not run):
+    STEP 0 confirmed the routes return a clean non-2xx on failure (``_loud_action_
+    failure``, status UNCHANGED) and a 200 ``_resolved_card`` on success. So — on
+    SUCCESS (``event.detail.successful``) reload the proposals queue into
+    ``#center-panel`` and restore the proposals push-url for back-button coherence;
+    on FAILURE (non-2xx — htmx did NOT swap ``#kaizen-result``) render a VISIBLE
+    error there and DO NOT reload, so the operator stays on the draft and sees the
+    failure (the routes' own OOB #alert-banner also fires via the shell's
+    responseError listener). The handler is STATIC (no pid), single-quoted JS with
+    no double quotes, so it is embedded raw in the attribute; only the pid-bearing
+    id / hx-post URLs pass through ``_esc``."""
     pe = _esc(pid)
+    on_after = (
+        "if(event.detail.successful){"
+        "htmx.ajax('GET','/portal/fragments/proposals/pending',{target:'#center-panel'});"
+        "history.pushState(null,'','/portal/fragments/proposals/pending')"
+        "}else{"
+        "document.getElementById('kaizen-result').textContent="
+        "'Disposition failed — see the alert above; you are still on the draft.'"
+        "}"
+    )
     return (
-        f'<div class="proposal-actions kaizen-disposition" id="forge-kaizen-{pe}">'
+        f'<div class="proposal-actions kaizen-disposition" id="forge-kaizen-{pe}" '
+        f'hx-on::after-request="{on_after}">'
         f'<button class="btn btn-approve" '
         f'hx-post="/portal/actions/proposals/{pe}/promote" '
-        f'hx-target="#center-panel" hx-swap="innerHTML" '
+        f'hx-target="#kaizen-result" hx-swap="innerHTML" '
         f'hx-confirm="Promote this draft — publish to Drive and update the row?">'
         f'Promote</button>'
         f'<button class="btn btn-reject" '
         f'hx-post="/portal/actions/proposals/{pe}/reject" '
-        f'hx-target="#center-panel" hx-swap="innerHTML">Reject</button>'
+        f'hx-target="#kaizen-result" hx-swap="innerHTML">Reject</button>'
         f'<button class="btn" disabled '
         f'title="Suggest revision — routed in the next sprint">Suggest revision</button>'
+        f'<div id="kaizen-result"></div>'
         f'</div>'
     )
 
