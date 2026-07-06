@@ -12421,6 +12421,7 @@ class GatewayRunner:
         loop = asyncio.get_running_loop()
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from tools.registry import ToolRegistry
 
             # Capture old server names before shutdown
             with _lock:
@@ -12430,8 +12431,13 @@ class GatewayRunner:
             # Shutdown existing connections
             await loop.run_in_executor(None, shutdown_mcp_servers)
 
-            # Reconnect by discovering tools (reads config.yaml fresh)
-            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+            # Reconnect by discovering tools (reads config.yaml fresh). fleet-mcp-warm-
+            # unification-v1 P4 — pass a fresh registry (required kwarg; the bare call
+            # was a latent TypeError). shutdown cleared _servers, so this reconnects all
+            # and returns the full tool surface (the accurate "N tools" count below).
+            new_tools = await loop.run_in_executor(
+                None, lambda: discover_mcp_tools(registry=ToolRegistry())
+            )
 
             # Compute what changed
             with _lock:
@@ -17328,6 +17334,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # See #16856.
     try:
         from tools.mcp_tool import discover_mcp_tools, reap_dead_owner_children
+        from tools.registry import ToolRegistry
         _loop = asyncio.get_running_loop()
         # Reap MCP children stranded by any dead-predecessor gateway (or
         # hard-killed CLI session) before we spawn fresh ones. Live-owner
@@ -17343,7 +17350,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 )
         except Exception as _reap_exc:
             logger.debug("MCP orphan reap at startup failed: %s", _reap_exc)
-        await _loop.run_in_executor(None, discover_mcp_tools)
+        # fleet-mcp-warm-unification-v1 P4 — pass a fresh registry: discover_mcp_tools
+        # requires it (Sprint 53 made registries Dispatcher-owned; the bare call was a
+        # latent TypeError swallowed pre-P1). This registry is transient — the warm's
+        # load-bearing effect is the _servers side effect (connection cache); each
+        # session's Dispatcher re-registers the tool surface from _servers per turn.
+        await _loop.run_in_executor(
+            None, lambda: discover_mcp_tools(registry=ToolRegistry())
+        )
     except Exception as e:
         # G4 (fleet-mcp-warm-unification-v1 P1) — FAIL LOUD, non-fatal. The startup
         # MCP warm is latency amortization only; the per-dispatch ensure_mcp_warm is
