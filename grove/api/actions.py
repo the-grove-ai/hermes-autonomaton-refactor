@@ -43,7 +43,7 @@ from grove.api.fragments import (
     render_tier_card,
 )
 from grove.api.portal import _memory_proposals_path, _read_forge_slug
-from grove.forge import PublishError, publish_application_package
+from grove.forge import PublishError, feedback_store, publish_application_package
 from grove.config.model_catalog import load_catalog
 from grove.config.routing_writer import ConfigValidationError, get_writer
 from grove.dock import _VALID_STATUSES, load_dock
@@ -788,6 +788,182 @@ async def handle_forge_promote(request: web.Request) -> web.Response:
     )
 
 
+# ---------------------------------------------------------------------------
+# suggest-revision-verb-v1 — the informed-path loop-back tap
+# ---------------------------------------------------------------------------
+
+
+async def _suggest_revision_text(request: web.Request):
+    """Parse ``revision_text`` from the request body (handle_dock_goal_update
+    precedent: form-urlencoded or JSON). Returns the RAW text when it has
+    non-whitespace content, else None — the caller Andons on None (never a silent
+    400). RAW is preserved (the store keeps what the operator typed); only the
+    presence check strips."""
+    if request.content_type == "application/x-www-form-urlencoded":
+        data = await request.post()
+        raw = data.get("revision_text")
+        if raw is not None and str(raw).strip():
+            return str(raw)
+    if request.content_type == "application/json":
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — malformed JSON is absent input -> Andon
+            return None
+        raw = body.get("revision_text") if isinstance(body, dict) else None
+        if raw is not None and str(raw).strip():
+            return str(raw)
+    return None
+
+
+def _forge_suggest_error_card(short_id: str, message: str) -> str:
+    """A suggest-revision failure card (lands in ``#kaizen-result``). The textarea
+    survives in the DOM (hx-target is ``#kaizen-result``, not the disposition div),
+    so the operator can correct and re-submit — no re-render of the affordance."""
+    return (
+        f'<div class="card card-error" id="proposal-{short_id}">'
+        f'<div class="meta error">{_esc(message)}</div></div>'
+    )
+
+
+def _write_archive_pending_marker(slug: str) -> None:
+    """Write the ``.archive-pending`` intent marker into ``pending_review/<slug>/``.
+
+    Written AFTER finalize, BEFORE ``_archive_forge_slug``: a crash landing between
+    the marker and the archive leaves the marked dir for the P4 orphan-staged sweep
+    to complete — the finalize-before-archive crash residual self-heals. A dotfile,
+    so it never enters the ``_staged_row_ids`` ``*/meta.json`` glob."""
+    slug_dir = Path(get_hermes_home()) / "forge" / "pending_review" / slug
+    if slug_dir.is_dir():
+        (slug_dir / ".archive-pending").write_text(
+            datetime.now(timezone.utc).isoformat(), encoding="utf-8"
+        )
+
+
+async def handle_forge_suggest_revision(request: web.Request) -> web.Response:
+    """``POST /portal/actions/proposals/{proposal_id}/suggest_revision`` — the
+    informed-path loop-back tap (suggest-revision-verb-v1). Accumulate the operator's
+    free-text guidance into the Path-B feedback store, record a suggest_revision
+    disposition, then archive the stale draft so the row re-drafts WITH the guidance
+    next cadence.
+
+    ORDERING is finalize-success-gated: store.write -> finalize -> marker -> archive.
+    Archive runs ONLY if finalize succeeded; a finalize failure clears the lease and
+    Andons WITHOUT archiving (the uncleared skip-marker keeps the row out of
+    re-selection — never a feedback-blind re-draft). Fast local ops -> no
+    timeout-split; a mid-request cancel clears the lease in the finally."""
+    proposal_id = request.match_info["proposal_id"]
+    short_id = _short_id(proposal_id)
+
+    # (1) revision_text — FAIL LOUD on empty/whitespace/absent (never a silent 400).
+    revision_text = await _suggest_revision_text(request)
+    if not revision_text:
+        msg = "Revision guidance is empty — enter what the next draft must change."
+        return await _loud_action_failure(
+            _forge_suggest_error_card(short_id, msg),
+            failure_class="suggest_revision_empty", action="forge_suggest_revision",
+            message=msg, status=400, file_kaizen=False,  # pure client input, no structural fix
+        )
+
+    # (2) resolve proposal + the pid->row_id JOIN — FAIL LOUD on missing.
+    proposal = proposal_queue.read(proposal_id)
+    if proposal is None:
+        return await _loud_action_failure(
+            _not_found_card_html(proposal_id), failure_class="proposal_not_found",
+            action="forge_suggest_revision", message="Proposal already resolved.", status=404,
+        )
+    ptype = proposal.type
+    slug = (proposal.payload or {}).get("slug")
+    row_id = (proposal.payload or {}).get("row_id")
+    if not row_id:
+        msg = "Proposal carries no row_id — cannot store revision guidance."
+        return await _loud_action_failure(
+            _forge_suggest_error_card(short_id, msg),
+            failure_class="suggest_revision_no_row_id", action="forge_suggest_revision",
+            message=msg, status=400,
+        )
+
+    # (3) set_lease CAS — the double-tap guard.
+    lease = proposal_queue.set_lease(proposal_id, holder="portal_suggest_revision")
+    if lease == proposal_queue.LEASE_NOT_FOUND:
+        return await _loud_action_failure(
+            _not_found_card_html(proposal_id), failure_class="proposal_not_found",
+            action="forge_suggest_revision", message="Proposal already resolved.", status=404,
+        )
+    if lease == proposal_queue.LEASE_ALREADY_HELD:
+        msg = "A disposition is already in flight for this draft."
+        return await _loud_action_failure(
+            _forge_suggest_error_card(short_id, msg),
+            failure_class="suggest_revision_in_flight", action="forge_suggest_revision",
+            message=msg, status=409,
+        )
+
+    # (4) ORDERING — finalize-success-gated. Fast local ops.
+    lease_released = False
+    try:
+        # a. store durable FIRST (accumulate). Harmless pre-write: if finalize fails
+        #    below, the skip-marker is NEVER cleared, so the row is not re-selected.
+        feedback_store.write(row_id, revision_text)
+
+        # b. finalize (ledger audit + pop). If THIS fails -> NO archive.
+        try:
+            finalized = proposal_queue.finalize_proposal_state(
+                proposal_id, "suggest_revision",
+                {"row_id": row_id, "revision_note": revision_text},
+            )
+        except Exception as exc:  # noqa: BLE001 — finalize failure: no archive, clear lease, Andon
+            proposal_queue.clear_lease(proposal_id)
+            lease_released = True
+            msg = (f"Recording the revision failed: {exc}. The draft was NOT archived; "
+                   f"re-tap to retry.")
+            return await _loud_action_failure(
+                _forge_suggest_error_card(short_id, msg),
+                failure_class="suggest_revision_finalize_error",
+                action="forge_suggest_revision", message=msg, status=500,
+            )
+        if not finalized:
+            # proposal vanished between read and finalize — no archive.
+            proposal_queue.clear_lease(proposal_id)
+            lease_released = True
+            return await _loud_action_failure(
+                _not_found_card_html(proposal_id), failure_class="proposal_not_found",
+                action="forge_suggest_revision", message="Proposal already resolved.",
+                status=404,
+            )
+
+        # c. archive-pending marker (into the slug dir) BEFORE the archive.
+        _write_archive_pending_marker(slug)
+        # d. archive LAST — clears the skip-marker so the row re-drafts WITH guidance.
+        #    Best-effort post-finalize: the disposition is already durable (store +
+        #    ledger + pop). A physical-rename glitch leaves the marker for the P4
+        #    orphan sweep to complete — logged LOUD, never silent.
+        try:
+            _archive_forge_slug(proposal)
+        except Exception:  # noqa: BLE001 — marker retained -> orphan sweep reconciles
+            logger.error(
+                "[portal.actions] suggest_revision archive failed post-finalize for "
+                "slug=%s (row_id=%s); .archive-pending marker retained for the orphan "
+                "sweep", slug, row_id, exc_info=True,
+            )
+    except asyncio.CancelledError:
+        # operator closed the tab mid-request — release the lease, then re-raise.
+        proposal_queue.clear_lease(proposal_id)
+        lease_released = True
+        raise
+    finally:
+        # belt-and-suspenders: a lease still held on any unexpected exit is cleared.
+        # On SUCCESS finalize already popped the proposal, so this no-ops.
+        if not lease_released:
+            proposal_queue.clear_lease(proposal_id)
+
+    # SUCCESS — resolved card. revision_note is passed RAW; _resolved_card HTML-
+    # escapes the summary at render (store keeps raw).
+    return _resolved_card(
+        short_id, ptype, "revision requested",
+        f"Revision guidance recorded — the row will re-draft with your notes: "
+        f"{revision_text}",
+    )
+
+
 def register_action_routes(app: web.Application) -> None:
     """Register the portal's write endpoints. Wired at gateway connect() time,
     after the read-only portal/fragment/dashboard routes. portal_auth_middleware
@@ -813,4 +989,10 @@ def register_action_routes(app: web.Application) -> None:
     # publish -> finalize) for a forge_artifact_pending proposal.
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/promote", handle_forge_promote
+    )
+    # suggest-revision-verb-v1 P2 — bespoke informed-path loop-back tap
+    # (store.write -> finalize -> marker -> archive; finalize-success-gated).
+    app.router.add_post(
+        "/portal/actions/proposals/{proposal_id}/suggest_revision",
+        handle_forge_suggest_revision,
     )
