@@ -1718,6 +1718,25 @@ def _reset_server_error(server_name: str) -> None:
     _server_breaker_opened_at.pop(server_name, None)
 
 
+def is_open(server_name: str) -> bool:
+    """True iff the CALL-TIME breaker for ``server_name`` is OPEN (tripped AND still
+    cooling down) — a read-only, queryable mirror of the inline gate in
+    ``_make_tool_handler`` (threshold :data:`_CIRCUIT_BREAKER_THRESHOLD` / cooldown
+    :data:`_CIRCUIT_BREAKER_COOLDOWN_SEC`). Returns False when the failure count is
+    below threshold OR the cooldown has elapsed (half-open — the next real call
+    probes). Never mutates breaker state.
+
+    fleet-mcp-warm-unification-v1 P2(b) — lets ``ensure_mcp_warm`` (P3) short-circuit
+    a known-tripped server without replicating the inline arithmetic, and without
+    re-arming the cooldown. This is the CALL-TIME breaker; ``get_connect_failures``
+    exposes the separate CONNECT breaker.
+    """
+    if _server_error_counts.get(server_name, 0) < _CIRCUIT_BREAKER_THRESHOLD:
+        return False
+    opened_at = _server_breaker_opened_at.get(server_name, 0.0)
+    return (time.monotonic() - opened_at) < _CIRCUIT_BREAKER_COOLDOWN_SEC
+
+
 # ---------------------------------------------------------------------------
 # connector-failure-andon-v1 — parallel CONNECT breaker (distinct from the
 # call-time breaker above). Records a FAILED initial connect (name ->
@@ -1749,6 +1768,31 @@ _composed_nodes: Dict[str, "NodeDeclaration"] = {}
 # when the task had pre-marked an auth failure. The CancelledError is the
 # symptom; ``self._error`` is the disease.
 _server_connect_auth_evidence: Dict[str, bool] = {}  # name -> task carried an auth _error
+
+# fleet-mcp-warm-unification-v1 P2(c) — AUTH-DEAD alert latch. SET when
+# ensure_mcp_warm (P3) fires the LOUD operator "re-auth required" Andon for a
+# server whose connect breaker carries the "reauth" signature; READ by the next
+# dispatch so the alert is broadcast ONCE, not every cadence (the storm). CLEARED
+# on a confirming successful connect (alongside the "reauth" signature drop in
+# register_mcp_servers) — set-on-alert / clear-on-recover. The reset is
+# LOAD-BEARING: without it a fixed-then-re-broken auth would go permanently silent
+# (the inverse of the storm, a fail-loud violation).
+auth_alert_surfaced: Dict[str, bool] = {}            # name -> loud auth Andon already sent
+
+
+def _mark_auth_alert_surfaced(name: str) -> None:
+    """Latch that the loud Auth-Dead Andon has been surfaced for ``name`` (P3 calls
+    this when it broadcasts). Subsequent dispatches read the latch and suppress the
+    operator broadcast until a confirming reconnect clears it."""
+    with _lock:
+        auth_alert_surfaced[name] = True
+
+
+def auth_alert_already_surfaced(name: str) -> bool:
+    """Locked snapshot read of the auth-alert latch for ``name`` — True iff the loud
+    Auth-Dead Andon has already been surfaced and not yet cleared by a recover."""
+    with _lock:
+        return bool(auth_alert_surfaced.get(name))
 
 
 def _bump_connect_failed(name: str, signature: str) -> None:
@@ -3584,6 +3628,11 @@ async def _discover_and_register_server(
         # evidence so a recovered server stops being excluded / offered.
         _server_connect_failed.pop(name, None)
         _server_connect_auth_evidence.pop(name, None)
+        # fleet-mcp-warm-unification-v1 P2(c) — clear-on-recover: the confirming
+        # connect resets the AUTH-DEAD alert latch alongside the "reauth" signature,
+        # so a later re-break surfaces the loud Andon AGAIN (never permanently
+        # silent). Raw pop: already under _lock (the helpers would re-acquire it).
+        auth_alert_surfaced.pop(name, None)
         # Sprint 47.5 — a fresh server registration is a new MCP lifecycle:
         # re-arm the shutdown idempotency guard so this lifecycle can be
         # shut down again after a prior shutdown completed.

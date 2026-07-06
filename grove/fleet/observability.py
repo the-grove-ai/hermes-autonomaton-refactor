@@ -100,12 +100,21 @@ def surface_fleet_andon(
     loop: Optional[Any] = None,
     severity: str = "error",
     extra: Optional[Dict[str, Any]] = None,
+    broadcast: bool = True,
 ) -> Dict[str, Any]:
     """Route a fleet Andon to the operator + the governed Kaizen ledger.
 
     ``loop`` is the gateway event loop (the ticker holds it); when present the
     operator broadcast is scheduled onto it. Both legs are defensive — this must
     never raise into the ticker.
+
+    ``broadcast`` (fleet-mcp-warm-unification-v1 P2 / LOCK-1) gates ONLY the
+    operator-broadcast leg. ``broadcast=False`` suppresses the operator alert for
+    an EXPECTED, self-healing condition (e.g. a persistently-cold MCP server the
+    per-dispatch warm re-attempts every cadence — no operator storm), while the
+    local log floor AND the governed Kaizen andon_halt filing still fire — the
+    halt is always recorded, only the operator ping is muted. Default True is
+    byte-identical for every existing caller.
     """
     options = go_forward_options(check)
     report = _compose_report(worker_id, run_id, message, options)
@@ -114,8 +123,10 @@ def surface_fleet_andon(
         metadata.update(extra)
 
     # ── Leg 1: operator surface (broadcast on the loop, or log floor). ──
+    # broadcast=False skips the operator ping; the log floor below still fires, so
+    # a suppressed Andon is muted-to-operator but never silent-in-logs.
     scheduled = False
-    if loop is not None:
+    if broadcast and loop is not None:
         try:
             from agent.async_utils import safe_schedule_threadsafe
             from grove.notify import broadcast_to_operator

@@ -250,3 +250,100 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         )
     finally:
         _cleanup(mcp_tool, "srv")
+
+
+# ---------------------------------------------------------------------------
+# fleet-mcp-warm-unification-v1 P2(b) — is_open() queryable call-time breaker
+# ---------------------------------------------------------------------------
+
+
+def test_is_open_tracks_threshold_and_cooldown(monkeypatch):
+    """is_open() mirrors the inline gate in _make_tool_handler: True only when the
+    failure count is at/above threshold AND the cooldown window is still active;
+    False below threshold or after the cooldown elapses (half-open probe)."""
+    from tools import mcp_tool
+
+    name = "srv_isopen"
+    try:
+        # Below threshold -> closed.
+        mcp_tool._server_error_counts.pop(name, None)
+        mcp_tool._server_breaker_opened_at.pop(name, None)
+        assert mcp_tool.is_open(name) is False
+
+        # At threshold, within cooldown -> OPEN.
+        fake_t = [1000.0]
+        monkeypatch.setattr(mcp_tool.time, "monotonic", lambda: fake_t[0])
+        mcp_tool._server_error_counts[name] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        mcp_tool._server_breaker_opened_at[name] = fake_t[0]
+        assert mcp_tool.is_open(name) is True
+
+        # Advance past the cooldown -> half-open (closed), lets a probe through.
+        fake_t[0] = 1000.0 + mcp_tool._CIRCUIT_BREAKER_COOLDOWN_SEC + 1.0
+        assert mcp_tool.is_open(name) is False
+    finally:
+        mcp_tool._server_error_counts.pop(name, None)
+        mcp_tool._server_breaker_opened_at.pop(name, None)
+
+    # is_open is read-only — it never mutated the count on the closed path above.
+    assert mcp_tool._server_error_counts.get(name, 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# fleet-mcp-warm-unification-v1 P2(c) — AUTH-DEAD alert latch (set + CLEAR-on-recover)
+# ---------------------------------------------------------------------------
+
+
+def test_auth_alert_latch_sets_on_mark():
+    from tools import mcp_tool
+
+    name = "srv_latch_set"
+    try:
+        assert mcp_tool.auth_alert_already_surfaced(name) is False   # fresh -> not surfaced
+        mcp_tool._mark_auth_alert_surfaced(name)
+        assert mcp_tool.auth_alert_already_surfaced(name) is True    # set-on-alert
+    finally:
+        mcp_tool.auth_alert_surfaced.pop(name, None)
+
+
+@pytest.mark.asyncio
+async def test_auth_alert_latch_clears_on_successful_reconnect(monkeypatch):
+    """LOAD-BEARING: the confirming successful connect must reset the latch alongside
+    the "reauth" signature. Without this, a fixed-then-re-broken auth goes permanently
+    silent (the inverse of the storm). A set-only latch would pass a 'sets' test — so
+    this asserts the CLEAR explicitly."""
+    from unittest.mock import MagicMock
+
+    from tools import mcp_tool
+    from tools.registry import ToolRegistry
+
+    name = "notion_latch"
+    try:
+        # Arrange: auth declared dead + the loud alert already latched.
+        mcp_tool._server_connect_failed[name] = "reauth"
+        mcp_tool._mark_auth_alert_surfaced(name)
+        assert mcp_tool.auth_alert_already_surfaced(name) is True
+
+        # A confirming successful connect (real _discover_and_register_server with
+        # _connect_server mocked to succeed; tool registration stubbed to isolate).
+        server = mcp_tool.MCPServerTask(name, registry=ToolRegistry())
+        server.session = MagicMock()
+        server._tools = []
+
+        async def _fake_connect(n, cfg, **kw):
+            return server
+
+        monkeypatch.setattr(mcp_tool, "_connect_server", _fake_connect)
+        monkeypatch.setattr(mcp_tool, "_register_server_tools", lambda n, s, c: [])
+
+        await mcp_tool._discover_and_register_server(
+            name, {"command": "x"}, registry=ToolRegistry()
+        )
+
+        # The success cleared BOTH the reauth signature AND the alert latch, so a
+        # later re-break will surface the loud Andon AGAIN (never permanently silent).
+        assert mcp_tool._server_connect_failed.get(name) is None
+        assert mcp_tool.auth_alert_already_surfaced(name) is False   # CLEAR-on-recover
+    finally:
+        mcp_tool._servers.pop(name, None)
+        mcp_tool._server_connect_failed.pop(name, None)
+        mcp_tool.auth_alert_surfaced.pop(name, None)
