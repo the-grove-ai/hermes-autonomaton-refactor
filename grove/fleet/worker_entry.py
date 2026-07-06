@@ -139,6 +139,20 @@ def _resolve_worker_runtime(cap, worker_id: str):
 
 
 def _build_worker_prompt(skill_name: str, payload: Any) -> str:
+    # suggest-revision-verb-v1 P3 (B1 attention fix) — a host-side revision_directive
+    # is surfaced as an EXPLICIT turn instruction (its OWN segment, before RESOLVED
+    # INPUT) and LIFTED OUT of the json.dumps blob: a passive json key is ambient
+    # metadata the corpus-only worker ignores. Absent directive -> byte-identical.
+    directive = payload.get("revision_directive") if isinstance(payload, dict) else None
+    if directive:
+        directive_block = (
+            "REVISION DIRECTIVE (authoritative — the new draft MUST satisfy this):\n"
+            f"{directive}\n\n"
+        )
+        json_payload = {k: v for k, v in payload.items() if k != "revision_directive"}
+    else:
+        directive_block = ""
+        json_payload = payload
     return (
         f"You are an autonomous, non-interactive fleet background worker. You are "
         f"EXECUTING a job, not describing one. Your FIRST step is to call "
@@ -154,8 +168,10 @@ def _build_worker_prompt(skill_name: str, payload: Any) -> str:
         f'{{"<filename>": "<full file content>", ...}}}}}}\n'
         f"The runtime writes each file atomically into your pending_review sink "
         f"under the slug directory. A message that summarizes the procedure instead "
-        f"of returning the fleet_package is an INCOMPLETE run.\n\nRESOLVED INPUT:\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        f"of returning the fleet_package is an INCOMPLETE run.\n\n"
+        f"{directive_block}"
+        f"RESOLVED INPUT:\n"
+        f"{json.dumps(json_payload, ensure_ascii=False, indent=2)}"
     )
 
 
