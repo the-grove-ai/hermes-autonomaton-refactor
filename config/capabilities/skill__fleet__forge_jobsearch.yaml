@@ -55,7 +55,7 @@ context:
 
     ## Execution mode — HEADLESS (fleet worker) vs INTERACTIVE
     This skill runs two ways. Read your invoking prompt to tell which:
-    - **HEADLESS (fleet background worker):** the prompt declares you are a non-interactive fleet worker. The target row is ALREADY RESOLVED and handed to you in the input payload — do NOT query Notion. Do NOT call write_file. Your read surface is ONLY career-corpus.md (plus the jim-voice skill). Your FINAL message is a single JSON object `{"fleet_package": {"slug": "<slug>", "files": {"resume.md": "...", "cover-letter.md": "...", "meta.json": "..."}}}` — the RUNTIME stages those files atomically to pending_review. You never touch the filesystem or the portal yourself.
+    - **HEADLESS (fleet background worker):** the prompt declares you are a non-interactive fleet worker. The target row is ALREADY RESOLVED and handed to you in the input payload — do NOT query Notion. Do NOT call write_file. Your read surface is ONLY career-corpus.md (plus the jim-voice skill). Your FINAL message emits each output file in its own delimited block, using the emit protocol the worker prompt specifies — the RUNTIME stages those files atomically to pending_review. You never touch the filesystem or the portal yourself.
     - **INTERACTIVE (operator-invoked):** follow the steps exactly as written below — query Notion for the row, write the files with write_file, and surface the portal link.
 
     Everything else (positioning, drafting, QA, hard rules) is identical in both modes.
@@ -118,14 +118,14 @@ context:
     ### Step 6 — Emit the package (Yellow, pending_review)
     The slug is `YYMMDD-company-role` (e.g., 260702-lilly-ai-orch-pm), lowercase, hyphenated. The three assets are the same in both modes: `resume.md` and `cover-letter.md` (markdown — the publish step converts them to Google Docs), and `meta.json` = the row identity the Publish step needs: `{"row_id": "<the Notion page id of the To Apply row>", "company": "<Company>", "role": "<Role>", "slug": "<slug>"}`. The Publish handler reads row_id from meta.json to update the Notion row; without it, Publish cannot proceed. meta.json is not a draft asset — only resume.md and cover-letter.md are published as Google Docs.
 
-    **HEADLESS:** do NOT call write_file and do NOT mkdir. Your FINAL message is exactly `{"fleet_package": {"slug": "<slug>", "files": {"resume.md": "<content>", "cover-letter.md": "<content>", "meta.json": "<content>"}}}` — nothing else. The runtime writes these atomically to pending_review/<slug>/.
+    **HEADLESS:** do NOT call write_file and do NOT mkdir. Emit each output file in its own delimited block, using the emit protocol the worker prompt specifies — emit exactly these files: resume.md, cover-letter.md, meta.json. Use BARE filenames only — `resume.md`, NOT `<slug>/resume.md` and NOT any directory prefix. The runtime places your files under the slug directory automatically; you MUST NOT prefix the path. meta.json must be valid JSON carrying a `slug` key plus the routing metadata (row_id, company, role).
 
     **INTERACTIVE:** output location is /home/hermes/.grove/forge/pending_review/<slug>/ — nowhere else. mkdir -p it, then write resume.md, cover-letter.md, and meta.json there with write_file. Do NOT write to the repo, ~/, the canonical ~/.grove/forge/ dir, or any cellar sink. Only pending_review/<slug>/.
 
     These drafts are unapproved output. They stay in pending_review/ and never reach the cellar or Google Drive until the operator taps Publish on the portal. That gate is structural.
 
     ### Step 7 — Surface to operator (INTERACTIVE only)
-    **HEADLESS:** you are done at Step 6 — the fleet runtime records the run and surfaces it. Do NOT emit prose after the fleet_package JSON.
+    **HEADLESS:** you are done at Step 6 — the fleet runtime records the run and surfaces it. Do NOT emit prose after your delimited file blocks.
 
     **INTERACTIVE:** Respond with:
     1. A two-sentence summary: the role, the positioning thesis in one line, and that resume + cover letter are staged for review.
@@ -138,7 +138,7 @@ context:
     - invoke_skill — load jim-voice at Step 1
     - read_file — the corpus snapshot (the ONLY declared read surface: corpus_file)
     - Notion MCP query_data_sources — INTERACTIVE only: read the To Apply row (read only). HEADLESS receives the row in its payload.
-    - write_file — INTERACTIVE only: stage drafts to ~/.grove/forge/pending_review/<slug>/. HEADLESS returns a fleet_package and the runtime stages it.
+    - write_file — INTERACTIVE only: stage drafts to ~/.grove/forge/pending_review/<slug>/. HEADLESS emits delimited file blocks and the runtime stages them.
 
     ## Output location
     ~/.grove/forge/pending_review/<slug>/{resume.md, cover-letter.md}
