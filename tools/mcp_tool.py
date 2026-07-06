@@ -3892,6 +3892,102 @@ def discover_mcp_tools(*, registry: "ToolRegistry") -> List[str]:
     return tool_names
 
 
+async def ensure_mcp_warm(server_id: str, context: Optional[dict] = None) -> None:
+    """Guarantee ``server_id``'s MCP session is warm before a fleet dispatch reads it,
+    or fail loud with a precise, non-storming Andon (fleet-mcp-warm-unification-v1 P3).
+
+    This is the CORRECTNESS guarantee the fleet dispatch rides — the startup warm is
+    only latency amortization. It is a CORE helper (general to any server/worker), not
+    an agent tool: it is never registered in a ToolRegistry.
+
+    Ordered check (LOCK-2 — the sequence is load-bearing):
+
+      1. AUTH-DEAD (checked FIRST — never bury a dead secret under a generic timeout).
+         A ``reauth`` connect-breaker signature means the operator must act. Loud ONCE
+         (``broadcast=True`` + latch), then local-only until a confirming reconnect
+         clears the latch (:func:`_mark_auth_alert_surfaced` / P2c).
+      2. BREAKER — an OPEN call-time breaker is an EXPECTED cooldown; local Andon, no
+         operator storm every cadence.
+      3. PLAUSIBLY-WARM FAST-PATH — a live session short-circuits with NO RPC (the G1
+         per-dispatch-latency guard). "Plausibly" because a session non-None with a
+         live task is not RPC-authoritative; G6 handles the stale case (below).
+      4. WARM-IF-COLD — the canonical warm (:func:`discover_mcp_tools`, idempotent,
+         only connects cold servers) into a throwaway registry; its SIDE EFFECT
+         (populating the module-global ``_servers``) is what the fleet resolver reads.
+         A warm failure is a genuine fault the operator should see (``broadcast=True``).
+
+    G6 (stale session): Check-3 self-corrects. On any transport death ``run()`` sets
+    ``self.session = None`` (both the ``except`` and the per-iteration ``finally``), so
+    a dead/reconnecting transport has ``session is None`` → Check-3 fails → Check-4. The
+    only residual (a silent half-open where the session is briefly non-None) is bounded
+    by the run-loop keepalive-triggered reconnect AND the call-time breaker (Check-2)
+    that opens after 3 failed RPCs — never an infinite non-healing loop. No per-dispatch
+    liveness RPC is added (it would re-introduce the G4 latency).
+
+    Raises :class:`~grove.fleet.errors.OperatorActionRequired` (auth-dead) or
+    :class:`~grove.fleet.errors.FleetWorkerAndon` (breaker-open / warm-failed), each
+    carrying ``broadcast`` so the dispatch surfacer (P4) mutes or fires the operator
+    alert. Returns ``None`` on success (warm or already-warm).
+    """
+    import functools
+
+    from grove.fleet.errors import FleetWorkerAndon, OperatorActionRequired
+    from tools.registry import ToolRegistry
+
+    ctx = context or {}
+    wid = ctx.get("wid")
+
+    # 1. AUTH-DEAD — before the breaker, so a dead secret is never buried under a
+    #    generic connect timeout.
+    if get_connect_failures().get(server_id) == "reauth":
+        if not auth_alert_already_surfaced(server_id):
+            _mark_auth_alert_surfaced(server_id)
+            raise OperatorActionRequired(
+                f"MCP server {server_id!r} needs re-authentication (connect breaker: "
+                f"'reauth'). Fleet dispatch is blocked until the operator re-auths; it "
+                f"will re-alert if the auth is fixed and later re-breaks.",
+                server_id=server_id, check="mcp_auth_dead", broadcast=True,
+            )
+        raise OperatorActionRequired(
+            f"MCP server {server_id!r} still needs re-authentication (already alerted "
+            f"once; suppressing the operator storm until a confirming reconnect).",
+            server_id=server_id, check="mcp_auth_dead", broadcast=False,
+        )
+
+    # 2. BREAKER — an open call-time breaker is an expected cooldown, not news.
+    if is_open(server_id):
+        raise FleetWorkerAndon(
+            f"MCP server {server_id!r} call-time breaker is OPEN — skipping the warm "
+            f"this cadence (self-heals when the cooldown elapses).",
+            worker_id=wid, check="mcp_breaker_open", broadcast=False,
+        )
+
+    # 3. PLAUSIBLY-WARM FAST-PATH — a live session returns with NO RPC.
+    with _lock:
+        server = _servers.get(server_id)
+    if (
+        server is not None
+        and getattr(server, "session", None) is not None
+        and getattr(server, "_task", None) is not None
+        and not server._task.done()
+        and server._ready.is_set()
+    ):
+        return
+
+    # 4. WARM-IF-COLD — the canonical warm (idempotent). The registry is a throwaway;
+    #    the side effect that matters is _servers being populated for the resolver.
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, functools.partial(discover_mcp_tools, registry=ToolRegistry())
+        )
+    except Exception as exc:  # noqa: BLE001 — a genuine warm failure the operator should see
+        raise FleetWorkerAndon(
+            f"MCP warm for server {server_id!r} failed: {exc}",
+            worker_id=wid, check="mcp_warm_failed", broadcast=True,
+        ) from exc
+
+
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Check if an MCP tool belongs to a server that supports parallel tool calls.
 
