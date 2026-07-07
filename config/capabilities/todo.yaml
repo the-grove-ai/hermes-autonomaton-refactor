@@ -1,13 +1,13 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=todo  zone=green  tiers=[3]  disclosure=fallback  trigger=fallback
+# family=todo  zone=green  tiers=[3]  disclosure=proactive  trigger=proactive
 id: todo
 kind: verb
 trigger:
   intents: []
   keywords: []
   dock_affinity: []
-  always: false
-  disclosure: fallback
+  always: true
+  disclosure: proactive
 bindings:
   tools:
   - todo

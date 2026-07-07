@@ -1,13 +1,13 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=discord  zone=yellow  tiers=[3]  disclosure=fallback  trigger=fallback
+# family=discord  zone=yellow  tiers=[3]  disclosure=proactive  trigger=proactive
 id: discord
 kind: verb
 trigger:
-  intents: []
-  keywords: []
+  intents: [messaging]
+  keywords: [discord, chat, message]
   dock_affinity: []
   always: false
-  disclosure: fallback
+  disclosure: proactive
 bindings:
   tools:
   - discord

@@ -1,13 +1,13 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=computer_use  zone=red  tiers=[3]  disclosure=fallback  trigger=fallback
+# family=computer_use  zone=red  tiers=[3]  disclosure=proactive  trigger=proactive
 id: computer_use
 kind: verb
 trigger:
-  intents: []
-  keywords: []
+  intents: [code_generation, system_admin]
+  keywords: [computer, screen, browser use]
   dock_affinity: []
   always: false
-  disclosure: fallback
+  disclosure: proactive
 bindings:
   tools:
   - computer_use
