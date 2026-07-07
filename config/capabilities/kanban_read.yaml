@@ -1,13 +1,13 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=null:kanban  zone=green  tiers=[3]  disclosure=fallback  trigger=fallback
+# family=null:kanban  zone=green  tiers=[3]  disclosure=proactive  trigger=proactive
 id: kanban_read
 kind: verb
 trigger:
   intents: []
   keywords: []
   dock_affinity: []
-  always: false
-  disclosure: fallback
+  always: true
+  disclosure: proactive
 bindings:
   tools:
   - kanban_list
