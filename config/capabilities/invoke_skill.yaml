@@ -1,13 +1,13 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=skills  zone=yellow  tiers=[3]  disclosure=fallback  trigger=fallback
+# family=skills  zone=yellow  tiers=[3]  disclosure=proactive  trigger=proactive
 id: invoke_skill
 kind: verb
 trigger:
   intents: []
   keywords: []
   dock_affinity: []
-  always: false
-  disclosure: fallback
+  always: true
+  disclosure: proactive
 bindings:
   tools:
   - invoke_skill
@@ -56,7 +56,6 @@ lineage:
     reason: 'E5 C-VERBS — declarative-resolution-v1: grouped verb record (strict A2: zone+tier+trigger
       homogeneous) governing native tools at the operator-locked gate'
     evidence:
-    - config/tool_groups.yaml
     - config/zones.schema.yaml#tool_zones
 failure:
   fallback: halt_and_surface
