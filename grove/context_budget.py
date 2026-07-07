@@ -428,10 +428,10 @@ def _caps_index() -> List[tuple]:
     Each entry is ``(cap_id, disclosure, always, intents_frozenset,
     eligible_frozenset, native_tools_tuple)`` for records that govern at least one
     native (non-MCP) tool. ``eligible_frozenset`` is the record's
-    ``tier_rule.eligible`` — the SOLE tier gate (Option B, ``allow_groups``
-    retired): a record's tools load on tier ``T`` iff ``T`` is in this set (or no
-    tier is routed). ``cap_id`` rides so the D8 escalation net can name the
-    capabilities a tier stripped, not just their groups. MCP tools are gated
+    ``tier_rule.eligible``; it is retained in the projection but the admission gate
+    that consumed it is now INERT (fallback-retirement-v1 Phase 2) — tier
+    governance is the Cognitive Router's job. ``cap_id`` likewise rides unused,
+    kept for the dormant D8 escalation net's signature. MCP tools are gated
     separately by ``mcp_allow`` (E4) and excluded here.
     """
     global _caps_index_cache
@@ -468,37 +468,31 @@ def _registry_allowed_names(
     complexity_signal: Optional[str],
     current_tier: Optional[int],
 ) -> Tuple[Set[str], List[Tuple[str, Tuple[int, ...]]]]:
-    """The native tool-name surface admitted this turn, plus the capabilities the
-    tier stripped (C-RESOLVE / D8 — Option B: ``tier_rule.eligible`` is the SOLE
-    tier gate; ``allow_groups`` is retired).
+    """The native tool-name surface admitted this turn, plus an (always-empty)
+    stripped-capability provenance kept for the D8 return contract.
 
-    Admission is two predicates per capability:
-
-    ``intent_match`` (tier-independent) — does this turn SELECT the record?
+    Admission is ONE predicate per capability — ``intent_match`` (does this turn
+    SELECT the record?):
       * ``fallback`` disclosure — selected only on the unknown maximal fallback.
+        (fallback-retirement-v1 Phase 1 migrated every record off this mode; the
+        branch is retained pending Phase 3's Andon-on-uncertainty rewrite.)
       * ``complexity`` disclosure — the exploratory surface; selected on a
         complex/novel turn (or the unknown fallback).
       * ``proactive`` + ``always`` — the core surface; always selected.
       * ``proactive`` + ``intents`` — selected iff the turn's intent is one of the
         record's; on the unknown fallback every proactive record is selected.
 
-    ``tier_ok`` — ``current_tier in tier_rule.eligible``. ``current_tier is None``
-    (cloud / vanilla — no tier routed) BYPASSES the gate and admits. An EMPTY
-    ``eligible`` admits at NO tier; a core record with too-narrow ``eligible``
-    therefore surfaces as a stripped capability (a RECORD bug), never a hidden
-    branch special-case.
-
-    A record the turn SELECTED but the tier makes ineligible is STRIPPED —
-    returned as ``(cap_id, eligible_tuple)`` for the D8 escalation net, never
-    silently dropped. Stripping is meaningful only on a CLASSIFIED turn: the
-    unknown maximal fallback strips nothing (it could not name an intent to
-    cover). Returns ``(admitted_names, stripped_capabilities)``.
+    The tier-eligibility gate is INERT (fallback-retirement-v1 Phase 2): tier
+    governance is handled by the Cognitive Router, not here, and the zone system
+    governs mutation safety. Every intent-matched capability is admitted; nothing
+    is tier-stripped. ``current_tier`` is accepted for signature compatibility but
+    no longer gates admission. Returns ``(admitted_names, [])`` — the second
+    element is the empty stripped provenance the D8 escalation net still reads.
     """
     unknown = intent_class is None or intent_class == "unknown"
     cx_high = complexity_signal in ("complex", "novel")
     names: Set[str] = set()
-    stripped: List[Tuple[str, Tuple[int, ...]]] = []
-    for cap_id, disclosure, always, intents, eligible, native_tools in _caps_index():
+    for _cap_id, disclosure, always, intents, _eligible, native_tools in _caps_index():
         if disclosure == "fallback":
             intent_match = unknown
         elif disclosure == "complexity":
@@ -509,13 +503,16 @@ def _registry_allowed_names(
             intent_match = True if unknown else (intent_class in intents)
         if not intent_match:
             continue
-        # tier_rule.eligible is inert at admission (neuter-tier-eligible-gate):
-        # the cognitive router picks the tier; the zone system governs mutation
-        # safety. Every intent-matched capability is admitted; nothing is
-        # tier-stripped. ``current_tier`` / ``eligible`` remain in the loop
-        # unpacking only to preserve the vestigial signature shape.
+        # The tier-eligibility gate is INERT (fallback-retirement-v1 Phase 2):
+        # every intent-matched capability is admitted here. Tier governance is the
+        # Cognitive Router's job (it picks the tier); the zone system governs
+        # mutation safety. Nothing is tier-stripped. ``_cap_id`` / ``_eligible``
+        # ride the registry projection unused, kept only for the D8 signature.
         names.update(native_tools)
-    return names, stripped
+    # Second element is the (always-empty) stripped provenance. It stays in the
+    # return contract because ToolResolution.stripped_capabilities and the D8
+    # escalation net downstream read it; the inert eligible gate never fills it.
+    return names, []
 
 
 def resolve_tools_for_tier(
@@ -528,19 +525,18 @@ def resolve_tools_for_tier(
 ) -> ToolResolution:
     """Resolve the per-turn tool surface under a tier (R1 + D4 + D8 — Option B).
 
-    The native surface derives from the capability registry gated by ONE rule:
-    ``current_tier in tier_rule.eligible`` (``allow_groups`` retired). ``current_tier``
-    is the int tier (1/2/3) bound from ``run_agent._current_tier_int()``; escalation
-    re-runs this builder at the new tier. ``current_tier is None`` (cloud / vanilla —
-    no tier routed) bypasses the gate. A capability the intent selected but the
-    tier makes ineligible is reported in ``stripped_capabilities`` for the D8
-    escalation net; it is never silently dropped. MCP exposure is gated solely by
-    ``mcp_allow`` (GRV-009 E4 C4): a server is admitted only if it is in the
-    matched set. ``mcp_allow=None`` ⇒ no records, allow-by-default.
+    The native surface derives from the capability registry via intent/disclosure
+    admission (``_registry_allowed_names``). The tier-eligibility gate is INERT
+    (fallback-retirement-v1 Phase 2): ``current_tier`` is accepted and threaded for
+    signature compatibility but no longer gates admission — tier governance is the
+    Cognitive Router's responsibility, and the zone system governs mutation safety.
+    Because nothing is tier-stripped, ``stripped_capabilities`` is always empty; it
+    stays on the result for the dormant D8 escalation net downstream. MCP exposure
+    is gated solely by ``mcp_allow`` (GRV-009 E4 C4): a server is admitted only if
+    it is in the matched set. ``mcp_allow=None`` ⇒ no records, allow-by-default.
 
-    On an unknown intent (maximal fallback) the surface is the full registry
-    capped by ``tier_rule.eligible`` and marked ``fallback`` loudly; the unknown
-    fallback strips nothing (it could not name an intent to cover).
+    On an unknown intent (maximal fallback) the surface is the full registry, and
+    the result is marked ``fallback`` loudly.
     """
     fallback = intent_class is None or intent_class == "unknown"
 
@@ -555,9 +551,8 @@ def resolve_tools_for_tier(
     if fallback:
         logger.info(
             "[grove.context_budget] maximal fallback under tier budget "
-            "(intent_class=%r) — registry-driven surface gated by "
-            "tier_rule.eligible (current_tier=%r), MCP gated by the registry "
-            "mcp_allow",
+            "(intent_class=%r, current_tier=%r) — registry-driven surface, MCP "
+            "gated by the registry mcp_allow",
             intent_class,
             current_tier,
         )

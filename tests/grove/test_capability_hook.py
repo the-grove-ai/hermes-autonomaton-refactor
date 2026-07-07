@@ -181,7 +181,9 @@ def test_hook_outcome_stamp_tolerates_absent_selection():
     agent = _ws_agent([_tool("gmail_search")])
     # deliberately no _last_tool_selection attribute
     agent._apply_capability_hook("messaging")  # must not raise
-    assert agent._capability_records_applied == WORKSPACE_IDS
+    # fallback-retirement-v1: discord migrated to proactive+intents=[messaging], so
+    # it now co-governs the messaging intent alongside the Workspace records.
+    assert agent._capability_records_applied == sorted(WORKSPACE_IDS + ["discord"])
 
 
 # ── Skill retirement: gone from every scanned path, verbs/scripts intact ──────

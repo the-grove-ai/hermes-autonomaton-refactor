@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from grove.classify import COMPLEXITY_SIGNALS, INTENT_CLASSES
+from grove.classify import INTENT_CLASSES
 from grove.context_budget import resolve_tools_for_tier
 
 # web-surface-admission-fix (Option B): the tier is bound via ``current_tier``
@@ -54,24 +54,34 @@ def test_complexity_record_absent_on_simple_t3_present_on_complex():
     assert "browser_navigate" in t1c   # tier ceiling retired → present at T1 on a complex turn
 
 
-@pytest.mark.parametrize("fb_tool", ["spotify_search", "kanban_list", "discord", "computer_use"])
-def test_fallback_record_absent_on_every_known_intent_present_only_in_fallback(fb_tool):
+# fallback-retirement-v1 retired disclosure:fallback. The former "fallback record
+# absent on every known intent, present only in the unknown fallback" invariant no
+# longer holds — those records migrated to proactive (Class A: always:true core;
+# Class B2/C: intent-gated). The two tests below assert the INVERSE, the behavior
+# the migration installed.
+
+
+@pytest.mark.parametrize("core_tool", ["kanban_list", "todo"])
+def test_migrated_class_a_present_on_every_intent(core_tool):
+    # Class A (todo, send_message, kanban_read/write) flipped to always:true —
+    # core native verbs offered on EVERY recognized intent at every tier.
     for tier_int in (1, 2, 3):
         for intent in INTENT_CLASSES:
-            for cx in COMPLEXITY_SIGNALS:
-                got = _names(resolve_tools_for_tier(TOOLS, intent, cx, current_tier=tier_int, mcp_allow=None))
-                assert fb_tool not in got, f"fallback record {fb_tool} leaked onto known cell T{tier_int}|{intent}|{cx}"
-    t3_unknown = _names(resolve_tools_for_tier(TOOLS, None, "simple", current_tier=3, mcp_allow=None))
-    assert fb_tool in t3_unknown, f"fallback record {fb_tool} missing from maximal unknown fallback"
+            got = _names(resolve_tools_for_tier(TOOLS, intent, "moderate", current_tier=tier_int, mcp_allow=None))
+            assert core_tool in got, f"{core_tool} missing on classified cell T{tier_int}|{intent}"
 
 
-def test_fallback_explicitly_t3_research_complex():
-    got = _names(resolve_tools_for_tier(TOOLS, "research", "complex", current_tier=3, mcp_allow=None))
-    # invoke_skill removed from this spot-check: invoke-skill-classification-hotfix-v1
-    # flipped it to always:true/proactive, so it is now PRESENT on every classified
-    # cell (asserted by test_invoke_skill_offered_on_every_recognized_intent below).
-    for fb in ("spotify_search", "kanban_list", "computer_use", "todo"):
-        assert fb not in got, f"{fb} (fallback) must be absent on T3|research|complex"
+def test_migrated_intent_gated_records_ride_only_their_intent():
+    # Class B2/C (spotify_write, discord, homeassistant_read, discord_admin,
+    # computer_use) became proactive+intent-gated: present iff the intent matches,
+    # absent on unrelated classified turns (no longer fallback-only).
+    sysadmin = _names(resolve_tools_for_tier(TOOLS, "system_admin", "moderate", current_tier=3, mcp_allow=None))
+    messaging = _names(resolve_tools_for_tier(TOOLS, "messaging", "moderate", current_tier=3, mcp_allow=None))
+    research = _names(resolve_tools_for_tier(TOOLS, "research", "moderate", current_tier=3, mcp_allow=None))
+    assert "spotify_search" in sysadmin           # spotify_write intents=[system_admin]
+    assert "spotify_search" not in messaging
+    assert "discord" in messaging                  # discord intents=[messaging]
+    assert "discord" not in research
 
 
 def test_invoke_skill_offered_on_every_recognized_intent():

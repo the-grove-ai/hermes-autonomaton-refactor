@@ -76,7 +76,11 @@ CONFIGURABLE_TOOLSETS = [
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
-    ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
+    # yuanbao (Tencent Yuanbao platform) removed from the operator toolset toggle
+    # by fallback-retirement-v1 — its Grove capability records (yuanbao_read/write)
+    # were retired in Phase 1 as dead upstream Hermes governance. The live platform
+    # adapter still routes tools via the separate `hermes-yuanbao` toolset
+    # (toolsets.py) and its platform default_toolset; only this TUI toggle is gone.
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
     # GRV-009 spike C2 — Google Workspace native verbs. Registry-backed
     # (the 24 verbs register under toolset="google-workspace" in
