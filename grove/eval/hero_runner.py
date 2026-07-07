@@ -233,10 +233,12 @@ def _route(
     )
 
 
-def _tools(classification: Optional[ClassificationResult]) -> Optional[Set[str]]:
+def _tools(classification: Optional[ClassificationResult]) -> Set[str]:
     """Compute the tool set via the production resolver.
 
     GRV-009 E5 C-RETIRE — registry-driven; reads no tool_groups.yaml taxonomy.
+    fallback-retirement-v1 — never ``None``: an unknown/None classification yields
+    the always:true core, identical to the production hot path.
     """
     return resolve_tool_set(
         intent_class=classification.intent_class if classification else None,
@@ -356,45 +358,37 @@ def _check_assertions(
             detail="GRV-008 § I.b: tier not in allowed set",
         ))
 
-    # (c) tools — must-include / must-not-include / maximal-fallback.
+    # (c) tools — composition unbroken (must-include / must-not-include).
+    # GRV-008 § I(c) is "tool composition sequences remain unbroken": a determinism
+    # assertion, NOT a maximal-surface rule. The tool surface is always an explicit
+    # deterministic set — fallback-retirement-v1 retired the maximal "load
+    # everything" fallback, so an unknown intent yields the always:true core (never
+    # None). The former ``expected_maximal`` branch asserted a phantom rule
+    # ("§ I.c: unknown-intent must trip maximal fallback" — no such canon in
+    # docs/standards/008) and is removed at source; unknown-intent prompts now
+    # assert the deterministic core via must-include / must-not-include like any
+    # other prompt. ``tools`` is always a set here (_check_assertions runs only
+    # when tool resolution succeeded), so the old ``tools is None`` branch is gone.
     expected_must_include = set(expected.get("tools_must_include") or [])
     expected_must_not_include = set(
         expected.get("tools_must_not_include") or []
     )
-    expected_maximal = bool(expected.get("tool_set_is_maximal_fallback"))
-    if expected_maximal:
-        if tools is not None:
-            failures.append(AssertionFailure(
-                kind="tools",
-                expected="maximal-fallback (None)",
-                observed=f"explicit set of {len(tools)} tools",
-                detail="GRV-008 § I.c: unknown-intent must trip maximal fallback",
-            ))
-    else:
-        if tools is None:
-            failures.append(AssertionFailure(
-                kind="tools",
-                expected="explicit tool set",
-                observed="maximal-fallback (None)",
-                detail="GRV-008 § I.c: known-intent must produce explicit set",
-            ))
-        else:
-            missing = expected_must_include - tools
-            if missing:
-                failures.append(AssertionFailure(
-                    kind="tools",
-                    expected=f"must include {sorted(missing)}",
-                    observed=f"tools={sorted(tools)}",
-                    detail="GRV-008 § I.c: required tools missing",
-                ))
-            present_forbidden = expected_must_not_include & tools
-            if present_forbidden:
-                failures.append(AssertionFailure(
-                    kind="tools",
-                    expected=f"must not include {sorted(present_forbidden)}",
-                    observed=f"tools={sorted(tools)}",
-                    detail="GRV-008 § I.c: forbidden tools present",
-                ))
+    missing = expected_must_include - tools
+    if missing:
+        failures.append(AssertionFailure(
+            kind="tools",
+            expected=f"must include {sorted(missing)}",
+            observed=f"tools={sorted(tools)}",
+            detail="GRV-008 § I.c: required tools missing",
+        ))
+    present_forbidden = expected_must_not_include & tools
+    if present_forbidden:
+        failures.append(AssertionFailure(
+            kind="tools",
+            expected=f"must not include {sorted(present_forbidden)}",
+            observed=f"tools={sorted(tools)}",
+            detail="GRV-008 § I.c: forbidden tools present",
+        ))
 
     return failures
 

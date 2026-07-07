@@ -55,11 +55,12 @@ ALL_TOOLS = _mk(
         ("code_generation", "moderate"),
         ("analysis", "complex"),
         ("retrieval", "simple"),
-        ("unknown", "simple"),
-        (None, None),
     ],
 )
 def test_no_tier_reproduces_tier_unaware(intent, complexity):
+    # CLASSIFIED turns: the no-tier (cloud) hot path reproduces the tier-unaware
+    # Sprint 29 twin exactly. Unknown-intent diverges BY DESIGN after
+    # fallback-retirement-v1 Phase 3 — see the divergence test below.
     legacy = filter_tools_by_name(
         ALL_TOOLS, resolve_tool_set(intent, complexity)
     )
@@ -69,6 +70,29 @@ def test_no_tier_reproduces_tier_unaware(intent, complexity):
     assert _names(res.tools) == _names(legacy)
     assert res.stripped_capabilities == frozenset()   # no tier -> nothing stripped
     assert res.excluded_mcp == frozenset()
+
+
+@pytest.mark.parametrize("intent,complexity", [("unknown", "simple"), (None, None)])
+def test_unknown_production_and_eval_twin_both_core_only(intent, complexity):
+    # fallback-retirement-v1 (Andon-on-uncertainty): an unclassified turn admits
+    # the always:true CORE ONLY on BOTH the production hot path
+    # (resolve_tools_for_tier) AND the tier-unaware eval twin (resolve_tool_set) —
+    # the maximal "load everything" fallback is eradicated everywhere. The two
+    # surfaces are IDENTICAL (no drift); the twin NEVER returns None.
+    res = resolve_tools_for_tier(ALL_TOOLS, intent, complexity, current_tier=None)
+    assert res.fallback is True
+    # Compare against the production ADMISSION set (registry-derived, independent of
+    # the ALL_TOOLS surface), not the delivered/filtered res.tools — ALL_TOOLS here
+    # is a small fixed subset.
+    prod_admitted = {n for n in res.allowed_names if not n.startswith("mcp_")}
+    twin = resolve_tool_set(intent, complexity)
+    assert twin == prod_admitted              # eval twin mirrors production exactly
+    # always:true core admitted; intent-gated + complexity records withheld.
+    assert {"clarify", "memory", "terminal", "read_file", "skill_view",
+            "write_file", "patch", "search_files", "x_search"} <= twin
+    assert "execute_code" not in twin         # intent-gated — withheld on unknown
+    assert "web_search" not in twin           # intent-gated — withheld on unknown
+    assert "delegate_task" not in twin        # complexity — withheld on unknown
 
 
 # ── _maybe_apply_tool_filter consolidation (bare AIAgent) ──────────────────
@@ -160,13 +184,42 @@ def test_no_budget_native_matches_legacy_mcp_disclose_on_match(monkeypatch):
     assert agent._tool_resolution is not None
 
 
-def test_no_budget_unknown_intent_full_registry(monkeypatch):
-    _setup(monkeypatch, "unknown", "simple")
+def test_no_budget_unknown_intent_core_only(monkeypatch):
+    # fallback-retirement-v1 Phase 3 (Andon-on-uncertainty): an unclassified turn
+    # NO LONGER reverts to the full registry. _maybe_apply_tool_filter delivers the
+    # always:true CORE only (eager on the T1/cloud path) and ARMS the async Andon.
+    _setup(monkeypatch, "unknown", "simple", tier="T1")
     agent = _bare_agent(ALL_TOOLS)
     agent._maybe_apply_tool_filter()
-    assert agent._tools_for_turn is None             # full-registry signal
-    assert agent._tools_for_api is ALL_TOOLS
+    assert agent._tools_for_turn is not None          # NOT the full-registry signal
+    assert agent._tools_for_api is not ALL_TOOLS      # not the maximal fallback
+    got = set(_names(agent._tools_for_api))
+    assert {"clarify", "memory", "terminal", "read_file"} <= got   # core present
+    assert "delegate_task" not in got                 # complexity — withheld on unknown
+    assert "web_search" not in got                    # intent-gated — withheld on unknown
     assert agent._last_tool_selection["fallback"] is True
+    assert getattr(agent, "_uncertainty_andon_pending", False) is True  # Andon armed
+
+
+def test_uncertainty_andon_offer_appends_once_then_dedups(monkeypatch):
+    # The armed Andon surfaces ONCE alongside the answer (answer-then-surface),
+    # then dedups for the rest of the session. Never blocks, never raises.
+    agent = _bare_agent(ALL_TOOLS)
+    agent._uncertainty_andon_pending = True
+    out1 = agent._append_uncertainty_andon_offer("Here is your answer.")
+    assert out1.startswith("Here is your answer.")
+    assert "couldn't classify" in out1                # advisory appended
+    assert agent._uncertainty_andon_pending is False  # consumed
+    # re-arm + re-call: dedup (once per session), answer returned unchanged.
+    agent._uncertainty_andon_pending = True
+    out2 = agent._append_uncertainty_andon_offer("Second answer.")
+    assert out2 == "Second answer."                   # no re-append
+
+
+def test_uncertainty_andon_offer_noop_when_not_pending(monkeypatch):
+    # A classified turn never arms the flag → the offer is a pure passthrough.
+    agent = _bare_agent(ALL_TOOLS)
+    assert agent._append_uncertainty_andon_offer("Clean answer.") == "Clean answer."
 
 
 def test_budgeted_serves_intent_and_excludes_mcp(monkeypatch):

@@ -3364,20 +3364,26 @@ class AIAgent:
         except Exception:
             pass
 
-        # Preserve the Sprint 29 maximal-fallback signal: the LEGACY (no-budget)
-        # unknown-intent path leaves _tools_for_turn None so _tools_for_api
-        # returns the full registry verbatim. Every other case — any classified
-        # turn, and ANY budgeted turn (incl. a budgeted fallback, which must
-        # stay CAPPED, never revert to eager) — sets the resolved list.
+        # fallback-retirement-v1 Phase 3 — Andon-on-uncertainty. The unknown-intent
+        # turn NO LONGER reverts to the eager full registry (the retired maximal
+        # "load everything" fallback). resolve_tools_for_tier already capped res.tools
+        # to the always:true CORE on unknown, so the turn answers with that core
+        # surface — through the SAME assembly as a classified turn — and the
+        # classification failure is surfaced to the operator ASYNCHRONOUSLY on the
+        # NEXT turn (see _append_uncertainty_andon_offer). The current turn is never
+        # blocked. This also stops the old None→self.tools path from dumping the full
+        # MCP surface on an unclassified turn (res.tools respects mcp_allow).
         #
         # Sprint 74 Phase 3 — on T2/T3 the disclosure layer replaces the eager
         # schemas of non-core tools with the always-loaded index + agent-pull;
         # T1 (and the no-tier / cloud-without-tier path) stays eager (D3: a
         # round-trip on Haiku costs more than it saves, so T1 never pulls).
         self._disclosure_manifest = None
-        if (not budgeted) and res.fallback:
-            self._tools_for_turn = None
-        elif _tier_now in ("T2", "T3"):
+        if res.fallback:
+            # Record the uncertainty event for the async operator Andon. Ephemeral,
+            # agent-resident (survives per-turn rebuild, like the connector offers).
+            self._uncertainty_andon_pending = True
+        if _tier_now in ("T2", "T3"):
             self._tools_for_turn = self._apply_disclosure(res, intent_class=intent_class)
         else:
             tools = list(res.tools)
@@ -5738,6 +5744,44 @@ class AIAgent:
             return final_response
         except Exception as exc:  # noqa: BLE001
             logger.debug("[connector-andon] offer append skipped: %r", exc)
+            return final_response
+
+    def _append_uncertainty_andon_offer(self, final_response: str) -> str:
+        """fallback-retirement-v1 Phase 3 — Andon-on-uncertainty surface.
+
+        When a turn's intent could not be classified, resolve_tools_for_tier
+        admitted the always:true CORE tools ONLY (the maximal "load everything"
+        fallback is retired); specialized tools were withheld. This advises the
+        operator ALONGSIDE the answer (answer-then-surface, mirroring the
+        connector-failure Andon) so a possibly under-served turn is never silent —
+        Prime Directive: fail loud, never silently degrade.
+
+        Proportionate to a TRANSIENT classification event: ephemeral, agent-resident,
+        once per session. It carries none of the connector Andon's persistence /
+        retry / dismiss machinery (there is nothing to re-auth or approve — it is an
+        advisory). Best-effort; never blocks the current turn or raises into it.
+        """
+        if not final_response:
+            return final_response
+        try:
+            if not getattr(self, "_uncertainty_andon_pending", False):
+                return final_response
+            # Consume the pending flag regardless; once-per-session dedup on the
+            # agent-resident shown flag (survives per-turn rebuild like the
+            # connector shown-set, but needs no store — a stale advisory is cheap).
+            self._uncertainty_andon_pending = False
+            if getattr(self, "_uncertainty_andon_shown", False):
+                return final_response
+            self._uncertainty_andon_shown = True
+            offer = (
+                "⚠️ _Heads up: I couldn't classify the intent of that request, so I "
+                "answered with the core tool set only — some specialized tools may "
+                "have been withheld. If I missed something, rephrase and I'll pick "
+                "it up._"
+            )
+            return final_response.rstrip() + "\n\n" + offer
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[uncertainty-andon] offer append skipped: %r", exc)
             return final_response
 
     def _connector_offer_retry(self, server_name: str) -> None:
@@ -17765,6 +17809,10 @@ class AIAgent:
             # the answer (fail-loud: a dead connector's tools are absent, never
             # silently worked around). Answer-then-surface, once per session.
             final_response = self._append_connector_failure_offer(final_response)
+            # fallback-retirement-v1 Phase 3 — Andon-on-uncertainty: if the turn's
+            # intent was unclassified, the core tool set was used; advise the
+            # operator alongside the answer (answer-then-surface, once per session).
+            final_response = self._append_uncertainty_andon_offer(final_response)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.
