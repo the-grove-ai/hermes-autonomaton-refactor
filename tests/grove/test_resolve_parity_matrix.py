@@ -67,5 +67,21 @@ def test_fallback_record_absent_on_every_known_intent_present_only_in_fallback(f
 
 def test_fallback_explicitly_t3_research_complex():
     got = _names(resolve_tools_for_tier(TOOLS, "research", "complex", current_tier=3, mcp_allow=None))
-    for fb in ("spotify_search", "kanban_list", "computer_use", "todo", "invoke_skill"):
+    # invoke_skill removed from this spot-check: invoke-skill-classification-hotfix-v1
+    # flipped it to always:true/proactive, so it is now PRESENT on every classified
+    # cell (asserted by test_invoke_skill_offered_on_every_recognized_intent below).
+    for fb in ("spotify_search", "kanban_list", "computer_use", "todo"):
         assert fb not in got, f"{fb} (fallback) must be absent on T3|research|complex"
+
+
+def test_invoke_skill_offered_on_every_recognized_intent():
+    # invoke-skill-classification-hotfix-v1 regression guard. invoke_skill carried
+    # disclosure:fallback — offered ONLY on the unknown maximal fallback, so a
+    # classified turn ("forge the GoodRx application" -> system_admin) walled it off
+    # (the live defect). Flipped to always:true/proactive, it is a core native verb
+    # and MUST be offered on EVERY recognized intent at every tier — the exact
+    # inverse of the fallback-absent invariant above.
+    for tier_int in (1, 2, 3):
+        for intent in INTENT_CLASSES:
+            got = _names(resolve_tools_for_tier(TOOLS, intent, "moderate", current_tier=tier_int, mcp_allow=None))
+            assert "invoke_skill" in got, f"invoke_skill missing on classified cell T{tier_int}|{intent}"

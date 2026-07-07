@@ -299,16 +299,22 @@ def test_real_records_disclosure_modes_match_golden():
                 "ha_call_service"):
         assert caps[rid].trigger.disclosure is TD.COMPLEXITY, rid
     # never-grouped integrations -> fallback (only on maximal unknown fallback).
+    # invoke_skill was reclassified to proactive core in
+    # invoke-skill-classification-hotfix-v1 (it is a native verb, peer of
+    # read_file/write_file/terminal, not a never-grouped integration) — it now
+    # lives in the proactive cohort below, not here.
     for rid in ("spotify_write", "kanban_read", "kanban_write", "yuanbao_read",
                 "yuanbao_write", "discord", "discord_admin", "computer_use", "todo",
-                "invoke_skill", "send_message", "feishu_read", "feishu_write",
+                "send_message", "feishu_read", "feishu_write",
                 "homeassistant_read"):
         assert caps[rid].trigger.disclosure is TD.FALLBACK, rid
         # carve-out holds on the real records: no proactive trigger.
         assert not caps[rid].trigger.always and not caps[rid].trigger.intents
-    # core + intent records stay proactive.
+    # core + intent records stay proactive. invoke_skill joined this cohort
+    # (invoke-skill-classification-hotfix-v1): always:true, offered on every intent.
     for rid in ("clarify", "memory", "read_file", "terminal", "escalate",
-                "web_search", "search_files", "execute_code", "x_search"):
+                "web_search", "search_files", "execute_code", "x_search",
+                "invoke_skill"):
         assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
 
 
