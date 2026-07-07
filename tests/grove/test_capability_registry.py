@@ -298,18 +298,23 @@ def test_real_records_disclosure_modes_match_golden():
                 "vision_analyze", "video_analyze", "feishu_doc_read", "ha_get_state",
                 "ha_call_service"):
         assert caps[rid].trigger.disclosure is TD.COMPLEXITY, rid
-    # never-grouped integrations -> fallback (only on maximal unknown fallback).
-    # invoke_skill was reclassified to proactive core in
-    # invoke-skill-classification-hotfix-v1 (it is a native verb, peer of
-    # read_file/write_file/terminal, not a never-grouped integration) — it now
-    # lives in the proactive cohort below, not here.
-    for rid in ("spotify_write", "kanban_read", "kanban_write", "yuanbao_read",
-                "yuanbao_write", "discord", "discord_admin", "computer_use", "todo",
-                "send_message", "feishu_read", "feishu_write",
-                "homeassistant_read"):
-        assert caps[rid].trigger.disclosure is TD.FALLBACK, rid
-        # carve-out holds on the real records: no proactive trigger.
-        assert not caps[rid].trigger.always and not caps[rid].trigger.intents
+    # fallback-retirement-v1: the never-grouped-integration cohort that carried
+    # disclosure:fallback is GONE. feishu_read/write and yuanbao_read/write were
+    # DELETED (dead upstream Hermes governance); the remaining nine migrated to
+    # proactive. No record may carry FALLBACK any longer.
+    assert not any(
+        c.trigger.disclosure is TD.FALLBACK for c in caps.values()
+    ), "a disclosure:fallback record survived fallback-retirement-v1"
+    assert "yuanbao_read" not in caps and "feishu_write" not in caps  # B1 deletes
+    # Class A — flipped to proactive CORE (always:true, offered on every intent).
+    for rid in ("todo", "send_message", "kanban_read", "kanban_write"):
+        assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
+        assert caps[rid].trigger.always, rid
+    # Class B2 / C — proactive but INTENT-GATED (always:false, non-empty intents).
+    for rid in ("discord", "homeassistant_read", "spotify_write",
+                "discord_admin", "computer_use"):
+        assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
+        assert not caps[rid].trigger.always and caps[rid].trigger.intents, rid
     # core + intent records stay proactive. invoke_skill joined this cohort
     # (invoke-skill-classification-hotfix-v1): always:true, offered on every intent.
     for rid in ("clarify", "memory", "read_file", "terminal", "escalate",
