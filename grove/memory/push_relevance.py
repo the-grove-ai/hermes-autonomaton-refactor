@@ -9,10 +9,15 @@ when the proposal is tagged to a Dock goal active this turn (Dock override).
 Pure + deterministic: a table lookup, no LLM call. Repo-config only (no
 ``~/.grove`` override — structural tuning tied to the intent taxonomy).
 
-Fallback discipline (maximal-fallback = "don't spam"):
+Fallback discipline (memory-push noise suppression = "don't spam"):
   * unknown / null ``intent_class``      -> suppress (return False)
   * ``intent_class`` absent from the map -> suppress
   * ``entity_type`` not listed for it    -> suppress
+
+NOTE: this "fallback" is Kaizen memory-push SUPPRESSION on an unclassified turn
+(when we can't tell the topic, don't push memories) — semantically DISTINCT from
+the retired tool-admission maximal fallback. fallback-retirement-v1 does NOT touch
+this file; suppress-on-unknown is the correct, intended behavior here.
 """
 
 from __future__ import annotations
@@ -100,7 +105,10 @@ def is_push_relevant(
         return True
 
     if not intent_class or not entity_type:
-        return False  # maximal fallback: unknown turn → don't spam
+        # Memory-push suppression on an unclassified turn (NOT the tool-admission
+        # fallback that fallback-retirement-v1 retired): don't spam when we can't
+        # tell the topic. Correct behavior here — see the module docstring.
+        return False
     eligible = _load_relevance().get(intent_class)
     if not eligible:
         return False  # intent absent from the map → suppress all

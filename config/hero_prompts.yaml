@@ -49,7 +49,9 @@
 # analysis, research, creative_writing, system_admin) and architect /
 # T3-native (planning) round out the taxonomy.  1 correction-trigger
 # exercises is_correction=true; 1 unknown-intent degenerate input
-# exercises the maximal-fallback path through ``resolve_tool_set``.
+# exercises the always:true CORE-only path through ``resolve_tool_set``
+# (fallback-retirement-v1: the maximal "load everything" fallback is retired —
+# an unclassified turn yields the deterministic core, GRV-008 § I(c)).
 # ============================================================================
 
 hero_prompts:
@@ -259,8 +261,12 @@ hero_prompts:
       intent_class: unknown
       complexity_signal_in: [simple, moderate, complex, novel, unknown]
       tier_in: [T1]
-      tools_must_include: []
-      tools_must_not_include: []
+      # fallback-retirement-v1: an unclassified turn yields the DETERMINISTIC
+      # always:true CORE (never a maximal surface). This is the real GRV-008 § I(c)
+      # — "tool composition sequences remain unbroken": the core is present and the
+      # specialized surface is withheld, identical to the production hot path.
+      # Derived from the actual always:true core (48 tools); a stable subset asserted.
+      tools_must_include: [clarify, memory, read_file, terminal, write_file, search_files, skill_view, invoke_skill]
+      tools_must_not_include: [execute_code, web_search, delegate_task, browser_navigate]
       is_correction: false
       andon_halt: false
-      tool_set_is_maximal_fallback: true

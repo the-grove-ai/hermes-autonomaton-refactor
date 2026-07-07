@@ -96,9 +96,14 @@ def test_resolve_tool_set_is_registry_driven():
     got = resolve_tool_set("code_generation", "moderate")
     assert {"write_file", "patch", "search_files", "execute_code", "skill_manage"} <= got
     assert {"clarify", "terminal", "read_file"} <= got            # core (always)
-    assert "spotify_search" not in got                            # fallback — never proactive
+    assert "spotify_search" not in got                            # intent-gated — not conversation
     assert "browser_navigate" not in got                          # complexity — not on a moderate turn
-    assert resolve_tool_set("unknown", "simple") is None
+    # fallback-retirement-v1: unknown yields the always:true CORE (never None).
+    unk = resolve_tool_set("unknown", "simple")
+    assert unk is not None
+    assert {"clarify", "terminal", "read_file"} <= unk            # core rides unknown
+    assert "execute_code" not in unk                             # intent-gated withheld
+    assert "browser_navigate" not in unk                         # complexity withheld
 
 
 # ── MCP disclose-on-match (mcp_allow) — the _partition_tools flip ──────────
@@ -132,7 +137,9 @@ def test_mcp_allow_via_filter_tools_by_name():
     n = _names(kept)
     assert "mcp_notion_API_post_page" in n
     assert "mcp_other_do_thing" not in n
-    assert resolve_tool_set(None, None) is None
+    # fallback-retirement-v1: unknown/None yields the always:true CORE, never None.
+    core = resolve_tool_set(None, None)
+    assert core is not None and {"clarify", "read_file"} <= core
 
 
 # ── the SOLE tier gate: tier_rule.eligible (Option B) ──────────────────────
@@ -232,25 +239,29 @@ def test_mcp_server_of_is_crash_proof():
 # ── fallback under a tier (budget still honored; unknown strips nothing) ────
 
 
-def test_unknown_intent_fallback_uncapped_on_t2(synth_caps):
-    # neuter-tier-eligible-gate: the unknown maximal fallback at T2 is no longer
-    # tier-capped — x_search (record documents eligible [3]) is admitted at T2
-    # too. Unknown still strips nothing.
+def test_unknown_intent_admits_core_only_on_t2(synth_caps):
+    # fallback-retirement-v1 Phase 3 (Andon-on-uncertainty): an unclassified turn
+    # admits ONLY the always:true core — never the retired maximal "load
+    # everything" fallback. Intent-gated (code/xsearch) and complexity (explore)
+    # records are withheld; the classification failure surfaces asynchronously.
     res = resolve_tools_for_tier(ALL_TOOLS, None, None,
                                  current_tier=2)
     assert res.fallback is True
     assert res.stripped_capabilities == frozenset()         # unknown strips nothing
-    assert "write_file" in res.allowed_names
-    assert "x_search" in res.allowed_names                  # tier gate retired
+    got = set(res.allowed_names)
+    assert {"clarify", "memory", "terminal", "read_file", "skill_view"} <= got  # core
+    assert "write_file" not in got                          # code — intent-gated, withheld
+    assert "x_search" not in got                            # xsearch — intent-gated, withheld
 
 
-def test_unknown_intent_fallback_full_on_t3(synth_caps):
+def test_unknown_intent_admits_core_only_on_t3(synth_caps):
     res = resolve_tools_for_tier(ALL_TOOLS, "unknown", "simple",
                                  current_tier=3)
     assert res.fallback is True
     got = _names(res.tools)
-    assert "delegate_task" in got                           # full non-MCP registry@T3
-    assert "x_search" in got
+    assert "read_file" in got                               # always:true core present
+    assert "delegate_task" not in got                      # explore — complexity, withheld
+    assert "x_search" not in got                           # xsearch — intent-gated, withheld
 
 
 # ── result object ──────────────────────────────────────────────────────────

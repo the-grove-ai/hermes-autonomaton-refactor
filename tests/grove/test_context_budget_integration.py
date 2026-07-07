@@ -177,21 +177,25 @@ class TestMaybeApplyToolFilter:
         assert agent._last_tool_selection["intent_class"] == "code_generation"
         assert agent._last_tool_selection["fallback"] is False
 
-    def test_unknown_intent_fallback_to_full(
+    def test_unknown_intent_core_only(
         self, monkeypatch: pytest.MonkeyPatch,
     ):
-        # Sprint 12 graceful-tier returned None classification → loud
-        # fallback. _tools_for_turn stays None (so _tools_for_api
-        # returns the full self.tools).
+        # fallback-retirement-v1 Phase 3 (Andon-on-uncertainty): a None
+        # classification (unknown) admits the always:true CORE ONLY — never the
+        # full registry. _tools_for_turn is the core list (NOT the None
+        # full-registry signal), specialized tools are withheld, and the async
+        # operator Andon is armed.
         from grove import providers as _providers_mod
         monkeypatch.setattr(_providers_mod, "_last_classification", None)
-        full = [_tool("clarify"), _tool("write_file")]
-        agent = _bare_agent_with_tools(full)
+        surface = [_tool("clarify"), _tool("write_file"), _tool("web_search")]
+        agent = _bare_agent_with_tools(surface)
         agent._maybe_apply_tool_filter()
-        assert agent._tools_for_turn is None
-        assert agent._tools_for_api is full
+        assert agent._tools_for_turn is not None          # NOT the full-registry signal
+        got = {t["function"]["name"] for t in agent._tools_for_api}
+        assert {"clarify", "write_file"} <= got           # always:true core admitted
+        assert "web_search" not in got                    # intent-gated — withheld
         assert agent._last_tool_selection["fallback"] is True
-        assert agent._last_tool_selection["selected_count"] == 2
+        assert getattr(agent, "_uncertainty_andon_pending", False) is True
 
     def test_complex_intent_adds_exploratory(
         self, monkeypatch: pytest.MonkeyPatch,

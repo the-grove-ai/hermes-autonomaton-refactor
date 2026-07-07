@@ -12,9 +12,12 @@ turn-1 context. The Sprint 29 design targets:
 * Simple / moderate intent → ~12-14K tokens (core + reads + small
   domain chunk); a 55-58% reduction from the all-loaded baseline.
 * Complex / novel intent → ~18-22K tokens (the above + exploratory).
-* Unknown intent → load ALL tools as the maximal fallback per the
-  Architectural Prime Directive (loud, not silent — logged to the
-  Kaizen Ledger by the Dispatcher).
+* Unknown intent → admit the always:true CORE ONLY (Andon-on-
+  uncertainty, fallback-retirement-v1 Phase 3). The maximal "load
+  everything" fallback is retired per the Architectural Prime Directive
+  (never silently inflate the tool surface); the classifier failure is
+  surfaced loudly and asynchronously (WARNING + operator Andon next turn),
+  not by dumping the full registry.
 
 This module is a pure-function surface: ``load_taxonomy`` reads + caches
 the YAML; ``resolve_tool_set`` computes the per-turn allowed name set;
@@ -79,10 +82,10 @@ def _validate_co_location(
 ) -> None:
     """Raise RuntimeError if any CO_LOCATED_TOOLS pair is half-loaded.
 
-    Runs against the materialized per-turn set, never against the
-    maximal-fallback (None) path — when every tool is loaded the
-    invariant holds trivially. The Agent sees this at construction
-    time; the Andon is the message, not a downstream hang.
+    Runs against a CLASSIFIED per-turn set only; skipped on the unknown /
+    fallback core surface (which cannot half-load an intent's co-located pair).
+    The Agent sees this at construction time; the Andon is the message, not a
+    downstream hang.
     """
     for discovery, execution in CO_LOCATED_TOOLS:
         if discovery in selected and execution not in selected:
@@ -188,78 +191,54 @@ def load_taxonomy(path: Optional[Path] = None) -> dict:
     return raw
 
 
-def _selected_group_names(
-    intent_class: Optional[str],
-    complexity_signal: Optional[str],
-) -> Optional[Set[str]]:
-    """The tool-GROUP names a turn selects, or ``None`` for the maximal-fallback
-    signal (unknown / missing intent).
-
-    GRV-009 E5 C-RETIRE — taxonomy-free. The group-selection rule is purely
-    structural: ``core`` always, the intent's own group (the intent_class name
-    IS its group name), plus ``exploratory`` on complex/novel turns. It needs no
-    ``tool_groups.yaml`` read — the tool->group taxonomy the records subsumed.
-    This is the group-NAME logic the resolver uses for the ``stripped`` / fallback
-    provenance; native tool admission itself is registry-driven
-    (``_registry_allowed_names``).
-    """
-    if intent_class is None or intent_class == "unknown":
-        return None
-    from grove.classify import INTENT_CLASSES
-    groups: Set[str] = {"core"}
-    if intent_class in INTENT_CLASSES:
-        groups.add(intent_class)
-    if complexity_signal in ("complex", "novel"):
-        groups.add("exploratory")
-    return groups
-
-
 def resolve_tool_set(
     intent_class: Optional[str],
     complexity_signal: Optional[str],
-) -> Optional[Set[str]]:
+) -> Set[str]:
     """Compute the per-turn allowed tool-name set (Sprint 29, intent-only).
 
-    Returns ``None`` when the intent is unknown or missing — the signal
-    to the caller to load ALL tools. The Architectural Prime Directive
-    says fail loud, not silent: callers MUST surface this fallback to
-    the Kaizen Ledger so the operator can audit how often the
-    classifier failed to give the optimizer enough to work with.
-
     The tier-unaware surface; the tier-aware gate lives in
-    :func:`resolve_tools_for_tier`. Both derive the native surface from the same
-    :func:`_registry_allowed_names` admission (this path passes ``current_tier=None``
-    — the eligibility gate bypassed), so neither can drift from the selection rule.
+    :func:`resolve_tools_for_tier`. Both derive the native surface from the SAME
+    :func:`_registry_allowed_names` admission (this path passes ``current_tier=None``),
+    so neither can drift.
+
+    On an unknown / missing intent this returns the always:true CORE ONLY —
+    identical to the production hot path (fallback-retirement-v1 Phase 3,
+    Andon-on-uncertainty). The maximal "load everything" fallback is retired per
+    the Architectural Prime Directive (never silently inflate the tool surface on
+    uncertainty); the classifier failure is surfaced loudly (WARNING) and, in
+    production, via the operator Andon.
 
     Args:
-        intent_class: one of the Sprint 12 INTENT_CLASSES, or
-            ``"unknown"`` / ``None`` for the maximal-fallback signal.
+        intent_class: one of the Sprint 12 INTENT_CLASSES, or ``"unknown"`` /
+            ``None`` (the unclassified turn → always:true core surface).
         complexity_signal: one of the Sprint 12 COMPLEXITY_SIGNALS
-            (``simple`` / ``moderate`` / ``complex`` / ``novel``).
-            ``complex`` / ``novel`` add the exploratory group.
+            (``simple`` / ``moderate`` / ``complex`` / ``novel``);
+            ``complex`` / ``novel`` add the exploratory (complexity) surface on a
+            CLASSIFIED turn only.
 
     Returns:
-        Set of tool names to expose this turn, or None for "load all".
+        The set of native tool names to expose this turn (NEVER ``None``).
     """
-    groups = _selected_group_names(intent_class, complexity_signal)
-    if groups is None:
-        logger.info(
-            "[grove.context_budget] tool selection: maximal fallback "
-            "(intent_class=%r) — full registry loaded",
+    unknown = intent_class is None or intent_class == "unknown"
+    if unknown:
+        logger.warning(
+            "[grove.context_budget] Andon: classifier returned unknown intent "
+            "(intent_class=%r) — tier-unaware surface admits always:true CORE tools "
+            "only (maximal fallback retired; identical to the production hot path).",
             intent_class,
         )
-        return None
-    # GRV-009 E5 C-RESOLVE — the intent-only (tier-unaware) native surface now
-    # derives from the capability registry, NOT _materialize over tool_groups.
-    # Tier-unaware == the wildcard case of the registry resolver (every group
-    # admitted; only the intent/complexity/disclosure gate applies). MCP tools
-    # (mcp_*) are not enumerated here — the per-turn filter governs MCP exposure.
-    # Tier-unaware == ``current_tier=None`` (the eligibility gate bypassed): every
-    # intent-selected record admitted, no tier cap, nothing stripped.
+    # Registry-driven native admission (current_tier=None → tier gate bypassed).
+    # Unknown yields the always:true core; a classified turn yields core +
+    # intent-matched + (complex/novel) exploratory records. MCP tools (mcp_*) are
+    # not enumerated here — the per-turn filter governs MCP exposure.
     selected, _ = _registry_allowed_names(
         intent_class, complexity_signal, current_tier=None
     )
-    _validate_co_location(selected, intent_class)
+    if not unknown:
+        # Co-location is validated on a CLASSIFIED surface only, mirroring
+        # resolve_tools_for_tier (which skips the guard on the fallback path).
+        _validate_co_location(selected, intent_class)
     return selected
 
 
@@ -366,7 +345,9 @@ def filter_tools_by_name(
         tools: list of tool dicts in the
             ``{"type": "function", "function": {"name": ..., ...}}`` shape.
         allowed: set of names the turn should expose, OR ``None`` for non-MCP
-            pass-through (the maximal-fallback signal).
+            pass-through (a no-filter signal — e.g. the resolver-crash
+            degradation in run_agent; NOT produced by resolve_tool_set, which
+            now returns the always:true core, never None).
         mcp_allow: an MCP tool passes only if its server is in this set; ``None``
             ⇒ every MCP passes (the legacy allow-by-default signal). ``None`` for
             both ``allowed`` and ``mcp_allow`` is the legacy pass-through fast-path.
@@ -473,14 +454,17 @@ def _registry_allowed_names(
 
     Admission is ONE predicate per capability — ``intent_match`` (does this turn
     SELECT the record?):
-      * ``fallback`` disclosure — selected only on the unknown maximal fallback.
-        (fallback-retirement-v1 Phase 1 migrated every record off this mode; the
-        branch is retained pending Phase 3's Andon-on-uncertainty rewrite.)
+      * ``proactive`` + ``always`` — the core surface; always selected (classified
+        or not).
+      * unknown / unclassified turn — ONLY the ``always`` core above is selected
+        (fallback-retirement-v1 Phase 3, Andon-on-uncertainty). Intent-gated and
+        complexity records are withheld; the maximal "load everything" fallback is
+        retired. The classifier failure surfaces asynchronously, not by inflating
+        the surface.
       * ``complexity`` disclosure — the exploratory surface; selected on a
-        complex/novel turn (or the unknown fallback).
-      * ``proactive`` + ``always`` — the core surface; always selected.
-      * ``proactive`` + ``intents`` — selected iff the turn's intent is one of the
-        record's; on the unknown fallback every proactive record is selected.
+        complex/novel CLASSIFIED turn.
+      * ``proactive`` + ``intents`` — selected iff the classified turn's intent is
+        one of the record's.
 
     The tier-eligibility gate is INERT (fallback-retirement-v1 Phase 2): tier
     governance is handled by the Cognitive Router, not here, and the zone system
@@ -493,14 +477,34 @@ def _registry_allowed_names(
     cx_high = complexity_signal in ("complex", "novel")
     names: Set[str] = set()
     for _cap_id, disclosure, always, intents, _eligible, native_tools in _caps_index():
-        if disclosure == "fallback":
-            intent_match = unknown
-        elif disclosure == "complexity":
-            intent_match = True if unknown else cx_high
-        elif always:  # proactive core
+        # Precedence: complexity is checked BEFORE always. Some exploratory records
+        # (browser_read, delegate_task) carry disclosure=complexity AND always=True;
+        # complexity must win so they ride ONLY complex/novel turns, never every
+        # turn. (Reordering these two branches leaks the exploratory surface onto
+        # simple turns — a load-bearing precedence.)
+        if disclosure == "complexity":
+            # Exploratory surface — only on a genuinely complex/novel CLASSIFIED
+            # turn. Withheld on unknown: fallback-retirement-v1 Phase 3 admits the
+            # core only on uncertainty, and exploratory tools are the specialized
+            # surface the Andon withholds (never inflate on an unclassified turn).
+            intent_match = (not unknown) and cx_high
+        elif always:
+            # Proactive CORE — the always-offered native surface, admitted on
+            # every turn, classified or not.
             intent_match = True
-        else:  # proactive intent
-            intent_match = True if unknown else (intent_class in intents)
+        elif unknown:
+            # Andon-on-uncertainty (fallback-retirement-v1 Phase 3): an
+            # unclassified turn admits ONLY the always:true core above. Intent-gated
+            # and complexity records are NOT inflated onto an unknown turn — the
+            # turn answers with the core surface and the classification failure is
+            # surfaced asynchronously (resolve_tools_for_tier marks ``fallback``;
+            # run_agent raises the operator Andon on the NEXT turn). This replaces
+            # the retired maximal "load everything" fallback — Prime Directive:
+            # never silently inflate the tool surface on uncertainty.
+            intent_match = False
+        else:
+            # Proactive + intents — selected iff the classified intent matches.
+            intent_match = intent_class in intents
         if not intent_match:
             continue
         # The tier-eligibility gate is INERT (fallback-retirement-v1 Phase 2):
@@ -535,8 +539,10 @@ def resolve_tools_for_tier(
     is gated solely by ``mcp_allow`` (GRV-009 E4 C4): a server is admitted only if
     it is in the matched set. ``mcp_allow=None`` ⇒ no records, allow-by-default.
 
-    On an unknown intent (maximal fallback) the surface is the full registry, and
-    the result is marked ``fallback`` loudly.
+    On an unknown intent the surface is the always:true CORE ONLY (Andon-on-
+    uncertainty, fallback-retirement-v1 Phase 3 — the maximal "load everything"
+    fallback is retired). The result is marked ``fallback`` so run_agent answers
+    with the core surface and raises the operator Andon asynchronously.
     """
     fallback = intent_class is None or intent_class == "unknown"
 
@@ -549,10 +555,11 @@ def resolve_tools_for_tier(
     if not fallback and allowed:
         _validate_co_location(allowed, intent_class or "")
     if fallback:
-        logger.info(
-            "[grove.context_budget] maximal fallback under tier budget "
-            "(intent_class=%r, current_tier=%r) — registry-driven surface, MCP "
-            "gated by the registry mcp_allow",
+        logger.warning(
+            "[grove.context_budget] Andon: classifier returned unknown intent "
+            "(intent_class=%r, current_tier=%r) — admitting always:true CORE tools "
+            "only. Specialized tools withheld; operator may see reduced capability "
+            "(surfaced asynchronously next turn).",
             intent_class,
             current_tier,
         )

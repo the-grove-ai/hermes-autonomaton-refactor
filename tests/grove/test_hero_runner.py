@@ -229,7 +229,12 @@ class TestToolsAssertion:
         tool_failures = [f for f in result.failures if f.kind == "tools"]
         assert any("must not include" in f.expected for f in tool_failures)
 
-    def test_unknown_intent_maximal_fallback_passes(self) -> None:
+    def test_unknown_intent_core_only_passes(self) -> None:
+        # fallback-retirement-v1: an unknown / None classification yields the
+        # always:true CORE (never None / maximal). The prompt asserts the
+        # deterministic core via must-include / must-not-include — the REAL
+        # GRV-008 § I(c) ("tool composition sequences remain unbroken"). No phantom
+        # tool_set_is_maximal_fallback flag; observed_tools is the core set.
         prompt = HeroPrompt(
             id="meta",
             message=" ",
@@ -237,19 +242,20 @@ class TestToolsAssertion:
                 "intent_class": "unknown",
                 "complexity_signal_in": ["simple"],
                 "tier_in": ["T2"],
-                "tools_must_include": [],
-                "tools_must_not_include": [],
+                "tools_must_include": ["clarify", "read_file"],
+                "tools_must_not_include": ["execute_code", "delegate_task"],
                 "is_correction": False,
                 "andon_halt": False,
-                "tool_set_is_maximal_fallback": True,
             },
         )
-        # Pretend classification returned None (degenerate path).
+        # Classification returns None (degenerate path) -> core-only surface.
         report = evaluate([prompt], classifier=lambda msg: None)
         result = report.results[0]
         tool_failures = [f for f in result.failures if f.kind == "tools"]
         assert not tool_failures
-        assert result.observed_tools is None
+        assert result.observed_tools is not None
+        assert {"clarify", "read_file"} <= result.observed_tools
+        assert "execute_code" not in result.observed_tools
 
     def test_known_intent_with_no_fallback_passes(self) -> None:
         report = evaluate(

@@ -141,15 +141,21 @@ class TestTaxonomyCache:
 
 
 class TestResolveToolSet:
-    def test_unknown_intent_returns_none_loud_fallback(self, caplog):
+    def test_unknown_intent_returns_core_loud_andon(self, caplog):
         import logging
-        with caplog.at_level(logging.INFO, logger="grove.context_budget"):
+        with caplog.at_level(logging.WARNING, logger="grove.context_budget"):
             result = resolve_tool_set("unknown", "simple")
-        assert result is None
-        assert "maximal fallback" in caplog.text
+        # fallback-retirement-v1: unknown yields the always:true CORE (never None),
+        # surfaced loudly as an Andon (WARNING) — not the retired maximal fallback.
+        assert result is not None
+        assert {"clarify", "read_file", "memory"} <= result
+        assert "unknown intent" in caplog.text
+        assert "CORE" in caplog.text
 
-    def test_none_intent_returns_none(self):
-        assert resolve_tool_set(None, "simple") is None
+    def test_none_intent_returns_core(self):
+        result = resolve_tool_set(None, "simple")
+        assert result is not None
+        assert {"clarify", "read_file", "memory"} <= result
 
     def test_core_always_loaded(self):
         result = resolve_tool_set(
@@ -274,16 +280,15 @@ class TestCoLocationGuard:
         assert "skill_view" in result
         assert "terminal" in result
 
-    def test_guard_skipped_on_maximal_fallback(self) -> None:
-        """Unknown-intent maximal fallback returns None — every tool
-        is loaded, so the invariant holds trivially and the guard
-        MUST NOT run on the None path."""
-        tax = self._taxonomy_with(
-            core=["clarify", "skill_view"],  # missing terminal — would fail guard
-            domain={"factual_retrieval": ["web_search"]},
-        )
+    def test_guard_skipped_on_unknown_core(self) -> None:
+        """fallback-retirement-v1: unknown intent returns the always:true CORE
+        (never None), and the co-location guard is SKIPPED on the unknown/fallback
+        surface (mirrors resolve_tools_for_tier) — so it can never raise on an
+        unclassified turn."""
         result = resolve_tool_set("unknown", "simple")
-        assert result is None  # maximal fallback signal
+        assert result is not None
+        assert isinstance(result, set)
+        assert {"clarify", "read_file", "memory"} <= result  # core present
 
     def test_message_points_at_fix_path(self) -> None:
         """The Andon message still names the fix location for the operator."""
@@ -327,7 +332,9 @@ class TestFilterToolsByName:
         ]
 
     def test_none_allowed_returns_input_unchanged(self, tools):
-        # The maximal-fallback signal: pass-through, full registry.
+        # filter_tools_by_name's own no-filter contract: allowed=None → pass-through.
+        # (Decoupled from resolve_tool_set, which no longer returns None; this is a
+        # defensive utility path, e.g. the resolver-crash degradation in run_agent.)
         out = filter_tools_by_name(tools, allowed=None)
         assert out is tools
 
