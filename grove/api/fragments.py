@@ -49,6 +49,8 @@ from grove.capability_registry import load_capabilities
 from grove.dock import _VALID_STATUSES, load_dock
 from grove.eval.proposal_queue import PROPOSAL_VERBS, _type_offers_approve
 from grove.eval.proposal_queue import read_all as read_all_proposals
+from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE
+from grove.api.red_nonce import nonce_key_from_app, red_nonce
 from grove.wiki.index import MalformedWikiPage
 from grove.wiki.links import cellar_page_id
 from hermes_constants import get_hermes_home, get_wiki_path
@@ -554,6 +556,61 @@ def _proposal_actions_html(
     )
 
 
+def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
+    """RED ``.env`` proposal card — propose-approve-deadlock-v1 Phase 1b-ii.
+
+    Pulls the MASKED operator-facing description from the in-memory store
+    singleton (``request.app["red_pending_store"]``); the secret value is NEVER
+    rendered. If the payload is gone (orphan — durable queue row survived a
+    restart, in-memory payload did not) render EXPIRED with a Dismiss affordance,
+    NOT a live approve. Otherwise render a two-step approve form carrying the
+    ``approve``-step CSRF nonce. Not batchable (single-id action row)."""
+    store = request.app.get("red_pending_store")
+    bare = full_pid.split(":", 1)[1] if ":" in full_pid else full_pid
+    masked = store.masked_description(bare) if store is not None else None
+    badge = _ZONE_BADGE.get("red", "badge")
+    pid = _esc(full_pid)
+
+    if masked is None:
+        # ORPHAN → EXPIRED. Dismiss removes the stale durable row (no approve).
+        return (
+            f'<div class="card card-expired" id="proposal-{short_id}">'
+            f'<h4><span class="badge {badge}">RED</span> '
+            f'<span class="badge">expired</span></h4>'
+            f'<p>This pending .env change is no longer available — the gateway '
+            f'restarted and pending proposals are session-scoped. Re-propose to '
+            f'apply it.</p>'
+            f'<div class="proposal-actions">'
+            f'<button class="btn btn-dismiss" '
+            f'hx-post="/portal/actions/proposals/{pid}/dismiss" '
+            f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">Dismiss</button>'
+            f'</div>'
+            f'</div>'
+        )
+
+    nonce = red_nonce(full_pid, "approve", nonce_key_from_app(request.app))
+    # Two-step approve: this POST /approve returns a Confirm card (no mint); the
+    # Confirm card's POST /confirm performs the write. hx-vals carries the nonce.
+    return (
+        f'<div class="card card-red" id="proposal-{short_id}">'
+        f'<h4><span class="badge {badge}">RED — governance write</span></h4>'
+        f'<p>{_esc(masked)}</p>'
+        f'<div class="meta">value: •••• (masked)</div>'
+        f'<div class="proposal-actions">'
+        f'<button class="btn btn-approve" '
+        f'hx-post="/portal/actions/proposals/{pid}/approve" '
+        f'hx-vals=\'{{"nonce": "{_esc(nonce)}"}}\' '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
+        f'hx-confirm="Approve a RED .env write? You will confirm once more.">'
+        f'Approve</button>'
+        f'<button class="btn btn-reject" '
+        f'hx-post="/portal/actions/proposals/{pid}/reject" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">Reject</button>'
+        f'</div>'
+        f'</div>'
+    )
+
+
 # fleet-pipeline-v1 P2 — verb-bearing proposal types render their OWN action set
 # by iterating the type's verb tuple (PROPOSAL_VERBS), not the generic
 # approve/reject/dismiss. verb -> (route template, label, css, confirm-or-None).
@@ -616,6 +673,13 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
         pid = p.get("proposal_id", "")
         short_id = _short_id(pid)
         ptype = p.get("type")
+        # propose-approve-deadlock-v1 Phase 1b-ii — a RED .env proposal renders a
+        # bespoke card (masked description + two-step nonce-gated approve, or
+        # EXPIRED if the in-memory payload is gone). It NEVER uses the generic
+        # one-tap approve row and is not batchable (single-id action).
+        if ptype == RED_PENDING_PROPOSAL_TYPE:
+            parts.append(_render_red_proposal_card(request, pid, short_id))
+            continue
         # Verb-bearing types (P2) render their own action set; everything else
         # keeps the generic approve/reject/dismiss row.
         verbs = PROPOSAL_VERBS.get(ptype)
