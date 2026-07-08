@@ -67,6 +67,12 @@ class HaltTrigger(str, Enum):
     # decision, surfaced via ``can_descope``); distinct from the non-feed-worthy
     # OPERATOR_DECLINE soft auto-decline. NON_TERMINAL — the turn continues.
     OPERATOR_DESCOPED = "operator_descoped"
+    # Stored-pending-approval — propose-approve-deadlock-v1 Phase 1a: a RED
+    # `.env` propose_governance_change was STORED as a per-instance proposal
+    # awaiting operator approval (not cancelled). FEED-WORTHY (a steering
+    # decision, surfaced via ``can_store_pending``). NON_TERMINAL — the turn
+    # continues so the agent can relay the portal-approval link to the operator.
+    OPERATOR_STORED_PENDING = "operator_stored_pending"
 
 
 class HaltSeverity(str, Enum):
@@ -125,6 +131,9 @@ class HaltCapabilities:
     can_promote: bool = False
     can_retry: bool = False
     can_configure_fallback: bool = False
+    # propose-approve-deadlock-v1 Phase 1a — the proposal was stored for operator
+    # approval (RED `.env`). A steering decision → feed-worthy.
+    can_store_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -165,6 +174,7 @@ STEERING_CAPABILITY_FLAGS = (
     "can_promote",
     "can_retry",
     "can_configure_fallback",
+    "can_store_pending",
 )
 
 

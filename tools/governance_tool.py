@@ -141,6 +141,7 @@ def propose_governance_change(
     rationale: Optional[str] = None,
     diff_or_content: Optional[str] = None,
     task_id: str = "default",
+    approved_content_sha256: Optional[str] = None,
 ) -> str:
     """Write a governance-config change. Sanctioned post-Stage-04 effect.
 
@@ -149,6 +150,12 @@ def propose_governance_change(
     the approved effect, not a request. ``content`` (alias ``diff_or_content``)
     is the FULL new file content (write-replace). Refuses any target that is not
     a recognized governance config.
+
+    ``approved_content_sha256`` (propose-approve-deadlock-v1 Phase 1a, Step 6) —
+    the TOCTOU integrity anchor. When set (the RED store-and-approve path passes
+    the hash captured at propose time), the payload about to be written is
+    re-hashed and MUST match, or the write is refused fail-loud. This closes the
+    propose-time→execute-time window the durable store introduces.
     """
     body = content if content is not None else diff_or_content
     zone = classify_governance_target(target_file)
@@ -164,6 +171,17 @@ def propose_governance_change(
         return _err("content is required — the full new file content (write-replace).")
     if not rationale or not str(rationale).strip():
         return _err("rationale is required — the governance change is logged with its reason.")
+
+    # TOCTOU integrity gate (Phase 1a Step 6): verify the payload matches the one
+    # approved at propose time, BEFORE it reaches the write. Fail-loud on drift.
+    if approved_content_sha256 is not None:
+        live = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if live != approved_content_sha256:
+            return _err(
+                "governance write refused — approved payload integrity check "
+                f"failed (expected {approved_content_sha256[:12]}…, got "
+                f"{live[:12]}…). The content changed after approval; not written."
+            )
 
     target = Path(os.path.realpath(os.path.expanduser(target_file)))
     try:

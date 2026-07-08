@@ -83,7 +83,10 @@ class TestStructRoundTrip:
         names = {f.name for f in dataclasses.fields(HaltEvent)}
         assert "feed_criterion" not in names
 
-    def test_capabilities_pin_at_six_flags(self):
+    def test_capabilities_pin_at_seven_flags(self):
+        # propose-approve-deadlock-v1 Phase 1a — DELIBERATE guardrail change:
+        # ``can_store_pending`` (RED .env proposal stored for operator approval)
+        # is a steering flag; it joins the pinned set and STEERING_CAPABILITY_FLAGS.
         names = {f.name for f in dataclasses.fields(HaltCapabilities)}
         assert names == {
             "can_cancel",
@@ -92,6 +95,7 @@ class TestStructRoundTrip:
             "can_promote",
             "can_retry",
             "can_configure_fallback",
+            "can_store_pending",
         }
         assert "can_redirect" not in names
 
