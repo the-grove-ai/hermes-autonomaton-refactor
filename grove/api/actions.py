@@ -567,6 +567,25 @@ async def handle_red_proposal_confirm(request: web.Request) -> web.Response:
             status=409,
             file_kaizen=False,
         )
+    # red-action-store-pending-v1 Phase C (STEP 4) — distinguish an EXECUTION
+    # failure from an authorization failure. The approval WAS authorized (the mint
+    # was minted + consumed); the tool handler failed or refused. Do NOT mislabel
+    # this "could not be authorized." unknown_tool = the tool isn't on the approval
+    # registry (e.g. an MCP action — Phase B registry-completeness).
+    if reason in ("execute_error", "unknown_tool"):
+        _detail = str(result.get("error") or result.get("result") or "").strip()
+        _extra = f" ({_detail[:200]})" if _detail else ""
+        return await _loud_action_failure(
+            _red_inline_fail_card(short_id, "Approved, but the action failed to run."),
+            failure_class="red_execute_error",
+            action="proposal_confirm",
+            message=(
+                "Approved, but the action failed to run — the approval was valid; "
+                f"the tool did not complete.{_extra}"
+            ),
+            status=502,
+            file_kaizen=False,
+        )
     return await _loud_action_failure(
         _red_inline_fail_card(short_id, "Approval could not be authorized."),
         failure_class="red_auth_fail",
