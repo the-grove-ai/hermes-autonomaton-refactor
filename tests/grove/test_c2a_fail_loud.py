@@ -33,6 +33,7 @@ from grove.governance_halt import (
 )
 from grove.intents import FinalResponse, ToolBatchYield, ToolIntent
 from grove.operator_input import OperatorInputRequired, PendingOperatorRequest
+from grove.sovereign_prompt_handlers import non_interactive_deny_handler
 from grove.tool_executor import (
     ExecutionContext,
     ExecutorConfig,
@@ -297,8 +298,12 @@ class TestLevel1DenyFork:
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="terminal", arguments={}, call_id="c1")]
         agent._run_turn_generator = lambda **kw: _gen_one_batch(intents)
-        # The sovereign handler is injected to prove RED does NOT consult it.
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
+        # red-action-store-pending-v1 Phase A: RED store-pending is reachability-
+        # gated. This test asserts the RED terminate/cancel mechanic, so it runs on
+        # an UNREACHABLE surface (``non_interactive_deny_handler`` →
+        # ``_is_operator_reachable()`` False). The handler is still injected to
+        # prove RED does NOT consult it — the red_resolution_handler governs.
+        d = Dispatcher(sovereign_prompt_handler=non_interactive_deny_handler)
         with pytest.raises(TerminalGovernanceHalt) as exc_info:
             d.dispatch_turn(agent, user_message="hi")
         assert exc_info.value.context.trigger == "red_workflow_cancel"
@@ -351,7 +356,11 @@ class TestDispatchTurnOutcome:
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="terminal", arguments={}, call_id="c1")]
         agent._run_turn_generator = lambda **kw: _gen_one_batch(intents)
-        d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
+        # red-action-store-pending-v1 Phase A: the terminal governance-terminated
+        # outcome only arises when RED terminates — i.e. on an UNREACHABLE surface.
+        # Install ``non_interactive_deny_handler`` (→ ``_is_operator_reachable()``
+        # False) so the RED action cancels and records ``governance_terminated``.
+        d = Dispatcher(sovereign_prompt_handler=non_interactive_deny_handler)
         outcomes = []
         orig = d._write_intent_record
         monkeypatch.setattr(

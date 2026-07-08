@@ -39,6 +39,7 @@ from grove.dispatcher import (
     headless_red_resolution,
 )
 from grove.intents import ToolIntent
+from grove.sovereign_prompt_handlers import non_interactive_deny_handler
 from tests.grove.test_dispatch_turn import (
     _phase2_executor_stub,
     _synthetic_generator,
@@ -115,7 +116,13 @@ class TestStrictCoupling:
         # A RED halt whose resolution handler returns a YELLOW disposition is
         # cross-contamination → ValueError.
         _force_zone(monkeypatch, "red")
-        d = Dispatcher(red_resolution_handler=lambda halt: "once")
+        # Phase A: an UNREACHABLE surface consults the handler (reachable would
+        # store-pend, never touching the handler). The cross-contamination
+        # ValueError only fires when the handler IS consulted.
+        d = Dispatcher(
+            red_resolution_handler=lambda halt: "once",
+            sovereign_prompt_handler=non_interactive_deny_handler,
+        )
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="write_file", arguments={}, call_id="c1")]
         with pytest.raises(ValueError, match="admissible RED resolutions"):
@@ -133,7 +140,11 @@ class TestStrictCoupling:
 
     def test_red_resolution_handler_unknown_value_fails_loud(self, monkeypatch):
         _force_zone(monkeypatch, "red")
-        d = Dispatcher(red_resolution_handler=lambda halt: "bogus")
+        # Phase A: UNREACHABLE so the handler is consulted (reachable store-pends).
+        d = Dispatcher(
+            red_resolution_handler=lambda halt: "bogus",
+            sovereign_prompt_handler=non_interactive_deny_handler,
+        )
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="write_file", arguments={}, call_id="c1")]
         with pytest.raises(ValueError, match="admissible RED resolutions"):
@@ -147,7 +158,9 @@ class TestRedMintNeverFires:
     def test_drive_loop_cancel_never_executes(self, monkeypatch):
         from grove.governance_halt import TerminalGovernanceHalt
         _force_zone(monkeypatch, "red")
-        d = Dispatcher()  # default headless → cancel
+        # Phase A: UNREACHABLE so the cancel handler (headless default) is
+        # consulted and terminates (reachable would store-pend instead).
+        d = Dispatcher(sovereign_prompt_handler=non_interactive_deny_handler)  # default headless → cancel
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="write_file", arguments={}, call_id="c1")]
         with pytest.raises(TerminalGovernanceHalt):
@@ -199,7 +212,12 @@ class TestRedMintNeverFires:
 class TestRedResolutionTelemetry:
     def test_descope_records_red_resolution_not_disposition(self, monkeypatch):
         _force_zone(monkeypatch, "red")
-        d = Dispatcher(red_resolution_handler=lambda halt: "descoped")
+        # Phase A: UNREACHABLE so the descoped handler is consulted and records a
+        # descoped red_resolution (reachable would record store_pending_approval).
+        d = Dispatcher(
+            red_resolution_handler=lambda halt: "descoped",
+            sovereign_prompt_handler=non_interactive_deny_handler,
+        )
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="write_file", arguments={}, call_id="c1")]
         _drive(agent, d, intents, {"final_response": "ok"})
@@ -218,7 +236,9 @@ class TestRedResolutionTelemetry:
     def test_cancel_records_red_resolution(self, monkeypatch):
         from grove.governance_halt import TerminalGovernanceHalt
         _force_zone(monkeypatch, "red")
-        d = Dispatcher()  # default headless cancel
+        # Phase A: UNREACHABLE so the headless cancel default is consulted and
+        # records a cancel red_resolution (reachable would store-pend).
+        d = Dispatcher(sovereign_prompt_handler=non_interactive_deny_handler)  # default headless cancel
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="write_file", arguments={}, call_id="c1")]
         with pytest.raises(TerminalGovernanceHalt):
@@ -237,7 +257,12 @@ class TestResolutionSemantics:
     def test_cancel_carries_red_workflow_cancel_provenance(self, monkeypatch):
         from grove.governance_halt import TerminalGovernanceHalt
         _force_zone(monkeypatch, "red")
-        d = Dispatcher(red_resolution_handler=lambda halt: "cancel")
+        # Phase A: UNREACHABLE so the cancel handler is consulted (reachable
+        # store-pends). Cancel still carries red_workflow_cancel provenance.
+        d = Dispatcher(
+            red_resolution_handler=lambda halt: "cancel",
+            sovereign_prompt_handler=non_interactive_deny_handler,
+        )
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="write_file", arguments={}, call_id="c1")]
         with pytest.raises(TerminalGovernanceHalt) as exc:
@@ -248,7 +273,12 @@ class TestResolutionSemantics:
     def test_descope_event_is_feed_worthy(self, monkeypatch):
         from grove.halt_event import HaltTrigger, is_feed_worthy
         _force_zone(monkeypatch, "red")
-        d = Dispatcher(red_resolution_handler=lambda halt: "descoped")
+        # Phase A: UNREACHABLE so the descoped handler is consulted (reachable
+        # store-pends) and the feed-worthy OPERATOR_DESCOPED event is emitted.
+        d = Dispatcher(
+            red_resolution_handler=lambda halt: "descoped",
+            sovereign_prompt_handler=non_interactive_deny_handler,
+        )
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="write_file", arguments={}, call_id="c1")]
         _drive(agent, d, intents, {"final_response": "ok"})
@@ -262,7 +292,12 @@ class TestResolutionSemantics:
         # descope_command strips the privilege wrapper; the de-scoped event
         # carries the within-authority form.
         _force_zone(monkeypatch, "red")
-        d = Dispatcher(red_resolution_handler=lambda halt: "descoped")
+        # Phase A: UNREACHABLE so the descoped handler is consulted (reachable
+        # store-pends) and the within-authority alternative is computed.
+        d = Dispatcher(
+            red_resolution_handler=lambda halt: "descoped",
+            sovereign_prompt_handler=non_interactive_deny_handler,
+        )
         agent = _bare_agent([])
         intents = [
             ToolIntent(
@@ -294,6 +329,11 @@ class TestHeadlessOnly:
 
         _force_zone(monkeypatch, "red")
         d = Dispatcher(sovereign_prompt_handler=_exploding_prompt)
+        # Phase A: force UNREACHABLE via the fleet platform so the RED path
+        # consults the headless cancel default and terminates. Reachability keys
+        # on platform here (not the sovereign handler), so the exploding sovereign
+        # prompt is still never touched — the invariant this test guards.
+        d._platform = "fleet"
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="write_file", arguments={}, call_id="c1")]
         with pytest.raises(TerminalGovernanceHalt):
@@ -306,7 +346,10 @@ class TestHeadlessOnly:
 class TestResolutionFnsHeadless:
     def _red_halt(self, monkeypatch, command=None):
         _force_zone(monkeypatch, "red")
-        d = Dispatcher()
+        # Phase A: an UNREACHABLE dispatcher so _resolve_red_halt consults the
+        # red_resolution_handler (cancel/descope) rather than store-pending — the
+        # headless resolution mechanic these unit tests exercise.
+        d = Dispatcher(sovereign_prompt_handler=non_interactive_deny_handler)
         args = {"command": command} if command is not None else {}
         intent = ToolIntent(tool_name="terminal", arguments=args, call_id="c1")
         try:

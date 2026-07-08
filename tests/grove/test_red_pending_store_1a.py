@@ -20,15 +20,20 @@ from typing import Any
 import pytest
 
 from grove.dispatcher import AndonResolutionHalt, Dispatcher
+from grove.effect_signature import canonical_effect_signature
 from grove.halt_event import HaltTrigger, is_feed_worthy
 from grove.intents import ToolIntent
 from grove.red_pending_store import (
     RED_PENDING_PROPOSAL_TYPE,
     PendingRedProposal,
+    action_proposal_id,
     content_proposal_id,
+    describe_red_action,
     extract_env_keys,
     masked_env_description,
+    prepare_execute_arguments,
 )
+from grove.sovereign_prompt_handlers import non_interactive_deny_handler
 from tests.grove.test_kaizen_voice_red_fork_b1 import _bare_agent, _force_zone
 
 
@@ -79,6 +84,18 @@ def _propose_intent(env_path, content="HF_TOKEN=hf_x\n", rationale="persist HF t
     )
 
 
+def _propose_pid(env_path, content="HF_TOKEN=hf_x\n", rationale="persist HF token"):
+    """The generic pending-RED id the dispatcher stores for a .env propose —
+    ``action_proposal_id(canonical_effect_signature(tool, prepare_execute_arguments(...)))``.
+    Mirrors ``_store_pending_red_proposal`` so tests key on the same anchor."""
+    args = prepare_execute_arguments(
+        "propose_governance_change",
+        {"target_file": str(env_path), "content": content, "rationale": rationale},
+    )
+    sig = canonical_effect_signature("propose_governance_change", args)
+    return action_proposal_id(sig)
+
+
 def _stash(d: Dispatcher, env_path, content):
     """Drive a RED .env propose to the STORE_PENDING store; return the halt."""
     intent = _propose_intent(env_path, content=content)
@@ -104,9 +121,11 @@ class TestStorePendingRouting:
         else:
             raise AssertionError("expected AndonResolutionHalt for a .env RED propose")
 
-        pid = content_proposal_id("HF_TOKEN=hf_x\n")
+        # red-action-store-pending-v1 Phase A — the stored id is now the generic
+        # action anchor (action_proposal_id(effect_signature)), not content_proposal_id.
         assert len(d._red_pending_store) == 1
-        assert d._red_pending_store.get(pid) is not None
+        (entry,) = list(d._red_pending_store._by_id.values())
+        assert entry.tool_name == "propose_governance_change"
         # feed-worthy NON-TERMINAL store event
         assert d._last_store_pending_event.trigger is HaltTrigger.OPERATOR_STORED_PENDING
         assert is_feed_worthy(d._last_store_pending_event) is True
@@ -120,13 +139,35 @@ class TestStorePendingRouting:
         # resume observation (success, relay-not-replan) — not a re-plan/cancel
         assert gen.sent and gen.sent[0].success is True
 
-    def test_other_red_action_still_cancels(self, tmp_path, monkeypatch):
-        """Non-propose RED actions keep the terminal Cancel — STORE_PENDING is
-        scoped to propose_governance_change ONLY."""
+    def test_reachable_non_propose_red_stores_pending(self, tmp_path, monkeypatch):
+        """red-action-store-pending-v1 Phase A — STORE_PENDING now covers ALL RED
+        on an operator-REACHABLE surface, not just propose_governance_change. A
+        forced-RED non-propose action STORES (no terminal Cancel)."""
+        _force_zone(monkeypatch, "red")  # force a NON-propose tool to RED
+        d = Dispatcher()  # default cli platform + handler → REACHABLE
+        assert d._is_operator_reachable() is True
+        intent = ToolIntent(
+            tool_name="write_file", arguments={"path": str(tmp_path / "x")}, call_id="c1"
+        )
+        try:
+            d._classify_intents_batch_and_halt_or_raise([intent])
+        except AndonResolutionHalt as halt:
+            # Stores + resumes — MUST NOT raise TerminalGovernanceHalt.
+            d._resolve_red_halt(_bare_agent([]), _FakeGen(), halt)
+        else:
+            raise AssertionError("expected AndonResolutionHalt")
+        assert len(d._red_pending_store) == 1
+        (entry,) = list(d._red_pending_store._by_id.values())
+        assert entry.tool_name == "write_file"
+
+    def test_unreachable_red_action_still_cancels(self, tmp_path, monkeypatch):
+        """On an UNREACHABLE surface (non_interactive_deny_handler → no operator
+        can approve) RED keeps the terminal Cancel and stores NOTHING."""
         from grove.governance_halt import TerminalGovernanceHalt
 
         _force_zone(monkeypatch, "red")  # force a NON-propose tool to RED
-        d = Dispatcher()  # default headless handler → cancel
+        d = Dispatcher(sovereign_prompt_handler=non_interactive_deny_handler)
+        assert d._is_operator_reachable() is False
         intent = ToolIntent(
             tool_name="write_file", arguments={"path": str(tmp_path / "x")}, call_id="c1"
         )
@@ -145,7 +186,7 @@ class TestApproveCallback:
         d = Dispatcher()
         env = tmp_path / ".env"
         _stash(d, env, "HF_TOKEN=hf_real\n")
-        pid = content_proposal_id("HF_TOKEN=hf_real\n")
+        pid = _propose_pid(env, content="HF_TOKEN=hf_real\n")  # generic action anchor
         assert not env.exists()  # nothing written until approval
 
         res = d.approve_pending_red_proposal(pid)
@@ -157,18 +198,32 @@ class TestApproveCallback:
         d = Dispatcher()
         env = tmp_path / ".env"
         content = "HF_TOKEN=hf_good\n"
-        pid = content_proposal_id(content)
+        # Build the generic pending-RED record the same way the dispatcher does.
+        args = prepare_execute_arguments(
+            "propose_governance_change",
+            {"target_file": str(env), "content": content, "rationale": "r"},
+        )
+        sig = canonical_effect_signature("propose_governance_change", args)
+        pid = action_proposal_id(sig)
+        desc, is_opaque = describe_red_action("propose_governance_change", args)
         entry = PendingRedProposal(
-            proposal_id=pid, target_file=str(env), content=content,
-            content_sha256=pid, effect_signature="propose\x1f\x1f{}",
-            rationale="r", description="d", created_at="2026-07-07T00:00:00+00:00",
+            proposal_id=pid,
+            tool_name="propose_governance_change",
+            arguments=args,
+            effect_signature=sig,
+            description=desc,
+            rationale="r",
+            created_at="2026-07-08T00:00:00+00:00",
+            is_opaque=is_opaque,
         )
         d._red_pending_store.put(entry)
-        # Tamper AFTER storing — the payload no longer hashes to the anchor.
-        entry.content = "HF_TOKEN=EVIL\n"
+        # Tamper AFTER storing — the stored anchor no longer matches the recomputed
+        # effect signature (there is no content field to tamper; the signature is it).
+        entry.effect_signature = "TAMPERED"
 
         res = d.approve_pending_red_proposal(pid)
         assert res["success"] is False
+        assert res["reason"] == "integrity"
         assert "integrity" in res["error"].lower()
         assert not env.exists()                              # NO write
         assert d._red_pending_store.get(pid) is None         # tampered entry dropped

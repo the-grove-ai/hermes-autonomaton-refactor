@@ -31,8 +31,10 @@ from grove.eval import proposal_queue
 from grove.red_pending_store import (
     RED_PENDING_PROPOSAL_TYPE,
     PendingRedProposal,
-    content_proposal_id,
+    action_proposal_id,
+    describe_red_action,
     get_red_pending_store,
+    prepare_execute_arguments,
 )
 
 _KEY = b"testkey"
@@ -72,19 +74,30 @@ async def client(grove_home):
         yield c
 
 
-def _stage(grove_home, *, content="HF_TOKEN=hf_x\n", description="Persist HF_TOKEN — values hidden."):
-    """Put a live RED proposal into the store + the opaque durable queue row."""
+def _stage(grove_home, *, content="HF_TOKEN=hf_x\n", description=None):
+    """Put a live RED proposal into the store + the opaque durable queue row.
+
+    red-action-store-pending-v1 Phase A — the store now holds a generalized
+    ``(tool_name, arguments)`` ToolIntent keyed by ``action_proposal_id(sig)``
+    (the effect-signature anchor), not the 1a ``.env``-only shape. The secret
+    ``.env`` body rides ONLY in ``arguments`` (in-memory), never on the durable
+    queue row nor the ``description`` (which is the masked operator-facing copy).
+    """
     env = grove_home / ".env"
-    bare = content_proposal_id(content)
-    full_pid = f"{RED_PENDING_PROPOSAL_TYPE}:{bare}"
-    sig = canonical_effect_signature(
+    args = prepare_execute_arguments(
         "propose_governance_change",
         {"target_file": str(env), "content": content, "rationale": "r"},
     )
+    sig = canonical_effect_signature("propose_governance_change", args)
+    bare = action_proposal_id(sig)          # store key + integrity anchor
+    full_pid = f"{RED_PENDING_PROPOSAL_TYPE}:{bare}"
+    if description is None:
+        # The exact masked string the portal renders — names the key, hides value.
+        description, _ = describe_red_action("propose_governance_change", args)
     get_red_pending_store().put(PendingRedProposal(
-        proposal_id=bare, target_file=str(env), content=content,
-        content_sha256=bare, effect_signature=sig, rationale="r",
-        description=description, created_at="2026-07-07T00:00:00+00:00",
+        proposal_id=bare, tool_name="propose_governance_change", arguments=args,
+        effect_signature=sig, description=description, rationale="r",
+        created_at="2026-07-07T00:00:00+00:00",
     ))
     proposal_queue.append(proposal_queue.RoutingProposal(
         proposal_id=full_pid, type=RED_PENDING_PROPOSAL_TYPE, payload={"zone": "red"},
@@ -101,7 +114,11 @@ class TestNonce:
         assert verify_red_nonce(pid, "approve", n, _KEY) is True         # valid
         assert verify_red_nonce(pid, "confirm", n, _KEY) is False        # wrong step
         assert verify_red_nonce("other", "approve", n, _KEY) is False    # wrong id
-        assert verify_red_nonce(pid, "approve", n[:-1] + "0", _KEY) is False  # tamper
+        # tamper — flip the last hex char to a guaranteed-different value (a fixed
+        # "0" is a no-op ~1/16 of the time-buckets when the nonce already ends "0").
+        assert verify_red_nonce(
+            pid, "approve", n[:-1] + ("1" if n[-1] == "0" else "0"), _KEY
+        ) is False
         assert verify_red_nonce(pid, "approve", "", _KEY) is False       # empty
         # expired: a nonce from 2 buckets ago is outside [now, now-1]
         import grove.api.red_nonce as rn

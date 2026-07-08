@@ -23,8 +23,9 @@ from grove.dispatcher import Dispatcher
 from grove.effect_signature import canonical_effect_signature
 from grove.red_pending_store import (
     PendingRedProposal,
-    content_proposal_id,
+    action_proposal_id,
     get_red_pending_store,
+    prepare_execute_arguments,
 )
 
 
@@ -46,15 +47,16 @@ def _fresh_red_store(monkeypatch):
 
 
 def _entry(env_path, content="A=1\n", rationale="r"):
-    pid = content_proposal_id(content)
-    sig = canonical_effect_signature(
+    args = prepare_execute_arguments(
         "propose_governance_change",
         {"target_file": str(env_path), "content": content, "rationale": rationale},
     )
+    sig = canonical_effect_signature("propose_governance_change", args)
+    pid = action_proposal_id(sig)
     return pid, PendingRedProposal(
-        proposal_id=pid, target_file=str(env_path), content=content,
-        content_sha256=pid, effect_signature=sig, rationale=rationale,
-        description="d", created_at="2026-07-07T00:00:00+00:00",
+        proposal_id=pid, tool_name="propose_governance_change",
+        arguments=args, effect_signature=sig, description="d",
+        rationale=rationale, created_at="2026-07-08T00:00:00+00:00",
     )
 
 

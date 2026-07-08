@@ -27,8 +27,8 @@ from __future__ import annotations
 import hashlib
 import re
 import threading
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 # The proposal ``type`` written (opaque) to the agent-reachable queue as the
 # 1b portal-render bridge. Namespaced so existing flywheel/portal consumers
@@ -67,18 +67,78 @@ def masked_env_description(target_file: str, key_names: List[str]) -> str:
     return f"Persist credential(s) to {where} — values hidden."
 
 
+def action_proposal_id(effect_signature: str) -> str:
+    """Content-addressed id for a pending RED action — ``sha256`` of its effect
+    signature (which binds tool + realpath-canonical args). Idempotent (the same
+    action proposed twice collapses to one entry) and the id doubles as the
+    integrity anchor re-checked at approve."""
+    return hashlib.sha256(("red_action:" + effect_signature).encode("utf-8")).hexdigest()
+
+
+def prepare_execute_arguments(tool_name: str, arguments: dict) -> dict:
+    """The exact args to re-dispatch on approval — a COPY; the original is never
+    mutated. ``propose_governance_change`` gets its TOCTOU anchor
+    (``approved_content_sha256``) folded in so the shipped ``.env`` write path is
+    byte-identical to 1a; every other tool re-dispatches its args verbatim."""
+    args = dict(arguments or {})
+    if tool_name == "propose_governance_change" and "approved_content_sha256" not in args:
+        body = args.get("content")
+        if body is None:
+            body = args.get("diff_or_content")
+        if isinstance(body, str) and body:
+            args["approved_content_sha256"] = content_proposal_id(body)
+    return args
+
+
+def describe_red_action(
+    tool_name: str, arguments: dict, pattern_key: Optional[str] = None
+) -> Tuple[str, bool]:
+    """``(operator-facing description, is_opaque)`` for the pending-RED card.
+
+    Per-type: governance-write → masked env keys; legible shell → the command
+    string; opaque dynamic (``pattern_key`` startswith ``opacity:``) → a
+    non-committal "effect not statically resolved" line (the OPAQUE render
+    affordance is Phase B). Generic tools name the tool + arg keys, values hidden.
+    """
+    is_opaque = bool(pattern_key and str(pattern_key).startswith("opacity:"))
+    if is_opaque:
+        return ("Opaque dynamic command — effect not statically resolved.", True)
+    if tool_name == "propose_governance_change":
+        body = arguments.get("content") or arguments.get("diff_or_content") or ""
+        return (
+            masked_env_description(arguments.get("target_file") or "", extract_env_keys(body)),
+            False,
+        )
+    if tool_name in ("terminal", "execute_code"):
+        raw = str(arguments.get("command") or arguments.get("code") or "").strip()
+        shown = raw if len(raw) <= 200 else raw[:197] + "..."
+        verb = "Run command" if tool_name == "terminal" else "Execute code"
+        return (f"{verb}: {shown}", False)
+    keys = ", ".join(sorted(str(k) for k in (arguments or {}).keys()))
+    return (f"Run {tool_name}({keys}) — arguments hidden.", False)
+
+
 @dataclass
 class PendingRedProposal:
-    """One pending RED ``.env`` proposal. Holds the secret payload IN-MEMORY only."""
+    """One pending RED action, held IN-MEMORY only.
 
-    proposal_id: str          # sha256(content) — key + integrity anchor
-    target_file: str          # e.g. ~/.grove/.env — NEVER surfaced to agent/queue
-    content: str              # the .env body (SECRET; in-memory only)
-    content_sha256: str       # == proposal_id; re-verified at execute (TOCTOU)
-    effect_signature: str     # canonical_effect_signature(tool, args) — mint anchor
+    red-action-store-pending-v1 Phase A — generalized from the 1a ``.env``-only
+    record to ANY RED action. The action is the frozen ``(tool_name, arguments)``
+    ToolIntent; ``effect_signature`` is the ``canonical_effect_signature`` mint
+    anchor + integrity gate; ``description`` is the per-type operator-facing copy.
+    Value-bearing arguments (a ``.env`` body, a secret-read path) live only here,
+    never on an agent tool surface or the durable queue. ``propose_governance_
+    change`` is now ONE instance (``tool_name == "propose_governance_change"``).
+    """
+
+    proposal_id: str          # action_proposal_id(effect_signature) — key + anchor
+    tool_name: str            # the RED tool to re-dispatch on approval
+    arguments: dict           # the exact execute args (SECRET-bearing; in-memory only)
+    effect_signature: str     # canonical_effect_signature(tool, args) — mint + integrity anchor
+    description: str          # per-type operator-facing copy (masked/legible)
     rationale: str
-    description: str          # masked operator-facing copy (no values)
     created_at: str
+    is_opaque: bool = False   # ZoneResult.pattern_key startswith "opacity:" (Phase B render)
     zone: str = "red"
 
 
@@ -151,24 +211,29 @@ def get_red_pending_store() -> RedPendingStore:
 def approve_red_proposal(
     proposal_id: str, store: Optional[RedPendingStore] = None
 ) -> Dict[str, object]:
-    """Mint-on-approve — claim-then-execute a pending RED ``.env`` proposal.
+    """Mint-on-approve — claim-then-execute a pending RED action.
 
-    propose-approve-deadlock-v1 Phase 1b-i (claim-then-execute) + 1b-ii (portal
-    reachability). Operator-only: invoked by the portal /confirm handler (which
-    holds the singleton store) and by ``Dispatcher.approve_pending_red_proposal``
-    (which delegates here). NEVER model-reachable — no tool exposes it.
+    red-action-store-pending-v1 Phase A — generalized from the 1a ``.env``-only
+    write to ANY stored RED ToolIntent. Operator-only: the portal /confirm handler
+    (holds the singleton store) and ``Dispatcher.approve_pending_red_proposal``
+    (delegates here). NEVER model-reachable — no tool exposes it.
 
-    CLAIM: atomic ``pop`` at the START — exactly one claimant; a concurrent second
-    approve pops ``None`` and returns ``not_found``. TOCTOU verify + mint/consume +
-    the ``.env`` write happen OUTSIDE the store lock; on any post-claim failure the
-    entry is already gone (fail-safe: the operator re-proposes).
+    CLAIM: atomic ``pop`` — exactly one claimant; a concurrent second approve pops
+    ``None`` → ``not_found``. Integrity: the claimed args must still recompute to
+    the stored ``effect_signature`` (realpath-canonical → a symlink swap is caught).
+    Then mint that signature into an ISOLATED ApprovalGate and RE-DISPATCH the
+    action through ``registry.dispatch`` — which consumes the token (signature
+    match) and invokes the tool handler by name, the SAME seam every governed
+    execution uses. ``propose_governance_change`` is one instance; the ``.env``
+    write routes through here too (its TOCTOU anchor rode in via
+    ``prepare_execute_arguments``, so the handler's second gate still fires).
 
     Returns ``{"success": bool, "reason": one of
-    "written"/"not_found"/"integrity"/"auth", ...}``.
+    "written"/"not_found"/"integrity"/"unknown_tool"/"execute_error", ...}``.
     """
-    import hashlib
+    import json as _json
 
-    from grove.effect_signature import ApprovalGate
+    from grove.effect_signature import ApprovalGate, canonical_effect_signature
 
     st = store if store is not None else get_red_pending_store()
 
@@ -183,43 +248,60 @@ def approve_red_proposal(
                 "do not survive a restart)."
             ),
         }
-    # TOCTOU: the claimed payload must still hash to its stored anchor.
-    live = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
-    if live != entry.content_sha256:
-        return {  # entry already popped — no write, fail-safe
+
+    # Integrity: recompute the effect signature over the claimed args; it must
+    # still match the stored anchor (realpath-canonical → symlink-swap caught).
+    live_sig = canonical_effect_signature(entry.tool_name, entry.arguments)
+    if live_sig != entry.effect_signature:
+        return {  # entry already popped — nothing dispatched, fail-safe
             "success": False,
             "reason": "integrity",
             "error": (
-                "Approval aborted — stored payload integrity check failed "
-                "(content changed since it was proposed). Nothing was written."
+                "Approval aborted — stored action integrity check failed (the "
+                "effect changed since it was proposed). Nothing was executed."
             ),
         }
-    # Mint a single-use, content-bound authorization; consume it. FRESH gate.
-    gate = ApprovalGate()
-    gate.activate()
-    gate.mint(entry.effect_signature)
-    authorized = gate.consume(entry.effect_signature)
-    gate.flush()
-    if not authorized:
+
+    # Isolated registry + gate: mint the bound signature, then RE-DISPATCH. The
+    # gate is consumed inside registry.dispatch (canonical_effect_signature match).
+    # A bare registry carries no MCP/plugin surface — a stored MCP action returns
+    # unknown_tool (Phase B: ExecutionIdentity / registry completeness).
+    from tools.registry import ToolRegistry, register_builtin_tools
+
+    registry = ToolRegistry()
+    register_builtin_tools(registry)
+    if registry.get_entry(entry.tool_name) is None:
         return {
             "success": False,
-            "reason": "auth",
-            "error": "approval authorization failed (token not consumable).",
+            "reason": "unknown_tool",
+            "error": (
+                f"tool {entry.tool_name!r} is not registered on the approval "
+                f"registry; cannot re-dispatch (Phase B: registry completeness)."
+            ),
         }
-    # Execute the .env write; the handler re-verifies the hash immediately before
-    # write_text (a second, independent integrity gate).
-    from tools.governance_tool import propose_governance_change
 
-    result = propose_governance_change(
-        target_file=entry.target_file,
-        content=entry.content,
-        rationale=(entry.rationale or "operator-approved .env change"),
-        approved_content_sha256=entry.content_sha256,
-    )
-    # Entry popped at claim — single-use; an approved proposal cannot re-fire.
+    gate = ApprovalGate()
+    gate.activate()
+    registry._approval_gate = gate
+    gate.mint(entry.effect_signature)
+    try:
+        result = registry.dispatch(entry.tool_name, entry.arguments)
+    finally:
+        gate.flush()  # single-use; the entry is already popped and cannot re-fire
+
+    # registry.dispatch returns a JSON string; a handler error / GovernanceError
+    # surfaces as {"error": ...}. Treat that as a LOUD execute failure, never a
+    # silent success.
+    ok, reason = True, "written"
+    try:
+        parsed = _json.loads(result) if isinstance(result, str) else result
+        if isinstance(parsed, dict) and (parsed.get("error") or parsed.get("success") is False):
+            ok, reason = False, "execute_error"
+    except Exception:  # noqa: BLE001 — non-JSON handler output is treated as success
+        pass
     return {
-        "success": True,
-        "reason": "written",
+        "success": ok,
+        "reason": reason,
         "proposal_id": proposal_id,
         "result": result,
     }

@@ -4644,6 +4644,24 @@ class Dispatcher:
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         return (tool_name, digest)
 
+    def _is_operator_reachable(self) -> bool:
+        """red-action-store-pending-v1 Phase A — structural reachability for RED
+        store-pending. STORE_PENDING is only sound where an operator can actually
+        approve (inline Stage-04 OR the portal). Fleet background workers
+        (``platform == "fleet"``) and non-interactive gateway channels (``/v1``,
+        feishu — which install :func:`non_interactive_deny_handler`) are
+        UNREACHABLE; their RED keeps the cancel default (closing the latent 1a
+        orphan: a pending nobody approves). The real operator surfaces — the CLI
+        TTY callback and Telegram's Kaizen handler — are interactive and pass.
+
+        Structural, not inference: keyed on the platform identity and the injected
+        sovereign handler (the RED-resolution handler is uniformly headless — the
+        B2 interactive RED menu is GATE-DARK — so it cannot discriminate here)."""
+        from grove.sovereign_prompt_handlers import non_interactive_deny_handler
+        if self._platform == "fleet":
+            return False
+        return self._sovereign_prompt_handler is not non_interactive_deny_handler
+
     def _resolve_red_halt(
         self,
         agent: Any,
@@ -4674,12 +4692,15 @@ class Dispatcher:
         """
         _trig = halt.intents[halt.triggering_index]
         _trig_tool = getattr(_trig, "tool_name", None)
-        # propose-approve-deadlock-v1 Phase 1a — a RED-classified
-        # propose_governance_change resolves to STORE_PENDING (store the proposal
-        # for OPERATOR approval), NOT the Cancel/De-scope menu. SCOPED to
-        # propose_governance_change ONLY; every other RED action keeps the
-        # handler's Cancel/De-scope resolution unchanged.
-        if _trig_tool == "propose_governance_change":
+        # red-action-store-pending-v1 Phase A — reachability-gated store-pending for
+        # ALL RED (generalized from the 1a propose_governance_change-only scope). An
+        # operator-reachable surface (interactive Stage-04 / portal) stores the
+        # action for approval + re-dispatch; an unreachable surface (fleet worker /
+        # non-interactive gateway) keeps the handler's Cancel/De-scope default —
+        # closing the latent 1a orphan (a store-pending nobody can approve). The
+        # four fail-safe cancel sites (headless default, __init__ default, tty EOF,
+        # cli timeout) are UNTOUCHED; the RED_RESOLUTIONS default stays cancel.
+        if self._is_operator_reachable():
             resolution = RED_RESOLUTION_STORE_PENDING
         else:
             resolution = self._red_resolution_handler(halt)
@@ -4768,55 +4789,61 @@ class Dispatcher:
         from grove.red_pending_store import (
             PendingRedProposal,
             RED_PENDING_PROPOSAL_TYPE,
-            content_proposal_id,
-            extract_env_keys,
-            masked_env_description,
+            action_proposal_id,
+            describe_red_action,
+            prepare_execute_arguments,
         )
         from grove.halt_renderer import _render_red_pending_approval
 
         _trig = halt.intents[halt.triggering_index]
-        _args = getattr(_trig, "arguments", None) or {}
-        _content = _args.get("content")
-        if _content is None:
-            _content = _args.get("diff_or_content")
-        _target = _args.get("target_file") or ""
+        _tool = getattr(_trig, "tool_name", "") or ""
+        _args = dict(getattr(_trig, "arguments", None) or {})
         _rationale = _args.get("rationale") or ""
 
-        # ANDON-guard: a payload-less propose cannot be stored as a proposal. Fail
-        # loud back to Cancel rather than queue a hollow entry.
-        if not isinstance(_content, str) or not _content:
-            from grove.action_facts import describe_action_kaizen
-            from grove.governance_halt import (
-                GovernanceHaltContext,
-                TerminalGovernanceHalt,
-            )
-            raise TerminalGovernanceHalt(
-                GovernanceHaltContext(
-                    trigger="red_workflow_cancel",
-                    tool_name=getattr(_trig, "tool_name", None),
-                    zone=halt.zone,
-                    matched_rule=(getattr(halt, "matched_rule", None) or None),
-                    reason="propose_governance_change carried no content to store",
-                    detail=describe_action_kaizen(
-                        getattr(_trig, "tool_name", "") or "", _args
-                    ),
+        # ANDON-guard: a payload-less propose_governance_change cannot be stored
+        # (nothing to write). Fail loud to Cancel rather than queue a hollow entry.
+        # SCOPED to propose — other RED actions carry their effect in the args.
+        if _tool == "propose_governance_change":
+            _content = _args.get("content")
+            if _content is None:
+                _content = _args.get("diff_or_content")
+            if not isinstance(_content, str) or not _content:
+                from grove.action_facts import describe_action_kaizen
+                from grove.governance_halt import (
+                    GovernanceHaltContext,
+                    TerminalGovernanceHalt,
                 )
-            )
+                raise TerminalGovernanceHalt(
+                    GovernanceHaltContext(
+                        trigger="red_workflow_cancel",
+                        tool_name=_tool,
+                        zone=halt.zone,
+                        matched_rule=(getattr(halt, "matched_rule", None) or None),
+                        reason="propose_governance_change carried no content to store",
+                        detail=describe_action_kaizen(_tool, _args),
+                    )
+                )
 
-        pid = content_proposal_id(_content)
-        sig = canonical_effect_signature(getattr(_trig, "tool_name", "") or "", _args)
-        keys = extract_env_keys(_content)
-        desc = masked_env_description(_target, keys)
+        # Generic pending-RED action: the frozen (tool, args) ToolIntent re-dispatched
+        # on approval. prepare_execute_arguments folds propose's TOCTOU anchor in so
+        # the .env write stays byte-identical; the signature binds the exact effect;
+        # is_opaque rides the ZoneResult pattern_key (opacity:* → Phase B render).
+        _exec_args = prepare_execute_arguments(_tool, _args)
+        sig = canonical_effect_signature(_tool, _exec_args)
+        pid = action_proposal_id(sig)
+        desc, is_opaque = describe_red_action(
+            _tool, _exec_args, getattr(halt, "pattern_key", None)
+        )
         created_at = datetime.now(timezone.utc).isoformat()
         entry = PendingRedProposal(
             proposal_id=pid,
-            target_file=_target,
-            content=_content,
-            content_sha256=pid,
+            tool_name=_tool,
+            arguments=_exec_args,
             effect_signature=sig,
-            rationale=_rationale,
             description=desc,
+            rationale=_rationale,
             created_at=created_at,
+            is_opaque=is_opaque,
         )
         self._red_pending_store.put(entry)
 
