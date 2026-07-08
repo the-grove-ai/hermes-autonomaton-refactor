@@ -4728,7 +4728,20 @@ class Dispatcher:
         if is_denied_by_policy(getattr(halt, "pattern_key", None)):
             resolution = RED_RESOLUTION_DENIED_BY_POLICY
         elif self._is_operator_reachable():
-            resolution = RED_RESOLUTION_STORE_PENDING
+            # operator-red-correctness-v1 Move 1 (Gemini Q4 — unconditional priv:*,
+            # NESTED inside reachable). A privileged shell RED (priv:* — sudo/su/doas)
+            # is operator-approvable but NOT gateway-executable: hermes holds no such
+            # privilege, so store-pending → approve → claim → dispatch would refuse to
+            # the PRIVILEGE_REQUIRED surface AFTER consuming the row (retries then read
+            # "expired"). Route it to Operator-Runs-It AT RESOLUTION — before any
+            # store/claim — so the row is never created. Every OTHER non-catastrophic
+            # operator RED still store-pends. The nesting is load-bearing: fleet /
+            # unreachable sessions never enter this arm (they fail the reachable gate),
+            # so their priv:* still routes to the headless handler below, unchanged.
+            if (getattr(halt, "pattern_key", None) or "").startswith("priv:"):
+                resolution = RED_RESOLUTION_OPERATOR_IDENTITY
+            else:
+                resolution = RED_RESOLUTION_STORE_PENDING
         else:
             resolution = self._red_resolution_handler(halt)
         # Strict zone-disposition coupling (fail-loud): a RED halt admits ONLY a
@@ -4806,6 +4819,22 @@ class Dispatcher:
             # drop+observation send the ordinary Yellow decline uses.
             observations = self._build_descope_observations(agent, halt)
             return gen.send(observations)
+        if resolution == RED_RESOLUTION_OPERATOR_IDENTITY:
+            # operator-red-correctness-v1 Move 1 — the FIRST real member of the
+            # reserved Operator-Runs-It resolution (RED_RESOLUTION_OPERATOR_IDENTITY,
+            # dispatcher.py: "render + logic ship with the first real member"): a
+            # non-gateway-executable privileged RED (priv:*). Surface the EXISTING
+            # render_red_surface / PRIVILEGE_REQUIRED copy (can_operator_run=True) and
+            # resume NON-TERMINALLY so the agent relays "run it yourself, then tell me
+            # the result." NO store, NO claim — the row is never created, so there is
+            # no post-claim orphan and no "expired" on retry.
+            from grove.dispatch import render_red_surface
+            _args = getattr(_trig, "arguments", None) or {}
+            _cmd = str(_args.get("command") or _args.get("code") or "")
+            _msg = render_red_surface(_cmd, halt)
+            return gen.send(
+                self._build_operator_runs_observations(agent, halt.intents, _msg)
+            )
         # No silent fall-through: an admitted RED_RESOLUTIONS member without a
         # handler branch here is a structural defect (Phase 1a Step 2, fail-loud).
         raise ValueError(
@@ -4970,6 +4999,41 @@ class Dispatcher:
                 "can_store_pending steering flag was lost (Phase 1a invariant)."
             )
         self._last_store_pending_event = event
+
+    def _build_operator_runs_observations(
+        self, agent: Any, intents: List[Any], obs_text: str
+    ) -> List[Any]:
+        """Resume the turn with an 'operator runs it' observation for a non-gateway-
+        executable privileged RED (operator-red-correctness-v1 Move 1). NON-TERMINAL:
+        the agent relays the run-it-yourself surface and awaits the operator's result.
+        NO store, NO claim — nothing was queued; the privilege stays with the operator.
+        Mirrors the store-pending relay (success=True steers relay, not a re-plan) with
+        operator-runs-it copy instead of a portal link."""
+        from grove.intents import Observation
+
+        msgs = getattr(agent, "_current_messages", None)
+        if msgs is None:
+            msgs = []
+        body = (
+            f"{obs_text}\n\n[Do NOT retry or attempt an alternative — this privileged "
+            "action stays with the operator. Relay the message above; the operator "
+            "runs it and reports the result back.]"
+        )
+        observations: List[Any] = []
+        for intent in intents:
+            tool_call_id = getattr(intent, "call_id", None) or ""
+            msgs.append(
+                {"role": "tool", "tool_call_id": tool_call_id, "content": body}
+            )
+            observations.append(
+                Observation(
+                    intent_id=getattr(intent, "call_id", None),
+                    success=True,
+                    value=body,
+                    metadata={"disposition": "operator_identity_required"},
+                )
+            )
+        return observations
 
     def _build_store_pending_observations(
         self, agent: Any, intents: List[Any], obs_text: str
