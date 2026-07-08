@@ -671,6 +671,12 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
     agent reported 59 staged memory crystallizations.
     """
     proposals = [p.to_dict() for p in read_all_proposals()]
+    # proposal-sort-v1 — render-only newest-first sort. created_at is ISO 8601 UTC on
+    # every proposal, so a lexical sort IS chronological. read_all's append-order
+    # contract (proposal_queue.py) is UNTOUCHED — this sorts only the local render
+    # copy. A missing/empty created_at sorts LAST under reverse=True (unknown-age
+    # proposals sink to the bottom). Matches the fleet viewer's newest-first order.
+    proposals.sort(key=lambda p: p.get("created_at") or "", reverse=True)
     memory_items = pending_memory_proposal_items()
     parts = ['<div id="proposals-listing">']
     if not proposals and not memory_items:
