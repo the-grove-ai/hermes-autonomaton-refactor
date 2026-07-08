@@ -22,6 +22,7 @@ import pytest
 
 from grove.dispatcher import Dispatcher, RuntimeContext
 from grove.intents import ToolBatchYield, FinalResponse, Observation, ToolIntent
+from grove.sovereign_prompt_handlers import non_interactive_deny_handler
 from tests._runtime_ctx import MOCK_RUNTIME_CTX
 
 
@@ -286,11 +287,14 @@ class TestPhase7RunConversationDelegation:
         agent._run_turn_generator = (
             lambda **kw: _synthetic_generator(intents, {"final_response": "u"})
         )
-        # The sovereign_prompt_handler is deliberately injected to prove RED does
-        # NOT consult it — the red_resolution_handler default (headless Cancel)
-        # governs instead.
+        # red-action-store-pending-v1 Phase A: RED store-pending is now
+        # reachability-gated. This test exercises the CANCEL/terminal mechanic, so
+        # it runs on an UNREACHABLE surface (``non_interactive_deny_handler``
+        # installed as the sovereign handler → ``_is_operator_reachable()`` False).
+        # The handler is still injected to prove RED does NOT consult it — the
+        # red_resolution_handler default (headless Cancel) governs instead.
         agent._dispatcher_singleton = Dispatcher(
-            sovereign_prompt_handler=lambda halt: "deny",
+            sovereign_prompt_handler=non_interactive_deny_handler,
         )
         import run_agent
         with pytest.raises(TerminalGovernanceHalt) as exc_info:
@@ -562,8 +566,16 @@ class TestPhase4ZoneClassification:
 
         # §VI — Cancel resolves the structurally-blocked RED batch by terminating
         # the turn via TerminalGovernanceHalt(red_workflow_cancel).
+        # red-action-store-pending-v1 Phase A: RED store-pending is now
+        # reachability-gated; the ``_capturing_resolution`` red_resolution_handler
+        # only fires on an UNREACHABLE surface. Install
+        # ``non_interactive_deny_handler`` so ``_is_operator_reachable()`` is False,
+        # preserving the batch-halt context assertions and terminal-cancel path.
         from grove.governance_halt import TerminalGovernanceHalt
-        d = Dispatcher(red_resolution_handler=_capturing_resolution)
+        d = Dispatcher(
+            red_resolution_handler=_capturing_resolution,
+            sovereign_prompt_handler=non_interactive_deny_handler,
+        )
         with pytest.raises(TerminalGovernanceHalt):
             d.dispatch_turn(agent, user_message="hi")
         # The halt the prompt saw carried both zone results so Phase 5

@@ -34,6 +34,7 @@ from grove.dispatcher import (
     headless_red_resolution,
 )
 from grove.intents import ToolIntent
+from grove.sovereign_prompt_handlers import non_interactive_deny_handler
 from tests.grove.test_kaizen_voice_red_fork_b1 import (
     _bare_agent,
     _drive,
@@ -84,7 +85,14 @@ class TestM1GateFlip:
             return "descoped"
 
         _force_zone(monkeypatch, "red")
-        d = Dispatcher(red_resolution_handler=_operator_menu)
+        # Phase A: UNREACHABLE so the injected handler is actually consulted (a
+        # reachable surface store-pends and never calls it). The seam this test
+        # guards — injected handler consulted, not the headless default — holds
+        # only where the handler is reached.
+        d = Dispatcher(
+            red_resolution_handler=_operator_menu,
+            sovereign_prompt_handler=non_interactive_deny_handler,
+        )
         assert d._red_resolution_handler is _operator_menu
         assert d._red_resolution_handler is not headless_red_resolution
         agent = _bare_agent([])
@@ -157,7 +165,12 @@ class TestM2RedMenu:
     def test_cancel_maps_to_red_workflow_cancel_terminal(self, monkeypatch):
         from grove.governance_halt import TerminalGovernanceHalt
         _force_zone(monkeypatch, "red")
-        d = Dispatcher(red_resolution_handler=lambda h: "cancel")
+        # Phase A: UNREACHABLE so the cancel handler is consulted (reachable
+        # store-pends). Cancel still maps to the red_workflow_cancel terminal.
+        d = Dispatcher(
+            red_resolution_handler=lambda h: "cancel",
+            sovereign_prompt_handler=non_interactive_deny_handler,
+        )
         agent = _bare_agent([])
         intents = [ToolIntent(tool_name="terminal", arguments={}, call_id="c1")]
         with pytest.raises(TerminalGovernanceHalt) as exc:
