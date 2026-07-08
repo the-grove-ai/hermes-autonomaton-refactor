@@ -132,6 +132,14 @@ def init_substrate_singletons(app: web.Application) -> None:
         "memory": _path_mtime(app["memory_store"].log_path),
     }
 
+    # propose-approve-deadlock-v1 Phase 1b-i — the process-level pending-RED store
+    # singleton, so the portal approve handler and the render-side orphan check
+    # reach the SAME store any Dispatcher stored the proposal into. In-memory
+    # only; not a tool; no agent surface. (Render/approve wiring is 1b-ii.)
+    from grove.red_pending_store import get_red_pending_store
+
+    app["red_pending_store"] = get_red_pending_store()
+
 
 def _check_wiki_stale(app: web.Application) -> None:
     """Ensure the wiki FTS index exists and is fresh. Called only by /search —

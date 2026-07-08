@@ -111,6 +111,38 @@ class RedPendingStore:
         entry = self.get(proposal_id)
         return entry.description if entry else None
 
+    def has(self, proposal_id: str) -> bool:
+        """True iff a live payload is held for *proposal_id*.
+
+        propose-approve-deadlock-v1 Phase 1b-i (Step 3) — the portal render calls
+        this (via ``request.app["red_pending_store"]``) to distinguish a live
+        pending proposal from an ORPHAN: the durable queue row persists across a
+        restart, but this in-memory payload does not, so a metadata row whose
+        ``has()`` is False renders EXPIRED (1b-ii) rather than a dead approve.
+        """
+        with self._lock:
+            return proposal_id in self._by_id
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._by_id)
+
+
+# ── Process-level singleton (propose-approve-deadlock-v1 Phase 1b-i, Step 1) ──
+# The store MUST survive across turns and requests: the gateway rebuilds the
+# Dispatcher per turn (ThreadPoolExecutor) and the portal approve is a SEPARATE
+# request, so the 1a per-Dispatcher instance was GC'd before approve — the
+# proposal was unreachable. This shared process singleton (mirrors
+# grove.grants.get_grant_store) is the ONE reachable, lifetime-scoped store both
+# the store-on-propose (any Dispatcher) and the portal approve handler use. Still
+# in-memory (restart drops it), still not a tool, still no agent surface reaches
+# it. Thread-safe: the gateway touches it from executor threads AND the loop.
+_STORE: Optional[RedPendingStore] = None
+
+
+def get_red_pending_store() -> RedPendingStore:
+    """Return the process-level RedPendingStore singleton (creates on first call)."""
+    global _STORE
+    if _STORE is None:
+        _STORE = RedPendingStore()
+    return _STORE

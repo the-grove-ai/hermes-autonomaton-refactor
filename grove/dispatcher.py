@@ -470,6 +470,7 @@ class Dispatcher:
         memory_store: Optional[Any] = None,
         memory_manager: Optional[Any] = None,
         platform: str = "cli",
+        red_pending_store: Optional[Any] = None,
     ) -> None:
         """Capture the substrate snapshot and install Phase 5 disposition handler.
 
@@ -514,11 +515,19 @@ class Dispatcher:
         # sites and consumed once at registry.dispatch (the dumb crypto lock).
         from grove.effect_signature import ApprovalGate
         self._approval_gate = ApprovalGate()
-        # propose-approve-deadlock-v1 Phase 1a — session-volatile, dispatcher-owned
-        # store for pending RED `.env` proposals. In-memory only (restart drops
-        # it); never a tool, so no agent surface can read the stored secret payload.
-        from grove.red_pending_store import RedPendingStore
-        self._red_pending_store = RedPendingStore()
+        # propose-approve-deadlock-v1 Phase 1b-i — pull the PROCESS-LEVEL pending-RED
+        # store singleton (default) so it survives across turns/requests and the
+        # portal approve handler reaches the SAME store that stored the proposal.
+        # (1a's per-Dispatcher instance was GC'd at turn end — unreachable by
+        # approve.) Still in-memory (restart drops it); never a tool, so no agent
+        # surface can read the stored secret payload. An explicit override is for
+        # tests / isolation.
+        from grove.red_pending_store import get_red_pending_store
+        self._red_pending_store = (
+            red_pending_store
+            if red_pending_store is not None
+            else get_red_pending_store()
+        )
         self.registry._approval_gate = self._approval_gate
         # Back-ref so the parent-side sandbox RPC handler and the plugin manager
         # can reach classify_and_mint (C1c-i). Held on the Dispatcher-owned
@@ -4917,34 +4926,38 @@ class Dispatcher:
     def approve_pending_red_proposal(self, proposal_id: str) -> Dict[str, Any]:
         """Mint-on-approve — execute a stored pending RED ``.env`` proposal.
 
-        propose-approve-deadlock-v1 Phase 1a (Step 5). Invoked ONLY by an
-        operator-approval path (the portal, wired in 1b); NEVER model-reachable
-        (no tool exposes it). Flow: read the stored entry → TOCTOU re-verify the
-        payload hash (fail-loud on drift, NO write) → mint a single-use,
-        content-bound authorization and consume it → execute the ``.env`` write
-        via the governance handler (which re-verifies the hash immediately before
-        the write — Step 6) → clear the entry (single-use).
+        propose-approve-deadlock-v1 Phase 1a (Step 5) + 1b-i (Step 2, CLAIM-THEN-
+        EXECUTE). Invoked ONLY by an operator-approval path (the portal, wired in
+        1b-ii); NEVER model-reachable (no tool exposes it).
+
+        Concurrency: the store singleton is touched from both executor threads and
+        the event loop. We CLAIM the entry with an atomic ``pop`` at the START —
+        exactly one claimant; a concurrent second approve pops ``None`` and fails
+        clean ("already approved / expired"). Everything after the claim (TOCTOU
+        verify, mint/consume, the ``.env`` write) runs OUTSIDE the store lock. On
+        any post-claim failure the entry is already gone — fail-safe: the operator
+        re-proposes rather than leaving a half-approved entry re-approvable.
         """
         import hashlib
 
         from grove.effect_signature import ApprovalGate
         from tools.governance_tool import propose_governance_change
 
-        entry = self._red_pending_store.get(proposal_id)
+        # CLAIM — atomic single-writer gate. Pop first; the loser gets None.
+        entry = self._red_pending_store.pop(proposal_id)
         if entry is None:
             return {
                 "success": False,
                 "error": (
-                    "No pending proposal with that id — it may have been approved "
-                    "already, or the gateway restarted (pending proposals are "
-                    "session-scoped and do not survive a restart)."
+                    "No pending proposal with that id — it was already approved, "
+                    "or the gateway restarted (pending proposals are session-"
+                    "scoped and do not survive a restart)."
                 ),
             }
-        # (b) TOCTOU: the in-memory payload must still hash to the stored anchor.
+        # (b) TOCTOU: the claimed payload must still hash to its stored anchor.
         live = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
         if live != entry.content_sha256:
-            self._red_pending_store.pop(proposal_id)  # drop the tampered entry
-            return {
+            return {  # entry already popped at claim — no write, fail-safe
                 "success": False,
                 "error": (
                     "Approval aborted — stored payload integrity check failed "
@@ -4971,8 +4984,7 @@ class Dispatcher:
             rationale=(entry.rationale or "operator-approved .env change"),
             approved_content_sha256=entry.content_sha256,
         )
-        # (e) clear the entry — single-use; an approved proposal cannot re-fire.
-        self._red_pending_store.pop(proposal_id)
+        # Entry was popped at claim — single-use; an approved proposal cannot re-fire.
         return {"success": True, "proposal_id": proposal_id, "result": result}
 
     def _build_descope_observations(
