@@ -4926,66 +4926,17 @@ class Dispatcher:
     def approve_pending_red_proposal(self, proposal_id: str) -> Dict[str, Any]:
         """Mint-on-approve — execute a stored pending RED ``.env`` proposal.
 
-        propose-approve-deadlock-v1 Phase 1a (Step 5) + 1b-i (Step 2, CLAIM-THEN-
-        EXECUTE). Invoked ONLY by an operator-approval path (the portal, wired in
-        1b-ii); NEVER model-reachable (no tool exposes it).
+        propose-approve-deadlock-v1 Phase 1a (Step 5) + 1b-i (claim-then-execute).
+        Invoked ONLY by an operator-approval path; NEVER model-reachable.
 
-        Concurrency: the store singleton is touched from both executor threads and
-        the event loop. We CLAIM the entry with an atomic ``pop`` at the START —
-        exactly one claimant; a concurrent second approve pops ``None`` and fails
-        clean ("already approved / expired"). Everything after the claim (TOCTOU
-        verify, mint/consume, the ``.env`` write) runs OUTSIDE the store lock. On
-        any post-claim failure the entry is already gone — fail-safe: the operator
-        re-proposes rather than leaving a half-approved entry re-approvable.
+        Phase 1b-ii — the claim-then-execute body is extracted to
+        :func:`grove.red_pending_store.approve_red_proposal` so the portal (which
+        holds the singleton store but no Dispatcher) can invoke the SAME mint-on-
+        approve path. This method delegates against this Dispatcher's store handle.
         """
-        import hashlib
+        from grove.red_pending_store import approve_red_proposal
 
-        from grove.effect_signature import ApprovalGate
-        from tools.governance_tool import propose_governance_change
-
-        # CLAIM — atomic single-writer gate. Pop first; the loser gets None.
-        entry = self._red_pending_store.pop(proposal_id)
-        if entry is None:
-            return {
-                "success": False,
-                "error": (
-                    "No pending proposal with that id — it was already approved, "
-                    "or the gateway restarted (pending proposals are session-"
-                    "scoped and do not survive a restart)."
-                ),
-            }
-        # (b) TOCTOU: the claimed payload must still hash to its stored anchor.
-        live = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
-        if live != entry.content_sha256:
-            return {  # entry already popped at claim — no write, fail-safe
-                "success": False,
-                "error": (
-                    "Approval aborted — stored payload integrity check failed "
-                    "(content changed since it was proposed). Nothing was written."
-                ),
-            }
-        # (c) mint a single-use, content-bound authorization; (d) consume it. A
-        # FRESH gate keeps this out of any in-flight turn's shared approval gate.
-        gate = ApprovalGate()
-        gate.activate()
-        gate.mint(entry.effect_signature)
-        authorized = gate.consume(entry.effect_signature)
-        gate.flush()
-        if not authorized:
-            return {
-                "success": False,
-                "error": "approval authorization failed (token not consumable).",
-            }
-        # (d) execute the .env write; the handler re-verifies the hash (Step 6)
-        # immediately before write_text — a second, independent integrity gate.
-        result = propose_governance_change(
-            target_file=entry.target_file,
-            content=entry.content,
-            rationale=(entry.rationale or "operator-approved .env change"),
-            approved_content_sha256=entry.content_sha256,
-        )
-        # Entry was popped at claim — single-use; an approved proposal cannot re-fire.
-        return {"success": True, "proposal_id": proposal_id, "result": result}
+        return approve_red_proposal(proposal_id, self._red_pending_store)
 
     def _build_descope_observations(
         self, agent: Any, halt: "AndonResolutionHalt",

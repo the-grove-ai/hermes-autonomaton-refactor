@@ -146,3 +146,80 @@ def get_red_pending_store() -> RedPendingStore:
     if _STORE is None:
         _STORE = RedPendingStore()
     return _STORE
+
+
+def approve_red_proposal(
+    proposal_id: str, store: Optional[RedPendingStore] = None
+) -> Dict[str, object]:
+    """Mint-on-approve — claim-then-execute a pending RED ``.env`` proposal.
+
+    propose-approve-deadlock-v1 Phase 1b-i (claim-then-execute) + 1b-ii (portal
+    reachability). Operator-only: invoked by the portal /confirm handler (which
+    holds the singleton store) and by ``Dispatcher.approve_pending_red_proposal``
+    (which delegates here). NEVER model-reachable — no tool exposes it.
+
+    CLAIM: atomic ``pop`` at the START — exactly one claimant; a concurrent second
+    approve pops ``None`` and returns ``not_found``. TOCTOU verify + mint/consume +
+    the ``.env`` write happen OUTSIDE the store lock; on any post-claim failure the
+    entry is already gone (fail-safe: the operator re-proposes).
+
+    Returns ``{"success": bool, "reason": one of
+    "written"/"not_found"/"integrity"/"auth", ...}``.
+    """
+    import hashlib
+
+    from grove.effect_signature import ApprovalGate
+
+    st = store if store is not None else get_red_pending_store()
+
+    entry = st.pop(proposal_id)  # CLAIM — atomic single-writer gate
+    if entry is None:
+        return {
+            "success": False,
+            "reason": "not_found",
+            "error": (
+                "No pending proposal with that id — it was already approved, or "
+                "the gateway restarted (pending proposals are session-scoped and "
+                "do not survive a restart)."
+            ),
+        }
+    # TOCTOU: the claimed payload must still hash to its stored anchor.
+    live = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
+    if live != entry.content_sha256:
+        return {  # entry already popped — no write, fail-safe
+            "success": False,
+            "reason": "integrity",
+            "error": (
+                "Approval aborted — stored payload integrity check failed "
+                "(content changed since it was proposed). Nothing was written."
+            ),
+        }
+    # Mint a single-use, content-bound authorization; consume it. FRESH gate.
+    gate = ApprovalGate()
+    gate.activate()
+    gate.mint(entry.effect_signature)
+    authorized = gate.consume(entry.effect_signature)
+    gate.flush()
+    if not authorized:
+        return {
+            "success": False,
+            "reason": "auth",
+            "error": "approval authorization failed (token not consumable).",
+        }
+    # Execute the .env write; the handler re-verifies the hash immediately before
+    # write_text (a second, independent integrity gate).
+    from tools.governance_tool import propose_governance_change
+
+    result = propose_governance_change(
+        target_file=entry.target_file,
+        content=entry.content,
+        rationale=(entry.rationale or "operator-approved .env change"),
+        approved_content_sha256=entry.content_sha256,
+    )
+    # Entry popped at claim — single-use; an approved proposal cannot re-fire.
+    return {
+        "success": True,
+        "reason": "written",
+        "proposal_id": proposal_id,
+        "result": result,
+    }

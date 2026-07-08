@@ -62,6 +62,8 @@ from grove.flywheel_cli import (
 from grove.memory import digest
 from grove.memory.digest import MemoryProposalHandler
 from grove.notify import broadcast_to_operator
+from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE, approve_red_proposal
+from grove.api.red_nonce import nonce_key_from_app, red_nonce, verify_red_nonce
 from hermes_constants import get_hermes_home
 from tools import mcp_tool
 
@@ -365,6 +367,12 @@ async def _action_reason(request: web.Request):
 async def _dispatch_proposal_action(request: web.Request, action: str) -> web.Response:
     proposal_id = request.match_info["proposal_id"]
     short_id = _short_id(proposal_id)
+    # propose-approve-deadlock-v1 Phase 1b-ii — RED .env proposals are two-step,
+    # nonce-gated, and mint-capable; intercept BEFORE the generic dispatch.
+    if proposal_id.startswith(RED_PENDING_PROPOSAL_TYPE + ":"):
+        return await _dispatch_red_proposal_action(
+            request, action, proposal_id, short_id
+        )
     reason = await _action_reason(request)
 
     # Routing proposals first — the content-addressable id is unique across both
@@ -387,6 +395,185 @@ async def _dispatch_proposal_action(request: web.Request, action: str) -> web.Re
             f"Proposal {proposal_id} not found — it may have already been resolved."
         ),
         status=404,
+    )
+
+
+def _red_inline_fail_card(short_id: str, note: str) -> str:
+    """Inline card body for a RED-action failure. On 4xx/5xx htmx keeps the
+    existing card in the DOM (the OOB banner carries the message); this is the
+    ``_loud_action_failure`` contract's first arg."""
+    return (
+        f'<div class="card card-red" id="proposal-{short_id}">'
+        f'<h4><span class="badge badge-red">RED — governance write</span></h4>'
+        f'<p>{_esc(note)}</p>'
+        f'</div>'
+    )
+
+
+def _red_confirm_card_html(
+    full_pid: str, short_id: str, masked: str, confirm_nonce: str
+) -> str:
+    """The SECOND-step Confirm-RED card (server-authoritative). Rendered by the
+    /approve step (hx-swap outerHTML); its Confirm button POSTs /confirm with a
+    FRESH confirm-step nonce that ONLY a successful /approve issues (step-jump
+    defense). NO mint until /confirm. The value stays masked."""
+    pid = _esc(full_pid)
+    return (
+        f'<div class="card card-red-confirm" id="proposal-{short_id}">'
+        f'<h4><span class="badge badge-red">RED — confirm write</span></h4>'
+        f'<p>{_esc(masked)}</p>'
+        f'<div class="meta">This writes to .env. The value stays masked. '
+        f'Confirm to apply, or Cancel.</div>'
+        f'<div class="proposal-actions">'
+        f'<button class="btn btn-approve" '
+        f'hx-post="/portal/actions/proposals/{pid}/confirm" '
+        f'hx-vals=\'{{"nonce": "{_esc(confirm_nonce)}"}}\' '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
+        f'hx-confirm="Final confirm: write this credential to .env now?">'
+        f'Confirm RED write</button>'
+        f'<button class="btn btn-reject" '
+        f'hx-post="/portal/actions/proposals/{pid}/reject" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">Cancel</button>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+async def _dispatch_red_proposal_action(
+    request: web.Request, action: str, full_pid: str, short_id: str
+) -> web.Response:
+    """RED .env proposal actions — propose-approve-deadlock-v1 Phase 1b-ii.
+
+    ``approve`` = STEP 1 of the two-step: verify the approve-nonce, then render
+    the Confirm card (NO mint). ``reject``/``dismiss`` drop the in-memory payload
+    AND the durable queue row. The mint (STEP 2) is the separate /confirm route.
+    """
+    key = nonce_key_from_app(request.app)
+    bare = full_pid.split(":", 1)[1] if ":" in full_pid else full_pid
+    store = request.app.get("red_pending_store")
+
+    if action in ("reject", "dismiss"):
+        if store is not None:
+            store.pop(bare)  # drop the secret payload — nothing is written
+        try:
+            proposal_queue.remove(full_pid)
+        except Exception:  # noqa: BLE001 — best-effort queue cleanup
+            pass
+        return _resolved_card(
+            short_id, "governance write", "rejected",
+            "Rejected — nothing was written to .env.",
+        )
+
+    if action == "approve":
+        form = await request.post()
+        nonce = str(form.get("nonce", ""))
+        if not verify_red_nonce(full_pid, "approve", nonce, key):
+            return await _loud_action_failure(
+                _red_inline_fail_card(short_id, "Approval token invalid or expired."),
+                failure_class="red_nonce_invalid",
+                action="proposal_approve",
+                message="Approval token invalid or expired. Reload the portal and try again.",
+                status=403,
+                file_kaizen=False,
+            )
+        masked = store.masked_description(bare) if store is not None else None
+        if masked is None:  # orphan — payload GC'd on restart
+            try:
+                proposal_queue.remove(full_pid)
+            except Exception:  # noqa: BLE001
+                pass
+            return _resolved_card(
+                short_id, "governance write", "expired",
+                "Expired — the pending change is no longer available. Re-propose.",
+            )
+        confirm_nonce = red_nonce(full_pid, "confirm", key)
+        return _html_fragment(
+            _red_confirm_card_html(full_pid, short_id, masked, confirm_nonce)
+        )
+
+    return await _loud_action_failure(
+        _red_inline_fail_card(short_id, f"Unsupported action {action!r}."),
+        failure_class="red_action_unsupported",
+        action=f"proposal_{action}",
+        message=f"Unsupported action {action!r} for a RED proposal.",
+        status=400,
+        file_kaizen=False,
+    )
+
+
+async def handle_red_proposal_confirm(request: web.Request) -> web.Response:
+    """STEP 2 — mint + write a confirmed RED .env proposal (the highest-risk
+    endpoint). Verify the confirm-step nonce (a skipped /approve never issued
+    one → step-jump rejected), then run the claim-then-execute callback."""
+    full_pid = request.match_info["proposal_id"]
+    short_id = _short_id(full_pid)
+    if not full_pid.startswith(RED_PENDING_PROPOSAL_TYPE + ":"):
+        return await _loud_action_failure(
+            _red_inline_fail_card(short_id, "Not a RED proposal."),
+            failure_class="red_confirm_wrong_type",
+            action="proposal_confirm",
+            message="Confirm is only valid for a RED governance proposal.",
+            status=404,
+            file_kaizen=False,
+        )
+    key = nonce_key_from_app(request.app)
+    form = await request.post()
+    nonce = str(form.get("nonce", ""))
+    if not verify_red_nonce(full_pid, "confirm", nonce, key):
+        return await _loud_action_failure(
+            _red_inline_fail_card(short_id, "Confirmation token invalid or expired."),
+            failure_class="red_confirm_nonce_invalid",
+            action="proposal_confirm",
+            message=(
+                "Confirmation token invalid or expired — the approve step must "
+                "precede confirm. Reload the portal and try again."
+            ),
+            status=403,
+            file_kaizen=False,
+        )
+    bare = full_pid.split(":", 1)[1] if ":" in full_pid else full_pid
+    store = request.app.get("red_pending_store")
+    result = approve_red_proposal(bare, store)
+
+    if result.get("success"):
+        try:
+            proposal_queue.remove(full_pid)
+        except Exception:  # noqa: BLE001
+            pass
+        return _resolved_card(
+            short_id, "governance write", "written",
+            "Written — the credential was saved to .env.",
+        )
+
+    reason = result.get("reason")
+    if reason == "not_found":  # orphan / already approved (replay)
+        try:
+            proposal_queue.remove(full_pid)
+        except Exception:  # noqa: BLE001
+            pass
+        return _resolved_card(
+            short_id, "governance write", "expired",
+            "Expired — re-propose. Nothing was written.",
+        )
+    if reason == "integrity":
+        return await _loud_action_failure(
+            _red_inline_fail_card(short_id, "Integrity check failed — not written."),
+            failure_class="red_integrity_abort",
+            action="proposal_confirm",
+            message=(
+                "Integrity check failed — the content changed since it was "
+                "proposed. Nothing was written to .env."
+            ),
+            status=409,
+            file_kaizen=False,
+        )
+    return await _loud_action_failure(
+        _red_inline_fail_card(short_id, "Approval could not be authorized."),
+        failure_class="red_auth_fail",
+        action="proposal_confirm",
+        message="Approval could not be authorized. Nothing was written.",
+        status=500,
+        file_kaizen=False,
     )
 
 
@@ -1041,6 +1228,11 @@ def register_action_routes(app: web.Application) -> None:
     )
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/dismiss", handle_proposal_dismiss
+    )
+    # propose-approve-deadlock-v1 Phase 1b-ii — the RED .env two-step confirm
+    # (mint-capable). /approve (above) issues the confirm nonce; this applies it.
+    app.router.add_post(
+        "/portal/actions/proposals/{proposal_id}/confirm", handle_red_proposal_confirm
     )
     app.router.add_patch(
         "/portal/actions/dock/goals/{goal_id}", handle_dock_goal_update
