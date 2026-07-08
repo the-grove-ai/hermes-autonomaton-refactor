@@ -53,6 +53,17 @@ def _capture_queue_writes(monkeypatch):
     return cap
 
 
+def _stored(d: Dispatcher, tool: str, raw_args: dict):
+    """The single durable entry the dispatcher stored for ``(tool, raw_args)``.
+
+    durable-red-store-v1: the store is SQLite-backed (no ``_by_id`` to enumerate),
+    so fetch by the content-addressed pid computed exactly as
+    ``_store_pending_red_proposal`` does (prepare → sign → action_proposal_id)."""
+    args = prepare_execute_arguments(tool, raw_args)
+    pid = action_proposal_id(canonical_effect_signature(tool, args))
+    return d._red_pending_store.get(pid)
+
+
 class _FakeGen:
     def __init__(self) -> None:
         self.sent: Any = None
@@ -83,7 +94,8 @@ class TestStoreRouting:
         d = Dispatcher()  # default: platform!=fleet, interactive handler → reachable
         _drive(d, _term("sudo apt-get install ffmpeg"))
         assert len(d._red_pending_store) == 1
-        (entry,) = list(d._red_pending_store._by_id.values())
+        entry = _stored(d, "terminal", {"command": "sudo apt-get install ffmpeg"})
+        assert entry is not None
         assert entry.tool_name == "terminal"
         assert entry.arguments == {"command": "sudo apt-get install ffmpeg"}
         assert entry.is_opaque is False
@@ -93,7 +105,8 @@ class TestStoreRouting:
         d = Dispatcher()
         _drive(d, _term("echo $(whoami)"))  # command substitution → opacity:*
         assert len(d._red_pending_store) == 1
-        (entry,) = list(d._red_pending_store._by_id.values())
+        entry = _stored(d, "terminal", {"command": "echo $(whoami)"})
+        assert entry is not None
         assert entry.is_opaque is True
         assert "not statically resolved" in entry.description
 
@@ -106,7 +119,9 @@ class TestStoreRouting:
             call_id="c1",
         ))
         assert len(d._red_pending_store) == 1
-        (entry,) = list(d._red_pending_store._by_id.values())
+        entry = _stored(d, "propose_governance_change",
+                        {"target_file": str(env), "content": "HF_TOKEN=hf_x\n", "rationale": "r"})
+        assert entry is not None
         assert entry.tool_name == "propose_governance_change"
         # propose's TOCTOU anchor folded into the execute args (byte-identical .env path)
         assert "approved_content_sha256" in entry.arguments

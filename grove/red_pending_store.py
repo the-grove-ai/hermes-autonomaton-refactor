@@ -1,33 +1,39 @@
-"""Session-volatile store for pending RED governance proposals.
+"""Durable (SQLite WAL) store for pending RED governance proposals.
 
-propose-approve-deadlock-v1 Phase 1a (GOVERNANCE CORE).
+durable-red-store-v1 Move A (GOVERNANCE CORE). Supersedes the propose-approve-
+deadlock-v1 Phase 1a/1b in-memory ``_by_id`` map: the store is now the SOLE
+source of truth, backed by a SQLite WAL database under ``$GROVE_HOME``.
 
-A ``.env`` (RED) ``propose_governance_change`` is the operator's request to
-persist a secret. The dispatcher classifies ``.env`` RED, but RED has no
-store-and-resume path — it hard-cancels (Phase 0 verdict: STRUCTURAL bug). This
-module is the CORE half of the fix: a **dispatcher-owned, in-memory** map of
-pending RED proposals that a later operator approval mints and executes.
+A RED action (a ``.env`` ``propose_governance_change`` credential write, or a
+privileged / secret-bearing / opaque shell command) has no store-and-resume path
+— RED hard-cancels. This module is the CORE half of the fix: a pending-RED store
+that a later operator approval claims and executes (see ``approve_red_proposal``).
 
 Confinement (deliberate):
-  * IN-MEMORY ONLY. Never written to disk. A gateway restart drops every pending
-    entry — a durable, restart-surviving store is NET-NEW infrastructure that
-    Phase 0 (Task 2) flagged as scope-material and DEFERRED to a later gate. 1a
-    is the volatile, same-session bridge.
-  * NOT A TOOL. This object is held by the Dispatcher and is unreachable by any
-    model-invoked tool (write_file/patch/shell only ever cross the registry;
-    this class is never registered). The secret ``.env`` payload therefore never
-    passes through an agent-readable surface.
+  * DURABLE, but OPERATOR-CONFINED. Persisted to ``~/.grove/red_pending.db`` so a
+    pending proposal survives the gateway rebuilding the Dispatcher per turn AND a
+    full gateway restart (the durability the 1a volatile bridge deferred). The DB
+    holds the raw (possibly secret-bearing) ``arguments``, so it is created
+    owner-only (mode 0600) inside the already owner-only ``~/.grove`` — never an
+    agent-readable surface.
+  * NOT A TOOL. Never registered on any registry; no model-invoked tool reaches
+    it. The secret payload therefore never crosses an agent-readable surface.
 
-The map is keyed by ``proposal_id`` = ``sha256(canonical .env content)`` so the
-same proposed body is idempotent and the id doubles as the integrity anchor.
+The claim is a single ``DELETE … RETURNING`` (whole-row atomic, exactly-once:
+SQLite serializes writers). Keyed by ``proposal_id`` (content-addressed
+``sha256`` of the effect signature) so the same proposed effect is idempotent and
+the id doubles as the integrity anchor re-checked at approve.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
-import threading
-from dataclasses import dataclass, field
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # The proposal ``type`` written (opaque) to the agent-reachable queue as the
@@ -161,78 +167,221 @@ class PendingRedProposal:
     is_opaque: bool = False   # ZoneResult.pattern_key startswith "opacity:" (Phase B render)
     pattern_key: Optional[str] = None  # AST effect signature — drives the card title (Phase B)
     zone: str = "red"
+    origin: str = "operator"  # durable-red-store-v1: the proposing surface. Move A
+    # is the operator path (always "operator"); fleet-red-durable-v2 sets "fleet".
+
+
+def default_red_pending_path() -> Path:
+    """``~/.grove/red_pending.db`` — sibling of ``pattern_cache.db`` (top-level
+    under ``$GROVE_HOME``). Resolved live so a redirected home (tests) is honored,
+    mirroring :func:`grove.pattern_cache.default_pattern_cache_path`."""
+    from hermes_constants import get_hermes_home
+
+    return Path(get_hermes_home()) / "red_pending.db"
+
+
+# The durable schema — durable-red-store-v1 Move A (9 columns, LOCKED). No
+# ``claim_state`` (the claim is the atomic ``DELETE … RETURNING`` — no UPDATE
+# path) and NO nonce columns (nonces live only on the portal request surface,
+# ``grove/api/red_nonce.py``). ``is_opaque``/``pattern_key`` are immutable
+# proposal-time classification metadata, serialized so the portal OPAQUE banner +
+# per-type card title resolve from SQLite now that the in-memory map is retired.
+_COLUMNS = (
+    "proposal_id", "tool_name", "arguments", "effect_signature",
+    "masked_description", "origin", "created_at", "is_opaque", "pattern_key",
+)
+
+# Owner-only (0600). The DB persists raw, possibly secret-bearing ``arguments``
+# (a ``secret:operand`` RED can carry a credential), so it is created strictly
+# tighter than the 0644 sibling stores — which hold no secrets and are walled only
+# by the 0700 ``~/.grove`` parent. Applied to the DB and its WAL/SHM sidecars.
+_DB_MODE = 0o600
 
 
 class RedPendingStore:
-    """Dispatcher-owned, session-volatile map of pending RED proposals.
+    """Durable (SQLite WAL) store of pending RED proposals — sole source of truth.
 
-    Not a tool; no agent surface reaches it. Thread-safe (the gateway may touch
-    it from the turn thread and an approval thread).
+    durable-red-store-v1 Move A — replaces the Phase 1a/1b in-memory ``_by_id``
+    map. The claim is a single ``DELETE … RETURNING`` (exactly-once across threads
+    AND processes: SQLite serializes writers). Not a tool; never registered on any
+    registry, so no agent surface reaches it. Held as a process-level thin handle
+    (:func:`get_red_pending_store`) whose state is the on-disk DB, so a pending
+    proposal survives both a per-turn Dispatcher rebuild and a gateway restart.
     """
 
-    def __init__(self) -> None:
-        self._by_id: Dict[str, PendingRedProposal] = {}
-        self._lock = threading.Lock()
+    def __init__(self, db_path: Optional[Path] = None) -> None:
+        self._path = Path(db_path) if db_path is not None else default_red_pending_path()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Pre-create owner-only so the file is NEVER briefly world-readable between
+        # creation and chmod (the payload is secret-bearing). No-op if it exists.
+        if not self._path.exists():
+            os.close(os.open(str(self._path), os.O_CREAT | os.O_RDWR, _DB_MODE))
+        self._ensure_schema()
+        self._harden_perms()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def _connect(self) -> sqlite3.Connection:
+        con = sqlite3.connect(str(self._path), timeout=5)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA journal_mode=WAL")
+        return con
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as con:
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS red_pending (
+                    proposal_id        TEXT PRIMARY KEY,
+                    tool_name          TEXT NOT NULL,
+                    arguments          TEXT NOT NULL,
+                    effect_signature   TEXT NOT NULL,
+                    masked_description TEXT NOT NULL,
+                    origin             TEXT NOT NULL,
+                    created_at         TEXT NOT NULL,
+                    is_opaque          INTEGER NOT NULL DEFAULT 0,
+                    pattern_key        TEXT
+                )
+                """
+            )
+
+    def _harden_perms(self) -> None:
+        """Force owner-only (0600) on the DB and its WAL/SHM sidecars. The sidecars
+        are created by SQLite honoring the process umask (typically 0644), so a
+        secret in the WAL would otherwise be group/other-readable."""
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(self._path) + suffix)
+            if p.exists():
+                os.chmod(p, _DB_MODE)
+
+    @staticmethod
+    def _row_to_entry(row: sqlite3.Row) -> "PendingRedProposal":
+        """Rebuild a PendingRedProposal from a durable row. ``rationale`` and
+        ``zone`` are NOT persisted (unread after store — approve keys on
+        tool_name/arguments/effect_signature; render keys on the others) and rebuild
+        with their defaults; ``is_opaque`` coerces INTEGER 0/1 ↔ bool."""
+        return PendingRedProposal(
+            proposal_id=row["proposal_id"],
+            tool_name=row["tool_name"],
+            arguments=json.loads(row["arguments"]),
+            effect_signature=row["effect_signature"],
+            description=row["masked_description"],
+            rationale="",
+            created_at=row["created_at"],
+            is_opaque=bool(row["is_opaque"]),
+            pattern_key=row["pattern_key"],
+            origin=row["origin"],
+        )
 
     def put(self, entry: PendingRedProposal) -> None:
-        with self._lock:
-            self._by_id[entry.proposal_id] = entry
+        """Durably persist a pending RED proposal — write + commit before returning.
+
+        FAIL-CLOSED ORDERING (durable-red-store-v1 Move A / Gemini Q2): the caller
+        commits THIS row BEFORE appending the proposal-queue ``governance_env_pending``
+        row, so a crash between the two leaves an invisible payload orphan (no card)
+        — never a card without a payload. ``INSERT OR REPLACE`` keeps ``put``
+        idempotent on the content-addressed ``proposal_id`` (same effect → identical
+        row). The ``with`` block commits on exit (WAL); the row is flushed to the WAL
+        before this returns."""
+        with self._connect() as con:
+            con.execute(
+                "INSERT OR REPLACE INTO red_pending "
+                "(proposal_id, tool_name, arguments, effect_signature, "
+                " masked_description, origin, created_at, is_opaque, pattern_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry.proposal_id,
+                    entry.tool_name,
+                    json.dumps(entry.arguments, ensure_ascii=False),
+                    entry.effect_signature,
+                    entry.description,
+                    getattr(entry, "origin", "operator"),
+                    entry.created_at,
+                    1 if entry.is_opaque else 0,
+                    entry.pattern_key,
+                ),
+            )
+        self._harden_perms()  # a first-write may have just created the WAL/SHM
 
     def get(self, proposal_id: str) -> Optional[PendingRedProposal]:
-        with self._lock:
-            return self._by_id.get(proposal_id)
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT * FROM red_pending WHERE proposal_id=?", (proposal_id,)
+            ).fetchone()
+        return self._row_to_entry(row) if row is not None else None
 
     def pop(self, proposal_id: str) -> Optional[PendingRedProposal]:
-        """Remove and return an entry (used on successful execute / abort)."""
-        with self._lock:
-            return self._by_id.pop(proposal_id, None)
+        """Atomic claim — ``DELETE … RETURNING``. Exactly one caller receives the
+        row; a concurrent second caller receives zero rows (SQLite serializes
+        writers), which is the exactly-once approve gate that replaces the 1a dict
+        ``.pop``. Used on successful execute / abort."""
+        with self._connect() as con:
+            row = con.execute(
+                "DELETE FROM red_pending WHERE proposal_id=? RETURNING *",
+                (proposal_id,),
+            ).fetchone()
+        return self._row_to_entry(row) if row is not None else None
 
     def masked_description(self, proposal_id: str) -> Optional[str]:
         """The masked operator-facing description for a proposal, or None."""
-        entry = self.get(proposal_id)
-        return entry.description if entry else None
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT masked_description FROM red_pending WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+        return row["masked_description"] if row is not None else None
 
     def is_opaque(self, proposal_id: str) -> bool:
         """True iff the pending action is an OPAQUE dynamic effect (the classifier
         could not statically resolve it). red-action-store-pending-v1 Phase B — the
-        portal card reads this to render the OPAQUE_DYNAMIC_EFFECT warning."""
-        entry = self.get(proposal_id)
-        return bool(entry and entry.is_opaque)
+        portal card reads this to render the OPAQUE_DYNAMIC_EFFECT warning. Resolved
+        from the persisted ``is_opaque`` flag."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT is_opaque FROM red_pending WHERE proposal_id=?", (proposal_id,)
+            ).fetchone()
+        return bool(row["is_opaque"]) if row is not None else False
 
     def card_title(self, proposal_id: str) -> str:
         """Per-action-type portal card title (Phase B). Defaults to a generic RED
-        title for a missing entry."""
+        title for a missing entry. Resolved from the persisted ``tool_name`` /
+        ``pattern_key`` / ``is_opaque``."""
         entry = self.get(proposal_id)
         if entry is None:
             return "RED — action"
         return red_action_title(entry.tool_name, entry.pattern_key, entry.is_opaque)
 
     def has(self, proposal_id: str) -> bool:
-        """True iff a live payload is held for *proposal_id*.
+        """True iff a durable payload row exists for *proposal_id*.
 
-        propose-approve-deadlock-v1 Phase 1b-i (Step 3) — the portal render calls
-        this (via ``request.app["red_pending_store"]``) to distinguish a live
-        pending proposal from an ORPHAN: the durable queue row persists across a
-        restart, but this in-memory payload does not, so a metadata row whose
-        ``has()`` is False renders EXPIRED (1b-ii) rather than a dead approve.
-        """
-        with self._lock:
-            return proposal_id in self._by_id
+        The portal render calls this (via ``request.app["red_pending_store"]``) to
+        distinguish a live pending proposal from an ORPHAN: the durable queue row can
+        outlive its payload row (payload claimed/cleared, or a legacy row), so a
+        metadata row whose ``has()`` is False renders EXPIRED (1b-ii, retained as
+        defense-in-depth) rather than a dead approve."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT 1 FROM red_pending WHERE proposal_id=?", (proposal_id,)
+            ).fetchone()
+        return row is not None
 
     def __len__(self) -> int:
-        with self._lock:
-            return len(self._by_id)
+        with self._connect() as con:
+            row = con.execute("SELECT COUNT(*) AS n FROM red_pending").fetchone()
+        return int(row["n"])
 
 
-# ── Process-level singleton (propose-approve-deadlock-v1 Phase 1b-i, Step 1) ──
-# The store MUST survive across turns and requests: the gateway rebuilds the
-# Dispatcher per turn (ThreadPoolExecutor) and the portal approve is a SEPARATE
-# request, so the 1a per-Dispatcher instance was GC'd before approve — the
-# proposal was unreachable. This shared process singleton (mirrors
-# grove.grants.get_grant_store) is the ONE reachable, lifetime-scoped store both
-# the store-on-propose (any Dispatcher) and the portal approve handler use. Still
-# in-memory (restart drops it), still not a tool, still no agent surface reaches
-# it. Thread-safe: the gateway touches it from executor threads AND the loop.
+# ── Process-level singleton (durable-red-store-v1 Move A; thin handle) ─────────
+# Retained for the reason 1b-i introduced it — the gateway rebuilds the Dispatcher
+# per turn (ThreadPoolExecutor) and the portal approve is a SEPARATE request, so a
+# per-Dispatcher instance would be GC'd before approve. This shared handle (mirrors
+# grove.grants.get_grant_store) is the ONE store the store-on-propose (any
+# Dispatcher) and the portal approve handler use. Its state is now the on-disk DB,
+# so it ALSO survives a gateway restart. Still not a tool; no agent surface reaches
+# it. Concurrency is handled by SQLite (per-call connections + writer
+# serialization), not an in-process lock.
 _STORE: Optional[RedPendingStore] = None
 
 

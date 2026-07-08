@@ -71,8 +71,14 @@ class TestSurvival:
         pid, entry = _entry(tmp_path / ".env")
         d1._red_pending_store.put(entry)
         # visible via the SECOND Dispatcher and via the getter the portal uses.
-        assert d2._red_pending_store.get(pid) is entry
-        assert get_red_pending_store().get(pid) is entry
+        # durable-red-store-v1: the store reconstructs entries from SQLite, so this
+        # is value identity (proposal_id + the load-bearing anchors), not object
+        # identity (`is`) — a durable store cannot return the same object instance.
+        got = d2._red_pending_store.get(pid)
+        assert got is not None and got.proposal_id == pid
+        assert got.effect_signature == entry.effect_signature
+        assert got.arguments == entry.arguments
+        assert get_red_pending_store().get(pid).proposal_id == pid
 
     def test_explicit_store_override_isolates(self, tmp_path):
         from grove.red_pending_store import RedPendingStore

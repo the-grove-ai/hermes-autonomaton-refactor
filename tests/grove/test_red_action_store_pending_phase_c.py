@@ -30,6 +30,15 @@ from tools.approval import check_all_command_guards as _guard
 
 
 @pytest.fixture(autouse=True)
+def _redirect_grove_home(tmp_path, monkeypatch):
+    # durable-red-store-v1: the store is now disk-backed under $GROVE_HOME, so the
+    # RED tests MUST redirect it to a tmp dir — never create/write the real ~/.grove.
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    yield tmp_path
+
+
+@pytest.fixture(autouse=True)
 def _fresh_red_store(monkeypatch):
     import grove.red_pending_store as rps
     monkeypatch.setattr(rps, "_STORE", None)
