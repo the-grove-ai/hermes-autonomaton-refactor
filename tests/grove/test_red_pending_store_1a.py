@@ -42,6 +42,17 @@ def _redirect_grove_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_red_store(monkeypatch):
+    """propose-approve-deadlock-v1 Phase 1b-i — the pending-RED store is now a
+    PROCESS singleton, so entries would leak across tests (worker-order flake).
+    Reset it to a fresh instance per test for deterministic isolation."""
+    import grove.red_pending_store as rps
+
+    monkeypatch.setattr(rps, "_STORE", None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _capture_queue_writes(monkeypatch):
     """The opaque bridge write is best-effort; capture it instead of hitting disk."""
     from grove.eval import proposal_queue as pq
