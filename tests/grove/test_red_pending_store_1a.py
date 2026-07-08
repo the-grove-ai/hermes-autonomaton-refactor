@@ -236,7 +236,10 @@ class TestApproveCallback:
 
 
 class TestRpcHardDeny:
-    def test_rpc_propose_env_hard_denies_with_portal_error(self, tmp_path):
+    def test_rpc_propose_env_hard_denies(self, tmp_path):
+        # red-action-store-pending-v1 Phase B (STEP 4) — the non-generator RPC path
+        # cannot suspend to store, so it HARD-DENIES (message no longer misleadingly
+        # says "approve via portal"; nothing was stored to approve).
         d = Dispatcher()
         env = tmp_path / ".env"
         ok, reason = d.classify_and_mint(
@@ -244,7 +247,8 @@ class TestRpcHardDeny:
             {"target_file": str(env), "content": "X=1\n", "rationale": "r"},
         )
         assert ok is False
-        assert "portal" in reason.lower() and "approval" in reason.lower()
+        assert "denied" in reason.lower() and "approval" in reason.lower()
+        assert "nothing was stored" in reason.lower()
         assert len(d._red_pending_store) == 0  # never stored off-generator
         assert not env.exists()
 

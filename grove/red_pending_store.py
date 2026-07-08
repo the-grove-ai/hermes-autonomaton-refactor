@@ -90,6 +90,26 @@ def prepare_execute_arguments(tool_name: str, arguments: dict) -> dict:
     return args
 
 
+def red_action_title(
+    tool_name: str, pattern_key: Optional[str] = None, is_opaque: bool = False
+) -> str:
+    """The per-action-type portal card title (red-action-store-pending-v1 Phase B).
+    Derived from the effect: governance write / privileged shell / secret access /
+    opaque command / a generic tool fallback."""
+    pk = str(pattern_key or "")
+    if is_opaque or pk.startswith("opacity:"):
+        return "RED — opaque command"
+    if tool_name == "propose_governance_change":
+        return "RED — governance write"
+    if pk.startswith("priv:") or pk.startswith("rm:") or pk.startswith("govwrite:"):
+        return "RED — privileged shell"
+    if pk.startswith("secret:"):
+        return "RED — secret access"
+    if tool_name in ("terminal", "execute_code"):
+        return "RED — shell command"
+    return f"RED — {tool_name}"
+
+
 def describe_red_action(
     tool_name: str, arguments: dict, pattern_key: Optional[str] = None
 ) -> Tuple[str, bool]:
@@ -139,6 +159,7 @@ class PendingRedProposal:
     rationale: str
     created_at: str
     is_opaque: bool = False   # ZoneResult.pattern_key startswith "opacity:" (Phase B render)
+    pattern_key: Optional[str] = None  # AST effect signature — drives the card title (Phase B)
     zone: str = "red"
 
 
@@ -170,6 +191,21 @@ class RedPendingStore:
         """The masked operator-facing description for a proposal, or None."""
         entry = self.get(proposal_id)
         return entry.description if entry else None
+
+    def is_opaque(self, proposal_id: str) -> bool:
+        """True iff the pending action is an OPAQUE dynamic effect (the classifier
+        could not statically resolve it). red-action-store-pending-v1 Phase B — the
+        portal card reads this to render the OPAQUE_DYNAMIC_EFFECT warning."""
+        entry = self.get(proposal_id)
+        return bool(entry and entry.is_opaque)
+
+    def card_title(self, proposal_id: str) -> str:
+        """Per-action-type portal card title (Phase B). Defaults to a generic RED
+        title for a missing entry."""
+        entry = self.get(proposal_id)
+        if entry is None:
+            return "RED — action"
+        return red_action_title(entry.tool_name, entry.pattern_key, entry.is_opaque)
 
     def has(self, proposal_id: str) -> bool:
         """True iff a live payload is held for *proposal_id*.

@@ -110,6 +110,16 @@
 
 schema_version: 1
 
+# red-action-store-pending-v1 Phase B — DENIED_BY_POLICY deny-list (read by
+# grove/red_policy.py, NOT by the zones loader). A RED action whose AST-derived
+# pattern_key matches an entry here is NEVER store-pending and NEVER executed, on
+# any surface. The catastrophic-rm effect ("rm:catastrophic") is a HARDCODED floor
+# and is denied even if this key is absent/empty. Add entries to deny more effects;
+# an entry ending in ":" (e.g. "priv:") denies the whole family. Editing this file
+# is itself a RED governed change (propose_governance_change). "Never forbidden":
+# the operator holds this list.
+red_denied_by_policy: []
+
 zones:
   green:
     description: |

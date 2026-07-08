@@ -59,6 +59,11 @@ TERMINAL_TRIGGERS = (
     # the resolution logic + C2a boundary adapter (HaltTrigger(ctx.trigger))
     # resolve it.
     "red_workflow_cancel",
+    # red-action-store-pending-v1 Phase B — a deny-listed catastrophic RED effect
+    # (grove.red_policy) is terminated on ANY surface, never store-pending/executed.
+    # Distinct provenance from red_workflow_cancel: "on the deny-list", not
+    # "operator aborted". Legible: the detail names how to change the policy.
+    "red_denied_by_policy",
 )
 
 

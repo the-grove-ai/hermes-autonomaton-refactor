@@ -129,15 +129,18 @@ def _render_red_pending_approval(
     map). ``description`` may name the key (the operator authored it) but never a
     value — the caller supplies a value-masked description.
     """
-    what = (description or "").strip() or "The change"
+    # red-action-store-pending-v1 Phase B — operator-holds-this register: a RED
+    # action is QUEUED for the operator (not "blocked" / "can't"). Names the action,
+    # points to where the operator approves, honest that nothing runs first.
+    what = (description or "").strip() or "a RED action"
     tail = (
-        f" Review it in the portal: {portal_url}"
+        f" Approve it in the portal: {portal_url}"
         if portal_url
-        else " Review it in the portal."
+        else " Approve it in the portal."
     )
     return (
-        f"Proposed — it's waiting for your approval. {what}"
-        f"{tail} Nothing was written until you approve."
+        f"I've queued a RED action for your approval — {what}"
+        f"{tail} Nothing runs until you approve; decline it there to drop it."
     )
 
 

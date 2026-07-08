@@ -62,6 +62,12 @@ class HaltTrigger(str, Enum):
     # ``grove.governance_halt.TERMINAL_TRIGGERS`` so the C2a boundary adapter
     # resolves it.
     RED_WORKFLOW_CANCEL = "red_workflow_cancel"
+    # red-action-store-pending-v1 Phase B — DENIED_BY_POLICY: a catastrophic RED
+    # effect (deny-listed via grove.red_policy) is terminated on ANY surface, never
+    # store-pending/executed. Distinct terminal provenance from red_workflow_cancel:
+    # "the effect is on the deny-list", not "the operator aborted". Listed in
+    # ``grove.governance_halt.TERMINAL_TRIGGERS`` so the C2a boundary adapter resolves it.
+    RED_DENIED_BY_POLICY = "red_denied_by_policy"
     # De-scoped — the operator drops the privileged action and the agent re-plans
     # on a within-authority alternative. FEED-WORTHY (a genuine steering
     # decision, surfaced via ``can_descope``); distinct from the non-feed-worthy
