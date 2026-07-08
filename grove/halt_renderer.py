@@ -117,6 +117,30 @@ def _render_red_cancel(action_summary: Optional[str]) -> str:
     )
 
 
+def _render_red_pending_approval(
+    description: Optional[str], portal_url: Optional[str] = None
+) -> str:
+    """Operator-facing copy for a RED proposal STORED for approval —
+    propose-approve-deadlock-v1 Phase 1a (STORE_PENDING).
+
+    The action was NOT cancelled: it is proposed and queued for the operator's
+    approval. Proposal register (not the hard-boundary interrupt): honest about
+    what happens next and where to act. NO internals (no member name / hash /
+    map). ``description`` may name the key (the operator authored it) but never a
+    value — the caller supplies a value-masked description.
+    """
+    what = (description or "").strip() or "The change"
+    tail = (
+        f" Review it in the portal: {portal_url}"
+        if portal_url
+        else " Review it in the portal."
+    )
+    return (
+        f"Proposed — it's waiting for your approval. {what}"
+        f"{tail} Nothing was written until you approve."
+    )
+
+
 def _render_tool_boundary(event: HaltEvent) -> str:
     """Reproduce the RAW build-time surfaces: the dispatcher's non-interactive
     deny observations (dispatcher.py:4700-4720) and the red-zone privilege

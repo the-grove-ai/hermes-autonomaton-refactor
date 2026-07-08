@@ -346,21 +346,35 @@ class AndonResolutionHalt(AndonHalt):
     """A RED-zone Andon halt — a workflow RESOLUTION (GRV-005 §VI).
 
     RED severs the temporal dispositions: it is never ``once`` / ``session`` /
-    ``always`` / ``deny`` and never mints a token. It is resolved by the
+    ``always`` / ``deny`` and never mints a token IN-TURN. It is resolved by the
     Dispatcher's ``_red_resolution_handler`` into a :data:`RED_RESOLUTIONS`
-    value — Cancel (abort the structurally-blocked workflow) or De-scoped (drop
-    and re-plan within authority). B1 ships the resolution LOGIC; the
-    operator-facing RED menu is B2.
+    value:
+
+      * Cancel    — abort the structurally-blocked workflow (terminal).
+      * De-scoped — drop the action and re-plan within authority (non-terminal).
+      * Store-pending-approval — propose-approve-deadlock-v1 Phase 1a: PER-INSTANCE
+        store the proposal for OPERATOR approval. Scoped to
+        ``propose_governance_change`` (a ``.env`` write). It still never mints
+        once/session/always in-turn; the write authorization is minted ONLY by a
+        later operator-approval action (never model-reachable). Every OTHER RED
+        action keeps Cancel/De-scoped unchanged.
     """
 
 
 # The only strings a RED resolution handler MAY return (GRV-005 §VI). NOT
 # dispositions: a RED resolution never records ``andon_disposition`` and never
-# reaches a token-mint gate. Cross-contamination with a YELLOW disposition is a
-# fail-loud ``ValueError`` at the disposition switch.
+# reaches an IN-TURN token-mint gate. Cross-contamination with a YELLOW
+# disposition is a fail-loud ``ValueError`` at the disposition switch.
 RED_RESOLUTION_CANCEL = "cancel"
 RED_RESOLUTION_DESCOPED = "descoped"
-RED_RESOLUTIONS = (RED_RESOLUTION_CANCEL, RED_RESOLUTION_DESCOPED)
+# propose-approve-deadlock-v1 Phase 1a — per-instance store-pending-approval for a
+# RED-classified propose_governance_change. Mints ONLY via operator approval.
+RED_RESOLUTION_STORE_PENDING = "store_pending_approval"
+RED_RESOLUTIONS = (
+    RED_RESOLUTION_CANCEL,
+    RED_RESOLUTION_DESCOPED,
+    RED_RESOLUTION_STORE_PENDING,
+)
 
 
 def headless_red_resolution(halt: "AndonResolutionHalt") -> str:
@@ -500,6 +514,11 @@ class Dispatcher:
         # sites and consumed once at registry.dispatch (the dumb crypto lock).
         from grove.effect_signature import ApprovalGate
         self._approval_gate = ApprovalGate()
+        # propose-approve-deadlock-v1 Phase 1a — session-volatile, dispatcher-owned
+        # store for pending RED `.env` proposals. In-memory only (restart drops
+        # it); never a tool, so no agent surface can read the stored secret payload.
+        from grove.red_pending_store import RedPendingStore
+        self._red_pending_store = RedPendingStore()
         self.registry._approval_gate = self._approval_gate
         # Back-ref so the parent-side sandbox RPC handler and the plugin manager
         # can reach classify_and_mint (C1c-i). Held on the Dispatcher-owned
@@ -2957,6 +2976,24 @@ class Dispatcher:
         # below (disposition in once/session/always) is therefore structurally
         # unreachable for RED on BOTH this path and the drive loop.
         if zr.zone == "red":
+            # propose-approve-deadlock-v1 Phase 1a (Step 2, site 2) — the store-
+            # pending-approval resolution needs a paused generator to suspend the
+            # turn; this non-generator RPC/plugin channel CANNOT. Fail-loud DENY
+            # with a legible operator-facing error rather than storing off-
+            # generator (Do NOT store off-generator).
+            if tool_name == "propose_governance_change":
+                if ledger is not None:
+                    ledger.record(
+                        "red_resolution",
+                        resolution=RED_RESOLUTION_STORE_PENDING,
+                        zone="red",
+                        matched_rule=getattr(zr, "matched_rule", None),
+                        triggering_tool=tool_name,
+                    )
+                return False, (
+                    "RED approval required — this channel cannot suspend for "
+                    "approval. Approve the pending proposal via the portal."
+                )
             red_halt = AndonResolutionHalt(
                 intents=[intent], zone_results=[zr], triggering_index=0,
             )
@@ -4619,7 +4656,17 @@ class Dispatcher:
         there is NO operator-facing RED menu (B2). The Operator-Runs-It branch
         and the resumable bridge are B2.
         """
-        resolution = self._red_resolution_handler(halt)
+        _trig = halt.intents[halt.triggering_index]
+        _trig_tool = getattr(_trig, "tool_name", None)
+        # propose-approve-deadlock-v1 Phase 1a — a RED-classified
+        # propose_governance_change resolves to STORE_PENDING (store the proposal
+        # for OPERATOR approval), NOT the Cancel/De-scope menu. SCOPED to
+        # propose_governance_change ONLY; every other RED action keeps the
+        # handler's Cancel/De-scope resolution unchanged.
+        if _trig_tool == "propose_governance_change":
+            resolution = RED_RESOLUTION_STORE_PENDING
+        else:
+            resolution = self._red_resolution_handler(halt)
         # Strict zone-disposition coupling (fail-loud): a RED halt admits ONLY a
         # RED resolution. A YELLOW disposition reaching here is cross-contamination.
         if resolution not in RED_RESOLUTIONS:
@@ -4628,7 +4675,6 @@ class Dispatcher:
                 f"RED resolutions are {RED_RESOLUTIONS!r} (GRV-005 §VI strict "
                 f"coupling). Dispositions never apply to RED — minting STOPS here."
             )
-        _trig = halt.intents[halt.triggering_index]
         # Parallel telemetry — replaces the andon_disposition volume RED no longer
         # records (vocabulary change, not reduction). NOT andon_disposition.
         if ledger is not None:
@@ -4666,11 +4712,268 @@ class Dispatcher:
                     detail=_blocked_action,
                 )
             )
-        # De-scoped — drop the structurally-blocked action + re-plan within
-        # authority; feed-worthy OPERATOR_DESCOPED. The re-plan reuses the soft
-        # drop+observation send the ordinary Yellow decline uses.
-        observations = self._build_descope_observations(agent, halt)
-        return gen.send(observations)
+        if resolution == RED_RESOLUTION_STORE_PENDING:
+            # propose-approve-deadlock-v1 Phase 1a — store the proposal for OPERATOR
+            # approval. NON-TERMINAL: the turn continues so the agent relays the
+            # portal-approval link. Mints ONLY via a later operator approval.
+            return self._store_pending_red_proposal(agent, gen, halt, ledger=ledger)
+        if resolution == RED_RESOLUTION_DESCOPED:
+            # De-scoped — drop the structurally-blocked action + re-plan within
+            # authority; feed-worthy OPERATOR_DESCOPED. The re-plan reuses the soft
+            # drop+observation send the ordinary Yellow decline uses.
+            observations = self._build_descope_observations(agent, halt)
+            return gen.send(observations)
+        # No silent fall-through: an admitted RED_RESOLUTIONS member without a
+        # handler branch here is a structural defect (Phase 1a Step 2, fail-loud).
+        raise ValueError(
+            f"RED resolution {resolution!r} is admissible but has no handler "
+            f"branch in _resolve_red_halt (GRV-005 §VI)."
+        )
+
+    def _store_pending_red_proposal(
+        self,
+        agent: Any,
+        gen: Any,
+        halt: "AndonResolutionHalt",
+        *,
+        ledger: Optional[Any] = None,
+    ) -> Any:
+        """STORE_PENDING — store a RED ``.env`` proposal for operator approval.
+
+        propose-approve-deadlock-v1 Phase 1a (Step 4). Scoped to
+        ``propose_governance_change``. Writes the SECRET payload only to the
+        dispatcher-owned in-memory store (never disk, never an agent surface),
+        and ONLY opaque metadata (id / hash / timestamp / zone) to the
+        agent-reachable proposal queue as the 1b portal-render bridge. Emits a
+        feed-worthy NON-TERMINAL event and resumes the turn with a "relay this to
+        the operator + portal link" observation. Does NOT write ``.env``.
+        """
+        from grove.effect_signature import canonical_effect_signature
+        from grove.red_pending_store import (
+            PendingRedProposal,
+            RED_PENDING_PROPOSAL_TYPE,
+            content_proposal_id,
+            extract_env_keys,
+            masked_env_description,
+        )
+        from grove.halt_renderer import _render_red_pending_approval
+
+        _trig = halt.intents[halt.triggering_index]
+        _args = getattr(_trig, "arguments", None) or {}
+        _content = _args.get("content")
+        if _content is None:
+            _content = _args.get("diff_or_content")
+        _target = _args.get("target_file") or ""
+        _rationale = _args.get("rationale") or ""
+
+        # ANDON-guard: a payload-less propose cannot be stored as a proposal. Fail
+        # loud back to Cancel rather than queue a hollow entry.
+        if not isinstance(_content, str) or not _content:
+            from grove.action_facts import describe_action_kaizen
+            from grove.governance_halt import (
+                GovernanceHaltContext,
+                TerminalGovernanceHalt,
+            )
+            raise TerminalGovernanceHalt(
+                GovernanceHaltContext(
+                    trigger="red_workflow_cancel",
+                    tool_name=getattr(_trig, "tool_name", None),
+                    zone=halt.zone,
+                    matched_rule=(getattr(halt, "matched_rule", None) or None),
+                    reason="propose_governance_change carried no content to store",
+                    detail=describe_action_kaizen(
+                        getattr(_trig, "tool_name", "") or "", _args
+                    ),
+                )
+            )
+
+        pid = content_proposal_id(_content)
+        sig = canonical_effect_signature(getattr(_trig, "tool_name", "") or "", _args)
+        keys = extract_env_keys(_content)
+        desc = masked_env_description(_target, keys)
+        created_at = datetime.now(timezone.utc).isoformat()
+        entry = PendingRedProposal(
+            proposal_id=pid,
+            target_file=_target,
+            content=_content,
+            content_sha256=pid,
+            effect_signature=sig,
+            rationale=_rationale,
+            description=desc,
+            created_at=created_at,
+        )
+        self._red_pending_store.put(entry)
+
+        # Opaque metadata to the agent-reachable queue (NO key name / diff / path).
+        try:
+            from grove.eval import proposal_queue as _pq
+
+            _pq.append(
+                _pq.RoutingProposal(
+                    proposal_id=f"{RED_PENDING_PROPOSAL_TYPE}:{pid}",
+                    type=RED_PENDING_PROPOSAL_TYPE,
+                    payload={"zone": "red"},
+                    evidence=(),
+                    eval_hash=pid,
+                    created_at=created_at,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — the queue bridge is best-effort
+            logger.warning(
+                "pending-RED proposal queue bridge write failed (non-fatal): %r",
+                exc,
+            )
+
+        # Feed-worthy NON-TERMINAL structural fact for the operator's feed.
+        self._emit_store_pending_feed_event(halt, desc)
+
+        # Portal-approval link so the agent can relay it in an interactive turn.
+        portal_url = None
+        try:
+            from grove.prompt.portal_links import resolve_portal_base_url
+
+            _base = (resolve_portal_base_url() or "").strip()
+            if _base:
+                portal_url = f"{_base}/portal#fragments/proposals/pending"
+        except Exception:
+            portal_url = None
+
+        obs_text = _render_red_pending_approval(desc, portal_url)
+        return gen.send(
+            self._build_store_pending_observations(agent, halt.intents, obs_text)
+        )
+
+    def _emit_store_pending_feed_event(
+        self, halt: "AndonResolutionHalt", description: Optional[str]
+    ) -> None:
+        """Build + record the feed-worthy NON-TERMINAL OPERATOR_STORED_PENDING event
+        (propose-approve-deadlock-v1 Phase 1a). Fail-loud if the steering flag is
+        lost (mirrors the De-scope invariant)."""
+        from grove.halt_event import (
+            HaltCapabilities,
+            HaltDetail,
+            HaltEvent,
+            HaltSeverity,
+            HaltTrigger,
+            OriginatingLayer,
+            WhatHalted,
+            is_feed_worthy,
+        )
+
+        _trig = halt.intents[halt.triggering_index]
+        event = HaltEvent(
+            trigger=HaltTrigger.OPERATOR_STORED_PENDING,
+            what_halted=WhatHalted(
+                tool_name=getattr(_trig, "tool_name", None),
+                summary=description,
+            ),
+            zone=halt.zone,
+            severity=HaltSeverity.NON_TERMINAL,
+            originating_layer=OriginatingLayer.TOOL_BOUNDARY,
+            reason=getattr(halt, "reason", None),
+            detail=HaltDetail(matched_rule=getattr(halt, "matched_rule", None)),
+            capabilities=HaltCapabilities(can_store_pending=True),
+        )
+        if not is_feed_worthy(event):
+            raise ValueError(
+                "OPERATOR_STORED_PENDING event is not feed-worthy — the "
+                "can_store_pending steering flag was lost (Phase 1a invariant)."
+            )
+        self._last_store_pending_event = event
+
+    def _build_store_pending_observations(
+        self, agent: Any, intents: List[Any], obs_text: str
+    ) -> List[Any]:
+        """Resume the turn with a 'proposed — relay this to the operator'
+        observation (propose-approve-deadlock-v1 Phase 1a). Success=True (the
+        propose was accepted as a proposal), but the effect is NOT applied. The
+        agent is steered to relay, not re-plan."""
+        from grove.intents import Observation
+
+        msgs = getattr(agent, "_current_messages", None)
+        if msgs is None:
+            msgs = []
+        body = (
+            f"{obs_text}\n\n[Do NOT retry the write or attempt an alternative — "
+            "the change is queued for the operator's approval. Relay the message "
+            "above, including the portal link, to the operator.]"
+        )
+        observations: List[Any] = []
+        for intent in intents:
+            tool_call_id = getattr(intent, "call_id", None) or ""
+            msgs.append(
+                {"role": "tool", "tool_call_id": tool_call_id, "content": body}
+            )
+            observations.append(
+                Observation(
+                    intent_id=getattr(intent, "call_id", None),
+                    success=True,
+                    value=body,
+                    metadata={"disposition": "store_pending_approval"},
+                )
+            )
+        return observations
+
+    def approve_pending_red_proposal(self, proposal_id: str) -> Dict[str, Any]:
+        """Mint-on-approve — execute a stored pending RED ``.env`` proposal.
+
+        propose-approve-deadlock-v1 Phase 1a (Step 5). Invoked ONLY by an
+        operator-approval path (the portal, wired in 1b); NEVER model-reachable
+        (no tool exposes it). Flow: read the stored entry → TOCTOU re-verify the
+        payload hash (fail-loud on drift, NO write) → mint a single-use,
+        content-bound authorization and consume it → execute the ``.env`` write
+        via the governance handler (which re-verifies the hash immediately before
+        the write — Step 6) → clear the entry (single-use).
+        """
+        import hashlib
+
+        from grove.effect_signature import ApprovalGate
+        from tools.governance_tool import propose_governance_change
+
+        entry = self._red_pending_store.get(proposal_id)
+        if entry is None:
+            return {
+                "success": False,
+                "error": (
+                    "No pending proposal with that id — it may have been approved "
+                    "already, or the gateway restarted (pending proposals are "
+                    "session-scoped and do not survive a restart)."
+                ),
+            }
+        # (b) TOCTOU: the in-memory payload must still hash to the stored anchor.
+        live = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
+        if live != entry.content_sha256:
+            self._red_pending_store.pop(proposal_id)  # drop the tampered entry
+            return {
+                "success": False,
+                "error": (
+                    "Approval aborted — stored payload integrity check failed "
+                    "(content changed since it was proposed). Nothing was written."
+                ),
+            }
+        # (c) mint a single-use, content-bound authorization; (d) consume it. A
+        # FRESH gate keeps this out of any in-flight turn's shared approval gate.
+        gate = ApprovalGate()
+        gate.activate()
+        gate.mint(entry.effect_signature)
+        authorized = gate.consume(entry.effect_signature)
+        gate.flush()
+        if not authorized:
+            return {
+                "success": False,
+                "error": "approval authorization failed (token not consumable).",
+            }
+        # (d) execute the .env write; the handler re-verifies the hash (Step 6)
+        # immediately before write_text — a second, independent integrity gate.
+        result = propose_governance_change(
+            target_file=entry.target_file,
+            content=entry.content,
+            rationale=(entry.rationale or "operator-approved .env change"),
+            approved_content_sha256=entry.content_sha256,
+        )
+        # (e) clear the entry — single-use; an approved proposal cannot re-fire.
+        self._red_pending_store.pop(proposal_id)
+        return {"success": True, "proposal_id": proposal_id, "result": result}
 
     def _build_descope_observations(
         self, agent: Any, halt: "AndonResolutionHalt",

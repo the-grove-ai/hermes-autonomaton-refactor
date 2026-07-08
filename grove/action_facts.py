@@ -97,6 +97,10 @@ _KAIZEN_PROMPT_TEMPLATES: Tuple[Tuple[Optional[str], Optional[str], str], ...] =
     # "try it" moment; render it as a skill run, not a generic tool use.
     ("skill_view",   None,               "run the {skill_name} skill"),
     ("execute_code", None,               "run a Python script ({peek_code})"),
+    # propose-approve-deadlock-v1 Phase 1a — name the ACTION, not the raw tool.
+    # Without this the fallback below leaked "use propose_governance_change" into
+    # operator-facing RED copy. State-free; masks the internal tool name.
+    ("propose_governance_change", None,  "propose a governance change"),
     # Fallback row — matches every tool not above.
     (None,           None,               "use {tool_name}"),
 )

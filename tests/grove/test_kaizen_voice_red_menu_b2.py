@@ -125,8 +125,13 @@ class TestM1GateFlip:
 
 
 class TestM2RedMenu:
-    def test_red_resolutions_unchanged_no_operator_runs(self):
-        assert RED_RESOLUTIONS == ("cancel", "descoped")
+    def test_red_resolutions_membership(self):
+        # propose-approve-deadlock-v1 Phase 1a — DELIBERATE guardrail change: a
+        # third RED resolution, ``store_pending_approval``, joins {cancel,
+        # descoped}. It is NOT an operator MENU choice (the Cancel/De-scope menu
+        # below stays two choices); it is auto-selected for a RED-classified
+        # propose_governance_change and mints ONLY via operator approval.
+        assert RED_RESOLUTIONS == ("cancel", "descoped", "store_pending_approval")
         assert "operator_runs" not in RED_RESOLUTIONS
 
     def test_menu_renders_exactly_two_choices_via_halt_renderer(self):
