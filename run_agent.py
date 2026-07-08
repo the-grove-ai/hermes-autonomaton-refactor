@@ -12926,6 +12926,10 @@ class AIAgent:
         self, index_1_based: int, function_name: str, function_args: dict,
     ) -> None:
         """Display callback — per-tool descriptive call line."""
+        # propose-approve-deadlock-v1 Phase 1b-iii — redact the governance-write
+        # secret payload before it prints to console / gateway.log (keys stay).
+        from grove.secret_redact import redact_governance_args
+        function_args = redact_governance_args(function_name, function_args)
         args_str = json.dumps(function_args, ensure_ascii=False)
         if self.verbose_logging:
             print(f"  📞 Tool {index_1_based}: {function_name}({list(function_args.keys())})")
