@@ -497,4 +497,13 @@ def approve_red_proposal(
         "reason": reason,
         "proposal_id": proposal_id,
         "result": result,
+        # operator-red-correctness-v1 Move 2 — additive per-effect identity so the
+        # portal confirm card reflects the ACTUAL executed effect rather than a
+        # hardcoded governance-write mislabel. tool_name/pattern_key are non-secret
+        # classification metadata; target_path is the governance-write PATH ONLY
+        # (from target_file) — never the credential value (which stays in arguments,
+        # not surfaced here). Absent for non-governance effects (terminal → None).
+        "tool_name": entry.tool_name,
+        "pattern_key": entry.pattern_key,
+        "target_path": (entry.arguments or {}).get("target_file"),
     }
