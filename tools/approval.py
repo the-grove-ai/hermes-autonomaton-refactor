@@ -1136,6 +1136,41 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": _zone_pattern_key,
             }
         if _zone.zone == "red":
+            # red-action-store-pending-v1 Phase C (Gemini ordering constraint) —
+            # re-assert the catastrophic floor HERE, physically BEFORE the mint
+            # ContextVar is read, so a catastrophic command TERMINATES before the
+            # approved-effect token is ever extracted or compared. Eliminates any
+            # hypothetical side-channel / timing / collision surface on the
+            # ContextVar. Defense-in-depth atop the unconditional top-of-function
+            # hardline (approval.py:~1060) and the content-binding below —
+            # catastrophic returns before the mint check by construction.
+            _catastrophic, _cat_desc = detect_hardline_command(command)
+            if _catastrophic:
+                return _hardline_block_result(_cat_desc)
+            # MINT-AWARE: honor an operator-approved re-dispatch. Re-hash the EXACT
+            # command about to execute (hash-what-you-execute) and match it against
+            # the approved-effect ContextVar set by approve_red_proposal around
+            # registry.dispatch. A match means the operator approved THIS EXACT
+            # effect via the portal two-step → execute instead of re-blocking.
+            # Fail-CLOSED: any error falls through to the existing block below.
+            try:
+                from grove.red_execution_context import approved_effect_var
+                from grove.effect_signature import canonical_effect_signature
+                _approved_effect = approved_effect_var.get()
+                if _approved_effect is not None and canonical_effect_signature(
+                    "terminal", {"command": command}
+                ) == _approved_effect:
+                    return {
+                        "approved": True,
+                        "message": None,
+                        "zone_classified": "red",
+                        "matched_rule": _zone.matched_rule,
+                        "zone_reason": _zone_reason,
+                        "pattern_key": _zone_pattern_key,
+                        "approved_via_mint": True,
+                    }
+            except Exception:  # noqa: BLE001 — fail-closed to the block below
+                pass
             _strict = is_truthy_value(os.getenv("GROVE_ZONE_STRICT"))
             _interactive = is_cli and not is_gateway and not is_ask
             if _strict or not _interactive:
