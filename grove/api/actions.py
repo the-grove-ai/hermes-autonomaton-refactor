@@ -540,9 +540,34 @@ async def handle_red_proposal_confirm(request: web.Request) -> web.Response:
             proposal_queue.remove(full_pid)
         except Exception:  # noqa: BLE001
             pass
+        # operator-red-correctness-v1 Move 2 — reflect the ACTUAL executed effect,
+        # not a hardcoded governance-write mislabel. PATH only for a governance write;
+        # never the raw stdout/arguments (Gemini Q6 — no new value exposure).
+        _tool = result.get("tool_name")
+        _pk = str(result.get("pattern_key") or "")
+        if _pk.startswith("priv:"):
+            # Defensive: Move 1 routes priv:* to Operator-Runs-It at resolution, so it
+            # should not reach confirm. If a legacy pre-fix row does, do NOT falsely
+            # claim it executed — surface the operator-runs-it handback.
+            return _resolved_card(
+                short_id, "operator action", "handed back",
+                "This privileged action stays with you — run it in your terminal "
+                "and tell me the result.",
+            )
+        if _tool == "propose_governance_change":
+            _where = result.get("target_path") or "~/.grove/.env"
+            return _resolved_card(
+                short_id, "governance write", "written",
+                f"Written — the change was saved to {_where}.",
+            )
+        if _tool in ("terminal", "execute_code"):
+            return _resolved_card(
+                short_id, "command", "executed",
+                "Command executed — the approved action ran.",
+            )
         return _resolved_card(
-            short_id, "governance write", "written",
-            "Written — the credential was saved to .env.",
+            short_id, "action", "written",
+            "Done — the approved action was applied.",
         )
 
     reason = result.get("reason")
