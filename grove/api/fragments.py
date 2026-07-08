@@ -589,12 +589,28 @@ def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
         )
 
     nonce = red_nonce(full_pid, "approve", nonce_key_from_app(request.app))
+    # red-action-store-pending-v1 Phase B — OPAQUE_DYNAMIC_EFFECT affordance. When
+    # the classifier could NOT statically resolve the effect (command substitution,
+    # unparseable, dynamic targets), warn that approval authorizes the INTENT to run
+    # the string, not a guaranteed outcome. Legible proposals carry no warning.
+    opaque = store.is_opaque(bare) if store is not None else False
+    opaque_warning = (
+        '<div class="meta meta-opaque">⚠ OPAQUE dynamic command — effect not '
+        'statically resolved. Approving authorizes the intent to run this string, '
+        'not a guaranteed outcome.</div>'
+        if opaque else ""
+    )
     # Two-step approve: this POST /approve returns a Confirm card (no mint); the
     # Confirm card's POST /confirm performs the write. hx-vals carries the nonce.
+    # red-action-store-pending-v1 Phase B — per-action-type title (governance write /
+    # privileged shell / secret access / opaque command / generic), derived from the
+    # stored effect. Generalizes the former hardwired "RED — governance write".
+    title = store.card_title(bare) if store is not None else "RED — action"
     return (
         f'<div class="card card-red" id="proposal-{short_id}">'
-        f'<h4><span class="badge {badge}">RED — governance write</span></h4>'
+        f'<h4><span class="badge {badge}">{_esc(title)}</span></h4>'
         f'<p>{_esc(masked)}</p>'
+        f'{opaque_warning}'
         f'<div class="meta">value: •••• (masked)</div>'
         f'<div class="proposal-actions">'
         f'<button class="btn btn-approve" '

@@ -371,10 +371,27 @@ RED_RESOLUTION_DESCOPED = "descoped"
 # propose-approve-deadlock-v1 Phase 1a — per-instance store-pending-approval for a
 # RED-classified propose_governance_change. Mints ONLY via operator approval.
 RED_RESOLUTION_STORE_PENDING = "store_pending_approval"
+# red-action-store-pending-v1 Phase B — DENIED_BY_POLICY: a catastrophic effect
+# (default: rm:catastrophic; operator-extensible via red_denied_by_policy in the
+# governed zones schema) is NEVER store-pending and NEVER executed, on ANY surface
+# regardless of reachability. The load-bearing guardrail: without it the Phase A
+# generalization would make rm -rf / one-click-approvable. Terminal + LEGIBLE
+# (names how to change the policy — itself a governed action; "never forbidden").
+RED_RESOLUTION_DENIED_BY_POLICY = "denied_by_policy"
+# red-action-store-pending-v1 Phase B — ExecutionIdentity (RESERVED, ZERO members).
+# The second dimension of RED handling: WHO executes. Default = agent-execute
+# (hermes re-dispatches on approval — all 9 current RED classes are hermes-
+# executable local VM ops, GATE-A TASK 1). OPERATOR_IDENTITY_REQUIRED is reserved
+# for a future RED action needing a NON-DELEGABLE operator credential hermes lacks
+# (cloud IAM, another-host SSH) — the "Operator-Runs-It" copy-paste bridge. NO
+# action routes here today; the render + logic ship with the first real member.
+RED_RESOLUTION_OPERATOR_IDENTITY = "operator_identity_required"
 RED_RESOLUTIONS = (
     RED_RESOLUTION_CANCEL,
     RED_RESOLUTION_DESCOPED,
     RED_RESOLUTION_STORE_PENDING,
+    RED_RESOLUTION_DENIED_BY_POLICY,
+    RED_RESOLUTION_OPERATOR_IDENTITY,
 )
 
 
@@ -3007,8 +3024,11 @@ class Dispatcher:
                         triggering_tool=tool_name,
                     )
                 return False, (
-                    "RED approval required — this channel cannot suspend for "
-                    "approval. Approve the pending proposal via the portal."
+                    "RED action requires operator approval, and this "
+                    "non-interactive channel cannot suspend to queue it — the "
+                    "action is DENIED here (nothing was stored). Retry from an "
+                    "interactive surface (CLI / Telegram) where it can be stored "
+                    "for your approval."
                 )
             red_halt = AndonResolutionHalt(
                 intents=[intent], zone_results=[zr], triggering_index=0,
@@ -4700,7 +4720,14 @@ class Dispatcher:
         # closing the latent 1a orphan (a store-pending nobody can approve). The
         # four fail-safe cancel sites (headless default, __init__ default, tty EOF,
         # cli timeout) are UNTOUCHED; the RED_RESOLUTIONS default stays cancel.
-        if self._is_operator_reachable():
+        # red-action-store-pending-v1 Phase B — DENIED_BY_POLICY pre-check, keyed on
+        # the AST-derived pattern_key, BEFORE the reachability branch. A catastrophic
+        # effect (rm:catastrophic default; operator-extensible) is denied on ANY
+        # surface — never store-pending, never executed — regardless of reachability.
+        from grove.red_policy import is_denied_by_policy
+        if is_denied_by_policy(getattr(halt, "pattern_key", None)):
+            resolution = RED_RESOLUTION_DENIED_BY_POLICY
+        elif self._is_operator_reachable():
             resolution = RED_RESOLUTION_STORE_PENDING
         else:
             resolution = self._red_resolution_handler(halt)
@@ -4747,6 +4774,25 @@ class Dispatcher:
                     matched_rule=(getattr(halt, "matched_rule", None) or None),
                     reason=getattr(halt, "reason", None),
                     detail=_blocked_action,
+                )
+            )
+        if resolution == RED_RESOLUTION_DENIED_BY_POLICY:
+            # red-action-store-pending-v1 Phase B — a deny-listed catastrophic effect.
+            # Terminal, no store, no mint — but LEGIBLE: the message names the policy
+            # and how to change it (itself a governed action; "never forbidden").
+            from grove.governance_halt import (
+                GovernanceHaltContext,
+                TerminalGovernanceHalt,
+            )
+            from grove.red_policy import denial_message
+            raise TerminalGovernanceHalt(
+                GovernanceHaltContext(
+                    trigger="red_denied_by_policy",
+                    tool_name=getattr(_trig, "tool_name", None),
+                    zone=halt.zone,
+                    matched_rule=(getattr(halt, "matched_rule", None) or None),
+                    reason=getattr(halt, "reason", None),
+                    detail=denial_message(getattr(halt, "pattern_key", None)),
                 )
             )
         if resolution == RED_RESOLUTION_STORE_PENDING:
@@ -4844,6 +4890,7 @@ class Dispatcher:
             rationale=_rationale,
             created_at=created_at,
             is_opaque=is_opaque,
+            pattern_key=getattr(halt, "pattern_key", None),
         )
         self._red_pending_store.put(entry)
 

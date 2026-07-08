@@ -74,9 +74,11 @@ class TestTerminalSignal:
         # GRV-005 §VI (kaizen-voice B1) added "red_workflow_cancel" — the
         # operator aborting a structurally-blocked RED workflow (distinct
         # provenance from red_sovereign).
+        # red-action-store-pending-v1 Phase B added "red_denied_by_policy" — a
+        # deny-listed catastrophic RED effect terminated on any surface.
         assert set(TERMINAL_TRIGGERS) == {
             "red_sovereign", "deny_hard", "quarantine", "governance_error",
-            "tier_unavailable", "red_workflow_cancel",
+            "tier_unavailable", "red_workflow_cancel", "red_denied_by_policy",
         }
 
     def test_terminal_halt_result_shape(self):
