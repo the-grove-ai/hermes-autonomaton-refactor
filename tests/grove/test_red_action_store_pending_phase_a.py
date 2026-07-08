@@ -90,16 +90,13 @@ def _term(cmd: str) -> ToolIntent:
 
 # ── STORE routing (reachability + generalization) ─────────────────────────────
 class TestStoreRouting:
-    def test_reachable_legible_sudo_stores_not_cancels(self, tmp_path):
+    def test_reachable_priv_sudo_routes_operator_runs_it_no_store(self, tmp_path):
+        # operator-red-correctness-v1 Move 1 — a reachable operator priv:* RED (sudo)
+        # is non-gateway-executable, so it now routes to Operator-Runs-It AT RESOLUTION:
+        # NON-TERMINAL (no raise), and NO store row is created (was store-pending pre-v1).
         d = Dispatcher()  # default: platform!=fleet, interactive handler → reachable
-        _drive(d, _term("sudo apt-get install ffmpeg"))
-        assert len(d._red_pending_store) == 1
-        entry = _stored(d, "terminal", {"command": "sudo apt-get install ffmpeg"})
-        assert entry is not None
-        assert entry.tool_name == "terminal"
-        assert entry.arguments == {"command": "sudo apt-get install ffmpeg"}
-        assert entry.is_opaque is False
-        assert "sudo apt-get install ffmpeg" in entry.description
+        _drive(d, _term("sudo apt-get install ffmpeg"))  # priv:sudo
+        assert len(d._red_pending_store) == 0            # routed at resolution, never stored
 
     def test_reachable_opaque_stores_with_flag(self, tmp_path):
         d = Dispatcher()

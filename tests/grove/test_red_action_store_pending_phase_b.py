@@ -93,9 +93,12 @@ class TestDeniedByPolicy:
             _resolve(d, _term("rm -rf /"))
         assert exc.value.context.trigger == "red_denied_by_policy"  # policy, not workflow_cancel
 
-    def test_non_catastrophic_sudo_still_store_pends(self):
+    def test_non_catastrophic_nonpriv_still_store_pends(self):
+        # A non-catastrophic, non-priv RED is untouched by the deny-list and still
+        # store-pends. (operator-red-correctness-v1: sudo is now operator-runs-it, so
+        # a non-priv opacity RED is the store-pending example here.)
         d = Dispatcher()
-        _resolve(d, _term("sudo apt-get install ffmpeg"))
+        _resolve(d, _term("echo $(whoami)"))         # opacity:* — non-catastrophic, non-priv
         assert len(d._red_pending_store) == 1        # unaffected by the deny-list
 
     def test_operator_config_deny_pattern_denies(self, monkeypatch):
