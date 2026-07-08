@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 from grove.pattern_cache import pattern_cache_enabled
+from grove.secret_redact import redact_governance_args
 
 logger = logging.getLogger(__name__)
 
@@ -1762,7 +1763,13 @@ class Dispatcher:
                             # compiler's executable evidence.
                             self._current_turn_tool_invocations.append({
                                 "tool": _name,
-                                "args": getattr(_intent, "arguments", None),
+                                # propose-approve-deadlock-v1 Phase 1b-iii — redact the
+                                # governance-write secret payload BEFORE it reaches the
+                                # durable intent feed (IntentRecord.tool_invocation) or the
+                                # T0 pattern. Non-governance tools pass through unchanged.
+                                "args": redact_governance_args(
+                                    _name, getattr(_intent, "arguments", None)
+                                ),
                             })
                     # write-confinement-v1 Phase 2 — hard-reject out-of-workspace
                     # writes BEFORE classification, so an out-of-remit write is

@@ -2394,18 +2394,24 @@ class APIServerAdapter(BasePlatformAdapter):
 
             def _on_tool_start(tool_call_id, function_name, function_args):
                 """Queue a started tool for live function_call streaming."""
+                # propose-approve-deadlock-v1 Phase 1b-iii — redact the governance-
+                # write secret from the /v1 function_call.arguments blob (WHOLE, not
+                # deltas; render-only — the server executes in-process). target_file
+                # stays legible; non-governance tools stream unchanged.
+                from grove.secret_redact import redact_governance_args
                 _stream_q.put(("__tool_started__", {
                     "tool_call_id": tool_call_id,
                     "name": function_name,
-                    "arguments": function_args or {},
+                    "arguments": redact_governance_args(function_name, function_args or {}),
                 }))
 
             def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
                 """Queue a completed tool result for live function_call_output streaming."""
+                from grove.secret_redact import redact_governance_args
                 _stream_q.put(("__tool_completed__", {
                     "tool_call_id": tool_call_id,
                     "name": function_name,
-                    "arguments": function_args or {},
+                    "arguments": redact_governance_args(function_name, function_args or {}),
                     "result": function_result,
                 }))
 
