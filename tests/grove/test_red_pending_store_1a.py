@@ -124,7 +124,10 @@ class TestStorePendingRouting:
         # red-action-store-pending-v1 Phase A — the stored id is now the generic
         # action anchor (action_proposal_id(effect_signature)), not content_proposal_id.
         assert len(d._red_pending_store) == 1
-        (entry,) = list(d._red_pending_store._by_id.values())
+        # durable-red-store-v1: fetch by the content-addressed pid (the store is now
+        # SQLite-backed; there is no in-memory ``_by_id`` to enumerate).
+        entry = d._red_pending_store.get(_propose_pid(env))
+        assert entry is not None
         assert entry.tool_name == "propose_governance_change"
         # feed-worthy NON-TERMINAL store event
         assert d._last_store_pending_event.trigger is HaltTrigger.OPERATOR_STORED_PENDING
@@ -157,7 +160,13 @@ class TestStorePendingRouting:
         else:
             raise AssertionError("expected AndonResolutionHalt")
         assert len(d._red_pending_store) == 1
-        (entry,) = list(d._red_pending_store._by_id.values())
+        # durable-red-store-v1: fetch by the content-addressed pid (no in-memory
+        # ``_by_id`` to enumerate). write_file is a non-propose tool → args verbatim.
+        _wargs = prepare_execute_arguments("write_file", {"path": str(tmp_path / "x")})
+        entry = d._red_pending_store.get(
+            action_proposal_id(canonical_effect_signature("write_file", _wargs))
+        )
+        assert entry is not None
         assert entry.tool_name == "write_file"
 
     def test_unreachable_red_action_still_cancels(self, tmp_path, monkeypatch):
@@ -216,10 +225,13 @@ class TestApproveCallback:
             created_at="2026-07-08T00:00:00+00:00",
             is_opaque=is_opaque,
         )
-        d._red_pending_store.put(entry)
-        # Tamper AFTER storing — the stored anchor no longer matches the recomputed
-        # effect signature (there is no content field to tamper; the signature is it).
+        # durable-red-store-v1: the store snapshots ``arguments`` as JSON at put(),
+        # so mutating the local object AFTER store is a no-op. Persist a row whose
+        # anchor is already divergent from its args (there is no content field to
+        # tamper; the signature is it) — approve's integrity guard recomputes the
+        # live signature over the stored args and aborts on the mismatch.
         entry.effect_signature = "TAMPERED"
+        d._red_pending_store.put(entry)
 
         res = d.approve_pending_red_proposal(pid)
         assert res["success"] is False
