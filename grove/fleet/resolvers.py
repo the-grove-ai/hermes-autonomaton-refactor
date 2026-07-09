@@ -159,13 +159,13 @@ def resolve_notion_query(input_state: Dict[str, Any], worker_id: str) -> Optiona
     if not rows:
         return None  # every matching row already has a staged draft -> no_work
     payload = {"rows": rows, "data_source": ds_url, "filter": filter_}
-    # suggest-revision-verb-v1 P3 — host-side revision fold. Surface the selected
-    # row's accumulated operator guidance as an explicit, framed revision_directive
-    # so the re-draft satisfies it (the worker prompt lifts it OUT of the json blob).
-    # FAIL-LOUD: a corrupt store entry raises (never draft feedback-blind).
-    directive = _revision_directive(rows[0].get("id"), worker_id)
-    if directive:
-        payload["revision_directive"] = directive
+    # fleet-review-unification-v1 C1b-1 — surface the selected unit's stable identity
+    # so the WORKER RUNTIME seam (manager) can fold the revision_directive by unit_id.
+    # For notion_query unit_id == row_id (rows[0]["id"] — the single selected row).
+    # The directive fold itself MOVED to the manager (gated on action_surface_publish);
+    # the resolver no longer injects it here. Selection-time priority / terminal_skip
+    # reads remain in _select_units (row-selection, not directive injection).
+    payload["unit_id"] = rows[0].get("id")
     return payload
 
 
@@ -276,19 +276,20 @@ def _order_by_key(order_by: List[Dict[str, Any]]):
     return functools.cmp_to_key(_cmp)
 
 
-def _read_feedback_or_andon(row_id: Optional[str], worker_id: str):
-    """``feedback_store.read(row_id)`` with a corrupt entry converted to a LOUD
-    Andon (B7): a present-but-unreadable revision entry must NEVER be swallowed into
-    a feedback-blind re-draft. Returns the entry dict or None."""
-    if not row_id:
+def _read_feedback_or_andon(unit_id: Optional[str], worker_id: str):
+    """``feedback_store.read(worker_id, unit_id)`` with a corrupt entry converted to a
+    LOUD Andon (B7): a present-but-unreadable revision entry must NEVER be swallowed
+    into a feedback-blind re-draft. Returns the entry dict or None. (C1b-1: keyed on
+    the generalized (worker, unit_id) store; for notion_query unit_id == row_id.)"""
+    if not unit_id:
         return None
     from grove.forge import feedback_store
 
     try:
-        return feedback_store.read(row_id)
+        return feedback_store.read(worker_id, unit_id)
     except (json.JSONDecodeError, OSError, ValueError) as exc:
         raise FleetWorkerAndon(
-            f"revision feedback store unreadable for row {row_id!r} ({exc}) — refusing "
+            f"revision feedback store unreadable for unit {unit_id!r} ({exc}) — refusing "
             f"to re-draft feedback-blind",
             worker_id=worker_id,
             check="revision_store_unreadable",
