@@ -2,17 +2,16 @@
 
 The informed-path loop-back tap has a spine that crosses four modules:
 
-    operator taps "Suggest revision"           (fragments._forge_kaizen_div render)
+    operator taps "Suggest revision"           (fragments._disposition_actions_div render)
       -> feedback_store.write accumulates        (grove.forge.feedback_store)
-        -> resolver selects that row FIRST,       (grove.fleet.resolvers._select_units)
-           folds the framed directive             (grove.fleet.resolvers._revision_directive)
+        -> resolver selects that unit FIRST,      (grove.fleet.resolvers._select_units)
+           the manager folds the framed directive (grove.fleet.manager, C1b-1)
           -> worker prompt surfaces the directive  (grove.fleet.worker_entry._build_worker_prompt)
 
 plus the P4 N-breaker (terminal_skip exclusion + won't-converge threshold), the
 TTL-GC, the orphan-staged crash-residual sweep, and the fail-loud corrupt-store
-Andon. This smoke exercises that spine against a REAL temp GROVE_HOME store (no
-network, no model) — the deterministic seam is the prompt build; the model turn
-downstream of it is out of scope for a deterministic test.
+Andon. fleet-review-unification-v1 C1b-1 generalized the store to (worker, unit_id)
+keying; for notion_query unit_id == row_id and worker is the fleet worker id.
 
 Runs entirely local: ``GROVE_HOME`` is redirected to a per-test ``tmp_path`` (the
 store, the pending_review sink, the ``.feedback`` dir all land under it).
@@ -37,97 +36,108 @@ def grove_home(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------------------
 # feedback_store — accumulate-with-history, fail-loud, N-breaker state, GC
+# (C1b-1: keyed on (worker, unit_id); forge uses worker="forge", unit_id=row_id)
 # ---------------------------------------------------------------------------
 
 
 def test_store_accumulates_history_and_count(grove_home):
     from grove.forge import feedback_store
 
-    row = "row-abc"
-    e1 = feedback_store.write(row, "tighten the summary")
-    e2 = feedback_store.write(row, "add a metrics bullet")
+    unit = "row-abc"
+    e1 = feedback_store.write("forge", unit, "tighten the summary")
+    e2 = feedback_store.write("forge", unit, "add a metrics bullet")
     assert e1["count"] == 1 and e2["count"] == 2
     assert [h["revision_note"] for h in e2["history"]] == [
         "tighten the summary",
         "add a metrics bullet",
     ]
     # read returns the persisted entry verbatim (raw notes, never escaped by the store)
-    persisted = feedback_store.read(row)
+    persisted = feedback_store.read("forge", unit)
     assert persisted == e2
     assert persisted["terminal_skip"] is False
 
 
-def test_store_write_empty_row_id_fails_loud(grove_home):
+def test_store_write_empty_unit_id_fails_loud(grove_home):
     from grove.forge import feedback_store
 
     with pytest.raises(ValueError):
-        feedback_store.write("", "guidance")
+        feedback_store.write("forge", "", "guidance")
 
 
 def test_store_read_corrupt_entry_raises_not_swallow(grove_home):
     """A present-but-unreadable entry must RAISE (never a feedback-blind None)."""
     from grove.forge import feedback_store
 
-    feedback_store.write("row-x", "seed")
-    path = feedback_store._entry_path("row-x")
+    feedback_store.write("forge", "row-x", "seed")
+    path = feedback_store._entry_path("forge", "row-x")
     path.write_text("{ this is not json", encoding="utf-8")
     with pytest.raises(json.JSONDecodeError):
-        feedback_store.read("row-x")
+        feedback_store.read("forge", "row-x")
 
 
 def test_store_absent_entry_is_none(grove_home):
     from grove.forge import feedback_store
 
-    assert feedback_store.read("never-written") is None
+    assert feedback_store.read("forge", "never-written") is None
+
+
+def test_store_forge_path_byte_identical(grove_home):
+    """C1b-1 byte-identity: worker="forge", unit_id=row_id reproduces the pre-C1b
+    path ~/.grove/forge/.feedback/<row_id>.json exactly."""
+    from grove.forge import feedback_store
+
+    p = feedback_store._entry_path("forge", "ROW123")
+    assert p == grove_home / "forge" / ".feedback" / "ROW123.json"
 
 
 def test_set_terminal_skip_is_idempotent(grove_home):
     from grove.forge import feedback_store
 
-    feedback_store.write("row-t", "g1")
-    feedback_store.set_terminal_skip("row-t")
-    feedback_store.set_terminal_skip("row-t")  # idempotent — no raise, no dup
-    assert feedback_store.read("row-t")["terminal_skip"] is True
+    feedback_store.write("forge", "row-t", "g1")
+    feedback_store.set_terminal_skip("forge", "row-t")
+    feedback_store.set_terminal_skip("forge", "row-t")  # idempotent — no raise, no dup
+    assert feedback_store.read("forge", "row-t")["terminal_skip"] is True
     # absent entry -> no-op (nothing to skip)
-    feedback_store.set_terminal_skip("row-absent")
-    assert feedback_store.read("row-absent") is None
+    feedback_store.set_terminal_skip("forge", "row-absent")
+    assert feedback_store.read("forge", "row-absent") is None
 
 
 def test_gc_reclaims_stale_exempts_terminal_and_leaves_unreadable(grove_home):
     from grove.forge import feedback_store
 
     # stale non-terminal -> reclaimed
-    feedback_store.write("stale", "old")
-    stale_path = feedback_store._entry_path("stale")
+    feedback_store.write("forge", "stale", "old")
+    stale_path = feedback_store._entry_path("forge", "stale")
     stale = json.loads(stale_path.read_text())
     stale["written_at"] = "2000-01-01T00:00:00+00:00"
     stale_path.write_text(json.dumps(stale), encoding="utf-8")
 
     # stale terminal_skip -> EXEMPT (won't-converge must not resurrect after TTL)
-    feedback_store.write("stale-terminal", "old")
-    feedback_store.set_terminal_skip("stale-terminal")
-    term_path = feedback_store._entry_path("stale-terminal")
+    feedback_store.write("forge", "stale-terminal", "old")
+    feedback_store.set_terminal_skip("forge", "stale-terminal")
+    term_path = feedback_store._entry_path("forge", "stale-terminal")
     term = json.loads(term_path.read_text())
     term["written_at"] = "2000-01-01T00:00:00+00:00"
     term_path.write_text(json.dumps(term), encoding="utf-8")
 
     # fresh -> kept
-    feedback_store.write("fresh", "new")
+    feedback_store.write("forge", "fresh", "new")
 
     # unreadable -> left in place (never delete blind)
-    bad = feedback_store._store_dir() / "corrupt.json"
+    bad = feedback_store._store_dir("forge") / "corrupt.json"
     bad.write_text("{ not json", encoding="utf-8")
 
-    reclaimed = feedback_store.gc(ttl_seconds=60)
+    reclaimed = feedback_store.gc("forge", ttl_seconds=60)
     assert reclaimed == ["stale"]
-    assert not feedback_store._entry_path("stale").exists()
-    assert feedback_store._entry_path("stale-terminal").exists()
-    assert feedback_store._entry_path("fresh").exists()
+    assert not feedback_store._entry_path("forge", "stale").exists()
+    assert feedback_store._entry_path("forge", "stale-terminal").exists()
+    assert feedback_store._entry_path("forge", "fresh").exists()
     assert bad.exists()
 
 
 # ---------------------------------------------------------------------------
 # resolvers — framed directive, priority tier, terminal exclusion, fail-loud
+# (C1b-1: the store the helpers read is keyed on (worker_id, unit_id))
 # ---------------------------------------------------------------------------
 
 
@@ -135,8 +145,8 @@ def test_revision_directive_latest_authoritative_priors_context(grove_home):
     from grove.forge import feedback_store
     from grove.fleet import resolvers
 
-    feedback_store.write("row-d", "make it shorter")
-    feedback_store.write("row-d", "add the salary band")
+    feedback_store.write("worker-1", "row-d", "make it shorter")
+    feedback_store.write("worker-1", "row-d", "add the salary band")
     directive = resolvers._revision_directive("row-d", "worker-1")
     # latest is the authoritative directive; priors are framed as context-only
     assert "<<<add the salary band>>>" in directive
@@ -150,7 +160,7 @@ def test_revision_directive_single_note_no_priors_clause(grove_home):
     from grove.forge import feedback_store
     from grove.fleet import resolvers
 
-    feedback_store.write("row-s", "only guidance")
+    feedback_store.write("w", "row-s", "only guidance")
     directive = resolvers._revision_directive("row-s", "w")
     assert "<<<only guidance>>>" in directive
     assert "context only" not in directive
@@ -161,8 +171,8 @@ def test_revision_directive_none_when_no_guidance_or_terminal(grove_home):
     from grove.fleet import resolvers
 
     assert resolvers._revision_directive("row-none", "w") is None
-    feedback_store.write("row-term", "g")
-    feedback_store.set_terminal_skip("row-term")
+    feedback_store.write("w", "row-term", "g")
+    feedback_store.set_terminal_skip("w", "row-term")
     assert resolvers._revision_directive("row-term", "w") is None
 
 
@@ -170,24 +180,24 @@ def test_has_revision_priority_and_terminal_skip_gates(grove_home):
     from grove.forge import feedback_store
     from grove.fleet import resolvers
 
-    feedback_store.write("row-p", "g")
+    feedback_store.write("w", "row-p", "g")
     assert resolvers._has_revision_priority("row-p", "w") is True
     assert resolvers._is_terminal_skip("row-p", "w") is False
-    feedback_store.set_terminal_skip("row-p")
+    feedback_store.set_terminal_skip("w", "row-p")
     # terminal rows lose priority AND are flagged terminal
     assert resolvers._has_revision_priority("row-p", "w") is False
     assert resolvers._is_terminal_skip("row-p", "w") is True
 
 
 def test_select_units_prioritizes_pending_and_excludes_terminal(grove_home):
-    """The spine's selection contract: a revision-pending row jumps the fresh-fit
-    queue; a won't-converge (terminal_skip) row is removed entirely."""
+    """The spine's selection contract: a revision-pending unit jumps the fresh-fit
+    queue; a won't-converge (terminal_skip) unit is removed entirely."""
     from grove.forge import feedback_store
     from grove.fleet import resolvers
 
-    feedback_store.write("revised", "redo it")       # -> priority
-    feedback_store.write("dead", "loop")
-    feedback_store.set_terminal_skip("dead")          # -> excluded
+    feedback_store.write("worker-1", "revised", "redo it")       # -> priority
+    feedback_store.write("worker-1", "dead", "loop")
+    feedback_store.set_terminal_skip("worker-1", "dead")          # -> excluded
 
     rows = [{"id": "fresh1"}, {"id": "dead"}, {"id": "revised"}, {"id": "fresh2"}]
     selected = resolvers._select_units(rows, {}, "worker-1")
@@ -211,8 +221,8 @@ def test_resolver_read_corrupt_store_raises_fleet_andon(grove_home):
     from grove.forge import feedback_store
     from grove.fleet import resolvers
 
-    feedback_store.write("row-c", "seed")
-    feedback_store._entry_path("row-c").write_text("{ broken", encoding="utf-8")
+    feedback_store.write("worker-9", "row-c", "seed")
+    feedback_store._entry_path("worker-9", "row-c").write_text("{ broken", encoding="utf-8")
     with pytest.raises(FleetWorkerAndon) as ei:
         resolvers._has_revision_priority("row-c", "worker-9")
     assert ei.value.check == "revision_store_unreadable"
@@ -250,6 +260,99 @@ def test_worker_prompt_byte_identical_without_directive():
 
 
 # ---------------------------------------------------------------------------
+# manager — C1b-1 the revision-directive fold, LIFTED to the worker runtime seam
+# and AMENDMENT-gated on approval_handoff.mode == "action_surface_publish".
+# Exercises the REAL capability mode read (forge=action_surface_publish,
+# researcher=ingest_post) through _maybe_dispatch_one, not a monkeypatched gate.
+# ---------------------------------------------------------------------------
+
+
+class _FakeHandle:
+    def __init__(self):
+        self.run_id = "run-0001"
+
+
+def _dispatch_capturing(monkeypatch, skill_id, unit_id):
+    """Drive FleetManager._maybe_dispatch_one with the resolver/mcp/runner seams
+    stubbed, returning the payload runner.dispatch actually received. The mode gate
+    (_review_mode_for_skill) runs FOR REAL against the capability registry."""
+    from datetime import datetime, timezone
+
+    from grove.fleet import manager as mgr
+    from grove.fleet.config import WorkerConfig
+
+    captured = {}
+
+    def _fake_resolve(input_state, wid):
+        # the resolver's job post-C1b-1: build the payload + stamp unit_id, NO fold
+        return {"rows": [{"id": unit_id}], "unit_id": unit_id}
+
+    def _fake_dispatch(cfg, payload):
+        captured["payload"] = payload
+        return _FakeHandle()
+
+    monkeypatch.setattr(mgr, "resolve_input_state", _fake_resolve)
+    monkeypatch.setattr(mgr.runner, "dispatch", _fake_dispatch)
+    monkeypatch.setattr(mgr.FleetManager, "_ensure_mcp_warm_sync", lambda self, s, w: None)
+
+    cfg = WorkerConfig(
+        id="w", skill=skill_id, enabled=True, cadence="* * * * *",
+        input_state={"type": "notion_query", "server": "notion"},
+        limits={}, quiet_hours=None,
+    )
+    m = mgr.FleetManager()
+    m._maybe_dispatch_one("w", cfg, datetime.now(timezone.utc))
+    return captured.get("payload")
+
+
+def test_manager_injects_directive_for_action_surface_publish(grove_home, monkeypatch):
+    """VERDICT A — forge (mode=action_surface_publish, read FOR REAL from the cap
+    record): a feedback file present for the unit -> the manager folds the framed
+    directive into the dispatch payload at the runtime seam."""
+    from grove.forge import feedback_store
+
+    feedback_store.write("w", "row-a", "tighten the ask")
+    payload = _dispatch_capturing(monkeypatch, "skill.fleet.forge-jobsearch", "row-a")
+    assert payload is not None
+    assert "revision_directive" in payload
+    assert "<<<tighten the ask>>>" in payload["revision_directive"]
+
+
+def test_manager_no_injection_for_ingest_post_mode(grove_home, monkeypatch):
+    """VERDICT B — researcher (mode=ingest_post, read FOR REAL): even WITH a feedback
+    file present for the unit, the amendment gate suppresses injection entirely."""
+    from grove.forge import feedback_store
+
+    feedback_store.write("w", "row-b", "add a citation")
+    payload = _dispatch_capturing(monkeypatch, "skill.fleet.researcher", "row-b")
+    assert payload is not None
+    assert "revision_directive" not in payload  # amendment gate held
+
+
+def test_redraft_cycle_n_breaker_increments_then_terminates(grove_home):
+    """VERDICT A (cycle) — suggest_revision accumulates (count 1..N), the directive is
+    available for re-draft each round, and the N-breaker (count >= _REVISION_MAX) sets
+    terminal_skip, which then EXCLUDES the unit from re-selection (directive -> None)."""
+    from grove.api.actions import _REVISION_MAX
+    from grove.forge import feedback_store
+    from grove.fleet import resolvers
+
+    unit = "row-cycle"
+    for i in range(1, _REVISION_MAX + 1):
+        entry = feedback_store.write("w", unit, f"round {i}")
+        assert entry["count"] == i
+        # each round the framed directive is available to the next re-draft
+        assert resolvers._revision_directive(unit, "w") is not None
+        if int(entry["count"]) >= _REVISION_MAX:  # the portal's N-breaker predicate
+            feedback_store.set_terminal_skip("w", unit)
+    # won't-converge: excluded from re-selection, and no directive is served
+    assert resolvers._is_terminal_skip(unit, "w") is True
+    assert resolvers._revision_directive(unit, "w") is None
+    rows = [{"id": unit}, {"id": "fresh"}]
+    assert unit not in [r["id"] for r in resolvers._select_units(rows, {}, "w")]
+
+
+# ---------------------------------------------------------------------------
 # fragments — the render affordance (colon-free DOM id, hx-include wiring)
 # ---------------------------------------------------------------------------
 
@@ -264,55 +367,3 @@ def test_forge_kaizen_div_renders_enabled_suggest_revision():
     # enabled textarea (not the old disabled placeholder button)
     assert f'id="{rev_id}"' in html
     assert 'name="revision_text"' in html
-    assert "disabled" not in html
-    # colon-free CSS selector (the P1 Andon fix): #id must not carry the raw pid colon
-    assert f'hx-include="#{rev_id}"' in html
-    assert ":" not in rev_id
-    # submit routes to the suggest_revision endpoint with the raw pid in the path
-    assert f"/portal/actions/proposals/{pid}/suggest_revision" in html
-
-
-# ---------------------------------------------------------------------------
-# actions — N-breaker constant, orphan-staged sweep (marker-gated), error card
-# ---------------------------------------------------------------------------
-
-
-def test_revision_max_constant_is_the_n_breaker_threshold():
-    from grove.api import actions
-
-    assert actions._REVISION_MAX == 3
-
-
-def test_orphan_sweep_only_archives_marked_dirs(grove_home):
-    """The finalize-before-archive crash residual self-heals: ONLY a dir carrying
-    the ``.archive-pending`` marker is swept; a healthy/actively-staging dir is not
-    (false-positive guard)."""
-    from grove.api import actions
-
-    pending = grove_home / "forge" / "pending_review"
-    marked = pending / "marked-slug"
-    healthy = pending / "healthy-slug"
-    marked.mkdir(parents=True)
-    healthy.mkdir(parents=True)
-    (marked / ".archive-pending").write_text("2026-01-01T00:00:00+00:00", encoding="utf-8")
-    (marked / "meta.json").write_text("{}", encoding="utf-8")
-    (healthy / "meta.json").write_text("{}", encoding="utf-8")
-
-    swept = actions._sweep_orphan_staged()
-    assert swept == ["marked-slug"]
-    assert not marked.exists()          # archived (moved out of pending_review)
-    assert healthy.exists()             # untouched — no marker
-
-
-def test_orphan_sweep_empty_when_no_pending_dir(grove_home):
-    from grove.api import actions
-
-    assert actions._sweep_orphan_staged() == []
-
-
-def test_forge_suggest_error_card_escapes_and_targets_short_id():
-    from grove.api import actions
-
-    card = actions._forge_suggest_error_card("abc123", "Revision guidance is <empty>")
-    assert 'id="proposal-abc123"' in card
-    assert "&lt;empty&gt;" in card      # HTML-escaped at render

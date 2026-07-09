@@ -35,6 +35,21 @@ from grove.fleet.runner import WorkerHandle
 logger = logging.getLogger(__name__)
 
 
+def _review_mode_for_skill(skill_id: Optional[str]) -> Optional[str]:
+    """The worker's ``approval_handoff.mode`` from its capability record (or None).
+
+    fleet-review-unification-v1 — the SOLE ``approval_handoff.mode`` read in the
+    codebase. Gates BOTH the operator-promote proposal emission (post-run reap) and
+    the C1b-1 revision-directive fold (pre-run dispatch). ``action_surface_publish``
+    is the producer-declaring value; forge is the only skill declaring it today.
+    """
+    from grove.capability_registry import load_capabilities
+
+    cap = load_capabilities().get(skill_id)
+    gov = (cap.governance or {}) if cap is not None else {}
+    return ((gov.get("approval_handoff") or {}).get("mode")) if isinstance(gov, dict) else None
+
+
 class FleetManager:
     def __init__(self, loop: Optional[Any] = None, workers_path: Optional[Any] = None):
         self._loop = loop
@@ -142,17 +157,12 @@ class FleetManager:
         an emit failure surfaces an Andon, never crashes the tick."""
         try:
             skill_id = event.get("skill")
-            from grove.capability_registry import load_capabilities
-
-            cap = load_capabilities().get(skill_id)
-            gov = (cap.governance or {}) if cap is not None else {}
-            # fleet-review-unification-v1 C1a — the emission is producer-parametrized:
-            # the producer IS skill_id (payload.skill_id + proposer=skill_id below), and
-            # approval_handoff.mode == "action_surface_publish" is the SOLE producer-
-            # declaring gate (forge is the only skill declaring it today). Behavior is
-            # unchanged this commit; C1b flips additional producers on via this gate.
-            mode = ((gov.get("approval_handoff") or {}).get("mode")) if isinstance(gov, dict) else None
-            if mode != "action_surface_publish":
+            # fleet-review-unification-v1 C1a/C1b-1 — producer == skill_id;
+            # approval_handoff.mode == "action_surface_publish" is the producer-
+            # declaring gate. ``_review_mode_for_skill`` is the SOLE mode read (this
+            # file) — the SAME helper gates the C1b-1 directive fold in
+            # ``_maybe_dispatch_one``.
+            if _review_mode_for_skill(skill_id) != "action_surface_publish":
                 return  # ingest_post / other — no operator-promote proposal
 
             slug = event.get("slug")
@@ -259,6 +269,19 @@ class FleetManager:
         payload = resolve_input_state(cfg.input_state, wid)  # None -> no work; raises -> Andon
         if payload is None:
             return  # legitimate no_work — the quiet path
+        # fleet-review-unification-v1 C1b-1 — the revision-directive fold, LIFTED here
+        # from resolve_notion_query. AMENDMENT-gated: inject ONLY when the worker's
+        # approval_handoff.mode == "action_surface_publish" (forge today) — NO injection
+        # for ingest_post workers even if a feedback file exists for the unit. Ordering:
+        # AFTER the resolver constructs its payload; payload is a flat dict, key
+        # "revision_directive" exactly as before. Read the per-unit feedback store by
+        # unit_id (== row_id for notion_query) — same files, same directive, forge-identical.
+        if isinstance(payload, dict) and _review_mode_for_skill(cfg.skill) == "action_surface_publish":
+            from grove.fleet.resolvers import _revision_directive
+
+            _directive = _revision_directive(payload.get("unit_id"), wid)
+            if _directive:
+                payload["revision_directive"] = _directive
         handle = runner.dispatch(cfg, payload)
         self._running[wid] = handle
         self._last_dispatch[wid] = now

@@ -1038,6 +1038,21 @@ async def _promote_disposition(
 _REVISION_MAX = 3
 
 
+def _worker_id_for_skill(skill_id: Optional[str]) -> Optional[str]:
+    """The fleet worker id whose capability is *skill_id* (or None). fleet-review-
+    unification-v1 C1b-1 — the feedback store path is ``~/.grove/<worker>/.feedback``;
+    the manager keys it on its worker id, so the portal must resolve the same id from
+    the proposal's skill_id. Forge → ``"forge"``."""
+    if not skill_id:
+        return None
+    from grove.fleet.config import load_fleet_workers
+
+    for wid, cfg in load_fleet_workers().items():
+        if getattr(cfg, "skill", None) == skill_id:
+            return wid
+    return None
+
+
 async def _suggest_revision_text(request: web.Request):
     """Parse ``revision_text`` from the request body (handle_dock_goal_update
     precedent: form-urlencoded or JSON). Returns the RAW text when it has
@@ -1136,6 +1151,21 @@ async def _suggest_revision_disposition(
             message=msg, status=400,
         )
 
+    # fleet-review-unification-v1 C1b-1 — the feedback store is keyed on (worker,
+    # unit_id). For notion_query producers unit_id == row_id and worker is the fleet
+    # worker id (forge). Derive worker from the proposal's skill_id so the portal WRITE
+    # and the manager READ agree on ~/.grove/<worker>/.feedback/<unit_id>.json.
+    unit_id = row_id
+    _skill_id = (proposal.payload or {}).get("skill_id")
+    worker = _worker_id_for_skill(_skill_id)
+    if not worker:
+        msg = f"No fleet worker declares skill {_skill_id!r} — cannot key revision feedback."
+        return await _loud_action_failure(
+            _forge_suggest_error_card(short_id, msg),
+            failure_class="suggest_revision_no_worker", action="forge_suggest_revision",
+            message=msg, status=400,
+        )
+
     # (3) set_lease CAS — the double-tap guard.
     lease = proposal_queue.set_lease(proposal_id, holder="portal_suggest_revision")
     if lease == proposal_queue.LEASE_NOT_FOUND:
@@ -1157,13 +1187,13 @@ async def _suggest_revision_disposition(
     try:
         # a. store durable FIRST (accumulate). Harmless pre-write: if finalize fails
         #    below, the skip-marker is NEVER cleared, so the row is not re-selected.
-        entry = feedback_store.write(row_id, revision_text)
+        entry = feedback_store.write(worker, unit_id, revision_text)
         # N-BREAKER — the tap crossing N terminally excludes the row (won't converge)
         # and fires a LOUD out-of-band Andon. The disposition still proceeds (the
         # current draft is recorded + archived); the row simply will not re-draft.
         wont_converge = int(entry.get("count", 0)) >= _REVISION_MAX
         if wont_converge:
-            feedback_store.set_terminal_skip(row_id)
+            feedback_store.set_terminal_skip(worker, unit_id)
             wc_msg = (
                 f"Revision limit reached ({entry.get('count')}) for row {row_id} "
                 f"(slug {slug}) — marked WON'T-CONVERGE; it will no longer re-draft. "
