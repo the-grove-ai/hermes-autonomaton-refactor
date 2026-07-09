@@ -1236,6 +1236,10 @@ async def _suggest_revision_disposition(
             failure_class="suggest_revision_no_row_id", action="forge_suggest_revision",
             message=msg, status=400,
         )
+    # The Notion row_id (forge only; None for file producers) — retained for the
+    # finalize disposition record + won't-converge diagnostics. For forge unit_id ==
+    # row_id, so these paths stay byte-identical.
+    row_id = (proposal.payload or {}).get("row_id")
 
     # Derive worker from the proposal's skill_id so the portal WRITE and the manager
     # READ agree on ~/.grove/<worker>/.feedback/<unit_id>.json.
@@ -1287,7 +1291,7 @@ async def _suggest_revision_disposition(
             try:
                 proposal_queue.file_agentless_proposal(
                     failure_class="revision_wont_converge",
-                    action="forge_suggest_revision", evidence=row_id, justification=wc_msg,
+                    action="forge_suggest_revision", evidence=unit_id, justification=wc_msg,
                 )
             except Exception:  # noqa: BLE001 — reporter path, never blocks the disposition
                 logger.error(

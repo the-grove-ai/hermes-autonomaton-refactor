@@ -17454,7 +17454,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # archives ONLY .archive-pending-marked crash residuals (false-positive guarded).
     try:
         from grove.forge import feedback_store as _fb
-        _reclaimed = _fb.gc(30 * 24 * 3600)  # 30-day TTL; terminal_skip entries exempt
+        from grove.fleet.config import load_fleet_workers
+        # fleet-review-unification-v1 C1b-1/C1b-2 — the feedback store is keyed
+        # per-worker (~/.grove/<worker>/.feedback/); GC each worker's store (30-day
+        # TTL; terminal_skip entries exempt).
+        _reclaimed = []
+        for _wid in load_fleet_workers():
+            _reclaimed += [f"{_wid}/{_u}" for _u in _fb.gc(_wid, 30 * 24 * 3600)]
         if _reclaimed:
             logger.info(
                 "Feedback-store GC reclaimed %d stale revision entry(ies): %s",
