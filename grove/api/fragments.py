@@ -1658,8 +1658,14 @@ async def handle_forge_slug_dir(request: web.Request) -> web.Response:
     )
 
 
-def _forge_kaizen_div(pid: str) -> str:
-    """Inline Kaizen disposition affordance for the in-shell forge fragment — the
+def _disposition_actions_div(pid: str, producer: str = "forge") -> str:
+    """Inline Kaizen disposition affordance for a producer's in-shell review fragment.
+
+    fleet-review-unification-v1 C1a — producer-parametrized (refactor only). ``producer``
+    is threaded for C1b (per-producer copy/routes); today forge is the sole caller and
+    the render is byte-identical to the prior ``_forge_kaizen_div``.
+
+    Inline Kaizen disposition affordance for the in-shell forge fragment — the
     SAME pid-keyed routes the proposal card's fast-path uses (Kaizen Voice: two
     entry points, one protocol). Promote / Reject POST to those routes and land
     their response in ``#kaizen-result``; suggest-revision is an enabled textarea +
@@ -1740,7 +1746,7 @@ async def handle_forge_slug_fragment(request: web.Request) -> web.Response:
     # M3 — Kaizen div assembled HERE (not in _forge_slug_body, which stays a pure
     # draft body so the standalone page is unaffected). pid gate + fail loud.
     if pid:
-        disposition = _forge_kaizen_div(pid)
+        disposition = _disposition_actions_div(pid, producer="forge")
     else:
         disposition = (
             '<div class="meta error" id="forge-kaizen-none">'
