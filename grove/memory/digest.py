@@ -272,6 +272,7 @@ def _disposition_envelope(proposal: Dict[str, Any], session_id: str):
         evidence=evidence,
         eval_hash="",
         created_at=_now_iso(),
+        proposer="memory_digest",  # proposal-proposer-attribution-v1 (#3)
     )
 
 

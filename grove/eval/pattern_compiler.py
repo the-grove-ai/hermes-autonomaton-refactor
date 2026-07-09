@@ -479,6 +479,7 @@ def propose_pattern_promotions(
             evidence=evidence_ids,
             eval_hash=_synth_pattern_eval_hash(cand.t0_key),
             created_at=now,
+            proposer="pattern_compiler",  # proposal-proposer-attribution-v1 (#8)
         )
         if _queue_append(proposal, path=queue_path):
             dispositions.append(_disp(

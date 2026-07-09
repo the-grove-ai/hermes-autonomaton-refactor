@@ -181,6 +181,7 @@ class FleetManager:
                 payload=payload,
                 evidence=(row_id or slug,),  # stable per-unit dedup key
                 justification=justification,
+                proposer=skill_id,  # proposal-proposer-attribution-v1 (producer #1)
             )
             logger.info(
                 "[fleet.manager] emitted %s proposal %s (appended=%s) for %s",

@@ -251,6 +251,13 @@ class RoutingProposal:
     # operator tap; ``set_lease`` is a CAS (409 on a held lease) and the
     # startup-only ``sweep_stuck_leases`` reverts any lease still held at boot.
     lease: Optional[Dict[str, Any]] = None
+    # proposal-proposer-attribution-v1 — the PRODUCER that emitted this proposal
+    # (fleet ``skill_id`` / detector name / ``"governance"`` / ``"portal_failure"`` /
+    # ...). id-EXCLUDED: NOT a parameter to :func:`compute_proposal_id` (mirrors
+    # ``source_patterns`` exactly), so stamping attribution never forks a proposal's
+    # identity. Legacy on-disk records (no key) deserialize to ``"unattributed"`` via
+    # this default — no migration; on-disk records untouched.
+    proposer: str = "unattributed"
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -261,6 +268,11 @@ class RoutingProposal:
         # snapshot churns. A held proposal carries its lease dict.
         if data.get("lease") is None:
             data.pop("lease", None)
+        # Present-key only (mirrors ``lease``): an UNATTRIBUTED proposal serializes
+        # WITHOUT a ``proposer`` key — byte-identical to legacy records, no golden
+        # churn. Only an attributed proposal carries the key.
+        if data.get("proposer") == "unattributed":
+            data.pop("proposer", None)
         return data
 
     # ── KaizenRenderable (kaizen-proposal-surface-unification-v1) ─────────
@@ -464,6 +476,19 @@ def append(
     Idempotent on duplicate ``proposal_id``: a re-run of the detector
     that produces the same logical proposal does NOT pollute the queue.
     """
+    # proposal-proposer-attribution-v1 — defense-in-depth (NOT a strict assert). A
+    # proposal reaching the persist seam with no attribution means a producer failed
+    # to stamp it: log LOUD (type + id) and write it as "unattributed" — never crash,
+    # never drop the proposal. The 14 producers are covered by per-producer tests.
+    _proposer = getattr(proposal, "proposer", None)
+    if not _proposer or _proposer == "unattributed":
+        logger.warning(
+            "[proposal_queue] proposal %s (type=%s) reached append() with no proposer "
+            "attribution — writing as 'unattributed'; a producer failed to stamp it.",
+            proposal.proposal_id, proposal.type,
+        )
+        if _proposer != "unattributed":
+            proposal = replace(proposal, proposer="unattributed")
     target = Path(path) if path is not None else default_queue_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
@@ -721,6 +746,7 @@ def file_agentless_proposal(
         evidence=(evidence,),
         justification=justification,
         instance=instance,
+        proposer="portal_failure",  # proposal-proposer-attribution-v1 (producer #14)
         path=path,
     )
 
@@ -732,6 +758,7 @@ def file_agentless(
     evidence: Tuple[str, ...],
     justification: str = "",
     instance: Optional[Dict[str, Any]] = None,
+    proposer: str = "unattributed",
     path: Optional[Path] = None,
 ) -> Tuple[str, bool]:
     """The ONE agentless emission path (P2 generalization of
@@ -759,5 +786,6 @@ def file_agentless(
         eval_hash="",
         created_at=_now_iso(),
         semantic_justification=rationale,
+        proposer=proposer,
     )
     return proposal_id, append(proposal, path=path)

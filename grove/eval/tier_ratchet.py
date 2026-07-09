@@ -258,6 +258,7 @@ def _maybe_downward(
         eval_hash="",  # set by gate_proposal after the suite passes
         created_at=_now_iso(),
         source_patterns=(cluster_id,),
+        proposer="tier_ratchet",  # proposal-proposer-attribution-v1 (#9)
         semantic_justification=_build_justification(
             memory_store, intent_class, stats.get("message_stems", ()),
         ),
@@ -300,6 +301,7 @@ def _maybe_upward(
         eval_hash="",
         created_at=_now_iso(),
         source_patterns=(cluster_id,),
+        proposer="tier_ratchet",  # proposal-proposer-attribution-v1 (#9)
         semantic_justification=_build_justification(
             memory_store, intent_class, stats.get("message_stems", ()),
         ),

@@ -3257,6 +3257,7 @@ class Dispatcher:
                 payload=payload,
                 evidence=evidence,
                 eval_hash=eval_hash,
+                proposer="pattern_demotion",  # proposal-proposer-attribution-v1 (#7)
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
             _queue_append(proposal)
@@ -4935,6 +4936,7 @@ class Dispatcher:
                     evidence=(),
                     eval_hash=pid,
                     created_at=created_at,
+                    proposer="governance",  # proposal-proposer-attribution-v1 (#2)
                 )
             )
         except Exception as exc:  # noqa: BLE001 — the queue bridge is best-effort
@@ -5705,6 +5707,7 @@ class Dispatcher:
                 type=PROPOSAL_TYPE_SKILL_PROMOTION,
                 payload=payload_dict,
                 evidence=evidence,
+                proposer="skill_promotion",  # proposal-proposer-attribution-v1 (#5)
                 eval_hash=_synth_skill_eval_hash(
                     payload.skill_name, payload.skill_path,
                 ),

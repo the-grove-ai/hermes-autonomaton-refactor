@@ -1142,6 +1142,7 @@ def _queue_skill_promotion_proposal(payload) -> Optional[str]:
             evidence=evidence,
             eval_hash=_synth_skill_eval_hash(payload.skill_name, payload.skill_path),
             created_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+            proposer="skill_promotion",  # proposal-proposer-attribution-v1 (#6)
         )
         _queue_append(proposal)  # idempotent on duplicate id
         return proposal_id

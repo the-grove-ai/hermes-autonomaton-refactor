@@ -241,5 +241,6 @@ def build_zone_promotion_proposal(
         evidence=evidence,
         eval_hash=eval_hash,
         created_at=_now_iso(),
+        proposer="kaizen_promotion",  # proposal-proposer-attribution-v1 (#12)
     )
     return proposal, payload
