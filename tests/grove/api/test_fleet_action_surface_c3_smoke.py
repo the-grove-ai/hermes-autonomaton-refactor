@@ -162,7 +162,7 @@ async def test_inbox_page_renders_pending_pill_and_cards(grove_home):
         type=T, payload={"slug": "moon-bot", "unit_id": "moon-bot",
                          "skill_id": "skill.fleet.drafter", "canonical_sink": "drafter"},
         evidence=("moon-bot",), justification="t", proposer="skill.fleet.drafter")
-    req = SimpleNamespace(match_info={"skill_name": "drafter"})
+    req = SimpleNamespace(match_info={"skill_name": "drafter"}, query={})
     resp = await F.handle_fleet_skill_fragment(req)
     body = resp.text
     assert 'class="pending-pill"' in body and "1 needs review" in body
