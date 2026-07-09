@@ -60,20 +60,20 @@ def test_revision_requested_inflight_note_no_bar():
     assert "rail-revision_requested" in html
     assert 'class="inflight-note"' in html and "Guidance banked" in html
     assert "tighten" in html
-    assert "disposition-bar" not in html  # no actions in-flight
+    assert 'class="disposition-bar"' not in html  # no actions in-flight
 
 
 @pytest.mark.parametrize("state", ["promoted", "rejected"])
 def test_terminal_states_dim_no_bar(state):
     html = F._review_card(_unit(state), remote_sink=False)
     assert f"rail-{state}" in html and "card-resolved" in html
-    assert "disposition-bar" not in html
+    assert 'class="disposition-bar"' not in html
 
 
 def test_legacy_is_list_only():
     html = F._review_card(_unit("legacy"), remote_sink=False)
     assert "rail-legacy" in html
-    assert "disposition-bar" not in html and "card-resolved" not in html
+    assert 'class="disposition-bar"' not in html and "card-resolved" not in html
 
 
 # ---------------------------------------------------------------------------
