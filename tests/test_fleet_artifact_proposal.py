@@ -142,6 +142,9 @@ def test_forge_type_is_render_only():
 
 
 # ── verb-iterating portal buttons ────────────────────────────────────────────
+# fleet-ui-reconciliation-v1 C3: the helper no longer renders in the PENDING
+# FEED (artifact types partition into the Fleet cross-link card) — its live
+# consumer is the promote-failure card (actions._forge_promote_error_card).
 
 
 def test_verb_actions_render_promote_and_reject():
@@ -152,3 +155,22 @@ def test_verb_actions_render_promote_and_reject():
     assert "/portal/actions/proposals/sha256:abc/promote" in html
     assert "/portal/actions/proposals/sha256:abc/reject" in html
     assert "Approve" not in html  # not the generic approve affordance
+
+
+# ── proposals-page partition (fleet-ui-reconciliation-v1 C3) ─────────────────
+# Artifact-pending types never reach the pending feed's card renderer — they
+# partition into the Fleet cross-link card. The verb affordances live on the
+# Fleet review surface (C3 component); the disposition ROUTES are unchanged.
+
+
+def test_artifact_types_partition_out_of_feed():
+    from grove.api.fragments import _partition_proposals
+    from grove.eval.proposal_queue import PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING
+    mixed = [
+        {"type": FT, "proposal_id": "sha256:a"},
+        {"type": PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING, "proposal_id": "sha256:b"},
+        {"type": "routing_threshold", "proposal_id": "sha256:c"},
+    ]
+    artifact, other = _partition_proposals(mixed)
+    assert [p["proposal_id"] for p in artifact] == ["sha256:a", "sha256:b"]
+    assert [p["proposal_id"] for p in other] == ["sha256:c"]

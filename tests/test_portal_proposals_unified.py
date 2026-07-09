@@ -172,3 +172,84 @@ async def test_fragment_renders_both_routing_and_memory_cards(client, grove_home
     assert "Grove runs on sovereignty." in body
     # The empty-state placeholder must NOT appear when proposals exist.
     assert "No pending proposals" not in body
+
+
+# ---------------------------------------------------------------------------
+# fleet-ui-reconciliation-v1 C3 — one review surface: artifact partition
+# ---------------------------------------------------------------------------
+
+
+def _file_artifact_proposal(ptype, slug):
+    """One live artifact-pending proposal via the real agentless writer."""
+    proposal_queue.file_agentless(
+        type=ptype,
+        payload={"slug": slug, "unit_id": slug,
+                 "skill_id": "skill.fleet.drafter", "canonical_sink": "drafter"},
+        evidence=(slug,), justification="t", proposer="skill.fleet.drafter",
+    )
+
+
+async def test_artifact_proposals_partition_into_xlink_card(client, grove_home):
+    """Mixed queue: artifact-pending types render as ONE cross-link card (N=2),
+    zero artifact cards below; routing + memory cards unchanged."""
+    _write_routing_proposal(grove_home)
+    _write_memory_proposals(grove_home, [_memory_record("Pending fact.")])
+    _file_artifact_proposal(
+        proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING, "moon-bot")
+    _file_artifact_proposal(
+        proposal_queue.PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING, "260709-acme")
+
+    r = await client.get("/portal/fragments/proposals/pending")
+    assert r.status == 200
+    body = await r.text()
+    # ONE cross-link card with the artifact count, linking into Fleet.
+    assert body.count('class="card xlink"') == 1
+    assert "2 fleet artifact(s) awaiting review" in body
+    assert 'href="/portal#fragments/fleet/"' in body
+    # ZERO artifact cards: neither type badge nor Promote affordance renders.
+    assert "fleet_artifact_pending" not in body
+    assert "forge_artifact_pending" not in body
+    assert "/promote" not in body
+    # Non-artifact cards unchanged.
+    assert "routing_update" in body and "Pending fact." in body
+
+
+async def test_no_artifact_proposals_no_xlink_card(client, grove_home):
+    _write_routing_proposal(grove_home)
+    r = await client.get("/portal/fragments/proposals/pending")
+    body = await r.text()
+    assert 'class="card xlink"' not in body
+
+
+async def test_grouped_view_also_partitions_artifacts(client, grove_home):
+    _write_routing_proposal(grove_home)
+    _file_artifact_proposal(
+        proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING, "moon-bot")
+    r = await client.get("/portal/fragments/proposals/pending?view=grouped")
+    body = await r.text()
+    assert body.count('class="card xlink"') == 1
+    assert "fleet_artifact_pending" not in body
+    # the artifact proposer never gets a section of its own
+    assert 'data-proposer="skill.fleet.drafter"' not in body
+
+
+async def test_proposals_nav_badge_matches_page_card_count(client, grove_home):
+    """F3 — badge N == rendered card N, by the same partition: 1 routing + 1
+    memory = 2; the 2 artifact proposals never count here (they count in the
+    Fleet badge, C2)."""
+    _write_routing_proposal(grove_home)
+    _write_memory_proposals(grove_home, [_memory_record("Pending fact.")])
+    _file_artifact_proposal(
+        proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING, "moon-bot")
+    _file_artifact_proposal(
+        proposal_queue.PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING, "260709-acme")
+
+    r = await client.get("/portal/fragments/nav/proposals")
+    assert r.status == 200
+    body = await r.text()
+    assert 'href="/portal#fragments/proposals/pending"' in body
+    assert '<span class="nav-badge hot">2</span>' in body
+
+    # and the page renders exactly 2 disposition-bearing cards
+    page = await (await client.get("/portal/fragments/proposals/pending")).text()
+    assert page.count('class="proposal-actions"') == 2
