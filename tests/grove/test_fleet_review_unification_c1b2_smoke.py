@@ -326,6 +326,51 @@ def test_cultivator_empty_source_dir_noops_clean(grove_home):
     assert resolvers.resolve_file_source(_CULTIVATOR_INPUT, "cultivator") is None  # empty
 
 
+@pytest.mark.parametrize("count,producer,payload", [
+    (1, "forge", {"slug": "260707-sirion", "row_id": "ROW-1", "skill_id": "skill.fleet.forge-jobsearch", "fit_score": 70}),
+    (3, "forge", {"slug": "260707-sirion", "row_id": "ROW-1", "skill_id": "skill.fleet.forge-jobsearch", "fit_score": 70}),
+    (1, "drafter", {"slug": "moon-bot", "unit_id": "moon-bot", "skill_id": "skill.fleet.drafter", "canonical_sink": "drafter"}),
+    (3, "drafter", {"slug": "moon-bot", "unit_id": "moon-bot", "skill_id": "skill.fleet.drafter", "canonical_sink": "drafter"}),
+])
+def test_suggest_revision_handler_finalizes_without_nameerror(monkeypatch, count, producer, payload):
+    """REGRESSION (C1b-2 hotfix) — the disposition handler must reach finalize for BOTH
+    the normal (count<N) and won't-converge (count>=N) paths, for forge AND a file
+    producer, WITHOUT a NameError. The won't-converge + finalize branches reference
+    ``row_id``; a missing local there is exactly the crash two forge revisions hit on
+    prod. Drives the async handler with the collaborators stubbed."""
+    import asyncio
+    from grove.api import actions
+    from grove.eval import proposal_queue
+
+    proposal = SimpleNamespace(type="forge_artifact_pending" if producer == "forge"
+                               else "fleet_artifact_pending", payload=payload,
+                               proposal_id="sha256:deadbeef")
+
+    async def _text(_req):
+        return "tighten the open"
+
+    async def _noop_broadcast(_msg):
+        return None
+
+    monkeypatch.setattr(actions, "_suggest_revision_text", _text)
+    monkeypatch.setattr(actions, "broadcast_to_operator", _noop_broadcast)
+    monkeypatch.setattr(actions, "_worker_id_for_skill", lambda s: producer)
+    monkeypatch.setattr(actions, "_write_archive_pending_marker", lambda slug: None)
+    monkeypatch.setattr(actions, "_archive_forge_slug", lambda p: "/archive/x")
+    monkeypatch.setattr(proposal_queue, "read", lambda pid: proposal)
+    monkeypatch.setattr(proposal_queue, "set_lease", lambda pid, holder: "nonce")
+    monkeypatch.setattr(proposal_queue, "clear_lease", lambda pid: None)
+    monkeypatch.setattr(proposal_queue, "finalize_proposal_state", lambda *a, **k: True)
+    monkeypatch.setattr(proposal_queue, "file_agentless_proposal", lambda **k: ("sha256:z", True))
+    from grove.forge import feedback_store
+    monkeypatch.setattr(feedback_store, "write", lambda w, u, note: {"count": count})
+    monkeypatch.setattr(feedback_store, "set_terminal_skip", lambda w, u: None)
+
+    request = SimpleNamespace(match_info={"proposal_id": "sha256:deadbeef"})
+    resp = asyncio.run(actions._suggest_revision_disposition(request, producer=producer))
+    assert resp.status == 200  # resolved card (revision requested / won't-converge) — no NameError
+
+
 def test_forced_exit_absent_from_source():
     """The forced_exit mode is fully removed — no enum, routing, record, or dead branch."""
     repo = Path(__file__).resolve().parents[2]
