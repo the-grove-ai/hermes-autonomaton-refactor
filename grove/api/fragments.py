@@ -662,13 +662,99 @@ def _verb_actions_html(proposal_id: str, short_id: str, verbs) -> str:
     return f'<div class="proposal-actions">{"".join(buttons)}</div>'
 
 
+def _proposal_card_html(request: web.Request, p: dict) -> str:
+    """Render ONE routing/kaizen proposal card — RED bespoke or generic. Shared by
+    the flat feed and the grouped-by-proposer view (proposal-proposer-attribution-v1
+    Move 2b), so both surfaces render byte-identical cards."""
+    pid = p.get("proposal_id", "")
+    short_id = _short_id(pid)
+    ptype = p.get("type")
+    # propose-approve-deadlock-v1 Phase 1b-ii — a RED .env proposal renders a bespoke
+    # masked/two-step card, never the generic one-tap row.
+    if ptype == RED_PENDING_PROPOSAL_TYPE:
+        return _render_red_proposal_card(request, pid, short_id)
+    evidence = p.get("evidence")
+    if isinstance(evidence, dict):
+        ev_summary = ", ".join(f"{k}: {v}" for k, v in list(evidence.items())[:6])
+    elif isinstance(evidence, (list, tuple)):
+        ev_summary = f"{len(evidence)} item(s)"
+    else:
+        ev_summary = str(evidence) if evidence else ""
+    # Verb-bearing types (P2) render their own action set; everything else keeps the
+    # generic approve/reject/dismiss row.
+    verbs = PROPOSAL_VERBS.get(ptype)
+    actions = (
+        _verb_actions_html(pid, short_id, verbs) if verbs
+        else _proposal_actions_html(
+            pid, short_id, offers_approve=_type_offers_approve(ptype)
+        )
+    )
+    # forge-review-surface-v1 P2 (M2) — verb-bearing (forge) cards carry a "View
+    # details" link; a missing slug degrades in place, never crashes the feed.
+    view_html = ""
+    if verbs:
+        slug = (p.get("payload") or {}).get("slug")
+        if slug:
+            href = f"/portal/fragments/forge/{quote(str(slug))}/?pid={quote(str(pid))}"
+            view_html = (
+                f'<div class="meta"><a hx-get="{_esc(href)}" '
+                f'hx-target="#center-panel" hx-push-url="true">View details</a></div>'
+            )
+        else:
+            view_html = (
+                '<div class="meta error">view unavailable — missing payload.slug</div>'
+            )
+    return (
+        f'<div class="card" id="proposal-{short_id}">'
+        f'<h4><span class="badge">{_esc(ptype)}</span></h4>'
+        f'<p>{_esc(p.get("semantic_justification"))}</p>'
+        f'<div class="meta">evidence: {_esc(ev_summary)}</div>'
+        f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
+        f'{view_html}'
+        f'{actions}'
+        f'</div>'
+    )
+
+
+def _memory_card_html(m: dict) -> str:
+    """Render ONE memory-crystallization card (shared by both views)."""
+    pid = m.get("proposal_id", "")
+    short_id = _short_id(pid)
+    return (
+        f'<div class="card" id="proposal-{short_id}">'
+        f'<h4><span class="badge">{_esc(m.get("type"))}</span> '
+        f'<span class="badge">{_esc(m.get("action"))}</span></h4>'
+        f'<p>{_esc(m.get("semantic_justification"))}</p>'
+        f'<div class="meta">created {_esc(m.get("created_at"))}</div>'
+        f'{_proposal_actions_html(pid, short_id, offers_approve=_type_offers_approve(m.get("type")))}'
+        f'</div>'
+    )
+
+
+def _proposals_view_toggle(grouped: bool) -> str:
+    """proposal-proposer-attribution-v1 Move 2b — the flat <-> grouped view toggle.
+    Both views COEXIST; the flat newest-first feed (proposal-sort-v1) is the default."""
+    base = "/portal/fragments/proposals/pending"
+    flat_active = "" if grouped else " active"
+    grp_active = " active" if grouped else ""
+    return (
+        '<div class="view-toggle">'
+        f'<a class="toggle{flat_active}" hx-get="{base}" '
+        'hx-target="#proposals-listing" hx-swap="outerHTML">Newest first</a> '
+        f'<a class="toggle{grp_active}" hx-get="{base}?view=grouped" '
+        'hx-target="#proposals-listing" hx-swap="outerHTML">By proposer</a>'
+        '</div>'
+    )
+
+
 async def handle_proposals_pending(request: web.Request) -> web.Response:
     """List pending Kaizen proposals as cards with approve/reject/dismiss (P4).
 
-    Unifies the two backing files: routing proposals (``proposals.jsonl``) and
-    memory crystallizations (``memory_proposals.jsonl``). Before Sprint P3.1 the
-    panel read only the routing file and showed "No pending proposals" while the
-    agent reported 59 staged memory crystallizations.
+    Two COEXISTING views (proposal-proposer-attribution-v1 Move 2b): the default
+    FLAT newest-first feed (proposal-sort-v1), and ``?view=grouped`` — per-proposer
+    sections, groups ordered by their most-recent proposal, newest-first within
+    (inherits the flat sort). Unifies routing proposals (``proposals.jsonl``) and
+    memory crystallizations (``memory_proposals.jsonl``).
     """
     proposals = [p.to_dict() for p in read_all_proposals()]
     # proposal-sort-v1 — render-only newest-first sort. created_at is ISO 8601 UTC on
@@ -678,84 +764,49 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
     # proposals sink to the bottom). Matches the fleet viewer's newest-first order.
     proposals.sort(key=lambda p: p.get("created_at") or "", reverse=True)
     memory_items = pending_memory_proposal_items()
-    parts = ['<div id="proposals-listing">']
+    grouped = request.query.get("view") == "grouped"
+
+    parts = ['<div id="proposals-listing">', _proposals_view_toggle(grouped)]
     if not proposals and not memory_items:
         parts.append(
             '<p class="placeholder">No pending proposals — the system has '
             'nothing to recommend changing.</p>'
         )
-    for p in proposals:
-        evidence = p.get("evidence")
-        if isinstance(evidence, dict):
-            ev_summary = ", ".join(f"{k}: {v}" for k, v in list(evidence.items())[:6])
-        elif isinstance(evidence, (list, tuple)):
-            ev_summary = f"{len(evidence)} item(s)"
-        else:
-            ev_summary = str(evidence) if evidence else ""
-        pid = p.get("proposal_id", "")
-        short_id = _short_id(pid)
-        ptype = p.get("type")
-        # propose-approve-deadlock-v1 Phase 1b-ii — a RED .env proposal renders a
-        # bespoke card (masked description + two-step nonce-gated approve, or
-        # EXPIRED if the in-memory payload is gone). It NEVER uses the generic
-        # one-tap approve row and is not batchable (single-id action).
-        if ptype == RED_PENDING_PROPOSAL_TYPE:
-            parts.append(_render_red_proposal_card(request, pid, short_id))
-            continue
-        # Verb-bearing types (P2) render their own action set; everything else
-        # keeps the generic approve/reject/dismiss row.
-        verbs = PROPOSAL_VERBS.get(ptype)
-        actions = (
-            _verb_actions_html(pid, short_id, verbs) if verbs
-            else _proposal_actions_html(
-                pid, short_id, offers_approve=_type_offers_approve(ptype)
+    elif grouped:
+        # Bucket by proposer (proposals already newest-first). Groups ordered by
+        # their MOST-RECENT proposal (each group's first item, since the input is
+        # sorted); within a group newest-first is inherited. "unattributed" (legacy)
+        # and "governance" (RED) are just proposers → their own sections.
+        groups: dict = {}
+        for p in proposals:
+            groups.setdefault(p.get("proposer") or "unattributed", []).append(p)
+        ordered = sorted(
+            groups.items(),
+            key=lambda kv: (kv[1][0].get("created_at") or "") if kv[1] else "",
+            reverse=True,
+        )
+        for proposer, plist in ordered:
+            parts.append(
+                f'<section class="proposer-group" data-proposer="{_esc(proposer)}">'
+                f'<h3 class="proposer-head">{_esc(proposer)} '
+                f'<span class="count">({len(plist)})</span></h3>'
             )
-        )
-        # forge-review-surface-v1 P2 (M2) — the JOIN. Verb-bearing (forge) cards
-        # carry a "View details" link into the in-shell draft render, threading pid
-        # so the render can offer disposition. Fail loud PER-CARD: a verb card whose
-        # payload lacks slug shows a VISIBLE non-actionable marker, never a silent
-        # omission (the .get chain cannot raise, so a bad card degrades in place and
-        # never crashes the feed). Generic/memory cards get nothing — slug-absence is
-        # correct there. Fast-path promote/reject (``actions``) is unchanged.
-        view_html = ""
-        if verbs:
-            slug = (p.get("payload") or {}).get("slug")
-            if slug:
-                href = f"/portal/fragments/forge/{quote(str(slug))}/?pid={quote(str(pid))}"
-                view_html = (
-                    f'<div class="meta"><a hx-get="{_esc(href)}" '
-                    f'hx-target="#center-panel" hx-push-url="true">View details</a></div>'
-                )
-            else:
-                view_html = (
-                    '<div class="meta error">view unavailable — missing payload.slug</div>'
-                )
-        parts.append(
-            f'<div class="card" id="proposal-{short_id}">'
-            f'<h4><span class="badge">{_esc(ptype)}</span></h4>'
-            f'<p>{_esc(p.get("semantic_justification"))}</p>'
-            f'<div class="meta">evidence: {_esc(ev_summary)}</div>'
-            f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
-            f'{view_html}'
-            f'{actions}'
-            f'</div>'
-        )
-    for m in memory_items:
-        # Memory crystallizations carry a type badge plus the crystallization
-        # action (create/supersede/deprecate/graduate); the card body is the
-        # kaizen-voice summary from the shared MemoryProposalHandler renderer.
-        pid = m.get("proposal_id", "")
-        short_id = _short_id(pid)
-        parts.append(
-            f'<div class="card" id="proposal-{short_id}">'
-            f'<h4><span class="badge">{_esc(m.get("type"))}</span> '
-            f'<span class="badge">{_esc(m.get("action"))}</span></h4>'
-            f'<p>{_esc(m.get("semantic_justification"))}</p>'
-            f'<div class="meta">created {_esc(m.get("created_at"))}</div>'
-            f'{_proposal_actions_html(pid, short_id, offers_approve=_type_offers_approve(m.get("type")))}'
-            f'</div>'
-        )
+            for p in plist:
+                parts.append(_proposal_card_html(request, p))
+            parts.append('</section>')
+        if memory_items:
+            parts.append(
+                '<section class="proposer-group" data-proposer="memory">'
+                '<h3 class="proposer-head">memory</h3>'
+            )
+            for m in memory_items:
+                parts.append(_memory_card_html(m))
+            parts.append('</section>')
+    else:
+        for p in proposals:
+            parts.append(_proposal_card_html(request, p))
+        for m in memory_items:
+            parts.append(_memory_card_html(m))
     parts.append('</div>')
     return _html_fragment("".join(parts))
 

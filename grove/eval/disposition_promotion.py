@@ -361,4 +361,5 @@ class DispositionPromotionDetector:
             eval_hash="",
             created_at=_now_iso(),
             source_patterns=source_patterns,
+            proposer="disposition_promotion",  # proposal-proposer-attribution-v1 (#11)
         )

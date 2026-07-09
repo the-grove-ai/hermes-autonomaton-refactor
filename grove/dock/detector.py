@@ -155,6 +155,7 @@ class DockMutationDetector:
                 evidence=tuple(goal.get("source_record_ids", ())),
                 eval_hash="",
                 created_at=_now_iso(),
+                proposer="dock_detector",  # proposal-proposer-attribution-v1 (#13)
             )
             if append(record):
                 staged += 1

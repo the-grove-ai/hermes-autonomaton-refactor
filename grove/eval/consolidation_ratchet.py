@@ -142,6 +142,7 @@ class ConsolidationRatchet:
                 evidence=(),
                 eval_hash="",
                 created_at=_now_iso(),
+                proposer="consolidation_ratchet",  # proposal-proposer-attribution-v1 (#10)
             )
             if append(record):
                 staged += 1

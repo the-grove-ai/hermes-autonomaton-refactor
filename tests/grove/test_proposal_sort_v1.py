@@ -27,6 +27,7 @@ class _StubAdapter:
 
 class _StubReq:
     def __init__(self):
+        self.query = {}  # proposal-proposer-attribution-v1 Move 2b reads ?view
         self.app = {
             "red_pending_store": get_red_pending_store(),
             "api_server_adapter": _StubAdapter("k"),

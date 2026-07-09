@@ -356,6 +356,7 @@ def stage_proposal(
             evidence=evidence,
             eval_hash="sha256:" + hashlib.sha256(skill_md.encode("utf-8")).hexdigest(),
             created_at=datetime.now(timezone.utc).isoformat(),
+            proposer="skill_synthesis",  # proposal-proposer-attribution-v1 (#4)
         )
         appended = queue_append(proposal)
         if appended:
