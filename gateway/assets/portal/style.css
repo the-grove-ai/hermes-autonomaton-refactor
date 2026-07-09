@@ -537,6 +537,15 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .fpane.on { display: block; }
 .pkg-strip { margin-top: 0.6rem; }
 
+/* ---- Fleet-unit context panel (fleet-artifact-legibility-v1 C3) ---------
+   Timeline + selected-card cue. Tokens only. */
+.cx-tl { border-left: 2px solid var(--border); padding-left: 0.7rem; }
+.cx-ev { margin-bottom: 0.55rem; font-size: 0.82rem; }
+.cx-ev .t { color: var(--text-dim); font-size: 0.72rem; }
+.review-head a.title { color: var(--text); }
+.review-head a.title:hover { color: var(--accent); }
+.review-card.ctx-on { border-color: var(--accent-dim); background: var(--bg-elev); }
+
 /* Disposition bar — inset panel; a HORIZONTAL verb row at content width
    (fleet-ui-reconciliation-v1 C1, mock Screen B), stacking to a column below
    560px. The feedback block and the per-unit result div are full-width rows
