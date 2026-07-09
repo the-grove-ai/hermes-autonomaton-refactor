@@ -250,5 +250,19 @@ governance:
     terminal_artifact:
       tool: write_file
       path_pattern: "digest-*.json"
+      # fleet-artifact-legibility-v1 C1 — portal card presentation (data
+      # only: field paths + labels; renderer-agnostic, worker-name-free).
+      presentation:
+        facts:
+          - {path: opportunities, label: opportunities}
+          - {path: summary.total_flagged, label: flagged}
+          - {path: keyword_clusters_searched, label: clusters}
+        collection:
+          path: opportunities
+          item_title: author
+          item_prose:
+            - rationale
+            - content_preview
+          preview_count: 2
   approval_handoff:
     mode: ingest_post

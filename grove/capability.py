@@ -352,6 +352,113 @@ class ModelBinding:
 # that carry defaults without violating dataclass ordering.
 
 
+# ---------------------------------------------------------------------------
+# fleet-artifact-legibility-v1 C1 — terminal_artifact.presentation validation.
+#
+# The OPTIONAL presentation declaration tells the portal how to render a
+# worker's artifact as prose (headline / fact chips / collection preview /
+# body / package order). It is ENHANCEMENT, never governance: a malformed
+# block logs a LOUD warning naming the record + offending field and gains a
+# machine-readable ``presentation_error`` sibling key — renderers treat
+# error-present as declaration-absent and surface the notice inline. Loading
+# never fails on presentation errors (F2).
+# ---------------------------------------------------------------------------
+
+import logging as _logging
+
+_pres_logger = _logging.getLogger(__name__)
+
+
+def _prose_entry_ok(entry) -> bool:
+    """A prose entry is a field path: ``str`` or ``{path: str, md: bool?}``."""
+    if isinstance(entry, str) and entry.strip():
+        return True
+    if isinstance(entry, dict):
+        if not isinstance(entry.get("path"), str) or not entry["path"].strip():
+            return False
+        extra = set(entry) - {"path", "md"}
+        return not extra and isinstance(entry.get("md", False), bool)
+    return False
+
+
+def _presentation_shape_error(pres) -> str | None:
+    """Return the offending-field description for a malformed presentation
+    block, or None when the shape is valid. All keys optional; unknown keys
+    are malformed (strict — predictable degradation over silent tolerance)."""
+    if not isinstance(pres, dict):
+        return "presentation (must be a mapping)"
+    allowed = {"headline", "facts", "collection", "body", "package"}
+    unknown = set(pres) - allowed
+    if unknown:
+        return f"unknown key(s) {sorted(unknown)}"
+    for key in ("headline", "body"):
+        if key in pres and not _prose_entry_ok(pres[key]):
+            return f"'{key}' (str or {{path, md}})"
+    if "facts" in pres:
+        facts = pres["facts"]
+        if not isinstance(facts, list):
+            return "'facts' (must be a list)"
+        for f in facts:
+            if (not isinstance(f, dict)
+                    or not isinstance(f.get("path"), str) or not f["path"].strip()
+                    or set(f) - {"path", "label"}
+                    or ("label" in f and not isinstance(f["label"], str))):
+                return "'facts' entry (needs {path, label?})"
+    if "collection" in pres:
+        c = pres["collection"]
+        if not isinstance(c, dict):
+            return "'collection' (must be a mapping)"
+        if set(c) - {"path", "item_title", "item_prose", "preview_count"}:
+            return "'collection' unknown key(s)"
+        if not isinstance(c.get("path"), str) or not c["path"].strip():
+            return "'collection.path' (required str)"
+        if "item_title" in c and (not isinstance(c["item_title"], str)
+                                  or not c["item_title"].strip()):
+            return "'collection.item_title' (str)"
+        if "item_prose" in c:
+            if (not isinstance(c["item_prose"], list)
+                    or not all(_prose_entry_ok(e) for e in c["item_prose"])):
+                return "'collection.item_prose' (list of str or {path, md})"
+        if "preview_count" in c and (
+                not isinstance(c["preview_count"], int)
+                or isinstance(c["preview_count"], bool)
+                or c["preview_count"] < 1):
+            return "'collection.preview_count' (int >= 1)"
+    if "package" in pres:
+        p = pres["package"]
+        if not isinstance(p, dict) or set(p) - {"order", "title_from_meta"}:
+            return "'package' (needs {order?, title_from_meta?})"
+        for key in ("order", "title_from_meta"):
+            if key in p and (not isinstance(p[key], list)
+                             or not all(isinstance(x, str) for x in p[key])):
+                return f"'package.{key}' (list of str)"
+    return None
+
+
+def _validate_presentation(governance, record_id: str) -> None:
+    """Validate ``emission_preconditions.terminal_artifact.presentation`` IN
+    PLACE. Malformed: warn LOUD (record + field) and set a machine-readable
+    ``presentation_error`` string BESIDE the block (renderers treat
+    error-present as declaration-absent and surface an inline notice). The
+    operator's block itself is never deleted — a registry write-back must not
+    destroy a fixable declaration."""
+    if not isinstance(governance, dict):
+        return
+    ta = (governance.get("emission_preconditions") or {}).get("terminal_artifact")
+    if not isinstance(ta, dict) or "presentation" not in ta:
+        return
+    err = _presentation_shape_error(ta["presentation"])
+    if err is None:
+        ta.pop("presentation_error", None)
+        return
+    _pres_logger.warning(
+        "[capability] %s: terminal_artifact.presentation is malformed — %s; "
+        "declaration treated as ABSENT (fallback card renders). Fix the "
+        "presentation block in the capability record.", record_id, err,
+    )
+    ta["presentation_error"] = err
+
+
 @dataclass(kw_only=True)
 class Capability:
     id: str  # governance-bearing — no default
@@ -827,7 +934,12 @@ class Capability:
         # (present-key only; absent -> None default). Opaque dict, not cast into a
         # nested record: the enforcement seams read it and fail closed on malformed
         # shape, so the loader stays a pass-through and validate() never touches it.
+        # fleet-artifact-legibility-v1 C1 — the ONE exception to pass-through: the
+        # OPTIONAL terminal_artifact.presentation block is shape-validated here
+        # (loud warn + treated absent on malformed; loading NEVER fails on it —
+        # presentation is enhancement, disposition is governance).
         if "governance" in d:
+            _validate_presentation(d["governance"], d.get("id", "<no id>"))
             kwargs["governance"] = d["governance"]
 
         # R5 — per-skill model binding (present-key only; absent -> None default).

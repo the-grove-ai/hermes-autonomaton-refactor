@@ -271,5 +271,17 @@ governance:
     terminal_artifact:
       tool: write_file
       path_pattern: "scan-*.json"
+      # fleet-artifact-legibility-v1 C1 — portal card presentation.
+      presentation:
+        facts:
+          - {path: listings, label: listings}
+          - {path: summary.total_written_to_notion, label: written to Notion}
+          - {path: summary.skipped_dedup, label: deduped}
+        collection:
+          path: listings
+          item_title: title
+          item_prose:
+            - rationale
+          preview_count: 3
   approval_handoff:
     mode: ingest_post
