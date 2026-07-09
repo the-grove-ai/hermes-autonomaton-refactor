@@ -142,14 +142,18 @@ async def test_portal_overview_renders_skill_cards(client):
     assert 'class="badge badge-green"' in html         # scout Green zone badge
 
 
-async def test_portal_skill_page_lists_artifacts_with_state_badges(client):
+async def test_portal_skill_page_renders_c3_review_cards(client):
+    # fleet-review-unification-v1 C3 — the /portal/fleet/{skill}/ page is now the
+    # producer INBOX: four-state review-cards with state rails/chips, not the old
+    # two-state badges. The flat pending draft (no proposal) is legacy; the canonical
+    # draft is promoted.
     resp = await client.get("/portal/fleet/drafter/")
     assert resp.status == 200
     html = await resp.text()
-    assert 'href="/portal/fleet/drafter/draft-2026-07-01-x.md"' in html
-    # governance state badges — pending review (yellow) + canonical (green)
-    assert "pending review" in html and "badge-yellow" in html
-    assert "canonical" in html and "badge-green" in html
+    assert 'class="pending-pill' in html and "needs review" in html
+    assert "review-card rail-legacy" in html
+    assert "review-card rail-promoted" in html
+    assert "chip-legacy" in html and "chip-promoted" in html
     assert "&rsaquo;" in html                 # breadcrumb separator
     assert 'class="meta breadcrumb"' in html  # breadcrumb carries the class token
 

@@ -18,6 +18,7 @@ import html
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -37,7 +38,9 @@ from grove.api.portal import (
     _check_memory_stale,
     _check_wiki_stale,
     _fleet_skill_records,
+    _fleet_zone_dirs,
     _list_fleet_artifacts,
+    _list_fleet_units,
     _read_fleet_artifact,
     _read_forge_slug,
     _read_page,
@@ -1493,24 +1496,26 @@ async def handle_fleet_skill_page(request: web.Request) -> web.Response:
             ),
             status=404, content_type="text/html",
         )
-    arts = _list_fleet_artifacts(cap)
-    cards = []
-    for a in arts:
-        cards.append(
-            f'<div class="card"><h4>'
-            f'<a href="/portal/fleet/{_esc(skill_name)}/{_esc(a["filename"])}">'
-            f'{_esc(a["filename"])}</a> {_fleet_state_badge(a["governance_state"])}'
-            f'</h4><div class="meta">{a["size"]} bytes &middot; '
-            f'{_esc(a["mtime"])}</div></div>'
-        )
-    body = (
-        f"<h2>{_esc(skill_name)} {_fleet_zone_badge(cap.zone.value)}</h2>"
-        + ("".join(cards) if cards
-           else '<p class="placeholder">No artifacts yet.</p>')
+    # fleet-review-unification-v1 C3 — the producer INBOX (Mount 1): C2 four-state
+    # units as .review-cards with the inline disposition component. The Promote
+    # consequence copy is sink-derived (forge → Drive; mv-sink → wiki).
+    units = _list_fleet_units(cap)
+    remote_sink = cap.governance["write_zone"]["canonical_dir"] == "forge"
+    needs = sum(1 for u in units if u["governance_state"] == "needs_review")
+    pill_cls = "pending-pill" + ("" if needs else " zero")
+    header = (
+        f'<div class="inbox-head"><h2>{_esc(skill_name)} '
+        f'{_fleet_zone_badge(cap.zone.value)}</h2>'
+        f'<span class="{pill_cls}">{needs} needs review</span></div>'
     )
+    if units:
+        cards = "".join(_review_card(u, remote_sink, cap=cap) for u in units)
+    else:
+        cards = ('<div class="card"><p class="placeholder">No artifacts yet — '
+                 'this producer is idle.</p></div>')
     return web.Response(
         text=_fleet_page(
-            f"Fleet — {skill_name}", _fleet_breadcrumb(skill_name), body,
+            f"Fleet — {skill_name}", _fleet_breadcrumb(skill_name), header + cards,
         ),
         content_type="text/html",
     )
@@ -1658,67 +1663,213 @@ async def handle_forge_slug_dir(request: web.Request) -> web.Response:
     )
 
 
-def _disposition_actions_div(pid: str, producer: str = "forge") -> str:
-    """Inline Kaizen disposition affordance for a producer's in-shell review fragment.
+# ---------------------------------------------------------------------------
+# fleet-review-unification-v1 C3 — the Action Surface disposition component.
+# Producer-agnostic; rendered identically at both mounts (inbox card footer +
+# detail dock). Tokens/CSS from style.css (the C3 block); verbs POST the EXISTING
+# promote/reject/suggest_revision routes for BOTH proposal types (no write-path
+# change). State → rail/chip label from _STATE_META.
+# ---------------------------------------------------------------------------
 
-    fleet-review-unification-v1 C1a — producer-parametrized (refactor only). ``producer``
-    is threaded for C1b (per-producer copy/routes); today forge is the sole caller and
-    the render is byte-identical to the prior ``_forge_kaizen_div``.
+_STATE_META = {
+    "needs_review":       ("needs review", "rail-needs_review", "chip-needs_review"),
+    "revision_requested": ("redrafting", "rail-revision_requested", "chip-revision_requested"),
+    "promoted":           ("promoted", "rail-promoted", "chip-promoted"),
+    "rejected":           ("rejected", "rail-rejected", "chip-rejected"),
+    "legacy":             ("legacy", "rail-legacy", "chip-legacy"),
+}
+_REVISION_MAX = 3  # mirrors grove.api.actions._REVISION_MAX (the N-breaker copy)
 
-    Inline Kaizen disposition affordance for the in-shell forge fragment — the
-    SAME pid-keyed routes the proposal card's fast-path uses (Kaizen Voice: two
-    entry points, one protocol). Promote / Reject POST to those routes and land
-    their response in ``#kaizen-result``; suggest-revision is an enabled textarea +
-    submit POSTing to /portal/actions/proposals/{pid}/suggest_revision (routed at P2).
 
-    M4 return-to-queue + fail-loud guard, on ``hx-on::after-request`` (core HTMX
-    2.0.6 — reliable in swapped-in content; an inline <script> would not run):
-    STEP 0 confirmed the routes return a clean non-2xx on failure (``_loud_action_
-    failure``, status UNCHANGED) and a 200 ``_resolved_card`` on success. So — on
-    SUCCESS (``event.detail.successful``) reload the proposals queue into
-    ``#center-panel`` and restore the proposals push-url for back-button coherence;
-    on FAILURE (non-2xx — htmx did NOT swap ``#kaizen-result``) render a VISIBLE
-    error there and DO NOT reload, so the operator stays on the draft and sees the
-    failure (the routes' own OOB #alert-banner also fires via the shell's
-    responseError listener). The handler is STATIC (no pid), single-quoted JS with
-    no double quotes, so it is embedded raw in the attribute; only the pid-bearing
-    id / hx-post URLs pass through ``_esc``."""
+def _state_meta(state: str) -> tuple:
+    return _STATE_META.get(state, (state, "rail-legacy", "chip-legacy"))
+
+
+def _relative_age(iso: str) -> str:
+    """A compact relative age ('just now' / 'N min ago' / 'N h ago' / 'yesterday' /
+    'N days ago') from a C2 ISO-8601 mtime — the mock's timestamp style. Falls back to
+    the raw string on a parse miss: a display helper must never raise."""
+    try:
+        ts = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        secs = (datetime.now(timezone.utc) - ts).total_seconds()
+    except (ValueError, TypeError):
+        return iso
+    if secs < 90:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs // 60)} min ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)} h ago"
+    if secs < 172800:
+        return "yesterday"
+    return f"{int(secs // 86400)} days ago"
+
+
+def _state_chip(state: str) -> str:
+    label, _rail, chip = _state_meta(state)
+    return (f'<span class="state-chip {chip}"><span class="dot"></span>'
+            f'{_esc(label)}</span>')
+
+
+def _disposition_bar(pid: str, remote_sink: bool, revision_count: int = 0) -> str:
+    """The producer-agnostic disposition bar (evolves the C1a ``_disposition_actions_div``):
+    stacked full-width Promote / "Suggest revision…" / Reject, plus the progressively-
+    disclosed feedback block. The SAME pid-keyed routes both proposal types use.
+
+    ``remote_sink`` selects the Promote consequence copy ("publish to Drive" for forge,
+    "ingest to wiki" for an mv-sink). Verb responses land in a per-unit ``#disp-result-*``
+    div (innerHTML) — the ``_resolved_card`` on success, a VISIBLE failure message on a
+    non-2xx (the routes' OOB #alert-banner also fires). The colon-free ``_short_id`` DOM
+    id is load-bearing: ``compute_proposal_id`` yields ``sha256:<hex>`` and a ':' in a CSS
+    #id selector breaks ``hx-include`` (the C1a Andon). hx-post keeps the raw pid (URL-legal)."""
     pe = _esc(pid)
-    # DEVIATION (P1 Andon): the CC-PROMPT's literal id/hx-include="#rev-{pid}" breaks —
-    # compute_proposal_id yields "sha256:<hex>" (proposal_queue.py:366), and a colon in a
-    # CSS #id selector is a parse error, so htmx's querySelectorAll(hx-include) would never
-    # match the textarea → suggest_revision submits empty. Use the codebase's colon-free
-    # DOM-id convention _short_id(pid) (fragments.py:518, the same tail #proposal-{short_id}
-    # uses). hx-post keeps the raw pid (path segment — colon is URL-legal).
-    rev_id = "rev-" + _short_id(pid)
+    short = _short_id(pid)
+    rev_id = "rev-" + short
+    result = "disp-result-" + short
+    consequence = "publish to Drive" if remote_sink else "ingest to wiki"
+    counter = (f"Revision {revision_count + 1} of {_REVISION_MAX} — after "
+               f"{_REVISION_MAX} marked won't-converge.")
     on_after = (
-        "if(event.detail.successful){"
-        "htmx.ajax('GET','/portal/fragments/proposals/pending',{target:'#center-panel'});"
-        "history.pushState(null,'','/portal/fragments/proposals/pending')"
-        "}else{"
-        "document.getElementById('kaizen-result').textContent="
-        "'Disposition failed — see the alert above; you are still on the draft.'"
-        "}"
+        "if(!event.detail.successful){"
+        f"var r=document.getElementById('{result}');"
+        "if(r){r.textContent='Disposition failed — see the alert above; "
+        "you are still on the draft.'}}"
+    )
+    return f"""<div class="disposition-bar" hx-on::after-request="{on_after}">\
+<button class="btn btn-approve btn-promote" hx-post="/portal/actions/proposals/{pe}/promote" \
+hx-target="#{result}" hx-swap="innerHTML" \
+hx-confirm="Promote this draft — {consequence} and resolve the unit?">\
+Promote &mdash; {_esc(consequence)}</button>\
+<button class="btn btn-revise" type="button" \
+onclick="this.closest('.disposition-bar').querySelector('.feedback-block').classList.toggle('open')">\
+Suggest revision&hellip;</button>\
+<button class="btn btn-reject btn-reject-s" hx-post="/portal/actions/proposals/{pe}/reject" \
+hx-target="#{result}" hx-swap="innerHTML" \
+hx-confirm="Reject this draft — archive it and dismiss the proposal?">Reject</button>\
+<div class="feedback-block">\
+<textarea id="{rev_id}" name="revision_text" class="revision-text" rows="3" \
+placeholder="Revision guidance for the next draft (what to change)."></textarea>\
+<div class="feedback-row">\
+<button class="btn btn-approve" hx-post="/portal/actions/proposals/{pe}/suggest_revision" \
+hx-target="#{result}" hx-swap="innerHTML" hx-include="#{rev_id}">Send guidance &amp; redraft</button>\
+<button class="btn btn-secondary" type="button" \
+onclick="this.closest('.feedback-block').classList.remove('open')">Cancel</button>\
+</div>\
+<div class="revision-counter">{_esc(counter)}</div>\
+</div>\
+<div id="{result}"></div>\
+</div>"""
+
+
+def _disposition_actions_div(pid: str, producer: str = "forge") -> str:
+    """C1a compat shim — the bare disposition bar for the forge in-shell fragment.
+    fleet-review-unification-v1 C3 folded this into ``_disposition_bar``; forge is a
+    remote-publish sink."""
+    return _disposition_bar(pid, remote_sink=(producer == "forge"))
+
+
+def _revised_disclosure(unit: dict) -> str:
+    """The REVISED disclosure — a redraft (revision_count>0) quotes the operator's
+    latest directive so the card announces why it re-drafted."""
+    if unit.get("revision_count", 0) > 0 and unit.get("directive_echo"):
+        return f'<div class="revised-disclosure">{_esc(unit["directive_echo"])}</div>'
+    return ""
+
+
+def _unit_footer(unit: dict, remote_sink: bool) -> str:
+    """The per-state footer: the disposition bar (needs_review), the banked-guidance
+    in-flight note (revision_requested), or nothing (terminal / legacy)."""
+    state = unit["governance_state"]
+    if state == "needs_review" and unit.get("proposal_id"):
+        return _disposition_bar(unit["proposal_id"], remote_sink,
+                                unit.get("revision_count", 0))
+    if state == "revision_requested":
+        note = unit.get("directive_echo") or ""
+        quoted = f' <em>{_esc(note)}</em>' if note else ""
+        return (f'<div class="inflight-note">Guidance banked; redrafts next '
+                f'cycle.{quoted}</div>')
+    return ""  # promoted / rejected (dimmed) / legacy (list-only) — no actions
+
+
+def _unit_preview(cap: Any, unit: dict, limit: int = 2000) -> str:
+    """A bounded first-chars preview of a unit's primary content — the staged dir's
+    first non-meta content file, or the canonical/flat file. Best-effort: returns ''
+    when nothing resolves (a read-side view must not 500 on a stray file)."""
+    try:
+        _z, staging, canonical, _p = _fleet_zone_dirs(cap)
+        fn = unit.get("filename")
+        if fn:
+            for base in (staging, canonical):
+                cand = base / fn
+                if cand.is_file():
+                    return cand.read_text(encoding="utf-8", errors="replace")[:limit]
+            d = staging / fn
+            if d.is_dir():
+                for f in sorted(d.iterdir()):
+                    if f.is_file() and f.name != "meta.json":
+                        return f.read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        pass
+    return ""
+
+
+def _draft_preview_block(cap: Any, unit: dict) -> str:
+    """The 3-line clamped content preview + an in-place "Show full draft" expand
+    (toggles ``.expanded``, lifting the CSS line-clamp over the bounded read). Empty
+    when no content resolves."""
+    if cap is None:
+        return ""
+    text = _unit_preview(cap, unit)
+    if not text:
+        return ""
+    return (
+        f'<p class="draft-preview">{_esc(text)}</p>'
+        f'<button class="btn btn-secondary preview-toggle" type="button" '
+        f'''onclick="this.previousElementSibling.classList.toggle('expanded');'''
+        f'''this.textContent=this.previousElementSibling.classList.contains('expanded')?'''
+        f''''Collapse':'Show full draft'">Show full draft</button>'''
+    )
+
+
+def _review_card(unit: dict, remote_sink: bool, cap: Any = None) -> str:
+    """Mount 1 — one unit as a ``.review-card`` (state rail + header chip + meta +
+    REVISED disclosure + 3-line clamped preview + per-state footer). Terminals dim
+    (``.card-resolved``); legacy is list-only."""
+    state = unit["governance_state"]
+    _label, rail, _chip = _state_meta(state)
+    rc = unit.get("revision_count", 0)
+    title = unit.get("filename") or unit["unit_id"]
+    ver = f'draft v{rc + 1} &middot; ' if rc > 0 else ""
+    dim = " card-resolved" if state in ("promoted", "rejected") else ""
+    anchor = _short_id(unit.get("proposal_id") or unit["unit_id"])
+    head = (
+        f'<div class="review-head"><span class="title">{_esc(title)}</span>'
+        f'{_state_chip(state)}'
+        f'<span class="head-meta">{ver}{_esc(_relative_age(unit["mtime"]))}</span></div>'
     )
     return (
-        f'<div class="proposal-actions kaizen-disposition" id="forge-kaizen-{pe}" '
-        f'hx-on::after-request="{on_after}">'
-        f'<button class="btn btn-approve" '
-        f'hx-post="/portal/actions/proposals/{pe}/promote" '
-        f'hx-target="#kaizen-result" hx-swap="innerHTML" '
-        f'hx-confirm="Promote this draft — publish to Drive and update the row?">'
-        f'Promote</button>'
-        f'<button class="btn btn-reject" '
-        f'hx-post="/portal/actions/proposals/{pe}/reject" '
-        f'hx-target="#kaizen-result" hx-swap="innerHTML">Reject</button>'
-        f'<textarea id="{rev_id}" name="revision_text" class="revision-text" rows="3" '
-        f'placeholder="Revision guidance for the next draft (what to change)."></textarea>'
-        f'<button class="btn btn-secondary" '
-        f'hx-post="/portal/actions/proposals/{pe}/suggest_revision" '
-        f'hx-target="#kaizen-result" hx-swap="innerHTML" '
-        f'hx-include="#{rev_id}">Suggest revision</button>'
-        f'<div id="kaizen-result"></div>'
-        f'</div>'
+        f'<div class="card review-card {rail}{dim}" id="review-{anchor}">'
+        f'{head}{_revised_disclosure(unit)}{_draft_preview_block(cap, unit)}'
+        f'{_unit_footer(unit, remote_sink)}</div>'
+    )
+
+
+def _disposition_dock(unit: dict, remote_sink: bool, producer: str) -> str:
+    """Mount 2 — the sticky ``.disposition-dock`` for a detail view: state-colored top
+    border, a ``.dock-meta`` header, and the same disposition bar (or in-flight note).
+    Works for forge AND file-producer detail fragments."""
+    state = unit["governance_state"]
+    _label, rail, _chip = _state_meta(state)
+    rc = unit.get("revision_count", 0)
+    ver = f'draft v{rc + 1} &middot; ' if rc > 0 else ""
+    meta = (
+        f'<div class="dock-meta"><span class="unit">'
+        f'{_esc(unit.get("filename") or unit["unit_id"])}</span> {_state_chip(state)}'
+        f'<br>{ver}{_esc(_relative_age(unit["mtime"]))} &middot; {_esc(producer)}</div>'
+    )
+    return (
+        f'<div class="disposition-dock {rail}">{meta}'
+        f'{_revised_disclosure(unit)}{_unit_footer(unit, remote_sink)}</div>'
     )
 
 
@@ -1743,16 +1894,67 @@ async def handle_forge_slug_fragment(request: web.Request) -> web.Response:
         )
     pid = request.query.get("pid")
     body = _forge_slug_body(slug, read, pid=pid, include_publish=False)
-    # M3 — Kaizen div assembled HERE (not in _forge_slug_body, which stays a pure
-    # draft body so the standalone page is unaffected). pid gate + fail loud.
-    if pid:
-        disposition = _disposition_actions_div(pid, producer="forge")
+    # fleet-review-unification-v1 C3 — Mount 2: forge adopts the sticky disposition
+    # DOCK (state rail + dock-meta + the same bar), driven by the C2 unit. The route
+    # URL is unchanged. pid gate + fail loud preserved.
+    cap = _fleet_skill_records().get("forge-jobsearch")
+    unit = _find_fleet_unit(cap, proposal_id=pid, filename=slug) if cap else None
+    if unit is not None:
+        disposition = _disposition_dock(unit, remote_sink=True, producer="forge-jobsearch")
+    elif pid:
+        # C2 unit not resolvable (e.g. proposal already gone) but a pid is present —
+        # render the bare bar in a dock shell so disposition still works.
+        disposition = (f'<div class="disposition-dock rail-needs_review">'
+                       f'{_disposition_bar(pid, remote_sink=True)}</div>')
     else:
         disposition = (
             '<div class="meta error" id="forge-kaizen-none">'
             'disposition unavailable — no pid</div>'
         )
     return _html_fragment(body + disposition)
+
+
+def _find_fleet_unit(cap: Any, *, proposal_id: str | None = None,
+                     filename: str | None = None) -> Optional[dict]:
+    """Find one C2 unit for *cap* by its open proposal_id or by its filename/dir name.
+    None when neither matches (or cap is None)."""
+    if cap is None:
+        return None
+    for u in _list_fleet_units(cap):
+        if proposal_id and u.get("proposal_id") == proposal_id:
+            return u
+        if filename and u.get("filename") == filename:
+            return u
+    return None
+
+
+async def handle_fleet_unit_fragment(request: web.Request) -> web.Response:
+    """``GET /portal/fragments/fleet/{skill_name}/{unit}/`` — Mount 2 for a FILE
+    producer: the unit's staged content + the C2 disposition dock, for the context
+    sidebar. The generic sibling of the forge fragment (drafter/cultivator detail).
+    Unknown skill / unit -> 404 fragment."""
+    skill = request.match_info["skill_name"]
+    unit_name = request.match_info["unit"]
+    cap = _fleet_skill_records().get(skill)
+    if cap is None:
+        return _html_fragment(
+            f'<div class="error-card"><h3>404 — unknown fleet skill</h3>'
+            f'<p class="placeholder">{_esc(skill)}</p></div>', status=404)
+    unit = _find_fleet_unit(cap, filename=unit_name)
+    if unit is None:
+        return _html_fragment(
+            f'<div class="error-card"><h3>404 — unit not found</h3>'
+            f'<p class="placeholder">{_esc(skill)}/{_esc(unit_name)}</p></div>',
+            status=404)
+    remote_sink = cap.governance["write_zone"]["canonical_dir"] == "forge"
+    dock = _disposition_dock(unit, remote_sink, skill)
+    content = _unit_preview(cap, unit, limit=100000)
+    body = (
+        f'<h2>{_esc(unit_name)} {_fleet_zone_badge(cap.zone.value)}</h2>'
+        + (f'<article class="cellar-body">{_render_md(content)}</article>'
+           if content else '<p class="placeholder">No staged content.</p>')
+    )
+    return _html_fragment(dock + body)
 
 
 async def handle_portal_slash_redirect(request: web.Request) -> web.Response:
@@ -1789,6 +1991,12 @@ def register_fragment_routes(app: web.Application) -> None:
     # /portal/fleet/forge-jobsearch/{slug}/ page is unchanged; this shares its load
     # path (_read_forge_slug) and body builder (_forge_slug_body).
     app.router.add_get("/portal/fragments/forge/{slug}/", handle_forge_slug_fragment)
+    # fleet-review-unification-v1 C3 — Mount 2 for file producers: the generic unit
+    # detail fragment (staged content + disposition dock). Forge keeps its own route
+    # above; this serves drafter/cultivator/etc.
+    app.router.add_get(
+        "/portal/fragments/fleet/{skill_name}/{unit}/", handle_fleet_unit_fragment
+    )
     app.router.add_get("/portal/fragments/skills/", handle_skills)
     # Phase 4 — context sidebar. {entity_id:.+} carries slash-bearing cellar
     # page_ids; entity_type is a single non-slash segment.
