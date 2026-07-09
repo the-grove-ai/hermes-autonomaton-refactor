@@ -44,7 +44,6 @@ from grove.api.portal import (
     _fleet_zone_dirs,
     _list_fleet_units,
     _read_fleet_artifact,
-    _read_forge_slug,
     _read_page,
     _serialize_capability,
     pending_memory_proposal_items,
@@ -1872,38 +1871,133 @@ def render_forge_publish_card(
     )
 
 
-def _forge_slug_body(
-    slug: str, read: dict, *, pid: str | None = None, include_publish: bool = True
-) -> str:
-    """Inner HTML for a forge draft dir — the h2 + zone badge + subtitle, an
-    OPTIONAL Publish card, and the resume.md / cover-letter.md rendered-markdown
-    articles. Sole consumer is ``handle_forge_slug_fragment`` (C1 retired the
-    standalone slug-dir page), which passes ``include_publish = pid is None`` —
-    the Publish card renders for bare visits (the retired page's affordance),
-    and is omitted when a ``?pid`` drives disposition. ``pid`` itself is NOT
-    consumed here."""
-    meta = read["meta"]
-    if meta and all(meta.get(k) for k in ("row_id", "company", "role")):
-        publish = render_forge_publish_card(slug)
-        subtitle = f'{_esc(meta.get("company", ""))} &mdash; {_esc(meta.get("role", ""))}'
-    else:
-        why = read["meta_error"] or "meta.json is missing row_id/company/role"
-        publish = (
-            f'<div class="card" id="forge-publish-{_esc(slug)}">'
-            f'<h4>Publish unavailable</h4>'
-            f'<div class="meta error">{_esc(why)} — cannot publish without the '
-            f'row identity.</div></div>'
+# ---------------------------------------------------------------------------
+# fleet-artifact-legibility-v1 C2 — generic package rendering (mock screen B).
+#
+# A staged-dir unit enumerates its non-meta files into tabs (per-suffix
+# rendering); order and title come from the DECLARATION
+# (presentation.package.order / title_from_meta), never a worker name. The
+# forge-specific body builder (_forge_slug_body) retired into this path.
+# ---------------------------------------------------------------------------
+
+MAX_PACKAGE_TABS = 8
+_FILE_SUFFIX_ALLOWLIST = (".md", ".json", ".txt")
+
+
+def _render_file_html(text: str, suffix: str) -> str:
+    """Per-suffix file rendering: .md → frontmatter-strip + _render_md; .json →
+    the C1 structured facts/pretty path; .txt → escaped <pre>. Callers enforce
+    the allowlist + size gate BEFORE this runs."""
+    if suffix == ".md":
+        body = text
+        if body.startswith("---"):
+            split = _split_frontmatter(body)
+            if split is not None:
+                body = split[1]
+        return f'<article class="cellar-body">{_render_md(body)}</article>'
+    if suffix == ".json":
+        return _fleet_json_card(text)
+    return f"<pre>{_esc(text)}</pre>"
+
+
+def _package_files(d: Path, order: list) -> tuple:
+    """``(tab_files, strip_entries)`` for a staged package dir. Declared order
+    first, remaining non-meta files alphabetical (F6, enforced BEFORE any
+    render): at most MAX_PACKAGE_TABS tabs; off-allowlist or over-1MB files go
+    to the metadata strip — zero DOM content injection for them. Strip entries
+    are ``(name, size, reason)``."""
+    files = sorted(
+        (f for f in d.iterdir() if f.is_file() and f.name != "meta.json"),
+        key=lambda f: f.name,
+    )
+    by_name = {f.name: f for f in files}
+    ordered = [by_name[n] for n in order if n in by_name]
+    ordered += [f for f in files if f.name not in order]
+    tabs, strip = [], []
+    for f in ordered:
+        size = f.stat().st_size
+        if f.suffix.lower() not in _FILE_SUFFIX_ALLOWLIST:
+            strip.append((f.name, size, "unsupported type"))
+        elif size > _PARSE_SIZE_CAP:
+            strip.append((f.name, size, "exceeds the 1MB render cap"))
+        elif len(tabs) >= MAX_PACKAGE_TABS:
+            strip.append((f.name, size, "tab overflow"))
+        else:
+            tabs.append(f)
+    return tabs, strip
+
+
+def _package_strip_html(strip: list) -> str:
+    """The metadata strip for unrendered files: filename + size + reason. No
+    per-file raw link — package-inner files have no read route (the artifact
+    resolver serves single path components only); inventing one would be a new
+    read surface, out of C2 scope."""
+    if not strip:
+        return ""
+    rows = "".join(
+        f'<span class="tag">{_esc(name)} &middot; {size:,} B &middot; '
+        f'{_esc(reason)}</span>'
+        for name, size, reason in strip
+    )
+    return f'<div class="rc-facts pkg-strip">{rows}</div>'
+
+
+def _package_tabs_html(tab_files: list, unit_key: str) -> str:
+    """Client-side tabs: one button + pane per renderable file (single
+    dispatch — panes render server-side, the toggle is DOM-only). Default tab
+    = first ordered file."""
+    switch = (
+        "var p=this.closest('.pkg'),k=this.dataset.pane;"
+        "p.querySelectorAll('.ftab').forEach(function(t)"
+        "{t.classList.toggle('on',t.dataset.pane===k)});"
+        "p.querySelectorAll('.fpane').forEach(function(x)"
+        "{x.classList.toggle('on',x.dataset.pane===k)});"
+    )
+    tabs, panes = [], []
+    for i, f in enumerate(tab_files):
+        on = " on" if i == 0 else ""
+        tabs.append(
+            f'<button type="button" class="ftab{on}" data-pane="{i}" '
+            f'onclick="{switch}">{_esc(f.name)}</button>'
         )
-        subtitle = "(meta.json incomplete)"
-    publish_html = publish if include_publish else ""
+        text = f.read_text(encoding="utf-8", errors="replace")
+        panes.append(
+            f'<div class="fpane{on}" data-pane="{i}">'
+            f'{_render_file_html(text, f.suffix.lower())}</div>'
+        )
     return (
-        f'<h2>{_esc(slug)} {_fleet_zone_badge("yellow")}</h2>'
-        f'<p class="meta">forge-jobsearch &middot; {subtitle}</p>'
-        f"{publish_html}"
-        f"<h3>resume.md</h3>"
-        f'<article class="cellar-body">{_render_md(read["resume_md"])}</article>'
-        f"<h3>cover-letter.md</h3>"
-        f'<article class="cellar-body">{_render_md(read["cover_md"])}</article>'
+        f'<div class="pkg"><div class="ftabs">{"".join(tabs)}</div>'
+        f'{"".join(panes)}</div>'
+    )
+
+
+def _package_meta(d: Path) -> dict:
+    """The unit's ``meta.json`` as a dict (``{}`` when absent/malformed —
+    presentation-side; the write paths already fail loud)."""
+    p = d / "meta.json"
+    if not p.is_file():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _publish_affordance(cap: Any, unit_key: str, meta: dict,
+                        title_keys: list) -> str:
+    """The remote-publish action card for a SINK-published unit visited without
+    a driving ``?pid`` (the include_publish=(pid is None) ruling, preserved).
+    Gate: meta parsed and every title_from_meta key present — else a visible
+    'Publish unavailable' notice (a missing machine field like the row id is
+    caught fail-loud by the publish action itself)."""
+    if meta and all(meta.get(k) for k in title_keys or []):
+        return render_forge_publish_card(unit_key)
+    return (
+        f'<div class="card" id="forge-publish-{_esc(unit_key)}">'
+        f'<h4>Publish unavailable</h4>'
+        f'<div class="meta error">meta.json is missing or incomplete '
+        f'&mdash; cannot publish without the package identity.</div></div>'
     )
 
 
@@ -1939,10 +2033,11 @@ async def handle_fleet_artifact_redirect(request: web.Request) -> web.Response:
 
 async def handle_forge_slug_redirect(request: web.Request) -> web.Response:
     """302 ``/portal/fleet/forge-jobsearch/{slug}/`` →
-    ``/portal#fragments/forge/{slug}/`` (the existing in-shell forge fragment —
-    the slug-DIR viewer's body builder is shared, so content parity holds)."""
+    ``/portal#fragments/fleet/forge-jobsearch/{slug}/`` (the generic unit
+    fragment — fleet-artifact-legibility-v1 C2 retired the forge-specific
+    body; the legacy /portal/fragments/forge/ route stays as an alias)."""
     slug = quote(request.match_info["slug"], safe="")
-    raise web.HTTPFound(f"/portal#fragments/forge/{slug}/")
+    raise web.HTTPFound(f"/portal#fragments/fleet/forge-jobsearch/{slug}/")
 
 
 # ---------------------------------------------------------------------------
@@ -2043,13 +2138,6 @@ onclick="this.closest('.feedback-block').classList.remove('open')">Cancel</butto
 </div>"""
 
 
-def _disposition_actions_div(pid: str, producer: str = "forge") -> str:
-    """C1a compat shim — the bare disposition bar for the forge in-shell fragment.
-    fleet-review-unification-v1 C3 folded this into ``_disposition_bar``; forge is a
-    remote-publish sink."""
-    return _disposition_bar(pid, remote_sink=(producer == "forge"))
-
-
 def _revised_disclosure(unit: dict) -> str:
     """The REVISED disclosure — a redraft (revision_count>0) quotes the operator's
     latest directive so the card announces why it re-drafted."""
@@ -2075,8 +2163,9 @@ def _unit_footer(unit: dict, remote_sink: bool) -> str:
 
 def _unit_primary_file(cap: Any, unit: dict, limit: int = 2000) -> tuple:
     """``(text, source Path | None)`` for a unit's primary content — the staged
-    dir's first non-meta content file, or the canonical/flat file. The GATE-A D2
-    disk-read path, retained; C1 additionally surfaces WHICH file was read so the
+    dir's declaration-preferred content file (C2: ``presentation.package
+    .order[0]`` first, alphabetical fallback), or the canonical/flat file. The
+    GATE-A D2 disk-read path, retained; C1 surfaces WHICH file was read so the
     renderer can branch on its suffix. Best-effort: ``("", None)`` when nothing
     resolves (a read-side view must not 500 on a stray file)."""
     try:
@@ -2092,6 +2181,16 @@ def _unit_primary_file(cap: Any, unit: dict, limit: int = 2000) -> tuple:
                     )
             d = staging / fn
             if d.is_dir():
+                pres, _err = _fleet_presentation(cap)
+                order = ((pres or {}).get("package") or {}).get("order") or []
+                for name in order:
+                    cand = d / name
+                    if cand.is_file():
+                        return (
+                            cand.read_text(
+                                encoding="utf-8", errors="replace")[:limit],
+                            cand,
+                        )
                 for f in sorted(d.iterdir()):
                     if f.is_file() and f.name != "meta.json":
                         return (
@@ -2413,50 +2512,37 @@ def _disposition_dock(unit: dict, remote_sink: bool, producer: str) -> str:
     )
 
 
-async def handle_forge_slug_fragment(request: web.Request) -> web.Response:
-    """``GET /portal/fragments/forge/{slug}/`` — the forge draft as an in-shell
-    fragment for ``#center-panel``. Since fleet-ui-reconciliation-v1 C1 this is
-    ALSO the destination of the retired standalone slug-dir page (via 302), so it
-    carries that page's Publish card whenever no ``?pid`` drives disposition
-    (``include_publish = pid is None`` — the pid-driven proposals path is
-    unchanged, Publish omitted as before).
+def _sink_skill_record(canonical_dir: str):
+    """``(skill_name, cap)`` for the fleet record whose declared canonical sink
+    is *canonical_dir* — the SINK-derived resolver (never a worker name). None
+    when no record declares that sink."""
+    for name, cap in _fleet_skill_records().items():
+        try:
+            if cap.governance["write_zone"]["canonical_dir"] == canonical_dir:
+                return name, cap
+        except (KeyError, TypeError):
+            continue
+    return None
 
-    ``?pid=`` drives disposition (P2/M3). The Mount-2 disposition dock rides an
-    OOB ``#right-panel`` swap (C1 — its native 300px habitat) when a C2 unit or a
-    pid resolves. FAIL LOUD: neither → the draft still renders (reading is fine)
-    but a VISIBLE "disposition unavailable — no pid" notice stays inline in the
-    body, never a silent omission. Missing / unreadable slug dir -> 404."""
-    slug = request.match_info["slug"]
-    read = _read_forge_slug(slug)
-    if read is None:
+
+async def handle_forge_slug_fragment(request: web.Request) -> web.Response:
+    """``GET /portal/fragments/forge/{slug}/`` — LEGACY ALIAS (kept because
+    previously-sent deep links and the fleet-ui C1 302 target land here). The
+    fleet-artifact-legibility-v1 C2 generic package renderer serves it; the
+    owning skill is resolved by SINK (canonical_dir == "forge" — the sanctioned
+    sink discriminator, not a worker name). New emitters use the generic
+    ``/portal/fragments/fleet/{skill}/{unit}/`` route."""
+    resolved = _sink_skill_record("forge")
+    if resolved is None:
         return _html_fragment(
-            f'<div class="error-card"><h3>404 — forge draft not found</h3>'
-            f'<p class="placeholder">No forge draft dir: {_esc(slug)}</p></div>',
-            status=404,
+            '<div class="error-card"><h3>404 — no remote-publish sink</h3>'
+            '<p class="placeholder">No fleet record declares the forge '
+            'sink.</p></div>', status=404,
         )
-    pid = request.query.get("pid")
-    body = _forge_slug_body(slug, read, pid=pid, include_publish=(pid is None))
-    # fleet-review-unification-v1 C3 — Mount 2: forge adopts the sticky disposition
-    # DOCK (state rail + dock-meta + the same bar), driven by the C2 unit. The route
-    # URL is unchanged. pid gate + fail loud preserved.
-    cap = _fleet_skill_records().get("forge-jobsearch")
-    unit = _find_fleet_unit(cap, proposal_id=pid, filename=slug) if cap else None
-    if unit is not None:
-        dock = _disposition_dock(unit, remote_sink=True, producer="forge-jobsearch")
-    elif pid:
-        # C2 unit not resolvable (e.g. proposal already gone) but a pid is present —
-        # render the bare bar in a dock shell so disposition still works.
-        dock = (f'<div class="disposition-dock rail-needs_review">'
-                f'{_disposition_bar(pid, remote_sink=True)}</div>')
-    else:
-        dock = None
-    if dock is not None:
-        oob = (f'<div id="right-panel" class="right-panel" hx-swap-oob="true">'
-               f'{dock}</div>')
-        return _html_fragment(f'<div class="content">{body}</div>{oob}')
-    notice = ('<div class="meta error" id="forge-kaizen-none">'
-              'disposition unavailable — no pid</div>')
-    return _html_fragment(f'<div class="content">{body}{notice}</div>')
+    skill_name, cap = resolved
+    return _render_unit_detail(
+        cap, skill_name, request.match_info["slug"], request.query.get("pid")
+    )
 
 
 def _find_fleet_unit(cap: Any, *, proposal_id: str | None = None,
@@ -2473,33 +2559,120 @@ def _find_fleet_unit(cap: Any, *, proposal_id: str | None = None,
     return None
 
 
+def _render_unit_detail(cap: Any, skill: str, unit_name: str, pid) -> web.Response:
+    """The generic unit DETAIL fragment (fleet-artifact-legibility-v1 C2, mock
+    screen B) — shared by the generic route and the legacy forge alias.
+
+    Package units (staged dirs) render declaration-ordered file tabs with
+    per-suffix rendering + the metadata strip for overflow/blocked files;
+    single-file units render suffix-correct through the same gates. Title and
+    subtitle come from ``presentation.package`` + ``meta.json`` — never a
+    worker name. The Mount-2 disposition dock rides the OOB ``#right-panel``
+    swap; a remote-publish sink visited WITHOUT a driving ``?pid`` keeps the
+    Publish affordance (the include_publish=(pid is None) ruling)."""
+    unit = _find_fleet_unit(cap, proposal_id=pid, filename=unit_name)
+    if unit is not None and unit.get("filename"):
+        unit_name = unit["filename"]
+    try:
+        _z, staging, canonical, _p = _fleet_zone_dirs(cap)
+    except KeyError:
+        staging = canonical = None
+    remote_sink = False
+    if staging is not None:
+        remote_sink = cap.governance["write_zone"]["canonical_dir"] == "forge"
+
+    pres, _pres_err = _fleet_presentation(cap)
+    pkg = (pres or {}).get("package") or {}
+    order = pkg.get("order") or []
+    title_keys = pkg.get("title_from_meta") or []
+
+    d = (staging / unit_name) if staging is not None else None
+    single = None
+    if d is None or not d.is_dir():
+        d = None
+        for base in (staging, canonical):
+            if base is not None and (base / unit_name).is_file():
+                single = base / unit_name
+                break
+    if d is None and single is None:
+        return _html_fragment(
+            f'<div class="error-card"><h3>404 — unit not found</h3>'
+            f'<p class="placeholder">{_esc(skill)}/{_esc(unit_name)}</p></div>',
+            status=404)
+
+    # Title / subtitle — declaration + meta driven, unit_id fallback.
+    meta = _package_meta(d) if d is not None else {}
+    title_bits = [str(meta[k]) for k in title_keys if meta.get(k)]
+    title = " &mdash; ".join(_esc(b) for b in title_bits) or _esc(
+        (unit or {}).get("unit_id") or unit_name)
+    if d is not None:
+        tab_files, strip = _package_files(d, order)
+        n_docs = len(tab_files) + len(strip)
+        sub_tail = f'{n_docs} document(s) + meta'
+        content = _package_tabs_html(tab_files, unit_name) if tab_files else (
+            '<p class="placeholder">No renderable content files.</p>')
+        content += _package_strip_html(strip)
+    else:
+        size = single.stat().st_size
+        suffix = single.suffix.lower()
+        sub_tail = "1 document"
+        if suffix not in _FILE_SUFFIX_ALLOWLIST:
+            content = _package_strip_html([(single.name, size, "unsupported type")])
+        elif size > _PARSE_SIZE_CAP:
+            content = _package_strip_html(
+                [(single.name, size, "exceeds the 1MB render cap")])
+        else:
+            text = single.read_text(encoding="utf-8", errors="replace")
+            content = _render_file_html(text, suffix)
+    generated = (f' &middot; generated {_esc(_relative_age(unit["mtime"]))}'
+                 if unit else "")
+    header = (
+        f'<h2>{title} {_fleet_zone_badge(cap.zone.value)}</h2>'
+        f'<p class="page-sub">{_esc(skill)}{generated} &middot; {sub_tail}</p>'
+    )
+
+    # The remote-publish affordance (pid-less visits only — preserved ruling).
+    publish = ""
+    if remote_sink and pid is None and d is not None:
+        publish = _publish_affordance(cap, unit_name, meta, title_keys)
+
+    # Mount-2 disposition dock → OOB #right-panel (its native habitat).
+    if unit is not None:
+        dock = _disposition_dock(unit, remote_sink, skill)
+    elif pid:
+        # Unit not resolvable (e.g. proposal already gone) but a pid is present —
+        # the bare bar in a dock shell so disposition still works.
+        dock = (f'<div class="disposition-dock rail-needs_review">'
+                f'{_disposition_bar(pid, remote_sink)}</div>')
+    else:
+        dock = None
+    if dock is not None:
+        return _html_fragment(
+            f'<div class="content">{header}{publish}{content}</div>'
+            f'<div id="right-panel" class="right-panel" '
+            f'hx-swap-oob="true">{dock}</div>'
+        )
+    # FAIL LOUD (forge-review-surface-v1 posture preserved): reading is fine,
+    # but a missing disposition affordance is announced, never silent.
+    notice = ('<div class="meta error" id="unit-disposition-none">'
+              'disposition unavailable — no open proposal for this unit</div>')
+    return _html_fragment(
+        f'<div class="content">{header}{publish}{content}{notice}</div>'
+    )
+
+
 async def handle_fleet_unit_fragment(request: web.Request) -> web.Response:
-    """``GET /portal/fragments/fleet/{skill_name}/{unit}/`` — Mount 2 for a FILE
-    producer: the unit's staged content + the C2 disposition dock, for the context
-    sidebar. The generic sibling of the forge fragment (drafter/cultivator detail).
-    Unknown skill / unit -> 404 fragment."""
+    """``GET /portal/fragments/fleet/{skill_name}/{unit}/`` — the generic unit
+    detail (packages + single files). Unknown skill -> 404 fragment."""
     skill = request.match_info["skill_name"]
-    unit_name = request.match_info["unit"]
     cap = _fleet_skill_records().get(skill)
     if cap is None:
         return _html_fragment(
             f'<div class="error-card"><h3>404 — unknown fleet skill</h3>'
             f'<p class="placeholder">{_esc(skill)}</p></div>', status=404)
-    unit = _find_fleet_unit(cap, filename=unit_name)
-    if unit is None:
-        return _html_fragment(
-            f'<div class="error-card"><h3>404 — unit not found</h3>'
-            f'<p class="placeholder">{_esc(skill)}/{_esc(unit_name)}</p></div>',
-            status=404)
-    remote_sink = cap.governance["write_zone"]["canonical_dir"] == "forge"
-    dock = _disposition_dock(unit, remote_sink, skill)
-    content = _unit_preview(cap, unit, limit=100000)
-    body = (
-        f'<h2>{_esc(unit_name)} {_fleet_zone_badge(cap.zone.value)}</h2>'
-        + (f'<article class="cellar-body">{_render_md(content)}</article>'
-           if content else '<p class="placeholder">No staged content.</p>')
+    return _render_unit_detail(
+        cap, skill, request.match_info["unit"], request.query.get("pid")
     )
-    return _html_fragment(dock + body)
 
 
 async def handle_portal_slash_redirect(request: web.Request) -> web.Response:
@@ -2531,10 +2704,9 @@ def register_fragment_routes(app: web.Application) -> None:
     app.router.add_get("/portal/fragments/memory/records", handle_memory_records)
     app.router.add_get("/portal/fragments/dock/goals", handle_dock_goals)
     app.router.add_get("/portal/fragments/proposals/pending", handle_proposals_pending)
-    # forge-review-surface-v1 P1 — the forge draft body as an in-shell fragment
-    # for load into #center-panel. Since C1 it is ALSO the 302 target of the
-    # retired standalone /portal/fleet/forge-jobsearch/{slug}/ page (shared load
-    # path _read_forge_slug, shared body builder _forge_slug_body).
+    # fleet-artifact-legibility-v1 C2 — LEGACY ALIAS: previously-sent forge deep
+    # links land here; the generic package renderer serves it (sink-resolved).
+    # New emitters use the generic /portal/fragments/fleet/{skill}/{unit}/ route.
     app.router.add_get("/portal/fragments/forge/{slug}/", handle_forge_slug_fragment)
     # fleet-review-unification-v1 C3 — Mount 2 for file producers: the generic unit
     # detail fragment (staged content + disposition dock). Forge keeps its own route

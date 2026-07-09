@@ -2,7 +2,7 @@
 
 The informed-path loop-back tap has a spine that crosses four modules:
 
-    operator taps "Suggest revision"           (fragments._disposition_actions_div render)
+    operator taps "Suggest revision"           (fragments._disposition_bar render)
       -> feedback_store.write accumulates        (grove.forge.feedback_store)
         -> resolver selects that unit FIRST,      (grove.fleet.resolvers._select_units)
            the manager folds the framed directive (grove.fleet.manager, C1b-1)
@@ -361,7 +361,9 @@ def test_forge_kaizen_div_renders_enabled_suggest_revision():
     from grove.api import fragments
 
     pid = "sha256:deadbeefcafe"
-    html = fragments._disposition_actions_div(pid)  # C1a rename (was _forge_kaizen_div)
+    # fleet-artifact-legibility-v1 C2 — the C1a compat shim retired; render the
+    # bar directly (remote_sink=True = the forge case the shim defaulted to).
+    html = fragments._disposition_bar(pid, remote_sink=True)
     short = fragments._short_id(pid)
     rev_id = f"rev-{short}"
     # enabled textarea (not the old disabled placeholder button)

@@ -308,3 +308,118 @@ async def test_cultivator_card_renders_declared_in_queue(client, grove_home):
     assert "<b>Person 0</b>" in html and "+ 3 more" in html
     assert re.search(r'class="raw-link"', html)
     assert '"generated_at"' not in html                    # no raw JSON dump
+
+
+# ---------------------------------------------------------------------------
+# fleet-artifact-legibility-v1 C2 — generic package unit fragment (mock B)
+# ---------------------------------------------------------------------------
+
+
+def _stage_forge_pkg(home, slug="260709-acme", meta=None):
+    d = home / "forge" / "pending_review" / slug
+    d.mkdir(parents=True)
+    (d / "resume.md").write_text("# Resume\n\n**Jim Calhoun** resume body.",
+                                 encoding="utf-8")
+    (d / "cover-letter.md").write_text("# Cover\n\nCover body.", encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps(
+        meta if meta is not None else
+        {"slug": slug, "row_id": "ROW-1", "company": "Acme", "role": "PE"}),
+        encoding="utf-8")
+    return d
+
+
+async def test_forge_unit_generic_route_full_render(client, grove_home):
+    _stage_forge_pkg(grove_home)
+    resp = await client.get("/portal/fragments/fleet/forge-jobsearch/260709-acme/")
+    assert resp.status == 200
+    html = await resp.text()
+    # title from meta per package.title_from_meta; ordered tabs; md rendered
+    assert "Acme &mdash; PE" in html
+    assert html.index(">resume.md</button>") < html.index(
+        ">cover-letter.md</button>")
+    assert 'class="ftab on" data-pane="0"' in html   # default tab = order[0]
+    assert "<strong>Jim Calhoun</strong>" in html      # .md through _render_md
+    assert "2 document(s) + meta" in html
+    # pid-less visit: Publish card present (include_publish ruling preserved)
+    assert "forge-publish-260709-acme" in html
+    assert "/portal/actions/forge/260709-acme/publish" in html
+    # staged-no-proposal unit resolves LEGACY → meta-only dock OOB (same as
+    # the retired fragment, which also resolved the unit by filename)
+    assert 'hx-swap-oob="true"' in html
+    assert "chip-legacy" in html
+
+
+async def test_forge_unit_pid_visit_omits_publish_has_dock(client, grove_home):
+    from grove.eval import proposal_queue
+    _stage_forge_pkg(grove_home)
+    pid, _ = proposal_queue.file_agentless(
+        type=proposal_queue.PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
+        payload={"slug": "260709-acme", "row_id": "ROW-1",
+                 "skill_id": "skill.fleet.forge-jobsearch"},
+        evidence=("260709-acme",), justification="t",
+        proposer="skill.fleet.forge-jobsearch")
+    resp = await client.get(
+        f"/portal/fragments/fleet/forge-jobsearch/260709-acme/?pid={pid}")
+    html = await resp.text()
+    assert "forge-publish-" not in html                # publish omitted w/ pid
+    assert 'hx-swap-oob="true"' in html                # Mount-2 dock OOB
+    assert 'class="disposition-dock' in html
+    assert "/promote" in html and "/suggest_revision" in html  # verbs intact
+
+
+async def test_forge_legacy_alias_serves_generic(client, grove_home):
+    _stage_forge_pkg(grove_home)
+    a = await (await client.get(
+        "/portal/fragments/forge/260709-acme/")).text()
+    g = await (await client.get(
+        "/portal/fragments/fleet/forge-jobsearch/260709-acme/")).text()
+    assert a == g                                       # alias == generic, byte-equal
+
+
+async def test_package_tab_overflow_and_blocked_files(client, grove_home):
+    d = grove_home / "drafter" / "pending_review" / "big-unit"
+    d.mkdir(parents=True)
+    for i in range(12):
+        (d / f"part-{i:02d}.md").write_text(f"# Part {i}", encoding="utf-8")
+    (d / "blob.bin").write_bytes(b"\x00SECRETBYTES\x00")
+    (d / "huge.md").write_text("x" * 1_100_000, encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps({"unit_id": "big-unit"}),
+                                 encoding="utf-8")
+    resp = await client.get("/portal/fragments/fleet/drafter/big-unit/")
+    html = await resp.text()
+    from grove.api.fragments import MAX_PACKAGE_TABS
+    assert html.count('<button type="button" class="ftab') == MAX_PACKAGE_TABS
+    assert "tab overflow" in html                       # overflow strip entries
+    assert "unsupported type" in html                   # .bin → metadata strip
+    assert "exceeds the 1MB render cap" in html         # oversize → strip
+    assert "SECRETBYTES" not in html                    # zero content injection
+    assert "x" * 1000 not in html
+
+
+async def test_cultivator_unit_structured_json_unregressed(client, grove_home):
+    d = grove_home / "cultivator" / "pending_review" / "prospects-2026-07-09-x"
+    d.mkdir(parents=True)
+    (d / "prospects-2026-07-09-x.json").write_text(
+        json.dumps(_CULTIVATOR_PAYLOAD), encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps(
+        {"unit_id": "prospects-2026-07-09-x"}), encoding="utf-8")
+    resp = await client.get(
+        "/portal/fragments/fleet/cultivator/prospects-2026-07-09-x/")
+    html = await resp.text()
+    assert "<dt>generated_at</dt>" in html              # C1 structured JSON path
+    assert "Raw JSON" in html and "<details>" in html
+    assert "no remote-publish" not in html
+    assert "forge-publish" not in html                  # mv-sink: no publish card
+
+
+async def test_card_preview_leads_with_declared_order(grove_home):
+    """Item 3 — a package unit's CARD preview reads package.order[0]
+    (resume.md), not first-alphabetical (cover-letter.md)."""
+    from grove.api.fragments import _unit_primary_file
+    from grove.api.portal import _fleet_skill_records
+    _stage_forge_pkg(grove_home)
+    cap = _fleet_skill_records()["forge-jobsearch"]
+    text, src = _unit_primary_file(
+        cap, {"filename": "260709-acme"}, limit=10_000)
+    assert src.name == "resume.md"
+    assert "Resume" in text

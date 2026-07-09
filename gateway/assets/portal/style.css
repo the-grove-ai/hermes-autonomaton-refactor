@@ -524,6 +524,19 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .raw-link:hover { color: var(--accent); }
 .pres-notice { margin-top: 0.5rem; font-size: 0.76rem; opacity: 0.75; }
 
+/* ---- Package unit tabs (fleet-artifact-legibility-v1 C2, mock screen B) --
+   Tokens only. Panes render server-side; the tab switch is DOM-only. */
+.ftabs { display: flex; gap: 0.35rem; margin: 0.9rem 0 0.6rem; flex-wrap: wrap; }
+.ftab { padding: 0.3rem 0.8rem; font-size: 0.82rem; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--bg-panel);
+    color: var(--text-dim); cursor: pointer; }
+.ftab:hover { border-color: var(--accent-dim); }
+.ftab.on { background: var(--bg-elev); color: var(--text);
+    border-color: var(--accent-dim); }
+.fpane { display: none; }
+.fpane.on { display: block; }
+.pkg-strip { margin-top: 0.6rem; }
+
 /* Disposition bar — inset panel; a HORIZONTAL verb row at content width
    (fleet-ui-reconciliation-v1 C1, mock Screen B), stacking to a column below
    560px. The feedback block and the per-unit result div are full-width rows
