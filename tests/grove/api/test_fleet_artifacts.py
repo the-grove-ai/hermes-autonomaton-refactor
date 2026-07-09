@@ -374,11 +374,15 @@ async def test_legacy_fleet_artifact_redirects(client):
 
 
 async def test_legacy_forge_slug_redirects(client):
+    # fleet-artifact-legibility-v1 C2 — the target is the GENERIC unit fragment
+    # (the forge-specific body retired; /portal/fragments/forge/ stays an alias).
     resp = await client.get(
         "/portal/fleet/forge-jobsearch/260707-acme/", allow_redirects=False
     )
     assert resp.status == 302
-    assert resp.headers["Location"] == "/portal#fragments/forge/260707-acme/"
+    assert resp.headers["Location"] == (
+        "/portal#fragments/fleet/forge-jobsearch/260707-acme/"
+    )
 
 
 # ---------------------------------------------------------------------------
