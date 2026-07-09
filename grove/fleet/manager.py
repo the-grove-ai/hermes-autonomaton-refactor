@@ -41,13 +41,26 @@ def _review_mode_for_skill(skill_id: Optional[str]) -> Optional[str]:
     fleet-review-unification-v1 — the SOLE ``approval_handoff.mode`` read in the
     codebase. Gates BOTH the operator-promote proposal emission (post-run reap) and
     the C1b-1 revision-directive fold (pre-run dispatch). ``action_surface_publish``
-    is the producer-declaring value; forge is the only skill declaring it today.
+    is the producer-declaring value; as of C1b-2 forge, drafter, and cultivator all
+    declare it (the review-unified producer set).
     """
     from grove.capability_registry import load_capabilities
 
     cap = load_capabilities().get(skill_id)
     gov = (cap.governance or {}) if cap is not None else {}
     return ((gov.get("approval_handoff") or {}).get("mode")) if isinstance(gov, dict) else None
+
+
+def _canonical_sink_for_skill(skill_id: Optional[str]) -> Optional[str]:
+    """The worker's ``governance.write_zone.canonical_dir`` from its capability record
+    (or None). fleet-review-unification-v1 C1b-2 — the promote-dispatch + proposal-type
+    routing key: ``forge`` → self-authored forge_artifact_pending (Drive publish);
+    anything else → generic fleet_artifact_pending (mv → canonical, poller ingests)."""
+    from grove.capability_registry import load_capabilities
+
+    cap = load_capabilities().get(skill_id)
+    gov = (cap.governance or {}) if cap is not None else {}
+    return ((gov.get("write_zone") or {}).get("canonical_dir")) if isinstance(gov, dict) else None
 
 
 class FleetManager:
@@ -166,8 +179,6 @@ class FleetManager:
                 return  # ingest_post / other — no operator-promote proposal
 
             slug = event.get("slug")
-            row_id = event.get("row_id")
-            fit_score = event.get("fit_score")
             if not slug:
                 surface_fleet_andon(
                     wid, run_id,
@@ -178,10 +189,39 @@ class FleetManager:
                 return
 
             from grove.eval.proposal_queue import (
+                PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
                 PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
                 file_agentless,
             )
 
+            # fleet-review-unification-v1 C1b-2 — proposal TYPE by canonical_sink.
+            # A file producer (canonical_sink != "forge") emits the GENERIC
+            # fleet_artifact_pending, keyed on the stable unit_id (no Notion row_id);
+            # forge falls through to its byte-identical forge_artifact_pending path.
+            canonical_sink = _canonical_sink_for_skill(skill_id)
+            if canonical_sink != "forge":
+                unit_id = event.get("unit_id") or slug
+                payload = {
+                    "slug": slug,
+                    "unit_id": unit_id,
+                    "skill_id": skill_id,
+                    "canonical_sink": canonical_sink,
+                }
+                pid, appended = file_agentless(
+                    type=PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
+                    payload=payload,
+                    evidence=(unit_id,),  # stable per-unit dedup key
+                    justification="Draft staged for review: " + slug,
+                    proposer=skill_id,  # proposal-proposer-attribution-v1
+                )
+                logger.info(
+                    "[fleet.manager] emitted %s proposal %s (appended=%s) for %s",
+                    PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING, pid, appended, slug,
+                )
+                return
+
+            row_id = event.get("row_id")
+            fit_score = event.get("fit_score")
             payload = {
                 "slug": slug,
                 "row_id": row_id,

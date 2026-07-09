@@ -276,4 +276,7 @@ governance:
       tool: write_file
       path_pattern: "draft-*.md"
   approval_handoff:
-    mode: forced_exit
+    # fleet-review-unification-v1 C1b-2 — drafter is now a real fleet worker whose
+    # staged Yellow draft is disposed on the action surface (promote → mv to the
+    # canonical drafter/ sink, poller ingests). Previously a manual-exit producer.
+    mode: action_surface_publish

@@ -138,7 +138,9 @@ def _resolve_worker_runtime(cap, worker_id: str):
     return routed.tier_config.model, routed.tier_config.max_tokens, runtime
 
 
-def _build_worker_prompt(skill_name: str, payload: Any, tag: str) -> str:
+def _build_worker_prompt(
+    skill_name: str, payload: Any, tag: str, content_files: Optional[List[str]] = None
+) -> str:
     # suggest-revision-verb-v1 P3 (B1 attention fix) — a host-side revision_directive
     # is surfaced as an EXPLICIT turn instruction (its OWN segment, before RESOLVED
     # INPUT) and LIFTED OUT of the json.dumps blob: a passive json key is ambient
@@ -161,6 +163,42 @@ def _build_worker_prompt(skill_name: str, payload: Any, tag: str) -> str:
     # the skill (skill_view) names the specific files. Delimited-only: no JSON envelope,
     # so a body full of literal quotes/newlines transports verbatim (this kills the
     # unescaped-quote no_package class byte-confirmed on run f157eb558b).
+    if content_files is None:
+        # Self-authored producer (forge) — byte-identical to the pre-C1b-2 prompt.
+        return (
+            f"You are an autonomous, non-interactive fleet background worker. You are "
+            f"EXECUTING a job, not describing one. Your FIRST step is to call "
+            f"skill_view('{skill_name}'): what it returns is your OPERATING PROCEDURE "
+            f"to carry out, NOT reference material to summarize or report on. Then "
+            f"perform that procedure to completion against the resolved input below.\n\n"
+            f"No operator is present — do NOT ask clarifying questions. You have NO "
+            f"write tool and you do NOT publish; the RUNTIME stages your output. Read "
+            f"only your declared read surfaces.\n\n"
+            f"Your job is COMPLETE ONLY when you emit EACH file your procedure produces, "
+            f"each inside its OWN delimited block, using this EXACT protocol:\n"
+            f"@@@FILE_START: <filename> [{tag}]@@@\n"
+            f"<full raw file content — no JSON escaping; quotes and newlines are literal>\n"
+            f"@@@FILE_END: <filename> [{tag}]@@@\n"
+            f"One file MUST be meta.json — valid JSON carrying a \"slug\" key plus your "
+            f"routing metadata; the runtime stages your output under that slug. Do NOT wrap "
+            f"bodies in markdown fences. Prose outside blocks is ignored, but a run that "
+            f"omits a required file, leaves a block unterminated, or emits an empty body is "
+            f"an INCOMPLETE run.\n\n"
+            f"{directive_block}"
+            f"RESOLVED INPUT:\n"
+            f"{json.dumps(json_payload, ensure_ascii=False, indent=2)}"
+        )
+    # Declarative producer (drafter/cultivator, C1b-2) — the skill authors CONTENT
+    # only; the runtime synthesizes the identity envelope from the resolver payload,
+    # so the worker is told exactly which content file to emit and NOT to author a
+    # meta.json / slug. Names come from the record's terminal_artifact + the runtime.
+    emit_lines = "\n".join(
+        f"@@@FILE_START: {name} [{tag}]@@@\n"
+        f"<full raw file content — no JSON escaping; quotes and newlines are literal>\n"
+        f"@@@FILE_END: {name} [{tag}]@@@"
+        for name in content_files
+    )
+    files_phrase = ", ".join(content_files)
     return (
         f"You are an autonomous, non-interactive fleet background worker. You are "
         f"EXECUTING a job, not describing one. Your FIRST step is to call "
@@ -170,16 +208,14 @@ def _build_worker_prompt(skill_name: str, payload: Any, tag: str) -> str:
         f"No operator is present — do NOT ask clarifying questions. You have NO "
         f"write tool and you do NOT publish; the RUNTIME stages your output. Read "
         f"only your declared read surfaces.\n\n"
-        f"Your job is COMPLETE ONLY when you emit EACH file your procedure produces, "
-        f"each inside its OWN delimited block, using this EXACT protocol:\n"
-        f"@@@FILE_START: <filename> [{tag}]@@@\n"
-        f"<full raw file content — no JSON escaping; quotes and newlines are literal>\n"
-        f"@@@FILE_END: <filename> [{tag}]@@@\n"
-        f"One file MUST be meta.json — valid JSON carrying a \"slug\" key plus your "
-        f"routing metadata; the runtime stages your output under that slug. Do NOT wrap "
-        f"bodies in markdown fences. Prose outside blocks is ignored, but a run that "
-        f"omits a required file, leaves a block unterminated, or emits an empty body is "
-        f"an INCOMPLETE run.\n\n"
+        f"Your job is COMPLETE ONLY when you emit your finished content as EXACTLY "
+        f"these file(s) — {files_phrase} — each inside its OWN delimited block, using "
+        f"this EXACT protocol:\n"
+        f"{emit_lines}\n"
+        f"Do NOT author a meta.json or a slug — the runtime records identity from the "
+        f"resolved input. Do NOT wrap bodies in markdown fences. Prose outside blocks "
+        f"is ignored, but a run that omits the required file, leaves a block "
+        f"unterminated, or emits an empty body is an INCOMPLETE run.\n\n"
         f"{directive_block}"
         f"RESOLVED INPUT:\n"
         f"{json.dumps(json_payload, ensure_ascii=False, indent=2)}"
@@ -218,25 +254,18 @@ def _is_safe_basename(name: str, sink: Any) -> bool:
     return dest_real == sink_real or dest_real.startswith(sink_real + os.sep)
 
 
-def _extract_fleet_package(messages, tag: str, sink: Any, required_files):
-    """Parse the worker's delimited, sentinel-framed per-file emit (Path B).
+def _parse_delimited_blocks(messages, tag: str, sink: Any):
+    """Parse the worker's delimited, sentinel-framed per-file emit (Path B) into a
+    ``{filename: body}`` map. Returns ``(files, None)`` on a clean parse else
+    ``(None, reason)`` — every malformed transition fails LOUD (never a partial
+    stage). Delimited-ONLY: no JSON transport fallback (it masked forensics and
+    produced the unescaped-quote failure class byte-confirmed on run f157eb558b).
 
-    Returns ``({"slug": ..., "files": {...}}, None)`` on a clean parse, else
-    ``(None, reason)`` — every malformed transition fails LOUD to the no_package
-    path (never a partial/garbled stage). Delimited-ONLY: there is no JSON transport
-    fallback (it masked forensics and produced the unescaped-quote failure class
-    this sprint kills — byte-confirmed on run f157eb558b + 5 siblings).
-
-    The per-run *tag* (caller passes ``run_id[:8]``) frames the sentinels so a body
-    line that spoofs a marker with a DIFFERENT tag is treated as text, not a marker.
-    ``required_files`` is the caller-supplied set (forge names its own set; the parser
-    stays generic — a second fleet worker will have a different set). The slug is
-    recovered from ``meta.json``'s own body: ALL files, meta included, travel the SAME
-    protocol; reading meta.json's JSON body for the slug is reading one file, not a
-    transport fallback.
-    """
-    from grove.fleet.staging import _SLUG_RE
-
+    The per-run *tag* (``run_id[:8]``) frames the sentinels so a body line spoofing a
+    marker with a DIFFERENT tag is text, not a marker. Producer-agnostic — the CALLER
+    applies the required-file / identity contract (forge names its triad + reads
+    meta.json's slug; a declarative producer names its content file + the runtime
+    synthesizes identity)."""
     text = _final_assistant_text(messages)
     if not text:
         return None, "no-files"
@@ -292,6 +321,22 @@ def _extract_fleet_package(messages, tag: str, sink: Any, required_files):
         return None, f"unterminated:{cur}"
     if not files:
         return None, "no-files"
+    return files, None
+
+
+def _extract_fleet_package(messages, tag: str, sink: Any, required_files):
+    """Self-authored package (forge): parse the emit, require *required_files*, and
+    recover the slug from the skill's OWN ``meta.json`` body. ALL files, meta
+    included, travel the SAME protocol; reading meta.json's JSON for the slug is
+    reading one file, not a transport fallback. Returns ``({"slug", "files"}, None)``
+    or ``(None, reason)``. (C1b-2: the block parse is shared with the declarative
+    extractor; forge's identity contract — required set + meta/slug — is unchanged.)
+    """
+    from grove.fleet.staging import _SLUG_RE
+
+    files, reason = _parse_delimited_blocks(messages, tag, sink)
+    if files is None:
+        return None, reason
 
     missing = set(required_files) - set(files)
     if missing:
@@ -309,6 +354,24 @@ def _extract_fleet_package(messages, tag: str, sink: Any, required_files):
         return None, "bad-meta"
 
     return {"slug": slug, "files": files}, None
+
+
+def _extract_declarative_content(messages, tag: str, sink: Any, required_content_files):
+    """Declarative producer (drafter/cultivator, C1b-2): parse the emit and take ONLY
+    the runtime-declared content file(s) — the skill authors content, NOT identity.
+    The runtime synthesizes ``meta.json`` from the resolver payload (the skill never
+    authors its own slug), so a stray skill-emitted meta.json is DISCARDED here, not
+    honored. Returns ``({"files": {content-only}}, None)`` or ``(None, reason)``."""
+    files, reason = _parse_delimited_blocks(messages, tag, sink)
+    if files is None:
+        return None, reason
+    missing = set(required_content_files) - set(files)
+    if missing:
+        return None, f"missing-required-files:{sorted(missing)}"
+    # content-only: drop any extra emitted file (incl. a stray meta.json — identity
+    # is the runtime's, synthesized from the resolver payload).
+    content = {name: files[name] for name in required_content_files}
+    return {"files": content}, None
 
 
 def _final_assistant_text(messages) -> str:
@@ -448,9 +511,23 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         )
         agent = dispatcher.agent
 
+        # fleet-review-unification-v1 C1b-2 — emission style. A file producer
+        # (file_source resolver → payload carries "units", never "rows") uses
+        # DECLARATIVE emission: the skill authors content only, named by the record's
+        # terminal_artifact, and the RUNTIME synthesizes the identity envelope from
+        # the resolver payload. A notion producer (forge) keeps its self-authored
+        # triad path, byte-identical.
+        declarative = (
+            isinstance(payload, dict) and "units" in payload and "rows" not in payload
+        )
+        content_files = (
+            _declarative_content_files(cap, payload, worker_id) if declarative else None
+        )
         # The prompt-side tag and the parser-side tag MUST be the identical run_id[:8]
         # (a mismatch = the model writes markers the parser rejects = every run no-files).
-        prompt = _build_worker_prompt(skill_name, payload, run_id[:8])
+        prompt = _build_worker_prompt(
+            skill_name, payload, run_id[:8], content_files=content_files
+        )
         try:
             result = agent.run_conversation(prompt, task_id=run_id)
         except TerminalGovernanceHalt as tgh:
@@ -473,13 +550,22 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         # slug dir, jailed by is_relative_to(sink). The skill never self-writes — so a
         # wall-clock kill cannot leave a half-written file the portal reads. The
         # per-run tag (run_id[:8]) frames the sentinels; forge names its required set.
-        package, reason = _extract_fleet_package(
-            result.get("messages"),
-            run_id[:8],
-            sink,
-            {"resume.md", "cover-letter.md", "meta.json"},
-        )
-        if package is None:
+        if declarative:
+            # Declarative: parse the content file(s) only; the runtime synthesizes
+            # meta.json (identity) and stages the package under the resolver's unit_id.
+            extracted, reason = _extract_declarative_content(
+                result.get("messages"), run_id[:8], sink, content_files
+            )
+        else:
+            # (f) Option 2: self-authored forge triad — the skill names its files and
+            # authors meta.json; the runtime stages under the slug meta declares.
+            extracted, reason = _extract_fleet_package(
+                result.get("messages"),
+                run_id[:8],
+                sink,
+                {"resume.md", "cover-letter.md", "meta.json"},
+            )
+        if extracted is None:
             # fleet-failure-forensics-v1 — the model produced output but it did not
             # parse to a valid package; that output is discarded, leaving zero
             # diagnostic without this. Enrich detail with the fail-loud reason + a
@@ -502,16 +588,31 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 check="no_package",
                 raw_text_path=_persist_raw_output(worker_id, run_id, final_text),
             )
-        staged = stage_package(sink, package["slug"], package["files"])
-        row_id, fit_score = _row_identity(package, payload)
+        if declarative:
+            unit_id = payload["unit_id"]
+            files = dict(extracted["files"])
+            files["meta.json"] = _synthesize_meta(payload, worker_id, unit_id)
+            staged = stage_package(sink, unit_id, files)
+            return _event(
+                worker_id,
+                run_id,
+                cap.id,
+                "success",
+                detail=f"completed={result.get('completed')}; unit={unit_id}",
+                staged=[str(p) for p in staged],
+                slug=unit_id,
+                unit_id=unit_id,
+            )
+        staged = stage_package(sink, extracted["slug"], extracted["files"])
+        row_id, fit_score = _row_identity(extracted, payload)
         return _event(
             worker_id,
             run_id,
             cap.id,
             "success",
-            detail=f"completed={result.get('completed')}; slug={package['slug']}",
+            detail=f"completed={result.get('completed')}; slug={extracted['slug']}",
             staged=[str(p) for p in staged],
-            slug=package["slug"],
+            slug=extracted["slug"],
             row_id=row_id,
             fit_score=fit_score,
         )
@@ -550,6 +651,7 @@ def _event(
     row_id: Optional[str] = None,
     fit_score: Optional[Any] = None,
     raw_text_path: Optional[str] = None,
+    unit_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     # fleet-pipeline-v1 P2 (A1) — additive fields the reap emitter reads OFF the
     # event (never parsed from detail/paths). None for workers that don't produce
@@ -557,7 +659,7 @@ def _event(
     # so these additions are tolerated (manager.py:98,109-110). raw_text_path
     # (fleet-failure-forensics-v1) follows the same additive precedent — the path
     # to a failed run's persisted raw output, or None.
-    return {
+    event = {
         "worker_id": worker_id,
         "run_id": run_id,
         "skill": skill_id,
@@ -571,6 +673,58 @@ def _event(
         "raw_text_path": raw_text_path,
         "ts": _now_iso(),
     }
+    # fleet-review-unification-v1 C1b-2 — the stable unit_id, ADDED ONLY when set (a
+    # file producer's identity for the generic-proposal emission). Omitted for a
+    # notion producer (forge) so its event JSON stays byte-identical.
+    if unit_id is not None:
+        event["unit_id"] = unit_id
+    return event
+
+
+def _declarative_content_files(cap, payload: Any, worker_id: str) -> List[str]:
+    """The content filename(s) a declarative producer must emit (C1b-2), derived from
+    the record's ``terminal_artifact.path_pattern`` with ``*`` filled by the unit_id
+    — so ``draft-*.md`` + unit ``moon-bot`` → ``draft-moon-bot.md`` (matching the flat
+    canonical adapter glob the promote mv targets). One content file per file producer
+    today. Missing pattern / unit_id is a LOUD Andon (never a silent no-file run)."""
+    from grove.fleet.errors import FleetWorkerAndon
+
+    gov = cap.governance or {}
+    ta = (
+        ((gov.get("emission_preconditions") or {}) if isinstance(gov, dict) else {})
+        .get("terminal_artifact")
+        or {}
+    )
+    pattern = ta.get("path_pattern")
+    unit_id = payload.get("unit_id") if isinstance(payload, dict) else None
+    if not pattern or "*" not in pattern or not unit_id:
+        raise FleetWorkerAndon(
+            f"worker {worker_id!r}: declarative producer needs a "
+            f"terminal_artifact.path_pattern with '*' (got {pattern!r}) and a "
+            f"resolver unit_id (got {unit_id!r})",
+            worker_id=worker_id,
+            check="declarative_config_missing",
+        )
+    return [pattern.replace("*", unit_id)]
+
+
+def _synthesize_meta(payload: Any, worker_id: str, unit_id: str) -> str:
+    """The runtime-authored identity envelope for a declarative producer (C1b-2). The
+    skill authors content only; identity — unit_id, slug, worker, source ref — is the
+    runtime's, from the resolver payload. ``slug == unit_id`` (the staged package dir
+    and the stable fleet identity are one for a file producer)."""
+    src = payload if isinstance(payload, dict) else {}
+    return json.dumps(
+        {
+            "unit_id": unit_id,
+            "slug": unit_id,
+            "worker": worker_id,
+            "source_path": src.get("source_path"),
+            "source_name": src.get("source_name"),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _row_identity(package: Dict[str, Any], payload: Any) -> "tuple":

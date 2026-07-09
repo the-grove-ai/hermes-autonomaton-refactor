@@ -65,9 +65,9 @@ def test_forge_payload_still_byte_matches_repo_skill():
 # ── forge fleet_workers.yaml entry ───────────────────────────────────────────
 
 
-def test_forge_worker_entry_disabled_and_correct():
+def test_forge_worker_entry_enabled_and_correct():
     w = load_fleet_workers(default_fleet_workers_path())["forge"]
-    assert w.enabled is False  # not enabled until Phase-5 smoke authorizes it
+    assert w.enabled is True  # live fleet producer (authorized post Phase-5 smoke)
     assert w.skill == "skill.fleet.forge-jobsearch"
     ist = w.input_state
     assert ist["type"] == "notion_query"

@@ -50,6 +50,7 @@ from grove.dock import _VALID_STATUSES, load_dock
 from grove.dock.writer import update_dock_goal_status
 from grove.eval import proposal_queue
 from grove.eval.proposal_queue import (
+    PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
     PROPOSAL_TYPE_MEMORY_CONTEXT,
     compute_proposal_id,
@@ -117,24 +118,31 @@ def _not_found_card_html(proposal_id: str) -> str:
 
 
 def _archive_forge_slug(proposal) -> Optional[str]:
-    """Move a rejected forge draft OUT of pending_review into
-    ``~/.grove/forge/.archive/<slug>-<ts>/`` (fleet-pipeline-v1 P3 / Gemini D+B1).
+    """Move a rejected/revised staged draft OUT of pending_review into
+    ``~/.grove/<sink>/.archive/<slug>-<ts>/`` (fleet-pipeline-v1 P3 / Gemini D+B1).
 
     One atomic ``rename`` within ``~/.grove`` (a single mount) both retains the
-    trainable package AND clears the skip-already-staged marker (the one-level
-    ``pending_review/*/meta.json`` glob no longer sees it), so the row becomes
+    trainable package AND clears the skip marker (the one-level
+    ``pending_review/*/meta.json`` glob no longer sees it), so the unit becomes
     re-draftable. Returns the archive path, or None when the dir is already gone
     (published/removed). The CALLER archives BEFORE finalize so a crash between
-    leaves the proposal live."""
-    slug = (proposal.payload or {}).get("slug")
+    leaves the proposal live.
+
+    fleet-review-unification-v1 C1b-2 — the sink is the proposal's declared
+    ``canonical_sink`` (a fleet file producer), DEFAULTING to ``forge`` when absent
+    (the forge_artifact_pending payload carries none — byte-identical to pre-C1b-2).
+    """
+    payload = proposal.payload or {}
+    slug = payload.get("slug")
     if not slug:
         return None
+    sink = payload.get("canonical_sink") or "forge"
     home = Path(get_hermes_home())
-    src = home / "forge" / "pending_review" / slug
+    src = home / sink / "pending_review" / slug
     if not src.is_dir():
         return None
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    dest = home / "forge" / ".archive" / f"{slug}-{ts}"
+    dest = home / sink / ".archive" / f"{slug}-{ts}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     src.rename(dest)  # atomic within the one ~/.grove mount
     return str(dest)
@@ -270,7 +278,12 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str, rea
     # staged marker AND retaining the trainable corpus), THEN finalize. Order is
     # load-bearing: archive BEFORE finalize, so a crash between them leaves the
     # proposal LIVE (re-rejectable), never a cleared-proposal-with-unarchived-dir.
-    if proposal.type == PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING:
+    # fleet-review-unification-v1 C1b-2 — the generic fleet_artifact_pending shares
+    # forge's archive-then-finalize reject (the archive helper routes by canonical_sink).
+    if proposal.type in (
+        PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
+        PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
+    ):
         archive_path = _archive_forge_slug(proposal)
         proposal_queue.finalize_proposal_state(
             proposal.proposal_id, "rejected",
@@ -936,6 +949,42 @@ async def handle_forge_promote(request: web.Request) -> web.Response:
     return await _promote_disposition(request, producer="forge")
 
 
+def _fleet_promote_core(proposal) -> dict:
+    """Generic file-producer promote (C1b-2): mv the staged CONTENT file(s) out of
+    ``pending_review/<slug>/`` into the FLAT canonical sink ``~/.grove/<canonical>/``,
+    which the existing wiki poller ingests (no new ingest code). ``meta.json`` is the
+    fleet-internal identity envelope and is NOT promoted — the now-meta-only staged dir
+    is archived (clearing the skip marker so the unit can re-draft later). Synchronous,
+    fast, local — never the bounded-async Drive path. Returns ``{ok, ...}`` mirroring
+    ``_forge_publish_core``'s discriminated shape."""
+    payload = proposal.payload or {}
+    slug = payload.get("slug")
+    canonical = payload.get("canonical_sink")
+    if not (slug and canonical):
+        return {"ok": False, "kind": "fleet_promote_bad_payload", "status": 400,
+                "message": "Proposal carries no slug/canonical_sink — cannot promote."}
+    home = Path(get_hermes_home())
+    src_dir = home / canonical / "pending_review" / slug
+    if not src_dir.is_dir():
+        return {"ok": False, "kind": "fleet_promote_missing", "status": 404,
+                "message": "Staged package not found — it may already be promoted."}
+    canonical_dir = home / canonical
+    canonical_dir.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for f in sorted(src_dir.iterdir()):
+        if f.name == "meta.json" or not f.is_file():
+            continue  # fleet-internal identity / non-file — never promoted to canonical
+        f.rename(canonical_dir / f.name)  # atomic within ~/.grove; flat → poller ingests
+        moved.append(str(canonical_dir / f.name))
+    if not moved:
+        return {"ok": False, "kind": "fleet_promote_empty", "status": 422,
+                "message": "Staged package has no content file to promote."}
+    # Archive the now-content-free staged dir (clears the skip-already-staged marker).
+    _archive_forge_slug(proposal)
+    return {"ok": True, "moved": moved,
+            "folder_link": f"{canonical}/ (cellar) — {len(moved)} file(s)"}
+
+
 async def _promote_disposition(
     request: web.Request, producer: str = "forge"
 ) -> web.Response:
@@ -983,6 +1032,38 @@ async def _promote_disposition(
                                       retappable=False),
             failure_class="forge_promote_in_flight", action="forge_promote",
             message="A publish is already in flight for this draft.", status=409,
+        )
+
+    # fleet-review-unification-v1 C1b-2 — promote DISPATCH by canonical_sink. A file
+    # producer (canonical_sink present and != "forge") promotes by a fast, local,
+    # SYNCHRONOUS mv → canonical (poller ingests); forge (no canonical_sink in payload)
+    # falls through to the bounded-async Drive publish below, byte-identical.
+    canonical_sink = (proposal.payload or {}).get("canonical_sink")
+    if canonical_sink and canonical_sink != "forge":
+        try:
+            res = _fleet_promote_core(proposal)
+        except Exception as exc:  # noqa: BLE001 — completed failure: clear lease, re-tappable
+            proposal_queue.clear_lease(proposal_id)
+            msg = f"Promote failed unexpectedly: {exc}. Re-tap to retry."
+            return await _loud_action_failure(
+                _forge_promote_error_card(proposal_id, short_id, ptype, msg, retappable=True),
+                failure_class="fleet_promote_error", action="fleet_promote",
+                message=msg, status=500,
+            )
+        if not res.get("ok"):
+            proposal_queue.clear_lease(proposal_id)
+            return await _loud_action_failure(
+                _forge_promote_error_card(proposal_id, short_id, ptype, res["message"],
+                                          retappable=True),
+                failure_class=res["kind"], action="fleet_promote",
+                message=res["message"], status=res["status"],
+            )
+        proposal_queue.finalize_proposal_state(
+            proposal_id, "applied", {"moved": res["moved"]}
+        )
+        return _resolved_card(
+            short_id, ptype, "promoted",
+            f"Promoted to the cellar — {res['folder_link']}",
         )
 
     loop = asyncio.get_running_loop()
@@ -1142,20 +1223,22 @@ async def _suggest_revision_disposition(
         )
     ptype = proposal.type
     slug = (proposal.payload or {}).get("slug")
-    row_id = (proposal.payload or {}).get("row_id")
-    if not row_id:
-        msg = "Proposal carries no row_id — cannot store revision guidance."
+    # fleet-review-unification-v1 C1b-1/C1b-2 — the feedback store is keyed on (worker,
+    # unit_id). For notion_query producers (forge) the payload carries row_id and
+    # unit_id == row_id; for file producers the payload carries the stable unit_id
+    # directly (no Notion row_id). Prefer unit_id, fall back to row_id — forge is
+    # byte-identical (unit_id resolves to row_id).
+    unit_id = (proposal.payload or {}).get("unit_id") or (proposal.payload or {}).get("row_id")
+    if not unit_id:
+        msg = "Proposal carries no unit_id/row_id — cannot store revision guidance."
         return await _loud_action_failure(
             _forge_suggest_error_card(short_id, msg),
             failure_class="suggest_revision_no_row_id", action="forge_suggest_revision",
             message=msg, status=400,
         )
 
-    # fleet-review-unification-v1 C1b-1 — the feedback store is keyed on (worker,
-    # unit_id). For notion_query producers unit_id == row_id and worker is the fleet
-    # worker id (forge). Derive worker from the proposal's skill_id so the portal WRITE
-    # and the manager READ agree on ~/.grove/<worker>/.feedback/<unit_id>.json.
-    unit_id = row_id
+    # Derive worker from the proposal's skill_id so the portal WRITE and the manager
+    # READ agree on ~/.grove/<worker>/.feedback/<unit_id>.json.
     _skill_id = (proposal.payload or {}).get("skill_id")
     worker = _worker_id_for_skill(_skill_id)
     if not worker:

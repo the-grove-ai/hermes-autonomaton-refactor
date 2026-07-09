@@ -69,12 +69,16 @@ def test_all_existing_records_still_load():
 # ── Condition 1: fleet_workers.yaml loader + loud dup-id guard ────────────────
 
 
-def test_shipped_registry_has_only_the_disabled_forge_worker():
-    # As of Phase 4 the committed registry declares one worker — forge, disabled
-    # until the Phase-5 smoke authorizes it. It must load cleanly and stay off.
+def test_shipped_registry_declares_the_review_unified_producer_set():
+    # fleet-review-unification-v1 C1b-2 — the committed registry declares the three
+    # real fleet producers: forge (notion_query) and the file producers drafter /
+    # cultivator (file_source), all enabled. It must load cleanly.
     workers = config.load_fleet_workers(config.default_fleet_workers_path())
-    assert set(workers) == {"forge"}
-    assert workers["forge"].enabled is False
+    assert set(workers) == {"forge", "drafter", "cultivator"}
+    assert all(w.enabled for w in workers.values())
+    assert workers["forge"].input_state["type"] == "notion_query"
+    assert workers["drafter"].input_state["type"] == "file_source"
+    assert workers["cultivator"].input_state["type"] == "file_source"
 
 
 def _write(tmp_path: Path, text: str) -> Path:

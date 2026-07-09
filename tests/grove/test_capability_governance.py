@@ -50,7 +50,7 @@ DRAFTER_GOV = {
         "required_tool_classes": [{"class": "skill_invocation", "min_calls": 1}],
         "terminal_artifact": {"tool": "write_file", "path_pattern": "draft-*.md"},
     },
-    "approval_handoff": {"mode": "forced_exit"},
+    "approval_handoff": {"mode": "action_surface_publish"},
 }
 
 FLEET = [("skill.fleet.scout", SCOUT_GOV), ("skill.fleet.drafter", DRAFTER_GOV)]
