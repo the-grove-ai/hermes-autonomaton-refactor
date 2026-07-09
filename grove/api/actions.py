@@ -285,9 +285,15 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str, rea
         PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
     ):
         archive_path = _archive_forge_slug(proposal)
+        _pl = proposal.payload or {}
         proposal_queue.finalize_proposal_state(
             proposal.proposal_id, "rejected",
-            {"archive_path": archive_path}, reason=reason,
+            # C2 — carry the unit identity so the read-side viewer's ledger join
+            # (forge terminals) is keyed reliably (additive ledger telemetry).
+            {"archive_path": archive_path,
+             "unit_id": _pl.get("unit_id") or _pl.get("row_id"),
+             "slug": _pl.get("slug")},
+            reason=reason,
         )
         return _resolved_card(
             short_id, type_label, _DISPOSITION_LABEL[action], summary
@@ -1101,8 +1107,15 @@ async def _promote_disposition(
         )
 
     # SUCCESS — finalize (the single disposition path): remove + kaizen ledger.
+    _pl = proposal.payload or {}
     proposal_queue.finalize_proposal_state(
-        proposal_id, "applied", {"folder_link": res["folder_link"]}
+        proposal_id, "applied",
+        # C2 — carry the unit identity so the read-side viewer's ledger join keys
+        # forge 'promoted' reliably (forge's staged dir lingers post-publish; the
+        # ledger, not the filesystem, records the terminal). Additive telemetry.
+        {"folder_link": res["folder_link"],
+         "unit_id": _pl.get("unit_id") or _pl.get("row_id"),
+         "slug": _pl.get("slug")},
     )
     return _resolved_card(
         short_id, ptype, "promoted", f"Published — {res['folder_link']}"

@@ -53,7 +53,12 @@ async def test_promote_happy_path_finalizes(monkeypatch):
     assert pq.read(pid) is None  # finalized -> removed from queue
     ev = [e for e in _ledger_events() if e["event_type"] == "kaizen_disposition"]
     assert ev and ev[-1]["disposition"] == "applied"
-    assert ev[-1]["applied_result"] == {"folder_link": "drive://x"}
+    # fleet-review-unification-v1 C2 — the disposition OUTCOME is unchanged
+    # (folder_link preserved); the applied_result gains ADDITIVE unit identity so the
+    # read-side viewer's ledger join keys forge 'promoted' reliably.
+    ar = ev[-1]["applied_result"]
+    assert ar["folder_link"] == "drive://x"
+    assert ar["unit_id"] == "pg1" and ar["slug"] == "260704-acme-pm"
 
 
 async def test_double_tap_returns_409_and_holds_first_lease(monkeypatch):

@@ -742,6 +742,285 @@ def _fleet_mtime_iso(mtime: float) -> str:
     return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# ---------------------------------------------------------------------------
+# fleet-review-unification-v1 C2 — four-state artifact disposition (read-side).
+#
+# Replaces the two-state topology flag with a governance_state joined from:
+#   * filesystem topology — AUTHORITATIVE for mv-sink producers (drafter,
+#     cultivator): canonical presence = promoted.
+#   * the live proposal store (open artifact proposals) — needs_review.
+#   * the per-(worker, unit_id) feedback store — revision_requested / rejected
+#     (won't-converge) + the revision_count / directive echo disclosure.
+#   * the kaizen_disposition ledger — AUTHORITATIVE for the remote-publish sink
+#     (forge → Drive), whose staged dir LINGERS post-publish so the filesystem
+#     cannot show 'promoted'. Sink-authority rule (GATE-B): canonical_sink=="forge"
+#     → ledger-authoritative terminals; else filesystem-authoritative.
+#
+# TOPOLOGICAL SUPREMACY — reconcile on read: an open proposal whose artifact
+# already sits in canonical (out-of-band mv) is auto-closed promoted_out_of_band;
+# an open proposal whose artifact was archived out of band (no staged, no
+# canonical) with no live revision is auto-closed rejected_out_of_band.
+# ---------------------------------------------------------------------------
+
+_ARTIFACT_PROPOSAL_TYPES = (
+    proposal_queue.PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
+    proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
+)
+
+
+def _artifact_unit_id(payload: Optional[dict]) -> Optional[str]:
+    """The stable unit identity a proposal/ledger event keys on: unit_id (file
+    producer) → row_id (forge) → slug (last resort)."""
+    pl = payload or {}
+    return pl.get("unit_id") or pl.get("row_id") or pl.get("slug")
+
+
+def _open_artifact_proposals(skill_id: str) -> Dict[str, Any]:
+    """``{unit_id -> live proposal}`` for this skill's OPEN artifact proposals
+    (forge_artifact_pending + fleet_artifact_pending). read_all() returns only live
+    proposals; terminals are popped into the ledger."""
+    out: Dict[str, Any] = {}
+    for p in read_all_proposals():
+        if getattr(p, "type", None) not in _ARTIFACT_PROPOSAL_TYPES:
+            continue
+        if (p.payload or {}).get("skill_id") != skill_id:
+            continue
+        uid = _artifact_unit_id(p.payload)
+        if uid:
+            out[uid] = p
+    return out
+
+
+def _feedback_units(worker: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    """``{unit_id -> {count, terminal_skip, latest_note, mtime}}`` from the worker's
+    feedback store (``~/.grove/<worker>/.feedback/*.json``). Empty when worker is
+    None / the dir is absent. A corrupt entry is skipped — a read-side view must
+    not 500 on one bad file (the write paths already fail loud)."""
+    if not worker:
+        return {}
+    fbdir = Path(get_hermes_home()) / worker / ".feedback"
+    if not fbdir.is_dir():
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for fp in fbdir.glob("*.json"):
+        try:
+            d = json.loads(fp.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        hist = d.get("history") or []
+        out[fp.stem] = {
+            "count": int(d.get("count", 0)),
+            "terminal_skip": bool(d.get("terminal_skip")),
+            "latest_note": (hist[-1].get("revision_note") if hist else None),
+            "mtime": fp.stat().st_mtime,
+        }
+    return out
+
+
+def _ledger_terminal_dispositions() -> Dict[str, str]:
+    """``{unit_id -> 'applied'|'rejected'}`` from the kaizen_disposition ledger, for
+    artifact proposals — the remote-publish sink's terminal source of truth. Keyed on
+    the unit identity the disposition's ``applied_result`` carries (C2 enriches
+    promote/reject with unit_id + slug); a reject's ``archive_path`` slug is the
+    fallback key. Later events win (the last disposition is authoritative)."""
+    ledger_dir = Path(get_hermes_home()) / ".kaizen_ledger"
+    out: Dict[str, str] = {}
+    if not ledger_dir.is_dir():
+        return out
+    for lf in sorted(ledger_dir.glob("*.jsonl")):
+        try:
+            lines = lf.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("event_type") != "kaizen_disposition":
+                continue
+            if ev.get("proposal_type") not in _ARTIFACT_PROPOSAL_TYPES:
+                continue
+            disp = ev.get("disposition")
+            if disp not in ("applied", "rejected"):
+                continue  # suggest_revision is not a terminal
+            ar = ev.get("applied_result") or {}
+            uid = ar.get("unit_id") or ar.get("slug")
+            if not uid and ar.get("archive_path"):
+                base = Path(str(ar["archive_path"])).name  # <slug>-<utc-ts>
+                uid = base.rsplit("-", 1)[0] if "-" in base else base
+            if uid:
+                out[uid] = disp
+    return out
+
+
+def _reverse_pattern(filename: str, pattern: str) -> str:
+    """Recover a unit_id from a flat canonical filename by stripping the
+    ``terminal_artifact`` pattern's fixed prefix/suffix (the ``*`` is the unit_id):
+    ``draft-*.md`` over ``draft-moon-bot.md`` → ``moon-bot``. A pattern without a
+    ``*`` (or a name that does not fit) falls back to the filename stem."""
+    if "*" not in pattern:
+        return Path(filename).stem
+    pre, suf = pattern.split("*", 1)
+    s = filename
+    if pre and s.startswith(pre):
+        s = s[len(pre):]
+    if suf and s.endswith(suf):
+        s = s[: -len(suf)]
+    return s
+
+
+def _unit_from_meta(meta_path: Path, dirname: str) -> str:
+    """The staged unit's unit_id from its synthesized/self-authored ``meta.json``
+    (unit_id → row_id → slug), falling back to the dir name."""
+    try:
+        m = json.loads(meta_path.read_text(encoding="utf-8"))
+        if isinstance(m, dict):
+            return m.get("unit_id") or m.get("row_id") or m.get("slug") or dirname
+    except (json.JSONDecodeError, OSError):
+        pass
+    return dirname
+
+
+def _resolve_unit_state(uid, producer, staged, canon, feedback, open_props,
+                        ledger, remote_sink, autoclose) -> Optional[dict]:
+    """Resolve ONE unit to its four-state governance_state + payload, applying
+    topological supremacy (filesystem-first) and the sink-authority rule, and
+    queuing any out-of-band proposal auto-close. Returns the artifact payload dict
+    (with a private ``_mt`` sort key) or None."""
+    fb = feedback.get(uid)
+    prop = open_props.get(uid)
+    rc = fb["count"] if fb else 0
+
+    def row(state, mt, filename=None, size=None, include_prop=False):
+        r = {
+            "unit_id": uid,
+            "producer": producer,
+            "governance_state": state,
+            "revision_count": rc,
+            "mtime": _fleet_mtime_iso(mt),
+            "_mt": mt,
+        }
+        if rc > 0 and fb and fb["latest_note"]:
+            r["directive_echo"] = fb["latest_note"]
+        if filename is not None:
+            r["filename"] = filename
+        if size is not None:
+            r["size"] = size
+        if include_prop and prop is not None:
+            r["proposal_id"] = prop.proposal_id
+            r["proposal_type"] = prop.type
+        return r
+
+    # (1) TOPOLOGICAL SUPREMACY — canonical presence wins (mv-sink promoted).
+    if uid in canon:
+        mt, fn, p = canon[uid]
+        if prop is not None:  # open proposal + already-canonical = out-of-band mv
+            autoclose.append((prop, "promoted_out_of_band",
+                              {"unit_id": uid, "reconciled": "canonical_present"}))
+        return row("promoted", mt, filename=fn, size=p.stat().st_size)
+
+    # (2) Remote-publish sink (forge) — ledger authoritative for the terminal; the
+    #     staged dir may linger post-publish, so the ledger wins over it.
+    if remote_sink and uid in ledger:
+        disp = ledger[uid]
+        mt = staged[uid][0] if uid in staged else (fb["mtime"] if fb else 0.0)
+        fn = staged[uid][1] if uid in staged else None
+        if prop is not None:
+            autoclose.append((
+                prop,
+                "promoted_out_of_band" if disp == "applied" else "rejected_out_of_band",
+                {"unit_id": uid, "reconciled": "ledger_terminal"},
+            ))
+        return row("promoted" if disp == "applied" else "rejected", mt, filename=fn)
+
+    # (3) Staged draft present.
+    if uid in staged:
+        mt, fn, _ud = staged[uid]
+        if prop is not None:
+            return row("needs_review", mt, filename=fn, include_prop=True)
+        return row("legacy", mt, filename=fn)  # grandfathered: staged, no proposal
+
+    # (4) No staged, no canonical. An open proposal here = out-of-band archive.
+    if prop is not None:
+        mt = fb["mtime"] if fb else 0.0
+        if fb and not fb["terminal_skip"]:
+            return row("revision_requested", mt)  # redraft pending; superseded on redraft
+        autoclose.append((prop, "rejected_out_of_band",
+                          {"unit_id": uid, "reconciled": "artifact_archived_oob"}))
+        return row("rejected", mt)
+
+    # (5) No artifact, no proposal — feedback-only unit (the redraft window /
+    #     won't-converge). A plain Reject leaves no feedback trace and is not listed.
+    if fb:
+        return row("rejected" if fb["terminal_skip"] else "revision_requested",
+                   fb["mtime"])
+    return None
+
+
+def _list_fleet_units(cap: Any) -> list:
+    """The C2 four-state disposition list for one fleet skill, newest-first. Joins
+    filesystem topology + proposal store + feedback store + (remote sink) ledger,
+    reconciling on read. Auto-closes out-of-band proposals as a side effect (the
+    single read-side write; Verdict A proves it does not drift the forge flow)."""
+    skill_id = cap.id
+    producer = skill_id.rsplit(".", 1)[-1]
+    _zone, staging, canonical, pattern = _fleet_zone_dirs(cap)
+    canonical_sink = cap.governance["write_zone"]["canonical_dir"]
+    remote_sink = canonical_sink == "forge"
+    from grove.api.actions import _worker_id_for_skill
+
+    worker = _worker_id_for_skill(skill_id)
+    has_pending = staging.resolve() != canonical.resolve()
+
+    open_props = _open_artifact_proposals(skill_id)
+    feedback = _feedback_units(worker)
+    ledger = _ledger_terminal_dispositions() if remote_sink else {}
+
+    # staged units — nested pending_review/<unit>/meta.json (C1b-2), plus any flat
+    # legacy files (grandfathered pre-nesting).
+    staged: Dict[str, tuple] = {}
+    if has_pending and staging.is_dir():
+        for meta_path in staging.glob("*/meta.json"):
+            ud = meta_path.parent
+            uid = _unit_from_meta(meta_path, ud.name)
+            staged[uid] = (meta_path.stat().st_mtime, ud.name, ud)
+        for p in staging.glob(pattern):  # flat legacy (non-recursive)
+            if p.is_file():
+                staged.setdefault(
+                    _reverse_pattern(p.name, pattern),
+                    (p.stat().st_mtime, p.name, p),
+                )
+
+    # canonical artifacts — flat files (mv-sink promoted).
+    canon: Dict[str, tuple] = {}
+    if canonical.is_dir():
+        for p in canonical.glob(pattern):  # non-recursive: skips pending_review/
+            if p.is_file():
+                canon[_reverse_pattern(p.name, pattern)] = (p.stat().st_mtime, p.name, p)
+
+    autoclose: list = []
+    uids = set(staged) | set(canon) | set(feedback) | set(open_props) | set(ledger)
+    rows = []
+    for uid in uids:
+        rec = _resolve_unit_state(uid, producer, staged, canon, feedback,
+                                  open_props, ledger, remote_sink, autoclose)
+        if rec is not None:
+            rows.append(rec)
+
+    # reconcile-on-read WRITE — auto-close out-of-band proposals to the terminal the
+    # filesystem/ledger already reflects (idempotent; a re-read finds them gone).
+    for prop, status, applied_result in autoclose:
+        proposal_queue.finalize_proposal_state(prop.proposal_id, status, applied_result)
+
+    rows.sort(key=lambda r: r["_mt"], reverse=True)
+    for r in rows:
+        r.pop("_mt", None)
+    return rows
+
+
 def _list_fleet_artifacts(cap: Any) -> list:
     """List a fleet skill's artifacts, newest-first, each tagged with its
     governance_state.
@@ -776,13 +1055,16 @@ def _list_fleet_artifacts(cap: Any) -> list:
 
 
 async def handle_fleet_index(request: web.Request) -> web.Response:
-    """``GET /api/substrate/fleet/`` — one row per fleet skill with aggregated
-    artifact metadata (counts split pending vs canonical, latest mtime)."""
+    """``GET /api/substrate/fleet/`` — one row per fleet skill with the C2 four-state
+    disposition aggregation (needs_review count per producer + a full state-count
+    breakdown, latest mtime)."""
+    from collections import Counter
+
     records = _fleet_skill_records()
     skills = []
     for name in sorted(records):
         try:
-            arts = _list_fleet_artifacts(records[name])
+            units = _list_fleet_units(records[name])
         except KeyError as exc:
             # Parity with the cellar listing's commanded skip: one malformed
             # record must not blank the whole index. Logged loud, not swallowed.
@@ -791,21 +1073,21 @@ async def handle_fleet_index(request: web.Request) -> web.Response:
                 "skipping: %r", name, exc,
             )
             continue
-        pending = sum(1 for a in arts if a["governance_state"] == "pending_review")
+        counts = Counter(u["governance_state"] for u in units)
         skills.append({
             "name": name,
             "zone": records[name].zone.value,
-            "artifact_count": len(arts),
-            "latest_mtime": arts[0]["mtime"] if arts else None,
-            "pending_count": pending,
-            "canonical_count": len(arts) - pending,
+            "artifact_count": len(units),
+            "latest_mtime": units[0]["mtime"] if units else None,
+            "needs_review_count": counts.get("needs_review", 0),
+            "state_counts": dict(counts),
         })
     return _envelope({"skills": skills}, count=len(skills))
 
 
 async def handle_fleet_skill(request: web.Request) -> web.Response:
-    """``GET /api/substrate/fleet/{skill_name}/`` — the artifact list for one
-    fleet skill, newest-first. Unknown skill -> 404."""
+    """``GET /api/substrate/fleet/{skill_name}/`` — the C2 four-state disposition
+    list for one fleet skill, newest-first. Unknown skill -> 404."""
     skill_name = request.match_info["skill_name"]
     cap = _fleet_skill_records().get(skill_name)
     if cap is None:
@@ -813,7 +1095,7 @@ async def handle_fleet_skill(request: web.Request) -> web.Response:
             {"error": "not_found", "detail": f"unknown fleet skill: {skill_name}"},
             status=404,
         )
-    return _envelope({"artifacts": _list_fleet_artifacts(cap)})
+    return _envelope({"artifacts": _list_fleet_units(cap)})
 
 
 def _resolve_fleet_artifact(cap: Any, filename: str) -> Optional[tuple]:
