@@ -258,7 +258,7 @@ def test_forge_kaizen_div_renders_enabled_suggest_revision():
     from grove.api import fragments
 
     pid = "sha256:deadbeefcafe"
-    html = fragments._forge_kaizen_div(pid)
+    html = fragments._disposition_actions_div(pid)  # C1a rename (was _forge_kaizen_div)
     short = fragments._short_id(pid)
     rev_id = f"rev-{short}"
     # enabled textarea (not the old disabled placeholder button)

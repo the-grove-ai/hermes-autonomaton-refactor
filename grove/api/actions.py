@@ -930,6 +930,15 @@ def _forge_promote_error_card(proposal_id: str, short_id: str, ptype: str,
 
 
 async def handle_forge_promote(request: web.Request) -> web.Response:
+    """Route handler for forge's promote tap. fleet-review-unification-v1 C1a —
+    delegates to the producer-generic ``_promote_disposition``; forge is the sole
+    producer today, so behavior is byte-identical."""
+    return await _promote_disposition(request, producer="forge")
+
+
+async def _promote_disposition(
+    request: web.Request, producer: str = "forge"
+) -> web.Response:
     """``POST /portal/actions/proposals/{proposal_id}/promote`` — the bespoke async
     Promote tap for a forge_artifact_pending proposal (fleet-pipeline-v1 P3).
 
@@ -1076,6 +1085,15 @@ def _write_archive_pending_marker(slug: str) -> None:
 
 
 async def handle_forge_suggest_revision(request: web.Request) -> web.Response:
+    """Route handler for forge's suggest-revision tap. fleet-review-unification-v1
+    C1a — delegates to the producer-generic ``_suggest_revision_disposition``; forge
+    is the sole producer today, so behavior is byte-identical."""
+    return await _suggest_revision_disposition(request, producer="forge")
+
+
+async def _suggest_revision_disposition(
+    request: web.Request, producer: str = "forge"
+) -> web.Response:
     """``POST /portal/actions/proposals/{proposal_id}/suggest_revision`` — the
     informed-path loop-back tap (suggest-revision-verb-v1). Accumulate the operator's
     free-text guidance into the Path-B feedback store, record a suggest_revision

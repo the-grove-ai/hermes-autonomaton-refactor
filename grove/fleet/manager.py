@@ -146,6 +146,11 @@ class FleetManager:
 
             cap = load_capabilities().get(skill_id)
             gov = (cap.governance or {}) if cap is not None else {}
+            # fleet-review-unification-v1 C1a — the emission is producer-parametrized:
+            # the producer IS skill_id (payload.skill_id + proposer=skill_id below), and
+            # approval_handoff.mode == "action_surface_publish" is the SOLE producer-
+            # declaring gate (forge is the only skill declaring it today). Behavior is
+            # unchanged this commit; C1b flips additional producers on via this gate.
             mode = ((gov.get("approval_handoff") or {}).get("mode")) if isinstance(gov, dict) else None
             if mode != "action_surface_publish":
                 return  # ingest_post / other — no operator-promote proposal
