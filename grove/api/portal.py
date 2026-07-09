@@ -1021,6 +1021,19 @@ def _list_fleet_units(cap: Any) -> list:
     return rows
 
 
+def _fleet_presentation(cap: Any) -> tuple:
+    """``(presentation dict | None, presentation_error str | None)`` from the
+    capability's terminal_artifact block (fleet-artifact-legibility-v1 C1).
+    Loader-validated: an error means the declaration is treated as absent."""
+    ta = (
+        ((cap.governance or {}).get("emission_preconditions") or {})
+        .get("terminal_artifact") or {}
+    )
+    err = ta.get("presentation_error")
+    pres = ta.get("presentation") if not err else None
+    return (pres if isinstance(pres, dict) else None), err
+
+
 def _fleet_worker_registry() -> Dict[str, tuple]:
     """``{capability skill_id -> (worker_id, WorkerConfig)}`` from the operational
     registry (config/fleet_workers.yaml). A missing/malformed registry is logged
@@ -1107,6 +1120,7 @@ def _fleet_index_rows() -> list:
             continue
         counts = Counter(u["governance_state"] for u in units)
         mode = ((cap.governance.get("approval_handoff") or {}).get("mode"))
+        presentation, presentation_error = _fleet_presentation(cap)
         worker = None
         last_run = None
         reg = registry.get(cap.id)
@@ -1135,6 +1149,10 @@ def _fleet_index_rows() -> list:
             # renderers show no lineage line — honest, never name-inferred.
             "provenance": cap.lifecycle.provenance.value,
             "parent_id": cap.lineage.parent_id,
+            # fleet-artifact-legibility-v1 C1 — the presentation declaration,
+            # verbatim (data only: field paths and labels, never HTML).
+            "presentation": presentation,
+            "presentation_error": presentation_error,
             "worker": worker,
             "last_run": last_run,
             "last_ingest": _fleet_mtime_iso(max(ingested)) if ingested else None,

@@ -275,6 +275,20 @@ governance:
     terminal_artifact:
       tool: write_file
       path_pattern: "prospects-*.json"
+      # fleet-artifact-legibility-v1 C1 — portal card presentation (mock A).
+      presentation:
+        headline: input_detail
+        facts:
+          - {path: prospects, label: prospects}
+          - {path: flagged_tier_4, label: tier-4 flagged}
+          - {path: input_source, label: source}
+        collection:
+          path: prospects
+          item_title: name
+          item_prose:
+            - why_they_matter
+            - outreach_draft
+          preview_count: 2
   approval_handoff:
     # fleet-review-unification-v1 C1b-2 — cultivator is now a real fleet worker whose
     # staged Yellow prospect list is disposed on the action surface (promote → mv to

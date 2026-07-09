@@ -39,6 +39,7 @@ from grove.api.portal import (
     _check_memory_stale,
     _check_wiki_stale,
     _fleet_index_rows,
+    _fleet_presentation,
     _fleet_skill_records,
     _fleet_zone_dirs,
     _list_fleet_units,
@@ -55,7 +56,7 @@ from grove.eval.proposal_queue import _type_offers_approve
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE
 from grove.api.red_nonce import nonce_key_from_app, red_nonce
-from grove.wiki.index import MalformedWikiPage
+from grove.wiki.index import MalformedWikiPage, _split_frontmatter
 from grove.wiki.links import cellar_page_id
 from hermes_constants import get_hermes_home, get_wiki_path
 
@@ -2072,10 +2073,12 @@ def _unit_footer(unit: dict, remote_sink: bool) -> str:
     return ""  # promoted / rejected (dimmed) / legacy (list-only) — no actions
 
 
-def _unit_preview(cap: Any, unit: dict, limit: int = 2000) -> str:
-    """A bounded first-chars preview of a unit's primary content — the staged dir's
-    first non-meta content file, or the canonical/flat file. Best-effort: returns ''
-    when nothing resolves (a read-side view must not 500 on a stray file)."""
+def _unit_primary_file(cap: Any, unit: dict, limit: int = 2000) -> tuple:
+    """``(text, source Path | None)`` for a unit's primary content — the staged
+    dir's first non-meta content file, or the canonical/flat file. The GATE-A D2
+    disk-read path, retained; C1 additionally surfaces WHICH file was read so the
+    renderer can branch on its suffix. Best-effort: ``("", None)`` when nothing
+    resolves (a read-side view must not 500 on a stray file)."""
     try:
         _z, staging, canonical, _p = _fleet_zone_dirs(cap)
         fn = unit.get("filename")
@@ -2083,32 +2086,288 @@ def _unit_preview(cap: Any, unit: dict, limit: int = 2000) -> str:
             for base in (staging, canonical):
                 cand = base / fn
                 if cand.is_file():
-                    return cand.read_text(encoding="utf-8", errors="replace")[:limit]
+                    return (
+                        cand.read_text(encoding="utf-8", errors="replace")[:limit],
+                        cand,
+                    )
             d = staging / fn
             if d.is_dir():
                 for f in sorted(d.iterdir()):
                     if f.is_file() and f.name != "meta.json":
-                        return f.read_text(encoding="utf-8", errors="replace")[:limit]
+                        return (
+                            f.read_text(encoding="utf-8", errors="replace")[:limit],
+                            f,
+                        )
     except OSError:
         pass
-    return ""
+    return "", None
 
 
-def _draft_preview_block(cap: Any, unit: dict) -> str:
-    """The 3-line clamped content preview + an in-place "Show full draft" expand
-    (toggles ``.expanded``, lifting the CSS line-clamp over the bounded read). Empty
-    when no content resolves."""
-    if cap is None:
-        return ""
-    text = _unit_preview(cap, unit)
-    if not text:
+def _unit_preview(cap: Any, unit: dict, limit: int = 2000) -> str:
+    """Text-only view of :func:`_unit_primary_file` (kept for the unit fragment)."""
+    return _unit_primary_file(cap, unit, limit)[0]
+
+
+# ---------------------------------------------------------------------------
+# fleet-artifact-legibility-v1 C1 — schema-declared card bodies (mock A + D).
+#
+# render_unit_card_body() replaces the raw-bytes preview inside the review
+# card: a JSON artifact renders through its capability record's
+# terminal_artifact.presentation declaration (headline / fact chips /
+# collection preview); an undeclared JSON renders the honest fallback (key
+# facts + teaching hint); .md renders a frontmatter-stripped _render_md
+# excerpt. ZERO worker names in this logic — everything keys on the
+# declaration and the file suffix. Every declared value is _esc'd unless the
+# entry declares md:true, which routes through _render_md (nh3 mandatory).
+# ---------------------------------------------------------------------------
+
+# F3 bounds — enforced BEFORE any loop / render call.
+MAX_RENDER_ITEMS = 50       # collection preview hard cap, whatever is declared
+MAX_PROSE_BYTES = 4096      # per-string cap before any _esc/_render_md call
+_PARSE_SIZE_CAP = 1_000_000  # bytes; a larger payload is never json.loads'd
+
+
+def _prose_spec(entry) -> tuple:
+    """Normalize a prose entry (``str`` | ``{path, md}``) → ``(path, md)``."""
+    if isinstance(entry, dict):
+        return entry.get("path", ""), bool(entry.get("md"))
+    return entry, False
+
+
+def _field_path(data, path):
+    """Resolve a dot-path over nested dicts. None on any miss — never raises."""
+    cur = data
+    for part in str(path).split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _prose_html(value, md: bool) -> str:
+    """One declared prose value → safe HTML: clamp to MAX_PROSE_BYTES first,
+    then ``_esc`` (or ``_render_md`` when md:true — nh3 stays mandatory). A
+    clipped value carries a VISIBLE truncation marker."""
+    text = str(value)
+    clipped = len(text) > MAX_PROSE_BYTES
+    text = text[:MAX_PROSE_BYTES]
+    body = _render_md(text) if md else _esc(text)
+    marker = '<span class="meta"> &hellip; truncated</span>' if clipped else ""
+    return body + marker
+
+
+def _pres_notice(detail: str) -> str:
+    """The dim inline degradation notice (F2) — same pattern for a missing
+    declared field and for a load-time-malformed declaration."""
+    return (
+        f'<div class="meta pres-notice">&#9888; presentation: {_esc(detail)} '
+        f'&mdash; raw view available</div>'
+    )
+
+
+def _raw_payload_link(unit: dict) -> str:
+    """The raw-payload disclosure — a hash LINK to the existing unit fragment
+    (not an embedded <details>: a list view of cards must not carry up-to-1MB
+    payloads in its DOM; the link is one line and already routed)."""
+    producer, fn = unit.get("producer"), unit.get("filename")
+    if not (producer and fn):
         return ""
     return (
-        f'<p class="draft-preview">{_esc(text)}</p>'
+        f'<a class="raw-link" href="/portal#fragments/fleet/'
+        f'{_esc(producer)}/{_esc(fn)}/">View raw payload &#9656;</a>'
+    )
+
+
+def _fact_chips_html(facts: list, data: dict, notices: list) -> str:
+    """Declared fact chips: scalar → ``label · value``; list → count; dict →
+    field count. A missing path degrades to a notice, never a crash."""
+    chips = []
+    for f in facts:
+        path = f.get("path", "")
+        label = f.get("label") or str(path).rsplit(".", 1)[-1]
+        val = _field_path(data, path)
+        if val is None:
+            notices.append(path)
+            continue
+        if isinstance(val, list):
+            shown = str(len(val))
+        elif isinstance(val, dict):
+            shown = f"{len(val)} field(s)"
+        else:
+            shown = str(val)[:120]
+        chips.append(f'<span class="tag">{_esc(label)} &middot; {_esc(shown)}</span>')
+    return f'<div class="rc-facts">{"".join(chips)}</div>' if chips else ""
+
+
+def _collection_html(coll: dict, data: dict, unit: dict, notices: list) -> str:
+    """The declared collection preview: preview_count items (hard-capped at
+    MAX_RENDER_ITEMS), each item_title + item_prose excerpts, then a visible
+    "+N more" line. String-item collections render each string as prose."""
+    items = _field_path(data, coll.get("path", ""))
+    if not isinstance(items, list):
+        notices.append(coll.get("path", "collection"))
+        return ""
+    if not items:
+        return ""
+    n_show = min(int(coll.get("preview_count", 2)), MAX_RENDER_ITEMS, len(items))
+    rows = []
+    for item in items[:n_show]:
+        if isinstance(item, str):
+            rows.append(f'<div class="coll-item"><p>{_prose_html(item, False)}</p></div>')
+            continue
+        if not isinstance(item, dict):
+            continue
+        title = ""
+        title_path = coll.get("item_title")
+        if title_path:
+            tval = _field_path(item, title_path)
+            if tval is None:
+                notices.append(f'{coll.get("path")}[].{title_path}')
+            else:
+                title = f"<b>{_esc(str(tval)[:200])}</b>"
+        prose_bits = []
+        for entry in coll.get("item_prose", []) or []:
+            path, md = _prose_spec(entry)
+            val = _field_path(item, path)
+            if not isinstance(val, str) or not val.strip():
+                notices.append(f'{coll.get("path")}[].{path}')
+                continue
+            prose_bits.append(f"<p>{_prose_html(val, md)}</p>")
+        rows.append(f'<div class="coll-item">{title}{"".join(prose_bits)}</div>')
+    more = ""
+    if len(items) > n_show:
+        more = f'<div class="coll-more">+ {len(items) - n_show} more</div>'
+    return f'<div class="coll">{"".join(rows)}{more}</div>'
+
+
+def _declared_card_html(pres: dict, data: dict, unit: dict) -> str:
+    """Render a JSON payload through its presentation declaration. Per-element
+    degradation (F2): each missing/mistyped declared path falls back and adds
+    ONE deduplicated inline notice; the rest of the card still renders."""
+    parts: list = []
+    notices: list = []
+
+    def prose_block(entry, cls):
+        path, md = _prose_spec(entry)
+        val = _field_path(data, path)
+        if not isinstance(val, str) or not val.strip():
+            notices.append(path)
+            return ""
+        return f'<p class="{cls}">{_prose_html(val, md)}</p>'
+
+    if "headline" in pres:
+        parts.append(prose_block(pres["headline"], "rc-headline"))
+    if "facts" in pres:
+        parts.append(_fact_chips_html(pres["facts"], data, notices))
+    if "collection" in pres:
+        parts.append(_collection_html(pres["collection"], data, unit, notices))
+    if "body" in pres:
+        parts.append(prose_block(pres["body"], "rc-headline"))
+    deduped: list = []
+    for n in notices:
+        if n and n not in deduped:
+            deduped.append(n)
+    notice_html = "".join(
+        _pres_notice(f"field '{n}' not found") for n in deduped[:5]
+    )
+    return "".join(p for p in parts if p) + notice_html + _raw_payload_link(unit)
+
+
+def _md_fallback_html(text: str, unit: dict) -> str:
+    """Undeclared ``.md`` — a frontmatter-stripped, clamped ``_render_md``
+    excerpt with the existing Show-full-draft toggle."""
+    body = text
+    if body.startswith("---"):
+        split = _split_frontmatter(body)
+        if split is not None:
+            body = split[1]
+    clipped = len(body) > MAX_PROSE_BYTES
+    html = _render_md(body[:MAX_PROSE_BYTES])
+    marker = '<div class="meta"> &hellip; truncated</div>' if clipped else ""
+    return (
+        f'<div class="draft-preview">{html}{marker}</div>'
         f'<button class="btn btn-secondary preview-toggle" type="button" '
         f'''onclick="this.previousElementSibling.classList.toggle('expanded');'''
         f'''this.textContent=this.previousElementSibling.classList.contains('expanded')?'''
         f''''Collapse':'Show full draft'">Show full draft</button>'''
+        + _raw_payload_link(unit)
+    )
+
+
+def _json_fallback_html(data: dict, unit: dict) -> str:
+    """Undeclared JSON — the honest fallback (mock D): top-level key facts +
+    the teaching hint naming terminal_artifact.presentation + the raw link."""
+    chips = []
+    for key, val in list(data.items())[:8]:
+        if isinstance(val, list):
+            shown = str(len(val))
+        elif isinstance(val, dict):
+            shown = f"{len(val)} field(s)"
+        else:
+            shown = str(val)[:60]
+        chips.append(f'<span class="tag">{_esc(key)} &middot; {_esc(shown)}</span>')
+    facts = f'<div class="rc-facts">{"".join(chips)}</div>' if chips else ""
+    hint = (
+        f'<p class="rc-headline meta">Structured payload &mdash; {len(data)} '
+        f'top-level key(s). Declare <span class="mono">terminal_artifact'
+        f'.presentation</span> in this skill&rsquo;s capability record to '
+        f'render prose here.</p>'
+    )
+    return facts + hint + _raw_payload_link(unit)
+
+
+def render_unit_card_body(
+    unit: dict, presentation, payload_text: str, *,
+    filename: str = "", presentation_error: str = "",
+) -> str:
+    """The review card's content block (C1). Branches on the SOURCE FILE's
+    suffix and the presentation declaration only — never on a worker name.
+    ``payload_text`` is the disk read (up to the parse cap + 1); ``filename``
+    is the actual file read (a nested unit's dir name has no suffix)."""
+    malformed = (
+        _pres_notice(f"declaration malformed ({presentation_error})")
+        if presentation_error else ""
+    )
+    suffix = Path(filename or unit.get("filename") or "").suffix.lower()
+    if suffix != ".json":
+        return _md_fallback_html(payload_text, unit) + malformed
+    if len(payload_text) > _PARSE_SIZE_CAP:
+        return (
+            _pres_notice("payload exceeds the 1MB parse cap")
+            + _raw_payload_link(unit) + malformed
+        )
+    try:
+        data = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        return (
+            f'<div class="meta error">Malformed JSON: {_esc(str(exc))}</div>'
+            + _raw_payload_link(unit) + malformed
+        )
+    if not isinstance(data, dict):
+        return (
+            f'<p class="rc-headline meta">JSON {_esc(type(data).__name__)} '
+            f'payload.</p>' + _raw_payload_link(unit) + malformed
+        )
+    if isinstance(presentation, dict) and presentation:
+        return _declared_card_html(presentation, data, unit) + malformed
+    return _json_fallback_html(data, unit) + malformed
+
+
+def _draft_preview_block(cap: Any, unit: dict) -> str:
+    """C1 — the schema-declared card body (mock A/D), replacing the raw-bytes
+    preview. The disk-read path (:func:`_unit_primary_file`) is retained; the
+    read is sized to the JSON parse cap so a declared payload parses whole.
+    Empty when no content resolves."""
+    if cap is None:
+        return ""
+    text, src = _unit_primary_file(cap, unit, limit=_PARSE_SIZE_CAP + 1)
+    if not text:
+        return ""
+    presentation, presentation_error = _fleet_presentation(cap)
+    return render_unit_card_body(
+        unit, presentation, text,
+        filename=(src.name if src is not None else ""),
+        presentation_error=presentation_error or "",
     )
 
 

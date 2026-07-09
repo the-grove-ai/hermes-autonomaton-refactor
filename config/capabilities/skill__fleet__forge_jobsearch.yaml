@@ -187,6 +187,13 @@ governance:
     terminal_artifact:
       tool: write_file
       path_pattern: "*.md"
+      # fleet-artifact-legibility-v1 C1 — package declaration (consumed by
+      # the C2 package renderer; the card-level view falls back to .md this
+      # commit). Data only.
+      presentation:
+        package:
+          order: [resume.md, cover-letter.md]
+          title_from_meta: [company, role]
   approval_handoff:
     mode: action_surface_publish
 read_surfaces:

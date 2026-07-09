@@ -273,5 +273,17 @@ governance:
     terminal_artifact:
       tool: write_file
       path_pattern: "brief-*.json"
+      # fleet-artifact-legibility-v1 C1 — portal card presentation.
+      # Headline = synthesis.recommended_angle: the operator-facing takeaway
+      # (source_article.summary describes the INPUT, not the work).
+      presentation:
+        headline: synthesis.recommended_angle
+        facts:
+          - {path: source_article.title, label: source}
+          - {path: operator_intent.angle, label: angle}
+          - {path: synthesis.strength_of_thesis, label: thesis}
+        collection:
+          path: synthesis.key_claims
+          preview_count: 2
   approval_handoff:
     mode: ingest_post
