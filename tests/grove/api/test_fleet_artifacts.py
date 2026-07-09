@@ -68,15 +68,21 @@ async def test_fleet_index_splits_green_and_yellow(client):
     # all four fleet skills are present (governance-block records)
     assert {"scout", "researcher", "drafter", "cultivator"} <= set(skills)
 
+    # fleet-review-unification-v1 C2 — the index now aggregates the four-state
+    # disposition (needs_review_count + a full state_counts breakdown), replacing
+    # the two-state pending/canonical split.
     scout = skills["scout"]
     assert scout["zone"] == "green"
-    assert scout["canonical_count"] == 2 and scout["pending_count"] == 0
+    # green: staging == canonical, both digests sit in canonical → promoted.
+    assert scout["state_counts"] == {"promoted": 2}
+    assert scout["needs_review_count"] == 0
     assert scout["artifact_count"] == 2 and scout["latest_mtime"] is not None
 
     drafter = skills["drafter"]
     assert drafter["zone"] == "yellow"
-    # non-recursive canonical glob must NOT count the pending_review draft
-    assert drafter["pending_count"] == 1 and drafter["canonical_count"] == 1
+    # flat pending draft (no proposal) → legacy; the canonical draft → promoted.
+    assert drafter["state_counts"] == {"legacy": 1, "promoted": 1}
+    assert drafter["needs_review_count"] == 0
     assert drafter["artifact_count"] == 2
 
 
@@ -85,10 +91,15 @@ async def test_fleet_skill_list_tags_governance_state(client):
     assert resp.status == 200
     arts = (await resp.json())["data"]["artifacts"]
     states = {a["filename"]: a["governance_state"] for a in arts}
-    assert states["draft-2026-07-01-x.md"] == "pending_review"
-    assert states["draft-approved.md"] == "canonical"
+    # fleet-review-unification-v1 C2 — four-state disposition. The flat pending draft
+    # (no proposal) is legacy; the canonical draft is promoted.
+    assert states["draft-2026-07-01-x.md"] == "legacy"
+    assert states["draft-approved.md"] == "promoted"
     for a in arts:
-        assert set(a) == {"filename", "size", "mtime", "governance_state"}
+        # C2 payload: adds unit_id / producer / revision_count. `size` is present for
+        # single-file artifacts (canonical/flat), omitted for nested-staged packages.
+        assert {"filename", "mtime", "governance_state",
+                "unit_id", "producer", "revision_count"} <= set(a)
 
 
 async def test_fleet_artifact_json_verbatim(client):
