@@ -37,9 +37,9 @@ from grove.api.portal import (
     _check_cellar_stale,
     _check_memory_stale,
     _check_wiki_stale,
+    _fleet_index_rows,
     _fleet_skill_records,
     _fleet_zone_dirs,
-    _list_fleet_artifacts,
     _list_fleet_units,
     _read_fleet_artifact,
     _read_forge_slug,
@@ -1377,7 +1377,7 @@ async def handle_model_context(request: web.Request) -> web.Response:
 # dispatches, so the operator always lands in the full styled portal. The
 # legacy standalone paths (``/portal/fleet/...``) 302 to the hash URLs so
 # previously-sent links keep landing. Readers are the shared portal.py fleet
-# readers (_fleet_skill_records / _list_fleet_artifacts / _read_fleet_artifact),
+# readers (_fleet_index_rows / _fleet_skill_records / _read_fleet_artifact),
 # never the filesystem.
 
 
@@ -1444,32 +1444,203 @@ def _fleet_json_card(raw: str) -> str:
     )
 
 
-async def handle_fleet_overview(request: web.Request) -> web.Response:
-    """``GET /portal/fragments/fleet/`` — the fleet overview fragment: one card
-    per skill, in the WIDE content primitive (C1; the board layout lands in C2)."""
-    records = _fleet_skill_records()
-    cards = []
-    for name in sorted(records):
-        cap = records[name]
-        try:
-            arts = _list_fleet_artifacts(cap)
-        except KeyError:
-            # Parity with the API index: skip a malformed record, don't blank all.
-            logger.warning("[portal] fleet skill %s malformed, skipping card", name)
+# fleet-ui-reconciliation-v1 C2 — status board + outline nav presentation
+# helpers. All data comes from portal._fleet_index_rows() (one pass, F3); these
+# helpers only PRESENT it. State order is the review lifecycle.
+
+_STATE_ORDER = (
+    ("needs_review", "needs review"),
+    ("revision_requested", "redrafting"),
+    ("promoted", "promoted"),
+    ("rejected", "rejected"),
+    ("legacy", "legacy"),
+)
+
+_PRODUCER_MODE = "action_surface_publish"
+
+
+def _humanize_cadence(cadence) -> str:
+    """Presentation-only humanizer for the registry's common cron forms
+    (``*/N * * * *`` → every N min; ``M H * * *`` → daily HH:MM). Anything
+    else renders as the raw expression — never guessed."""
+    if not cadence:
+        return "no cadence"
+    m = re.match(r"^\*/(\d+) \* \* \* \*$", cadence)
+    if m:
+        return f"every {m.group(1)} min"
+    m = re.match(r"^(\d{1,2}) (\d{1,2}) \* \* \*$", cadence)
+    if m:
+        return f"daily {int(m.group(2)):02d}:{int(m.group(1)):02d}"
+    return cadence
+
+
+def _producer_meta_line(row: dict) -> str:
+    """The worker-card meta line: role · cadence · last run (status-qualified).
+    A skill with no registry entry says so rather than fabricating a schedule."""
+    parts = ["Producer"]
+    worker = row.get("worker")
+    if worker:
+        parts.append(_humanize_cadence(worker.get("cadence")))
+        if not worker.get("enabled"):
+            parts.append("disabled")
+    else:
+        parts.append("no worker registered")
+    last = row.get("last_run")
+    if last and last.get("ts"):
+        qual = ""
+        if last.get("status") == "failed":
+            qual = " (failed)"
+        elif last.get("status") == "no_work":
+            qual = " (no work)"
+        parts.append(f"last run {_relative_age(last['ts'])}{qual}")
+    return " &middot; ".join(_esc(p) for p in parts)
+
+
+def _observer_ingest_line(row: dict) -> str:
+    """The observer strip's freshness line — from the wiki ingest ledger
+    (newest ingested SOURCE mtime), or an honest 'no ingest recorded'."""
+    if row.get("last_ingest"):
+        n = row.get("ingested_count") or 0
+        return (f"last ingest {_esc(_relative_age(row['last_ingest']))} &middot; "
+                f"{n} ingested")
+    return "no ingest recorded"
+
+
+def _state_pills(row: dict) -> str:
+    """The state-pill row: needs_review ALWAYS renders (zero-styled at 0);
+    other states render only when nonzero. Every pill deep-links to the
+    producer's queue fragment."""
+    counts = row.get("state_counts") or {}
+    href = f'/portal#fragments/fleet/{_esc(row["name"])}/'
+    pills = []
+    for state, label in _STATE_ORDER:
+        n = counts.get(state, 0)
+        if state != "needs_review" and not n:
             continue
-        latest = arts[0]["mtime"] if arts else "—"
-        cards.append(
-            f'<div class="card"><h4>'
-            f'<a href="/portal#fragments/fleet/{_esc(name)}/">{_esc(name)}</a> '
-            f'{_fleet_zone_badge(cap.zone.value)}</h4>'
-            f'<div class="meta">{len(arts)} artifact(s) &middot; '
-            f'latest {_esc(latest)}</div></div>'
+        zero = " zero" if not n else ""
+        pills.append(
+            f'<a class="state-pill{zero}" href="{href}">'
+            f'<span class="dot dot-{state}"></span>'
+            f'<span class="n">{n}</span> {label}</a>'
         )
-    body = "<h2>Fleet artifacts</h2>" + (
-        "".join(cards) if cards
-        else '<p class="placeholder">No fleet skills with artifacts yet.</p>'
+    return f'<div class="state-row">{"".join(pills)}</div>'
+
+
+async def handle_fleet_overview(request: web.Request) -> web.Response:
+    """``GET /portal/fragments/fleet/`` — the fleet STATUS BOARD (C2, mock
+    screen A): a wide grid of producer cards (zone badge, schedule/last-run
+    meta, state pills) with an observer strip below. Producers vs observers
+    split on the capability's ``approval_handoff.mode`` passthrough."""
+    rows = _fleet_index_rows()
+    producers = [r for r in rows if r.get("mode") == _PRODUCER_MODE]
+    observers = [r for r in rows if r.get("mode") != _PRODUCER_MODE]
+    total_needs = sum(r["needs_review_count"] for r in rows)
+
+    if not rows:
+        return _html_fragment(
+            '<div class="content wide"><h2>Fleet</h2>'
+            '<p class="placeholder">No fleet skills registered.</p></div>'
+        )
+
+    cards = "".join(
+        f'<div class="card worker-card">'
+        f'<h3><a href="/portal#fragments/fleet/{_esc(r["name"])}/">'
+        f'{_esc(r["name"])}</a> {_fleet_zone_badge(r["zone"])}</h3>'
+        f'<div class="meta">{_producer_meta_line(r)}</div>'
+        f'{_state_pills(r)}'
+        f'</div>'
+        for r in producers
     )
-    return _html_fragment(f'<div class="content wide">{body}</div>')
+    obs_cards = "".join(
+        f'<div class="card"><div class="grow"><h3>'
+        f'<a href="/portal#fragments/fleet/{_esc(r["name"])}/">'
+        f'{_esc(r["name"])}</a> {_fleet_zone_badge(r["zone"])}</h3></div>'
+        f'<span class="mono">{_observer_ingest_line(r)}</span></div>'
+        for r in observers
+    )
+    obs_strip = (
+        f'<div class="observer-strip">'
+        f'<div class="obs-strip-label">Observers &mdash; ingest only, '
+        f'no review queue</div>{obs_cards}</div>'
+        if observers else ""
+    )
+    sub = (f'{len(producers)} producer(s) &middot; {len(observers)} '
+           f'observer(s) &middot; {total_needs} unit(s) awaiting review')
+    return _html_fragment(
+        f'<div class="content wide"><h2>Fleet</h2>'
+        f'<p class="page-sub">{sub}</p>'
+        f'<div class="board">{cards}</div>{obs_strip}</div>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fleet outline nav (fleet-ui-reconciliation-v1 C2)
+# ---------------------------------------------------------------------------
+
+
+def _nav_badge(n: int, *, hot_when_positive: bool = True) -> str:
+    hot = " hot" if (n and hot_when_positive) else ""
+    return f'<span class="nav-badge{hot}">{n}</span>'
+
+
+def _nav_toggle_attr() -> str:
+    """The expand/collapse onclick shared by outline nodes: toggles .open on
+    the node (twist rotation) and on its sibling .kids block."""
+    return ('onclick="this.classList.toggle(\'open\');'
+            'var k=this.nextElementSibling;'
+            'if(k&&k.classList.contains(\'kids\')){k.classList.toggle(\'open\')}"')
+
+
+async def handle_fleet_nav(request: web.Request) -> web.Response:
+    """``GET /portal/fragments/nav/fleet`` — the data-driven Fleet outline for
+    the sidebar (C2). Same one-pass join as the fleet index (F3, no N+1). The
+    Fleet badge counts needs_review units ONLY. Producer nodes expand to
+    nonzero state rows (hash links into the queue); observers group below,
+    count-free, with the P2 ingest age when the ledger has one. Expansion
+    state is server-rendered (root open; a producer opens when it has units
+    needing review) and resets on refresh."""
+    rows = _fleet_index_rows()
+    producers = [r for r in rows if r.get("mode") == _PRODUCER_MODE]
+    observers = [r for r in rows if r.get("mode") != _PRODUCER_MODE]
+    total_needs = sum(r["needs_review_count"] for r in rows)
+
+    parts = [
+        f'<div class="nav-node open" {_nav_toggle_attr()}>'
+        f'<span class="twist">&#9654;</span>'
+        f'<a href="/portal#fragments/fleet/">Fleet</a>'
+        f'{_nav_badge(total_needs)}</div>',
+        '<div class="kids open">',
+    ]
+    for r in producers:
+        name = _esc(r["name"])
+        needs = r["needs_review_count"]
+        counts = r.get("state_counts") or {}
+        opened = " open" if needs else ""
+        parts.append(
+            f'<div class="nav-node lvl1{opened}" {_nav_toggle_attr()}>'
+            f'<span class="twist">&#9654;</span> {name}'
+            f'{_nav_badge(needs)}</div>'
+        )
+        state_rows = "".join(
+            f'<a class="nav-item lvl2" href="/portal#fragments/fleet/{name}/">'
+            f'<span class="dot dot-{state}"></span> {label}'
+            f'{_nav_badge(counts[state], hot_when_positive=(state == "needs_review"))}'
+            f'</a>'
+            for state, label in _STATE_ORDER if counts.get(state)
+        )
+        parts.append(f'<div class="kids{opened}">{state_rows}</div>')
+    if observers:
+        parts.append('<div class="obs-label">Observers</div>')
+        for r in observers:
+            age = (f'<span class="mono">{_esc(_relative_age(r["last_ingest"]))}</span>'
+                   if r.get("last_ingest") else "")
+            parts.append(
+                f'<a class="nav-item lvl1 observer" '
+                f'href="/portal#fragments/fleet/{_esc(r["name"])}/">'
+                f'{_esc(r["name"])}{age}</a>'
+            )
+    parts.append('</div>')
+    return _html_fragment("".join(parts))
 
 
 async def handle_fleet_skill_fragment(request: web.Request) -> web.Response:
@@ -2019,6 +2190,9 @@ def register_fragment_routes(app: web.Application) -> None:
     app.router.add_get("/portal/fragments/routing/panel", handle_routing_panel)
     # portal-models-nav-v1 — model detail for the right-panel (?model_slug=...)
     app.router.add_get("/portal/fragments/routing/model", handle_model_context)
+    # fleet-ui-reconciliation-v1 C2 — the data-driven Fleet outline for the
+    # sidebar (loaded on shell boot + on the fleet-disposition refresh event).
+    app.router.add_get("/portal/fragments/nav/fleet", handle_fleet_nav)
     # fleet-ui-reconciliation-v1 C1 — fleet renders IN-SHELL: hash-routed
     # fragments (the two-segment unit fragment is registered above). The
     # overview registers at the bare dir path; the skill/artifact patterns

@@ -1408,6 +1408,25 @@ def _sweep_orphan_staged() -> list:
     return swept
 
 
+def _with_fleet_nav_refresh(handler):
+    """fleet-ui-reconciliation-v1 C2 — count freshness for the Fleet outline
+    nav. A SUCCESSFUL (2xx/3xx) disposition response gains an
+    ``HX-Trigger: fleet-disposition`` header; the shell's nav container listens
+    (``hx-trigger="fleet-disposition from:body"``) and re-fetches its counts.
+    Response-header only: handler side effects and the emitter set are
+    untouched — presentation, NOT a write-path change."""
+    import functools
+
+    @functools.wraps(handler)
+    async def wrapped(request: web.Request) -> web.Response:
+        resp = await handler(request)
+        if getattr(resp, "status", 500) < 400:
+            resp.headers["HX-Trigger"] = "fleet-disposition"
+        return resp
+
+    return wrapped
+
+
 def register_action_routes(app: web.Application) -> None:
     """Register the portal's write endpoints. Wired at gateway connect() time,
     after the read-only portal/fragment/dashboard routes. portal_auth_middleware
@@ -1415,11 +1434,14 @@ def register_action_routes(app: web.Application) -> None:
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/approve", handle_proposal_approve
     )
+    # reject/dismiss can retire a fleet_artifact proposal → nav counts change.
     app.router.add_post(
-        "/portal/actions/proposals/{proposal_id}/reject", handle_proposal_reject
+        "/portal/actions/proposals/{proposal_id}/reject",
+        _with_fleet_nav_refresh(handle_proposal_reject),
     )
     app.router.add_post(
-        "/portal/actions/proposals/{proposal_id}/dismiss", handle_proposal_dismiss
+        "/portal/actions/proposals/{proposal_id}/dismiss",
+        _with_fleet_nav_refresh(handle_proposal_dismiss),
     )
     # propose-approve-deadlock-v1 Phase 1b-ii — the RED .env two-step confirm
     # (mint-capable). /approve (above) issues the confirm nonce; this applies it.
@@ -1437,11 +1459,12 @@ def register_action_routes(app: web.Application) -> None:
     # fleet-pipeline-v1 P3 — bespoke async Promote tap (set_lease -> bounded
     # publish -> finalize) for a forge_artifact_pending proposal.
     app.router.add_post(
-        "/portal/actions/proposals/{proposal_id}/promote", handle_forge_promote
+        "/portal/actions/proposals/{proposal_id}/promote",
+        _with_fleet_nav_refresh(handle_forge_promote),
     )
     # suggest-revision-verb-v1 P2 — bespoke informed-path loop-back tap
     # (store.write -> finalize -> marker -> archive; finalize-success-gated).
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/suggest_revision",
-        handle_forge_suggest_revision,
+        _with_fleet_nav_refresh(handle_forge_suggest_revision),
     )

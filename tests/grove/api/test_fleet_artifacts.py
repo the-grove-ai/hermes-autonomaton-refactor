@@ -11,6 +11,8 @@ so the two governance_state tiers and the non-recursive canonical glob are both
 exercised.
 """
 
+import json
+
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -86,6 +88,33 @@ async def test_fleet_index_splits_green_and_yellow(client):
     assert drafter["artifact_count"] == 2
 
 
+async def test_fleet_index_c2_passthrough_fields(client):
+    """fleet-ui-reconciliation-v1 C2 — the row carries mode + operational
+    passthrough (worker schedule from fleet_workers.yaml, last_run from the
+    terminal-event bus, ingest freshness from the wiki ledger). DATA ONLY —
+    no HTML ever appears in a row value."""
+    resp = await client.get("/api/substrate/fleet/")
+    skills = {s["name"]: s for s in (await resp.json())["data"]["skills"]}
+
+    drafter = skills["drafter"]
+    assert drafter["mode"] == "action_surface_publish"
+    # drafter is a registered worker: schedule passthrough verbatim.
+    assert drafter["worker"]["id"] == "drafter"
+    assert drafter["worker"]["cadence"] == "0 8 * * *"
+    assert drafter["worker"]["enabled"] is True
+    # no terminal events / no ingest ledger in this fixture → honest nulls.
+    assert drafter["last_run"] is None
+    assert drafter["last_ingest"] is None and drafter["ingested_count"] == 0
+
+    scout = skills["scout"]
+    assert scout["mode"] == "ingest_post"
+    assert scout["worker"] is None  # observers have no registry entry
+
+    # F6 — zero HTML/layout content anywhere in the rows.
+    body = json.dumps(skills)
+    assert "<" not in body and "class=" not in body
+
+
 async def test_fleet_skill_list_tags_governance_state(client):
     resp = await client.get("/api/substrate/fleet/drafter/")
     assert resp.status == 200
@@ -134,15 +163,75 @@ async def test_fleet_api_traversal_refused(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_portal_overview_renders_skill_cards(client):
+async def test_portal_overview_renders_status_board(client):
+    # fleet-ui-reconciliation-v1 C2 — the overview is the STATUS BOARD (mock
+    # screen A): producer cards in a wide grid, observer strip below, split on
+    # approval_handoff.mode.
     resp = await client.get("/portal/fragments/fleet/")
     assert resp.status == 200 and resp.content_type == "text/html"
     html = await resp.text()
-    # C1 — a fragment (no standalone document), wide content primitive.
     assert "<!DOCTYPE html>" not in html
     assert '<div class="content wide">' in html
-    assert 'href="/portal#fragments/fleet/scout/"' in html  # skill card hash link
-    assert 'class="badge badge-green"' in html              # scout Green zone badge
+    assert '<div class="board">' in html
+    # producers (action_surface_publish) render as worker cards…
+    assert 'class="card worker-card"' in html
+    assert 'href="/portal#fragments/fleet/drafter/"' in html
+    assert "Producer" in html and "daily 08:00" in html  # schedule passthrough
+    # …with the needs_review pill always present (zero-styled at 0).
+    assert 'class="state-pill zero"' in html and "needs review" in html
+    assert 'dot dot-promoted' in html
+    # observers (ingest_post) render in the strip, count-free without a ledger.
+    assert 'class="observer-strip"' in html
+    assert 'href="/portal#fragments/fleet/scout/"' in html
+    assert "no ingest recorded" in html
+    assert 'class="badge badge-green"' in html  # scout Green zone badge
+
+
+async def test_fleet_nav_fragment_outline(client):
+    # fleet-ui-reconciliation-v1 C2 — the data-driven outline nav: Fleet root
+    # with the needs_review badge, producer nodes with nonzero state rows,
+    # observers grouped count-free.
+    resp = await client.get("/portal/fragments/nav/fleet")
+    assert resp.status == 200
+    html = await resp.text()
+    assert 'href="/portal#fragments/fleet/"' in html      # root → board
+    assert '<div class="nav-node open"' in html           # root expanded
+    assert 'class="nav-node lvl1"' in html and "drafter" in html
+    # drafter has promoted+legacy units → both state rows, no needs_review row.
+    assert "dot dot-promoted" in html and "dot dot-legacy" in html
+    assert "dot dot-needs_review" not in html             # nonzero states only
+    assert 'class="obs-label">Observers' in html
+    assert 'class="nav-item lvl1 observer"' in html and "scout" in html
+    # badge counts needs_review ONLY → 0 here, and never hot at zero.
+    assert 'nav-badge hot' not in html
+
+
+async def test_fleet_nav_badge_counts_needs_review(grove_home):
+    # Stage a drafter unit WITH an open fleet_artifact proposal → needs_review;
+    # the Fleet badge and the producer badge both go hot with count 1 (F3: the
+    # badge is the same join the queue page renders).
+    import json as _json
+    from types import SimpleNamespace
+    from grove.api import fragments as F
+    from grove.eval import proposal_queue
+
+    unit = grove_home / "drafter" / "pending_review" / "moon-bot"
+    unit.mkdir(parents=True)
+    (unit / "draft-moon-bot.md").write_text("body", encoding="utf-8")
+    (unit / "meta.json").write_text(
+        _json.dumps({"unit_id": "moon-bot", "slug": "moon-bot"}), encoding="utf-8"
+    )
+    proposal_queue.file_agentless(
+        type=proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
+        payload={"slug": "moon-bot", "unit_id": "moon-bot",
+                 "skill_id": "skill.fleet.drafter", "canonical_sink": "drafter"},
+        evidence=("moon-bot",), justification="t", proposer="skill.fleet.drafter",
+    )
+    resp = await F.handle_fleet_nav(SimpleNamespace(match_info={}))
+    html = resp.text
+    assert '<span class="nav-badge hot">1</span>' in html
+    assert "dot dot-needs_review" in html                 # state row appears
+    assert 'class="nav-node lvl1 open"' in html           # producer auto-opens
 
 
 async def test_portal_skill_fragment_renders_c3_review_cards(client):
@@ -239,6 +328,29 @@ async def test_legacy_forge_slug_redirects(client):
     )
     assert resp.status == 302
     assert resp.headers["Location"] == "/portal#fragments/forge/260707-acme/"
+
+
+# ---------------------------------------------------------------------------
+# Nav count freshness — HX-Trigger response header (C2)
+# ---------------------------------------------------------------------------
+
+
+async def test_fleet_nav_refresh_header_on_success_only():
+    """The disposition wrapper adds HX-Trigger: fleet-disposition to 2xx
+    responses ONLY — a failed disposition changes no counts. Response-header
+    only (not a write-path change)."""
+    from grove.api.actions import _with_fleet_nav_refresh
+
+    async def ok(_request):
+        return web.Response(text="ok", status=200)
+
+    async def fail(_request):
+        return web.Response(text="no", status=409)
+
+    resp = await _with_fleet_nav_refresh(ok)(None)
+    assert resp.headers["HX-Trigger"] == "fleet-disposition"
+    resp = await _with_fleet_nav_refresh(fail)(None)
+    assert "HX-Trigger" not in resp.headers
 
 
 async def test_portal_trailing_slash_redirects_to_shell(client):

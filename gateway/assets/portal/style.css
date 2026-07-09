@@ -552,6 +552,73 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
     border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 0.12rem 0.65rem; }
 .pending-pill.zero { background: var(--bg-elev); color: var(--text-dim); font-weight: 600; }
 
+/* ---- Fleet outline nav (fleet-ui-reconciliation-v1 C2) ------------------
+   Scoped under .nav-fleet (the sidebar container the nav fragment loads
+   into). Tokens only — no new tokens beyond the C1 primitives. */
+.nav-fleet .nav-node { display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 0.6rem; border-radius: var(--radius); color: var(--text);
+    font-weight: 500; cursor: pointer; }
+.nav-fleet .nav-node:hover { background: var(--accent-dim); }
+.nav-fleet .nav-node a { color: var(--text); }
+.nav-fleet .twist { width: 12px; color: var(--text-dim); font-size: 10px;
+    flex: none; transition: transform 0.12s; display: inline-block; }
+.nav-fleet .nav-node.open > .twist { transform: rotate(90deg); }
+.nav-fleet .kids { display: none; }
+.nav-fleet .kids.open { display: block; }
+.nav-fleet .lvl1 { padding-left: 1.9rem; font-size: 0.9rem; }
+.nav-fleet a.nav-item { display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.35rem 0.6rem; border-radius: var(--radius); color: var(--text); }
+.nav-fleet a.nav-item:hover { background: var(--accent-dim);
+    text-decoration: none; }
+.nav-fleet .lvl2 { padding-left: 2.8rem; font-size: 0.82rem; }
+.nav-fleet .nav-badge { margin-left: auto; font-size: 0.7rem; min-width: 18px;
+    text-align: center; padding: 0 5px; border-radius: 9px;
+    background: var(--bg-elev); color: var(--text-dim);
+    border: 1px solid var(--border); }
+.nav-fleet .nav-badge.hot { background: var(--zone-yellow);
+    color: var(--bg-panel); border-color: var(--zone-yellow); font-weight: 700; }
+.nav-fleet .obs-label { padding: 0.5rem 0.6rem 0.15rem 1.9rem;
+    font-size: 0.65rem; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--text-dim); }
+.nav-fleet .observer { color: var(--text-dim); font-weight: 400; }
+.nav-fleet .observer .mono { margin-left: auto; font-size: 0.7rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* Governance-state dots — shared by the outline nav and the board pills. */
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none;
+    display: inline-block; }
+.dot-needs_review       { background: var(--zone-yellow); }
+.dot-revision_requested { background: var(--accent); }
+.dot-promoted           { background: var(--zone-green); }
+.dot-rejected           { background: var(--zone-red); }
+.dot-legacy             { background: var(--text-dim); }
+
+/* ---- Fleet status board (fleet-ui-reconciliation-v1 C2, mock screen A) -- */
+.page-sub { color: var(--text-dim); font-size: 0.88rem; margin: 0 0 1.25rem; }
+.board { display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: var(--gap); }
+.worker-card h3 { margin: 0 0 0.35rem; font-size: 1rem; display: flex;
+    align-items: center; gap: 0.5rem; }
+.state-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+.state-pill { display: inline-flex; align-items: center; gap: 0.4rem;
+    font-size: 0.82rem; padding: 0.28rem 0.6rem; border-radius: var(--radius);
+    background: var(--bg-elev); border: 1px solid var(--border);
+    color: var(--text); }
+.state-pill:hover { border-color: var(--accent-dim); text-decoration: none; }
+.state-pill .n { font-weight: 600; }
+.state-pill.zero { color: var(--text-dim); }
+.observer-strip { margin-top: 1.5rem; }
+.observer-strip .card { display: flex; align-items: center; gap: 0.9rem;
+    padding: 0.7rem 1rem; }
+.observer-strip .grow { flex: 1; }
+.observer-strip h3 { margin: 0; font-size: 0.95rem; font-weight: 500;
+    display: flex; align-items: center; gap: 0.5rem; }
+.observer-strip .mono { font-family: ui-monospace, SFMono-Regular, Menlo,
+    monospace; font-size: 0.78rem; color: var(--text-dim); }
+.obs-strip-label { font-size: 0.68rem; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-dim); margin: 0 0 0.5rem; }
+
 /* Mount 2 — sticky disposition dock in the context sidebar. */
 .disposition-dock { position: sticky; top: 0.5rem; background: var(--bg-panel);
     border: 1px solid var(--border); border-top: 3px solid var(--border);
