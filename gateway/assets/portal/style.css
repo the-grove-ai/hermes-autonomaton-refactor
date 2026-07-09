@@ -454,3 +454,96 @@ dl.frontmatter dd { margin: 0.1rem 0 0; }
 dl.model-detail { margin: 0.6rem 0; }
 dl.model-detail dt { color: var(--text-dim); font-size: 0.8rem; margin-top: 0.5rem; }
 dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
+
+/* ---- Fleet Action Surface (fleet-review-unification-v1 C3) -------------
+   The disposition component (both mounts) + the producer inbox. Tokens only
+   (style.css:5-19); state tints are color-mix over the zone tokens — no new
+   colors. Rails: yellow=needs_review, accent=revision_requested, green=promoted,
+   red=rejected, border=legacy. */
+.review-card { border-left: 3px solid var(--border); }
+.review-card.rail-needs_review       { border-left-color: var(--zone-yellow); }
+.review-card.rail-revision_requested { border-left-color: var(--accent); }
+.review-card.rail-promoted           { border-left-color: var(--zone-green); }
+.review-card.rail-rejected           { border-left-color: var(--zone-red); }
+.review-card.rail-legacy             { border-left-color: var(--border); }
+
+.review-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.review-head .title { font-weight: 600; word-break: break-word; }
+.review-head .head-meta { margin-left: auto; color: var(--text-dim); font-size: 0.82rem; }
+
+/* chip: colored label + tinted bg + currentColor dot (matches the signed mock). */
+.state-chip { display: inline-flex; align-items: center; gap: 0.35rem;
+    font-size: 0.68rem; font-weight: 700; padding: 0.1rem 0.6rem; border-radius: 999px;
+    background: var(--bg-elev); color: var(--text-dim); }
+.state-chip .dot { width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor; flex: none; }
+.chip-needs_review       { color: var(--zone-yellow); background: color-mix(in srgb, var(--zone-yellow) 12%, var(--bg-elev)); }
+.chip-revision_requested { color: var(--accent);      background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev)); }
+.chip-promoted           { color: var(--zone-green);  background: color-mix(in srgb, var(--zone-green) 12%, var(--bg-elev)); }
+.chip-rejected           { color: var(--zone-red);    background: color-mix(in srgb, var(--zone-red) 12%, var(--bg-elev)); }
+.chip-legacy             { color: var(--text-dim); }
+
+/* REVISED disclosure / in-flight guidance — italic, accent-dim left border. */
+.revised-disclosure { margin: 0.5rem 0; padding: 0.35rem 0.7rem;
+    border-left: 2px solid var(--accent-dim); color: var(--text-dim);
+    font-style: italic; font-size: 0.86rem; }
+
+/* 3-line clamped draft preview + expand. */
+.draft-preview { color: var(--text-dim); font-size: 0.84rem; margin: 0.5rem 0 0;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden; }
+.draft-preview.expanded { -webkit-line-clamp: unset; display: block; }
+.preview-toggle { background: none; border: none; color: var(--accent);
+    font-size: 0.76rem; font-weight: 600; padding: 0.2rem 0 0; cursor: pointer; }
+
+/* Disposition bar — inset panel, stacked full-width verbs (mock: promote green,
+   revise accent, reject red). */
+.disposition-bar { margin: 0.85rem -1rem -0.85rem; padding: 0.8rem 1rem;
+    background: var(--bg-panel); border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 0.5rem;
+    border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); }
+.disposition-bar.htmx-request { opacity: 0.5; pointer-events: none; }
+.disposition-bar .btn { width: 100%; text-align: center; padding: 0.55rem 0.8rem; }
+.btn-revise { border-color: var(--accent-dim); color: var(--accent); }
+.btn-revise:hover { background: var(--accent-dim); color: var(--text); }
+
+/* Feedback block — progressive disclosure (hidden until "Suggest revision…"). */
+.feedback-block { display: none; flex-direction: column; gap: 0.5rem;
+    padding: 0.55rem; background: var(--bg); border: 1px solid var(--accent-dim);
+    border-radius: var(--radius); }
+.feedback-block.open { display: flex; }
+.feedback-block textarea { width: 100%; min-height: 4.5rem; background: var(--bg-elev);
+    color: var(--text); border: 1px solid var(--accent-dim); border-radius: var(--radius);
+    padding: 0.55rem 0.7rem; font: inherit; resize: vertical; }
+.feedback-block textarea:focus { outline: none; border-color: var(--accent); }
+.feedback-row { display: flex; gap: 0.5rem; align-items: center; }
+.feedback-row .btn { flex: 1; }
+.feedback-row .btn-cancel { flex: 0 0 auto; color: var(--text-dim); }
+.revision-counter { color: var(--text-dim); font-size: 0.72rem; }
+
+/* In-flight (revision_requested) — no bar; banked-guidance footer + italic quote. */
+.inflight-note { margin-top: 0.55rem; color: var(--text-dim); font-size: 0.76rem; }
+.inflight-note em { display: block; border-left: 2px solid var(--accent-dim);
+    padding-left: 0.6rem; margin-top: 0.35rem; }
+
+/* Producer inbox header + pending pill (solid yellow, right-aligned; matches mock). */
+.inbox-head { display: flex; align-items: center; gap: 0.6rem; margin: 2.2rem 0 0.8rem; }
+.inbox-head h2 { font-size: 0.95rem; font-weight: 600; margin: 0; }
+.pending-pill { margin-left: auto; background: var(--zone-yellow); color: var(--bg-panel);
+    border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 0.12rem 0.65rem; }
+.pending-pill.zero { background: var(--bg-elev); color: var(--text-dim); font-weight: 600; }
+
+/* Mount 2 — sticky disposition dock in the context sidebar. */
+.disposition-dock { position: sticky; top: 0.5rem; background: var(--bg-panel);
+    border: 1px solid var(--border); border-top: 3px solid var(--border);
+    border-radius: var(--radius); padding: 0.8rem; margin-bottom: var(--gap); }
+.disposition-dock.rail-needs_review       { border-top-color: var(--zone-yellow); }
+.disposition-dock.rail-revision_requested { border-top-color: var(--accent); }
+.disposition-dock.rail-promoted           { border-top-color: var(--zone-green); }
+.disposition-dock.rail-rejected           { border-top-color: var(--zone-red); }
+.dock-meta { color: var(--text-dim); font-size: 0.82rem; margin-bottom: 0.5rem; }
+.dock-meta .unit { color: var(--text); font-weight: 600; }
+.disposition-dock .disposition-bar { margin: 0.6rem 0 0; border-radius: var(--radius); }
+@media (max-width: 900px) {
+    .disposition-dock { position: sticky; top: auto; bottom: 0; }
+}
