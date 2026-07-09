@@ -206,6 +206,40 @@
         handleHashRoute();
       }
     });
+
+    // fleet-ui-reconciliation-v1 C4 (C2 carry-over) — nav expansion
+    // persistence. The outline nav fragment re-renders (server defaults) on
+    // every refresh; sessionStorage keeps the operator's open/closed choices
+    // keyed by data-nav-key and re-applies them after each swap. Until the
+    // operator first toggles a node, the server defaults stand.
+    function _navOpenSet() {
+      try {
+        return new Set(JSON.parse(sessionStorage.getItem('navOpen') || '[]'));
+      } catch (e) { return new Set(); }
+    }
+    document.body.addEventListener('click', function(evt) {
+      var node = evt.target.closest &&
+        evt.target.closest('.nav-fleet .nav-node[data-nav-key]');
+      if (!node) { return; }
+      // The inline toggle onclick has already run (element handlers fire
+      // before this delegated one), so classList reflects the NEW state.
+      var set = _navOpenSet();
+      if (node.classList.contains('open')) { set.add(node.dataset.navKey); }
+      else { set.delete(node.dataset.navKey); }
+      sessionStorage.setItem('navOpen', JSON.stringify(Array.from(set)));
+    });
+    document.body.addEventListener('htmx:afterSwap', function(evt) {
+      var el = evt.target;
+      if (!el.classList || !el.classList.contains('nav-fleet')) { return; }
+      if (sessionStorage.getItem('navOpen') === null) { return; }
+      var set = _navOpenSet();
+      el.querySelectorAll('.nav-node[data-nav-key]').forEach(function(n) {
+        var open = set.has(n.dataset.navKey);
+        n.classList.toggle('open', open);
+        var k = n.nextElementSibling;
+        if (k && k.classList.contains('kids')) { k.classList.toggle('open', open); }
+      });
+    });
     </script>
 </body>
 </html>

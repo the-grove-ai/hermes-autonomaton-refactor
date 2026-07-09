@@ -624,6 +624,20 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .obs-strip-label { font-size: 0.68rem; letter-spacing: 0.08em;
     text-transform: uppercase; color: var(--text-dim); margin: 0 0 0.5rem; }
 
+/* ---- Fleet queue tabs (fleet-ui-reconciliation-v1 C4, mock screen B) ---- */
+.queue-tabs { display: flex; gap: 0.35rem; margin: 0 0 1.1rem; flex-wrap: wrap; }
+.queue-tab { display: inline-flex; align-items: center; gap: 0.45rem;
+    padding: 0.35rem 0.8rem; font-size: 0.82rem; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--bg-panel);
+    color: var(--text-dim); }
+.queue-tab:hover { border-color: var(--accent-dim); text-decoration: none; }
+.queue-tab.active { background: var(--bg-elev); color: var(--text);
+    border-color: var(--accent-dim); }
+
+/* Monospace utility (C4 — detail page-sub unit_id; scoped rules override). */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.85em; }
+
 /* Proposals — fleet-artifact cross-link card (fleet-ui-reconciliation-v1 C3,
    mock screen D): artifact dispositions live in Fleet, not this queue. */
 .card.xlink { display: flex; align-items: center; gap: 0.75rem;

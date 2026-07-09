@@ -1129,6 +1129,12 @@ def _fleet_index_rows() -> list:
             "name": name,
             "zone": cap.zone.value,
             "mode": mode,
+            # C4 — structural promotion provenance (Skill Flywheel lineage):
+            # lifecycle.provenance + lineage.parent_id, passthrough verbatim.
+            # Today every fleet record is operator_authored/parent-less, so
+            # renderers show no lineage line — honest, never name-inferred.
+            "provenance": cap.lifecycle.provenance.value,
+            "parent_id": cap.lineage.parent_id,
             "worker": worker,
             "last_run": last_run,
             "last_ingest": _fleet_mtime_iso(max(ingested)) if ingested else None,

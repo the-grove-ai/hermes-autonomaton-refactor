@@ -1513,6 +1513,13 @@ def _producer_meta_line(row: dict) -> str:
         elif last.get("status") == "no_work":
             qual = " (no work)"
         parts.append(f"last run {_relative_age(last['ts'])}{qual}")
+    # C4 — lifecycle lineage hint, from STRUCTURAL provenance only (P1): a
+    # named flywheel parent, or the agent_proposed promotion path. Today's
+    # records are all operator_authored → no line renders.
+    if row.get("parent_id"):
+        parts.append(f"promoted from {row['parent_id']}")
+    elif row.get("provenance") == "agent_proposed":
+        parts.append("promoted from skill")
     return " &middot; ".join(_esc(p) for p in parts)
 
 
@@ -1529,9 +1536,9 @@ def _observer_ingest_line(row: dict) -> str:
 def _state_pills(row: dict) -> str:
     """The state-pill row: needs_review ALWAYS renders (zero-styled at 0);
     other states render only when nonzero. Every pill deep-links to the
-    producer's queue fragment."""
+    producer's queue on that state's tab (C4)."""
     counts = row.get("state_counts") or {}
-    href = f'/portal#fragments/fleet/{_esc(row["name"])}/'
+    base = f'/portal#fragments/fleet/{_esc(row["name"])}/'
     pills = []
     for state, label in _STATE_ORDER:
         n = counts.get(state, 0)
@@ -1539,7 +1546,7 @@ def _state_pills(row: dict) -> str:
             continue
         zero = " zero" if not n else ""
         pills.append(
-            f'<a class="state-pill{zero}" href="{href}">'
+            f'<a class="state-pill{zero}" href="{base}?state={state}">'
             f'<span class="dot dot-{state}"></span>'
             f'<span class="n">{n}</span> {label}</a>'
         )
@@ -1624,10 +1631,14 @@ async def handle_fleet_nav(request: web.Request) -> web.Response:
     observers = [r for r in rows if r.get("mode") != _PRODUCER_MODE]
     total_needs = sum(r["needs_review_count"] for r in rows)
 
+    # The root LABEL navigates to the board WITHOUT toggling (stopPropagation —
+    # C4: with expansion persistence, a label click that also collapsed the
+    # outline would stick closed); the twist / row background still toggles.
     parts = [
-        f'<div class="nav-node open" {_nav_toggle_attr()}>'
+        f'<div class="nav-node open" data-nav-key="fleet" {_nav_toggle_attr()}>'
         f'<span class="twist">&#9654;</span>'
-        f'<a href="/portal#fragments/fleet/">Fleet</a>'
+        f'<a href="/portal#fragments/fleet/" '
+        f'onclick="event.stopPropagation()">Fleet</a>'
         f'{_nav_badge(total_needs)}</div>',
         '<div class="kids open">',
     ]
@@ -1637,12 +1648,14 @@ async def handle_fleet_nav(request: web.Request) -> web.Response:
         counts = r.get("state_counts") or {}
         opened = " open" if needs else ""
         parts.append(
-            f'<div class="nav-node lvl1{opened}" {_nav_toggle_attr()}>'
+            f'<div class="nav-node lvl1{opened}" data-nav-key="{name}" '
+            f'{_nav_toggle_attr()}>'
             f'<span class="twist">&#9654;</span> {name}'
             f'{_nav_badge(needs)}</div>'
         )
         state_rows = "".join(
-            f'<a class="nav-item lvl2" href="/portal#fragments/fleet/{name}/">'
+            f'<a class="nav-item lvl2" '
+            f'href="/portal#fragments/fleet/{name}/?state={state}">'
             f'<span class="dot dot-{state}"></span> {label}'
             f'{_nav_badge(counts[state], hot_when_positive=(state == "needs_review"))}'
             f'</a>'
@@ -1680,9 +1693,42 @@ async def handle_proposals_nav(request: web.Request) -> web.Response:
     )
 
 
+def _default_queue_state(counts: dict):
+    """The default queue tab: needs_review when nonzero, else the first nonzero
+    state in lifecycle order (C4 rule). None when the producer has no units."""
+    if counts.get("needs_review"):
+        return "needs_review"
+    for state, _label in _STATE_ORDER:
+        if counts.get(state):
+            return state
+    return None
+
+
+def _queue_tabs(name: str, counts: dict, active) -> str:
+    """The state-queue tab row (C4, mock screen B): nonzero states only (the C2
+    nonzero-only ruling), each a dot + label + count. Tabs are hash links
+    carrying ``?state=`` — a tab switch is one router dispatch, and the tab is
+    deep-linkable (nav state rows + board pills land here)."""
+    tabs = []
+    for state, label in _STATE_ORDER:
+        n = counts.get(state, 0)
+        if not n:
+            continue
+        cls = " active" if state == active else ""
+        tabs.append(
+            f'<a class="queue-tab{cls}" '
+            f'href="/portal#fragments/fleet/{_esc(name)}/?state={state}">'
+            f'<span class="dot dot-{state}"></span> {label} &middot; {n}</a>'
+        )
+    return f'<div class="queue-tabs">{"".join(tabs)}</div>' if tabs else ""
+
+
 async def handle_fleet_skill_fragment(request: web.Request) -> web.Response:
     """``GET /portal/fragments/fleet/{skill_name}/`` — one producer's inbox as an
-    in-shell fragment. Unknown skill -> 404 fragment."""
+    in-shell fragment. C4: state-queue tabs (mock screen B) — ``?state=``
+    selects the tab server-side; the unit list renders that state only. An
+    absent/invalid/zero-count ``state`` falls back to the default-tab rule.
+    Unknown skill -> 404 fragment."""
     skill_name = request.match_info["skill_name"]
     cap = _fleet_skill_records().get(skill_name)
     if cap is None:
@@ -1696,20 +1742,28 @@ async def handle_fleet_skill_fragment(request: web.Request) -> web.Response:
     # consequence copy is sink-derived (forge → Drive; mv-sink → wiki).
     units = _list_fleet_units(cap)
     remote_sink = cap.governance["write_zone"]["canonical_dir"] == "forge"
-    needs = sum(1 for u in units if u["governance_state"] == "needs_review")
+    counts: dict = {}
+    for u in units:
+        counts[u["governance_state"]] = counts.get(u["governance_state"], 0) + 1
+    needs = counts.get("needs_review", 0)
     pill_cls = "pending-pill" + ("" if needs else " zero")
     header = (
         f'<div class="inbox-head"><h2>{_esc(skill_name)} '
         f'{_fleet_zone_badge(cap.zone.value)}</h2>'
         f'<span class="{pill_cls}">{needs} needs review</span></div>'
     )
+    requested = request.query.get("state")
+    active = requested if counts.get(requested) else _default_queue_state(counts)
+    tabs = _queue_tabs(skill_name, counts, active)
     if units:
-        cards = "".join(_review_card(u, remote_sink, cap=cap) for u in units)
+        shown = [u for u in units if u["governance_state"] == active]
+        cards = "".join(_review_card(u, remote_sink, cap=cap) for u in shown)
     else:
         cards = ('<div class="card"><p class="placeholder">No artifacts yet — '
                  'this producer is idle.</p></div>')
     return _html_fragment(
-        f'<div class="content">{_fleet_breadcrumb(skill_name)}{header}{cards}</div>'
+        f'<div class="content">{_fleet_breadcrumb(skill_name)}{header}{tabs}'
+        f'{cards}</div>'
     )
 
 
@@ -1737,10 +1791,27 @@ async def handle_fleet_artifact_fragment(request: web.Request) -> web.Response:
         content = _fleet_json_card(raw)
     else:
         content = f"<pre>{_esc(raw)}</pre>"
-    header = (
-        f"<h2>{_esc(filename)}</h2>"
-        f'<p class="meta">{_esc(skill_name)} &middot; {_fleet_state_badge(state)}</p>'
-    )
+    unit = _find_fleet_unit(cap, filename=filename)
+    if unit is not None:
+        # C4 (mock screen C) — title row carries the state chip (+ rev chip when
+        # revised); page-sub carries worker · generated ts · unit_id.
+        rc = unit.get("revision_count", 0)
+        rev_chip = f' <span class="state-chip">rev {rc}</span>' if rc else ""
+        header = (
+            f"<h2>{_esc(filename)} {_state_chip(unit['governance_state'])}"
+            f"{rev_chip}</h2>"
+            f'<p class="page-sub">{_esc(skill_name)} &middot; generated '
+            f'{_esc(_relative_age(unit["mtime"]))} &middot; unit_id '
+            f'<span class="mono">{_esc(unit["unit_id"])}</span></p>'
+        )
+    else:
+        # No C2 unit resolves (e.g. a stray non-unit file) — keep the plain
+        # two-state badge line rather than fabricating unit metadata.
+        header = (
+            f"<h2>{_esc(filename)}</h2>"
+            f'<p class="meta">{_esc(skill_name)} &middot; '
+            f'{_fleet_state_badge(state)}</p>'
+        )
     body = (
         f'<div class="content">'
         f"{_fleet_breadcrumb(skill_name, filename)}{header}{content}</div>"
@@ -1748,7 +1819,6 @@ async def handle_fleet_artifact_fragment(request: web.Request) -> web.Response:
     # Mount 2 (C1) — the disposition dock lands in #right-panel via the OOB swap
     # pattern (same mechanic as the cellar detail's context OOB). No unit → no
     # dock: a canonical-only or unresolvable file has nothing to disposition.
-    unit = _find_fleet_unit(cap, filename=filename)
     oob = ""
     if unit is not None:
         remote_sink = cap.governance["write_zone"]["canonical_dir"] == "forge"

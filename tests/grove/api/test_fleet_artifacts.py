@@ -110,6 +110,11 @@ async def test_fleet_index_c2_passthrough_fields(client):
     assert scout["mode"] == "ingest_post"
     assert scout["worker"] is None  # observers have no registry entry
 
+    # C4 — structural lineage passthrough: every bundled record is
+    # operator-authored with no flywheel parent (banked P1 finding).
+    assert drafter["provenance"] == "operator_authored"
+    assert drafter["parent_id"] is None
+
     # F6 — zero HTML/layout content anywhere in the rows.
     body = json.dumps(skills)
     assert "<" not in body and "class=" not in body
@@ -234,22 +239,68 @@ async def test_fleet_nav_badge_counts_needs_review(grove_home):
     assert 'class="nav-node lvl1 open"' in html           # producer auto-opens
 
 
-async def test_portal_skill_fragment_renders_c3_review_cards(client):
-    # fleet-review-unification-v1 C3 — the producer INBOX: four-state review-cards
-    # with state rails/chips. The flat pending draft (no proposal) is legacy; the
-    # canonical draft is promoted. C1 — served as an in-shell fragment at content
-    # width.
+async def test_portal_skill_fragment_renders_queue_tabs(client):
+    # fleet-ui-reconciliation-v1 C4 — the inbox carries state-queue TABS (mock
+    # screen B): nonzero states only, ?state-addressable. drafter has one legacy
+    # + one promoted unit and ZERO needs_review → the default-tab rule lands on
+    # promoted (first nonzero in lifecycle order), and ONLY that state's cards
+    # render.
     resp = await client.get("/portal/fragments/fleet/drafter/")
     assert resp.status == 200
     html = await resp.text()
     assert '<div class="content">' in html
     assert 'class="pending-pill' in html and "needs review" in html
-    assert "review-card rail-legacy" in html
+    assert 'class="queue-tabs"' in html
+    # two tabs (promoted, legacy) — no needs_review/redrafting/rejected tabs.
+    assert html.count('<a class="queue-tab') == 2
+    assert 'href="/portal#fragments/fleet/drafter/?state=promoted"' in html
+    assert 'href="/portal#fragments/fleet/drafter/?state=legacy"' in html
+    # default tab = promoted (active), and only promoted cards render.
+    assert "queue-tab active" in html and "promoted &middot; 1" in html
     assert "review-card rail-promoted" in html
-    assert "chip-legacy" in html and "chip-promoted" in html
+    assert "review-card rail-legacy" not in html
     assert "&rsaquo;" in html                 # breadcrumb separator
     assert 'class="meta breadcrumb"' in html  # breadcrumb carries the class token
     assert 'href="/portal#fragments/fleet/"' in html  # breadcrumb hash link
+
+
+async def test_portal_skill_fragment_state_param_filters(client):
+    # ?state= selects the tab server-side; the legacy tab shows only legacy.
+    resp = await client.get("/portal/fragments/fleet/drafter/?state=legacy")
+    assert resp.status == 200
+    html = await resp.text()
+    assert "review-card rail-legacy" in html
+    assert "review-card rail-promoted" not in html
+    # the requested tab is the active one
+    assert ('class="queue-tab active" '
+            'href="/portal#fragments/fleet/drafter/?state=legacy"') in html
+    # an invalid state falls back to the default rule (promoted)
+    resp = await client.get("/portal/fragments/fleet/drafter/?state=bogus")
+    html = await resp.text()
+    assert "review-card rail-promoted" in html
+    assert "review-card rail-legacy" not in html
+
+
+async def test_board_pills_and_nav_rows_deep_link_to_tabs(client):
+    # C4 — board pills and nav state rows land on the corresponding queue tab.
+    board = await (await client.get("/portal/fragments/fleet/")).text()
+    assert 'href="/portal#fragments/fleet/drafter/?state=promoted"' in board
+    nav = await (await client.get("/portal/fragments/nav/fleet")).text()
+    assert 'href="/portal#fragments/fleet/drafter/?state=promoted"' in nav
+    assert 'href="/portal#fragments/fleet/drafter/?state=legacy"' in nav
+
+
+async def test_artifact_detail_title_chips_and_pagesub(client):
+    # C4 (mock screen C) — the detail title carries the state chip; page-sub
+    # carries worker · generated ts · unit_id.
+    resp = await client.get("/portal/fragments/fleet/drafter/draft-approved.md")
+    assert resp.status == 200
+    html = await resp.text()
+    assert "chip-promoted" in html            # state chip in the title row
+    assert 'class="page-sub"' in html
+    assert "generated" in html and "unit_id" in html
+    # unit_id = terminal_artifact pattern reverse ("draft-*.md" strips prefix)
+    assert '<span class="mono">approved</span>' in html
 
 
 async def test_portal_artifact_fragment_renders_markdown(client):
