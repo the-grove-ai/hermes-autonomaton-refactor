@@ -129,45 +129,60 @@ async def test_fleet_api_traversal_refused(client):
 
 
 # ---------------------------------------------------------------------------
-# Portal pages — /portal/fleet/
+# Portal fragments — /portal/fragments/fleet/ (in-shell since
+# fleet-ui-reconciliation-v1 C1; the legacy /portal/fleet/ paths 302)
 # ---------------------------------------------------------------------------
 
 
 async def test_portal_overview_renders_skill_cards(client):
-    resp = await client.get("/portal/fleet/")
+    resp = await client.get("/portal/fragments/fleet/")
     assert resp.status == 200 and resp.content_type == "text/html"
     html = await resp.text()
-    assert "<!DOCTYPE html>" in html
-    assert 'href="/portal/fleet/scout/"' in html      # skill card link
-    assert 'class="badge badge-green"' in html         # scout Green zone badge
+    # C1 — a fragment (no standalone document), wide content primitive.
+    assert "<!DOCTYPE html>" not in html
+    assert '<div class="content wide">' in html
+    assert 'href="/portal#fragments/fleet/scout/"' in html  # skill card hash link
+    assert 'class="badge badge-green"' in html              # scout Green zone badge
 
 
-async def test_portal_skill_page_renders_c3_review_cards(client):
-    # fleet-review-unification-v1 C3 — the /portal/fleet/{skill}/ page is now the
-    # producer INBOX: four-state review-cards with state rails/chips, not the old
-    # two-state badges. The flat pending draft (no proposal) is legacy; the canonical
-    # draft is promoted.
-    resp = await client.get("/portal/fleet/drafter/")
+async def test_portal_skill_fragment_renders_c3_review_cards(client):
+    # fleet-review-unification-v1 C3 — the producer INBOX: four-state review-cards
+    # with state rails/chips. The flat pending draft (no proposal) is legacy; the
+    # canonical draft is promoted. C1 — served as an in-shell fragment at content
+    # width.
+    resp = await client.get("/portal/fragments/fleet/drafter/")
     assert resp.status == 200
     html = await resp.text()
+    assert '<div class="content">' in html
     assert 'class="pending-pill' in html and "needs review" in html
     assert "review-card rail-legacy" in html
     assert "review-card rail-promoted" in html
     assert "chip-legacy" in html and "chip-promoted" in html
     assert "&rsaquo;" in html                 # breadcrumb separator
     assert 'class="meta breadcrumb"' in html  # breadcrumb carries the class token
+    assert 'href="/portal#fragments/fleet/"' in html  # breadcrumb hash link
 
 
-async def test_portal_artifact_view_renders_markdown(client):
-    resp = await client.get("/portal/fleet/drafter/draft-2026-07-01-x.md")
+async def test_portal_artifact_fragment_renders_markdown(client):
+    resp = await client.get("/portal/fragments/fleet/drafter/draft-2026-07-01-x.md")
     assert resp.status == 200 and resp.content_type == "text/html"
     html = await resp.text()
     assert "<strong>bold</strong>" in html          # rendered markdown
     assert "Fleet</a>" in html and "drafter</a>" in html  # breadcrumb links
 
 
-async def test_portal_artifact_view_renders_json_card(client):
-    resp = await client.get("/portal/fleet/scout/digest-2026-07-01.json")
+async def test_portal_artifact_fragment_mounts_dock_oob(client):
+    # C1 — the Mount-2 disposition dock rides an OOB #right-panel swap when the
+    # artifact resolves to a C2 unit (the flat staged draft is a legacy unit).
+    resp = await client.get("/portal/fragments/fleet/drafter/draft-2026-07-01-x.md")
+    assert resp.status == 200
+    html = await resp.text()
+    assert 'id="right-panel"' in html and 'hx-swap-oob="true"' in html
+    assert 'class="disposition-dock' in html
+
+
+async def test_portal_artifact_fragment_renders_json_card(client):
+    resp = await client.get("/portal/fragments/fleet/scout/digest-2026-07-01.json")
     assert resp.status == 200
     html = await resp.text()
     assert "<dt>generated_at</dt>" in html      # structured key extraction
@@ -176,19 +191,54 @@ async def test_portal_artifact_view_renders_json_card(client):
 
 
 async def test_portal_unknown_skill_404(client):
-    resp = await client.get("/portal/fleet/nonesuch/")
+    resp = await client.get("/portal/fragments/fleet/nonesuch/")
     assert resp.status == 404
     body = await resp.text()
     assert "Unknown fleet skill" in body
-    assert "404" in body  # styled 404 page carries the status token
+    assert "404" in body  # error fragment carries the status token
 
 
 async def test_portal_missing_artifact_404(client):
-    resp = await client.get("/portal/fleet/scout/missing.json")
+    resp = await client.get("/portal/fragments/fleet/scout/missing.json")
     assert resp.status == 404
     body = await resp.text()
     assert "not found" in body.lower()
     assert "404" in body
+
+
+# ---------------------------------------------------------------------------
+# Legacy standalone paths — 302 to the hash URLs (C1)
+# ---------------------------------------------------------------------------
+
+
+async def test_legacy_fleet_overview_redirects(client):
+    resp = await client.get("/portal/fleet/", allow_redirects=False)
+    assert resp.status == 302
+    assert resp.headers["Location"] == "/portal#fragments/fleet/"
+
+
+async def test_legacy_fleet_skill_redirects(client):
+    resp = await client.get("/portal/fleet/drafter/", allow_redirects=False)
+    assert resp.status == 302
+    assert resp.headers["Location"] == "/portal#fragments/fleet/drafter/"
+
+
+async def test_legacy_fleet_artifact_redirects(client):
+    resp = await client.get(
+        "/portal/fleet/drafter/draft-2026-07-01-x.md", allow_redirects=False
+    )
+    assert resp.status == 302
+    assert resp.headers["Location"] == (
+        "/portal#fragments/fleet/drafter/draft-2026-07-01-x.md"
+    )
+
+
+async def test_legacy_forge_slug_redirects(client):
+    resp = await client.get(
+        "/portal/fleet/forge-jobsearch/260707-acme/", allow_redirects=False
+    )
+    assert resp.status == 302
+    assert resp.headers["Location"] == "/portal#fragments/forge/260707-acme/"
 
 
 async def test_portal_trailing_slash_redirects_to_shell(client):

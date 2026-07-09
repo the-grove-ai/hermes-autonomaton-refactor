@@ -163,7 +163,7 @@ async def test_inbox_page_renders_pending_pill_and_cards(grove_home):
                          "skill_id": "skill.fleet.drafter", "canonical_sink": "drafter"},
         evidence=("moon-bot",), justification="t", proposer="skill.fleet.drafter")
     req = SimpleNamespace(match_info={"skill_name": "drafter"})
-    resp = await F.handle_fleet_skill_page(req)
+    resp = await F.handle_fleet_skill_fragment(req)
     body = resp.text
     assert 'class="pending-pill"' in body and "1 needs review" in body
     assert "review-card rail-needs_review" in body

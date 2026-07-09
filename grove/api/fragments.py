@@ -253,10 +253,12 @@ async def handle_cellar_listing(request: web.Request) -> web.Response:
                 f'<span class="badge badge-{_esc(p["source_type"])}">{_esc(p["source_type"])}</span>'
                 if p["source_type"] else ""
             )
+            # fleet-ui-reconciliation-v1 C1 — hash anchor, not hx-get+push: the
+            # shell's hash router is the single dispatcher/history actor (F1).
             parts.append(
                 f'<li{conf_attr}>'
-                f'<a hx-get="/portal/fragments/cellar/pages/{_esc(p["page_id"])}" '
-                f'hx-target="#center-panel" hx-push-url="true">{_esc(p["title"])}</a> '
+                f'<a href="/portal#fragments/cellar/pages/{_esc(p["page_id"])}">'
+                f'{_esc(p["title"])}</a> '
                 f'{badge} {_tags_html(p["topics"])}'
                 f'</li>'
             )
@@ -698,10 +700,11 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
     if verbs:
         slug = (p.get("payload") or {}).get("slug")
         if slug:
-            href = f"/portal/fragments/forge/{quote(str(slug))}/?pid={quote(str(pid))}"
+            # Hash anchor (C1): the ?pid rides the hash and becomes a real query
+            # string when the router's htmx.ajax GET dispatches it.
+            href = f"/portal#fragments/forge/{quote(str(slug))}/?pid={quote(str(pid))}"
             view_html = (
-                f'<div class="meta"><a hx-get="{_esc(href)}" '
-                f'hx-target="#center-panel" hx-push-url="true">View details</a></div>'
+                f'<div class="meta"><a href="{_esc(href)}">View details</a></div>'
             )
         else:
             view_html = (
@@ -905,10 +908,11 @@ def _goal_card(goal) -> str:
 
 def _page_link(page_id: str, title: str) -> str:
     """A related-page link that loads the page into the center panel (which in
-    turn refreshes this sidebar via the page's OOB swap)."""
+    turn refreshes this sidebar via the page's OOB swap). Hash anchor (C1) —
+    the shell's hash router dispatches it."""
     return (
-        f'<li><a hx-get="/portal/fragments/cellar/pages/{_esc(page_id)}" '
-        f'hx-target="#center-panel" hx-push-url="true">{_esc(title)}</a></li>'
+        f'<li><a href="/portal#fragments/cellar/pages/{_esc(page_id)}">'
+        f'{_esc(title)}</a></li>'
     )
 
 
@@ -1037,8 +1041,8 @@ def _wiki_result_html(r) -> str:
     page_id = Path(r.source_path).with_suffix("").as_posix()
     return (
         f'<li>'
-        f'<a hx-get="/portal/fragments/cellar/pages/{_esc(page_id)}" '
-        f'hx-target="#center-panel" hx-push-url="true">{_esc(r.title or page_id)}</a>'
+        f'<a href="/portal#fragments/cellar/pages/{_esc(page_id)}">'
+        f'{_esc(r.title or page_id)}</a>'
         f'<div class="search-snippet">{_render_md(r.snippet)}</div>'
         f'</li>'
     )
@@ -1363,40 +1367,28 @@ async def handle_model_context(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
-# Fleet artifact pages (fleet-artifact-viewer-v1)
+# Fleet fragments (fleet-artifact-viewer-v1; in-shell since
+# fleet-ui-reconciliation-v1 C1)
 # ---------------------------------------------------------------------------
 #
-# STANDALONE full-HTML pages (the /portal/routing model), NOT hash-routed SPA
-# fragments: a Telegram deep link to /portal/fleet/{skill}/{filename} must land
-# on a rendered page without JS. They read through the shared portal.py fleet
+# Fleet renders IN-SHELL: ``/portal/fragments/fleet/...`` fragments the shell's
+# hash router dispatches into #center-panel. A Telegram deep link is the hash
+# form ``/portal#fragments/fleet/...`` — the shell loads first, then the router
+# dispatches, so the operator always lands in the full styled portal. The
+# legacy standalone paths (``/portal/fleet/...``) 302 to the hash URLs so
+# previously-sent links keep landing. Readers are the shared portal.py fleet
 # readers (_fleet_skill_records / _list_fleet_artifacts / _read_fleet_artifact),
-# never the filesystem. Navigation between pages is via plain breadcrumb links.
-
-
-def _fleet_page(title: str, breadcrumb: str, body: str) -> str:
-    """Wrap fleet content in a full HTML shell — same stylesheet + topbar as the
-    standalone /portal/routing page. No HTMX runtime: these pages are static and
-    directly tappable."""
-    return (
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
-        "<meta charset=\"utf-8\">\n"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-        f"<title>{_esc(title)}</title>\n"
-        '<link rel="stylesheet" href="/portal/static/style.css">\n'
-        "</head>\n<body>\n"
-        '<header class="topbar"><div class="brand">grove-autonomaton '
-        '<span class="brand-sub">Fleet</span></div></header>\n'
-        '<main class="layout"><section class="center-panel">'
-        f"{breadcrumb}{body}"
-        "</section></main>\n</body>\n</html>\n"
-    )
+# never the filesystem.
 
 
 def _fleet_breadcrumb(skill: str = "", filename: str = "") -> str:
-    """``Fleet > {skill} > {filename}`` — each ancestor a link, the leaf plain."""
-    crumbs = ['<a href="/portal/fleet/">Fleet</a>']
+    """``Fleet > {skill} > {filename}`` — each ancestor an in-shell hash link
+    (the hash router dispatches it into #center-panel), the leaf plain."""
+    crumbs = ['<a href="/portal#fragments/fleet/">Fleet</a>']
     if skill:
-        crumbs.append(f'<a href="/portal/fleet/{_esc(skill)}/">{_esc(skill)}</a>')
+        crumbs.append(
+            f'<a href="/portal#fragments/fleet/{_esc(skill)}/">{_esc(skill)}</a>'
+        )
     if filename:
         crumbs.append(_esc(filename))
     return f'<p class="meta breadcrumb">{" &rsaquo; ".join(crumbs)}</p>'
@@ -1453,7 +1445,8 @@ def _fleet_json_card(raw: str) -> str:
 
 
 async def handle_fleet_overview(request: web.Request) -> web.Response:
-    """``GET /portal/fleet/`` — the fleet overview: one card per skill."""
+    """``GET /portal/fragments/fleet/`` — the fleet overview fragment: one card
+    per skill, in the WIDE content primitive (C1; the board layout lands in C2)."""
     records = _fleet_skill_records()
     cards = []
     for name in sorted(records):
@@ -1467,7 +1460,7 @@ async def handle_fleet_overview(request: web.Request) -> web.Response:
         latest = arts[0]["mtime"] if arts else "—"
         cards.append(
             f'<div class="card"><h4>'
-            f'<a href="/portal/fleet/{_esc(name)}/">{_esc(name)}</a> '
+            f'<a href="/portal#fragments/fleet/{_esc(name)}/">{_esc(name)}</a> '
             f'{_fleet_zone_badge(cap.zone.value)}</h4>'
             f'<div class="meta">{len(arts)} artifact(s) &middot; '
             f'latest {_esc(latest)}</div></div>'
@@ -1476,25 +1469,19 @@ async def handle_fleet_overview(request: web.Request) -> web.Response:
         "".join(cards) if cards
         else '<p class="placeholder">No fleet skills with artifacts yet.</p>'
     )
-    return web.Response(
-        text=_fleet_page("Fleet — grove-autonomaton", _fleet_breadcrumb(), body),
-        content_type="text/html",
-    )
+    return _html_fragment(f'<div class="content wide">{body}</div>')
 
 
-async def handle_fleet_skill_page(request: web.Request) -> web.Response:
-    """``GET /portal/fleet/{skill_name}/`` — one skill's artifact list. Unknown
-    skill -> 404 (full HTML page)."""
+async def handle_fleet_skill_fragment(request: web.Request) -> web.Response:
+    """``GET /portal/fragments/fleet/{skill_name}/`` — one producer's inbox as an
+    in-shell fragment. Unknown skill -> 404 fragment."""
     skill_name = request.match_info["skill_name"]
     cap = _fleet_skill_records().get(skill_name)
     if cap is None:
-        return web.Response(
-            text=_fleet_page(
-                "Fleet — not found", _fleet_breadcrumb(),
-                "<h2>404 — not found</h2>"
-                f'<p class="placeholder">Unknown fleet skill: {_esc(skill_name)}</p>',
-            ),
-            status=404, content_type="text/html",
+        return _html_fragment(
+            f'<div class="error-card"><h3>404 — not found</h3>'
+            f'<p class="placeholder">Unknown fleet skill: {_esc(skill_name)}</p></div>',
+            status=404,
         )
     # fleet-review-unification-v1 C3 — the producer INBOX (Mount 1): C2 four-state
     # units as .review-cards with the inline disposition component. The Promote
@@ -1513,31 +1500,27 @@ async def handle_fleet_skill_page(request: web.Request) -> web.Response:
     else:
         cards = ('<div class="card"><p class="placeholder">No artifacts yet — '
                  'this producer is idle.</p></div>')
-    return web.Response(
-        text=_fleet_page(
-            f"Fleet — {skill_name}", _fleet_breadcrumb(skill_name), header + cards,
-        ),
-        content_type="text/html",
+    return _html_fragment(
+        f'<div class="content">{_fleet_breadcrumb(skill_name)}{header}{cards}</div>'
     )
 
 
-async def handle_fleet_artifact_page(request: web.Request) -> web.Response:
-    """``GET /portal/fleet/{skill_name}/{filename}`` — the full artifact view:
-    rendered markdown for ``.md``, a structured card + collapsible raw for
-    ``.json``. Unknown skill or missing artifact -> 404 (full HTML page)."""
+async def handle_fleet_artifact_fragment(request: web.Request) -> web.Response:
+    """``GET /portal/fragments/fleet/{skill_name}/{filename}`` — the full artifact
+    view as an in-shell fragment: rendered markdown for ``.md``, a structured card
+    + collapsible raw for ``.json``. When the artifact resolves to a C2 unit, the
+    Mount-2 disposition dock rides an OOB ``#right-panel`` swap into its native
+    300px habitat (C1). Unknown skill or missing artifact -> 404 fragment."""
     skill_name = request.match_info["skill_name"]
     filename = request.match_info["filename"]
     cap = _fleet_skill_records().get(skill_name)
     read = _read_fleet_artifact(cap, filename) if cap is not None else None
     if read is None:
-        return web.Response(
-            text=_fleet_page(
-                "Fleet — not found", _fleet_breadcrumb(skill_name or ""),
-                "<h2>404 — not found</h2>"
-                f'<p class="placeholder">Artifact not found: '
-                f'{_esc(skill_name)}/{_esc(filename)}</p>',
-            ),
-            status=404, content_type="text/html",
+        return _html_fragment(
+            f'<div class="error-card"><h3>404 — not found</h3>'
+            f'<p class="placeholder">Artifact not found: '
+            f'{_esc(skill_name)}/{_esc(filename)}</p></div>',
+            status=404,
         )
     raw, suffix, state = read
     if suffix == ".md":
@@ -1550,13 +1533,22 @@ async def handle_fleet_artifact_page(request: web.Request) -> web.Response:
         f"<h2>{_esc(filename)}</h2>"
         f'<p class="meta">{_esc(skill_name)} &middot; {_fleet_state_badge(state)}</p>'
     )
-    body = header + content
-    return web.Response(
-        text=_fleet_page(
-            f"Fleet — {filename}", _fleet_breadcrumb(skill_name, filename), body,
-        ),
-        content_type="text/html",
+    body = (
+        f'<div class="content">'
+        f"{_fleet_breadcrumb(skill_name, filename)}{header}{content}</div>"
     )
+    # Mount 2 (C1) — the disposition dock lands in #right-panel via the OOB swap
+    # pattern (same mechanic as the cellar detail's context OOB). No unit → no
+    # dock: a canonical-only or unresolvable file has nothing to disposition.
+    unit = _find_fleet_unit(cap, filename=filename)
+    oob = ""
+    if unit is not None:
+        remote_sink = cap.governance["write_zone"]["canonical_dir"] == "forge"
+        oob = (
+            f'<div id="right-panel" class="right-panel" hx-swap-oob="true">'
+            f'{_disposition_dock(unit, remote_sink, skill_name)}</div>'
+        )
+    return _html_fragment(body + oob)
 
 
 def render_forge_publish_card(
@@ -1606,12 +1598,11 @@ def _forge_slug_body(
 ) -> str:
     """Inner HTML for a forge draft dir — the h2 + zone badge + subtitle, an
     OPTIONAL Publish card, and the resume.md / cover-letter.md rendered-markdown
-    articles. Shared by the standalone page (``handle_forge_slug_dir``,
-    ``include_publish=True``) and the in-shell fragment (``handle_forge_slug_fragment``,
-    ``include_publish=False``). ``pid`` is threaded for a future disposition
-    affordance (forge-review-surface-v1 P2/P3) but is NOT consumed here. With
-    ``include_publish=True`` the returned string is byte-identical to the
-    pre-refactor body."""
+    articles. Sole consumer is ``handle_forge_slug_fragment`` (C1 retired the
+    standalone slug-dir page), which passes ``include_publish = pid is None`` —
+    the Publish card renders for bare visits (the retired page's affordance),
+    and is omitted when a ``?pid`` drives disposition. ``pid`` itself is NOT
+    consumed here."""
     meta = read["meta"]
     if meta and all(meta.get(k) for k in ("row_id", "company", "role")):
         publish = render_forge_publish_card(slug)
@@ -1637,30 +1628,42 @@ def _forge_slug_body(
     )
 
 
-async def handle_forge_slug_dir(request: web.Request) -> web.Response:
-    """``GET /portal/fleet/forge-jobsearch/{slug}/`` — render a forge draft dir:
-    both markdown assets on one page plus a Publish affordance. The forge stages
-    a slug DIRECTORY (two ``.md`` files + a ``meta.json`` sidecar), which the
-    single-file fleet-artifact viewer cannot address. Missing dir/drafts -> 404."""
-    slug = request.match_info["slug"]
-    read = _read_forge_slug(slug)
-    if read is None:
-        return web.Response(
-            text=_fleet_page(
-                "Fleet — not found", _fleet_breadcrumb("forge-jobsearch"),
-                "<h2>404 — not found</h2>"
-                f'<p class="placeholder">No forge draft dir: {_esc(slug)}</p>',
-            ),
-            status=404, content_type="text/html",
-        )
-    body = _forge_slug_body(slug, read, include_publish=True)
-    return web.Response(
-        text=_fleet_page(
-            f"Fleet — forge-jobsearch/{slug}",
-            _fleet_breadcrumb("forge-jobsearch"), body,
-        ),
-        content_type="text/html",
-    )
+# ---------------------------------------------------------------------------
+# Legacy standalone-path redirects (fleet-ui-reconciliation-v1 C1).
+#
+# The ``/portal/fleet/...`` standalone pages are RETIRED; fleet renders in-shell.
+# These 302s keep every previously-sent deep link (Telegram push notes, skill
+# handoff messages) landing on the same content — now inside the shell via the
+# hash router. The fragment tail mirrors the legacy tail 1:1, except the forge
+# slug dir, whose in-shell home is the existing forge fragment.
+# ---------------------------------------------------------------------------
+
+
+async def handle_fleet_overview_redirect(request: web.Request) -> web.Response:
+    """302 ``/portal/fleet/`` → ``/portal#fragments/fleet/``."""
+    raise web.HTTPFound("/portal#fragments/fleet/")
+
+
+async def handle_fleet_skill_redirect(request: web.Request) -> web.Response:
+    """302 ``/portal/fleet/{skill}/`` → ``/portal#fragments/fleet/{skill}/``."""
+    skill = quote(request.match_info["skill_name"], safe="")
+    raise web.HTTPFound(f"/portal#fragments/fleet/{skill}/")
+
+
+async def handle_fleet_artifact_redirect(request: web.Request) -> web.Response:
+    """302 ``/portal/fleet/{skill}/{filename}`` →
+    ``/portal#fragments/fleet/{skill}/{filename}``."""
+    skill = quote(request.match_info["skill_name"], safe="")
+    filename = quote(request.match_info["filename"], safe="")
+    raise web.HTTPFound(f"/portal#fragments/fleet/{skill}/{filename}")
+
+
+async def handle_forge_slug_redirect(request: web.Request) -> web.Response:
+    """302 ``/portal/fleet/forge-jobsearch/{slug}/`` →
+    ``/portal#fragments/forge/{slug}/`` (the existing in-shell forge fragment —
+    the slug-DIR viewer's body builder is shared, so content parity holds)."""
+    slug = quote(request.match_info["slug"], safe="")
+    raise web.HTTPFound(f"/portal#fragments/forge/{slug}/")
 
 
 # ---------------------------------------------------------------------------
@@ -1874,16 +1877,18 @@ def _disposition_dock(unit: dict, remote_sink: bool, producer: str) -> str:
 
 
 async def handle_forge_slug_fragment(request: web.Request) -> web.Response:
-    """``GET /portal/fragments/forge/{slug}/`` — the forge draft body (no
-    ``_fleet_page`` chrome) for an in-shell load into ``#center-panel``, followed by
-    an inline Kaizen disposition div. Same slug load path as ``handle_forge_slug_dir``
-    (``_read_forge_slug``); the Publish card is omitted (``include_publish=False``).
+    """``GET /portal/fragments/forge/{slug}/`` — the forge draft as an in-shell
+    fragment for ``#center-panel``. Since fleet-ui-reconciliation-v1 C1 this is
+    ALSO the destination of the retired standalone slug-dir page (via 302), so it
+    carries that page's Publish card whenever no ``?pid`` drives disposition
+    (``include_publish = pid is None`` — the pid-driven proposals path is
+    unchanged, Publish omitted as before).
 
-    ``?pid=`` drives disposition (P2/M3): present → the Kaizen div (promote / reject
-    + a disabled suggest-revision slot) is appended, keyed on that pid. FAIL LOUD:
-    absent pid → the draft still renders (reading is fine) but a VISIBLE
-    "disposition unavailable — no pid" notice replaces the buttons, never a silent
-    omission. Missing / unreadable slug dir -> 404 with an explicit error body."""
+    ``?pid=`` drives disposition (P2/M3). The Mount-2 disposition dock rides an
+    OOB ``#right-panel`` swap (C1 — its native 300px habitat) when a C2 unit or a
+    pid resolves. FAIL LOUD: neither → the draft still renders (reading is fine)
+    but a VISIBLE "disposition unavailable — no pid" notice stays inline in the
+    body, never a silent omission. Missing / unreadable slug dir -> 404."""
     slug = request.match_info["slug"]
     read = _read_forge_slug(slug)
     if read is None:
@@ -1893,25 +1898,28 @@ async def handle_forge_slug_fragment(request: web.Request) -> web.Response:
             status=404,
         )
     pid = request.query.get("pid")
-    body = _forge_slug_body(slug, read, pid=pid, include_publish=False)
+    body = _forge_slug_body(slug, read, pid=pid, include_publish=(pid is None))
     # fleet-review-unification-v1 C3 — Mount 2: forge adopts the sticky disposition
     # DOCK (state rail + dock-meta + the same bar), driven by the C2 unit. The route
     # URL is unchanged. pid gate + fail loud preserved.
     cap = _fleet_skill_records().get("forge-jobsearch")
     unit = _find_fleet_unit(cap, proposal_id=pid, filename=slug) if cap else None
     if unit is not None:
-        disposition = _disposition_dock(unit, remote_sink=True, producer="forge-jobsearch")
+        dock = _disposition_dock(unit, remote_sink=True, producer="forge-jobsearch")
     elif pid:
         # C2 unit not resolvable (e.g. proposal already gone) but a pid is present —
         # render the bare bar in a dock shell so disposition still works.
-        disposition = (f'<div class="disposition-dock rail-needs_review">'
-                       f'{_disposition_bar(pid, remote_sink=True)}</div>')
+        dock = (f'<div class="disposition-dock rail-needs_review">'
+                f'{_disposition_bar(pid, remote_sink=True)}</div>')
     else:
-        disposition = (
-            '<div class="meta error" id="forge-kaizen-none">'
-            'disposition unavailable — no pid</div>'
-        )
-    return _html_fragment(body + disposition)
+        dock = None
+    if dock is not None:
+        oob = (f'<div id="right-panel" class="right-panel" hx-swap-oob="true">'
+               f'{dock}</div>')
+        return _html_fragment(f'<div class="content">{body}</div>{oob}')
+    notice = ('<div class="meta error" id="forge-kaizen-none">'
+              'disposition unavailable — no pid</div>')
+    return _html_fragment(f'<div class="content">{body}{notice}</div>')
 
 
 def _find_fleet_unit(cap: Any, *, proposal_id: str | None = None,
@@ -1987,9 +1995,9 @@ def register_fragment_routes(app: web.Application) -> None:
     app.router.add_get("/portal/fragments/dock/goals", handle_dock_goals)
     app.router.add_get("/portal/fragments/proposals/pending", handle_proposals_pending)
     # forge-review-surface-v1 P1 — the forge draft body as an in-shell fragment
-    # (body-only, no _fleet_page chrome) for load into #center-panel. The standalone
-    # /portal/fleet/forge-jobsearch/{slug}/ page is unchanged; this shares its load
-    # path (_read_forge_slug) and body builder (_forge_slug_body).
+    # for load into #center-panel. Since C1 it is ALSO the 302 target of the
+    # retired standalone /portal/fleet/forge-jobsearch/{slug}/ page (shared load
+    # path _read_forge_slug, shared body builder _forge_slug_body).
     app.router.add_get("/portal/fragments/forge/{slug}/", handle_forge_slug_fragment)
     # fleet-review-unification-v1 C3 — Mount 2 for file producers: the generic unit
     # detail fragment (staged content + disposition dock). Forge keeps its own route
@@ -2011,11 +2019,26 @@ def register_fragment_routes(app: web.Application) -> None:
     app.router.add_get("/portal/fragments/routing/panel", handle_routing_panel)
     # portal-models-nav-v1 — model detail for the right-panel (?model_slug=...)
     app.router.add_get("/portal/fragments/routing/model", handle_model_context)
-    # fleet-artifact-viewer-v1 — standalone full-HTML fleet pages (directly
-    # tappable from a Telegram deep link; not hash-routed SPA fragments).
-    app.router.add_get("/portal/fleet/", handle_fleet_overview)
-    # forge-jobsearch-v1 — slug-DIR viewer (two .md + meta.json). Registered
-    # before the generic single-file routes so the literal path wins.
-    app.router.add_get("/portal/fleet/forge-jobsearch/{slug}/", handle_forge_slug_dir)
-    app.router.add_get("/portal/fleet/{skill_name}/", handle_fleet_skill_page)
-    app.router.add_get("/portal/fleet/{skill_name}/{filename}", handle_fleet_artifact_page)
+    # fleet-ui-reconciliation-v1 C1 — fleet renders IN-SHELL: hash-routed
+    # fragments (the two-segment unit fragment is registered above). The
+    # overview registers at the bare dir path; the skill/artifact patterns
+    # cannot collide with it (aiohttp {var} segments are non-empty).
+    app.router.add_get("/portal/fragments/fleet/", handle_fleet_overview)
+    app.router.add_get(
+        "/portal/fragments/fleet/{skill_name}/", handle_fleet_skill_fragment
+    )
+    app.router.add_get(
+        "/portal/fragments/fleet/{skill_name}/{filename}",
+        handle_fleet_artifact_fragment,
+    )
+    # Legacy standalone paths 302 → hash URLs (previously-sent deep links).
+    # The forge slug-dir redirect is registered before the generic single-file
+    # patterns so the literal path wins (same ordering the pages used).
+    app.router.add_get("/portal/fleet/", handle_fleet_overview_redirect)
+    app.router.add_get(
+        "/portal/fleet/forge-jobsearch/{slug}/", handle_forge_slug_redirect
+    )
+    app.router.add_get("/portal/fleet/{skill_name}/", handle_fleet_skill_redirect)
+    app.router.add_get(
+        "/portal/fleet/{skill_name}/{filename}", handle_fleet_artifact_redirect
+    )
