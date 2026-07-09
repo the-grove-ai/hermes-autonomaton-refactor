@@ -1021,50 +1021,82 @@ def _list_fleet_units(cap: Any) -> list:
     return rows
 
 
-def _list_fleet_artifacts(cap: Any) -> list:
-    """List a fleet skill's artifacts, newest-first, each tagged with its
-    governance_state.
+def _fleet_worker_registry() -> Dict[str, tuple]:
+    """``{capability skill_id -> (worker_id, WorkerConfig)}`` from the operational
+    registry (config/fleet_workers.yaml). A missing/malformed registry is logged
+    LOUD and yields ``{}`` — the read-side index stays up with ``worker: null``
+    rows (the same commanded-skip parity as a malformed capability record)."""
+    from grove.fleet.config import load_fleet_workers
+    from grove.fleet.errors import FleetWorkerAndon
 
-    A Yellow-zone skill's staging dir (``<skill>/pending_review``) is distinct
-    from its canonical dir (``<skill>``): staging files are ``pending_review``,
-    canonical files are ``canonical``. The canonical glob is NON-recursive, so it
-    never descends into the ``pending_review`` subdir (no double count). A
-    Green-zone skill has staging == canonical, so there is no pending tier.
-    """
-    _zone, staging, canonical, pattern = _fleet_zone_dirs(cap)
-    found: list = []  # (mtime_float, Path, state)
-    has_pending = staging.resolve() != canonical.resolve()
-    if has_pending and staging.is_dir():
-        for p in staging.glob(pattern):
-            if p.is_file():
-                found.append((p.stat().st_mtime, p, "pending_review"))
-    if canonical.is_dir():
-        for p in canonical.glob(pattern):  # non-recursive: skips pending_review/
-            if p.is_file():
-                found.append((p.stat().st_mtime, p, "canonical"))
-    found.sort(key=lambda t: t[0], reverse=True)
-    return [
-        {
-            "filename": p.name,
-            "size": p.stat().st_size,
-            "mtime": _fleet_mtime_iso(mt),
-            "governance_state": state,
-        }
-        for mt, p, state in found
-    ]
+    try:
+        workers = load_fleet_workers()
+    except FleetWorkerAndon as exc:
+        logger.warning("[portal] fleet worker registry unreadable: %s", exc)
+        return {}
+    return {cfg.skill: (wid, cfg) for wid, cfg in workers.items()}
 
 
-async def handle_fleet_index(request: web.Request) -> web.Response:
-    """``GET /api/substrate/fleet/`` — one row per fleet skill with the C2 four-state
-    disposition aggregation (needs_review count per producer + a full state-count
-    breakdown, latest mtime)."""
+def _worker_last_run(worker_id: str) -> Optional[dict]:
+    """``{ts, status}`` from the worker's newest terminal-state event, or None.
+
+    The event bus at ``$GROVE_HOME/fleet/<id>/events/`` is the persisted run
+    record (every run writes one before exit). File mtime selects the newest
+    event FILE; the reported ``ts`` comes from the event body — never fabricated
+    from artifact mtimes. An unreadable newest event is logged and yields None."""
+    from grove.fleet.paths import events_dir
+
+    d = events_dir(worker_id)
+    if not d.is_dir():
+        return None
+    files = [p for p in d.glob("*.json") if p.is_file()]
+    if not files:
+        return None
+    newest = max(files, key=lambda p: p.stat().st_mtime)
+    try:
+        ev = json.loads(newest.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(
+            "[portal] unreadable terminal event %s/%s: %r",
+            worker_id, newest.name, exc,
+        )
+        return None
+    if not isinstance(ev, dict):
+        return None
+    return {"ts": ev.get("ts"), "status": ev.get("status")}
+
+
+def _ingest_ledger() -> Dict[str, float]:
+    """The wiki watcher's idempotency ledger (source path -> source mtime at
+    ingest), or ``{}`` when absent/unreadable (logged)."""
+    path = get_wiki_path() / ".index" / "ingest_state.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("[portal] wiki ingest ledger unreadable: %r", exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _fleet_index_rows() -> list:
+    """The fleet index rows — ONE pass over the capability records joining the
+    C2 unit disposition, the operational worker registry, the terminal-event
+    bus, and the wiki ingest ledger (fleet-ui-reconciliation-v1 C2). DATA ONLY
+    (F6): no HTML, no layout hints — the JSON API, the outline nav, and the
+    status board all inherit this row."""
     from collections import Counter
 
     records = _fleet_skill_records()
-    skills = []
+    registry = _fleet_worker_registry()
+    ledger = _ingest_ledger()
+    rows = []
     for name in sorted(records):
+        cap = records[name]
         try:
-            units = _list_fleet_units(records[name])
+            units = _list_fleet_units(cap)
+            _zone, _staging, canonical, _pattern = _fleet_zone_dirs(cap)
         except KeyError as exc:
             # Parity with the cellar listing's commanded skip: one malformed
             # record must not blank the whole index. Logged loud, not swallowed.
@@ -1074,14 +1106,46 @@ async def handle_fleet_index(request: web.Request) -> web.Response:
             )
             continue
         counts = Counter(u["governance_state"] for u in units)
-        skills.append({
+        mode = ((cap.governance.get("approval_handoff") or {}).get("mode"))
+        worker = None
+        last_run = None
+        reg = registry.get(cap.id)
+        if reg is not None:
+            wid, cfg = reg
+            worker = {
+                "id": wid,
+                "enabled": cfg.enabled,
+                "cadence": cfg.cadence,
+                "quiet_hours": cfg.quiet_hours,
+            }
+            last_run = _worker_last_run(wid)
+        # Observer freshness — max ledger mtime + entry count under the skill's
+        # canonical dir. The ledger value is the SOURCE file's mtime recorded at
+        # ingest ("newest source successfully ingested"), not ingest wall-clock.
+        prefix = str(canonical) + "/"
+        ingested = [v for k, v in ledger.items()
+                    if k.startswith(prefix) and isinstance(v, (int, float))]
+        rows.append({
             "name": name,
-            "zone": records[name].zone.value,
+            "zone": cap.zone.value,
+            "mode": mode,
+            "worker": worker,
+            "last_run": last_run,
+            "last_ingest": _fleet_mtime_iso(max(ingested)) if ingested else None,
+            "ingested_count": len(ingested),
             "artifact_count": len(units),
             "latest_mtime": units[0]["mtime"] if units else None,
             "needs_review_count": counts.get("needs_review", 0),
             "state_counts": dict(counts),
         })
+    return rows
+
+
+async def handle_fleet_index(request: web.Request) -> web.Response:
+    """``GET /api/substrate/fleet/`` — one row per fleet skill: the C2 four-state
+    disposition aggregation plus the C2-passthrough operational fields (mode /
+    worker schedule / last_run / ingest freshness)."""
+    skills = _fleet_index_rows()
     return _envelope({"skills": skills}, count=len(skills))
 
 

@@ -55,7 +55,15 @@
             <ul class="nav-list">
                 <li><a href="/portal#fragments/dashboard/overview">Dashboard</a></li>
                 <li><a href="/portal#fragments/cellar/pages">Knowledge</a></li>
-                <li><a href="/portal#fragments/fleet/">Fleet</a></li>
+                <!-- fleet-ui-reconciliation-v1 C2 — data-driven Fleet outline.
+                     Loads on shell boot; a disposition response's
+                     HX-Trigger: fleet-disposition header re-fires it so the
+                     badges track the queue. The static link is the fallback
+                     until the fragment lands. -->
+                <li class="nav-fleet" hx-get="/portal/fragments/nav/fleet"
+                    hx-trigger="load, fleet-disposition from:body"
+                    hx-swap="innerHTML">
+                    <a href="/portal#fragments/fleet/">Fleet</a></li>
                 <li><a href="/portal#fragments/memory/records">Memory</a></li>
                 <li><a href="/portal#fragments/dock/goals">Goals</a></li>
                 <li><a href="/portal#fragments/proposals/pending">Proposals</a></li>
