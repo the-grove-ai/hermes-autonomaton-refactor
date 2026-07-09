@@ -206,7 +206,7 @@ context:
     - Total listings scanned, scored, written to Notion
     - Top 5 opportunities with Tier, Fit Score, Company, Role, and Rationale inline
     - Any saved jobs that were new (high-signal — operator already flagged them)
-    - Portal link: `http://100.102.6.70:8642/portal/fleet/scout-jobsearch/scan-YYYY-MM-DD.json`
+    - Portal link: `http://100.102.6.70:8642/portal#fragments/fleet/scout-jobsearch/scan-YYYY-MM-DD.json`
     - Any flags (partial extractions, unreadable search pages)
 
     Do NOT paste the full JSON. The operator reads the full output on the portal.

@@ -123,9 +123,10 @@ async def test_cellar_listing_fragment_has_list_items(client):
     assert "<ul" in body and "<li" in body
     # Grouped by source_type subdirectory with <h3> headers.
     assert "<h3" in body and ">dock_goal<" in body
-    # Detail link with subdir-qualified page_id + history push.
-    assert "/portal/fragments/cellar/pages/dock_goal/sov-abc123" in body
-    assert 'hx-push-url="true"' in body
+    # Detail link with subdir-qualified page_id — a hash anchor the shell's
+    # router dispatches (fleet-ui-reconciliation-v1 C1: single history actor).
+    assert "/portal#fragments/cellar/pages/dock_goal/sov-abc123" in body
+    assert "hx-push-url" not in body
 
 
 async def test_cellar_listing_source_type_filter(client):
@@ -269,8 +270,8 @@ async def test_context_cellar_returns_related_items(client):
     assert 'id="right-panel"' in body
     assert "Related Goals" in body
     assert "Related Pages" in body
-    # The topic-sharing page B is surfaced as a related link.
-    assert "/portal/fragments/cellar/pages/scout_digest/gov-def456" in body
+    # The topic-sharing page B is surfaced as a related link (hash anchor, C1).
+    assert "/portal#fragments/cellar/pages/scout_digest/gov-def456" in body
 
 
 async def test_context_unknown_entity(client):

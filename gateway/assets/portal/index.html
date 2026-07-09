@@ -44,28 +44,24 @@
     <div id="alert-banner" class="alert-banner" role="alert" aria-live="assertive" hidden></div>
 
     <div class="layout">
+        <!-- fleet-ui-reconciliation-v1 C1 — ONE navigation mechanism, portal-wide:
+             every nav item is a hash anchor. Clicking sets location.hash; the
+             hash router below dispatches the fragment into #center-panel. The
+             hash URL is what lands in history, so reload and back/forward always
+             re-enter the shell, and exactly one dispatcher (the router) fires
+             per navigation (F1). htmx history (hx-push-url) is NOT used anywhere
+             in the portal — a second history actor cannot guarantee that. -->
         <nav class="left-panel" aria-label="Categories">
             <ul class="nav-list">
-                <li><a href="#" hx-get="/portal/fragments/dashboard/overview"
-                       hx-target="#center-panel" hx-push-url="true">Dashboard</a></li>
-                <li><a href="#" hx-get="/portal/fragments/cellar/pages"
-                       hx-target="#center-panel" hx-push-url="true">Knowledge</a></li>
-                <!-- Fleet artifacts are standalone full-HTML pages (directly
-                     tappable from a Telegram deep link), so this is a plain
-                     full-navigation link, not an in-shell hx-get fragment swap. -->
-                <li><a href="/portal/fleet/">Fleet</a></li>
-                <li><a href="#" hx-get="/portal/fragments/memory/records"
-                       hx-target="#center-panel" hx-push-url="true">Memory</a></li>
-                <li><a href="#" hx-get="/portal/fragments/dock/goals"
-                       hx-target="#center-panel" hx-push-url="true">Goals</a></li>
-                <li><a href="#" hx-get="/portal/fragments/proposals/pending"
-                       hx-target="#center-panel" hx-push-url="true">Proposals</a></li>
-                <li><a href="#" hx-get="/portal/fragments/skills/"
-                       hx-target="#center-panel" hx-push-url="true">Skills</a></li>
-                <li><a href="#" hx-get="/portal/fragments/composition/panel"
-                       hx-target="#center-panel" hx-push-url="true">Composition</a></li>
-                <li><a href="#" hx-get="/portal/fragments/routing/panel"
-                       hx-target="#center-panel" hx-push-url="true">Models</a></li>
+                <li><a href="/portal#fragments/dashboard/overview">Dashboard</a></li>
+                <li><a href="/portal#fragments/cellar/pages">Knowledge</a></li>
+                <li><a href="/portal#fragments/fleet/">Fleet</a></li>
+                <li><a href="/portal#fragments/memory/records">Memory</a></li>
+                <li><a href="/portal#fragments/dock/goals">Goals</a></li>
+                <li><a href="/portal#fragments/proposals/pending">Proposals</a></li>
+                <li><a href="/portal#fragments/skills/">Skills</a></li>
+                <li><a href="/portal#fragments/composition/panel">Composition</a></li>
+                <li><a href="/portal#fragments/routing/panel">Models</a></li>
             </ul>
         </nav>
 
@@ -161,6 +157,13 @@
     // alone never fired again, so the fragment silently failed to load. The
     // hashchange binding closes that gap. Dispatch is identical to the original
     // cold-load path — same htmx.ajax GET, same target — no new routing logic.
+    //
+    // fleet-ui-reconciliation-v1 C1 (F1) — this router is the SINGLE history
+    // dispatcher. All portal navigation (sidebar + in-fragment links) is hash
+    // anchors; hx-push-url is gone portal-wide, so htmx never writes history
+    // and never restores on popstate. Back/forward therefore fires exactly one
+    // hashchange → one fetch per navigation. Bare /portal (no hash) dispatches
+    // nothing and shows the shell's default center-panel content (F2).
     var _lastRoutedHash = null;
     function handleHashRoute() {
       var hash = window.location.hash.substring(1);
@@ -174,12 +177,19 @@
     }
     document.addEventListener('DOMContentLoaded', handleHashRoute);
     window.addEventListener('hashchange', handleHashRoute);
-    // A path-routed nav click pushes a hash-less URL via pushState (no
-    // hashchange event), so the guard would otherwise keep the stale value and
-    // suppress a later A→B→A re-activation of the same deep link. Reset on each
-    // history push so re-clicking a previously-viewed link always re-dispatches.
-    document.body.addEventListener('htmx:pushedIntoHistory', function() {
-      _lastRoutedHash = null;
+    // Re-clicking the CURRENT hash fires no hashchange event (the URL does not
+    // change), and the guard would suppress a manual re-dispatch — so a
+    // delegated click listener treats a same-hash nav as an explicit refresh.
+    // (Replaces the htmx:pushedIntoHistory guard-reset, which is obsolete now
+    // that nothing pushes hash-less URLs.)
+    document.body.addEventListener('click', function(evt) {
+      var a = evt.target.closest && evt.target.closest('a[href*="#fragments/"]');
+      if (!a) { return; }
+      var target = (a.getAttribute('href').split('#')[1] || '');
+      if (target && target === window.location.hash.substring(1)) {
+        _lastRoutedHash = null;
+        handleHashRoute();
+      }
     });
     </script>
 </body>

@@ -153,7 +153,7 @@ Present the top 5 opportunities with their best draft inline. For the remainder,
 
 After writing the artifact to your sink directory, respond to the operator with:
 1. A two-sentence summary of what was produced (key findings, scope, date range)
-2. A portal link: http://100.102.6.70:8642/portal/fleet/{skill_name}/{filename}
+2. A portal link: http://100.102.6.70:8642/portal#fragments/fleet/{skill_name}/{filename}
    (substitute the actual skill name and filename you wrote)
 
 Do NOT paste the full artifact content into the response. The operator

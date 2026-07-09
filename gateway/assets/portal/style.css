@@ -17,6 +17,10 @@
     --error:       #cf4b4b;
     --radius:      6px;
     --gap:         1rem;
+    /* fleet-ui-reconciliation-v1 C1 — the two layout primitives (the only
+       token additions this arc): reading width for center views, nav width. */
+    --content-max: 860px;
+    --nav-w:       250px;
 }
 
 * { box-sizing: border-box; }
@@ -66,7 +70,7 @@ a:hover { text-decoration: underline; }
 /* ---- Three-panel grid ------------------------------------------------ */
 .layout {
     display: grid;
-    grid-template-columns: 250px 1fr 300px;
+    grid-template-columns: var(--nav-w) 1fr 300px;
     gap: 0;
     min-height: calc(100vh - 53px);
 }
@@ -85,6 +89,12 @@ a:hover { text-decoration: underline; }
     padding: 1rem;
     color: var(--text-dim);
 }
+
+/* Content-width discipline (fleet-ui-reconciliation-v1 C1) — center views
+   wrap their body in .content for reading width; .wide opts out (the fleet
+   status board and other full-width grids). */
+.content { max-width: var(--content-max); margin: 0 auto; }
+.content.wide { max-width: none; }
 
 /* ---- Left nav -------------------------------------------------------- */
 .nav-list { list-style: none; margin: 0; padding: 0; }
@@ -496,14 +506,23 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .preview-toggle { background: none; border: none; color: var(--accent);
     font-size: 0.76rem; font-weight: 600; padding: 0.2rem 0 0; cursor: pointer; }
 
-/* Disposition bar — inset panel, stacked full-width verbs (mock: promote green,
-   revise accent, reject red). */
+/* Disposition bar — inset panel; a HORIZONTAL verb row at content width
+   (fleet-ui-reconciliation-v1 C1, mock Screen B), stacking to a column below
+   560px. The feedback block and the per-unit result div are full-width rows
+   (flex-basis 100%). Negative margins preserve the card-bleed fit against
+   .card padding (0.85rem 1rem). */
 .disposition-bar { margin: 0.85rem -1rem -0.85rem; padding: 0.8rem 1rem;
     background: var(--bg-panel); border-top: 1px solid var(--border);
-    display: flex; flex-direction: column; gap: 0.5rem;
+    display: flex; flex-direction: row; flex-wrap: wrap; gap: 0.5rem;
     border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); }
 .disposition-bar.htmx-request { opacity: 0.5; pointer-events: none; }
-.disposition-bar .btn { width: 100%; text-align: center; padding: 0.55rem 0.8rem; }
+.disposition-bar > .btn { flex: 1; white-space: nowrap; text-align: center;
+    padding: 0.55rem 0.8rem; }
+.disposition-bar > div { flex: 1 1 100%; }
+@media (max-width: 560px) {
+    .disposition-bar { flex-direction: column; }
+    .disposition-bar > .btn { white-space: normal; }
+}
 .btn-revise { border-color: var(--accent-dim); color: var(--accent); }
 .btn-revise:hover { background: var(--accent-dim); color: var(--text); }
 
@@ -543,7 +562,11 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .disposition-dock.rail-rejected           { border-top-color: var(--zone-red); }
 .dock-meta { color: var(--text-dim); font-size: 0.82rem; margin-bottom: 0.5rem; }
 .dock-meta .unit { color: var(--text); font-weight: 600; }
-.disposition-dock .disposition-bar { margin: 0.6rem 0 0; border-radius: var(--radius); }
+/* Inside the 300px dock the verbs stay STACKED (mock Screen C) — a horizontal
+   row cannot hold the Promote consequence copy at sidebar width. */
+.disposition-dock .disposition-bar { margin: 0.6rem 0 0; border-radius: var(--radius);
+    flex-direction: column; }
+.disposition-dock .disposition-bar > .btn { white-space: normal; }
 @media (max-width: 900px) {
     .disposition-dock { position: sticky; top: auto; bottom: 0; }
 }

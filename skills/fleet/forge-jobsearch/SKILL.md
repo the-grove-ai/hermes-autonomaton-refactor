@@ -94,7 +94,7 @@ These drafts are unapproved output. They stay in pending_review/ and never reach
 
 **INTERACTIVE:** Respond with:
 1. A two-sentence summary: the role, the positioning thesis in one line, and that resume + cover letter are staged for review.
-2. The portal link: http://100.102.6.70:8642/portal/fleet/forge-jobsearch/<slug>/
+2. The portal link: http://100.102.6.70:8642/portal#fragments/forge/<slug>/
 3. "Review the drafts and tap Publish to finalize them as a Google Doc package (it writes the folder link to the row and flips Status to Drafted), or send edits."
 Do NOT paste the full assets into the response. Do NOT publish. Do NOT touch the Notion row.
 

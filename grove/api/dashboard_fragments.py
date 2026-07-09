@@ -261,12 +261,15 @@ async def handle_dashboard_overview(request: web.Request) -> web.Response:
     active7 = "active" if days != 30 else ""
     active30 = "active" if days == 30 else ""
 
+    # fleet-ui-reconciliation-v1 C1 — hash anchors, not hx-get+push: the shell's
+    # hash router is the single dispatcher/history actor (F1). The ?days rides
+    # the hash and becomes a real query string at dispatch.
     toggle = (
         '<div class="time-toggle" role="group" aria-label="Time window">'
-        f'<a class="{active7}" hx-get="{_DASH}/overview?days=7" '
-        f'hx-target="#center-panel" hx-push-url="true">7 days</a>'
-        f'<a class="{active30}" hx-get="{_DASH}/overview?days=30" '
-        f'hx-target="#center-panel" hx-push-url="true">30 days</a>'
+        f'<a class="{active7}" '
+        f'href="/portal#fragments/dashboard/overview?days=7">7 days</a>'
+        f'<a class="{active30}" '
+        f'href="/portal#fragments/dashboard/overview?days=30">30 days</a>'
         "</div>"
     )
 
