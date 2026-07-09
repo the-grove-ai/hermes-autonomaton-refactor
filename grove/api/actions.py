@@ -1408,20 +1408,23 @@ def _sweep_orphan_staged() -> list:
     return swept
 
 
-def _with_fleet_nav_refresh(handler):
-    """fleet-ui-reconciliation-v1 C2 — count freshness for the Fleet outline
-    nav. A SUCCESSFUL (2xx/3xx) disposition response gains an
-    ``HX-Trigger: fleet-disposition`` header; the shell's nav container listens
-    (``hx-trigger="fleet-disposition from:body"``) and re-fetches its counts.
-    Response-header only: handler side effects and the emitter set are
-    untouched — presentation, NOT a write-path change."""
+def _with_nav_refresh(handler):
+    """fleet-ui-reconciliation-v1 C2/C3 — count freshness for the sidebar nav.
+    A SUCCESSFUL (2xx/3xx) disposition response gains an
+    ``HX-Trigger: fleet-disposition, proposal-disposition`` header (htmx splits
+    the non-JSON header on commas and fires each event); the Fleet outline and
+    the Proposals badge containers each listen for their event and re-fetch
+    their counts. Response-header only: handler side effects and the emitter
+    set are untouched — presentation, NOT a write-path change. Firing both
+    events on every disposition costs at most one redundant tiny nav fetch and
+    is always-correct by construction."""
     import functools
 
     @functools.wraps(handler)
     async def wrapped(request: web.Request) -> web.Response:
         resp = await handler(request)
         if getattr(resp, "status", 500) < 400:
-            resp.headers["HX-Trigger"] = "fleet-disposition"
+            resp.headers["HX-Trigger"] = "fleet-disposition, proposal-disposition"
         return resp
 
     return wrapped
@@ -1431,22 +1434,26 @@ def register_action_routes(app: web.Application) -> None:
     """Register the portal's write endpoints. Wired at gateway connect() time,
     after the read-only portal/fragment/dashboard routes. portal_auth_middleware
     already gates every /portal/* path."""
+    # C3 — approve resolves a routing/memory proposal → Proposals badge changes.
     app.router.add_post(
-        "/portal/actions/proposals/{proposal_id}/approve", handle_proposal_approve
+        "/portal/actions/proposals/{proposal_id}/approve",
+        _with_nav_refresh(handle_proposal_approve),
     )
     # reject/dismiss can retire a fleet_artifact proposal → nav counts change.
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/reject",
-        _with_fleet_nav_refresh(handle_proposal_reject),
+        _with_nav_refresh(handle_proposal_reject),
     )
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/dismiss",
-        _with_fleet_nav_refresh(handle_proposal_dismiss),
+        _with_nav_refresh(handle_proposal_dismiss),
     )
     # propose-approve-deadlock-v1 Phase 1b-ii — the RED .env two-step confirm
     # (mint-capable). /approve (above) issues the confirm nonce; this applies it.
+    # C3 — the RED two-step confirm applies the write and resolves the proposal.
     app.router.add_post(
-        "/portal/actions/proposals/{proposal_id}/confirm", handle_red_proposal_confirm
+        "/portal/actions/proposals/{proposal_id}/confirm",
+        _with_nav_refresh(handle_red_proposal_confirm),
     )
     app.router.add_patch(
         "/portal/actions/dock/goals/{goal_id}", handle_dock_goal_update
@@ -1460,11 +1467,11 @@ def register_action_routes(app: web.Application) -> None:
     # publish -> finalize) for a forge_artifact_pending proposal.
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/promote",
-        _with_fleet_nav_refresh(handle_forge_promote),
+        _with_nav_refresh(handle_forge_promote),
     )
     # suggest-revision-verb-v1 P2 — bespoke informed-path loop-back tap
     # (store.write -> finalize -> marker -> archive; finalize-success-gated).
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/suggest_revision",
-        _with_fleet_nav_refresh(handle_forge_suggest_revision),
+        _with_nav_refresh(handle_forge_suggest_revision),
     )

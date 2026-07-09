@@ -335,11 +335,12 @@ async def test_legacy_forge_slug_redirects(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_fleet_nav_refresh_header_on_success_only():
-    """The disposition wrapper adds HX-Trigger: fleet-disposition to 2xx
-    responses ONLY — a failed disposition changes no counts. Response-header
-    only (not a write-path change)."""
-    from grove.api.actions import _with_fleet_nav_refresh
+async def test_nav_refresh_header_on_success_only():
+    """The disposition wrapper adds both nav-refresh events (C3: the Fleet
+    outline AND the Proposals badge listen) to 2xx responses ONLY — a failed
+    disposition changes no counts. Response-header only (not a write-path
+    change)."""
+    from grove.api.actions import _with_nav_refresh
 
     async def ok(_request):
         return web.Response(text="ok", status=200)
@@ -347,9 +348,9 @@ async def test_fleet_nav_refresh_header_on_success_only():
     async def fail(_request):
         return web.Response(text="no", status=409)
 
-    resp = await _with_fleet_nav_refresh(ok)(None)
-    assert resp.headers["HX-Trigger"] == "fleet-disposition"
-    resp = await _with_fleet_nav_refresh(fail)(None)
+    resp = await _with_nav_refresh(ok)(None)
+    assert resp.headers["HX-Trigger"] == "fleet-disposition, proposal-disposition"
+    resp = await _with_nav_refresh(fail)(None)
     assert "HX-Trigger" not in resp.headers
 
 

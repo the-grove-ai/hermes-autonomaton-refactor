@@ -33,6 +33,7 @@ from aiohttp import web
 # (listing) vs surface (detail), exactly as P1 does. _serialize_capability /
 # _check_memory_stale are the same readers the JSON endpoints use.
 from grove.api.portal import (
+    _ARTIFACT_PROPOSAL_TYPES,
     _as_str_list,
     _check_cellar_stale,
     _check_memory_stale,
@@ -50,7 +51,7 @@ from grove.api.portal import (
 from grove.capability import CapabilityKind
 from grove.capability_registry import load_capabilities
 from grove.dock import _VALID_STATUSES, load_dock
-from grove.eval.proposal_queue import PROPOSAL_VERBS, _type_offers_approve
+from grove.eval.proposal_queue import _type_offers_approve
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE
 from grove.api.red_nonce import nonce_key_from_app, red_nonce
@@ -635,7 +636,11 @@ def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
 # fleet-pipeline-v1 P2 — verb-bearing proposal types render their OWN action set
 # by iterating the type's verb tuple (PROPOSAL_VERBS), not the generic
 # approve/reject/dismiss. verb -> (route template, label, css, confirm-or-None).
-# Adding a verb (e.g. "suggest_revision") is one dict entry + one tuple element.
+# fleet-ui-reconciliation-v1 C3: artifact types no longer reach the PENDING FEED
+# (partitioned into the Fleet cross-link), so the feed's verbs branch is gone —
+# but this helper is NOT feed-only: the promote-failure card
+# (actions._forge_promote_error_card) re-renders the verb buttons on a
+# re-tappable failure, so it stays.
 _PROPOSAL_VERB_ROUTES = {
     "promote": (
         "/portal/actions/proposals/{pid}/promote", "Promote", "btn-approve",
@@ -670,7 +675,13 @@ def _verb_actions_html(proposal_id: str, short_id: str, verbs) -> str:
 def _proposal_card_html(request: web.Request, p: dict) -> str:
     """Render ONE routing/kaizen proposal card — RED bespoke or generic. Shared by
     the flat feed and the grouped-by-proposer view (proposal-proposer-attribution-v1
-    Move 2b), so both surfaces render byte-identical cards."""
+    Move 2b), so both surfaces render byte-identical cards.
+
+    fleet-ui-reconciliation-v1 C3 — artifact-pending types never reach this
+    renderer (the feed partitions them into the Fleet cross-link card), so the
+    feed's verb-iterating branch and the forge View-details link were
+    clean-deleted. The disposition ROUTES are untouched — the C3 fleet
+    component posts the same endpoints from the Fleet surface."""
     pid = p.get("proposal_id", "")
     short_id = _short_id(pid)
     ptype = p.get("type")
@@ -685,38 +696,15 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
         ev_summary = f"{len(evidence)} item(s)"
     else:
         ev_summary = str(evidence) if evidence else ""
-    # Verb-bearing types (P2) render their own action set; everything else keeps the
-    # generic approve/reject/dismiss row.
-    verbs = PROPOSAL_VERBS.get(ptype)
-    actions = (
-        _verb_actions_html(pid, short_id, verbs) if verbs
-        else _proposal_actions_html(
-            pid, short_id, offers_approve=_type_offers_approve(ptype)
-        )
+    actions = _proposal_actions_html(
+        pid, short_id, offers_approve=_type_offers_approve(ptype)
     )
-    # forge-review-surface-v1 P2 (M2) — verb-bearing (forge) cards carry a "View
-    # details" link; a missing slug degrades in place, never crashes the feed.
-    view_html = ""
-    if verbs:
-        slug = (p.get("payload") or {}).get("slug")
-        if slug:
-            # Hash anchor (C1): the ?pid rides the hash and becomes a real query
-            # string when the router's htmx.ajax GET dispatches it.
-            href = f"/portal#fragments/forge/{quote(str(slug))}/?pid={quote(str(pid))}"
-            view_html = (
-                f'<div class="meta"><a href="{_esc(href)}">View details</a></div>'
-            )
-        else:
-            view_html = (
-                '<div class="meta error">view unavailable — missing payload.slug</div>'
-            )
     return (
         f'<div class="card" id="proposal-{short_id}">'
         f'<h4><span class="badge">{_esc(ptype)}</span></h4>'
         f'<p>{_esc(p.get("semantic_justification"))}</p>'
         f'<div class="meta">evidence: {_esc(ev_summary)}</div>'
         f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
-        f'{view_html}'
         f'{actions}'
         f'</div>'
     )
@@ -734,6 +722,29 @@ def _memory_card_html(m: dict) -> str:
         f'<div class="meta">created {_esc(m.get("created_at"))}</div>'
         f'{_proposal_actions_html(pid, short_id, offers_approve=_type_offers_approve(m.get("type")))}'
         f'</div>'
+    )
+
+
+def _partition_proposals(proposals: list) -> tuple:
+    """fleet-ui-reconciliation-v1 C3 — THE single-pass partition of the live
+    queue: artifact-pending types (dispositioned in Fleet, mock screen D's
+    cross-link) vs everything else (this page's cards). The pending page, the
+    Proposals nav badge, and the cross-link count all derive from this one
+    function, so badge N == rendered card N by construction (F3)."""
+    artifact, other = [], []
+    for p in proposals:
+        (artifact if p.get("type") in _ARTIFACT_PROPOSAL_TYPES else other).append(p)
+    return artifact, other
+
+
+def _artifact_xlink_card(n: int) -> str:
+    """The cross-link card that replaces artifact-pending cards in the queue
+    (mock screen D): a count + a hash link into the Fleet review surface."""
+    return (
+        f'<div class="card xlink"><div class="grow">{n} fleet artifact(s) '
+        f'awaiting review &mdash; dispositioned in '
+        f'<a href="/portal#fragments/fleet/">Fleet</a>, not here.</div>'
+        f'<span class="nav-badge hot">{n}</span></div>'
     )
 
 
@@ -761,6 +772,12 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
     sections, groups ordered by their most-recent proposal, newest-first within
     (inherits the flat sort). Unifies routing proposals (``proposals.jsonl``) and
     memory crystallizations (``memory_proposals.jsonl``).
+
+    fleet-ui-reconciliation-v1 C3 — ONE review surface: artifact-pending
+    proposals (forge/fleet) are partitioned OUT of the card feed into a single
+    cross-link card pointing at Fleet, where their disposition lives. The
+    partition is presentation-only: the queue, read_all(), and the disposition
+    routes are untouched.
     """
     proposals = [p.to_dict() for p in read_all_proposals()]
     # proposal-sort-v1 — render-only newest-first sort. created_at is ISO 8601 UTC on
@@ -769,10 +786,13 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
     # copy. A missing/empty created_at sorts LAST under reverse=True (unknown-age
     # proposals sink to the bottom). Matches the fleet viewer's newest-first order.
     proposals.sort(key=lambda p: p.get("created_at") or "", reverse=True)
+    artifact, proposals = _partition_proposals(proposals)
     memory_items = pending_memory_proposal_items()
     grouped = request.query.get("view") == "grouped"
 
     parts = ['<div id="proposals-listing">', _proposals_view_toggle(grouped)]
+    if artifact:
+        parts.append(_artifact_xlink_card(len(artifact)))
     if not proposals and not memory_items:
         parts.append(
             '<p class="placeholder">No pending proposals — the system has '
@@ -1643,6 +1663,23 @@ async def handle_fleet_nav(request: web.Request) -> web.Response:
     return _html_fragment("".join(parts))
 
 
+async def handle_proposals_nav(request: web.Request) -> web.Response:
+    """``GET /portal/fragments/nav/proposals`` — the Proposals nav item + badge
+    (C3). The badge counts EXACTLY what the pending page renders as cards —
+    non-artifact live proposals + pending memory items — via the same
+    ``_partition_proposals`` the page uses (F3: badge N == card N by
+    construction). Refreshed by the ``proposal-disposition`` HX-Trigger event."""
+    _artifact, other = _partition_proposals(
+        [p.to_dict() for p in read_all_proposals()]
+    )
+    n = len(other) + len(pending_memory_proposal_items())
+    return _html_fragment(
+        f'<a class="nav-count-link" '
+        f'href="/portal#fragments/proposals/pending">Proposals'
+        f'{_nav_badge(n)}</a>'
+    )
+
+
 async def handle_fleet_skill_fragment(request: web.Request) -> web.Response:
     """``GET /portal/fragments/fleet/{skill_name}/`` — one producer's inbox as an
     in-shell fragment. Unknown skill -> 404 fragment."""
@@ -2193,6 +2230,9 @@ def register_fragment_routes(app: web.Application) -> None:
     # fleet-ui-reconciliation-v1 C2 — the data-driven Fleet outline for the
     # sidebar (loaded on shell boot + on the fleet-disposition refresh event).
     app.router.add_get("/portal/fragments/nav/fleet", handle_fleet_nav)
+    # fleet-ui-reconciliation-v1 C3 — the Proposals nav badge (non-artifact
+    # count, same partition as the pending page; proposal-disposition refresh).
+    app.router.add_get("/portal/fragments/nav/proposals", handle_proposals_nav)
     # fleet-ui-reconciliation-v1 C1 — fleet renders IN-SHELL: hash-routed
     # fragments (the two-segment unit fragment is registered above). The
     # overview registers at the bare dir path; the skill/artifact patterns

@@ -571,12 +571,17 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .nav-fleet a.nav-item:hover { background: var(--accent-dim);
     text-decoration: none; }
 .nav-fleet .lvl2 { padding-left: 2.8rem; font-size: 0.82rem; }
-.nav-fleet .nav-badge { margin-left: auto; font-size: 0.7rem; min-width: 18px;
+/* .nav-badge is GLOBAL (C3): the Fleet outline, the Proposals nav item, and
+   the proposals cross-link card all carry it. margin-left:auto right-aligns
+   it inside any flex row. */
+.nav-badge { margin-left: auto; font-size: 0.7rem; min-width: 18px;
     text-align: center; padding: 0 5px; border-radius: 9px;
     background: var(--bg-elev); color: var(--text-dim);
     border: 1px solid var(--border); }
-.nav-fleet .nav-badge.hot { background: var(--zone-yellow);
+.nav-badge.hot { background: var(--zone-yellow);
     color: var(--bg-panel); border-color: var(--zone-yellow); font-weight: 700; }
+/* Proposals nav item (C3) — badge-bearing count fragment. */
+.nav-proposals a { display: flex; align-items: center; gap: 0.5rem; }
 .nav-fleet .obs-label { padding: 0.5rem 0.6rem 0.15rem 1.9rem;
     font-size: 0.65rem; letter-spacing: 0.07em; text-transform: uppercase;
     color: var(--text-dim); }
@@ -618,6 +623,13 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
     monospace; font-size: 0.78rem; color: var(--text-dim); }
 .obs-strip-label { font-size: 0.68rem; letter-spacing: 0.08em;
     text-transform: uppercase; color: var(--text-dim); margin: 0 0 0.5rem; }
+
+/* Proposals — fleet-artifact cross-link card (fleet-ui-reconciliation-v1 C3,
+   mock screen D): artifact dispositions live in Fleet, not this queue. */
+.card.xlink { display: flex; align-items: center; gap: 0.75rem;
+    border: 1px dashed var(--accent-dim); background: transparent; }
+.card.xlink .grow { flex: 1; }
+.card.xlink .nav-badge { flex: none; }
 
 /* Mount 2 — sticky disposition dock in the context sidebar. */
 .disposition-dock { position: sticky; top: 0.5rem; background: var(--bg-panel);

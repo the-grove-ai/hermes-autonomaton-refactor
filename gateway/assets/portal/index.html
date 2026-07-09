@@ -66,7 +66,14 @@
                     <a href="/portal#fragments/fleet/">Fleet</a></li>
                 <li><a href="/portal#fragments/memory/records">Memory</a></li>
                 <li><a href="/portal#fragments/dock/goals">Goals</a></li>
-                <li><a href="/portal#fragments/proposals/pending">Proposals</a></li>
+                <!-- fleet-ui-reconciliation-v1 C3 — badge counts what the
+                     pending page renders (non-artifact proposals + memory
+                     items, same partition). Refreshed by the
+                     proposal-disposition HX-Trigger event. -->
+                <li class="nav-proposals" hx-get="/portal/fragments/nav/proposals"
+                    hx-trigger="load, proposal-disposition from:body"
+                    hx-swap="innerHTML">
+                    <a href="/portal#fragments/proposals/pending">Proposals</a></li>
                 <li><a href="/portal#fragments/skills/">Skills</a></li>
                 <li><a href="/portal#fragments/composition/panel">Composition</a></li>
                 <li><a href="/portal#fragments/routing/panel">Models</a></li>
