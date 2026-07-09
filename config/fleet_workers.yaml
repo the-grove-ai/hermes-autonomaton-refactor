@@ -57,6 +57,57 @@ workers:
       start: "22:00"
       end: "07:00"
 
+  # fleet-review-unification-v1 C1b-2 — the file producers become real workers. Each
+  # consumes an upstream fleet SINK dir via the file_source resolver; the unit_id is
+  # the stable semantic slug from the source filename (timestamps stripped), so an
+  # upstream refresh continues the same unit. An empty/absent source dir is a graceful
+  # no-op (the upstream producer may not run yet). Conservative daily cadence.
+  - id: drafter
+    skill: skill.fleet.drafter            # capability-record id (canonical_dir: drafter)
+    enabled: true
+    cadence: "0 8 * * *"                   # once daily (08:00), work-gated
+    input_state:
+      type: file_source
+      source_dir: researcher              # ~/.grove/researcher/ — Researcher briefs
+      pattern: "brief-*.json"
+      slug_regex: '^brief-\d{4}-\d{2}-\d{2}-(.+)\.json$'   # unit_id = topic slug, date stripped
+      select_one: true
+      skip_already_staged: true
+    budget:
+      per_run_tokens: 120000
+      daily_tokens: 400000
+    limits:
+      wall_clock_secs: 900
+      mem_mb: 1536
+      fsize_mb: 64
+      nofile: 512
+    quiet_hours:
+      start: "22:00"
+      end: "07:00"
+
+  - id: cultivator
+    skill: skill.fleet.cultivator         # capability-record id (canonical_dir: cultivator)
+    enabled: true
+    cadence: "0 8 * * *"                   # once daily (08:00), work-gated
+    input_state:
+      type: file_source
+      source_dir: scout                   # ~/.grove/scout/ — Scout digests
+      pattern: "digest-*.json"
+      slug_regex: '^digest-(\d{4}-\d{2}-\d{2})\.json$'     # unit_id = digest date (no topic slug)
+      select_one: true
+      skip_already_staged: true
+    budget:
+      per_run_tokens: 120000
+      daily_tokens: 400000
+    limits:
+      wall_clock_secs: 900
+      mem_mb: 1536
+      fsize_mb: 64
+      nofile: 512
+    quiet_hours:
+      start: "22:00"
+      end: "07:00"
+
 # ── Worker entry schema (commented template — copy an entry, uncomment, fill) ─
 #
 # workers:

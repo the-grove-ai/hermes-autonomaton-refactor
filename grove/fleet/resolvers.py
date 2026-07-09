@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -374,3 +375,132 @@ def _select_units(rows: List[Dict[str, Any]], input_state: Dict[str, Any], worke
 
 
 register_resolver("notion_query", resolve_notion_query)
+
+
+# ── file_source ────────────────────────────────────────────────────────────
+# fleet-review-unification-v1 C1b-2 — the file-producer analog of notion_query.
+# A worker whose upstream is a fleet SINK (drafter ← ~/.grove/researcher/ briefs,
+# cultivator ← ~/.grove/scout/ digests) detects work by globbing that dir. The
+# unit_id is the STABLE SEMANTIC SLUG derived from the source filename with
+# timestamps/versions stripped (the ``slug_regex`` capture group) — an upstream
+# re-date/refresh CONTINUES the same unit, so feedback + revision count persist
+# (the C1b-1 store is keyed on that unit_id). No fold code here: the manager seam
+# folds the revision_directive (gated on action_surface_publish), exactly as for
+# notion_query.
+
+
+def _grove_source_dir(source_dir: str) -> Path:
+    """``~/.grove/<source_dir>`` — the upstream fleet sink this worker consumes."""
+    from hermes_constants import get_hermes_home
+
+    return Path(get_hermes_home()) / source_dir
+
+
+def _unit_id_from_source(filename: str, slug_regex: str, worker_id: str) -> str:
+    """The STABLE unit_id = ``slug_regex`` capture group over the source *filename*.
+
+    ``brief-\\d{4}-\\d{2}-\\d{2}-(.+)`` over ``brief-2026-07-09-moon-bot.json`` →
+    ``moon-bot`` — a re-dated brief for the same topic maps to the SAME unit_id, so
+    the disposition/feedback history persists across the upstream refresh. A source
+    name that does NOT match its declared regex is a LOUD Andon (never a silent skip
+    that would leave real work undetected)."""
+    m = re.match(slug_regex, filename)
+    if not m or not m.group(1):
+        raise FleetWorkerAndon(
+            f"worker {worker_id!r}: source file {filename!r} does not match the "
+            f"declared slug_regex {slug_regex!r}; cannot derive a stable unit_id",
+            worker_id=worker_id,
+            check="file_source_bad_name",
+        )
+    return m.group(1)
+
+
+def _staged_unit_ids(worker_id: str) -> set:
+    """The set of unit_ids that already have a staged package. Non-recursive glob of
+    ``staging_dir/*/meta.json`` — the SAME shape as ``_staged_row_ids`` but keyed on
+    the synthesized ``meta['unit_id']`` (file producers carry no Notion row_id). An
+    unreadable/malformed staged meta fails LOUD (must NOT re-draft a staged unit)."""
+    sink = _worker_staging_dir(worker_id)
+    if sink is None or not sink.is_dir():
+        return set()
+    staged: set = set()
+    for meta_path in sorted(sink.glob("*/meta.json")):
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            raise FleetWorkerAndon(
+                f"worker {worker_id!r}: staged meta.json unreadable/malformed at "
+                f"{meta_path} ({exc}) — cannot tell if its unit is staged; refusing "
+                f"to risk re-drafting a staged unit",
+                worker_id=worker_id,
+                check="staged_meta_unreadable",
+            )
+        uid = (data.get("unit_id") or data.get("slug")) if isinstance(data, dict) else None
+        if uid:
+            staged.add(uid)
+    return staged
+
+
+def _select_file_units(units: List[Dict[str, Any]], input_state: Dict[str, Any], worker_id: str):
+    """File-unit selection — the ``_select_units`` contract for file sources: drop
+    already-staged units (re-open on archive is automatic — the glob no longer sees
+    an archived unit), EXCLUDE terminal_skip (N-breaker), float revision-pending units
+    ahead of fresh ones (stable within each tier), select_one. Deterministic input
+    order is the caller's filename sort (no order_by for file sources)."""
+    if input_state.get("skip_already_staged"):
+        staged = _staged_unit_ids(worker_id)  # may raise a loud Andon
+        units = [u for u in units if u.get("id") not in staged]
+    if not units:
+        return []
+    units = [u for u in units if not _is_terminal_skip(u.get("id"), worker_id)]
+    pending, rest = [], []
+    for u in units:
+        (pending if _has_revision_priority(u.get("id"), worker_id) else rest).append(u)
+    units = pending + rest
+    if input_state.get("select_one"):
+        return units[:1]
+    return units
+
+
+def resolve_file_source(input_state: Dict[str, Any], worker_id: str) -> Optional[Any]:
+    """Detect work from an upstream fleet sink dir (C1b-2).
+
+    Returns ``{"units": [...], "source_dir", "source_path", "source_name",
+    "unit_id"}`` for the selected unit, or ``None`` for no work. An ABSENT or empty
+    source dir is a graceful no-op (the upstream producer has not run yet — idle is
+    correct, not an Andon). Missing config is a loud Andon."""
+    source_dir = input_state.get("source_dir")
+    pattern = input_state.get("pattern")
+    slug_regex = input_state.get("slug_regex")
+    if not (source_dir and pattern and slug_regex):
+        raise FleetWorkerAndon(
+            f"worker {worker_id!r}: file_source input_state needs 'source_dir', "
+            f"'pattern', and 'slug_regex'",
+            worker_id=worker_id,
+            check="resolver_failed",
+        )
+    base = _grove_source_dir(source_dir)
+    if not base.is_dir():
+        return None  # upstream producer has not run yet — graceful idle
+    files = sorted(p for p in base.glob(pattern) if p.is_file())
+    if not files:
+        return None  # empty source — idle
+    units = [
+        {"id": _unit_id_from_source(p.name, slug_regex, worker_id),
+         "source_path": str(p), "source_name": p.name}
+        for p in files
+    ]
+    units = _select_file_units(units, input_state, worker_id)
+    if not units:
+        return None  # all staged / terminal — no work
+    sel = units[0]
+    return {
+        "units": units,
+        "source_dir": source_dir,
+        "source_path": sel["source_path"],
+        "source_name": sel["source_name"],
+        "unit_id": sel["id"],
+    }
+
+
+register_resolver("file_source", resolve_file_source)

@@ -46,6 +46,8 @@ __all__ = [
     "PROPOSAL_TYPE_CONSOLIDATION",
     "PROPOSAL_TYPE_DOCK_MUTATION",
     "PROPOSAL_TYPE_PORTAL_ACTION_FAILURE",
+    "PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING",
+    "PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -156,11 +158,23 @@ PROPOSAL_TYPE_PORTAL_ACTION_FAILURE = "portal_action_failure"
 # button). The promote tap is the bespoke async route (P3); the affordances are
 # the verb set below, not approve/reject/dismiss.
 PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING = "forge_artifact_pending"
+# fleet-review-unification-v1 C1b-2 — the GENERIC file-producer analog of the
+# forge type. Emitted for any action_surface_publish worker whose canonical_sink
+# is NOT "forge" (drafter, cultivator, …). Payload mirrors forge's shape but is
+# keyed on the stable unit_id (no Notion row_id):
+#   {"slug": str, "unit_id": str, "skill_id": str, "canonical_sink": str}
+# Same RENDER-ONLY posture as forge (no generic Approve; the promote tap is the
+# bespoke async route, canonical_sink-dispatched). The disposition INTERNALS
+# (promote / reject / suggest_revision) are producer-parametrized in C1a/C1b-1;
+# forge keeps forge_artifact_pending, byte-identical.
+PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING = "fleet_artifact_pending"
 # Verb affordances per proposal type. The portal iterates this to render action
 # buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
-# to the iterator — the shape is deliberately open.
+# to the iterator — the shape is deliberately open. The generic fleet type
+# MIRRORS forge's verb shape (C1b-2).
 PROPOSAL_VERBS: Dict[str, Tuple[str, ...]] = {
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING: ("promote", "reject"),
+    PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING: ("promote", "reject"),
 }
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
