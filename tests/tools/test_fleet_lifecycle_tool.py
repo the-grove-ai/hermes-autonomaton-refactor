@@ -253,3 +253,86 @@ def test_every_lifecycle_tool_has_an_admitting_record():
         f"record — get_admitted_tools() will filter them (the andon_write / "
         f"P5-S4.1 gap class)"
     )
+
+
+# ── P5-S4.2 — governance-halt wiring (the ceremony-deaf gap class, pinned) ────
+
+
+def test_recognition_wired_tools_are_ceremony_wired():
+    """STRUCTURAL pin (the class dies here): every native tool the grant-
+    recognition coverage map knows (grant_covers_halt._NATIVE_TOOL_WRITE_CLASS)
+    MUST appear in Dispatcher._NATIVE_GOVERNANCE_TOOLS — a tool present in the
+    first but absent from the second is recognition-wired but ceremony-deaf:
+    the dispatcher never consults the grant, and every operator-initiated halt
+    store-pends to the portal (the S4.2 bake miss). Tools with NO recognition
+    (computer_use, propose_governance_change, ...) intentionally take the
+    pending-store ceremony and are out of this invariant."""
+    import inspect
+    import re as _re
+
+    from grove.dispatcher import Dispatcher
+    from grove.grant_recognition import grant_covers_halt
+
+    src = inspect.getsource(grant_covers_halt)
+    block = src.split("_NATIVE_TOOL_WRITE_CLASS")[1].split("}")[0]
+    recognized = set(_re.findall(r'"([a-z_]+)"\s*:', block))
+    assert recognized, "coverage-map keys not found — pin needs updating"
+    deaf = recognized - Dispatcher._NATIVE_GOVERNANCE_TOOLS
+    assert not deaf, (
+        f"tool(s) {sorted(deaf)} are in grant_covers_halt's coverage map but "
+        f"NOT in Dispatcher._NATIVE_GOVERNANCE_TOOLS — recognition-wired but "
+        f"ceremony-deaf: their implicit/standing grants can never resolve"
+    )
+
+
+def _dispatcher_stub(implicit_grant=None):
+    from grove.dispatcher import Dispatcher
+
+    d = object.__new__(Dispatcher)  # no __init__ — only grant-path attrs
+    d._implicit_grant = implicit_grant
+    return d
+
+
+def test_dispatcher_resolves_implicit_grant_for_fleet_purge_halt():
+    """Pin 4: the operator-minted implicit grant resolves a fleet_purge halt
+    through _resolve_governance_grant ITSELF — the dispatcher path the S4.2
+    bake miss proved untested, not just the grant_covers_halt helper."""
+    from grove.dispatcher import Dispatcher
+    from grove.grant_recognition import try_mint_implicit_grant
+
+    token = try_mint_implicit_grant(
+        "Purge the merchants capital unit from forge.")
+    assert token is not None and token.write_class == "fleet_purge"
+
+    halt = _halt_for("fleet_purge", {"skill": "forge-jobsearch",
+                                     "unit": "260706-merchants"})
+    d = _dispatcher_stub(implicit_grant=token)
+    assert Dispatcher._is_governance_mutation_halt(d, halt) is True
+    resolved = Dispatcher._resolve_governance_grant(d, halt)
+    assert resolved is token  # the T0 implicit grant, not a store-pend
+
+
+def test_dispatcher_resolves_standing_global_pair_for_fleet_purge(monkeypatch):
+    """R2 standing pair: with no implicit token, the store lookup uses the
+    GLOBAL (fleet_purge, fleet_purge) pair — args carry no per-target scope."""
+    from grove.dispatcher import Dispatcher
+    from grove.grants import GrantToken
+
+    standing = GrantToken(source="standing", scope="fleet_purge",
+                          write_class="fleet_purge", disposition="standing",
+                          authorized_by="operator")
+    asked = []
+
+    class _Store:
+        def get_grant(self, scope, write_class):
+            asked.append((scope, write_class))
+            return standing
+
+    import grove.grants as grants_mod
+    monkeypatch.setattr(grants_mod, "get_grant_store", lambda: _Store())
+
+    halt = _halt_for("fleet_purge", {"skill": "drafter", "unit": "u1"})
+    d = _dispatcher_stub(implicit_grant=None)
+    resolved = Dispatcher._resolve_governance_grant(d, halt)
+    assert resolved is standing
+    assert asked == [("fleet_purge", "fleet_purge")]  # the exact global pair
