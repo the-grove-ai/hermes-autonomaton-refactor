@@ -341,6 +341,14 @@ tool_zones:
   kanban_list:                               green
   kanban_show:                               green
   cellar_search:                             green
+  # emit_package (wiki-writer-structured-output-v1 P1.1): the fleet worker's
+  # terminal-emission tool. Writes ONLY through the jailed stage_package
+  # primitive into the capability record's declared pending_review sink —
+  # parity with the sentinel path, whose runtime-side staging was never
+  # gated. Promotion disposition remains the operator approval gate. Without
+  # this declaration the default-yellow classification makes the grant-less
+  # worker's deny handler refuse execution (live bake p1bake20260710aaaaaaaa).
+  emit_package:                              green
   memory:                                    green
   read_file:                                 green
   search_files:                              green
