@@ -266,6 +266,12 @@ governance:
     staging_dir: "researcher"
     canonical_dir: "researcher"
     promotion: auto_ingest
+    # P5 retention (promoted-artifact-persistence-v1): inert declared DATA —
+    # persist-by-default, never silent expiry; archive_dir is the operator-
+    # initiated purge verb's declared destination. No reader but the purge core.
+    retention:
+      policy: persist
+      archive_dir: ".archive"
   emission_preconditions:
     required_tool_classes:
       - class: retrieval

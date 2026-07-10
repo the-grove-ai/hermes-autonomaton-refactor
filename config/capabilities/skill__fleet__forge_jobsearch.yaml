@@ -180,6 +180,12 @@ governance:
     staging_dir: "forge/pending_review"
     canonical_dir: "forge"
     promotion: operator_approval
+    # P5 retention (promoted-artifact-persistence-v1): inert declared DATA —
+    # persist-by-default, never silent expiry; archive_dir is the operator-
+    # initiated purge verb's declared destination. No reader but the purge core.
+    retention:
+      policy: persist
+      archive_dir: ".archive"
     # promoted-artifact-persistence-v1 P2 (Delta 1) — declarative poller
     # coverage: the P1 per-unit canonical subdirs (~/.grove/forge/<slug>/)
     # are wiki-ingested by the generic package adapter. Declaration DATA:

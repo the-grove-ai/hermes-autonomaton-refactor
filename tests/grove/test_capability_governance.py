@@ -512,3 +512,26 @@ def test_storage_transfer_is_the_one_chokepoint():
     for streaming in (".write_text", ".write_bytes", "shutil.copy",
                       "copyfile", "open("):
         assert streaming not in src
+
+
+# ── promoted-artifact-persistence-v1 P5 S2 — retention declaration ────────────
+
+
+def test_write_zone_retention_round_trips_and_is_uniform():
+    """P5 S2 pin (mirrors the P2 ingest round-trip pin): the additive
+    retention declaration survives from_dict/to_dict verbatim on every
+    governance-bearing fleet record; persist-by-default shape exact."""
+    from grove.capability import Capability
+    from grove.capability_registry import load_capabilities
+
+    expected = {"policy": "persist", "archive_dir": ".archive"}
+    seen = 0
+    for cid, cap in load_capabilities().items():
+        wz = (cap.governance or {}).get("write_zone") if cap.governance else None
+        if not wz:
+            continue
+        seen += 1
+        assert wz.get("retention") == expected, cid
+        rebuilt = Capability.from_dict(cap.to_dict())
+        assert rebuilt.governance["write_zone"]["retention"] == expected, cid
+    assert seen >= 6  # all six fleet records declare it
