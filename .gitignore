@@ -83,3 +83,4 @@ docs/superpowers/*
 # working tree but out of commits. (routing-profiles/ IS tracked — it is
 # Phase 6 /context measurement substrate and binding-sprint reference.)
 scripts/com.grove.llama-server.plist
+docs/sprints/
