@@ -299,6 +299,36 @@ def test_fleet_floor_ceiling_includes_emit_package():
     assert '"emit_package"' in src.split("_FLEET_FLOOR = ")[1].split("\n")[0]
 
 
+def test_fleet_floor_tools_classify_green_through_real_zone_path():
+    """P1.1 bake-Andon pin: every tool on the fleet L2 floor must resolve
+    GREEN through the REAL zone classification path (repo zones.schema.yaml →
+    ZoneClassifier.classify), not the stubbed-Dispatcher harness. A grant-less
+    worker's non_interactive_deny_handler refuses Yellow/Red, so a floor tool
+    that is registered and offered but NOT zone-declared is dead on execution
+    — the exact live failure of bake run p1bake20260710aaaaaaaa ('That action
+    needs your approval.'). The floor is parsed from the Dispatcher source so
+    a FUTURE floor addition without a zone declaration fails HERE, not live."""
+    import ast
+    import inspect
+
+    from grove.dispatcher import Dispatcher
+    from grove.zones import ZoneClassifier
+
+    src = inspect.getsource(Dispatcher.get_authorized_tools)
+    floor = ast.literal_eval(src.split("_FLEET_FLOOR = ")[1].split("\n")[0])
+    assert set(floor) >= {"read_file", "skill_view", "emit_package"}
+
+    repo = Path(__file__).resolve().parents[1]
+    clf = ZoneClassifier(repo / "config" / "zones.schema.yaml")
+    for tool in floor:
+        res = clf.classify(tool)
+        assert res.zone == "green" and res.source == "tool_zones", (
+            f"fleet floor tool {tool!r} classifies {res.zone!r} (source "
+            f"{res.source!r}) — a grant-less worker cannot execute it; declare "
+            f"it in config/zones.schema.yaml tool_zones"
+        )
+
+
 # ── lifecycle pins: real handler, real staging, temp sink ───────────────────
 
 _FORGE_ARGS = {
