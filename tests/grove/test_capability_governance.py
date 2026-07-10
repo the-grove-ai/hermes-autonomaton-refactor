@@ -451,3 +451,42 @@ def test_canonicalize_self_rename_is_noop(grove):
     f = d / "digest-x.json"; f.write_text("{}")
     out = canonicalize_files([f], d)
     assert out == [str(f)] and f.read_text() == "{}"
+
+
+# ── promoted-artifact-persistence-v1 P2 — declaration + write-path pins ───────
+
+
+def test_write_zone_ingest_round_trips_from_dict_to_dict():
+    """P2 S1 pin: the additive write_zone.ingest declaration survives the
+    from_dict/to_dict round trip verbatim (governance threads whole)."""
+    from grove.capability_registry import load_capabilities
+    from grove.capability import Capability
+
+    cap = load_capabilities()["skill.fleet.forge-jobsearch"]
+    declared = cap.governance["write_zone"]["ingest"]
+    assert declared == {"surface": "canonical_subdirs",
+                        "source_type": "forge_package"}
+    rebuilt = Capability.from_dict(cap.to_dict())
+    assert rebuilt.governance["write_zone"]["ingest"] == declared
+
+
+def test_canonical_write_path_is_rename_only():
+    """P2 S4 (Mitigation 2) pin: the canonical write path is RENAME-ONLY —
+    no streaming writes to canonical paths, so the poller can never observe
+    a partial artifact (rename within one mount is atomic)."""
+    import inspect
+
+    from grove.api import actions
+    from grove.utils import fs_utils
+
+    src = (inspect.getsource(canonicalize_files)
+           + inspect.getsource(fs_utils.promote_artifact)
+           + inspect.getsource(actions._fleet_promote_core)
+           + inspect.getsource(actions._canonicalize_staged_package))
+    assert "rename(" in src
+    for streaming in (".write_text", ".write_bytes", "shutil.copy",
+                      "copyfile", "open("):
+        assert streaming not in src, (
+            f"streaming write {streaming!r} in the canonical write path — "
+            f"the poller could observe a partial artifact"
+        )

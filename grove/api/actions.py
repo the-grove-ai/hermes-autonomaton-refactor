@@ -866,7 +866,7 @@ async def _forge_publish_core(slug: str, loop) -> dict:
     # canonicalize step), falling back to the staged dir so the standalone
     # /publish tap (which runs pre-canonicalization) keeps working. A
     # deterministic resolution order, not a silent fallback: both files are
-    # verified present below, fail loud. Path-safe like _read_forge_slug.
+    # verified present below, fail loud. Path-safe (resolve + containment).
     home = Path(get_hermes_home())
     staging_root = (home / "forge" / "pending_review").resolve()
     slug_dir = (staging_root / slug).resolve()
@@ -897,7 +897,7 @@ async def _forge_publish_core(slug: str, loop) -> dict:
 
     resume, cover = _content("resume.md"), _content("cover-letter.md")
     if not resume.is_file() or not cover.is_file():
-        # Pre-P1 parity: _read_forge_slug returned None on a missing draft.
+        # Pre-P1 parity: a missing draft file reads as no-draft-dir (404).
         return {"ok": False, "kind": "forge_no_draft_dir", "status": 404,
                 "message": f"No forge draft dir for {slug!r}."}
     resume_path, cover_path = str(resume), str(cover)

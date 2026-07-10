@@ -180,6 +180,13 @@ governance:
     staging_dir: "forge/pending_review"
     canonical_dir: "forge"
     promotion: operator_approval
+    # promoted-artifact-persistence-v1 P2 (Delta 1) — declarative poller
+    # coverage: the P1 per-unit canonical subdirs (~/.grove/forge/<slug>/)
+    # are wiki-ingested by the generic package adapter. Declaration DATA:
+    # source_type is operator-editable; no code names this producer.
+    ingest:
+      surface: canonical_subdirs
+      source_type: forge_package
   emission_preconditions:
     required_tool_classes:
     - class: skill_invocation
