@@ -299,7 +299,7 @@ def test_T3_kaizen_prompt_renders():
         for opt in (
             "[1] Just this once",
             "[2] For the rest of this session",
-            "[3] Always — I'll remember it",
+            "[3] Always (zone rule) — I'll remember it",
             "[4] Not this time",
         ):
             assert opt in stdout, (

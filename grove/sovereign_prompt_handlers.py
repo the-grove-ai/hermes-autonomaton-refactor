@@ -116,8 +116,14 @@ def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
 
           [1] Just this once
           [2] For the rest of this session
-          [3] Always — I'll remember it
+          [3] Always (<store>) — I'll remember it
           [4] Not this time
+
+    H2 (grant-mint-unification-v1): option [3] names the store an Always
+    writes ("standing grant" / "zone rule") and is rendered ONLY when a
+    store resolves for this halt — otherwise the option is absent and the
+    keystroke is rejected (silent no-op prohibited). Digits stay stable
+    ([4] is always deny).
 
     Returns one of ``"once"``, ``"session"``, ``"always"``, ``"deny"``.
     Defaults to ``"deny"`` on EOF / KeyboardInterrupt (fail-safe).
@@ -147,17 +153,25 @@ def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
     # I/O and stays here. NO RED branch is added to this surface: post-§VI a RED
     # halt is a workflow resolution, resolved upstream by the Dispatcher's
     # red-resolution handler, never by this four-choice prompt.
+    from grove.grant_recognition import always_store_label
     from grove.halt_renderer import render_yellow_sovereign_prompt
 
     triggering = halt.intents[halt.triggering_index]
 
+    # H2 (grant-mint-unification-v1): the Always option names the store it
+    # writes; when no store applies the option is not rendered and the
+    # choice is rejected below (silent no-op prohibited).
+    always_store = always_store_label(halt)
+
     print(
         render_yellow_sovereign_prompt(
             triggering.tool_name, triggering.arguments or {},
+            always_store=always_store,
         ),
         file=out,
     )
 
+    valid_choices = "1, 2, 3, or 4" if always_store is not None else "1, 2, or 4"
     while True:
         try:
             choice = input("Choose [1-4]: ").strip().lower()
@@ -169,11 +183,18 @@ def tty_sovereign_prompt(halt: "AndonHalt", *, out=None) -> str:
         if choice in ("2", "session"):
             return "session"
         if choice in ("3", "always"):
-            return "always"
+            if always_store is not None:
+                return "always"
+            print(
+                f"Always is unavailable for this action (no store applies); "
+                f"pick {valid_choices}.",
+                file=out,
+            )
+            continue
         if choice in ("4", "deny", "no", "n", "don't allow", "dont allow"):
             return "deny"
         print(
-            f"Unknown choice {choice!r}; pick 1, 2, 3, or 4.",
+            f"Unknown choice {choice!r}; pick {valid_choices}.",
             file=out,
         )
 

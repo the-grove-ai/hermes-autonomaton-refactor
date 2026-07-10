@@ -94,14 +94,18 @@ class TestT28KeyboardConstruction:
             result = await adapter.send_kaizen_prompt(
                 chat_id="12345", kaizen_id=kid,
                 description="run a command on your machine",
+                always_store="zone rule",
             )
 
         assert result.success is True
         markup = adapter._bot.send_message.call_args[1]["reply_markup"]
         buttons = _flatten(markup)
         labels = [b.text for b in buttons]
+        # H2 (grant-mint-unification-v1): the Always button names the store
+        # its tap writes.
         assert labels == [
-            "🟢 Always", "🟡 This session", "🟠 Just once", "🔴 Not now",
+            "🟢 Always (zone rule)", "🟡 This session",
+            "🟠 Just once", "🔴 Not now",
         ]
         data = {b.callback_data for b in buttons}
         assert data == {
@@ -116,6 +120,29 @@ class TestT28KeyboardConstruction:
         assert "run a command on your machine" in text
         for jargon in ("Andon", "zone", "Dispatcher", "sovereignty"):
             assert jargon not in text
+
+    @pytest.mark.asyncio
+    async def test_kaizen_prompt_drops_always_row_when_no_store(self):
+        """H2 affordance pin: always_store=None → NO Always row, no
+        kz:always callback exists to tap (silent no-op prohibited)."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=9))
+        kid, _entry = adapter.register_kaizen_pending("sess-key-2")
+
+        with _patch_buttons():
+            result = await adapter.send_kaizen_prompt(
+                chat_id="12345", kaizen_id=kid,
+                description="run a command on your machine",
+                always_store=None,
+            )
+
+        assert result.success is True
+        markup = adapter._bot.send_message.call_args[1]["reply_markup"]
+        buttons = _flatten(markup)
+        assert [b.text for b in buttons] == [
+            "🟡 This session", "🟠 Just once", "🔴 Not now",
+        ]
+        assert f"kz:always:{kid}" not in {b.callback_data for b in buttons}
 
     @pytest.mark.asyncio
     async def test_promotion_buttons_and_callback_data(self):
@@ -213,7 +240,8 @@ class TestT31Timeout:
         adapter = _make_adapter()
         edited = {}
 
-        async def _send(chat_id, kaizen_id, description, metadata=None):
+        async def _send(chat_id, kaizen_id, description, metadata=None,
+                        always_store=None):
             with adapter._kaizen_lock:
                 e = adapter._kaizen_state.get(kaizen_id)
                 if e:

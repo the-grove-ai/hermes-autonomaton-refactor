@@ -2247,6 +2247,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_kaizen_prompt(
         self, chat_id: str, kaizen_id: int, description: str,
         metadata: Optional[Dict[str, Any]] = None,
+        always_store: Optional[str] = None,
     ) -> SendResult:
         """Render the Kaizen prompt as an inline keyboard.
 
@@ -2256,6 +2257,11 @@ class TelegramAdapter(BasePlatformAdapter):
         the session_key) so it stays under Telegram's 64-byte cap. Stores the
         sent message_id/chat_id on the entry so a timeout can edit it.
 
+        ``always_store`` (H2 grant-mint-unification-v1) names the store an
+        Always tap writes ("standing grant" / "zone rule",
+        ``grove.grant_recognition.always_store_label``). None means no store
+        applies — the Always row is NOT rendered (silent no-op prohibited:
+        an affordance whose tap persists nothing must not exist).
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
@@ -2268,12 +2274,18 @@ class TelegramAdapter(BasePlatformAdapter):
             if len(body) > 280:
                 body = body[:279] + "…"
             text = f"🔔 {_html.escape(body)}"
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🟢 Always", callback_data=f"kz:always:{kaizen_id}")],
+            rows = []
+            if always_store:
+                rows.append([InlineKeyboardButton(
+                    f"🟢 Always ({always_store})",
+                    callback_data=f"kz:always:{kaizen_id}",
+                )])
+            rows.extend([
                 [InlineKeyboardButton("🟡 This session", callback_data=f"kz:session:{kaizen_id}")],
                 [InlineKeyboardButton("🟠 Just once", callback_data=f"kz:once:{kaizen_id}")],
                 [InlineKeyboardButton("🔴 Not now", callback_data=f"kz:deny:{kaizen_id}")],
             ])
+            keyboard = InlineKeyboardMarkup(rows)
             thread_id = self._metadata_thread_id(metadata)
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),

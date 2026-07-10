@@ -48,6 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
+from grove.grant_recognition import NATIVE_GOVERNANCE_TOOLS
 from grove.pattern_cache import pattern_cache_enabled
 from grove.secret_redact import redact_governance_args
 
@@ -5251,6 +5252,19 @@ class Dispatcher:
             # would create a blanket green zone rule — the bypass bug this model
             # fixes. Only fire for non-governance halts (Yellow zone generics).
             if not self._is_governance_mutation_halt(halt):
+                # H2 structural floor: the resolver is total for yellow
+                # generics (zone_rule at minimum, GATE-B F2); anything else
+                # here is a defect — fail loud, never silently drop the
+                # operator's 'Always'.
+                from grove.grant_recognition import resolve_always_store
+                _store = resolve_always_store(halt)
+                if _store is None or _store[0] != "zone_rule":
+                    raise ValueError(
+                        f"'Always' on a non-governance halt resolved "
+                        f"{_store!r} instead of a zone_rule store — the "
+                        f"Always affordance must not render when no store "
+                        f"applies (H2 structural floor)"
+                    )
                 self._apply_zone_promotion(triggering_intent)
 
         # Sprint 53.2 — if an "allow once" disposition just let a
@@ -5333,15 +5347,15 @@ class Dispatcher:
     # Native tool names that are governance-mutation operations.  Checked in
     # _is_governance_mutation_halt so andon_tool.py calls (which carry no
     # ``command`` key) route through the permission path rather than terminal halt.
-    # Every RED kind=verb capability record's bound tools MUST appear here
-    # (structurally pinned, P5-S4.2) — a tool absent from this set never
-    # reaches _resolve_governance_grant, so its operator-minted implicit
-    # grant is silently ignored and every halt store-pends to the portal
-    # (recognition-wired but ceremony-deaf: the S4.2 bake miss).
-    _NATIVE_GOVERNANCE_TOOLS = frozenset({
-        "andon_promote", "andon_reject", "andon_revoke", "revoke_grant",
-        "fleet_purge",
-    })
+    # Every RED kind=verb capability record's bound tools MUST appear in the
+    # declaration (structurally pinned, P5-S4.2/H2) — a tool absent from this
+    # set never reaches _resolve_governance_grant, so its operator-minted
+    # implicit grant is silently ignored and every halt store-pends to the
+    # portal (recognition-wired but ceremony-deaf: the S4.2 bake miss).
+    # H2 (grant-mint-unification-v1): derived, routing-filtered, from the
+    # single WRITE_CLASS_DECLARATION (GATE-B F1). Do NOT re-declare tool
+    # names here — add the verb to grove/grant_recognition.py instead.
+    _NATIVE_GOVERNANCE_TOOLS = NATIVE_GOVERNANCE_TOOLS
 
     def _is_governance_mutation_halt(self, halt: Any) -> bool:
         """Return True if the halt's triggering intent is a governance-mutation.
@@ -5386,21 +5400,13 @@ class Dispatcher:
             args = getattr(triggering, "arguments", None) or {}
             from grove.grants import get_grant_store
             if tool_name in self._NATIVE_GOVERNANCE_TOOLS:
-                # Native tool call: extract scope from skill_name / grant_id argument.
-                _NATIVE_WRITE_CLASS = {
-                    "andon_promote": "andon_promote",
-                    "andon_reject": "andon_reject",
-                    "andon_revoke": "andon_revoke",
-                    "revoke_grant": "grant_revoke",
-                    "fleet_purge": "fleet_purge",
-                }
-                write_class = _NATIVE_WRITE_CLASS.get(tool_name, "")
-                scope = str(args.get("skill_name") or args.get("grant_id") or "").strip()
-                if tool_name == "fleet_purge":
-                    # P5-S4.2 (R2 ruling): fleet_purge standing grants are the
-                    # GLOBAL pair — its args carry no per-target scope.
-                    scope = "fleet_purge"
-                if scope and write_class:
+                # H2: scope + write_class from the single declaration —
+                # scope_policy drives global vs args-derived (the old inline
+                # map + hand-coded fleet_purge R2 override, unified).
+                from grove.grant_recognition import resolve_native_grant_target
+                target = resolve_native_grant_target(tool_name, args)
+                if target is not None:
+                    scope, write_class = target
                     standing = get_grant_store().get_grant(scope, write_class)
                     if standing is not None and not standing.revoked:
                         return standing
@@ -5466,31 +5472,37 @@ class Dispatcher:
         replaces _apply_zone_promotion so 'Always' writes a scoped standing
         grant instead of a blanket zone rule. Handles both terminal commands
         and native andon tool calls.
+
+        H2 (grant-mint-unification-v1): the target comes from
+        resolve_always_store — the same declaration-driven resolver that
+        labels the Always affordance, so what the operator was shown and
+        what is written cannot diverge. STRUCTURAL FLOOR: a resolution of
+        no standing-grant store raises (the affordance should not have
+        rendered) — the operator's decision is never silently dropped (the
+        H2 bake miss: fleet_purge 'Always' hit a bare return and persisted
+        nothing). Store-write I/O failures stay warn-and-continue — the
+        session_allow cache already gave this turn its relief; persistence
+        failing is observability, not authority.
         """
+        from grove.grant_recognition import GrantToken, resolve_always_store
+
+        store = resolve_always_store(halt)
+        if store is None or store[0] != "standing_grant":
+            try:
+                _t = halt.intents[halt.triggering_index]
+                _tool = getattr(_t, "tool_name", None)
+            except Exception:
+                _tool = None
+            raise ValueError(
+                f"'Always' on a governance-mutation halt resolved no "
+                f"standing-grant store (tool={_tool!r}, resolved={store!r}) "
+                f"— the Always affordance must not render when no store "
+                f"applies (H2 structural floor)"
+            )
+        _, scope, write_class = store
         try:
-            from grove.grant_recognition import try_mint_implicit_grant, GrantToken
             from grove.grants import get_grant_store
             from datetime import datetime, timezone
-            triggering = halt.intents[halt.triggering_index]
-            tool_name = getattr(triggering, "tool_name", "") or ""
-            args = getattr(triggering, "arguments", None) or {}
-            _NATIVE_WRITE_CLASS = {
-                "andon_promote": "andon_promote",
-                "andon_reject": "andon_reject",
-                "andon_revoke": "andon_revoke",
-                "revoke_grant": "grant_revoke",
-            }
-            if tool_name in _NATIVE_WRITE_CLASS:
-                scope = str(args.get("skill_name") or args.get("grant_id") or "").strip()
-                write_class = _NATIVE_WRITE_CLASS[tool_name]
-                if not scope:
-                    return
-            else:
-                cmd = str(args.get("command", ""))
-                parsed = try_mint_implicit_grant(cmd, source="standing_lookup")
-                if parsed is None:
-                    return
-                scope, write_class = parsed.scope, parsed.write_class
             standing = GrantToken(
                 source="standing",
                 scope=scope,
