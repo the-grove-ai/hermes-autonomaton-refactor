@@ -222,6 +222,167 @@ def _build_worker_prompt(
     )
 
 
+# ── emit_package transport (wiki-writer-structured-output-v1 P1) ────────────
+# Schema-bound JSON tool emission replaces the sentinel free-text protocol,
+# per producer, behind the record-declared flag (GATE-B F6 dual-read). The
+# record's emission_preconditions.terminal_artifact.emit block is the source
+# of truth; the harness DERIVES the registered schema from it (GATE-B F5).
+
+
+def _emit_declaration(cap) -> Optional[Dict[str, Any]]:
+    """The record's validated emit declaration, or None.
+
+    None (absent, non-mapping, or loader-flagged ``emit_error``) resolves to
+    the sentinel transport — the migration default. The loader already
+    validated shape at load (grove/capability.py:_validate_emit, C1 pattern);
+    the emit_error check here keeps this seam fail-closed to sentinel rather
+    than trusting a block the loader flagged. getattr (not attribute access):
+    a record with no governance at all is the ABSENT case, not an error.
+    """
+    gov = getattr(cap, "governance", None) or {}
+    ta = (
+        ((gov.get("emission_preconditions") or {}) if isinstance(gov, dict) else {})
+        .get("terminal_artifact")
+        or {}
+    )
+    emit = ta.get("emit") if isinstance(ta, dict) else None
+    if not isinstance(emit, dict) or (isinstance(ta, dict) and ta.get("emit_error")):
+        return None
+    return emit
+
+
+def _derive_emit_spec(
+    emit_decl: Dict[str, Any],
+    *,
+    declarative: bool,
+    content_files: Optional[List[str]],
+    payload: Any,
+    worker_id: str,
+):
+    """Resolve the emit_package contract for this run from the declaration.
+
+    Returns ``(expected_files, meta_required_keys, slug, synth_meta)``.
+    Declarative producer: files derive from terminal_artifact.path_pattern +
+    unit_id (the existing :func:`_declarative_content_files` derivation — no
+    duplicate declaration to drift against); identity is runtime-synthesized.
+    Self-authored producer (forge): the record names its file set and its
+    required meta keys (slug mandatory — it is the staging directory). A
+    tool-transport declaration too thin to derive a contract is a LOUD Andon.
+    """
+    from grove.fleet.errors import FleetWorkerAndon
+
+    if declarative:
+        if not content_files:
+            raise FleetWorkerAndon(
+                f"worker {worker_id!r}: tool-transport declarative producer "
+                f"resolved no content files — cannot derive an emit contract",
+                worker_id=worker_id,
+                check="emit_spec_missing",
+            )
+        unit_id = payload.get("unit_id") if isinstance(payload, dict) else None
+        return (
+            list(content_files),
+            None,
+            unit_id,
+            _synthesize_meta(payload, worker_id, unit_id),
+        )
+    files_decl = (emit_decl.get("files") or {}).get("required")
+    meta_keys = (emit_decl.get("meta") or {}).get("required_keys")
+    if not files_decl or not meta_keys or "slug" not in meta_keys:
+        raise FleetWorkerAndon(
+            f"worker {worker_id!r}: self-authored tool-transport producer needs "
+            f"emit.files.required AND emit.meta.required_keys including 'slug' "
+            f"(got files={files_decl!r}, meta_keys={meta_keys!r}) — fix the "
+            f"capability record's emit block",
+            worker_id=worker_id,
+            check="emit_spec_missing",
+        )
+    return list(files_decl), list(meta_keys), None, None
+
+
+def _build_worker_prompt_tool(
+    skill_name: str,
+    payload: Any,
+    expected_files: List[str],
+    meta_required_keys: Optional[List[str]],
+) -> str:
+    """The tool-transport worker prompt: advertises emit_package and DROPS the
+    sentinel protocol text entirely (GATE-B F6 — the flag flips the contract
+    the model is given; the harness still dual-reads both this phase). The
+    opening discipline paragraphs match the sentinel variant verbatim."""
+    directive = payload.get("revision_directive") if isinstance(payload, dict) else None
+    if directive:
+        directive_block = (
+            "REVISION DIRECTIVE (authoritative — the new draft MUST satisfy this):\n"
+            f"{directive}\n\n"
+        )
+        json_payload = {k: v for k, v in payload.items() if k != "revision_directive"}
+    else:
+        directive_block = ""
+        json_payload = payload
+    files_phrase = ", ".join(expected_files)
+    if meta_required_keys is None:
+        emit_para = (
+            f"Your job is COMPLETE ONLY when you call the emit_package tool "
+            f"EXACTLY ONCE with your finished content: 'files' must map EXACTLY "
+            f"these file name(s) — {files_phrase} — each to its complete raw "
+            f"body. Do NOT author a meta.json or a slug — the runtime records "
+            f"identity from the resolved input. Do NOT wrap bodies in markdown "
+            f"fences. A run that never calls emit_package produces NO output "
+            f"and is an INCOMPLETE run."
+        )
+    else:
+        meta_phrase = ", ".join(meta_required_keys)
+        emit_para = (
+            f"Your job is COMPLETE ONLY when you call the emit_package tool "
+            f"EXACTLY ONCE with your finished package: 'files' must map EXACTLY "
+            f"these file names — {files_phrase} — each to its complete raw "
+            f"body, and 'meta' must carry your routing metadata including: "
+            f"{meta_phrase} (the runtime stages the package under meta.slug). "
+            f"Do NOT wrap bodies in markdown fences. A run that never calls "
+            f"emit_package produces NO output and is an INCOMPLETE run."
+        )
+    return (
+        f"You are an autonomous, non-interactive fleet background worker. You are "
+        f"EXECUTING a job, not describing one. Your FIRST step is to call "
+        f"skill_view('{skill_name}'): what it returns is your OPERATING PROCEDURE "
+        f"to carry out, NOT reference material to summarize or report on. Then "
+        f"perform that procedure to completion against the resolved input below.\n\n"
+        f"No operator is present — do NOT ask clarifying questions. You have NO "
+        f"write tool and you do NOT publish; the RUNTIME stages your output. Read "
+        f"only your declared read surfaces.\n\n"
+        f"{emit_para}\n\n"
+        f"{directive_block}"
+        f"RESOLVED INPUT:\n"
+        f"{json.dumps(json_payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+# The agent loop's two truncation terminals (run_agent.py: truncated tool-call
+# retry exhaustion, and text-continuation exhaustion). Worker-level guard keys
+# on these result shapes — plus finish_reason=='length' on the final assistant
+# message, which now folds in OpenRouter's native_finish_reason (P0 finding 1:
+# the top-level finish_reason lies on OpenRouter; the native field is truth).
+_TRUNCATION_ERRORS = frozenset(
+    {
+        "Response truncated due to output length limit",
+        "Response remained truncated after 3 continuation attempts",
+    }
+)
+
+
+def _is_truncation_result(result: Any) -> bool:
+    """True when a run_conversation result is truncation-shaped (cap-hit)."""
+    if not isinstance(result, dict):
+        return False
+    if result.get("error") in _TRUNCATION_ERRORS:
+        return True
+    for msg in reversed(result.get("messages") or []):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return msg.get("finish_reason") == "length"
+    return False
+
+
 def _strip_fences(lines: List[str]) -> str:
     """Drop a single leading fence line and a single trailing fence line, then join.
 
@@ -462,10 +623,6 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         #            platform hardcode — deliberately decoupled from L2.
         from hermes_cli.config import load_config
 
-        worker_config = {
-            **load_config(),
-            "fleet_offered_allowlist": ["read_file", "skill_view"],
-        }
         sink = _resolve_declared_sink(cap, worker_id)
         sink.mkdir(parents=True, exist_ok=True)
 
@@ -473,6 +630,57 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         # None payload is an explicit no_work signal — do not run the skill.
         if payload is None:
             return _event(worker_id, run_id, cap.id, "no_work", detail="empty payload")
+
+        # fleet-review-unification-v1 C1b-2 — emission style. A file producer
+        # (file_source resolver → payload carries "units", never "rows") uses
+        # DECLARATIVE emission: the skill authors content only, named by the record's
+        # terminal_artifact, and the RUNTIME synthesizes the identity envelope from
+        # the resolver payload. A notion producer (forge) keeps its self-authored
+        # path. (P1: resolved BEFORE Dispatcher construction now — the tool
+        # transport must arm the emit tool and widen the allow-list before the
+        # agent's tool surface is built and cached.)
+        declarative = (
+            isinstance(payload, dict) and "units" in payload and "rows" not in payload
+        )
+        content_files = (
+            _declarative_content_files(cap, payload, worker_id) if declarative else None
+        )
+
+        # wiki-writer-structured-output-v1 P1 — record-declared emit transport
+        # (GATE-B F6 dual-read migration; default sentinel). transport=="tool":
+        # derive the emit_package contract from the record (GATE-B F5), arm the
+        # run-scoped tool module, and admit emit_package on BOTH offer gates
+        # (the L2 floor already ceilings it; this L1 allow-list enables it).
+        emit_decl = _emit_declaration(cap)
+        transport = (emit_decl or {}).get("transport", "sentinel")
+        expected_files: Optional[List[str]] = None
+        meta_keys: Optional[List[str]] = None
+        if transport == "tool":
+            from tools import fleet_emit_tool
+
+            expected_files, meta_keys, unit_slug, synth = _derive_emit_spec(
+                emit_decl,
+                declarative=declarative,
+                content_files=content_files,
+                payload=payload,
+                worker_id=worker_id,
+            )
+            fleet_emit_tool.reset()
+            fleet_emit_tool.configure(
+                expected_files=expected_files,
+                meta_required_keys=meta_keys,
+                sink=sink,
+                slug=unit_slug,
+                synth_meta=synth,
+            )
+            allowlist = ["read_file", "skill_view", "emit_package"]
+        else:
+            allowlist = ["read_file", "skill_view"]
+
+        worker_config = {
+            **load_config(),
+            "fleet_offered_allowlist": allowlist,
+        }
 
         # (c)+(d) install the deny handler and an ISOLATED session DB, then
         # (e) run the pinned skill via the Dispatcher — reuse skill-invoke whole.
@@ -511,23 +719,19 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         )
         agent = dispatcher.agent
 
-        # fleet-review-unification-v1 C1b-2 — emission style. A file producer
-        # (file_source resolver → payload carries "units", never "rows") uses
-        # DECLARATIVE emission: the skill authors content only, named by the record's
-        # terminal_artifact, and the RUNTIME synthesizes the identity envelope from
-        # the resolver payload. A notion producer (forge) keeps its self-authored
-        # triad path, byte-identical.
-        declarative = (
-            isinstance(payload, dict) and "units" in payload and "rows" not in payload
-        )
-        content_files = (
-            _declarative_content_files(cap, payload, worker_id) if declarative else None
-        )
-        # The prompt-side tag and the parser-side tag MUST be the identical run_id[:8]
-        # (a mismatch = the model writes markers the parser rejects = every run no-files).
-        prompt = _build_worker_prompt(
-            skill_name, payload, run_id[:8], content_files=content_files
-        )
+        # Prompt contract follows the transport flag (GATE-B F6): the tool
+        # variant advertises emit_package and DROPS the sentinel protocol text;
+        # the sentinel variant is byte-identical to the pre-P1 prompt. The
+        # sentinel prompt-side tag and the parser-side tag MUST be the identical
+        # run_id[:8] (a mismatch = markers the parser rejects = every run no-files).
+        if transport == "tool":
+            prompt = _build_worker_prompt_tool(
+                skill_name, payload, expected_files, meta_keys
+            )
+        else:
+            prompt = _build_worker_prompt(
+                skill_name, payload, run_id[:8], content_files=content_files
+            )
         try:
             result = agent.run_conversation(prompt, task_id=run_id)
         except TerminalGovernanceHalt as tgh:
@@ -542,6 +746,87 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 detail=f"governed denial: {tgh}",
                 check="governed_denial",
             )
+
+        # ── wiki-writer-structured-output-v1 P1 — emit lifecycle ladder ──
+        # Tool transport only. Lock-on-emit means a locked package was ALREADY
+        # validated + atomically staged by the handler; here the run recovers
+        # from the two known no-emit shapes, each bounded to ONE attempt:
+        #   * truncation-shaped result → raised-cap FRESH re-run (P0 findings:
+        #     identical-at-cap retry is deterministic 0/6; raised-cap 2/2);
+        #   * clean end, no emit → ONE re-prompt continuing the conversation.
+        # Exhausted → fall through to the dual-read sentinel extraction (F6),
+        # then the loud failure event (emit_truncation | no_package).
+        if transport == "tool":
+            from tools import fleet_emit_tool
+
+            raise_used = False
+            reprompt_used = False
+            while fleet_emit_tool.emitted() is None:
+                if _is_truncation_result(result) and not raise_used:
+                    raise_used = True
+                    agent.max_tokens = 2 * (agent.max_tokens or max_tokens or 8192)
+                    next_prompt, history = prompt, None
+                elif not reprompt_used:
+                    reprompt_used = True
+                    next_prompt = (
+                        "You have NOT called emit_package, so this run has "
+                        "produced NO output. Call emit_package NOW with your "
+                        "complete finished file(s). Do not reply with prose."
+                    )
+                    history = result.get("messages")
+                else:
+                    break
+                try:
+                    result = agent.run_conversation(
+                        next_prompt, conversation_history=history, task_id=run_id
+                    )
+                except TerminalGovernanceHalt as tgh:
+                    return _event(
+                        worker_id,
+                        run_id,
+                        cap.id,
+                        "failed",
+                        detail=f"governed denial: {tgh}",
+                        check="governed_denial",
+                    )
+
+            emitted = fleet_emit_tool.emitted()
+            if emitted is not None:
+                # Locked = validated + staged (handler staged atomically via
+                # the same jailed stage_package the sentinel path uses).
+                if declarative:
+                    unit_id = payload["unit_id"]
+                    return _event(
+                        worker_id,
+                        run_id,
+                        cap.id,
+                        "success",
+                        detail=(
+                            f"completed={result.get('completed')}; "
+                            f"unit={unit_id}; transport=tool"
+                        ),
+                        staged=list(emitted["staged"]),
+                        slug=unit_id,
+                        unit_id=unit_id,
+                    )
+                row_id, fit_score = _row_identity(emitted, payload)
+                return _event(
+                    worker_id,
+                    run_id,
+                    cap.id,
+                    "success",
+                    detail=(
+                        f"completed={result.get('completed')}; "
+                        f"slug={emitted['slug']}; transport=tool"
+                    ),
+                    staged=list(emitted["staged"]),
+                    slug=emitted["slug"],
+                    row_id=row_id,
+                    fit_score=fit_score,
+                )
+            # No lock — fall through to the sentinel extraction (dual-read):
+            # a tool-flagged producer that emitted sentinel blocks anyway is
+            # still accepted this migration phase (F6).
 
         # (f) Option 2: the RUNTIME stages the skill's delimited per-file emit. The
         # skill emits each file inside sentinel-framed blocks (forge-fleet-package-
@@ -572,20 +857,43 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             # bounded preview and persist the FULL raw text to an events/<run_id>.raw.txt
             # sidecar. status + check are preserved EXACTLY (reap keys on them); only
             # detail is enriched and the additive raw_text_path is added.
+            # P1: a tool-transport run whose FINAL turn is still truncation-shaped
+            # (after the bounded raised-cap retry) fails as its own Andon class,
+            # emit_truncation — distinct from no_package so the reap/portal can
+            # tell "model never emitted" from "the cap ate the emission".
             final_text = _final_assistant_text(result.get("messages") or [])
             preview = (
                 (final_text[:800] + "…") if len(final_text) > 800 else final_text
             ).strip()
+            if transport == "tool" and _is_truncation_result(result):
+                fail_check = "emit_truncation"
+                fail_detail = (
+                    "emit_package was never locked and the final turn was "
+                    "truncation-shaped even after the bounded raised-cap retry "
+                    "(P1 truncation guard); sentinel dual-read also found no "
+                    f"package (reason: {reason}); final assistant message was: "
+                    f"{preview!r}"
+                )
+            elif transport == "tool":
+                fail_check = "no_package"
+                fail_detail = (
+                    "emit_package was never called (after one bounded re-prompt) "
+                    "and the sentinel dual-read found no package "
+                    f"(reason: {reason}); final assistant message was: {preview!r}"
+                )
+            else:
+                fail_check = "no_package"
+                fail_detail = (
+                    "delimited emit did not parse to a valid fleet_package "
+                    f"(reason: {reason}); final assistant message was: {preview!r}"
+                )
             return _event(
                 worker_id,
                 run_id,
                 cap.id,
                 "failed",
-                detail=(
-                    "delimited emit did not parse to a valid fleet_package "
-                    f"(reason: {reason}); final assistant message was: {preview!r}"
-                ),
-                check="no_package",
+                detail=fail_detail,
+                check=fail_check,
                 raw_text_path=_persist_raw_output(worker_id, run_id, final_text),
             )
         if declarative:

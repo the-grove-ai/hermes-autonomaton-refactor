@@ -279,6 +279,12 @@ governance:
     terminal_artifact:
       tool: write_file
       path_pattern: "brief-*.json"
+      # wiki-writer-structured-output-v1 P1 — emit transport declaration
+      # (GATE-B F6 dual-read migration). sentinel = the delimited free-text
+      # protocol, unchanged; flips to tool after the drafter+forge live bake
+      # (separate ruling).
+      emit:
+        transport: sentinel
       # fleet-artifact-legibility-v1 C1 — portal card presentation.
       # Headline = synthesis.recommended_angle: the operator-facing takeaway
       # (source_article.summary describes the INPUT, not the work).

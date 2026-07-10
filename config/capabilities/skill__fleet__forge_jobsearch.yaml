@@ -200,6 +200,19 @@ governance:
     terminal_artifact:
       tool: write_file
       path_pattern: "*.md"
+      # wiki-writer-structured-output-v1 P1 — emit_package contract (source
+      # of truth; the harness DERIVES the registered tool schema from this
+      # block, GATE-B F5). transport:tool = schema-bound JSON emission (the
+      # sentinel free-text protocol is retired from this producer's prompt;
+      # the harness still dual-reads both this phase, GATE-B F6). forge is
+      # self-authored: it names its file set and carries identity in the
+      # structured meta arg (slug + routing metadata → staged meta.json).
+      emit:
+        transport: tool
+        files:
+          required: [resume.md, cover-letter.md]
+        meta:
+          required_keys: [slug]
       # fleet-artifact-legibility-v1 C1 — package declaration (consumed by
       # the C2 package renderer; the card-level view falls back to .md this
       # commit). Data only.

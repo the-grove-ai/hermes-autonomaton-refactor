@@ -961,6 +961,33 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     return "{}"
 
 
+def _effective_finish_reason(
+    finish_reason,
+    has_truncated_tool_args: bool,
+    native_finish_reason=None,
+) -> str:
+    """Fold the truncation truth signals into one effective finish_reason.
+
+    wiki-writer-structured-output-v1 P1 (P0 finding 1, wire-byte confirmed):
+    OpenRouter REWRITES a provider-level cap-hit to top-level
+    ``finish_reason: "tool_calls"`` — the truthful signal is the router's
+    ``native_finish_reason: "length"`` extra field. Without this fold, a
+    cap-cut tool call whose truncated JSON HAPPENS to parse (cut at a value
+    boundary) sails through as a silently-shorter body. Three signals, any
+    one of which marks the response truncated:
+      * the top-level finish_reason itself is "length";
+      * accumulated tool-call args are unrepairable JSON (shape heuristic);
+      * the router's native_finish_reason is "length" (the lie-proof signal).
+    Absent extra field (non-OpenRouter providers) → None → no effect.
+    """
+    effective = finish_reason or "stop"
+    if has_truncated_tool_args:
+        effective = "length"
+    if native_finish_reason == "length":
+        effective = "length"
+    return effective
+
+
 def _strip_non_ascii(text: str) -> str:
     """Remove non-ASCII characters, replacing with closest ASCII equivalent or removing.
 
@@ -10096,6 +10123,11 @@ class AIAgent:
             _last_id_at_idx: dict = {}      # raw_index -> last seen non-empty id
             _active_slot_by_idx: dict = {}  # raw_index -> current slot in tool_calls_acc
             finish_reason = None
+            # P1 (wiki-writer-structured-output-v1): OpenRouter's untranslated
+            # provider finish reason — the truth signal when the router rewrites
+            # a cap-hit to finish_reason="tool_calls" (P0 finding 1). None on
+            # providers that don't send the extra field.
+            native_finish_reason = None
             model_name = None
             role = "assistant"
             reasoning_parts: list = []
@@ -10237,6 +10269,12 @@ class AIAgent:
 
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
+                    # OpenRouter attaches the provider's untranslated reason as
+                    # an extra field on the same chunk (pydantic extra="allow"
+                    # exposes it as an attribute); absent elsewhere → None.
+                    native_finish_reason = getattr(
+                        chunk.choices[0], "native_finish_reason", None
+                    )
 
                 # Usage in the final chunk
                 if hasattr(chunk, "usage") and chunk.usage:
@@ -10280,9 +10318,12 @@ class AIAgent:
                         ),
                     ))
 
-            effective_finish_reason = finish_reason or "stop"
-            if has_truncated_tool_args:
-                effective_finish_reason = "length"
+            # P1 truncation-truth fold (see _effective_finish_reason): args-shape
+            # heuristic OR the router's native "length" marks the response
+            # truncated — the top-level finish_reason alone lies on OpenRouter.
+            effective_finish_reason = _effective_finish_reason(
+                finish_reason, has_truncated_tool_args, native_finish_reason
+            )
 
             full_reasoning = "".join(reasoning_parts) or None
             mock_message = SimpleNamespace(
