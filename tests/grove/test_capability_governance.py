@@ -490,3 +490,25 @@ def test_canonical_write_path_is_rename_only():
             f"streaming write {streaming!r} in the canonical write path — "
             f"the poller could observe a partial artifact"
         )
+
+
+# ── promoted-artifact-persistence-v1 P5 S1 — the storage chokepoint ───────────
+
+
+def test_storage_transfer_is_the_one_chokepoint():
+    """P5 S1 pins: storage_transfer is producer-blind, rename-only (atomic-or-
+    loud; POSIX rename is the implementation, not the contract), and
+    canonicalize_files is a TRUE alias of the same body — one implementation,
+    zero copies."""
+    import inspect
+
+    from grove.utils import fs_utils
+
+    assert fs_utils.canonicalize_files is fs_utils.storage_transfer
+    src = inspect.getsource(fs_utils.storage_transfer)
+    for name in ("forge", "scout", "drafter", "cultivator", "researcher"):
+        assert name not in src, f"producer name {name!r} in the chokepoint"
+    assert "rename(" in src
+    for streaming in (".write_text", ".write_bytes", "shutil.copy",
+                      "copyfile", "open("):
+        assert streaming not in src

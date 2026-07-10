@@ -146,6 +146,12 @@ def _archive_forge_slug(proposal) -> Optional[str]:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = home / sink / ".archive" / f"{slug}-{ts}"
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # STORAGE-SEAM NOTE (P5, minimal-honest exception): this single WHOLE-DIR
+    # rename is bound to the storage_transfer contract ("completes atomically
+    # or fails loud") but does not route through the per-file chokepoint —
+    # decomposing one atomic dir-rename into N file moves would weaken its
+    # atomicity. A future remote-backend sprint absorbs it when rename stops
+    # being the implementation.
     src.rename(dest)  # atomic within the one ~/.grove mount
     return str(dest)
 
