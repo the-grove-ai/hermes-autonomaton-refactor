@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import filecmp
 import fnmatch
+import json
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Iterable
@@ -45,6 +47,7 @@ __all__ = [
     "storage_transfer",
     "canonicalize_files",
     "promote_artifact",
+    "purge_artifacts",
 ]
 
 
@@ -929,3 +932,168 @@ def promote_artifact(source_path: str, governance: dict) -> str:
                 target, exc,
             )
     return target
+
+
+def purge_artifacts(
+    source_paths: "Iterable[str]",
+    governance: dict,
+    *,
+    unit: str,
+    reason: str,
+    initiated_by: str,
+    effect_signature: "str | None" = None,
+    now: "object | None" = None,
+) -> dict:
+    """Operator-initiated purge of canonical artifacts — archive-first
+    (promoted-artifact-persistence-v1 P5, the reverse door of
+    :func:`promote_artifact`).
+
+    ORCHESTRATOR-ONLY like promote: never a silent expiry, never model-
+    self-served — the RED verb's approval ceremony (grant token / sovereign
+    prompt / pending-store confirm) is the only path here. Semantic
+    revocation of operator approval: the bytes SURVIVE in the archive; they
+    leave the canonical (ambient) plane.
+
+    Validation — the INVERSE of promote's staging discipline, same
+    component-boundary realpath rules (never purges an out-of-canonical
+    path):
+      * every source must resolve STRICTLY inside
+        ``governance.write_zone.canonical_dir``;
+      * a source inside ``pending_review`` is REFUSED (staged work is
+        rejected/revised through the disposition flow, never purged);
+      * a source inside the declared archive dir is REFUSED (already
+        archived; purge is not archive management).
+
+    Mechanics:
+      * a DIR source contributes its regular files (the P1 package layout is
+        flat); a FILE source contributes itself;
+      * moves route through :func:`storage_transfer` (THE chokepoint) into
+        ``<canonical_dir>/<archive_dir>/<unit>-<utc-ts>/`` — the shipped
+        P1 archive naming convention (actions.py's reject-archive helper),
+        canonized;
+      * ``archive_dir`` comes from the S2 ``write_zone.retention``
+        declaration, defaulting to ``".archive"`` when absent
+        (persist-by-default: absence of the block never blocks a purge, it
+        only means the default destination);
+      * MOVES-THEN-MANIFEST: ``purge-manifest.json`` (what / when / by whom /
+        reason / effect signature) is written atomically (tmp + replace)
+        AFTER the moves — a crash in between leaves the files findable but
+        unmanifested, and a RE-TAP resumes the newest manifest-less archive
+        dir for this unit (storage_transfer's source-gone semantics complete
+        the moves) and completes the manifest. Idempotent end to end.
+
+    PRODUCER-BLIND (generality pin extended): zero producer names; the sink,
+    archive destination, and unit identity are all parameters or declared
+    data. Returns ``{"archive_dir", "files", "manifest", "resumed"}``."""
+    from datetime import datetime, timezone
+
+    wz = (governance or {}).get("write_zone") or {}
+    canonical = wz.get("canonical_dir")
+    if not canonical:
+        raise ValueError(
+            "purge_artifacts: governance.write_zone must declare canonical_dir"
+        )
+    archive_rel = ((wz.get("retention") or {}).get("archive_dir")
+                   or ".archive")
+    if not unit or not str(unit).strip():
+        raise ValueError("purge_artifacts: unit must be non-empty")
+    # basename-guard (the feedback_store discipline): a crafted unit can never
+    # escape the archive root or glob-inject the resume scan.
+    unit_safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(unit)).strip(".") or "unit"
+
+    grove = _grove_home_realpath()
+    if grove is None:
+        raise ValueError("purge_artifacts: could not resolve GROVE_HOME")
+    canonical_abs = _grove_subdir_realpath(canonical, grove)
+    archive_root = Path(canonical_abs) / archive_rel
+
+    # ── validation: inverse-promote containment, every source ────────────────
+    resolved: "list[Path]" = []
+    for sp in source_paths:
+        try:
+            real = os.path.realpath(os.path.expanduser(str(sp)))
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"purge_artifacts: source {sp!r} could not be resolved ({exc})"
+            ) from exc
+        if real == canonical_abs or not real.startswith(canonical_abs + os.sep):
+            raise ValueError(
+                f"purge_artifacts: source {sp!r} does not resolve inside the "
+                f"declared canonical dir {canonical!r} ({canonical_abs}) — "
+                f"refusing to purge"
+            )
+        rel_parts = Path(real).relative_to(canonical_abs).parts
+        if "pending_review" in rel_parts[:-1] or rel_parts[0] == "pending_review":
+            raise ValueError(
+                f"purge_artifacts: source {sp!r} is STAGED (pending_review) — "
+                f"staged work is rejected or revised through the disposition "
+                f"flow, never purged"
+            )
+        if rel_parts[0] == archive_rel:
+            raise ValueError(
+                f"purge_artifacts: source {sp!r} is already inside the archive "
+                f"dir {archive_rel!r} — purge is not archive management"
+            )
+        resolved.append(Path(real))
+
+    # ── expand: dirs contribute their regular files (flat P1 package layout) ─
+    files: "list[Path]" = []
+    for p in resolved:
+        if p.is_dir():
+            files.extend(f for f in sorted(p.iterdir()) if f.is_file())
+        else:
+            files.append(p)  # existing file, or gone (re-tap) — transfer decides
+
+    # ── destination: resume the newest manifest-less archive dir (re-tap),
+    #    else a fresh <unit>-<utc-ts>/. Resume detection precedes the
+    #    nothing-to-purge guard: an interrupted purge leaves the canonical
+    #    sources GONE — the file identities live in the incomplete archive. ──
+    ts_src = now or datetime.now(timezone.utc)
+    resumed = False
+    dest = None
+    if archive_root.is_dir():
+        incomplete = [
+            d for d in sorted(archive_root.glob(f"{unit_safe}-*"))
+            if d.is_dir() and not (d / "purge-manifest.json").is_file()
+        ]
+        if incomplete:
+            dest = incomplete[-1]
+            resumed = True
+    if not files and not resumed:
+        raise ValueError(
+            f"purge_artifacts: nothing to purge for unit {unit!r} — no files "
+            f"under the given sources and no interrupted purge to complete"
+        )
+    if dest is None:
+        dest = archive_root / f"{unit_safe}-{ts_src.strftime('%Y%m%dT%H%M%SZ')}"
+
+    archived = storage_transfer(files, dest) if files else []
+    if resumed:
+        # Fold in the files the interrupted attempt already archived, so the
+        # manifest records the COMPLETE set (idempotent union, sorted).
+        already = {
+            str(f) for f in dest.iterdir()
+            if f.is_file() and f.name != "purge-manifest.json"
+            and not f.name.endswith(".tmp")
+        }
+        archived = sorted(set(archived) | already)
+
+    # ── manifest, atomically, AFTER the moves ────────────────────────────────
+    manifest = {
+        "unit": str(unit),
+        "purged_at": ts_src.isoformat(),
+        "initiated_by": initiated_by,
+        "reason": reason,
+        "sources": [str(p) for p in resolved],
+        "archived_files": archived,
+        "effect_signature": effect_signature,
+        "resumed": resumed,
+    }
+    manifest_path = dest / "purge-manifest.json"
+    tmp = manifest_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True),
+                   encoding="utf-8")
+    os.replace(tmp, manifest_path)
+
+    return {"archive_dir": str(dest), "files": archived,
+            "manifest": str(manifest_path), "resumed": resumed}
