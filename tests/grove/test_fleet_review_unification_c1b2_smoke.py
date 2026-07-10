@@ -366,7 +366,10 @@ def test_suggest_revision_handler_finalizes_without_nameerror(monkeypatch, count
     monkeypatch.setattr(feedback_store, "write", lambda w, u, note: {"count": count})
     monkeypatch.setattr(feedback_store, "set_terminal_skip", lambda w, u: None)
 
-    request = SimpleNamespace(match_info={"proposal_id": "sha256:deadbeef"})
+    # fleet-artifact-legibility-v1 C4 — the handler reads the presentation
+    # mount selector from request.query; the stub carries an empty mapping.
+    request = SimpleNamespace(match_info={"proposal_id": "sha256:deadbeef"},
+                              query={})
     resp = asyncio.run(actions._suggest_revision_disposition(request, producer=producer))
     assert resp.status == 200  # resolved card (revision requested / won't-converge) — no NameError
 

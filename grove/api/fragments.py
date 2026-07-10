@@ -2233,21 +2233,34 @@ def _state_chip(state: str) -> str:
             f'{_esc(label)}</span>')
 
 
-def _disposition_bar(pid: str, remote_sink: bool, revision_count: int = 0) -> str:
+def _disposition_bar(pid: str, remote_sink: bool, revision_count: int = 0,
+                     card_target: bool = False) -> str:
     """The producer-agnostic disposition bar (evolves the C1a ``_disposition_actions_div``):
     stacked full-width Promote / "Suggest revision…" / Reject, plus the progressively-
     disclosed feedback block. The SAME pid-keyed routes both proposal types use.
 
     ``remote_sink`` selects the Promote consequence copy ("publish to Drive" for forge,
-    "ingest to wiki" for an mv-sink). Verb responses land in a per-unit ``#disp-result-*``
-    div (innerHTML) — the ``_resolved_card`` on success, a VISIBLE failure message on a
-    non-2xx (the routes' OOB #alert-banner also fires). The colon-free ``_short_id`` DOM
-    id is load-bearing: ``compute_proposal_id`` yields ``sha256:<hex>`` and a ':' in a CSS
-    #id selector breaks ``hx-include`` (the C1a Andon). hx-post keeps the raw pid (URL-legal)."""
+    "ingest to wiki" for an mv-sink).
+
+    fleet-artifact-legibility-v1 C4 (D6 fix) — ``card_target=True`` (Mount 1)
+    posts with ``?mount=card`` and targets ``closest .review-card`` outerHTML:
+    a SUCCESS swaps the whole card to its post-disposition transient (mock
+    screen C). ``card_target=False`` (the Mount-2 dock) keeps the legacy
+    ``#disp-result-*`` innerHTML target byte-identically. Failures (4xx/5xx)
+    never swap in EITHER mode — the OOB #alert-banner fires and the per-unit
+    ``#disp-result-*`` div carries the visible failure note, so the original
+    card and its live verbs survive a failed tap (re-tap contract). The
+    colon-free ``_short_id`` DOM id is load-bearing (the C1a Andon)."""
     pe = _esc(pid)
     short = _short_id(pid)
     rev_id = "rev-" + short
     result = "disp-result-" + short
+    if card_target:
+        qs = "?mount=card"
+        target_attrs = 'hx-target="closest .review-card" hx-swap="outerHTML"'
+    else:
+        qs = ""
+        target_attrs = f'hx-target="#{result}" hx-swap="innerHTML"'
     consequence = "publish to Drive" if remote_sink else "ingest to wiki"
     counter = (f"Revision {revision_count + 1} of {_REVISION_MAX} — after "
                f"{_REVISION_MAX} marked won't-converge.")
@@ -2258,22 +2271,22 @@ def _disposition_bar(pid: str, remote_sink: bool, revision_count: int = 0) -> st
         "you are still on the draft.'}}"
     )
     return f"""<div class="disposition-bar" hx-on::after-request="{on_after}">\
-<button class="btn btn-approve btn-promote" hx-post="/portal/actions/proposals/{pe}/promote" \
-hx-target="#{result}" hx-swap="innerHTML" \
+<button class="btn btn-approve btn-promote" hx-post="/portal/actions/proposals/{pe}/promote{qs}" \
+{target_attrs} \
 hx-confirm="Promote this draft — {consequence} and resolve the unit?">\
 Promote &mdash; {_esc(consequence)}</button>\
 <button class="btn btn-revise" type="button" \
 onclick="this.closest('.disposition-bar').querySelector('.feedback-block').classList.toggle('open')">\
 Suggest revision&hellip;</button>\
-<button class="btn btn-reject btn-reject-s" hx-post="/portal/actions/proposals/{pe}/reject" \
-hx-target="#{result}" hx-swap="innerHTML" \
+<button class="btn btn-reject btn-reject-s" hx-post="/portal/actions/proposals/{pe}/reject{qs}" \
+{target_attrs} \
 hx-confirm="Reject this draft — archive it and dismiss the proposal?">Reject</button>\
 <div class="feedback-block">\
 <textarea id="{rev_id}" name="revision_text" class="revision-text" rows="3" \
 placeholder="Revision guidance for the next draft (what to change)."></textarea>\
 <div class="feedback-row">\
-<button class="btn btn-approve" hx-post="/portal/actions/proposals/{pe}/suggest_revision" \
-hx-target="#{result}" hx-swap="innerHTML" hx-include="#{rev_id}">Send guidance &amp; redraft</button>\
+<button class="btn btn-approve" hx-post="/portal/actions/proposals/{pe}/suggest_revision{qs}" \
+{target_attrs} hx-include="#{rev_id}">Send guidance &amp; redraft</button>\
 <button class="btn btn-secondary" type="button" \
 onclick="this.closest('.feedback-block').classList.remove('open')">Cancel</button>\
 </div>\
@@ -2291,13 +2304,15 @@ def _revised_disclosure(unit: dict) -> str:
     return ""
 
 
-def _unit_footer(unit: dict, remote_sink: bool) -> str:
+def _unit_footer(unit: dict, remote_sink: bool, card_target: bool = False) -> str:
     """The per-state footer: the disposition bar (needs_review), the banked-guidance
-    in-flight note (revision_requested), or nothing (terminal / legacy)."""
+    in-flight note (revision_requested), or nothing (terminal / legacy).
+    ``card_target`` threads the C4 Mount-1 card-swap wiring through to the bar."""
     state = unit["governance_state"]
     if state == "needs_review" and unit.get("proposal_id"):
         return _disposition_bar(unit["proposal_id"], remote_sink,
-                                unit.get("revision_count", 0))
+                                unit.get("revision_count", 0),
+                                card_target=card_target)
     if state == "revision_requested":
         note = unit.get("directive_echo") or ""
         quoted = f' <em>{_esc(note)}</em>' if note else ""
@@ -2615,7 +2630,8 @@ def _draft_preview_block(cap: Any, unit: dict) -> str:
     )
 
 
-def _review_card(unit: dict, remote_sink: bool, cap: Any = None) -> str:
+def _review_card(unit: dict, remote_sink: bool, cap: Any = None,
+                 footer_override=None) -> str:
     """Mount 1 — one unit as a ``.review-card`` (state rail + header chip + meta +
     REVISED disclosure + declared/preview body + per-state footer). Terminals dim
     (``.card-resolved``); legacy is list-only.
@@ -2625,7 +2641,11 @@ def _review_card(unit: dict, remote_sink: bool, cap: Any = None) -> str:
     ``#right-panel``. The hx-trigger EVENT FILTER excludes clicks originating
     inside interactive elements (the title link, disposition verbs, textarea) —
     plain hx attrs, no new JS; the title <a> keeps its own navigation to the
-    unit fragment. A successful context load marks the card ``.ctx-on``."""
+    unit fragment. A successful context load marks the card ``.ctx-on``.
+
+    C4 (D6 fix) — Mount-1 verbs target THIS card (outerHTML) and a success
+    swaps in the post-disposition transient (``render_disposition_transient``
+    passes ``footer_override`` = the slim result strip in place of the bar)."""
     state = unit["governance_state"]
     _label, rail, _chip = _state_meta(state)
     rc = unit.get("revision_count", 0)
@@ -2666,10 +2686,12 @@ def _review_card(unit: dict, remote_sink: bool, cap: Any = None) -> str:
         f'{_state_chip(state)}'
         f'<span class="head-meta">{ver}{_esc(_relative_age(unit["mtime"]))}</span></div>'
     )
+    footer = (footer_override if footer_override is not None
+              else _unit_footer(unit, remote_sink, card_target=True))
     return (
         f'<div class="card review-card {rail}{dim}" id="review-{anchor}"{ctx}>'
         f'{head}{_revised_disclosure(unit)}{_draft_preview_block(cap, unit)}'
-        f'{_unit_footer(unit, remote_sink)}</div>'
+        f'{footer}</div>'
     )
 
 
@@ -2690,6 +2712,83 @@ def _disposition_dock(unit: dict, remote_sink: bool, producer: str) -> str:
         f'<div class="disposition-dock {rail}">{meta}'
         f'{_revised_disclosure(unit)}{_unit_footer(unit, remote_sink)}</div>'
     )
+
+
+# ---------------------------------------------------------------------------
+# fleet-artifact-legibility-v1 C4 — the fleet-shaped disposition transient
+# (D6 fix, mock screen C). A Mount-1 verb SUCCESS swaps the whole review card
+# to its post-disposition render: chip flipped, body preserved, bar replaced
+# by a slim result strip. Rendered HERE with the other card renderers;
+# actions.py handlers CALL it (the render_forge_publish_card precedent).
+# ---------------------------------------------------------------------------
+
+_TRANSIENT_STATE = {
+    "promote": "promoted",
+    "reject": "rejected",
+    "suggest_revision": "revision_requested",
+}
+
+
+def _disposition_strip(state: str, message: str, link_href=None,
+                       link_label=None, link_external: bool = False,
+                       echo=None) -> str:
+    """The slim post-disposition result strip: state dot + message + an
+    optional destination link, plus the C3-era directive echo for a
+    suggest_revision. NO hx attributes — the strip is inert presentation."""
+    dim = " dim" if state == "rejected" else ""
+    link = ""
+    if link_href and link_label:
+        ext = ' target="_blank" rel="noopener"' if link_external else ""
+        link = (f'<a class="lnk" href="{_esc(link_href)}"{ext}>'
+                f'{_esc(link_label)} &#9656;</a>')
+    echo_html = (f'<div class="revised-disclosure">{_esc(echo)}</div>'
+                 if echo else "")
+    return (
+        f'<div class="disp-strip rail-{state}{dim}">'
+        f'<span class="dot dot-{state}"></span> {_esc(message)}{link}</div>'
+        f'{echo_html}'
+    )
+
+
+def render_disposition_transient(payload, disposition: str, *, message: str,
+                                 link_href=None, link_label=None,
+                                 link_external: bool = False,
+                                 echo=None) -> str:
+    """The post-disposition CARD for a Mount-1 verb success (D6 fix).
+
+    Resolves the unit from the C2 join AFTER the handler's side effects ran
+    (promote → topology/ledger shows the terminal; suggest_revision → the
+    feedback store shows revision_requested); a vanished unit (reject archives
+    the staged dir) falls back to an identity-only synthesis from the proposal
+    payload — the strip carries the outcome either way. The card stays in
+    place until the next queue fetch (mock C); counts refresh via the existing
+    nav HX-Trigger header. Worker-agnostic: skill resolution is by the
+    payload's skill_id, never a name literal."""
+    pl = payload or {}
+    skill_id = pl.get("skill_id")
+    unit_key = pl.get("unit_id") or pl.get("row_id") or pl.get("slug")
+    state = _TRANSIENT_STATE.get(disposition, disposition)
+    cap = None
+    producer = ""
+    for name, c in _fleet_skill_records().items():
+        if c.id == skill_id:
+            cap, producer = c, name
+            break
+    unit = None
+    if cap is not None and unit_key:
+        for u in _list_fleet_units(cap):
+            if u.get("unit_id") == unit_key or u.get("filename") == unit_key:
+                unit = u
+                break
+    if unit is None:
+        unit = {"unit_id": unit_key or "", "producer": producer,
+                "governance_state": state, "revision_count": 0,
+                "mtime": "", "filename": pl.get("slug") or ""}
+    unit = dict(unit, governance_state=state)
+    strip = _disposition_strip(state, message, link_href, link_label,
+                               link_external, echo)
+    return _review_card(unit, remote_sink=False, cap=cap,
+                        footer_override=strip)
 
 
 def _sink_skill_record(canonical_dir: str):

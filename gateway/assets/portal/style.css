@@ -537,6 +537,23 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .fpane.on { display: block; }
 .pkg-strip { margin-top: 0.6rem; }
 
+/* ---- Post-disposition result strip (fleet-artifact-legibility-v1 C4) ----
+   The D6 fix's slim transient footer (mock screen C). Card-bleed margins
+   mirror .disposition-bar; state color rides the existing rail tokens. */
+.disp-strip { display: flex; align-items: center; gap: 0.6rem;
+    margin: 0.85rem -1rem -0.85rem; padding: 0.55rem 1rem;
+    background: var(--bg-elev); border-top: 1px solid var(--border);
+    font-size: 0.82rem;
+    border-bottom-left-radius: var(--radius);
+    border-bottom-right-radius: var(--radius); }
+.disp-strip.rail-promoted           { border-top-color: var(--zone-green);
+    color: var(--zone-green); }
+.disp-strip.rail-revision_requested { border-top-color: var(--accent);
+    color: var(--accent); }
+.disp-strip.rail-rejected.dim       { border-top-color: var(--border);
+    color: var(--text-dim); }
+.disp-strip .lnk { margin-left: auto; }
+
 /* ---- Fleet-unit context panel (fleet-artifact-legibility-v1 C3) ---------
    Timeline + selected-card cue. Tokens only. */
 .cx-tl { border-left: 2px solid var(--border); padding-left: 0.7rem; }

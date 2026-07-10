@@ -38,6 +38,7 @@ from grove.api.fragments import (
     _short_id,
     _swappable_tiers,
     render_alert_banner,
+    render_disposition_transient,
     render_forge_publish_card,
     render_goal_card,
     render_tier_card,
@@ -217,7 +218,8 @@ async def _loud_action_failure(
 # ---------------------------------------------------------------------------
 
 
-async def _apply_routing(proposal, action: str, full_id: str, short_id: str, reason):
+async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
+                         reason, mount: str = ""):
     """Apply a routing proposal action. Mirrors grove.flywheel_cli.cli_approve /
     cli_reject: approve runs the registry apply_callback + remove + disposition;
     reject/dismiss remove + record (routing has no soft-dismiss — dismiss is a
@@ -295,6 +297,12 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str, rea
              "slug": _pl.get("slug")},
             reason=reason,
         )
+        # fleet-artifact-legibility-v1 C4 (D6 fix) — a Mount-1 card tap gets the
+        # fleet-shaped post-disposition CARD; the legacy _resolved_card stays for
+        # every other origin (proposals page, Mount-2 dock). Markup-only branch.
+        if mount == "card":
+            return _html_fragment(render_disposition_transient(
+                _pl, "reject", message="Rejected"))
         return _resolved_card(
             short_id, type_label, _DISPOSITION_LABEL[action], summary
         )
@@ -398,7 +406,10 @@ async def _dispatch_proposal_action(request: web.Request, action: str) -> web.Re
     # backing files, so a routing hit is unambiguous.
     routing = proposal_queue.read(proposal_id)
     if routing is not None:
-        return await _apply_routing(routing, action, proposal_id, short_id, reason)
+        return await _apply_routing(
+            routing, action, proposal_id, short_id, reason,
+            mount=request.query.get("mount") or "",
+        )
 
     # Then memory crystallizations.
     store = request.app["memory_store"]
@@ -1007,6 +1018,8 @@ async def _promote_disposition(
     Drive guard; only the startup sweep or a manual clear releases it."""
     proposal_id = request.match_info["proposal_id"]
     short_id = _short_id(proposal_id)
+    # C4 — presentation-mount selector (markup-only; side effects identical).
+    mount = request.query.get("mount") or ""
 
     proposal = proposal_queue.read(proposal_id)
     if proposal is None:
@@ -1067,6 +1080,16 @@ async def _promote_disposition(
         proposal_queue.finalize_proposal_state(
             proposal_id, "applied", {"moved": res["moved"]}
         )
+        # fleet-artifact-legibility-v1 C4 (D6 fix) — Mount-1 card tap gets the
+        # fleet-shaped transient with the sink-derived destination link.
+        if mount == "card":
+            return _html_fragment(render_disposition_transient(
+                proposal.payload, "promote",
+                message=(f"Promoted — ingested to wiki "
+                         f"({canonical_sink}/ · {len(res['moved'])} file(s))"),
+                link_href="/portal#fragments/cellar/pages",
+                link_label="View in Knowledge",
+            ))
         return _resolved_card(
             short_id, ptype, "promoted",
             f"Promoted to the cellar — {res['folder_link']}",
@@ -1117,6 +1140,14 @@ async def _promote_disposition(
          "unit_id": _pl.get("unit_id") or _pl.get("row_id"),
          "slug": _pl.get("slug")},
     )
+    # fleet-artifact-legibility-v1 C4 (D6 fix) — Mount-1 card tap gets the
+    # fleet-shaped transient; the Drive folder is the destination link.
+    if mount == "card":
+        return _html_fragment(render_disposition_transient(
+            _pl, "promote", message="Promoted — published to Drive",
+            link_href=res["folder_link"], link_label="Open in Drive",
+            link_external=True,
+        ))
     return _resolved_card(
         short_id, ptype, "promoted", f"Published — {res['folder_link']}"
     )
@@ -1366,13 +1397,27 @@ async def _suggest_revision_disposition(
     # escapes the summary at render (store keeps raw). The won't-converge tap
     # succeeded (recorded + archived + terminally excluded) — a distinct card, not a
     # failure; the loud Andon fired out-of-band above.
+    # fleet-artifact-legibility-v1 C4 (D6 fix) — Mount-1 card taps get the
+    # fleet-shaped transient (markup-only; the store write above is identical).
+    mount = request.query.get("mount") or ""
     if wont_converge:
+        if mount == "card":
+            return _html_fragment(render_disposition_transient(
+                proposal.payload, "reject",
+                message=(f"Won't converge — revision limit ({_REVISION_MAX}) "
+                         f"reached; archived, needs manual attention"),
+            ))
         return _resolved_card(
             short_id, ptype, "won't converge",
             f"Revision limit reached ({_REVISION_MAX}) — recorded and archived, but this "
             f"row is marked WON'T-CONVERGE and will no longer re-draft. Needs manual "
             f"attention.",
         )
+    if mount == "card":
+        return _html_fragment(render_disposition_transient(
+            proposal.payload, "suggest_revision",
+            message="Guidance sent — redrafting", echo=revision_text,
+        ))
     return _resolved_card(
         short_id, ptype, "revision requested",
         f"Revision guidance recorded — the row will re-draft with your notes: "

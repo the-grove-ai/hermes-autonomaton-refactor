@@ -206,7 +206,7 @@ async def test_verb_from_surface_stores_feedback(grove_home, monkeypatch, produc
     monkeypatch.setattr(actions, "_suggest_revision_text", _text)
     monkeypatch.setattr(actions, "broadcast_to_operator", lambda msg: _noop())
 
-    req = SimpleNamespace(match_info={"proposal_id": pid})
+    req = SimpleNamespace(match_info={"proposal_id": pid}, query={})
     resp = await actions._suggest_revision_disposition(req, producer=worker)
     assert resp.status == 200
     entry = feedback_store.read(worker, unit_id)  # keyed (worker, unit_id)
