@@ -261,6 +261,8 @@ def test_renderer_logic_has_zero_worker_names():
         src[src.index("MAX_RENDER_ITEMS"):src.index("def _review_card")],
         # C3 context-panel block
         src[src.index("MAX_HISTORY_ENTRIES"):src.index("async def handle_context")],
+        # C4 disposition-transient block
+        src[src.index("_TRANSIENT_STATE"):src.index("def _sink_skill_record")],
     ]
     for block in blocks:
         for name in ("scout", "researcher", "drafter", "cultivator",
@@ -276,9 +278,11 @@ def grove_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 async def client(grove_home):
+    from grove.api.actions import register_action_routes
     app = web.Application()
     register_portal_routes(app)
     register_fragment_routes(app)
+    register_action_routes(app)   # C4 — disposition round-trip tests
     async with TestClient(TestServer(app)) as c:
         yield c
 
@@ -553,3 +557,120 @@ def test_review_card_context_stamps_and_title_link():
             'href="#fragments/fleet/drafter/draft-moon-bot.md/">') in html
     # selected-card cue wiring
     assert "ctx-on" in html
+
+
+# ---------------------------------------------------------------------------
+# fleet-artifact-legibility-v1 C4 — fleet-shaped disposition transient (D6)
+# ---------------------------------------------------------------------------
+
+
+def test_mount1_bar_targets_card_and_dock_keeps_result_div():
+    from grove.api import fragments as F
+    card_bar = F._disposition_bar("sha256:abc", remote_sink=False, card_target=True)
+    dock_bar = F._disposition_bar("sha256:abc", remote_sink=False)
+    # Mount 1 — card swap + mount=card param on all three verbs
+    assert card_bar.count("?mount=card") == 3
+    assert card_bar.count('hx-target="closest .review-card"') == 3
+    assert 'hx-swap="outerHTML"' in card_bar
+    # failure note slot survives (4xx never swaps; the note lands here)
+    assert 'id="disp-result-' in card_bar
+    # Mount 2 (deferred) — byte-identical legacy targeting
+    assert "?mount=card" not in dock_bar
+    assert dock_bar.count('hx-target="#disp-result-') == 3
+
+
+def test_review_card_mount1_wiring_end_to_end():
+    from grove.api import fragments as F
+    unit = {"unit_id": "moon-bot", "producer": "drafter",
+            "governance_state": "needs_review", "revision_count": 0,
+            "mtime": "2026-07-09T12:00:00Z", "filename": "draft-moon-bot.md",
+            "proposal_id": "sha256:abc"}
+    html = F._review_card(unit, remote_sink=False)
+    assert "?mount=card" in html and 'hx-target="closest .review-card"' in html
+
+
+def test_transient_promote_card_shape(grove_home):
+    from grove.api.fragments import render_disposition_transient
+    _stage_cultivator_ctx(grove_home)
+    html = render_disposition_transient(
+        {"skill_id": "skill.fleet.cultivator", "unit_id": "prospects-2026-07-09-x",
+         "slug": "prospects-2026-07-09-x", "canonical_sink": "cultivator"},
+        "promote", message="Promoted — ingested to wiki (cultivator/ · 1 file(s))",
+        link_href="/portal#fragments/cellar/pages", link_label="View in Knowledge")
+    assert 'class="card review-card rail-promoted' in html   # chip/rail flipped
+    assert "chip-promoted" in html
+    assert "Promoted — ingested to wiki" in html
+    assert ">View in Knowledge &#9656;</a>" in html
+    # the bar is GONE — no verbs, no proposals-shaped card
+    assert 'class="disposition-bar"' not in html
+    assert "/promote" not in html and "card-resolved\" id=\"proposal-" not in html
+    # F4 markup constraints: no OOB, no state-mutating triggers in the response
+    assert "hx-swap-oob" not in html
+    assert "hx-post" not in html and "hx-patch" not in html
+
+
+def test_transient_reject_and_revision_shapes(grove_home):
+    from grove.api.fragments import render_disposition_transient
+    rej = render_disposition_transient(
+        {"skill_id": "skill.fleet.drafter", "unit_id": "gone-unit", "slug": "gone-unit"},
+        "reject", message="Rejected")
+    assert "rail-rejected" in rej and "disp-strip rail-rejected dim" in rej
+    assert "Rejected" in rej and "hx-swap-oob" not in rej
+    rev = render_disposition_transient(
+        {"skill_id": "skill.fleet.drafter", "unit_id": "gone-unit", "slug": "gone-unit"},
+        "suggest_revision", message="Guidance sent — redrafting",
+        echo="tighten the hooks")
+    assert "rail-revision_requested" in rev
+    assert "Guidance sent — redrafting" in rev
+    assert 'class="revised-disclosure">tighten the hooks' in rev
+
+
+async def test_mount_card_promote_end_to_end(client, grove_home):
+    """Full round trip: staged drafter unit + proposal → POST promote?mount=card
+    → fleet-shaped transient card; the file lands in canonical (side effect
+    identical); a queue re-fetch shows the unit promoted."""
+    from grove.eval import proposal_queue
+    d = grove_home / "drafter" / "pending_review" / "moon-bot"
+    d.mkdir(parents=True)
+    (d / "draft-moon-bot.md").write_text("---\ntitle: X\n---\nbody", encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps(
+        {"unit_id": "moon-bot", "slug": "moon-bot"}), encoding="utf-8")
+    pid, _ = proposal_queue.file_agentless(
+        type=proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
+        payload={"slug": "moon-bot", "unit_id": "moon-bot",
+                 "skill_id": "skill.fleet.drafter", "canonical_sink": "drafter"},
+        evidence=("moon-bot",), justification="t", proposer="skill.fleet.drafter")
+    resp = await client.post(f"/portal/actions/proposals/{pid}/promote?mount=card")
+    assert resp.status == 200
+    html = await resp.text()
+    assert "rail-promoted" in html and "chip-promoted" in html
+    assert "Promoted — ingested to wiki (drafter/ · 1 file(s))" in html
+    assert "View in Knowledge" in html
+    assert 'class="disposition-bar"' not in html
+    # side effect identical: mv → canonical
+    assert (grove_home / "drafter" / "draft-moon-bot.md").is_file()
+    # queue re-fetch shows the unit in its new tab
+    q = await (await client.get(
+        "/portal/fragments/fleet/drafter/?state=promoted")).text()
+    assert "review-card rail-promoted" in q
+    # legacy response (no mount param) unchanged for the dock/proposals shape
+    # (nothing left to disposition here — shape asserted in the unit tests)
+
+
+async def test_mount_card_promote_failure_keeps_retap(client, grove_home):
+    """Broken unit (staged dir vanished) → promote?mount=card fails 4xx: no
+    swap semantics (htmx never swaps 4xx), body carries the re-tappable error
+    card, the OOB alert banner rides along."""
+    from grove.eval import proposal_queue
+    pid, _ = proposal_queue.file_agentless(
+        type=proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
+        payload={"slug": "ghost", "unit_id": "ghost",
+                 "skill_id": "skill.fleet.drafter", "canonical_sink": "drafter"},
+        evidence=("ghost",), justification="t", proposer="skill.fleet.drafter")
+    resp = await client.post(f"/portal/actions/proposals/{pid}/promote?mount=card")
+    assert 400 <= resp.status < 600
+    html = await resp.text()
+    assert "proposal-" in html            # the error card body
+    assert "/promote" in html             # live verbs — re-tap works
+    assert 'hx-swap-oob="true"' in html   # the PRE-EXISTING alert-banner OOB only
+    assert html.count('hx-swap-oob') == 1

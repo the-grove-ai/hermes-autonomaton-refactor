@@ -153,10 +153,17 @@
               _clearAlertBanner();
           }
       });
-      // 2. Auto-clear-on-success — htmx:afterOnLoad fires ONLY on a 2xx (verified
-      //    against the bundled htmx: it lives inside the shouldSwap block). A
-      //    subsequent successful action clears a stale error banner. NO timer.
-      document.body.addEventListener('htmx:afterOnLoad', _clearAlertBanner);
+      // 2. Auto-clear-on-success. CROSS-SPRINT CORRECTION
+      //    (fleet-artifact-legibility-v1 C4): the bundled htmx fires
+      //    afterOnLoad on 4xx/5xx responses TOO (observed event order on an
+      //    error: beforeSwap → responseError → afterOnLoad), so an ungated
+      //    clear wiped a fresh error banner the instant the responseError
+      //    handler rendered it. Gate on a genuinely successful status; a
+      //    subsequent successful action still clears a stale banner. NO timer.
+      document.body.addEventListener('htmx:afterOnLoad', function(evt) {
+        var xhr = evt.detail && evt.detail.xhr;
+        if (xhr && xhr.status < 400) { _clearAlertBanner(); }
+      });
     </script>
     <!-- portal-link-provider-v1 — hash router. Deep links use
          {base_url}/portal#fragments/... so the operator always lands in the
