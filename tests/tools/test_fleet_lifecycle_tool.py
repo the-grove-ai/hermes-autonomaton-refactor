@@ -210,3 +210,46 @@ def test_purge_action_layer_is_producer_blind():
            + inspect.getsource(flt._strip_pattern))
     for name in ("forge", "scout", "drafter", "cultivator", "researcher"):
         assert name not in src, f"producer name {name!r} in the action layer"
+
+
+# ── P5-S4.1 — tool admission (the andon_write gap class, pinned shut) ────────
+
+
+def test_fleet_purge_is_admitted_through_the_real_gate():
+    """The record loads, binds the tool, and fleet_purge passes
+    get_admitted_tools() — the LIVE authority chain, not an import-level
+    registry check (the in-process-passes/live-fails trap)."""
+    from grove.capability_registry import load_capabilities
+    from grove.tool_admission import get_admitted_tools
+    from tools.registry import ToolRegistry, register_builtin_tools
+
+    cap = load_capabilities()["fleet_purge"]
+    assert cap.zone.value == "red"
+    assert cap.bindings.tools == ["fleet_purge"]
+    assert cap.trigger.always is True
+
+    reg = ToolRegistry()
+    register_builtin_tools(reg)
+    admitted = get_admitted_tools(reg, "cli", {})
+    assert "fleet_purge" in admitted
+
+
+def test_every_lifecycle_tool_has_an_admitting_record():
+    """STRUCTURAL pin: the gap class cannot recur silently — every tool this
+    module registers must be bound by some capability record (else
+    get_admitted_tools() filters it and the verb is dead on arrival)."""
+    from types import SimpleNamespace
+
+    from grove.capability_registry import load_capabilities
+
+    registered = []
+    register(SimpleNamespace(register=lambda **kw: registered.append(kw["name"])))
+    bound = set()
+    for cap in load_capabilities().values():
+        bound.update(cap.bindings.tools)
+    missing = [t for t in registered if t not in bound]
+    assert not missing, (
+        f"lifecycle tool(s) {missing} registered but bound by NO capability "
+        f"record — get_admitted_tools() will filter them (the andon_write / "
+        f"P5-S4.1 gap class)"
+    )
