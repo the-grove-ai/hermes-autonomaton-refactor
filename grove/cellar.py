@@ -193,10 +193,21 @@ class CellarIndex:
         if memory.is_file():
             yield memory, "memory"
         # Fleet + operator workspaces — each a directory of Markdown the
-        # autonomaton produces or curates. Walked recursively (mirroring the
-        # skills directory glob, including the .andon quarantine skip); each
-        # subtree is tagged with its own content_type. content_type matches
-        # the directory name so retrieval provenance is self-describing.
+        # autonomaton produces or curates. Walked recursively; each subtree is
+        # tagged with its own content_type. content_type matches the directory
+        # name so retrieval provenance is self-describing.
+        #
+        # promoted-artifact-persistence-v1 P4 — CANONICAL-ONLY corpus. pathlib
+        # glob descends into dot-dirs and staging subtrees, so an unfiltered
+        # **/*.md walk leaks STAGED (pending_review/, unapproved) and
+        # REJECTED/residue (.archive/) content into the automatic turn-start
+        # context — the agent's ambient sense of operator standards polluted
+        # by discards. The filter is STRUCTURAL (path segments, uniform for
+        # every workspace, zero producer names): any dir segment that is
+        # pending_review or dot-prefixed (.archive, .feedback, .andon — the
+        # prior explicit .andon skip is subsumed) excludes the file. Only
+        # operator-approved (promoted/canonical) and operator-authored
+        # content enters the corpus.
         for subdir, content_type in (
             ("research", "research"),
             ("scout", "scout"),
@@ -207,7 +218,9 @@ class CellarIndex:
             workspace = cellar / subdir
             if workspace.is_dir():
                 for md in sorted(workspace.glob("**/*.md")):
-                    if ".andon" in md.parts:
+                    rel_dirs = md.relative_to(workspace).parts[:-1]
+                    if any(p == "pending_review" or p.startswith(".")
+                           for p in rel_dirs):
                         continue
                     yield md, content_type
 

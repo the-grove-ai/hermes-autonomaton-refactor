@@ -2,15 +2,23 @@
 
 grove-browser is read-only: it RETURNS extracted data; the autonomaton persists
 it. This thin writer stages an extraction as a Yellow-staged RAW source file under
-a substrate-indexed workspace's ``pending_review/`` subdir, carrying
+a substrate-indexed workspace's ``extractions/`` subdir, carrying
 ``source: grove-browser/<domain>/<strategy>`` frontmatter.
 
 The substrate CellarIndex (grove/cellar.py) recursively globs the ``research``
 workspace (``research/**/*.md``), so the staged file is BM25-retrievable with its
 source attribution intact — the frontmatter is kept verbatim in the indexed body
 and surfaced in the query snippet. It is invisible to the wiki-compaction poller
-(whose flat glob skips ``pending_review/``), so this is NOT the canonical
+(no adapter or record declares research), so this is NOT the canonical
 compaction path: canonicalization is deferred to downstream skill synthesis.
+
+promoted-artifact-persistence-v1 P4 (cross-sprint correction): the staging
+subdir moved ``pending_review/`` → ``extractions/``. ``pending_review`` is now
+uniformly "awaiting operator approval, never ambient" — P4's canonical-only
+corpus filter excludes it from turn-start context, which would have made
+extractions retrieval-dark. ``extractions/`` is a plain (non-dot,
+non-pending_review) subdir, inside the CellarIndex recursive boundary and
+outside the P4 filter, so AC-6' retrievability is preserved.
 """
 
 from __future__ import annotations
@@ -21,11 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# A substrate-indexed workspace (research) + a pending_review/ staging subdir:
-# indexed by CellarIndex's recursive **/*.md glob, invisible to the wiki poller's
-# flat glob (Yellow staging). Not a new sink — research is already scanned.
+# A substrate-indexed workspace (research) + a plain staging subdir: indexed by
+# CellarIndex's recursive **/*.md glob (P4 filter does not exclude it),
+# invisible to the wiki poller. Not a new sink — research is already scanned.
 _WORKSPACE = "research"
-_STAGING = "pending_review"
+_STAGING = "extractions"
 
 
 def _slug(text: str) -> str:

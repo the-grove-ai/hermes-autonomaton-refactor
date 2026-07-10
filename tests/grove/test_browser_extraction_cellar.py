@@ -27,8 +27,10 @@ def test_stages_with_correct_source_frontmatter(tmp_path):
     path = stage_browser_extraction(
         content=_CONTENT, domain="linkedin.com", strategy="job_listing", cellar_dir=tmp_path,
     )
-    # Lands under a substrate-indexed workspace's pending_review/ (Yellow staging).
-    assert path.parent == tmp_path / "research" / "pending_review"
+    # Lands under a substrate-indexed workspace's extractions/ subdir (Yellow
+    # staging; P4 relocated it out of pending_review, which is now uniformly
+    # "awaiting operator approval, never ambient").
+    assert path.parent == tmp_path / "research" / "extractions"
     text = path.read_text(encoding="utf-8")
     assert "source: grove-browser/linkedin.com/job_listing" in text
     assert "source_type: browser_extraction" in text
@@ -65,3 +67,26 @@ def test_source_string_shape():
 def test_fails_loud_on_empty_inputs(tmp_path, kwargs):
     with pytest.raises(ValueError):
         stage_browser_extraction(cellar_dir=tmp_path, **kwargs)
+
+
+def test_extractions_path_survives_the_p4_canonical_only_filter(tmp_path):
+    """P4 seam pin: research/extractions/ is inside the CellarIndex recursive
+    boundary and NOT excluded by the canonical-only filter (not a dot-dir, not
+    pending_review, not .archive) — while a pending_review sibling IS excluded.
+    Extraction stays indexed with source attribution."""
+    path = stage_browser_extraction(
+        content=_CONTENT, domain="linkedin.com", strategy="job_listing", cellar_dir=tmp_path,
+    )
+    assert "pending_review" not in path.parts
+    # a staged (unapproved) sibling in the same workspace stays OUT of the corpus
+    staged = tmp_path / "research" / "pending_review" / "u1"
+    staged.mkdir(parents=True)
+    (staged / "draft-unapproved.md").write_text("sovereign staged discard")
+
+    idx = _index(tmp_path)
+    idx.build_index()
+    results = idx.query("sovereign infrastructure model independence", k=10)
+    paths = [r.source_path for r in results]
+    assert any("research/extractions/" in p for p in paths)
+    assert all("pending_review" not in p for p in paths)
+    assert build_source("linkedin.com", "job_listing") in results[0].snippet
