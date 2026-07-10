@@ -1259,7 +1259,14 @@ class Dispatcher:
         # (fleet-corpus-only-offering-v1 P2) confines the per-turn OFFERED surface;
         # this L2 floor is the fail-safe ceiling beneath it.
         if self._platform == "fleet":
-            _FLEET_FLOOR = ("read_file", "skill_view")
+            # wiki-writer-structured-output-v1 P1 — emit_package joins the
+            # ceiling: it is the harness-governed terminal-emission tool
+            # (validates + stages atomically into the record's declared sink
+            # via the jailed stage_package; no free write surface). Its
+            # check_fn is True ONLY in a configured worker process, and the
+            # per-spawn L1 allow-list admits it ONLY for tool-transport
+            # producers — the ceiling permits, the allow-list enables.
+            _FLEET_FLOOR = ("read_file", "skill_view", "emit_package")
             all_defs = get_tool_definitions(
                 self.registry, enabled_toolsets=None, quiet_mode=quiet_mode,
             )

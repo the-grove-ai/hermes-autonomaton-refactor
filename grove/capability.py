@@ -459,6 +459,86 @@ def _validate_presentation(governance, record_id: str) -> None:
     ta["presentation_error"] = err
 
 
+# ---------------------------------------------------------------------------
+# wiki-writer-structured-output-v1 P1 — terminal_artifact.emit validation.
+#
+# The OPTIONAL emit declaration is the SOURCE OF TRUTH for a fleet producer's
+# emit_package contract (GATE-B F5: record declares, harness derives). Shape:
+#   emit:
+#     transport: "tool" | "sentinel"          # required
+#     files: {required: [name, ...]}          # optional (forge names its set;
+#                                             #  declarative producers derive
+#                                             #  from path_pattern + unit_id)
+#     meta: {required_keys: [key, ...]}       # optional (forge identity keys)
+# Rides the C1 presentation-block pattern exactly: a malformed block logs a
+# LOUD warning naming the record + offending field and gains a non-destructive
+# ``emit_error`` sibling — consumers treat error-present as declaration-absent
+# (= sentinel transport, the migration default per GATE-B F6). Loading never
+# fails on emit errors; the operator's block is never deleted.
+# ---------------------------------------------------------------------------
+
+_EMIT_TRANSPORTS: frozenset = frozenset({"tool", "sentinel"})
+
+
+def _str_list_ok(value) -> bool:
+    """A list of non-empty strings."""
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(x, str) and x.strip() for x in value)
+    )
+
+
+def _emit_shape_error(emit) -> str | None:
+    """Return the offending-field description for a malformed emit block, or
+    None when the shape is valid. ``transport`` is required; unknown keys are
+    malformed (strict — predictable degradation over silent tolerance)."""
+    if not isinstance(emit, dict):
+        return "emit (must be a mapping)"
+    unknown = set(emit) - {"transport", "files", "meta"}
+    if unknown:
+        return f"unknown key(s) {sorted(unknown)}"
+    if emit.get("transport") not in _EMIT_TRANSPORTS:
+        return "'transport' (required; \"tool\" or \"sentinel\")"
+    if "files" in emit:
+        f = emit["files"]
+        if not isinstance(f, dict) or set(f) - {"required"}:
+            return "'files' (needs {required})"
+        if "required" in f and not _str_list_ok(f["required"]):
+            return "'files.required' (non-empty list of non-empty str)"
+    if "meta" in emit:
+        m = emit["meta"]
+        if not isinstance(m, dict) or set(m) - {"required_keys"}:
+            return "'meta' (needs {required_keys})"
+        if "required_keys" in m and not _str_list_ok(m["required_keys"]):
+            return "'meta.required_keys' (non-empty list of non-empty str)"
+    return None
+
+
+def _validate_emit(governance, record_id: str) -> None:
+    """Validate ``emission_preconditions.terminal_artifact.emit`` IN PLACE.
+    Malformed: warn LOUD (record + field) and set a machine-readable
+    ``emit_error`` string BESIDE the block (the harness treats error-present
+    as declaration-absent → sentinel transport). The operator's block itself
+    is never deleted — a registry write-back must not destroy a fixable
+    declaration."""
+    if not isinstance(governance, dict):
+        return
+    ta = (governance.get("emission_preconditions") or {}).get("terminal_artifact")
+    if not isinstance(ta, dict) or "emit" not in ta:
+        return
+    err = _emit_shape_error(ta["emit"])
+    if err is None:
+        ta.pop("emit_error", None)
+        return
+    _pres_logger.warning(
+        "[capability] %s: terminal_artifact.emit is malformed — %s; "
+        "declaration treated as ABSENT (sentinel transport). Fix the emit "
+        "block in the capability record.", record_id, err,
+    )
+    ta["emit_error"] = err
+
+
 @dataclass(kw_only=True)
 class Capability:
     id: str  # governance-bearing — no default
@@ -940,6 +1020,9 @@ class Capability:
         # presentation is enhancement, disposition is governance).
         if "governance" in d:
             _validate_presentation(d["governance"], d.get("id", "<no id>"))
+            # wiki-writer-structured-output-v1 P1 — the SECOND validated-optional
+            # terminal_artifact sibling (emit), same non-destructive discipline.
+            _validate_emit(d["governance"], d.get("id", "<no id>"))
             kwargs["governance"] = d["governance"]
 
         # R5 — per-skill model binding (present-key only; absent -> None default).

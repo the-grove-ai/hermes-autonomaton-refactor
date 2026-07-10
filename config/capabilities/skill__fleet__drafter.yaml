@@ -281,6 +281,14 @@ governance:
     terminal_artifact:
       tool: write_file
       path_pattern: "draft-*.md"
+      # wiki-writer-structured-output-v1 P1 — emit_package contract (source
+      # of truth; harness derives the registered schema, GATE-B F5).
+      # transport:tool = schema-bound JSON emission. Declarative producer:
+      # the required file derives from path_pattern + unit_id at spawn (no
+      # duplicate declaration to drift against); identity (meta.json) stays
+      # runtime-synthesized — no meta arg.
+      emit:
+        transport: tool
   approval_handoff:
     # fleet-review-unification-v1 C1b-2 — drafter is now a real fleet worker whose
     # staged Yellow draft is disposed on the action surface (promote → mv to the
