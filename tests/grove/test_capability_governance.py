@@ -25,6 +25,7 @@ import pytest
 
 from grove.tool_classes import TOOL_CLASS_MAP, classify_tool, count_tool_classes
 from grove.utils.fs_utils import (
+    canonicalize_files,
     capability_emission_precondition,
     is_capability_write_allowed,
     promote_artifact,
@@ -390,3 +391,63 @@ def test_real_fleet_records_carry_governance():
         assert cap.kind is CapabilityKind.SKILL
         assert cap.governance is not None
         assert cap.governance["write_zone"]["staging_dir"] == staging
+
+
+# ── canonicalize_files (THE shared canonicalization core, P1) ─────────────────
+
+
+def test_canonicalize_moves_and_creates_dir(grove):
+    src_dir = grove / "x" / "pending_review"
+    src_dir.mkdir(parents=True)
+    a, b = src_dir / "a.md", src_dir / "b.md"
+    a.write_text("A"); b.write_text("B")
+    out = canonicalize_files([a, b], grove / "x" / "unit-1")
+    assert out == [str(grove / "x" / "unit-1" / "a.md"),
+                   str(grove / "x" / "unit-1" / "b.md")]
+    assert not a.exists() and not b.exists()  # moved, not copied
+    assert (grove / "x" / "unit-1" / "a.md").read_text() == "A"
+
+
+def test_canonicalize_skip_if_identical_leaves_source(grove):
+    """P1 ruling 3: byte-identical canonical copy → skip; source untouched."""
+    src_dir = grove / "x"; src_dir.mkdir()
+    canon = grove / "canon"; canon.mkdir()
+    src = src_dir / "f.md"; src.write_text("same")
+    (canon / "f.md").write_text("same")
+    out = canonicalize_files([src], canon)
+    assert out == [str(canon / "f.md")]
+    assert src.exists()  # skip — not moved
+
+
+def test_canonicalize_divergent_overwrites_last_write_wins(grove):
+    """P1 ruling 3: divergent content → overwrite via rename (no Andon)."""
+    src_dir = grove / "x"; src_dir.mkdir()
+    canon = grove / "canon"; canon.mkdir()
+    src = src_dir / "f.md"; src.write_text("new")
+    (canon / "f.md").write_text("old")
+    out = canonicalize_files([src], canon)
+    assert out == [str(canon / "f.md")]
+    assert (canon / "f.md").read_text() == "new"
+    assert not src.exists()
+
+
+def test_canonicalize_source_gone_canonical_present_satisfied(grove):
+    """P1 ruling 3: staging-gone + canonical-present → satisfied (re-tap)."""
+    canon = grove / "canon"; canon.mkdir()
+    (canon / "f.md").write_text("already")
+    out = canonicalize_files([grove / "x" / "f.md"], canon)
+    assert out == [str(canon / "f.md")]
+    assert (canon / "f.md").read_text() == "already"
+
+
+def test_canonicalize_source_gone_no_canonical_fails_loud(grove):
+    with pytest.raises(FileNotFoundError, match="cannot be satisfied"):
+        canonicalize_files([grove / "x" / "f.md"], grove / "canon")
+
+
+def test_canonicalize_self_rename_is_noop(grove):
+    """staging == canonical (scout): the self-rename resolves as a skip."""
+    d = grove / "scout"; d.mkdir()
+    f = d / "digest-x.json"; f.write_text("{}")
+    out = canonicalize_files([f], d)
+    assert out == [str(f)] and f.read_text() == "{}"

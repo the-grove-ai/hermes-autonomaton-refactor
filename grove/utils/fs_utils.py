@@ -21,11 +21,13 @@ promotion); nothing else under ``~/.grove`` is writable by a generic file tool.
 
 from __future__ import annotations
 
+import filecmp
 import fnmatch
 import logging
 import os
 import tempfile
 from pathlib import Path
+from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ __all__ = [
     "GOVERNED_PATH_MESSAGE",
     "is_capability_write_allowed",
     "capability_emission_precondition",
+    "canonicalize_files",
     "promote_artifact",
 ]
 
@@ -765,6 +768,57 @@ def capability_emission_precondition(
     return (True, "")
 
 
+def canonicalize_files(files: Iterable[Path], canonical_dir: Path) -> "list[str]":
+    """THE canonicalization implementation (promoted-artifact-persistence-v1 P1).
+
+    Atomically ``rename`` content *files* into *canonical_dir* under their own
+    basenames, creating the dir if absent. ``~/.grove`` is one mount, so each
+    rename is atomic. Returns the canonical paths (moved or skip-verified), in
+    input order.
+
+    Per-file idempotency (P1 ruling 3, exactly):
+      * source gone + same-name canonical present → SATISFIED (the canonical
+        act already happened — a re-tap after a downstream delivery failure);
+      * source present + same-name canonical byte-IDENTICAL → SKIP (source is
+        left untouched; the canonical state is already achieved);
+      * source present + same-name canonical DIVERGENT → last-write-wins
+        overwrite via the rename (the pre-P1 ``os.rename`` semantic — no new
+        collision Andon);
+      * source gone + no canonical → ``FileNotFoundError``, loud (a canonical
+        write failure aborts the promote — never a silent partial).
+
+    PRODUCER-BLIND BY CONTRACT (GATE-B ruling 2, test-pinned): this function
+    contains zero producer names and zero content knowledge. Callers own
+    selection (e.g. the ``meta.json`` exclusion) and validation (staging
+    membership, WHERE-gate discipline). Both promote entry points —
+    :func:`promote_artifact` and the portal's ``_fleet_promote_core`` —
+    delegate the canonical act here; there is no second copy."""
+    canonical = Path(canonical_dir)
+    canonical.mkdir(parents=True, exist_ok=True)
+    out: "list[str]" = []
+    for f in files:
+        src = Path(f)
+        target = canonical / src.name
+        if not src.is_file():
+            if target.is_file():
+                out.append(str(target))  # satisfied — already canonicalized
+                continue
+            raise FileNotFoundError(
+                f"canonicalize_files: source {src} is gone and no canonical "
+                f"copy exists at {target} — the canonical write cannot be "
+                f"satisfied"
+            )
+        if target.is_file() and (
+            os.path.samefile(src, target)
+            or filecmp.cmp(src, target, shallow=False)
+        ):
+            out.append(str(target))  # skip — byte-identical (or self-rename)
+            continue
+        src.rename(target)  # atomic within the one ~/.grove mount
+        out.append(str(target))
+    return out
+
+
 def promote_artifact(source_path: str, governance: dict) -> str:
     """Deterministic promotion of an approved artifact from a capability's
     staging dir to its canonical sink (structural-review-gate-v1).
@@ -838,10 +892,11 @@ def promote_artifact(source_path: str, governance: dict) -> str:
             f"promote"
         )
 
+    # The canonical act delegates to the ONE shared implementation
+    # (promoted-artifact-persistence-v1 P1, GATE-B ruling 1) — mkdir + atomic
+    # rename under the source's own basename, skip-if-identical.
     canonical_abs = _grove_subdir_realpath(canonical, grove)
-    os.makedirs(canonical_abs, exist_ok=True)
-    target = os.path.join(canonical_abs, os.path.basename(source_real))
-    os.rename(source_real, target)
+    target = canonicalize_files([Path(source_real)], Path(canonical_abs))[0]
 
     # auto_ingest — trigger the universal ingest gate immediately. operator_
     # approval capabilities skip this: the move is the approval effect and the

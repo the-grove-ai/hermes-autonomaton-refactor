@@ -34,6 +34,22 @@ def _emit(slug="260704-acme-pm", row_id="pg1"):
     return pid
 
 
+def _stage(slug="260704-acme-pm", row_id="pg1"):
+    """Stage a forge package (P1 fixture — the canonicalize step precedes the
+    mocked publish, so the promote sequence needs real staged content)."""
+    slug_dir = Path(get_hermes_home()) / "forge" / "pending_review" / slug
+    slug_dir.mkdir(parents=True, exist_ok=True)
+    (slug_dir / "resume.md").write_text("R")
+    (slug_dir / "cover-letter.md").write_text("C")
+    (slug_dir / "meta.json").write_text(json.dumps(
+        {"row_id": row_id, "company": "Acme", "role": "PM", "slug": slug}))
+    return slug_dir
+
+
+def _canonical_dir(slug="260704-acme-pm"):
+    return Path(get_hermes_home()) / "forge" / slug
+
+
 def _ledger_events():
     out = []
     for f in glob.glob(str(Path(get_hermes_home()) / ".kaizen_ledger" / "*.jsonl")):
@@ -46,6 +62,7 @@ def _ledger_events():
 
 async def test_promote_happy_path_finalizes(monkeypatch):
     pid = _emit()
+    slug_dir = _stage()
     monkeypatch.setattr(actions, "_forge_publish_core",
                         lambda slug, loop: _async({"ok": True, "folder_link": "drive://x", "row_id": "pg1"}))
     resp = await actions.handle_forge_promote(_Req(proposal_id=pid))
@@ -59,6 +76,17 @@ async def test_promote_happy_path_finalizes(monkeypatch):
     ar = ev[-1]["applied_result"]
     assert ar["folder_link"] == "drive://x"
     assert ar["unit_id"] == "pg1" and ar["slug"] == "260704-acme-pm"
+    # P1 (promoted-artifact-persistence-v1) — Verdict B: local canonical copies
+    # exist in the per-unit subdir; the staged dir is archived META-ONLY.
+    canon = _canonical_dir()
+    assert (canon / "resume.md").read_text() == "R"
+    assert (canon / "cover-letter.md").read_text() == "C"
+    assert ar["canonical_files"] == sorted(
+        str(canon / n) for n in ("cover-letter.md", "resume.md"))
+    assert not slug_dir.exists()  # archived away
+    archived = list((Path(get_hermes_home()) / "forge" / ".archive").glob("260704-acme-pm-*"))
+    assert len(archived) == 1
+    assert sorted(p.name for p in archived[0].iterdir()) == ["meta.json"]
 
 
 async def test_double_tap_returns_409_and_holds_first_lease(monkeypatch):
@@ -72,6 +100,7 @@ async def test_double_tap_returns_409_and_holds_first_lease(monkeypatch):
 
 async def test_timeout_keeps_lease_held(monkeypatch):
     pid = _emit()
+    slug_dir = _stage()
     monkeypatch.setattr(actions, "_FORGE_PUBLISH_TIMEOUT", 0.05)
 
     async def _slow(slug, loop):
@@ -85,10 +114,15 @@ async def test_timeout_keeps_lease_held(monkeypatch):
     # THE load-bearing assertion: the lease is STILL HELD after the timeout path
     held = pq.read(pid)
     assert held is not None and held.lease is not None  # not cleared, not finalized
+    # P1 ruling 3 — canonical write preceded the (timed-out) publish and STAYS
+    # intact; the staged dir is NOT archived (meta.json is the retry substrate).
+    assert (_canonical_dir() / "resume.md").read_text() == "R"
+    assert (slug_dir / "meta.json").is_file()
 
 
 async def test_completed_failure_clears_lease(monkeypatch):
     pid = _emit()
+    slug_dir = _stage()
     monkeypatch.setattr(actions, "_forge_publish_core",
                         lambda slug, loop: _async(
                             {"ok": False, "kind": "forge_notion_cold", "status": 400,
@@ -97,6 +131,19 @@ async def test_completed_failure_clears_lease(monkeypatch):
     assert resp.status == 400
     rec = pq.read(pid)
     assert rec is not None and rec.lease is None  # cleared -> re-tappable, record stays
+    # P1 ruling 3 — publish failure AFTER canonical write: proposal held OPEN
+    # (asserted above), canonical intact, staged dir NOT archived, NO finalize,
+    # and the Andon is raised (the loud path files a portal_action_failure).
+    assert (_canonical_dir() / "resume.md").read_text() == "R"
+    assert (_canonical_dir() / "cover-letter.md").read_text() == "C"
+    assert (slug_dir / "meta.json").is_file()
+    applied = [e for e in _ledger_events()
+               if e["event_type"] == "kaizen_disposition"
+               and e.get("disposition") == "applied"]
+    assert not applied  # never finalize an undelivered package
+    andons = [p for p in pq._read_records(pq.default_queue_path())
+              if p.type == "portal_action_failure"]
+    assert andons  # the Andon surface fired
 
 
 async def test_promote_missing_proposal_404(monkeypatch):
@@ -108,6 +155,74 @@ def _async(value):
     async def _c(*a, **k):
         return value
     return _c()
+
+
+# ── P1 (promoted-artifact-persistence-v1): canonicalize → publish → archive ──
+
+
+async def test_publish_failure_then_retap_succeeds(monkeypatch):
+    """Verdict C — the full ruling-3 + ruling-4 arc: publish fails AFTER the
+    canonical write (hold open, canonical intact), then a re-tap is SATISFIED
+    on the canonical write (staging content already moved) and proceeds to a
+    successful publish, archive, finalize."""
+    pid = _emit()
+    slug_dir = _stage()
+    monkeypatch.setattr(actions, "_forge_publish_core",
+                        lambda slug, loop: _async(
+                            {"ok": False, "kind": "forge_drive_publish_error",
+                             "status": 422, "message": "Drive down"}))
+    resp = await actions.handle_forge_promote(_Req(proposal_id=pid))
+    assert resp.status == 422
+    assert pq.read(pid) is not None  # held open
+    canon_before = {p.name: p.read_text() for p in _canonical_dir().iterdir()}
+    assert canon_before == {"resume.md": "R", "cover-letter.md": "C"}
+
+    # re-tap — canonical write satisfied (idempotent), publish now succeeds
+    monkeypatch.setattr(actions, "_forge_publish_core",
+                        lambda slug, loop: _async(
+                            {"ok": True, "folder_link": "drive://x", "row_id": "pg1"}))
+    resp2 = await actions.handle_forge_promote(_Req(proposal_id=pid))
+    assert resp2.status == 200
+    assert pq.read(pid) is None  # finalized
+    canon_after = {p.name: p.read_text() for p in _canonical_dir().iterdir()}
+    assert canon_after == canon_before  # canonical untouched by the re-tap
+    assert not slug_dir.exists()  # archived meta-only on the successful pass
+    archived = list((Path(get_hermes_home()) / "forge" / ".archive").glob("260704-acme-pm-*"))
+    assert len(archived) == 1
+    assert sorted(p.name for p in archived[0].iterdir()) == ["meta.json"]
+    ev = [e for e in _ledger_events() if e["event_type"] == "kaizen_disposition"]
+    assert ev[-1]["disposition"] == "applied"
+
+
+async def test_canonicalize_missing_aborts_before_publish(monkeypatch):
+    """Ruling 3 — a canonical write that cannot be satisfied (no staged content,
+    no canonical package) ABORTS the promote before any delivery attempt."""
+    pid = _emit()  # no _stage(): nothing staged, nothing canonical
+
+    async def _never(slug, loop):
+        raise AssertionError("publish must not run when canonicalize fails")
+
+    monkeypatch.setattr(actions, "_forge_publish_core", _never)
+    resp = await actions.handle_forge_promote(_Req(proposal_id=pid))
+    assert resp.status == 404
+    rec = pq.read(pid)
+    assert rec is not None and rec.lease is None  # held open, re-tappable
+
+
+def test_canonicalize_core_is_producer_blind():
+    """Verdict E — GATE-B ruling 2 pin: the ONE canonicalization core contains
+    zero producer names, and both promote entry points delegate to it."""
+    import inspect
+
+    from grove.utils import fs_utils
+
+    core_src = inspect.getsource(fs_utils.canonicalize_files)
+    for name in ("forge", "scout", "drafter", "cultivator", "researcher"):
+        assert name not in core_src, f"producer name {name!r} leaked into the core"
+    # single-implementation pin: both entry points route through the core
+    assert "canonicalize_files" in inspect.getsource(actions._fleet_promote_core)
+    assert "canonicalize_files" in inspect.getsource(fs_utils.promote_artifact)
+    assert "canonicalize_files" in inspect.getsource(actions._canonicalize_staged_package)
 
 
 # ── reject: archive-then-clear ───────────────────────────────────────────────
