@@ -22,6 +22,7 @@ __all__ = [
     "MemoryDeprecated",
     "MemoryAccessed",
     "MemoryGraduated",
+    "FleetPromoteAccepted",
     "MemoryEvent",
     "new_event_id",
     "new_record_id",
@@ -109,10 +110,35 @@ class MemoryGraduated:
     record_id: str
 
 
+@dataclass(frozen=True)
+class FleetPromoteAccepted:
+    """Operator acceptance of a fleet unit at promote finalize
+    (promoted-artifact-persistence-v1 P3).
+
+    OBSERVATIONAL — projects no :class:`MemoryRecord` (the fold is a no-op,
+    like the telemetry shape of :class:`MemoryAccessed`); it is Flywheel food.
+    ``directive_history`` is the feedback store's history SNAPSHOT captured at
+    promote time — the durable record that survives the feedback store's
+    TTL-GC. Producer-blind: ``producer`` is the skill_id and ``sink`` the
+    capability-declared canonical_dir value; no field is producer-specific."""
+
+    event_id: str                       # "evt_" + uuid8
+    timestamp: str                      # ISO-8601 UTC
+    unit_id: str                        # stable unit identity (unit_id/row_id/slug)
+    slug: Optional[str]                 # staged package slug (None if absent)
+    producer: Optional[str]             # skill_id (e.g. skill.fleet.<name>)
+    sink: Optional[str]                 # declared write_zone.canonical_dir value
+    revision_count: int                 # feedback count at promote time (0 = fresh)
+    directive_history: List[Dict]       # [{ts, revision_note}] snapshot
+    proposal_id: str                    # the finalized proposal
+    canonical_files: List[str]          # P1 canonical copies (from the promote)
+
+
 MemoryEvent = Union[
     MemoryCreated,
     MemorySuperseded,
     MemoryDeprecated,
     MemoryAccessed,
     MemoryGraduated,
+    FleetPromoteAccepted,
 ]

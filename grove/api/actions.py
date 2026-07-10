@@ -1084,6 +1084,57 @@ def _canonicalize_staged_package(proposal) -> dict:
                         f"— nothing to promote.")}
 
 
+def _emit_promote_accepted(request, proposal, canonical_files) -> None:
+    """P3 (promoted-artifact-persistence-v1) — memorialize operator acceptance
+    as a :class:`FleetPromoteAccepted` memory event, AFTER finalize succeeded.
+
+    The highest-signal event the system produces: "the operator accepted unit
+    X at revision N after this guidance." The feedback store's history is
+    snapshotted HERE, at promote time — the durable record that survives the
+    feedback store's TTL-GC. Producer-blind: every field derives from the
+    proposal payload, the feedback store keyed (worker, unit_id), and the
+    capability-declared canonical_dir (the manager's own sink resolver).
+
+    FAILURE POSTURE (P3 binding): emission failure NEVER unwinds or blocks
+    the finalize — the promote contract is delivery + custody; this is
+    learning signal. Loud warning, the promote_artifact ingest-failure shape.
+    A corrupt feedback entry also lands here: no event is emitted over a
+    feedback-blind snapshot, and the loss is announced."""
+    try:
+        from grove.fleet.manager import _canonical_sink_for_skill
+        from grove.memory.events import FleetPromoteAccepted, new_event_id
+        from grove.memory.store import MemoryStore
+
+        pl = proposal.payload or {}
+        skill_id = pl.get("skill_id")
+        unit_id = pl.get("unit_id") or pl.get("row_id") or pl.get("slug")
+        worker = _worker_id_for_skill(skill_id)
+        fb = (feedback_store.read(worker, unit_id)
+              if worker and unit_id else None) or {}
+        app = getattr(request, "app", None)
+        store = app.get("memory_store") if app is not None else None
+        if store is None:
+            store = MemoryStore(base_dir=Path(get_hermes_home()))
+        store.append_event(FleetPromoteAccepted(
+            event_id=new_event_id(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            unit_id=str(unit_id),
+            slug=pl.get("slug"),
+            producer=skill_id,
+            sink=_canonical_sink_for_skill(skill_id),
+            revision_count=int(fb.get("count", 0)),
+            directive_history=list(fb.get("history", [])),
+            proposal_id=proposal.proposal_id,
+            canonical_files=list(canonical_files or []),
+        ))
+    except Exception as exc:  # noqa: BLE001 — learning signal, never unwinds a promote
+        logger.warning(
+            "[portal.actions] promote-accepted memory event FAILED (%r) — the "
+            "promote finalized; the acceptance record for %s is lost.",
+            exc, (proposal.payload or {}).get("slug"),
+        )
+
+
 async def _promote_disposition(
     request: web.Request, producer: str = "forge"
 ) -> web.Response:
@@ -1159,9 +1210,13 @@ async def _promote_disposition(
                 failure_class=res["kind"], action="fleet_promote",
                 message=res["message"], status=res["status"],
             )
-        proposal_queue.finalize_proposal_state(
+        finalized = proposal_queue.finalize_proposal_state(
             proposal_id, "applied", {"moved": res["moved"]}
         )
+        # P3 — memorialize acceptance AFTER a successful finalize (a False
+        # return = already finalized elsewhere; no duplicate event). Non-fatal.
+        if finalized:
+            _emit_promote_accepted(request, proposal, res["moved"])
         # fleet-artifact-legibility-v1 C4 (D6 fix) — Mount-1 card tap gets the
         # fleet-shaped transient with the sink-derived destination link.
         if mount == "card":
@@ -1234,7 +1289,7 @@ async def _promote_disposition(
 
     # SUCCESS — finalize (the single disposition path): remove + kaizen ledger.
     _pl = proposal.payload or {}
-    proposal_queue.finalize_proposal_state(
+    finalized = proposal_queue.finalize_proposal_state(
         proposal_id, "applied",
         # C2 — carry the unit identity so the read-side viewer's ledger join keys
         # forge 'promoted' reliably (the ledger, not the filesystem, records the
@@ -1245,6 +1300,10 @@ async def _promote_disposition(
          "slug": _pl.get("slug"),
          "canonical_files": canon.get("canonical_files", [])},
     )
+    # P3 — memorialize acceptance AFTER a successful finalize (a False return
+    # = already finalized elsewhere; no duplicate event). Non-fatal.
+    if finalized:
+        _emit_promote_accepted(request, proposal, canon.get("canonical_files"))
     # fleet-artifact-legibility-v1 C4 (D6 fix) — Mount-1 card tap gets the
     # fleet-shaped transient; the Drive folder is the destination link.
     if mount == "card":

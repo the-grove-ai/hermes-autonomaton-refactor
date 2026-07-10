@@ -25,6 +25,7 @@ class _Req:
         self.match_info = mi
         self.query = {}
         self.content_type = ""
+        self.app = {}  # P3 — the emit helper probes request.app for memory_store
 
 
 def _emit(slug="260704-acme-pm", row_id="pg1"):
@@ -211,18 +212,131 @@ async def test_canonicalize_missing_aborts_before_publish(monkeypatch):
 
 def test_canonicalize_core_is_producer_blind():
     """Verdict E — GATE-B ruling 2 pin: the ONE canonicalization core contains
-    zero producer names, and both promote entry points delegate to it."""
+    zero producer names, and both promote entry points delegate to it. P3
+    extends the pin to the acceptance-event emission path."""
     import inspect
 
     from grove.utils import fs_utils
 
-    core_src = inspect.getsource(fs_utils.canonicalize_files)
+    core_src = (inspect.getsource(fs_utils.canonicalize_files)
+                + inspect.getsource(actions._emit_promote_accepted))
     for name in ("forge", "scout", "drafter", "cultivator", "researcher"):
         assert name not in core_src, f"producer name {name!r} leaked into the core"
     # single-implementation pin: both entry points route through the core
     assert "canonicalize_files" in inspect.getsource(actions._fleet_promote_core)
     assert "canonicalize_files" in inspect.getsource(fs_utils.promote_artifact)
     assert "canonicalize_files" in inspect.getsource(actions._canonicalize_staged_package)
+
+
+# ── P3 (promoted-artifact-persistence-v1): acceptance memory event ───────────
+
+
+def _accept_events():
+    """Every FleetPromoteAccepted line in the memory event log."""
+    p = Path(get_hermes_home()) / "memory_records.jsonl"
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        d = json.loads(line)
+        if d.get("__type__") == "FleetPromoteAccepted":
+            out.append(d)
+    return out
+
+
+async def test_forge_promote_emits_acceptance_event_fresh(monkeypatch):
+    """Verdicts A+B (forge, fresh): exactly ONE FleetPromoteAccepted append per
+    promote; revision_count 0, empty directive history, full identity."""
+    pid = _emit()
+    _stage()
+    monkeypatch.setattr(actions, "_forge_publish_core",
+                        lambda slug, loop: _async({"ok": True, "folder_link": "drive://x", "row_id": "pg1"}))
+    resp = await actions.handle_forge_promote(_Req(proposal_id=pid))
+    assert resp.status == 200
+
+    evs = _accept_events()
+    assert len(evs) == 1  # exactly one append per promote
+    ev = evs[0]
+    assert ev["unit_id"] == "pg1"
+    assert ev["slug"] == "260704-acme-pm"
+    assert ev["producer"] == "skill.fleet.forge-jobsearch"
+    assert ev["sink"] == "forge"  # capability-declared canonical_dir value
+    assert ev["revision_count"] == 0
+    assert ev["directive_history"] == []
+    assert ev["proposal_id"] == pid
+    assert sorted(Path(f).name for f in ev["canonical_files"]) == [
+        "cover-letter.md", "resume.md"]
+    assert ev["event_id"].startswith("evt_") and ev["timestamp"]
+
+
+async def test_forge_promote_event_snapshots_revision_history(monkeypatch):
+    """Verdict B (revised): the feedback store's guidance is snapshotted INTO
+    the event at promote time — the record that survives feedback TTL-GC."""
+    from grove.forge import feedback_store
+    pid = _emit()
+    _stage()
+    feedback_store.write("forge", "pg1", "tighten the intro")
+    feedback_store.write("forge", "pg1", "lead with the metric")
+    monkeypatch.setattr(actions, "_forge_publish_core",
+                        lambda slug, loop: _async({"ok": True, "folder_link": "drive://x", "row_id": "pg1"}))
+    resp = await actions.handle_forge_promote(_Req(proposal_id=pid))
+    assert resp.status == 200
+
+    (ev,) = _accept_events()
+    assert ev["revision_count"] == 2
+    notes = [h["revision_note"] for h in ev["directive_history"]]
+    assert notes == ["tighten the intro", "lead with the metric"]
+
+
+async def test_file_producer_promote_emits_acceptance_event(monkeypatch):
+    """Verdict B (file-producer variant): the mv-sink branch emits the same
+    event shape — sink from the capability declaration, files from the move."""
+    from grove.eval.proposal_queue import PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING
+    slug = "draft-2026-07-04-moon"
+    pid, _ = pq.file_agentless(
+        type=PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
+        payload={"slug": slug, "unit_id": "moon", "skill_id": "skill.fleet.drafter",
+                 "canonical_sink": "drafter"},
+        evidence=("moon",))
+    d = Path(get_hermes_home()) / "drafter" / "pending_review" / slug
+    d.mkdir(parents=True)
+    (d / "draft-2026-07-04-moon.md").write_text("D")
+    (d / "meta.json").write_text(json.dumps({"unit_id": "moon"}))
+
+    resp = await actions.handle_forge_promote(_Req(proposal_id=pid))
+    assert resp.status == 200
+
+    (ev,) = _accept_events()
+    assert ev["unit_id"] == "moon"
+    assert ev["producer"] == "skill.fleet.drafter"
+    assert ev["sink"] == "drafter"
+    assert ev["revision_count"] == 0
+    assert [Path(f).name for f in ev["canonical_files"]] == [
+        "draft-2026-07-04-moon.md"]
+
+
+async def test_acceptance_event_failure_never_unwinds(monkeypatch, caplog):
+    """Verdict C: emission failure → finalize completes, loud log, no unwind,
+    no event."""
+    import logging
+
+    from grove.memory.store import MemoryStore
+    pid = _emit()
+    _stage()
+    monkeypatch.setattr(actions, "_forge_publish_core",
+                        lambda slug, loop: _async({"ok": True, "folder_link": "drive://x", "row_id": "pg1"}))
+
+    def _boom(self, event):
+        raise RuntimeError("event store down")
+
+    monkeypatch.setattr(MemoryStore, "append_event", _boom)
+    with caplog.at_level(logging.WARNING):
+        resp = await actions.handle_forge_promote(_Req(proposal_id=pid))
+    assert resp.status == 200  # the promote is NOT unwound
+    assert pq.read(pid) is None  # finalized
+    assert _accept_events() == []  # no event landed
+    assert any("promote-accepted memory event FAILED" in r.message
+               for r in caplog.records)  # announced loud
 
 
 # ── reject: archive-then-clear ───────────────────────────────────────────────
