@@ -332,3 +332,106 @@ def test_cmd_rebuild_rebuilds_and_reports(temp_cellar, capsys):
     out = capsys.readouterr().out
     assert "rebuilt" in out
     assert "7 file" in out  # the D2 set from _make_cellar
+
+
+# ----- promoted-artifact-persistence-v1 P4 — canonical-only corpus ------------
+
+
+def _make_workspace_cellar(root):
+    """A drafter-shaped workspace exercising all four P4 filter classes:
+    flat canonical (kept), nested non-dot subdir (kept), pending_review
+    (staged — excluded), .archive (rejected — excluded), .feedback
+    (dot-dir — excluded), .andon (excluded, prior-skip subsumed)."""
+    ws = root / "drafter"
+    ws.mkdir(parents=True)
+    (ws / "draft-approved.md").write_text("canonical approved zebra draft")
+    (ws / "series").mkdir()
+    (ws / "series" / "draft-part-two.md").write_text("canonical zebra sequel")
+    (ws / "pending_review" / "u1").mkdir(parents=True)
+    (ws / "pending_review" / "u1" / "draft-staged.md").write_text(
+        "staged unapproved zebra draft")
+    (ws / ".archive" / "u2-20260101T000000Z").mkdir(parents=True)
+    (ws / ".archive" / "u2-20260101T000000Z" / "draft-rejected.md").write_text(
+        "rejected zebra draft")
+    (ws / ".feedback").mkdir()
+    (ws / ".feedback" / "note.md").write_text("dot-dir zebra residue")
+    (ws / ".andon" / "q").mkdir(parents=True)
+    (ws / ".andon" / "q" / "draft-quarantined.md").write_text(
+        "quarantined zebra draft")
+    return ws
+
+
+def test_p4_filter_excludes_staged_archived_dotdirs_keeps_canonical(tmp_path):
+    """Verdict A: staged/archived/dot-dir excluded; flat canonical AND nested
+    non-dot subdir content still indexed; .andon still skipped."""
+    root = tmp_path / "cellar"
+    _make_workspace_cellar(root)
+    idx = CellarIndex(cellar_dir=root, index_path=root / "index" / "cellar.db")
+    idx.build_index()
+    indexed = {
+        p for p, _t in ((s, t) for s, t in idx._iter_sources())
+    }
+    names = sorted(p.name for p in indexed)
+    assert names == ["draft-approved.md", "draft-part-two.md"]
+    # retrieval sees only the canonical entries
+    results = idx.query("zebra", k=10)
+    got = sorted(r.source_path for r in results)
+    assert got == ["drafter/draft-approved.md", "drafter/series/draft-part-two.md"]
+
+
+def test_p4_removal_only_against_raw_glob(tmp_path):
+    """Verdict B: the enumeration equals the raw **/*.md walk MINUS exactly
+    the excluded classes — removals only, no additions."""
+    root = tmp_path / "cellar"
+    ws = _make_workspace_cellar(root)
+    idx = CellarIndex(cellar_dir=root, index_path=root / "index" / "cellar.db")
+    raw = set(ws.glob("**/*.md"))
+    excluded = {
+        p for p in raw
+        if any(seg == "pending_review" or seg.startswith(".")
+               for seg in p.relative_to(ws).parts[:-1])
+    }
+    enumerated = {p for p, _t in idx._iter_sources()}
+    assert enumerated == raw - excluded  # removal-only, structurally exact
+    assert len(excluded) == 4  # staged + archived + feedback + andon
+
+
+def test_p4_stale_leaked_entries_evicted_on_refresh(tmp_path):
+    """V3 pin: entries indexed under the OLD enumeration (leaked staged file)
+    are evicted by update_index's stale-drop when they leave enumeration."""
+    root = tmp_path / "cellar"
+    ws = _make_workspace_cellar(root)
+    idx = CellarIndex(cellar_dir=root, index_path=root / "index" / "cellar.db")
+    idx.build_index()
+    # simulate a pre-P4 leaked row: inject the staged file directly
+    import sqlite3 as _sq
+    conn = _sq.connect(idx.index_path)
+    conn.execute(
+        "INSERT INTO cellar_fts (source_path, content_type, title, body) "
+        "VALUES (?, ?, ?, ?)",
+        ("drafter/pending_review/u1/draft-staged.md", "drafter", "leak",
+         "staged unapproved zebra draft"),
+    )
+    conn.execute(
+        "INSERT INTO cellar_meta (source_path, mtime) VALUES (?, ?)",
+        ("drafter/pending_review/u1/draft-staged.md", 0.0),
+    )
+    conn.commit(); conn.close()
+    idx.update_index()  # the deploy-time refresh path
+    results = idx.query("zebra", k=10)
+    assert all("pending_review" not in r.source_path for r in results)
+
+
+def test_p4_filter_is_producer_blind():
+    """Verdict C: the workspace filter is path-segment structural — zero
+    producer names in _iter_sources beyond the declared subdir/content-type
+    table itself (which predates P4 and is data, not branching)."""
+    import inspect
+
+    src = inspect.getsource(CellarIndex._iter_sources)
+    # the filter expression itself names no producer:
+    filter_lines = [l for l in src.splitlines() if "pending_review" in l]
+    assert filter_lines, "structural filter missing"
+    for line in filter_lines:
+        for name in ("forge", "cultivator", "researcher"):
+            assert name not in line
