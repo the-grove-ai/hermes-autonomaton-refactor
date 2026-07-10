@@ -255,34 +255,172 @@ def test_every_lifecycle_tool_has_an_admitting_record():
     )
 
 
-# ── P5-S4.2 — governance-halt wiring (the ceremony-deaf gap class, pinned) ────
+# ── P5-S4.2 / H2 — declaration-driven governance wiring (the map-copy gap
+# class, pinned). grant-mint-unification-v1 replaced the five hand-copied
+# verb→write_class maps with grove.grant_recognition.WRITE_CLASS_DECLARATION;
+# these pins hold every consumer to that single source. The old
+# source-parsing test (recognition ⊆ ceremony) is superseded: the inline map
+# it parsed no longer exists. ────────────────────────────────────────────────
 
 
-def test_recognition_wired_tools_are_ceremony_wired():
-    """STRUCTURAL pin (the class dies here): every native tool the grant-
-    recognition coverage map knows (grant_covers_halt._NATIVE_TOOL_WRITE_CLASS)
-    MUST appear in Dispatcher._NATIVE_GOVERNANCE_TOOLS — a tool present in the
-    first but absent from the second is recognition-wired but ceremony-deaf:
-    the dispatcher never consults the grant, and every operator-initiated halt
-    store-pends to the portal (the S4.2 bake miss). Tools with NO recognition
-    (computer_use, propose_governance_change, ...) intentionally take the
-    pending-store ceremony and are out of this invariant."""
-    import inspect
-    import re as _re
-
+def test_native_governance_tools_is_the_declaration():
+    """Provenance pin (H2, GATE-B F5): the Dispatcher's ceremony set IS the
+    routing-filtered declaration — object identity, not a hand-copy. A tool
+    added to the declaration is ceremony-wired by construction; a tool
+    re-declared on the Dispatcher breaks identity and fails here."""
     from grove.dispatcher import Dispatcher
-    from grove.grant_recognition import grant_covers_halt
-
-    src = inspect.getsource(grant_covers_halt)
-    block = src.split("_NATIVE_TOOL_WRITE_CLASS")[1].split("}")[0]
-    recognized = set(_re.findall(r'"([a-z_]+)"\s*:', block))
-    assert recognized, "coverage-map keys not found — pin needs updating"
-    deaf = recognized - Dispatcher._NATIVE_GOVERNANCE_TOOLS
-    assert not deaf, (
-        f"tool(s) {sorted(deaf)} are in grant_covers_halt's coverage map but "
-        f"NOT in Dispatcher._NATIVE_GOVERNANCE_TOOLS — recognition-wired but "
-        f"ceremony-deaf: their implicit/standing grants can never resolve"
+    from grove.grant_recognition import (
+        NATIVE_GOVERNANCE_TOOLS,
+        WRITE_CLASS_DECLARATION,
     )
+
+    assert Dispatcher._NATIVE_GOVERNANCE_TOOLS is NATIVE_GOVERNANCE_TOOLS
+    assert NATIVE_GOVERNANCE_TOOLS == frozenset(
+        name for name, entry in WRITE_CLASS_DECLARATION.items()
+        if entry.routing_class == "native"
+    )
+
+
+def test_verb_maps_derive_from_declaration():
+    """Provenance pin: GOVERNANCE_VERBS (operator tokens) and
+    NATIVE_TOOL_WRITE_CLASS (coverage/resolve/mint map) equal their
+    declaration derivations — replacing either with a drifting literal
+    fails here."""
+    from grove.grant_recognition import (
+        GOVERNANCE_VERBS,
+        NATIVE_TOOL_WRITE_CLASS,
+        WRITE_CLASS_DECLARATION,
+    )
+
+    assert GOVERNANCE_VERBS == {
+        token: entry.write_class
+        for entry in WRITE_CLASS_DECLARATION.values()
+        for token in entry.verb_tokens
+    }
+    assert NATIVE_TOOL_WRITE_CLASS == {
+        name: entry.write_class
+        for name, entry in WRITE_CLASS_DECLARATION.items()
+        if entry.routing_class == "native"
+    }
+    # Every declared entry is well-formed — the declaration is the schema.
+    for name, entry in WRITE_CLASS_DECLARATION.items():
+        assert entry.routing_class in ("native", "terminal"), name
+        assert entry.scope_policy in ("args_derived", "global"), name
+        assert entry.write_class, name
+
+
+def test_always_mints_standing_grant_for_every_native_verb(tmp_path, monkeypatch):
+    """Behavioral mint pin (H2, GATE-B F4) — THE test that catches the bake
+    miss: for EVERY native verb in the declaration, a synthetic Always-halt
+    runs the UNMOCKED dispatcher mint path into a real tmp grants.yaml and
+    the (scope, write_class) entry lands with the declared scope policy
+    (fleet_purge → the GLOBAL pair). Before H2, fleet_purge hit a silent
+    return here and the operator's Always persisted nothing."""
+    from grove.dispatcher import Dispatcher
+    from grove.grant_recognition import WRITE_CLASS_DECLARATION
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore
+
+    store = GrantStore(tmp_path / "grants.yaml")
+    monkeypatch.setattr(grants_mod, "_store", store)
+
+    for tool, entry in WRITE_CLASS_DECLARATION.items():
+        if entry.routing_class != "native":
+            continue
+        if entry.scope_policy == "global":
+            args = {"skill": "drafter", "unit": "u1"}  # no per-target scope keys
+            expected_scope = entry.write_class
+        else:
+            args = {"skill_name": f"target-{tool}"}
+            expected_scope = f"target-{tool}"
+        Dispatcher._add_standing_grant_from_halt(
+            _dispatcher_stub(), _halt_for(tool, args),
+        )
+        minted = store.get_grant(expected_scope, entry.write_class)
+        assert minted is not None, (
+            f"'Always' on native verb {tool!r} minted NO standing grant — "
+            f"the S4.2/H2 bake-miss class"
+        )
+        assert minted.disposition == "standing"
+        assert minted.authorized_by == "sovereignty_prompt"
+
+
+def test_always_with_no_resolvable_store_fails_loud():
+    """H2 structural floor: the silent returns are dead — an 'Always' whose
+    halt resolves no store raises instead of silently dropping the
+    operator's decision."""
+    from grove.dispatcher import Dispatcher
+    from grove.grant_recognition import resolve_always_store
+
+    # Governance-shaped but unparseable: bare verb token, no target.
+    halt = _halt_for("terminal", {"command": "promote"})
+    assert resolve_always_store(halt) is None
+    with pytest.raises(ValueError, match="no.*standing-grant store"):
+        Dispatcher._add_standing_grant_from_halt(_dispatcher_stub(), halt)
+
+
+def test_resolver_totality():
+    """Totality pin (H2, GATE-B F2): argless yellow generics resolve
+    ("zone_rule", tool_name); every declared native verb with a derivable
+    scope resolves standing_grant — never None."""
+    from grove.grant_recognition import (
+        WRITE_CLASS_DECLARATION,
+        resolve_always_store,
+    )
+
+    assert resolve_always_store(_halt_for("browser_read", {})) == (
+        "zone_rule", "browser_read",
+    )
+    assert resolve_always_store(
+        _halt_for("terminal", {"command": "ls -la /tmp"})
+    ) == ("zone_rule", "ls -la /tmp")
+    for tool, entry in WRITE_CLASS_DECLARATION.items():
+        if entry.routing_class != "native":
+            continue
+        args = {} if entry.scope_policy == "global" else {"skill_name": "tgt"}
+        got = resolve_always_store(_halt_for(tool, args))
+        assert got is not None and got[0] == "standing_grant", (tool, got)
+
+
+def test_always_affordance_names_store_or_does_not_render():
+    """Affordance pin (H2): the TTY menu names the store an Always writes;
+    resolver None → option [3] absent from the rendered block and the
+    keystroke rejected (silent no-op prohibited)."""
+    import io
+
+    from grove.grant_recognition import always_store_label
+    from grove.halt_renderer import render_yellow_sovereign_prompt
+    from grove.sovereign_prompt_handlers import tty_sovereign_prompt
+
+    # Store resolves → the label names it.
+    labeled = render_yellow_sovereign_prompt(
+        "terminal", {"command": "ls"}, always_store="zone rule",
+    )
+    assert "[3] Always (zone rule) — I'll remember it" in labeled
+    grant_halt = _halt_for("fleet_purge", {"skill": "drafter", "unit": "u1"})
+    assert always_store_label(grant_halt) == "standing grant"
+
+    # No store → no option 3, and choosing it re-prompts instead of minting.
+    orphan = _halt_for("terminal", {"command": "promote"})
+    assert always_store_label(orphan) is None
+    dropped = render_yellow_sovereign_prompt(
+        "terminal", {"command": "promote"}, always_store=None,
+    )
+    assert "[3]" not in dropped and "Always" not in dropped
+    assert "[4] Not this time" in dropped
+
+    import builtins
+    answers = iter(["3", "4"])
+    orig_input = builtins.input
+    builtins.input = lambda *a, **k: next(answers)
+    try:
+        out = io.StringIO()
+        assert tty_sovereign_prompt(orphan, out=out) == "deny"
+    finally:
+        builtins.input = orig_input
+    text = out.getvalue()
+    assert "[3]" not in text
+    assert "Always is unavailable" in text
 
 
 def _dispatcher_stub(implicit_grant=None):

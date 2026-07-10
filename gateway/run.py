@@ -1065,11 +1065,18 @@ def _build_kaizen_prompt_handler(
             if grant_covers_halt(implicit_grant, halt):
                 return implicit_grant.disposition
 
+        # H2 (grant-mint-unification-v1): resolve which store an Always tap
+        # would write and label the affordance with it. None → the adapter
+        # renders no Always row (silent no-op prohibited).
+        from grove.grant_recognition import always_store_label
+        always_store = always_store_label(halt)
+
         kid, entry = adapter.register_kaizen_pending(session_key)
         send_fut = safe_schedule_threadsafe(
             adapter.send_kaizen_prompt(
                 chat_id=chat_id, kaizen_id=kid,
                 description=description, metadata=metadata,
+                always_store=always_store,
             ),
             loop, logger=logger,
             log_message="send_kaizen_prompt scheduling error",

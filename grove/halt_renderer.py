@@ -202,21 +202,29 @@ def render_halt_event(event: HaltEvent) -> str:
         return _CRITICAL_FALLBACK
 
 
-def render_yellow_sovereign_prompt(tool_name: str, arguments: dict) -> str:
+def render_yellow_sovereign_prompt(
+    tool_name: str, arguments: dict, always_store: "str | None" = None,
+) -> str:
     """The YELLOW four-choice Sovereign Prompt TEXT (kaizen-voice Sprint B1 fold).
 
     GRV-005 §VI: after the RED hard fork, the four-choice disposition menu
     (``once`` / ``session`` / ``always`` / ``deny``) is a YELLOW-only surface —
     a permission grant. Sprint 32 inlined this text inside
-    ``sovereign_prompt_handlers.tty_sovereign_prompt``; Sprint B1 relocates the
+    ``sovereign_prompt_handlers.tty_sovereign_prompt``; Sprint B1 relocated the
     TEXT here (the ``input()`` loop is I/O and stays at the call site) so the
-    renderer owns operator-facing copy. This is RELOCATION, NOT REWRITE — the
-    returned block is byte-identical to the prior inline ``print`` sequence
-    (Sprint 32 vocabulary, Sprint 60 concierge refresh): a leading blank line,
-    the first-person header carrying :func:`describe_action_kaizen`, a blank
-    line, the four numbered choices, and a trailing newline. The caller emits it
-    with a single ``print(block, file=out)``, which appends the final blank line
-    the prior eighth ``print()`` produced.
+    renderer owns operator-facing copy. The block keeps the B1 shape — a
+    leading blank line, the first-person header carrying
+    :func:`describe_action_kaizen`, a blank line, the numbered choices, and a
+    trailing newline; the caller emits it with a single
+    ``print(block, file=out)``.
+
+    H2 (grant-mint-unification-v1): ``always_store`` names the store an
+    "Always" choice writes ("standing grant" / "zone rule",
+    ``grove.grant_recognition.always_store_label``). None means no store
+    applies — option [3] is NOT rendered (silent no-op prohibited: a choice
+    whose selection persists nothing must not exist). Option digits stay
+    stable ([4] is always deny) so operator muscle memory and the input-loop
+    mapping never shift.
 
     The fact (WHAT the agent wants to do) comes from the shared
     :mod:`grove.action_facts` layer; the TONE (this four-choice permission
@@ -224,15 +232,16 @@ def render_yellow_sovereign_prompt(tool_name: str, arguments: dict) -> str:
     isolation). No RED branch exists on this surface — RED never reaches it.
     """
     description = describe_action_kaizen(tool_name, arguments or {})
-    lines = (
+    lines = [
         "",
         f"I'd like to {description}. This one's your call before I go ahead.",
         "",
         "  [1] Just this once",
         "  [2] For the rest of this session",
-        "  [3] Always — I'll remember it",
-        "  [4] Not this time",
-    )
+    ]
+    if always_store is not None:
+        lines.append(f"  [3] Always ({always_store}) — I'll remember it")
+    lines.append("  [4] Not this time")
     return "\n".join(lines) + "\n"
 
 

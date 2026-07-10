@@ -374,10 +374,15 @@ class TestTtySovereignPromptV11:
         assert "I'd like to run the cal skill" in captured
         assert "Just this once" in captured
         assert "For the rest of this session" in captured
-        assert "Always — I'll remember it" in captured
+        # H2 (grant-mint-unification-v1): the Always option names the store
+        # it writes. "(zone rule)" is a RULED exception to the no-"zone"
+        # register rule below — the store name is the disclosure, not jargon
+        # leakage. No other zone vocabulary may appear.
+        assert "Always (zone rule) — I'll remember it" in captured
         assert "Not this time" in captured
         # Forbidden tokens — operator MUST NOT see these.
-        assert "zone" not in captured.lower()
+        _scrubbed = captured.lower().replace("always (zone rule)", "")
+        assert "zone" not in _scrubbed
         assert "andon halt" not in captured.lower()
         assert "sovereign disposition" not in captured.lower()
         assert "matched_rule" not in captured

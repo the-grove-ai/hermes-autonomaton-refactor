@@ -408,6 +408,9 @@ class _FakeHalt:
 
 
 class TestYellowFoldByteIdentical:
+    # H2 (grant-mint-unification-v1): the [3] line now names the store an
+    # Always writes; the B1 eight-print SHAPE (blank / header / blank /
+    # choices / trailing blank via a single print) is what this pins.
     def _legacy_block(self, description: str) -> str:
         buf = io.StringIO()
         print(file=buf)
@@ -418,7 +421,7 @@ class TestYellowFoldByteIdentical:
         print(file=buf)
         print("  [1] Just this once", file=buf)
         print("  [2] For the rest of this session", file=buf)
-        print("  [3] Always — I'll remember it", file=buf)
+        print("  [3] Always (zone rule) — I'll remember it", file=buf)
         print("  [4] Not this time", file=buf)
         print(file=buf)
         return buf.getvalue()
@@ -428,7 +431,9 @@ class TestYellowFoldByteIdentical:
         from grove.halt_renderer import render_yellow_sovereign_prompt
         args = {"command": "rm -rf /tmp/junk"}
         desc = describe_action_kaizen("terminal", args)
-        block = render_yellow_sovereign_prompt("terminal", args)
+        block = render_yellow_sovereign_prompt(
+            "terminal", args, always_store="zone rule",
+        )
         # A single print(block) reproduces the prior eight-print output exactly.
         nbuf = io.StringIO()
         print(block, file=nbuf)
