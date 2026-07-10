@@ -5333,8 +5333,14 @@ class Dispatcher:
     # Native tool names that are governance-mutation operations.  Checked in
     # _is_governance_mutation_halt so andon_tool.py calls (which carry no
     # ``command`` key) route through the permission path rather than terminal halt.
+    # Every RED kind=verb capability record's bound tools MUST appear here
+    # (structurally pinned, P5-S4.2) — a tool absent from this set never
+    # reaches _resolve_governance_grant, so its operator-minted implicit
+    # grant is silently ignored and every halt store-pends to the portal
+    # (recognition-wired but ceremony-deaf: the S4.2 bake miss).
     _NATIVE_GOVERNANCE_TOOLS = frozenset({
         "andon_promote", "andon_reject", "andon_revoke", "revoke_grant",
+        "fleet_purge",
     })
 
     def _is_governance_mutation_halt(self, halt: Any) -> bool:
@@ -5386,9 +5392,14 @@ class Dispatcher:
                     "andon_reject": "andon_reject",
                     "andon_revoke": "andon_revoke",
                     "revoke_grant": "grant_revoke",
+                    "fleet_purge": "fleet_purge",
                 }
                 write_class = _NATIVE_WRITE_CLASS.get(tool_name, "")
                 scope = str(args.get("skill_name") or args.get("grant_id") or "").strip()
+                if tool_name == "fleet_purge":
+                    # P5-S4.2 (R2 ruling): fleet_purge standing grants are the
+                    # GLOBAL pair — its args carry no per-target scope.
+                    scope = "fleet_purge"
                 if scope and write_class:
                     standing = get_grant_store().get_grant(scope, write_class)
                     if standing is not None and not standing.revoked:
