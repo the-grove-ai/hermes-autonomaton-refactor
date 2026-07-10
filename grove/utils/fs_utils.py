@@ -42,6 +42,7 @@ __all__ = [
     "GOVERNED_PATH_MESSAGE",
     "is_capability_write_allowed",
     "capability_emission_precondition",
+    "storage_transfer",
     "canonicalize_files",
     "promote_artifact",
 ]
@@ -768,45 +769,52 @@ def capability_emission_precondition(
     return (True, "")
 
 
-def canonicalize_files(files: Iterable[Path], canonical_dir: Path) -> "list[str]":
-    """THE canonicalization implementation (promoted-artifact-persistence-v1 P1).
+def storage_transfer(files: Iterable[Path], dest_dir: Path) -> "list[str]":
+    """THE lifecycle storage chokepoint (promoted-artifact-persistence-v1 P5,
+    storage-seam constraint) — every lifecycle destination op routes here.
 
-    Atomically ``rename`` content *files* into *canonical_dir* under their own
-    basenames, creating the dir if absent. ``~/.grove`` is one mount, so each
-    rename is atomic. Returns the canonical paths (moved or skip-verified), in
+    CONTRACT: each file transfer completes atomically or fails loud. POSIX
+    ``rename`` within the one ``~/.grove`` mount is TODAY'S IMPLEMENTATION,
+    not the contract — a future remote backend (S3 etc.) becomes a
+    config/declaration swap implementing this one function, never a rework of
+    its callers. Destinations are always parameters; this function contains
+    zero producer names and zero content knowledge (test-pinned).
+
+    Moves *files* into *dest_dir* under their own basenames, creating the dir
+    if absent. Returns the destination paths (moved or skip-verified), in
     input order.
 
-    Per-file idempotency (P1 ruling 3, exactly):
-      * source gone + same-name canonical present → SATISFIED (the canonical
-        act already happened — a re-tap after a downstream delivery failure);
-      * source present + same-name canonical byte-IDENTICAL → SKIP (source is
-        left untouched; the canonical state is already achieved);
-      * source present + same-name canonical DIVERGENT → last-write-wins
+    Per-file idempotency (P1 ruling 3, exactly — the same semantics serve a
+    re-tapped promote AND a re-tapped purge):
+      * source gone + same-name destination present → SATISFIED (the transfer
+        already happened — a re-tap after a downstream failure);
+      * source present + same-name destination byte-IDENTICAL → SKIP (source
+        is left untouched; the destination state is already achieved);
+      * source present + same-name destination DIVERGENT → last-write-wins
         overwrite via the rename (the pre-P1 ``os.rename`` semantic — no new
         collision Andon);
-      * source gone + no canonical → ``FileNotFoundError``, loud (a canonical
-        write failure aborts the promote — never a silent partial).
+      * source gone + no destination → ``FileNotFoundError``, loud (a
+        transfer that cannot be satisfied aborts the operation — never a
+        silent partial).
 
-    PRODUCER-BLIND BY CONTRACT (GATE-B ruling 2, test-pinned): this function
-    contains zero producer names and zero content knowledge. Callers own
-    selection (e.g. the ``meta.json`` exclusion) and validation (staging
-    membership, WHERE-gate discipline). Both promote entry points —
-    :func:`promote_artifact` and the portal's ``_fleet_promote_core`` —
-    delegate the canonical act here; there is no second copy."""
-    canonical = Path(canonical_dir)
-    canonical.mkdir(parents=True, exist_ok=True)
+    Callers own selection (e.g. the ``meta.json`` exclusion) and validation
+    (staging/canonical membership, WHERE-gate discipline). The promote entry
+    points — :func:`promote_artifact`, the portal's ``_fleet_promote_core``
+    and ``_canonicalize_staged_package`` — and :func:`purge_artifacts` all
+    delegate the destination act here; there is no second copy."""
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
     out: "list[str]" = []
     for f in files:
         src = Path(f)
-        target = canonical / src.name
+        target = dest / src.name
         if not src.is_file():
             if target.is_file():
-                out.append(str(target))  # satisfied — already canonicalized
+                out.append(str(target))  # satisfied — already transferred
                 continue
             raise FileNotFoundError(
-                f"canonicalize_files: source {src} is gone and no canonical "
-                f"copy exists at {target} — the canonical write cannot be "
-                f"satisfied"
+                f"storage_transfer: source {src} is gone and no destination "
+                f"copy exists at {target} — the transfer cannot be satisfied"
             )
         if target.is_file() and (
             os.path.samefile(src, target)
@@ -817,6 +825,13 @@ def canonicalize_files(files: Iterable[Path], canonical_dir: Path) -> "list[str]
         src.rename(target)  # atomic within the one ~/.grove mount
         out.append(str(target))
     return out
+
+
+# The P1 name, kept as a true alias of the chokepoint (promote-side callers
+# and every shipped pin — producer-blind, rename-only — read the SAME body).
+# ``inspect.getsource(canonicalize_files)`` resolves to storage_transfer's
+# definition, so the P1-P4 pins hold unmodified.
+canonicalize_files = storage_transfer
 
 
 def promote_artifact(source_path: str, governance: dict) -> str:
