@@ -1,0 +1,82 @@
+# fleet_purge.yaml — Fleet lifecycle governance (governed) verb record.
+# Added by P5-S4.1 (promoted-artifact-persistence-v1): fleet_lifecycle_tool.py
+# registered fleet_purge under toolset="fleet_lifecycle" but no capability
+# record existed, so get_admitted_tools() filtered it out — the EXACT gap the
+# andon_write record's own header documents for the andon verbs. Caught by the
+# pre-bake readiness check; pinned so the class cannot recur silently.
+# family=fleet_lifecycle  zone=red  tiers=[1,2,3]  disclosure=proactive  trigger=always
+id: fleet_purge
+kind: verb
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - fleet_purge
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: red
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'Fleet lifecycle governance (governed, zone red). Tool: fleet_purge
+    — archive-first purge of a promoted unit; semantic revocation of operator
+    approval. Bytes survive in the sink archive; derived wiki pages are
+    tombstoned and the unit is marked terminal.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: operator_authored
+  created_at: '2026-07-10T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-07-10T00:00:00+00:00'
+    from_state: new
+    to_state: approved
+    reason: 'P5-S4.1 tool admission: fleet_purge was registered in
+      fleet_lifecycle_tool.py but had no capability record, so
+      get_admitted_tools() filtered it out — caught by the arc-closing
+      bake readiness check before the operator tap; the andon_write
+      precedent documents the identical class'
+    evidence:
+    - config/zones.schema.yaml#tool_zones
+    - tools/fleet_lifecycle_tool.py
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: fleet_purge'
+  - 'subsystem: fleet lifecycle (tools.fleet_lifecycle_tool)'
+  - 'check: tool registered + zone mapped + record admits'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300
