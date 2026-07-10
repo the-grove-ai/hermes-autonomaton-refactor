@@ -535,3 +535,124 @@ def test_write_zone_retention_round_trips_and_is_uniform():
         rebuilt = Capability.from_dict(cap.to_dict())
         assert rebuilt.governance["write_zone"]["retention"] == expected, cid
     assert seen >= 6  # all six fleet records declare it
+
+
+# ── promoted-artifact-persistence-v1 P5 S3 — purge core ──────────────────────
+
+from pathlib import Path  # noqa: E402
+
+from grove.utils.fs_utils import purge_artifacts  # noqa: E402
+
+PURGE_GOV = {
+    "write_zone": {"staging_dir": "sinkp/pending_review", "canonical_dir": "sinkp",
+                   "promotion": "operator_approval",
+                   "retention": {"policy": "persist", "archive_dir": ".archive"}},
+}
+
+
+def _canonical_unit(grove, unit="260101-acme-pm"):
+    d = grove / "sinkp" / unit
+    d.mkdir(parents=True)
+    (d / "resume.md").write_text("R")
+    (d / "cover-letter.md").write_text("C")
+    return d
+
+
+def test_purge_happy_path_archive_layout_and_manifest(grove):
+    import json as _json
+    from datetime import datetime, timezone
+    d = _canonical_unit(grove)
+    res = purge_artifacts(
+        [str(d)], PURGE_GOV, unit="260101-acme-pm", reason="stale package",
+        initiated_by="operator", effect_signature="sig-x",
+        now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc),
+    )
+    dest = grove / "sinkp" / ".archive" / "260101-acme-pm-20260710T120000Z"
+    assert res["archive_dir"] == str(dest) and res["resumed"] is False
+    assert sorted(p.name for p in dest.iterdir()) == [
+        "cover-letter.md", "purge-manifest.json", "resume.md"]
+    assert not d.exists() or not any(d.iterdir())  # canonical files GONE
+    m = _json.loads((dest / "purge-manifest.json").read_text())
+    assert m["unit"] == "260101-acme-pm" and m["reason"] == "stale package"
+    assert m["initiated_by"] == "operator" and m["effect_signature"] == "sig-x"
+    assert m["purged_at"] == "2026-07-10T12:00:00+00:00"
+    assert sorted(Path(f).name for f in m["archived_files"]) == [
+        "cover-letter.md", "resume.md"]
+
+
+def test_purge_flat_file_source(grove):
+    (grove / "sinkp").mkdir(parents=True)
+    f = grove / "sinkp" / "draft-x.md"
+    f.write_text("D")
+    res = purge_artifacts([str(f)], PURGE_GOV, unit="x", reason="r",
+                          initiated_by="operator")
+    assert not f.exists()
+    assert Path(res["files"][0]).read_text() == "D"
+
+
+def test_purge_refuses_outside_canonical(grove):
+    (grove / "elsewhere").mkdir()
+    f = grove / "elsewhere" / "a.md"
+    f.write_text("x")
+    with pytest.raises(ValueError, match="does not resolve inside"):
+        purge_artifacts([str(f)], PURGE_GOV, unit="u", reason="r",
+                        initiated_by="operator")
+
+
+def test_purge_refuses_staged_pending_review(grove):
+    d = grove / "sinkp" / "pending_review" / "u1"
+    d.mkdir(parents=True)
+    (d / "resume.md").write_text("staged")
+    with pytest.raises(ValueError, match="STAGED"):
+        purge_artifacts([str(d / "resume.md")], PURGE_GOV, unit="u1",
+                        reason="r", initiated_by="operator")
+
+
+def test_purge_refuses_archive_dir_itself(grove):
+    d = grove / "sinkp" / ".archive" / "old-20260101T000000Z"
+    d.mkdir(parents=True)
+    (d / "resume.md").write_text("archived")
+    with pytest.raises(ValueError, match="already inside the archive"):
+        purge_artifacts([str(d / "resume.md")], PURGE_GOV, unit="old",
+                        reason="r", initiated_by="operator")
+
+
+def test_purge_retap_resumes_incomplete_archive(grove):
+    """Crash-after-moves: files archived, manifest missing. The re-tap resumes
+    the SAME archive dir (no duplicate <unit>-<ts> dirs), storage_transfer's
+    source-gone semantics satisfy the moves, and the manifest completes."""
+    d = _canonical_unit(grove)
+    files = [d / "resume.md", d / "cover-letter.md"]
+    # simulate the crash: moves done, no manifest
+    crash_dest = grove / "sinkp" / ".archive" / "260101-acme-pm-20260101T000000Z"
+    from grove.utils.fs_utils import storage_transfer
+    storage_transfer(files, crash_dest)
+    assert not (crash_dest / "purge-manifest.json").exists()
+
+    res = purge_artifacts([str(d)], PURGE_GOV, unit="260101-acme-pm",
+                          reason="r", initiated_by="operator")
+    assert res["resumed"] is True
+    assert res["archive_dir"] == str(crash_dest)  # SAME dir — no duplicates
+    assert (crash_dest / "purge-manifest.json").is_file()
+    archive_dirs = list((grove / "sinkp" / ".archive").glob("260101-acme-pm-*"))
+    assert len(archive_dirs) == 1
+
+
+def test_purge_default_archive_dir_when_retention_absent(grove):
+    gov = {"write_zone": {"staging_dir": "sinkp/pending_review",
+                          "canonical_dir": "sinkp"}}  # no retention block
+    d = _canonical_unit(grove)
+    res = purge_artifacts([str(d)], gov, unit="260101-acme-pm", reason="r",
+                          initiated_by="operator")
+    assert "/.archive/" in res["archive_dir"]  # persist-by-default destination
+
+
+def test_purge_core_is_producer_blind_and_routes_chokepoint():
+    import inspect
+
+    from grove.utils import fs_utils
+
+    src = inspect.getsource(fs_utils.purge_artifacts)
+    for name in ("forge", "scout", "drafter", "cultivator", "researcher"):
+        assert name not in src, f"producer name {name!r} in the purge core"
+    assert "storage_transfer(" in src  # THE chokepoint, no second copy
