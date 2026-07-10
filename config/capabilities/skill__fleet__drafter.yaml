@@ -268,6 +268,12 @@ governance:
     staging_dir: "drafter/pending_review"
     canonical_dir: "drafter"
     promotion: operator_approval
+    # P5 retention (promoted-artifact-persistence-v1): inert declared DATA —
+    # persist-by-default, never silent expiry; archive_dir is the operator-
+    # initiated purge verb's declared destination. No reader but the purge core.
+    retention:
+      policy: persist
+      archive_dir: ".archive"
   emission_preconditions:
     required_tool_classes:
       - class: skill_invocation
