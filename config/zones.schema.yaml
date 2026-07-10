@@ -437,6 +437,15 @@ tool_zones:
   andon_reject:                              red
   andon_revoke:                              red
 
+  # ── promoted-artifact-persistence-v1 P5 — fleet lifecycle (fleet_lifecycle_tool) ──
+  # fleet_purge is SEMANTIC REVOCATION of a prior operator approval — RED
+  # (GATE-B Q1: revocation outranks mechanical reversibility; the move is
+  # archive-first and the bytes survive, but the approval is retracted).
+  # Red + valid Grant Token (implicit operator verb, or the standing pair
+  # (fleet_purge, fleet_purge)) = execute; Red + agent-synthesized =
+  # sovereignty ceremony (prompt / durable pending-store portal confirm).
+  fleet_purge:                               red
+
   # ── Native tools: SECURITY / SYSTEM → RED ──
   # OS-level UI automation; keystroke-injection territory.
   computer_use:                              red

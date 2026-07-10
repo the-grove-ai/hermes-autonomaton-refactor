@@ -1044,14 +1044,18 @@ def _list_fleet_units(cap: Any) -> list:
     # first (the crash window's freshest identity), then the ledger slug map,
     # then the slug itself (consistent with _artifact_unit_id's last resort).
     canon: Dict[str, tuple] = {}
+    slug_to_uid: Dict[str, str] = {}
+    prop_slug_to_uid: Dict[str, str] = {}
     if remote_sink:
+        # slug→uid joins, needed by the canon scan AND the purge suppression
+        # below (a purged unit has NO canon subdir, so compute unconditionally).
+        slug_to_uid = _ledger_slug_to_uid()
+        prop_slug_to_uid = {
+            (p.payload or {}).get("slug"): uid
+            for uid, p in open_props.items()
+            if (p.payload or {}).get("slug")
+        }
         if canonical.is_dir():
-            slug_to_uid = _ledger_slug_to_uid()
-            prop_slug_to_uid = {
-                (p.payload or {}).get("slug"): uid
-                for uid, p in open_props.items()
-                if (p.payload or {}).get("slug")
-            }
             for d in sorted(canonical.iterdir()):
                 if (not d.is_dir() or d.name == "pending_review"
                         or d.name.startswith(".")):
@@ -1071,8 +1075,41 @@ def _list_fleet_units(cap: Any) -> list:
             if p.is_file():
                 canon[_reverse_pattern(p.name, pattern)] = (p.stat().st_mtime, p.name, p)
 
+    # P5 purge suppression (ANDON ruling, Option 1) — a unit whose sink archive
+    # holds a purge manifest EXITS the surface: absence, not a fifth state.
+    # Ranks above BOTH the ledger terminal (rule 2 would keep a phantom
+    # 'promoted' with zero files) and the terminal_skip feedback row (rule 5
+    # would list 'rejected'). EXCEPTION (topological honesty): a REDRAFT after
+    # the purge — freshly staged WITH an open proposal — beats suppression and
+    # surfaces needs_review. Evidence is filesystem-only and producer-blind:
+    # <canonical>/<archive_dir from the retention declaration>/<unit>-*/
+    # purge-manifest.json, written solely by the purge core. An unreadable
+    # manifest never suppresses (garbage must not hide a unit).
+    purged: set = set()
+    _archive_rel = ((cap.governance["write_zone"].get("retention") or {})
+                    .get("archive_dir") or ".archive")
+    _archive_root = canonical / _archive_rel
+    if _archive_root.is_dir():
+        for _man in sorted(_archive_root.glob("*/purge-manifest.json")):
+            try:
+                _m_unit = json.loads(_man.read_text(encoding="utf-8")).get("unit")
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not _m_unit:
+                continue
+            purged.add(prop_slug_to_uid.get(_m_unit)
+                       or slug_to_uid.get(_m_unit) or _m_unit)
+
     autoclose: list = []
     uids = set(staged) | set(canon) | set(feedback) | set(open_props) | set(ledger)
+    uids -= {u for u in purged if not (u in staged and u in open_props)}
+    for u in purged:
+        if u in staged and u in open_props:
+            # The redraft-after-purge exception surfaces the unit — and the
+            # purge REVOKED its old 'applied' terminal, so that stale ledger
+            # entry must not outrank the fresh draft (rule 2 would resolve it
+            # 'promoted'). The redraft resolves topologically: needs_review.
+            ledger.pop(u, None)
     rows = []
     for uid in uids:
         rec = _resolve_unit_state(uid, producer, staged, canon, feedback,

@@ -39,6 +39,9 @@ GOVERNANCE_VERBS: dict[str, str] = {
     "downgrade": "flywheel_downgrade",
     # Grant management — "hermes grants revoke <id>" maps here via GRANTS_PATTERN.
     "revoke_grant": "grant_revoke",
+    # promoted-artifact-persistence-v1 P5 — the operator's explicit "purge X"
+    # is an implicit grant for the RED fleet_purge verb (DATA addition only).
+    "purge": "fleet_purge",
 }
 
 GOVERNANCE_PATTERN = re.compile(
@@ -115,6 +118,10 @@ def grant_covers_halt(grant: "GrantToken", halt: object) -> bool:
         "andon_reject": "andon_reject",
         "andon_revoke": "andon_revoke",
         "revoke_grant": "grant_revoke",
+        # P5: fleet_purge grants are GLOBAL scope (R2) — its args carry no
+        # skill_name/grant_id, so the scope check passes vacuously and the
+        # write_class exact-match is the guard.
+        "fleet_purge": "fleet_purge",
     }
     try:
         triggering = halt.intents[halt.triggering_index]  # type: ignore[attr-defined]
