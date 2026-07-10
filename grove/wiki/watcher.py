@@ -35,7 +35,13 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from grove.wiki.adapters import ADAPTERS, FLEET_ADAPTERS, Adapter, fleet_adapter_for
+from grove.wiki.adapters import (
+    ADAPTERS,
+    FLEET_ADAPTERS,
+    Adapter,
+    GenericPackageAdapter,
+    fleet_adapter_for,
+)
 from grove.wiki.pipeline import CanonicalPage, compact, project_dock
 
 logger = logging.getLogger(__name__)
@@ -45,6 +51,82 @@ _LEDGER_REL = Path(".index") / "ingest_state.json"
 # The Dock manifest, relative to the hermes home. The watcher treats it as one
 # more observed target alongside the fleet sinks (Sprint K2).
 _DOCK_REL = Path("dock") / "dock.yaml"
+
+
+# ── record-driven enumeration (promoted-artifact-persistence-v1 P2) ──────
+#
+# Declarative poller coverage ALONGSIDE the FLEET_ADAPTERS glob walk (staged
+# migration, GATE-B Q1 — the four existing adapters are untouched). A
+# capability record opting in via ``write_zone.ingest: {surface:
+# canonical_subdirs, source_type: ...}`` gets its per-unit canonical subdirs
+# (``<sink>/<unit>/<file>``, the P1 promote layout) walked with a
+# declaration-fed :class:`GenericPackageAdapter`. Zero producer names — the
+# record, not code, opts a sink in.
+
+
+def _record_ingest_adapters(home: Path) -> "List[tuple]":
+    """``[(GenericPackageAdapter, sink_abs_path)]`` for every kind=skill
+    capability declaring ``write_zone.ingest`` with the ``canonical_subdirs``
+    surface. A declaration missing ``source_type`` or ``canonical_dir`` fails
+    loud (a half-declared coverage would silently ingest nothing)."""
+    from grove.capability import CapabilityKind
+    from grove.capability_registry import load_capabilities
+
+    out: "List[tuple]" = []
+    for cid, cap in load_capabilities().items():
+        if cap.kind != CapabilityKind.SKILL or not cap.governance:
+            continue
+        wz = (cap.governance or {}).get("write_zone") or {}
+        ingest = wz.get("ingest") or {}
+        if not isinstance(ingest, dict) or ingest.get("surface") != "canonical_subdirs":
+            continue
+        source_type = ingest.get("source_type")
+        canonical = wz.get("canonical_dir")
+        if not source_type or not canonical:
+            raise ValueError(
+                f"capability {cid} declares write_zone.ingest with surface="
+                f"canonical_subdirs but is missing "
+                f"{'source_type' if not source_type else 'canonical_dir'} — "
+                f"coverage cannot be derived"
+            )
+        out.append(
+            (GenericPackageAdapter(sink_dir=canonical, source_type=source_type),
+             home / canonical)
+        )
+    return out
+
+
+def _iter_package_files(sink: Path):
+    """Yield content files one level inside a canonical sink's per-unit
+    subdirs: ``<sink>/<unit>/<file>``. Excludes the staging subtree
+    (``pending_review``), dot-dirs (``.archive`` / ``.feedback``), dotfiles,
+    and ``meta.json`` (never promoted; excluded defensively)."""
+    for unit_dir in sorted(sink.iterdir()):
+        if (not unit_dir.is_dir() or unit_dir.name == "pending_review"
+                or unit_dir.name.startswith(".")):
+            continue
+        for f in sorted(unit_dir.iterdir()):
+            if f.is_file() and f.name != "meta.json" and not f.name.startswith("."):
+                yield f
+
+
+def _record_adapter_for(source: Path) -> Optional[Adapter]:
+    """Path-aware record-adapter resolution for the explicit-path caller
+    (:func:`ingest_file`) — the no-second-ingest-path symmetry (P2 S1). A file
+    one level inside a declared ``canonical_subdirs`` sink resolves the SAME
+    adapter the scanner uses; the fleet adapters' filename-only matching is
+    untouched. Returns None for anything outside a declared sink."""
+    from hermes_constants import get_hermes_home
+
+    src = Path(source).resolve()
+    unit_dir = src.parent
+    if (unit_dir.name == "pending_review" or unit_dir.name.startswith(".")
+            or src.name == "meta.json"):
+        return None
+    for adapter, sink in _record_ingest_adapters(Path(get_hermes_home())):
+        if unit_dir.parent == sink.resolve():
+            return adapter
+    return None
 
 
 def ingest_file(
@@ -97,7 +179,10 @@ def _ingest_one(
     single-file caller. No skill name is branched on — the map is glob-keyed.
     """
     if adapter is None:
-        adapter = fleet_adapter_for(source) or ADAPTERS["operator_curated"]
+        # Resolution order: fleet glob (filename-only, unchanged) → declared
+        # canonical_subdirs sink (path-aware, P2 S1) → operator_curated.
+        adapter = (fleet_adapter_for(source) or _record_adapter_for(source)
+                   or ADAPTERS["operator_curated"])
     mtime = source.stat().st_mtime
     if ledger.get(str(source)) == mtime:
         return None  # unchanged since last ingest
@@ -140,13 +225,15 @@ def scan_and_ingest(
     now = time.time()
 
     pages: List[CanonicalPage] = []
-    for adapter in FLEET_ADAPTERS:
-        sink = home / adapter.sink_dir
-        if not sink.is_dir():
-            # Absent sink (e.g. cultivator never ran) — skip by design.
-            logger.debug("[wiki] sink %s absent; skipping.", sink)
-            continue
-        for source in sorted(sink.glob(adapter.glob)):
+
+    def _scan_source(source: Path, adapter: Adapter) -> None:
+        """Per-file scan body shared by the fleet glob walk and the
+        record-driven package walk: debounce guard → _ingest_one. Tolerates a
+        file that vanishes between enumeration and read (P2 Mitigation 1 —
+        e.g. a future purge racing the scan): a FileNotFoundError is a
+        graceful skip, never a crashed scan. Adapter parse failures (A2) still
+        raise — a PRESENT-but-malformed file stays loud."""
+        try:
             if debounce_seconds > 0:
                 age = now - source.stat().st_mtime
                 if age < debounce_seconds:
@@ -157,15 +244,41 @@ def scan_and_ingest(
                         "[wiki] %s age %.1fs < debounce %.0fs; deferring.",
                         source.name, age, debounce_seconds,
                     )
-                    continue
+                    return
             page = _ingest_one(
                 source, adapter=adapter, wiki_root=root, ledger=ledger
             )
-            if page is not None:
-                pages.append(page)
-                logger.info(
-                    "[wiki] ingested %s -> %s", source.name, page.path.name
-                )
+        except FileNotFoundError:
+            logger.debug(
+                "[wiki] %s vanished mid-scan; skipping (purge race).",
+                source,
+            )
+            return
+        if page is not None:
+            pages.append(page)
+            logger.info(
+                "[wiki] ingested %s -> %s", source.name, page.path.name
+            )
+
+    for adapter in FLEET_ADAPTERS:
+        sink = home / adapter.sink_dir
+        if not sink.is_dir():
+            # Absent sink (e.g. cultivator never ran) — skip by design.
+            logger.debug("[wiki] sink %s absent; skipping.", sink)
+            continue
+        for source in sorted(sink.glob(adapter.glob)):
+            _scan_source(source, adapter)
+
+    # Record-driven package walk (promoted-artifact-persistence-v1 P2) —
+    # capabilities declaring write_zone.ingest {surface: canonical_subdirs}
+    # get their per-unit canonical subdirs ingested via the declaration-fed
+    # generic adapter. Same ledger, same debounce, same per-file body.
+    for adapter, sink in _record_ingest_adapters(home):
+        if not sink.is_dir():
+            logger.debug("[wiki] declared sink %s absent; skipping.", sink)
+            continue
+        for source in _iter_package_files(sink):
+            _scan_source(source, adapter)
 
     # Dock observed-target branch (Sprint K2) — parallel to the fleet loop,
     # riding the SAME ledger dict + single save. Acts ONLY when the manifest

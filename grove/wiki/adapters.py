@@ -286,6 +286,74 @@ class DrafterDraftAdapter(Adapter):
         )
 
 
+# ── generic package adapter (declaration-fed) ───────────────────────────
+
+
+class GenericPackageAdapter(Adapter):
+    """Declaration-fed package adapter (promoted-artifact-persistence-v1 P2).
+
+    Built at enumeration time from a capability record's
+    ``write_zone.ingest: {surface: canonical_subdirs, source_type: ...}``
+    declaration — ``sink_dir`` and ``source_type`` are constructor DATA, never
+    a producer-named class (GATE-B ruling 2, generality pin extended). Parses
+    ONE content file inside a per-unit canonical subdir
+    (``<sink>/<unit>/<file>``) as plain text with best-effort optional
+    frontmatter (the operator_curated discipline — package content files
+    declare no frontmatter contract). One page per file; there is no
+    package-level compaction concept.
+
+    ``lineage_key`` is ``"<unit-dir>/<filename>"`` — a re-promoted file
+    (P1 last-write-wins overwrite) supersedes ITS OWN prior page; distinct
+    units never cross-supersede, and the two files of one package coexist."""
+
+    glob = None  # enumerated by the record-driven walker, never the fleet glob walk
+
+    def __init__(self, *, sink_dir: str, source_type: str):
+        if not sink_dir or not source_type:
+            raise ValueError(
+                "GenericPackageAdapter requires both sink_dir and source_type "
+                "from the write_zone.ingest declaration"
+            )
+        self.sink_dir = sink_dir
+        self.source_type = source_type
+
+    def lineage_key(self, path: Path) -> Optional[str]:
+        p = Path(path)
+        return f"{p.parent.name}/{p.name}"
+
+    def parse(self, path: Path) -> NormalizedDoc:
+        path = Path(path)
+        text = _read_text(path)
+        if not text.strip():
+            raise MalformedSourceDoc(
+                f"{self.source_type} source {path.name} is empty"
+            )
+        dock_goal_refs: List[str] = []
+        body = text
+        split = _split_frontmatter(text)
+        if split is not None:
+            fm_str, fm_body = split
+            try:
+                meta = yaml.safe_load(fm_str)
+            except yaml.YAMLError:
+                logger.debug(
+                    "[wiki] %s %s: frontmatter did not parse; treating entire "
+                    "file as body (best-effort).", self.source_type, path.name,
+                )
+            else:
+                if isinstance(meta, dict):
+                    dock_goal_refs = _as_str_list(meta.get("dock_goal_refs"))
+                    body = fm_body
+        return NormalizedDoc(
+            source_type=self.source_type,
+            source_path=str(path),
+            source_mtime=path.stat().st_mtime,
+            dock_goal_refs=dock_goal_refs,
+            raw_content=body,
+            lineage_key=self.lineage_key(path),
+        )
+
+
 # ── operator_curated (path-invoked) ─────────────────────────────────────
 
 

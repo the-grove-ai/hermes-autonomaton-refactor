@@ -2865,10 +2865,33 @@ def _render_unit_detail(cap: Any, skill: str, unit_name: str, pid) -> web.Respon
     order = pkg.get("order") or []
     title_keys = pkg.get("title_from_meta") or []
 
-    d = (staging / unit_name) if staging is not None else None
+    # Package-dir resolution across BOTH sides (promoted-artifact-persistence-v1
+    # P2 S3). Content renders from whichever side HOLDS it: staging while a
+    # draft is under review; canonical (~/.grove/<sink>/<unit>/, the P1 promote
+    # layout) once canonicalized — which covers both the promoted unit and the
+    # hold-open window, whose staged dir is meta-only. meta.json never
+    # promotes, so identity reads staged-side first. Containment-guarded.
+    def _pkg_dir(base: Path | None):
+        if base is None:
+            return None
+        cand = base / unit_name
+        try:
+            cand.resolve().relative_to(base.resolve())
+        except ValueError:
+            return None  # traversal-guarded out
+        return cand if cand.is_dir() else None
+
+    def _has_content(pkg) -> bool:
+        return pkg is not None and any(
+            f.is_file() and f.name != "meta.json" for f in pkg.iterdir()
+        )
+
+    staged_pkg = _pkg_dir(staging)
+    canon_pkg = _pkg_dir(canonical)
+    d = staged_pkg if _has_content(staged_pkg) else (
+        canon_pkg if _has_content(canon_pkg) else (staged_pkg or canon_pkg))
     single = None
-    if d is None or not d.is_dir():
-        d = None
+    if d is None:
         for base in (staging, canonical):
             if base is not None and (base / unit_name).is_file():
                 single = base / unit_name
@@ -2879,8 +2902,13 @@ def _render_unit_detail(cap: Any, skill: str, unit_name: str, pid) -> web.Respon
             f'<p class="placeholder">{_esc(skill)}/{_esc(unit_name)}</p></div>',
             status=404)
 
-    # Title / subtitle — declaration + meta driven, unit_id fallback.
-    meta = _package_meta(d) if d is not None else {}
+    # Title / subtitle — declaration + meta driven, unit_id fallback. Identity
+    # is staged-side while the draft/hold-open dir exists; a promoted unit's
+    # meta is archived, so the title falls back to unit_id (by design).
+    meta: dict = {}
+    for meta_side in (staged_pkg, canon_pkg):
+        if meta_side is not None and not meta:
+            meta = _package_meta(meta_side)
     title_bits = [str(meta[k]) for k in title_keys if meta.get(k)]
     title = " &mdash; ".join(_esc(b) for b in title_bits) or _esc(
         (unit or {}).get("unit_id") or unit_name)
@@ -2911,8 +2939,11 @@ def _render_unit_detail(cap: Any, skill: str, unit_name: str, pid) -> web.Respon
     )
 
     # The remote-publish affordance (pid-less visits only — preserved ruling).
+    # P2: bound to a STAGED package (the publishable state); a promoted unit
+    # (canonical-only) has nothing left to publish — the ledger records its
+    # terminal, so no affordance and no 'Publish unavailable' noise.
     publish = ""
-    if remote_sink and pid is None and d is not None:
+    if remote_sink and pid is None and staged_pkg is not None:
         publish = _publish_affordance(cap, unit_name, meta, title_keys)
 
     # Mount-2 disposition dock → OOB #right-panel (its native habitat).

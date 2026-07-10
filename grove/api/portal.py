@@ -819,16 +819,16 @@ def _feedback_units(worker: Optional[str]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _ledger_terminal_dispositions() -> Dict[str, str]:
-    """``{unit_id -> 'applied'|'rejected'}`` from the kaizen_disposition ledger, for
-    artifact proposals — the remote-publish sink's terminal source of truth. Keyed on
-    the unit identity the disposition's ``applied_result`` carries (C2 enriches
-    promote/reject with unit_id + slug); a reject's ``archive_path`` slug is the
-    fallback key. Later events win (the last disposition is authoritative)."""
+def _iter_ledger_terminal_events():
+    """Yield ``(uid, slug, disposition)`` for every terminal artifact
+    disposition in the kaizen ledger, in file/line order (callers apply
+    later-events-win). The shared parse body for
+    :func:`_ledger_terminal_dispositions` and :func:`_ledger_slug_to_uid`.
+    ``slug`` is the ``applied_result`` slug when carried (C2/P1 enrich both
+    promote and reject with unit_id + slug), else None."""
     ledger_dir = Path(get_hermes_home()) / ".kaizen_ledger"
-    out: Dict[str, str] = {}
     if not ledger_dir.is_dir():
-        return out
+        return
     for lf in sorted(ledger_dir.glob("*.jsonl")):
         try:
             lines = lf.read_text(encoding="utf-8").splitlines()
@@ -847,12 +847,35 @@ def _ledger_terminal_dispositions() -> Dict[str, str]:
             if disp not in ("applied", "rejected"):
                 continue  # suggest_revision is not a terminal
             ar = ev.get("applied_result") or {}
-            uid = ar.get("unit_id") or ar.get("slug")
+            slug = ar.get("slug")
+            uid = ar.get("unit_id") or slug
             if not uid and ar.get("archive_path"):
                 base = Path(str(ar["archive_path"])).name  # <slug>-<utc-ts>
                 uid = base.rsplit("-", 1)[0] if "-" in base else base
             if uid:
-                out[uid] = disp
+                yield uid, slug, disp
+
+
+def _ledger_terminal_dispositions() -> Dict[str, str]:
+    """``{unit_id -> 'applied'|'rejected'}`` from the kaizen_disposition ledger, for
+    artifact proposals — the remote-publish sink's terminal source of truth. Keyed on
+    the unit identity the disposition's ``applied_result`` carries (C2 enriches
+    promote/reject with unit_id + slug); a reject's ``archive_path`` slug is the
+    fallback key. Later events win (the last disposition is authoritative)."""
+    out: Dict[str, str] = {}
+    for uid, _slug, disp in _iter_ledger_terminal_events():
+        out[uid] = disp
+    return out
+
+
+def _ledger_slug_to_uid() -> Dict[str, str]:
+    """``{slug -> unit_id}`` from the same terminal events (P2, additive) — the
+    join key for the P1 canonical subdirs, whose dir NAME is the slug while the
+    unit list keys on unit_id. Later events win."""
+    out: Dict[str, str] = {}
+    for uid, slug, _disp in _iter_ledger_terminal_events():
+        if slug:
+            out[slug] = uid
     return out
 
 
@@ -915,12 +938,31 @@ def _resolve_unit_state(uid, producer, staged, canon, feedback, open_props,
         return r
 
     # (1) TOPOLOGICAL SUPREMACY — canonical presence wins (mv-sink promoted).
-    if uid in canon:
+    #     P2 ORDERING INVERSION (GATE-B confirmed): for the REMOTE sink,
+    #     canonical-subdir presence ranks BELOW staged-presence. Staged meta +
+    #     canonical subdir + open proposal is the NORMAL hold-open window
+    #     (canonicalized, delivery pending) — needs_review, never an
+    #     out-of-band autoclose. Canonical + NO staged is the promote signal:
+    #     P1's strict ordering archives staging only AFTER publish succeeded,
+    #     so staged-gone + canonical-present ⟹ delivered (the crash window
+    #     between archive and finalize heals here as promoted_out_of_band).
+    #     A ledger-REJECTED unit whose canonical subdir lingers (reject during
+    #     the hold-open window orphans it — P1 residual 3) falls through to
+    #     rule 2: the reject terminal outranks the undelivered local copy.
+    #     File-producer rule 1 is untouched (ledger is {} for mv-sinks).
+    if uid in canon and not (
+        remote_sink and (uid in staged or ledger.get(uid) == "rejected")
+    ):
         mt, fn, p = canon[uid]
         if prop is not None:  # open proposal + already-canonical = out-of-band mv
             autoclose.append((prop, "promoted_out_of_band",
                               {"unit_id": uid, "reconciled": "canonical_present"}))
-        return row("promoted", mt, filename=fn, size=p.stat().st_size)
+        try:
+            size = (sum(f.stat().st_size for f in p.iterdir() if f.is_file())
+                    if p.is_dir() else p.stat().st_size)
+        except FileNotFoundError:
+            size = None  # vanished mid-read (purge race) — row survives
+        return row("promoted", mt, filename=fn, size=size)
 
     # (2) Remote-publish sink (forge) — ledger authoritative for the terminal; the
     #     staged dir may linger post-publish, so the ledger wins over it.
@@ -994,9 +1036,37 @@ def _list_fleet_units(cap: Any) -> list:
                     (p.stat().st_mtime, p.name, p),
                 )
 
-    # canonical artifacts — flat files (mv-sink promoted).
+    # canonical artifacts. File producers (mv-sink): flat files, unchanged.
+    # Remote sink (P2): PER-UNIT SUBDIRS ONLY — the P1 promote layout
+    # (~/.grove/<sink>/<slug>/). Subdir-only enumeration is the RULED phantom
+    # correction: a flat file dropped in the sink (e.g. an operator note) is
+    # not a unit and produces no row. slug→uid joins: open proposal payload
+    # first (the crash window's freshest identity), then the ledger slug map,
+    # then the slug itself (consistent with _artifact_unit_id's last resort).
     canon: Dict[str, tuple] = {}
-    if canonical.is_dir():
+    if remote_sink:
+        if canonical.is_dir():
+            slug_to_uid = _ledger_slug_to_uid()
+            prop_slug_to_uid = {
+                (p.payload or {}).get("slug"): uid
+                for uid, p in open_props.items()
+                if (p.payload or {}).get("slug")
+            }
+            for d in sorted(canonical.iterdir()):
+                if (not d.is_dir() or d.name == "pending_review"
+                        or d.name.startswith(".")):
+                    continue
+                try:
+                    files = [f for f in d.iterdir() if f.is_file()]
+                    if not files:
+                        continue
+                    mt = max(f.stat().st_mtime for f in files)
+                except FileNotFoundError:
+                    continue  # vanished mid-scan (purge race) — not a unit
+                uid = (prop_slug_to_uid.get(d.name)
+                       or slug_to_uid.get(d.name) or d.name)
+                canon[uid] = (mt, d.name, d)
+    elif canonical.is_dir():
         for p in canonical.glob(pattern):  # non-recursive: skips pending_review/
             if p.is_file():
                 canon[_reverse_pattern(p.name, pattern)] = (p.stat().st_mtime, p.name, p)
@@ -1257,39 +1327,10 @@ def _read_fleet_artifact(cap: Any, filename: str) -> Optional[tuple]:
     return target.read_text(encoding="utf-8"), target.suffix, state
 
 
-def _read_forge_slug(slug: str) -> Optional[dict]:
-    """Read a forge ``pending_review/<slug>/`` draft dir (forge-jobsearch-v1).
-
-    The forge stages a DIRECTORY (``resume.md`` + ``cover-letter.md`` + a
-    ``meta.json`` sidecar carrying ``{row_id, company, role, slug}``), unlike the
-    single-file fleet artifacts. Returns
-    ``{"slug","meta","meta_error","resume_md","cover_md"}`` or ``None`` when the
-    dir or either draft is absent. Path-safe: a ``slug`` that escapes the forge
-    staging dir (traversal) resolves to ``None`` (fail-closed)."""
-    staging = (Path(get_hermes_home()) / "forge" / "pending_review").resolve()
-    slug_dir = (staging / slug).resolve()
-    if not slug_dir.is_relative_to(staging) or not slug_dir.is_dir():
-        return None
-    resume, cover = slug_dir / "resume.md", slug_dir / "cover-letter.md"
-    if not resume.is_file() or not cover.is_file():
-        return None
-    meta: Optional[dict] = None
-    meta_error: Optional[str] = None
-    meta_path = slug_dir / "meta.json"
-    if meta_path.is_file():
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            meta_error = f"meta.json is unreadable: {exc}"
-    else:
-        meta_error = "meta.json not found in the slug dir"
-    return {
-        "slug": slug,
-        "meta": meta,
-        "meta_error": meta_error,
-        "resume_md": resume.read_text(encoding="utf-8"),
-        "cover_md": cover.read_text(encoding="utf-8"),
-    }
+# _read_forge_slug lived here until promoted-artifact-persistence-v1 P2: P1
+# inlined its one live caller (_forge_publish_core) and the P2 discovery found
+# it dead — deleted, not deprecated (the fragment renderer resolves packages
+# across staging + canonical itself).
 
 
 # ---------------------------------------------------------------------------
