@@ -136,6 +136,43 @@ def _strip_pattern(filename: str, pattern: str) -> str:
     return s
 
 
+def _completed_purge(gov: dict, unit: str) -> Optional[dict]:
+    """The newest MANIFESTED archive dir for *unit*, as a purge-result dict —
+    the P5-S4.3 re-tap seam: a completed purge's moves + manifest already
+    happened, so the handler proceeds idempotently to the remaining
+    post-steps (marker / tombstone / ledger-drop) from the manifest's own
+    record. None when no completed purge exists (the caller re-raises)."""
+    import json as _json
+    import re as _re
+
+    from grove.utils.fs_utils import _grove_home_realpath, _grove_subdir_realpath
+
+    wz = (gov or {}).get("write_zone") or {}
+    grove = _grove_home_realpath()
+    if grove is None or not wz.get("canonical_dir"):
+        return None
+    canonical = Path(_grove_subdir_realpath(wz["canonical_dir"], grove))
+    archive_rel = ((wz.get("retention") or {}).get("archive_dir") or ".archive")
+    unit_safe = _re.sub(r"[^A-Za-z0-9._-]", "_", str(unit)).strip(".") or "unit"
+    root = canonical / archive_rel
+    if not root.is_dir():
+        return None
+    for d in sorted(root.glob(f"{unit_safe}-*"), reverse=True):
+        man = d / "purge-manifest.json"
+        if d.is_dir() and man.is_file():
+            try:
+                record = _json.loads(man.read_text(encoding="utf-8"))
+            except (_json.JSONDecodeError, OSError):
+                continue  # unreadable manifest — not a usable completion
+            return {"archive_dir": str(d),
+                    "files": list(record.get("archived_files") or []),
+                    "manifest": str(man), "resumed": True,
+                    # the ORIGINAL resolved paths at purge time — the re-tap's
+                    # tombstone/ledger basis (S4.3)
+                    "sources_record": list(record.get("sources") or [])}
+    return None
+
+
 def _page_source(page: Path) -> Optional[str]:
     """The ``source:`` frontmatter field of a wiki page, or None."""
     from grove.wiki.index import MalformedWikiPage, _split_frontmatter
@@ -195,14 +232,25 @@ def fleet_purge(skill: str, unit: str, unit_id: Optional[str] = None,
     sig = canonical_effect_signature("fleet_purge", {
         "skill": cap.id, "unit": unit, "unit_id": unit_id, "reason": reason,
     })
-    res = purge_artifacts(
-        sources,  # [] on a re-tap: the core resumes an interrupted purge,
-        gov,      # and fail-louds when there is truly nothing to purge.
-        unit=unit,
-        reason=reason or "operator purge",
-        initiated_by="operator",
-        effect_signature=sig,
-    )
+    try:
+        res = purge_artifacts(
+            sources,  # [] on a re-tap: the core resumes an interrupted purge,
+            gov,      # and fail-louds when there is truly nothing to purge.
+            unit=unit,
+            reason=reason or "operator purge",
+            initiated_by="operator",
+            effect_signature=sig,
+        )
+    except ValueError as exc:
+        if "nothing to purge" not in str(exc):
+            raise
+        # P5-S4.3 (ruled re-tap semantics): a COMPLETED purge — moves +
+        # manifest done — still owes any post-steps a crash or defect left
+        # behind; complete them idempotently from the manifest's record.
+        completed = _completed_purge(gov, unit)
+        if completed is None:
+            raise
+        res = completed
 
     # ── terminal_skip marker: the selection pass never resurrects this unit.
     # set_terminal_skip is a deliberate no-op on an ABSENT entry (its
@@ -229,21 +277,38 @@ def fleet_purge(skill: str, unit: str, unit_id: Optional[str] = None,
     # ── wiki tombstone (R1): derived pages leave the ambient plane ──────────
     # Original (pre-move) file paths: reconstruct from the dir sources + the
     # archived basenames; flat sources are their own originals.
+    #
+    # REALPATH-CANONICAL matching (P5-S4.3): the purge core realpath-resolves
+    # its sources (on the VM, ~/.grove is a symlink into /mnt/grove-data), but
+    # page ``source:`` frontmatter and the ingest ledger store the SYMLINK
+    # spelling the poller saw. String equality misses across the symlink — the
+    # merchants bake proved it live — so BOTH comparands are realpath'd.
+    # (realpath normalizes existing symlink components even when the leaf file
+    # is already gone, which post-purge it always is.)
+    import os as _os
+
     originals = set()
     archived_names = [Path(f).name for f in res["files"]]
-    for s in sources or [str(unit_dir)]:
+    # Basis: this tap's live sources, else the manifest's recorded sources
+    # (a completed-purge re-tap — S4.3), else the unit dir. A basis entry
+    # whose basename is itself an archived name is a FLAT-file original;
+    # anything else is a package dir and expands with the archived names.
+    basis = sources or res.get("sources_record") or [str(unit_dir)]
+    for s in basis:
         sp = Path(s)
-        if s == str(unit_dir):
+        if sp.name in archived_names:
+            originals.add(s)
+        else:
             originals.update(str(sp / n) for n in archived_names
                              if n != "purge-manifest.json")
-        else:
-            originals.add(s)
+    originals_real = {_os.path.realpath(p) for p in originals}
     tombstoned: List[str] = []
     pages_root = Path(get_wiki_path()) / "pages"
-    if pages_root.is_dir() and originals:
+    if pages_root.is_dir() and originals_real:
         idx = WikiIndex()
         for page in sorted(pages_root.glob("*/*.md")):
-            if _page_source(page) in originals:
+            src_field = _page_source(page)
+            if src_field and _os.path.realpath(src_field) in originals_real:
                 rel = str(page.relative_to(pages_root))
                 idx.tombstone(rel)  # unlink-first-then-purge-rows (fail-safe)
                 tombstoned.append(rel)
@@ -251,7 +316,8 @@ def fleet_purge(skill: str, unit: str, unit_id: Optional[str] = None,
     # ── ingest-ledger drop: the purged sources' mtime entries leave too ─────
     ledger_path = Path(get_wiki_path()) / _LEDGER_REL
     ledger = _load_ledger(ledger_path)
-    dropped = [k for k in list(ledger) if k in originals]
+    dropped = [k for k in list(ledger)
+               if _os.path.realpath(k) in originals_real]
     if dropped:
         for k in dropped:
             ledger.pop(k, None)

@@ -336,3 +336,110 @@ def test_dispatcher_resolves_standing_global_pair_for_fleet_purge(monkeypatch):
     resolved = Dispatcher._resolve_governance_grant(d, halt)
     assert resolved is standing
     assert asked == [("fleet_purge", "fleet_purge")]  # the exact global pair
+
+
+# ── P5-S4.3 — bake-closure pins ───────────────────────────────────────────────
+
+
+@pytest.fixture()
+def symlinked_home(tmp_path, monkeypatch):
+    """The VM trap as a fixture: GROVE_HOME is a SYMLINK into the real data
+    dir (~/.grove -> /mnt/grove-data/.grove on prod). The poller records the
+    symlink spelling; the purge core realpaths to the target — the S4.3
+    matching class."""
+    real = tmp_path / "mnt" / "grove-data" / ".grove"
+    real.mkdir(parents=True)
+    link = tmp_path / "home-grove"
+    link.symlink_to(real)
+    monkeypatch.setenv("GROVE_HOME", str(link))
+    monkeypatch.setenv("GROVE_WIKI_PATH", str(tmp_path / "wiki"))
+    return link
+
+
+def test_tombstone_matches_across_the_symlink(symlinked_home, tmp_path):
+    """Pin 1 (the merchants miss): page source: and ledger keys carry the
+    SYMLINK spelling; the purge still tombstones + drops them."""
+    from grove.wiki.index import WikiIndex
+
+    src = symlinked_home / "drafter" / "draft-2026-01-01-moon.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("zebra moon body", encoding="utf-8")
+    # frontmatter + ledger recorded via the SYMLINK path (as the poller does)
+    page = _page(tmp_path, "drafter_draft", "moon-abc12345.md",
+                 str(src), "zebra moon compacted")
+    _ledger(tmp_path, {str(src): 1.0})
+    WikiIndex().build_index()
+
+    out = fleet_purge("drafter", "2026-01-01-moon")
+
+    assert not page.exists()  # tombstoned across the symlink boundary
+    ledger = json.loads((tmp_path / "wiki" / ".index" / "ingest_state.json")
+                        .read_text())
+    assert str(src) not in ledger
+    assert "1 wiki page(s) tombstoned" in out and "1 ingest-ledger" in out
+
+
+def test_resume_discriminator_skips_promote_residue(grove_home):
+    """Pin 3a: a manifest-less archive dir WITH meta.json is promote/reject
+    residue — the purge mints its OWN dir (resumed False), residue untouched."""
+    from grove.utils.fs_utils import purge_artifacts
+
+    gov = {"write_zone": {"staging_dir": "sinkr/pending_review",
+                          "canonical_dir": "sinkr"}}
+    d = grove_home / "sinkr" / "u1"
+    d.mkdir(parents=True)
+    (d / "resume.md").write_text("R")
+    residue = grove_home / "sinkr" / ".archive" / "u1-20260101T000000Z"
+    residue.mkdir(parents=True)
+    (residue / "meta.json").write_text("{}")  # promote-era meta-only archive
+
+    res = purge_artifacts([str(d)], gov, unit="u1", reason="r",
+                          initiated_by="operator")
+    assert res["resumed"] is False
+    assert res["archive_dir"] != str(residue)
+    assert sorted(p.name for p in residue.iterdir()) == ["meta.json"]  # untouched
+
+
+def test_resume_discriminator_still_resumes_true_interruptions(grove_home):
+    """Pin 3b: manifest-less WITHOUT meta.json = interrupted purge — resumed."""
+    from grove.utils.fs_utils import purge_artifacts, storage_transfer
+
+    gov = {"write_zone": {"staging_dir": "sinkr/pending_review",
+                          "canonical_dir": "sinkr"}}
+    d = grove_home / "sinkr" / "u1"
+    d.mkdir(parents=True)
+    (d / "resume.md").write_text("R")
+    crash = grove_home / "sinkr" / ".archive" / "u1-20260101T000000Z"
+    storage_transfer([d / "resume.md"], crash)  # moves done, no manifest
+
+    res = purge_artifacts([str(d)], gov, unit="u1", reason="r",
+                          initiated_by="operator")
+    assert res["resumed"] is True and res["archive_dir"] == str(crash)
+
+
+def test_retap_of_completed_purge_finishes_post_steps(grove_home, tmp_path):
+    """Pin 4 (the merchants remediation path): purge completed (manifest
+    present) but a post-step was missed — the re-tap does NOT raise; it
+    completes marker/tombstone/ledger idempotently from the manifest."""
+    from grove.wiki.index import WikiIndex
+
+    src = grove_home / "drafter" / "draft-2026-01-01-moon.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("zebra moon body", encoding="utf-8")
+    fleet_purge("drafter", "2026-01-01-moon")  # completed purge
+
+    # simulate the missed tombstone: the derived page + ledger entry linger
+    page = _page(tmp_path, "drafter_draft", "moon-late5678.md",
+                 str(src), "zebra moon leftover")
+    _ledger(tmp_path, {str(src): 1.0})
+    WikiIndex().build_index()
+
+    out = fleet_purge("drafter", "2026-01-01-moon")  # re-tap: must not raise
+    assert "resumed" in out or "interrupted" in out or "archived" in out
+    assert not page.exists()  # leftover tombstoned on the re-tap
+    ledger = json.loads((tmp_path / "wiki" / ".index" / "ingest_state.json")
+                        .read_text())
+    assert str(src) not in ledger
+    # still exactly ONE archive dir + one manifest (idempotent, no duplicates)
+    dirs = list((grove_home / "drafter" / ".archive").glob("2026-01-01-moon-*"))
+    assert len(dirs) == 1

@@ -1097,8 +1097,13 @@ def _list_fleet_units(cap: Any) -> list:
                 continue
             if not _m_unit:
                 continue
+            # BOTH identities (P5-S4.3, the bake identity split): the mapped
+            # uid (ledger/proposal join) AND the raw manifest unit — the
+            # feedback marker may be keyed by either (unit_id vs slug), and an
+            # unsuppressed twin resurfaces as a rule-5 'rejected' row.
             purged.add(prop_slug_to_uid.get(_m_unit)
                        or slug_to_uid.get(_m_unit) or _m_unit)
+            purged.add(_m_unit)
 
     autoclose: list = []
     uids = set(staged) | set(canon) | set(feedback) | set(open_props) | set(ledger)

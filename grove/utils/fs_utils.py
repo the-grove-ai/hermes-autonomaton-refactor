@@ -1052,9 +1052,15 @@ def purge_artifacts(
     resumed = False
     dest = None
     if archive_root.is_dir():
+        # RESUME DISCRIMINATOR (P5-S4.3): an interrupted PURGE dir never
+        # contains meta.json (the identity envelope never reaches canonical),
+        # while promote/reject archive residue always does — a manifest-less
+        # dir WITH meta.json is residue, never resumed (the merchants bake
+        # coalesced into the promote-era meta dir before this pin).
         incomplete = [
             d for d in sorted(archive_root.glob(f"{unit_safe}-*"))
             if d.is_dir() and not (d / "purge-manifest.json").is_file()
+            and not (d / "meta.json").is_file()
         ]
         if incomplete:
             dest = incomplete[-1]
