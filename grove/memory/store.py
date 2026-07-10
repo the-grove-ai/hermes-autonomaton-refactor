@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional
 
 from grove.memory.events import (
+    FleetPromoteAccepted,
     MemoryAccessed,
     MemoryCreated,
     MemoryDeprecated,
@@ -56,6 +57,7 @@ _EVENT_TYPES = {
     "MemoryDeprecated": MemoryDeprecated,
     "MemoryAccessed": MemoryAccessed,
     "MemoryGraduated": MemoryGraduated,
+    "FleetPromoteAccepted": FleetPromoteAccepted,
 }
 
 
@@ -218,6 +220,11 @@ class MemoryStore:
                     # cellar page is now its sole serving surface.
                     rec.graduated_at = ev.timestamp
                     rec.status = "graduated"
+            elif isinstance(ev, FleetPromoteAccepted):
+                # OBSERVATIONAL (promoted-artifact-persistence-v1 P3) — the
+                # operator-acceptance event is Flywheel food, not a record:
+                # the fold is a deliberate no-op; the projection is unchanged.
+                pass
 
         self._index = records
         self._save_index(records)
