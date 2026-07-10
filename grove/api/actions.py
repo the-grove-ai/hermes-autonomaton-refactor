@@ -43,8 +43,9 @@ from grove.api.fragments import (
     render_goal_card,
     render_tier_card,
 )
-from grove.api.portal import _memory_proposals_path, _read_forge_slug
+from grove.api.portal import _memory_proposals_path
 from grove.forge import PublishError, feedback_store, publish_application_package
+from grove.utils.fs_utils import canonicalize_files
 from grove.config.model_catalog import load_catalog
 from grove.config.routing_writer import ConfigValidationError, get_writer
 from grove.dock import _VALID_STATUSES, load_dock
@@ -859,19 +860,47 @@ async def _forge_publish_core(slug: str, loop) -> dict:
     portal is a CONSUMER of the MCP substrate: a cold notion session fails LOUD,
     never connecting or waking the server. Shared by /publish (renders forge
     cards) and /promote (lease + finalize)."""
-    read = _read_forge_slug(slug)
-    if read is None:
+    # P1 (promoted-artifact-persistence-v1, decision 2) — meta.json stays
+    # staging-side until the post-publish archive, but CONTENT resolves
+    # CANONICAL-SIDE first (~/.grove/forge/<slug>/, written by the
+    # canonicalize step), falling back to the staged dir so the standalone
+    # /publish tap (which runs pre-canonicalization) keeps working. A
+    # deterministic resolution order, not a silent fallback: both files are
+    # verified present below, fail loud. Path-safe like _read_forge_slug.
+    home = Path(get_hermes_home())
+    staging_root = (home / "forge" / "pending_review").resolve()
+    slug_dir = (staging_root / slug).resolve()
+    if not slug_dir.is_relative_to(staging_root) or not slug_dir.is_dir():
         return {"ok": False, "kind": "forge_no_draft_dir", "status": 404,
                 "message": f"No forge draft dir for {slug!r}."}
-    meta = read["meta"]
+    meta: Optional[dict] = None
+    meta_error: Optional[str] = None
+    meta_path = slug_dir / "meta.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            meta_error = f"meta.json is unreadable: {exc}"
+    else:
+        meta_error = "meta.json not found in the slug dir"
     if not meta or not all(meta.get(k) for k in ("row_id", "company", "role")):
-        why = read["meta_error"] or "meta.json is missing row_id/company/role"
+        why = meta_error or "meta.json is missing row_id/company/role"
         return {"ok": False, "kind": "forge_meta_invalid", "status": 400,
                 "message": f"Cannot publish: {why}."}
     row_id, company, role = meta["row_id"], meta["company"], meta["role"]
-    slug_dir = Path(get_hermes_home()) / "forge" / "pending_review" / slug
-    resume_path = str(slug_dir / "resume.md")
-    cover_path = str(slug_dir / "cover-letter.md")
+
+    canonical_dir = home / "forge" / slug
+
+    def _content(name: str) -> Path:
+        c = canonical_dir / name
+        return c if c.is_file() else slug_dir / name
+
+    resume, cover = _content("resume.md"), _content("cover-letter.md")
+    if not resume.is_file() or not cover.is_file():
+        # Pre-P1 parity: _read_forge_slug returned None on a missing draft.
+        return {"ok": False, "kind": "forge_no_draft_dir", "status": 404,
+                "message": f"No forge draft dir for {slug!r}."}
+    resume_path, cover_path = str(resume), str(cover)
 
     try:
         result = await loop.run_in_executor(
@@ -986,20 +1015,73 @@ def _fleet_promote_core(proposal) -> dict:
         return {"ok": False, "kind": "fleet_promote_missing", "status": 404,
                 "message": "Staged package not found — it may already be promoted."}
     canonical_dir = home / canonical
-    canonical_dir.mkdir(parents=True, exist_ok=True)
-    moved = []
-    for f in sorted(src_dir.iterdir()):
-        if f.name == "meta.json" or not f.is_file():
-            continue  # fleet-internal identity / non-file — never promoted to canonical
-        f.rename(canonical_dir / f.name)  # atomic within ~/.grove; flat → poller ingests
-        moved.append(str(canonical_dir / f.name))
-    if not moved:
+    # Selection is caller-owned (meta.json is the fleet-internal identity
+    # envelope / non-files are never promoted); the canonical act itself
+    # delegates to the ONE shared core (promoted-artifact-persistence-v1 P1,
+    # GATE-B ruling 1) — atomic rename within ~/.grove; flat → poller ingests.
+    content = [f for f in sorted(src_dir.iterdir())
+               if f.name != "meta.json" and f.is_file()]
+    if not content:
         return {"ok": False, "kind": "fleet_promote_empty", "status": 422,
                 "message": "Staged package has no content file to promote."}
+    moved = canonicalize_files(content, canonical_dir)
     # Archive the now-content-free staged dir (clears the skip-already-staged marker).
     _archive_forge_slug(proposal)
     return {"ok": True, "moved": moved,
             "folder_link": f"{canonical}/ (cellar) — {len(moved)} file(s)"}
+
+
+def _canonicalize_staged_package(proposal) -> dict:
+    """P1 step 1 (promoted-artifact-persistence-v1) — canonicalize a remote-
+    delivery producer's staged package into the PER-UNIT canonical subdir
+    ``~/.grove/<sink>/<slug>/`` BEFORE the delivery step. Per-slug, not flat:
+    the package's fixed file names (resume.md / cover-letter.md) would collide
+    across units in a flat sink, and flat ``*.md`` files would perturb the C2
+    four-state read (its canonical glob is non-recursive, so a subdir is
+    invisible to it by design — the ledger stays the remote sink's terminal
+    authority until P2 wires the read side).
+
+    Discriminated dict mirroring ``_fleet_promote_core``. Re-tap idempotency
+    rides :func:`canonicalize_files`: staged content present → moved
+    (skip-if-identical); staging content gone + canonical files present →
+    satisfied; neither → ``{"ok": False}`` — a canonical write that cannot be
+    satisfied ABORTS the promote (fail loud, nothing is delivered)."""
+    payload = proposal.payload or {}
+    slug = payload.get("slug")
+    # Absent on remote-sink payloads (forge_artifact_pending carries no
+    # canonical_sink) — same defaulting idiom as _archive_forge_slug.
+    sink = payload.get("canonical_sink") or "forge"
+    if not slug:
+        return {"ok": False, "kind": "fleet_canonicalize_bad_payload", "status": 400,
+                "message": "Proposal carries no slug — cannot canonicalize."}
+    base = (Path(get_hermes_home()) / sink).resolve()
+    staging_root = base / "pending_review"
+    src_dir = (staging_root / slug).resolve()
+    canonical_dir = (base / slug).resolve()
+    if (not src_dir.is_relative_to(staging_root)
+            or canonical_dir == base
+            or canonical_dir.is_relative_to(staging_root)
+            or not canonical_dir.is_relative_to(base)):
+        return {"ok": False, "kind": "fleet_canonicalize_bad_payload", "status": 400,
+                "message": f"Slug {slug!r} escapes the sink's dirs — refusing."}
+    content = ([f for f in sorted(src_dir.iterdir())
+                if f.name != "meta.json" and f.is_file()]
+               if src_dir.is_dir() else [])
+    if content:
+        try:
+            files = canonicalize_files(content, canonical_dir)
+        except OSError as exc:
+            return {"ok": False, "kind": "fleet_canonicalize_error", "status": 500,
+                    "message": (f"Local canonical write failed ({exc}) — promote "
+                                f"aborted; nothing was delivered.")}
+        return {"ok": True, "canonical_files": files}
+    if canonical_dir.is_dir():
+        existing = [str(p) for p in sorted(canonical_dir.iterdir()) if p.is_file()]
+        if existing:  # re-tap after a delivery failure — already canonicalized
+            return {"ok": True, "canonical_files": existing, "satisfied": True}
+    return {"ok": False, "kind": "fleet_canonicalize_missing", "status": 404,
+            "message": (f"No staged content and no canonical package for {slug!r} "
+                        f"— nothing to promote.")}
 
 
 async def _promote_disposition(
@@ -1095,6 +1177,21 @@ async def _promote_disposition(
             f"Promoted to the cellar — {res['folder_link']}",
         )
 
+    # P1 (promoted-artifact-persistence-v1) — CANONICALIZATION IS LOCAL;
+    # DELIVERY IS DECLARATIVE. Step 1: canonicalize the staged package into the
+    # per-unit canonical subdir BEFORE delivery. A canonical-write failure
+    # ABORTS the promote (fail loud, nothing delivered); steps 2 (publish),
+    # 3 (archive) and 4 (finalize) gate strictly in order below.
+    canon = _canonicalize_staged_package(proposal)
+    if not canon.get("ok"):
+        proposal_queue.clear_lease(proposal_id)
+        return await _loud_action_failure(
+            _forge_promote_error_card(proposal_id, short_id, ptype,
+                                      canon["message"], retappable=True),
+            failure_class=canon["kind"], action="forge_promote",
+            message=canon["message"], status=canon["status"],
+        )
+
     loop = asyncio.get_running_loop()
     try:
         res = await asyncio.wait_for(
@@ -1129,16 +1226,24 @@ async def _promote_disposition(
             message=res["message"], status=res["status"], detail=res.get("detail"),
         )
 
+    # P1 step 3 — archive the now-meta-only staged dir (the existing archive
+    # mechanic; clears the skip marker). Runs ONLY after delivery succeeded —
+    # a publish failure above leaves the staged meta + canonical files intact
+    # as the retry substrate. Returns None when the dir is already gone.
+    _archive_forge_slug(proposal)
+
     # SUCCESS — finalize (the single disposition path): remove + kaizen ledger.
     _pl = proposal.payload or {}
     proposal_queue.finalize_proposal_state(
         proposal_id, "applied",
         # C2 — carry the unit identity so the read-side viewer's ledger join keys
-        # forge 'promoted' reliably (forge's staged dir lingers post-publish; the
-        # ledger, not the filesystem, records the terminal). Additive telemetry.
+        # forge 'promoted' reliably (the ledger, not the filesystem, records the
+        # terminal). Additive telemetry: canonical_files records the P1 local
+        # canonical copies (promoted-artifact-persistence-v1).
         {"folder_link": res["folder_link"],
          "unit_id": _pl.get("unit_id") or _pl.get("row_id"),
-         "slug": _pl.get("slug")},
+         "slug": _pl.get("slug"),
+         "canonical_files": canon.get("canonical_files", [])},
     )
     # fleet-artifact-legibility-v1 C4 (D6 fix) — Mount-1 card tap gets the
     # fleet-shaped transient; the Drive folder is the destination link.
