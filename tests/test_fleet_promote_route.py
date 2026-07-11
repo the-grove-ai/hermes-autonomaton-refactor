@@ -142,7 +142,7 @@ async def test_completed_failure_clears_lease(monkeypatch):
                if e["event_type"] == "kaizen_disposition"
                and e.get("disposition") == "applied"]
     assert not applied  # never finalize an undelivered package
-    andons = [p for p in pq._read_records(pq.default_queue_path())
+    andons = [p for p in pq.read_all()
               if p.type == "portal_action_failure"]
     assert andons  # the Andon surface fired
 
