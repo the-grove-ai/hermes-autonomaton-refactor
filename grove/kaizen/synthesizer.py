@@ -27,11 +27,18 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from grove.t1_call import T1TruncationError
+
 logger = logging.getLogger(__name__)
 
 
 _SYNTHESIS_MAX_TOKENS = 2048
-_REVIEW_MAX_TOKENS = 512
+# kaizen-review-cap-guard-v1: the forced-tool review runs on reasoning-mode
+# models whose reasoning tokens count against max_tokens (observed live:
+# 459–631 completion incl. 362–533 reasoning). 512 sat inside that range and
+# cap-cut intermittently; 1024 clears the observed max with headroom, and the
+# _t3_call truncation ladder covers the tail.
+_REVIEW_MAX_TOKENS = 1024
 
 # Maximum operator prompts and prompt length fed into a single synthesis call —
 # enough for semantic context without unbounded token spend on a pathological
@@ -157,7 +164,48 @@ def _t3_call(
     max_tokens: int,
     tool: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
-    """Issue one T3 call; return the result or None on error.
+    """Issue one T3 call behind the truncation ladder; result or None on error.
+
+    kaizen-review-cap-guard-v1: :func:`_t3_call_once` raises
+    ``T1TruncationError`` when the response was cut at the output cap —
+    including the silent valid-but-shorter class. Cap-hit → ONE WARNING +
+    re-issue at 2x the call's cap (P0 evidence: identical-at-cap retry is
+    deterministic 0/6; raised-cap 2/2). A second truncation — like every
+    other failure — falls through to the best-effort floor: WARNING + None,
+    never a raise into the background daemon.
+    """
+    try:
+        try:
+            return _t3_call_once(
+                runtime, system_prompt, user_content,
+                max_tokens=max_tokens, tool=tool,
+            )
+        except T1TruncationError:
+            raised = 2 * max_tokens
+            logger.warning(
+                "[kaizen.synthesizer] T3 %s call truncated at max_tokens=%d; "
+                "retrying once at %d.",
+                "forced-tool" if tool is not None else "free-text",
+                max_tokens, raised,
+            )
+            return _t3_call_once(
+                runtime, system_prompt, user_content,
+                max_tokens=raised, tool=tool,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[kaizen.synthesizer] T3 call failed: %r", exc)
+        return None
+
+
+def _t3_call_once(
+    runtime: dict,
+    system_prompt: str,
+    user_content: str,
+    *,
+    max_tokens: int,
+    tool: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """One un-laddered T3 call; raises on every failure (the ladder decides).
 
     Branches on the tier's resolved ``api_mode`` (template:
     ``grove.t1_call.call_t1``). ``anthropic_messages`` reuses
@@ -165,109 +213,166 @@ def _t3_call(
     client construction, matching ``grove.classify``'s classifier call;
     ``chat_completions`` drives any OpenAI-compatible provider. With ``tool``
     (Anthropic tool shape) the call forces that tool and returns its parsed
-    arguments dict; without it, returns the response text. Best-effort on
-    both arms: any failure — unsupported api_mode, transport error, missing
-    or mis-named tool call — logs a WARNING and returns None, never raising
-    into the caller.
+    arguments dict; without it, returns the response text. A response cut at
+    the output cap raises :class:`grove.t1_call.T1TruncationError` — a local
+    port of the P2 guard; never return silently-short data. Any other
+    failure raises its natural exception.
     """
-    try:
-        api_mode = runtime.get("api_mode")
-        if api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
+    api_mode = runtime.get("api_mode")
+    if api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import build_anthropic_client
 
-            client = build_anthropic_client(
-                api_key=runtime.get("api_key") or "",
-                base_url=runtime.get("base_url") or None,
-            )
-            kwargs: Dict[str, Any] = {
-                "model": runtime["model"],
-                "max_tokens": max_tokens,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_content}],
-            }
-            if tool is not None:
-                kwargs["tools"] = [tool]
-                kwargs["tool_choice"] = {"type": "tool", "name": tool["name"]}
-            response = client.messages.create(**kwargs)
-            if tool is not None:
-                for block in response.content or ():
-                    if (
-                        getattr(block, "type", None) == "tool_use"
-                        and getattr(block, "name", None) == tool["name"]
-                    ):
-                        return dict(block.input)
-                raise ValueError(
-                    f"T3 returned no {tool['name']!r} tool_use block: "
-                    f"{response.content!r}"
-                )
-            return response.content[0].text if response.content else ""
-
-        if api_mode == "chat_completions":
-            # Lazy import keeps the ~800ms openai/pydantic load off the
-            # module-import path, matching the Anthropic branch's local
-            # import.
-            from openai import OpenAI
-
-            client = OpenAI(
-                api_key=runtime.get("api_key") or "",
-                base_url=runtime.get("base_url") or None,
-            )
-            messages: List[Dict[str, str]] = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ]
-            kwargs = {
-                "model": runtime["model"],
-                "max_tokens": max_tokens,
-                "messages": messages,
-            }
-            if tool is not None:
-                # Reshape the Anthropic tool shape into the OpenAI
-                # function-tool envelope, mirroring grove.t1_call._to_openai_tool.
-                kwargs["tools"] = [{
-                    "type": "function",
-                    "function": {
-                        "name": tool["name"],
-                        "description": tool.get("description", ""),
-                        "parameters": tool["input_schema"],
-                    },
-                }]
-                kwargs["tool_choice"] = {
-                    "type": "function",
-                    "function": {"name": tool["name"]},
-                }
-
-            # openrouter-zero-retention-routing-v1: attach the operator's
-            # OpenRouter provider routing (order/data_collection/fallbacks)
-            # verbatim, when this is an OpenRouter call and routing is
-            # configured. No-op otherwise.
-            from grove.providers import openrouter_provider_pref
-
-            _pp = openrouter_provider_pref(runtime)
-            if _pp:
-                kwargs["extra_body"] = {"provider": _pp}
-
-            response = client.chat.completions.create(**kwargs)
-            message = response.choices[0].message
-            if tool is not None:
-                calls = message.tool_calls or []
-                if not calls or calls[0].function.name != tool["name"]:
-                    raise ValueError(
-                        f"T3 (chat_completions) returned no {tool['name']!r} "
-                        f"tool call: {message!r}"
-                    )
-                return json.loads(calls[0].function.arguments)
-            return message.content or ""
-
-        raise ValueError(
-            f"unsupported T3 api_mode {api_mode!r} "
-            f"(model={runtime.get('model')!r}); bind T3 to an "
-            f"anthropic_messages or chat_completions provider in "
-            f"routing.config.yaml."
+        client = build_anthropic_client(
+            api_key=runtime.get("api_key") or "",
+            base_url=runtime.get("base_url") or None,
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[kaizen.synthesizer] T3 call failed: %r", exc)
-        return None
+        kwargs: Dict[str, Any] = {
+            "model": runtime["model"],
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_content}],
+        }
+        if tool is not None:
+            kwargs["tools"] = [tool]
+            kwargs["tool_choice"] = {"type": "tool", "name": tool["name"]}
+        response = client.messages.create(**kwargs)
+        # Messages API cap-hit is first-class: stop_reason == "max_tokens".
+        truncated = getattr(response, "stop_reason", None) == "max_tokens"
+        if tool is not None:
+            for block in response.content or ():
+                if (
+                    getattr(block, "type", None) == "tool_use"
+                    and getattr(block, "name", None) == tool["name"]
+                ):
+                    if truncated:
+                        raise T1TruncationError(
+                            f"T3 (anthropic_messages) response hit the "
+                            f"output cap (stop_reason max_tokens) — refusing "
+                            f"possibly-shortened tool args "
+                            f"(tool {tool['name']!r})"
+                        )
+                    return dict(block.input)
+            if truncated:
+                raise T1TruncationError(
+                    "T3 (anthropic_messages) forced-tool response cap-cut "
+                    "before any tool_use block materialized "
+                    "(max_tokens too low)"
+                )
+            raise ValueError(
+                f"T3 returned no {tool['name']!r} tool_use block: "
+                f"{response.content!r}"
+            )
+        text = response.content[0].text if response.content else ""
+        if truncated:
+            raise T1TruncationError(
+                f"T3 (anthropic_messages) free-text response cap-cut at the "
+                f"output cap ({len(text)} chars; stop_reason max_tokens) — "
+                f"retry at a raised max_tokens"
+            )
+        return text
+
+    if api_mode == "chat_completions":
+        # Lazy import keeps the ~800ms openai/pydantic load off the
+        # module-import path, matching the Anthropic branch's local
+        # import.
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=runtime.get("api_key") or "",
+            base_url=runtime.get("base_url") or None,
+        )
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        kwargs = {
+            "model": runtime["model"],
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if tool is not None:
+            # Reshape the Anthropic tool shape into the OpenAI
+            # function-tool envelope, mirroring grove.t1_call._to_openai_tool.
+            kwargs["tools"] = [{
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool["input_schema"],
+                },
+            }]
+            kwargs["tool_choice"] = {
+                "type": "function",
+                "function": {"name": tool["name"]},
+            }
+
+        # openrouter-zero-retention-routing-v1: attach the operator's
+        # OpenRouter provider routing (order/data_collection/fallbacks)
+        # verbatim, when this is an OpenRouter call and routing is
+        # configured. No-op otherwise.
+        from grove.providers import openrouter_provider_pref
+
+        _pp = openrouter_provider_pref(runtime)
+        if _pp:
+            kwargs["extra_body"] = {"provider": _pp}
+
+        response = client.chat.completions.create(**kwargs)
+        choice = response.choices[0]
+        # Local port of the grove.t1_call P2 guard: either the top-level
+        # finish_reason or OpenRouter's native_finish_reason extra saying
+        # "length" marks the response cap-cut. The extra field is absent on
+        # non-OpenRouter providers → None → inert. (Probe-confirmed on the
+        # live T3 route: both fields read 'length' on a cap-hit.)
+        truncated = "length" in (
+            getattr(choice, "finish_reason", None),
+            getattr(choice, "native_finish_reason", None),
+        )
+        message = choice.message
+        if tool is not None:
+            calls = message.tool_calls or []
+            if not calls or calls[0].function.name != tool["name"]:
+                if truncated and not calls:
+                    raise T1TruncationError(
+                        f"T3 (chat_completions) forced-tool response cap-cut "
+                        f"before any tool call materialized (max_tokens too "
+                        f"low): {message!r}"
+                    )
+                raise ValueError(
+                    f"T3 (chat_completions) returned no {tool['name']!r} "
+                    f"tool call: {message!r}"
+                )
+            try:
+                args = json.loads(calls[0].function.arguments)
+            except json.JSONDecodeError:
+                if truncated:
+                    raise T1TruncationError(
+                        f"T3 (chat_completions) tool arguments cap-cut "
+                        f"mid-JSON ({len(calls[0].function.arguments or '')} "
+                        f"chars; unterminated) — retry at a raised max_tokens"
+                    ) from None
+                raise
+            if truncated:
+                raise T1TruncationError(
+                    f"T3 (chat_completions) response hit the output cap yet "
+                    f"parsed cleanly — refusing possibly-shortened tool args "
+                    f"(tool {tool['name']!r})"
+                )
+            return args
+        text = message.content or ""
+        if truncated:
+            raise T1TruncationError(
+                f"T3 (chat_completions) free-text response cap-cut at the "
+                f"output cap ({len(text)} chars) — retry at a raised "
+                f"max_tokens"
+            )
+        return text
+
+    raise ValueError(
+        f"unsupported T3 api_mode {api_mode!r} "
+        f"(model={runtime.get('model')!r}); bind T3 to an "
+        f"anthropic_messages or chat_completions provider in "
+        f"routing.config.yaml."
+    )
 
 
 # ── Synthesis ────────────────────────────────────────────────────────────
