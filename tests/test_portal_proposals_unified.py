@@ -420,3 +420,207 @@ async def test_render_only_failure_falls_back_to_sj(client, grove_home, monkeypa
     assert "keeps failing (http_500)" in body
     assert "DEFECT" not in body
     assert "/dismiss" in body
+
+
+# ---------------------------------------------------------------------------
+# proposal-feed-navigation-v1 — per-type subnav + composable filters
+# ---------------------------------------------------------------------------
+
+_FT_SJ = (
+    "cultivator is hitting the same resolver_failed fault repeatedly — "
+    "one defect, active.\n"
+    "Seen 6 times across 2 session(s) in the last 14d (first x, last y).\n"
+    'Samples: {"raw": "json"}'
+)
+
+
+def _write_fault_triage(pid_char):
+    _write_typed_proposal(
+        "fault_triage",
+        {"source": "fleet_worker", "worker": "cultivator",
+         "check": "resolver_failed", "error_signature": pid_char},
+        pid="sha256:" + pid_char * 64, sj=_FT_SJ,
+        evidence=(f"fault_triage:{pid_char}",),
+    )
+
+
+async def test_type_tabs_counts_match_rendered_cards(client, grove_home):
+    """(a) Tab badges come from the unfiltered post-partition feed; each type
+    tab's count equals exactly the card count its filter renders. Order: all,
+    types by count desc, memory."""
+    _write_routing_proposal(grove_home)
+    _write_fault_triage("1")
+    _write_fault_triage("2")
+    _write_memory_proposals(grove_home, [
+        _memory_record("Fact A."), _memory_record("Fact B."),
+    ])
+
+    body = await (await client.get("/portal/fragments/proposals/pending")).text()
+    assert 'class="queue-tabs"' in body
+    assert "all &middot; 5" in body
+    assert "fault_triage &middot; 2" in body
+    assert "routing_update &middot; 1" in body
+    assert "memory &middot; 2" in body
+    # Tab order: all, then types by count desc, then memory.
+    assert (body.index("all &middot;") < body.index("fault_triage &middot;")
+            < body.index("routing_update &middot;") < body.index("memory &middot;"))
+    # Tab count == rendered card count under that tab's own filter.
+    for t, n in (("fault_triage", 2), ("routing_update", 1), ("memory", 2)):
+        page = await (await client.get(
+            f"/portal/fragments/proposals/pending?type={t}")).text()
+        assert page.count('<div class="card"') == n, t
+
+
+async def test_type_filter_selects_one_type_and_memory_pseudo_type(client, grove_home):
+    """(b) ?type= narrows to one proposal type (memory excluded); ?type=memory
+    shows memory cards only; unrecognized value → no filter."""
+    _write_routing_proposal(grove_home)
+    _write_memory_proposals(grove_home, [_memory_record("Only memory fact.")])
+
+    page = await (await client.get(
+        "/portal/fragments/proposals/pending?type=routing_update")).text()
+    assert '<span class="badge">routing_update</span>' in page
+    assert "Only memory fact." not in page
+
+    page = await (await client.get(
+        "/portal/fragments/proposals/pending?type=memory")).text()
+    assert "Only memory fact." in page
+    assert '<span class="badge">routing_update</span>' not in page
+
+    page = await (await client.get(
+        "/portal/fragments/proposals/pending?type=not_a_type")).text()
+    assert '<span class="badge">routing_update</span>' in page
+    assert "Only memory fact." in page
+
+
+async def test_class_filter_actionable_renderonly_split(client, grove_home):
+    """(c) ?class= splits on the adjudicated predicate: _type_offers_approve
+    OR PROPOSAL_VERBS. routing_update (handler) and fault_triage (verb set)
+    are actionable; portal_action_failure is render-only; memory cards are
+    actionable."""
+    _write_routing_proposal(grove_home)
+    _write_fault_triage("3")
+    _write_typed_proposal(
+        "portal_action_failure",
+        {"failure_class": "http_500", "action": "dock_status"},
+        pid="sha256:" + "9" * 64,
+        sj="portal action 'dock_status' keeps failing (http_500)",
+    )
+    _write_memory_proposals(grove_home, [_memory_record("Mem fact.")])
+
+    page = await (await client.get(
+        "/portal/fragments/proposals/pending?class=actionable")).text()
+    assert '<span class="badge">routing_update</span>' in page
+    assert '<span class="badge">fault_triage</span>' in page
+    assert '<span class="badge">portal_action_failure</span>' not in page
+    assert "Mem fact." in page
+
+    page = await (await client.get(
+        "/portal/fragments/proposals/pending?class=renderonly")).text()
+    assert '<span class="badge">portal_action_failure</span>' in page
+    assert '<span class="badge">routing_update</span>' not in page
+    assert '<span class="badge">fault_triage</span>' not in page
+    assert "Mem fact." not in page
+
+
+def test_get_record_time_prefers_created_at_falls_back_timestamp():
+    """(d, unit) _get_record_time: created_at first, timestamp fallback,
+    empty-string floor."""
+    from grove.api.fragments import _get_record_time
+
+    assert _get_record_time({"created_at": "A"}) == "A"
+    assert _get_record_time({"timestamp": "B"}) == "B"
+    assert _get_record_time({"created_at": "", "timestamp": "B"}) == "B"
+    assert _get_record_time({}) == ""
+
+
+async def test_age_filter_cutoff_on_both_stores(client, grove_home):
+    """(d) ?age= keeps records newer than the ISO cutoff on both stores:
+    routing proposals key created_at, memory records key timestamp (projected
+    to created_at by the portal reader)."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    old, fresh = ((now - timedelta(days=30)).isoformat(),
+                  (now - timedelta(hours=1)).isoformat())
+    for pid, ts in (("routing_update:old00001", old),
+                    ("routing_update:fresh001", fresh)):
+        proposal_queue.append(proposal_queue.RoutingProposal(
+            proposal_id=pid, type="routing_update",
+            payload={"rule": "downward", "add_intents": ["greet"]},
+            evidence=("t",), eval_hash="h", created_at=ts,
+        ))
+    old_mem = _memory_record("Old memory fact.")
+    old_mem["timestamp"] = old
+    fresh_mem = _memory_record("Fresh memory fact.")
+    fresh_mem["timestamp"] = fresh
+    _write_memory_proposals(grove_home, [old_mem, fresh_mem])
+
+    page = await (await client.get(
+        "/portal/fragments/proposals/pending?age=7d")).text()
+    assert page.count('<span class="badge">routing_update</span>') == 1
+    assert "Fresh memory fact." in page
+    assert "Old memory fact." not in page
+
+    page = await (await client.get(
+        "/portal/fragments/proposals/pending?age=24h")).text()
+    assert page.count('<span class="badge">routing_update</span>') == 1
+    assert "Fresh memory fact." in page
+    assert "Old memory fact." not in page
+
+    # No age param → everything renders.
+    page = await (await client.get(
+        "/portal/fragments/proposals/pending")).text()
+    assert page.count('<span class="badge">routing_update</span>') == 2
+    assert "Old memory fact." in page
+
+
+async def test_nav_badge_is_unfiltered_while_filter_active(client, grove_home):
+    """(e) The nav badge (handle_proposals_nav) counts the unfiltered total —
+    a page filter narrows cards but never the badge."""
+    _write_routing_proposal(grove_home)
+    _write_memory_proposals(grove_home, [_memory_record("Pending fact.")])
+
+    nav = await (await client.get("/portal/fragments/nav/proposals")).text()
+    assert '<span class="nav-badge hot">2</span>' in nav
+    page = await (await client.get(
+        "/portal/fragments/proposals/pending?type=memory")).text()
+    assert page.count('<div class="card"') == 1
+    nav = await (await client.get("/portal/fragments/nav/proposals")).text()
+    assert '<span class="nav-badge hot">2</span>' in nav
+
+
+async def test_filters_compose_with_grouped_view(client, grove_home):
+    """(f) ?type= composes with ?view=grouped: grouped runs on the filtered
+    set, and the view toggle round-trips all active filter params."""
+    _write_routing_proposal(grove_home)          # proposer → unattributed
+    _write_fault_triage("4")                     # proposer → test
+    _write_memory_proposals(grove_home, [_memory_record("Mem fact.")])
+
+    body = await (await client.get(
+        "/portal/fragments/proposals/pending?type=fault_triage&view=grouped"
+    )).text()
+    assert 'data-proposer="test"' in body
+    assert 'data-proposer="unattributed"' not in body
+    assert 'data-proposer="memory"' not in body      # memory excluded by type
+    # Round-trip: both toggle hrefs carry the active filter.
+    assert ('hx-get="/portal/fragments/proposals/pending'
+            '?view=grouped&type=fault_triage"') in body
+    assert ('hx-get="/portal/fragments/proposals/pending'
+            '?type=fault_triage"') in body
+
+
+async def test_hostile_param_values_sanitized(client, grove_home):
+    """(g) Hostile param values are stripped to alphanumerics + underscore;
+    the leftovers are unrecognized → no filter, no markup injection."""
+    _write_routing_proposal(grove_home)
+    r = await client.get(
+        "/portal/fragments/proposals/pending",
+        params={"type": "../<script>alert(1)</script>",
+                "class": "action<img>able!", "age": "24h; DROP TABLE"},
+    )
+    assert r.status == 200
+    body = await r.text()
+    assert "<script>" not in body and "<img>" not in body
+    # Sanitized values are unrecognized → no filter: the card still renders.
+    assert '<span class="badge">routing_update</span>' in body

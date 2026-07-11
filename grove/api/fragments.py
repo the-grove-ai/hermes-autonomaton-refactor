@@ -18,7 +18,7 @@ import html
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -933,20 +933,78 @@ def _artifact_xlink_card(n: int) -> str:
     )
 
 
-def _proposals_view_toggle(grouped: bool) -> str:
+def _proposals_view_toggle(grouped: bool, extra_qs: str = "") -> str:
     """proposal-proposer-attribution-v1 Move 2b — the flat <-> grouped view toggle.
-    Both views COEXIST; the flat newest-first feed (proposal-sort-v1) is the default."""
+    Both views COEXIST; the flat newest-first feed (proposal-sort-v1) is the default.
+    ``extra_qs`` (proposal-feed-navigation-v1) is the pre-encoded active filter
+    tail ("type=..&class=..&age=..") so a view switch round-trips all three."""
     base = "/portal/fragments/proposals/pending"
     flat_active = "" if grouped else " active"
     grp_active = " active" if grouped else ""
+    flat_href = f"{base}?{extra_qs}" if extra_qs else base
+    grp_href = (
+        f"{base}?view=grouped&{extra_qs}" if extra_qs else f"{base}?view=grouped"
+    )
     return (
         '<div class="view-toggle">'
-        f'<a class="toggle{flat_active}" hx-get="{base}" '
+        f'<a class="toggle{flat_active}" hx-get="{flat_href}" '
         'hx-target="#proposals-listing" hx-swap="outerHTML">Newest first</a> '
-        f'<a class="toggle{grp_active}" hx-get="{base}?view=grouped" '
+        f'<a class="toggle{grp_active}" hx-get="{grp_href}" '
         'hx-target="#proposals-listing" hx-swap="outerHTML">By proposer</a>'
         '</div>'
     )
+
+
+def _get_record_time(record: dict) -> str:
+    """proposal-feed-navigation-v1 — age-filter timestamp accessor. Routing
+    proposals stamp ``created_at`` (proposal_queue._now_iso); memory detector
+    records stamp ``timestamp`` (the portal projection renames it to
+    ``created_at``, the raw record keeps ``timestamp``). Both are ISO 8601
+    UTC, so a lexical compare IS chronological. Age-filter use only."""
+    return record.get("created_at") or record.get("timestamp") or ""
+
+
+def _proposal_type_tabs(counts: dict, active: str, extra_qs: str = "") -> str:
+    """proposal-feed-navigation-v1 — per-type tab row for the pending feed,
+    modeled on ``_queue_tabs``: hash-only anchors carrying ``?type=`` (a tab
+    switch is one router dispatch, deep-linkable), nonzero-only, server-side
+    active class. Order: all, proposal types by count desc, memory.
+    ``extra_qs`` is the pre-encoded "&class=..&age=.." tail so a tab switch
+    preserves the other active filters."""
+    ordered = (
+        ["all"]
+        + sorted(
+            (t for t in counts if t not in ("all", "memory")),
+            key=lambda t: (-counts[t], t),
+        )
+        + ["memory"]
+    )
+    tabs = []
+    for t in ordered:
+        n = counts.get(t, 0)
+        if not n:
+            continue
+        cls = " active" if t == active else ""
+        tabs.append(
+            f'<a class="queue-tab{cls}" '
+            f'href="/portal#fragments/proposals/pending?type={_esc(t)}{extra_qs}">'
+            f'{_esc(t)} &middot; {n}</a>'
+        )
+    return f'<div class="queue-tabs">{"".join(tabs)}</div>' if tabs else ""
+
+
+def _proposals_age_links(active_age, extra_qs: str = "") -> str:
+    """proposal-feed-navigation-v1 — age-window links (All time / 7d / 24h),
+    hash anchors beside the view toggle; each preserves the other active
+    filters (``extra_qs`` = pre-encoded "type=..&class=..")."""
+    base = "/portal#fragments/proposals/pending"
+    links = []
+    for val, label in ((None, "All time"), ("7d", "7d"), ("24h", "24h")):
+        qs = "&".join(x for x in ((f"age={val}" if val else ""), extra_qs) if x)
+        href = f"{base}?{qs}" if qs else base
+        cls = " active" if val == active_age else ""
+        links.append(f'<a class="toggle{cls}" href="{href}">{label}</a>')
+    return f'<div class="view-toggle age-links">{" ".join(links)}</div>'
 
 
 async def handle_proposals_pending(request: web.Request) -> web.Response:
@@ -975,14 +1033,91 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
     memory_items = pending_memory_proposal_items()
     grouped = request.query.get("view") == "grouped"
 
-    parts = ['<div id="proposals-listing">', _proposals_view_toggle(grouped)]
+    # proposal-feed-navigation-v1 — composable server-rendered filters
+    # (?type= / ?class= / ?age=). Values sanitized to alphanumerics +
+    # underscore (the ?source_type= hardening idiom): a crafted value can
+    # never carry path or markup semantics; sanitized-empty means no filter.
+    def _qparam(name: str):
+        raw = request.query.get(name)
+        return (re.sub(r"[^a-zA-Z0-9_]", "", raw) or None) if raw else None
+
+    type_f, class_f, age_f = _qparam("type"), _qparam("class"), _qparam("age")
+
+    # Tab counts from the UNFILTERED post-partition feed, so each tab's badge
+    # equals exactly the card count its own filter renders.
+    type_counts: dict = {}
+    for p in proposals:
+        t = p.get("type") or "unknown"
+        type_counts[t] = type_counts.get(t, 0) + 1
+    type_counts["memory"] = len(memory_items)
+    type_counts["all"] = len(proposals) + len(memory_items)
+
+    if type_f == "all" or type_f not in type_counts:
+        type_f = None            # absent / "all" / unrecognized → no filter
+    if class_f not in ("actionable", "renderonly"):
+        class_f = None
+    if age_f not in ("24h", "7d"):
+        age_f = None
+
+    if type_f == "memory":
+        proposals = []
+    elif type_f:
+        proposals = [p for p in proposals if p.get("type") == type_f]
+        memory_items = []
+    if class_f:
+        from grove.eval.proposal_queue import PROPOSAL_VERBS
+
+        def _actionable(ptype) -> bool:
+            # Adjudicated predicate (GATE-A D4 + overlap check): an honored
+            # apply path (_type_offers_approve) OR a bespoke verb set
+            # (PROPOSAL_VERBS — promote/acknowledge/dismiss) is actionable.
+            return _type_offers_approve(ptype) or ptype in PROPOSAL_VERBS
+
+        if class_f == "actionable":
+            proposals = [p for p in proposals if _actionable(p.get("type"))]
+            # memory cards approve/reject — actionable, kept.
+        else:
+            proposals = [p for p in proposals if not _actionable(p.get("type"))]
+            memory_items = []
+    if age_f:
+        delta = timedelta(hours=24) if age_f == "24h" else timedelta(days=7)
+        cutoff = (datetime.now(timezone.utc) - delta).isoformat()
+        proposals = [p for p in proposals if _get_record_time(p) >= cutoff]
+        memory_items = [m for m in memory_items if _get_record_time(m) >= cutoff]
+
+    # Round-trip tails: every navigation affordance preserves the OTHER
+    # active params (tabs keep class/age; age links keep type/class; the
+    # view toggle keeps all three).
+    filter_qs = "&".join(
+        f"{k}={v}" for k, v in
+        (("type", type_f), ("class", class_f), ("age", age_f)) if v
+    )
+    tab_tail = "".join(
+        f"&{k}={v}" for k, v in (("class", class_f), ("age", age_f)) if v
+    )
+    age_tail = "&".join(
+        f"{k}={v}" for k, v in (("type", type_f), ("class", class_f)) if v
+    )
+
+    parts = [
+        '<div id="proposals-listing">',
+        _proposals_view_toggle(grouped, filter_qs),
+        _proposals_age_links(age_f, age_tail),
+        _proposal_type_tabs(type_counts, type_f or "all", tab_tail),
+    ]
     if artifact:
         parts.append(_artifact_xlink_card(len(artifact)))
     if not proposals and not memory_items:
-        parts.append(
-            '<p class="placeholder">No pending proposals — the system has '
-            'nothing to recommend changing.</p>'
-        )
+        if filter_qs:
+            parts.append(
+                f'<p class="placeholder">No pending items match filter: '
+                f'{_esc(filter_qs.replace("&", ", "))}</p>'
+            )
+        else:
+            parts.append(
+                '<p class="placeholder">No pending proposals — the system has '
+                'nothing to recommend changing.</p>'
+            )
     elif grouped:
         # Bucket by proposer (proposals already newest-first). Groups ordered by
         # their MOST-RECENT proposal (each group's first item, since the input is
