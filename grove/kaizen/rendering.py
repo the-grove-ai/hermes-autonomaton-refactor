@@ -30,9 +30,11 @@ from typing import Any, Callable, Dict, List, Optional
 from grove.eval.proposal_queue import (
     _LEGACY_ROUTING_TYPE,
     PROPOSAL_TYPE_FAULT_TRIAGE,
+    PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
     PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
+    PROPOSAL_VERBS,
     RoutingProposal,
 )
 
@@ -307,6 +309,21 @@ def _summary_forge_artifact_pending(proposal: RoutingProposal) -> str:
     return f"{base} — {justification}" if justification and justification != base else base
 
 
+def _summary_fleet_artifact_pending(proposal: RoutingProposal) -> str:
+    """fleet-review-unification-v1 C1b-2 — the GENERIC file-producer sibling of
+    the forge renderer, keyed on the stable unit_id (no Notion row_id).
+    proposal-card-legibility-v1 Phase 3 — closes the GATE-A/V4 gap: the type
+    had verbs (promote/reject) but NO registry entry, so the first
+    action_surface_publish batch from a file producer (cultivator/drafter)
+    would ValueError at get_renderer and silently kill that turn's push."""
+    pl = proposal.payload or {}
+    slug = pl.get("slug", "?")
+    unit = pl.get("unit_id", "?")
+    base = f"fleet draft staged for review: {slug} (unit {unit})"
+    justification = getattr(proposal, "semantic_justification", "") or ""
+    return f"{base} — {justification}" if justification and justification != base else base
+
+
 def _summary_fault_triage(proposal: RoutingProposal) -> str:
     """kaizen-fault-triage-v1 — the one-line body IS the detector's judgment
     line (deterministic template over the group's evidence, byte-stable per
@@ -483,6 +500,19 @@ def seed_from_handlers(handlers: Dict[str, Any]) -> None:
                 f"no callable diff_renderer — the operator could not review "
                 f"the mutation before approving."
             )
+    # Census clause 3 (proposal-card-legibility-v1 Phase 3) — every
+    # verb-bearing type (a PROPOSAL_VERBS key) must resolve a summary renderer.
+    # The direct registrations run at this module's import, strictly before
+    # the seed call, so by now the registry is complete: a verb-bearing type
+    # missing here is exactly the fleet_artifact_pending class of gap (verbs
+    # offered, body unrenderable — GATE-A Andon candidate #1).
+    for type_name in PROPOSAL_VERBS:
+        if type_name not in RENDER_REGISTRY:
+            raise RuntimeError(
+                f"render census: verb-bearing proposal type {type_name!r} "
+                f"(PROPOSAL_VERBS) has no registered summary renderer — its "
+                f"card would offer dispositions on an unrenderable body."
+            )
 
 
 # portal-action-error-surfacing-v1 (Phase 1) — a RENDER-ONLY type: it composes
@@ -497,6 +527,12 @@ register_renderer(
 # (no PROPOSAL_HANDLERS row); the promote tap is the bespoke async route.
 register_renderer(
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING, _summary_forge_artifact_pending
+)
+
+# proposal-card-legibility-v1 Phase 3 — the generic fleet sibling, same
+# RENDER-ONLY posture as forge (verbs are promote/reject via PROPOSAL_VERBS).
+register_renderer(
+    PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING, _summary_fleet_artifact_pending
 )
 
 # kaizen-fault-triage-v1 — RENDER-ONLY (no PROPOSAL_HANDLERS row, so approve

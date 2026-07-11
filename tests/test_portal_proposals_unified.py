@@ -253,3 +253,170 @@ async def test_proposals_nav_badge_matches_page_card_count(client, grove_home):
     # and the page renders exactly 2 disposition-bearing cards
     page = await (await client.get("/portal/fragments/proposals/pending")).text()
     assert page.count('class="proposal-actions"') == 2
+
+
+# ---------------------------------------------------------------------------
+# proposal-card-legibility-v1 Phase 3 — registry-composed cards
+# ---------------------------------------------------------------------------
+
+
+def _write_typed_proposal(ptype, payload, *, pid, sj="", detail=None,
+                          evidence=("t_1",)):
+    """One proposal of an arbitrary type via the real queue writer."""
+    proposal_queue.append(proposal_queue.RoutingProposal(
+        proposal_id=pid,
+        type=ptype,
+        payload=payload,
+        evidence=tuple(evidence),
+        eval_hash="",
+        created_at="2026-07-11T00:00:00+00:00",
+        semantic_justification=sj,
+        proposer="test",
+        detail=detail,
+    ))
+
+
+async def test_dock_mutation_card_shows_summary_and_diff(client, grove_home):
+    """The GATE-A defect card: an approvable dock_mutation must show the
+    registry summary line AND the dock.autonomaton.yaml +add diff — the
+    operator sees the goal they are consenting to. Evidence subordinates
+    under <details>; the approve affordance is present."""
+    goal = {
+        "id": "auto-ecosystem", "name": "Ecosystem & Platform Strategy",
+        "keywords": ["platform"], "vector": "personal", "status": "staging",
+        "source_record_ids": [f"mem_{i}" for i in range(10)],
+    }
+    _write_typed_proposal(
+        "dock_mutation", {"action": "create_goal", "goal": goal},
+        pid="sha256:" + "d" * 64, evidence=tuple(goal["source_record_ids"]),
+    )
+    body = await (await client.get("/portal/fragments/proposals/pending")).text()
+    # Summary line (registry renderer — same line the CLI prints).
+    assert "10 memory records accumulating around" in body
+    assert "Ecosystem &amp; Platform Strategy" in body
+    # Material diff in <pre>: target file + +add block + goal fields.
+    assert "dock.autonomaton.yaml" in body
+    assert "+add" in body
+    assert "auto-ecosystem" in body
+    # Evidence subordinated, not a bare count line.
+    assert "<details" in body and "evidence (10)" in body
+    assert "evidence: 10 item(s)" not in body
+    # Approvable: the approve affordance is offered.
+    assert "/approve" in body
+
+
+async def test_zone_promotion_card_shows_summary_and_diff(client, grove_home):
+    _write_typed_proposal(
+        "zone_promotion",
+        {"tool": "mcp_grove_browser_read", "pattern": r".*\.md$",
+         "zone": "green", "reason": "docs are safe"},
+        pid="sha256:" + "e" * 64,
+    )
+    body = await (await client.get("/portal/fragments/proposals/pending")).text()
+    assert "greenlight mcp_grove_browser_read" in body
+    assert "tool_zones" in body
+    assert "docs are safe" in body
+
+
+async def test_fault_triage_card_judgment_led_with_samples(client, grove_home):
+    """Rider 4 — judgment + counts lead; detail.samples render as compact
+    date · subject · outcome lines inside <details>; the raw-JSON sj tail
+    never reaches the lead."""
+    sj = (
+        "terminal is hitting the same RED shell.effect.red repeatedly — "
+        "one defect, recurring, worsening.\n"
+        "Seen 5 times across 3 session(s) in the last 14d "
+        "(first 2026-07-05T22:34:55.020576+00:00, last 2026-07-08T17:31:09.753657+00:00).\n"
+        'Samples: {"event_type": "red_resolution", "session_id": "20260705_183408_b871b096"}'
+    )
+    detail = {"samples": [
+        {"ts": "2026-07-05", "subject": "terminal", "outcome": "cancel"},
+        {"ts": "2026-07-08", "subject": "terminal", "outcome": "store_pending_approval"},
+    ]}
+    _write_typed_proposal(
+        "fault_triage",
+        {"source": "red_resolution", "tool": "terminal",
+         "matched_rule": "shell.effect.red", "error_signature": ""},
+        pid="sha256:" + "f" * 64, sj=sj, detail=detail,
+        evidence=("fault_triage:synthetic",),
+    )
+    body = await (await client.get("/portal/fragments/proposals/pending")).text()
+    # Judgment line leads as the card body.
+    assert "one defect, recurring, worsening." in body
+    # Counts line as meta.
+    assert "Seen 5 times across 3 session(s)" in body
+    # Compact sample lines inside <details>.
+    assert "samples (2)" in body
+    assert "2026-07-05 · terminal · cancel" in body
+    assert "2026-07-08 · terminal · store_pending_approval" in body
+    # The raw JSON sample dump stays OUT of the rendered card.
+    assert "20260705_183408_b871b096" not in body
+    assert "&quot;event_type&quot;" not in body
+    # Verb set is acknowledge/dismiss — never approve.
+    assert "/acknowledge" in body
+    assert "/approve" not in body
+
+
+async def test_fault_triage_legacy_row_falls_back_to_sj(client, grove_home):
+    """A pre-Phase-2 queue row (no detail envelope) still renders: judgment
+    lead + the verbatim sj collapsed under <details>. Never blank."""
+    sj = (
+        "cultivator is hitting the same resolver_failed fault repeatedly — "
+        "one defect, active.\n"
+        "Seen 6 times across 2 session(s) in the last 14d (first x, last y).\n"
+        'Samples: {"raw": "json"}'
+    )
+    _write_typed_proposal(
+        "fault_triage",
+        {"source": "fleet_worker", "worker": "cultivator",
+         "check": "resolver_failed", "error_signature": ""},
+        pid="sha256:" + "a" * 64, sj=sj,
+        evidence=("fault_triage:legacy",),
+    )
+    body = await (await client.get("/portal/fragments/proposals/pending")).text()
+    assert "one defect, active." in body
+    assert "Seen 6 times across 2 session(s)" in body
+    # Verbatim sj collapsed — present, but inside a <details> block.
+    assert "<details" in body and "<summary>details</summary>" in body
+    assert "&quot;raw&quot;: &quot;json&quot;" in body
+
+
+async def test_approvable_render_failure_is_defect_card(client, grove_home):
+    """Rider 3 — an approvable proposal whose diff renderer raises (here: a
+    routing_adjustment with an unknown sink rule) renders the DEFECT card:
+    badge + id + inspect directive, and NO disposition buttons."""
+    _write_typed_proposal(
+        "routing_adjustment",
+        {"rule": "not_a_real_sink", "add_intents": ["greet"]},
+        pid="sha256:" + "b" * 64,
+    )
+    body = await (await client.get("/portal/fragments/proposals/pending")).text()
+    assert "DEFECT — mutation cannot be rendered." in body
+    assert "hermes flywheel show" in body
+    # No disposition affordances on the defect card (it is the only card).
+    assert "/approve" not in body
+    assert "/reject" not in body
+    assert "/dismiss" not in body
+
+
+async def test_render_only_failure_falls_back_to_sj(client, grove_home, monkeypatch):
+    """Rider 3 (render-only arm) — a render-only type whose renderer raises
+    falls back to the verbatim sj with a warning log; the card still renders
+    with its dismiss affordance (never a defect card, never blank)."""
+    from grove.kaizen import rendering as kaizen_rendering
+
+    def _boom(_):
+        raise RuntimeError("synthetic renderer failure")
+
+    monkeypatch.setitem(
+        kaizen_rendering.RENDER_REGISTRY, "portal_action_failure", _boom)
+    _write_typed_proposal(
+        "portal_action_failure",
+        {"failure_class": "http_500", "action": "dock_status"},
+        pid="sha256:" + "c" * 64,
+        sj="portal action 'dock_status' keeps failing (http_500) [detail]",
+    )
+    body = await (await client.get("/portal/fragments/proposals/pending")).text()
+    assert "keeps failing (http_500)" in body
+    assert "DEFECT" not in body
+    assert "/dismiss" in body

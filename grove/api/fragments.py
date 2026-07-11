@@ -686,6 +686,122 @@ def _verb_actions_html(proposal_id: str, short_id: str, verbs) -> str:
     return f'<div class="proposal-actions">{"".join(buttons)}</div>'
 
 
+class _RenderView:
+    """Attribute view over a queue ``to_dict()`` dict for the render core.
+
+    proposal-card-legibility-v1 Phase 3 — the pending feed sorts/partitions/
+    groups plain dicts, but the registry renderers and diff renderers read
+    attributes (``.payload`` / ``.semantic_justification`` / ``.type`` /
+    ``.detail``). This bridges without re-reading the queue. Read-only."""
+
+    __slots__ = ("type", "payload", "semantic_justification", "detail", "evidence")
+
+    def __init__(self, p: dict) -> None:
+        self.type = p.get("type") or ""
+        self.payload = p.get("payload") or {}
+        self.semantic_justification = p.get("semantic_justification") or ""
+        self.detail = p.get("detail")
+        self.evidence = p.get("evidence") or []
+
+
+def _defect_card_html(pid: str, short_id: str, ptype) -> str:
+    """proposal-card-legibility-v1 Phase 3 (Rider 3) — an APPROVABLE proposal
+    whose summary or diff renderer is missing/raised. The operator must never
+    consent to a mutation they cannot see: badge + id + inspect directive,
+    and NO disposition buttons (the CLI ``flywheel show`` path is the
+    inspection surface). Render-only failures never come here — they fall
+    back to verbatim sj instead."""
+    return (
+        f'<div class="card card-defect" id="proposal-{short_id}">'
+        f'<h4><span class="badge">{_esc(ptype)}</span> '
+        f'<span class="badge badge-yellow">defect</span></h4>'
+        f'<p>DEFECT — mutation cannot be rendered. Inspect: '
+        f'<code>hermes flywheel show {_esc(short_id)}</code></p>'
+        f'<div class="meta">{_esc(pid)}</div>'
+        f'</div>'
+    )
+
+
+def _evidence_details_html(evidence) -> str:
+    """Evidence subordinated under a native <details> (the :1629 idiom) —
+    the lead line carries the meaning; ids/turns are drill-down, not body.
+    Presentation-bounded at 20 lines with a VISIBLE '… N more' remainder."""
+    if not evidence:
+        return ""
+    if isinstance(evidence, dict):
+        items = [f"{k}: {v}" for k, v in evidence.items()]
+    elif isinstance(evidence, (list, tuple)):
+        items = [str(e) for e in evidence]
+    else:
+        items = [str(evidence)]
+    lines = "".join(f"<div>{_esc(i)}</div>" for i in items[:20])
+    more = (
+        f'<div class="meta">… {len(items) - 20} more</div>'
+        if len(items) > 20 else ""
+    )
+    return (
+        f'<details class="card-evidence"><summary>evidence ({len(items)})'
+        f'</summary>{lines}{more}</details>'
+    )
+
+
+def _fault_triage_card_html(p: dict, view: "_RenderView",
+                            pid: str, short_id: str) -> str:
+    """proposal-card-legibility-v1 Phase 3 (Rider 4) — the judgment-led fault
+    card. Lead = judgment + counts lines (the producer's deterministic,
+    pin-tested template — sj lines 1-2); samples subordinate as compact
+    ``YYYY-MM-DD · subject · outcome`` lines under <details>, decoded from
+    the structured ``detail`` envelope (Phase 2). Absent/empty/malformed
+    detail → the verbatim sj collapses under <details> instead (legacy queue
+    rows keep rendering; malformed logs a warning — fail loud, no blank
+    card, no raw JSON in the lead). No writes from this path."""
+    from grove.eval.proposal_queue import PROPOSAL_VERBS
+    from grove.kaizen import rendering as kaizen_rendering
+
+    sj = view.semantic_justification
+    lines = [ln for ln in sj.splitlines() if ln.strip()]
+    judgment = lines[0] if lines else "recurring fault pattern detected"
+    counts = lines[1] if len(lines) > 1 and lines[1].startswith("Seen ") else ""
+
+    decoded = None
+    try:
+        decoded = kaizen_rendering.decode_detail(view)
+    except ValueError as exc:
+        logger.warning(
+            "[portal] fault_triage detail malformed for %s: %r — verbatim "
+            "sj fallback", pid, exc,
+        )
+    if decoded is not None and decoded.samples:
+        rows = "".join(
+            f"<div>{_esc(s.ts)} · {_esc(s.subject)} · {_esc(s.outcome)}</div>"
+            for s in decoded.samples
+        )
+        detail_block = (
+            f'<details class="card-evidence"><summary>samples '
+            f'({len(decoded.samples)})</summary>{rows}</details>'
+        )
+    elif sj:
+        detail_block = (
+            f'<details class="card-evidence"><summary>details</summary>'
+            f'<pre>{_esc(sj)}</pre></details>'
+        )
+    else:
+        detail_block = ""
+
+    counts_html = f'<div class="meta">{_esc(counts)}</div>' if counts else ""
+    verbs = PROPOSAL_VERBS.get(view.type) or ()
+    return (
+        f'<div class="card" id="proposal-{short_id}">'
+        f'<h4><span class="badge">{_esc(view.type)}</span></h4>'
+        f'<p>{_esc(judgment)}</p>'
+        f'{counts_html}'
+        f'{detail_block}'
+        f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
+        f'{_verb_actions_html(pid, short_id, verbs)}'
+        f'</div>'
+    )
+
+
 def _proposal_card_html(request: web.Request, p: dict) -> str:
     """Render ONE routing/kaizen proposal card — RED bespoke or generic. Shared by
     the flat feed and the grouped-by-proposer view (proposal-proposer-attribution-v1
@@ -695,7 +811,17 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
     renderer (the feed partitions them into the Fleet cross-link card), so the
     feed's verb-iterating branch and the forge View-details link were
     clean-deleted. The disposition ROUTES are untouched — the C3 fleet
-    component posts the same endpoints from the Fleet surface."""
+    component posts the same endpoints from the Fleet surface.
+
+    proposal-card-legibility-v1 Phase 3 — the card BODY is the registry
+    summary line (ONE render path with the CLI/push/review tool, closing the
+    GATE-A portal divergence); approvable types append their diff renderer's
+    mutation target + material diff in <pre>; evidence subordinates under
+    <details>. All rendering is deterministic over structured payloads — NO
+    INFERENCE on the approval surface, and no writes from any render path.
+    An approvable card whose renderer fails is a DEFECT card with no
+    disposition buttons; a render-only failure falls back to verbatim sj
+    with a warning log. Never blank."""
     pid = p.get("proposal_id", "")
     short_id = _short_id(pid)
     ptype = p.get("type")
@@ -703,31 +829,66 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
     # masked/two-step card, never the generic one-tap row.
     if ptype == RED_PENDING_PROPOSAL_TYPE:
         return _render_red_proposal_card(request, pid, short_id)
-    evidence = p.get("evidence")
-    if isinstance(evidence, dict):
-        ev_summary = ", ".join(f"{k}: {v}" for k, v in list(evidence.items())[:6])
-    elif isinstance(evidence, (list, tuple)):
-        ev_summary = f"{len(evidence)} item(s)"
+
+    from grove.eval.proposal_queue import (
+        PROPOSAL_TYPE_FAULT_TRIAGE,
+        PROPOSAL_VERBS,
+    )
+    from grove.kaizen import rendering as kaizen_rendering
+
+    view = _RenderView(p)
+    # kaizen-fault-triage-v1 / Rider 4 — the fault card has its own judgment-led
+    # composition (samples from the Phase 2 detail envelope).
+    if ptype == PROPOSAL_TYPE_FAULT_TRIAGE:
+        return _fault_triage_card_html(p, view, pid, short_id)
+
+    offers_approve = _type_offers_approve(ptype)
+    if offers_approve:
+        # Approvable: the operator consents to a WHERE + WHAT — summary line
+        # + the same deterministic diff cli_show prints. Any failure here is
+        # a DEFECT card (Rider 3): no buttons on an invisible mutation.
+        try:
+            from grove.flywheel_cli import _handler_for
+            summary = kaizen_rendering.get_renderer(ptype)(view)
+            diff = _handler_for(ptype).diff_renderer(view)
+            diff_yaml = yaml.safe_dump(
+                diff, sort_keys=False, default_flow_style=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — every failure = defect card
+            logger.warning(
+                "[portal] approvable card render failed for %s (%s): %r — "
+                "DEFECT card, dispositions withheld", ptype, pid, exc,
+            )
+            return _defect_card_html(pid, short_id, ptype)
+        body = (
+            f'<p>{_esc(summary)}</p>'
+            f'<pre class="card-diff">{_esc(diff_yaml)}</pre>'
+        )
     else:
-        ev_summary = str(evidence) if evidence else ""
-    # kaizen-fault-triage-v1 — a verb-bearing type renders ITS verb set
-    # (acknowledge/dismiss), not the generic approve/reject pair. Artifact
-    # types are partitioned out of this feed (C3), so today this branch
-    # serves fault_triage cards.
-    from grove.eval.proposal_queue import PROPOSAL_VERBS
+        # Render-only: notification body; a renderer failure falls back to
+        # the verbatim sj (never blank — the short id anchors an empty sj).
+        try:
+            summary = kaizen_rendering.get_renderer(ptype)(view)
+        except Exception as exc:  # noqa: BLE001 — fallback + loud log
+            logger.warning(
+                "[portal] render-only card renderer failed for %s (%s): %r — "
+                "verbatim sj fallback", ptype, pid, exc,
+            )
+            summary = view.semantic_justification or f"{ptype} proposal {short_id}"
+        body = f'<p>{_esc(summary)}</p>'
 
     verbs = PROPOSAL_VERBS.get(ptype)
     if verbs:
         actions = _verb_actions_html(pid, short_id, verbs)
     else:
         actions = _proposal_actions_html(
-            pid, short_id, offers_approve=_type_offers_approve(ptype)
+            pid, short_id, offers_approve=offers_approve
         )
     return (
         f'<div class="card" id="proposal-{short_id}">'
         f'<h4><span class="badge">{_esc(ptype)}</span></h4>'
-        f'<p>{_esc(p.get("semantic_justification"))}</p>'
-        f'<div class="meta">evidence: {_esc(ev_summary)}</div>'
+        f'{body}'
+        f'{_evidence_details_html(p.get("evidence"))}'
         f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
         f'{actions}'
         f'</div>'

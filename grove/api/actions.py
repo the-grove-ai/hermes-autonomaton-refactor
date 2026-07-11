@@ -236,7 +236,19 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
     reject/dismiss remove + record (routing has no soft-dismiss — dismiss is a
     rejection disposition, SPEC 1c)."""
     type_label = proposal.type
-    summary = proposal.to_dict().get("semantic_justification") or ""
+    # proposal-card-legibility-v1 Phase 3 — refused/result cards speak the SAME
+    # registry summary line as the pending card (one render path); the verbatim
+    # sj is the fallback when a renderer is missing/raises (warning-logged —
+    # display text only, disposition mechanics below are renderer-blind).
+    try:
+        from grove.kaizen.rendering import get_renderer
+        summary = get_renderer(proposal.type)(proposal)
+    except Exception as exc:  # noqa: BLE001 — display fallback, loud log
+        logger.warning(
+            "[portal] result-card renderer failed for %s (%s): %r — "
+            "verbatim sj fallback", proposal.type, full_id, exc,
+        )
+        summary = proposal.to_dict().get("semantic_justification") or ""
 
     if action == "approve":
         try:
