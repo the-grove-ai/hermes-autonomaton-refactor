@@ -1,0 +1,13 @@
+# kaizen-ledger-retention-v1 P6 — one governed retention pass over
+# ~/.grove/.kaizen_ledger/. Oneshot; fired by grove-ledger-retention.timer.
+# Declarative knobs: ledger_retention block in ~/.grove/flywheel.config.yaml
+# (absent -> documented defaults). A failed run files an andon_halt
+# (source=ledger_retention) and exits non-zero, which systemd records.
+[Unit]
+Description=Grove Kaizen ledger retention pass (flywheel maintain --retention)
+
+[Service]
+Type=oneshot
+User=hermes
+WorkingDirectory=/home/hermes/hermes-autonomaton-refactor
+ExecStart=/home/hermes/hermes-autonomaton-refactor/.venv/bin/hermes flywheel maintain --retention

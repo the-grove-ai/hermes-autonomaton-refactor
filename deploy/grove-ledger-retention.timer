@@ -1,0 +1,13 @@
+# kaizen-ledger-retention-v1 P6 — daily off-peak firing of the retention
+# service. 08:30 UTC is early-morning EDT (03:30/04:30 local), off-peak for
+# the operator. Persistent=true catches up a missed firing after downtime.
+[Unit]
+Description=Daily Grove ledger retention (off-peak)
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 UTC
+Persistent=true
+Unit=grove-ledger-retention.service
+
+[Install]
+WantedBy=timers.target
