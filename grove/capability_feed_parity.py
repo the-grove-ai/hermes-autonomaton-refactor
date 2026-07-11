@@ -254,8 +254,8 @@ def run_parity(
         from grove.capability_feed import feed_dir as _fd
         feed_dir = _fd()
     if ledger_dir is None:
-        from hermes_constants import get_hermes_home
-        ledger_dir = Path(get_hermes_home()) / ".kaizen_ledger"
+        from grove.kaizen_ledger import default_ledger_dir
+        ledger_dir = default_ledger_dir()
     feed_invs = read_feed_invocations(Path(feed_dir), start, end)
     ledger_invs = read_ledger_invocations(Path(ledger_dir), start, end)
     return compare(feed_invs, ledger_invs, start, end, restart_boundaries)

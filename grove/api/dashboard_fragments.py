@@ -67,7 +67,8 @@ def _days(request: web.Request) -> int:
 
 
 def _ledger_dir() -> Path:
-    return get_hermes_home() / ".kaizen_ledger"
+    from grove.kaizen_ledger import default_ledger_dir
+    return default_ledger_dir()
 
 
 def _proposals_path() -> Path:

@@ -1097,8 +1097,8 @@ def _has_successful_quarantine_execution(skill_name: str) -> bool:
     "allow once" execution may have happened in any session before the
     operator runs ``flywheel approve --strict``.
     """
-    from hermes_constants import get_hermes_home
-    ledger_dir = Path(get_hermes_home()) / ".kaizen_ledger"
+    from grove.kaizen_ledger import default_ledger_dir
+    ledger_dir = default_ledger_dir()
     if not ledger_dir.is_dir():
         return False
     for path in sorted(ledger_dir.glob("*.jsonl")):
