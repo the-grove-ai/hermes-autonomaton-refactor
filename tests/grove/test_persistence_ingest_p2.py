@@ -25,12 +25,12 @@ from grove.wiki.watcher import ingest_file, scan_and_ingest
 
 class _FakeT1:
     def __call__(self, prompt, *, system=None, tool=None, max_tokens=4096):
-        if tool is not None:
+        # P2: all three pipeline calls are forced tools — route by NAME.
+        if tool["name"] == "wiki_evaluation":
             return {"complete": True, "accurate": True,
                     "quality_score": 0.9, "issues": []}
-        return (
-            "---\ntitle: Compacted\ntopics: [t]\nkey_entities: [e]\n---\n\nbody\n"
-        )
+        return {"title": "Compacted", "topics": ["t"],
+                "key_entities": ["e"], "body": "body\n"}
 
 
 def _install_t1(monkeypatch):

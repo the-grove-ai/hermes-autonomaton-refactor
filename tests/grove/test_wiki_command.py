@@ -18,10 +18,12 @@ from hermes_cli.wiki_command import cmd_ingest, cmd_rebuild, cmd_search, registe
 
 class _FakeT1:
     def __call__(self, prompt, *, system=None, tool=None, max_tokens=4096):
-        if tool is not None:
+        # P2: all three pipeline calls are forced tools — route by NAME.
+        if tool["name"] == "wiki_evaluation":
             return {"complete": True, "accurate": True,
                     "quality_score": 0.88, "issues": []}
-        return "---\ntitle: Page\ntopics: [t]\nkey_entities: [e]\n---\n\nthe body\n"
+        return {"title": "Page", "topics": ["t"],
+                "key_entities": ["e"], "body": "the body\n"}
 
 
 def _env(monkeypatch, tmp_path):
@@ -120,13 +122,14 @@ def test_search_prints_ranked_results(monkeypatch, tmp_path, capsys):
         source_mtime=src.stat().st_mtime, dock_goal_refs=[],
         raw_content="quantum tunneling diodes",
     )
-    # writer body carries the query term
+    # writer body carries the query term (P2: route by forced-tool NAME)
     monkeypatch.setattr(
         "grove.wiki.pipeline.call_t1",
         lambda *a, **k: (
             {"complete": True, "accurate": True, "quality_score": 0.9, "issues": []}
-            if k.get("tool")
-            else "---\ntitle: P\ntopics: [t]\nkey_entities: [e]\n---\n\nquantum tunneling\n"
+            if k["tool"]["name"] == "wiki_evaluation"
+            else {"title": "P", "topics": ["t"], "key_entities": ["e"],
+                  "body": "quantum tunneling\n"}
         ),
     )
     compact(doc)
