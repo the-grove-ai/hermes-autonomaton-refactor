@@ -6,8 +6,8 @@ runtime WITHOUT branching on the tier's resolved ``api_mode``. Every such
 call against a chat_completions tier POSTs ``/v1/messages`` at an
 OpenAI-compatible base_url and gets an HTML 404 back — the failure mode
 classifier-provider-agnostic-v1, wiki-pipeline-provider-agnostic-v1,
-detector-provider-agnostic-v1, and dock-detector-provider-agnostic-v1 each
-closed for one caller.
+detector-provider-agnostic-v1, dock-detector-provider-agnostic-v1, and
+kaizen-synthesizer-provider-agnostic-v1 each closed for one caller.
 
 Producer-blind by design: the scan matches the CONSTRUCTION PATTERN, not
 function names, so a new caller added anywhere under ``grove/`` or ``agent/``
@@ -47,10 +47,11 @@ _TRANSPORT_SEAM = frozenset({
 # ``api_mode == "anthropic_messages"`` arm, with a sibling chat_completions
 # arm and a fail-loud else. Asserted structurally below, not just listed.
 _API_MODE_BRANCHED = frozenset({
-    "grove/classify.py",         # classifier-provider-agnostic-v1
-    "grove/t1_call.py",          # wiki-pipeline-provider-agnostic-v1
-    "grove/memory/detector.py",  # detector-provider-agnostic-v1
-    "grove/dock/detector.py",    # dock-detector-provider-agnostic-v1
+    "grove/classify.py",              # classifier-provider-agnostic-v1
+    "grove/t1_call.py",               # wiki-pipeline-provider-agnostic-v1
+    "grove/memory/detector.py",       # detector-provider-agnostic-v1
+    "grove/dock/detector.py",         # dock-detector-provider-agnostic-v1
+    "grove/kaizen/synthesizer.py",    # kaizen-synthesizer-provider-agnostic-v1
 })
 
 # Construction gated on ``provider == "anthropic"`` at the call site
@@ -59,21 +60,7 @@ _PROVIDER_GATED = frozenset({
     "grove/dispatcher.py",
 })
 
-# DOCUMENTED EXCEPTION — grove/kaizen/synthesizer.py. Its ``_t3_call`` is
-# anthropic-only, but ``_resolve_t3_runtime`` self-gates: it returns None
-# (synthesis skipped, logged) unless T3 resolves
-# ``api_mode == "anthropic_messages"``, so the construction is never
-# mis-shaped. The subsystem is therefore DARK on a non-Anthropic T3 binding;
-# follow-on banked as kaizen-synthesizer-provider-agnostic-v1. Remove this
-# entry when that sprint ships.
-_DOCUMENTED_EXCEPTIONS = frozenset({
-    "grove/kaizen/synthesizer.py",
-})
-
-_ALLOWLIST = (
-    _TRANSPORT_SEAM | _API_MODE_BRANCHED | _PROVIDER_GATED
-    | _DOCUMENTED_EXCEPTIONS
-)
+_ALLOWLIST = _TRANSPORT_SEAM | _API_MODE_BRANCHED | _PROVIDER_GATED
 
 
 def _production_py_files():
@@ -129,17 +116,4 @@ def test_dispatcher_construction_is_provider_gated():
         "grove/dispatcher.py: provider gate on _get_or_build_anthropic_client "
         "call site missing — construction would fire for non-Anthropic "
         "main-loop providers"
-    )
-
-
-def test_documented_exception_still_self_gates():
-    """kaizen/synthesizer.py earns its exception by refusing to call unless
-    T3 resolves anthropic_messages. If the gate goes, the exception goes."""
-    text = (REPO_ROOT / "grove/kaizen/synthesizer.py").read_text(
-        encoding="utf-8"
-    )
-    assert '"anthropic_messages"' in text, (
-        "grove/kaizen/synthesizer.py: api_mode self-gate missing — the "
-        "documented exception no longer holds; branch it "
-        "(kaizen-synthesizer-provider-agnostic-v1) or fix the gate"
     )
