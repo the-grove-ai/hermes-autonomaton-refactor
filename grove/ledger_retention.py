@@ -49,9 +49,11 @@ __all__ = [
     "ARCHIVE_DIRNAME",
     "STATE_FILENAME",
     "FileReport",
+    "RetentionConfig",
     "RunReport",
     "default_archive_dir",
     "default_state_path",
+    "load_retention_config",
     "run_retention",
 ]
 
@@ -70,6 +72,91 @@ ARCHIVE_DIRNAME = ".kaizen_ledger_archive"
 STATE_FILENAME = ".kaizen_ledger_retention_state.json"
 
 _VERDICT_FULLY_RETAINED = "fully-retained"
+
+
+@dataclass(frozen=True)
+class RetentionConfig:
+    """Declarative retention knobs (``ledger_retention`` block in
+    ``~/.grove/flywheel.config.yaml``; template in ``config/``).
+
+    Fail-loud contract per the fault_triage loader precedent: an absent
+    file or block uses these documented defaults; a present-but-invalid
+    value raises LOUD in :func:`load_retention_config`.
+    """
+
+    enabled: bool = True
+    retention_days: int = 30
+    cold_buffer_hours: int = 24
+    batch_max_files: int = 100
+    sidecar_max_bytes: int = 1048576
+
+
+def _require_positive_int(block: Dict[str, object], key: str, default: int) -> int:
+    """Read ``key`` from a present config block, fail loud on a bad value."""
+    if key not in block:
+        return default
+    value = block[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"flywheel.config.yaml ledger_retention.{key} must be an "
+            f"integer, got {value!r} ({type(value).__name__})."
+        )
+    if value < 1:
+        raise ValueError(
+            f"flywheel.config.yaml ledger_retention.{key} must be >= 1, "
+            f"got {value}."
+        )
+    return value
+
+
+def load_retention_config(config_path: Optional[Path] = None) -> RetentionConfig:
+    """Load the ``ledger_retention`` block from the operator's
+    ``flywheel.config.yaml``.
+
+    Mirrors :func:`grove.eval.fault_triage.load_fault_triage_thresholds`:
+    absent file / absent block → documented defaults; a present block is
+    validated key-by-key and any malformed value raises LOUD. Malformed
+    YAML propagates from the parser.
+    """
+    if config_path is None:
+        from hermes_constants import get_hermes_home
+        config_path = Path(get_hermes_home()) / "flywheel.config.yaml"
+    if not config_path.exists():
+        return RetentionConfig()
+
+    import yaml
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if raw is None:
+        return RetentionConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{config_path} must be a YAML mapping, got {type(raw).__name__}."
+        )
+    block = raw.get("ledger_retention")
+    if block is None:
+        return RetentionConfig()
+    if not isinstance(block, dict):
+        raise ValueError(
+            f"{config_path} ledger_retention must be a mapping, got "
+            f"{type(block).__name__}."
+        )
+
+    enabled_raw = block.get("enabled", True)
+    if not isinstance(enabled_raw, bool):
+        raise ValueError(
+            f"flywheel.config.yaml ledger_retention.enabled must be a "
+            f"boolean, got {enabled_raw!r} ({type(enabled_raw).__name__})."
+        )
+    return RetentionConfig(
+        enabled=enabled_raw,
+        retention_days=_require_positive_int(block, "retention_days", 30),
+        cold_buffer_hours=_require_positive_int(block, "cold_buffer_hours", 24),
+        batch_max_files=_require_positive_int(block, "batch_max_files", 100),
+        sidecar_max_bytes=_require_positive_int(
+            block, "sidecar_max_bytes", 1048576
+        ),
+    )
 
 
 def default_archive_dir() -> Path:

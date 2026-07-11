@@ -5551,10 +5551,22 @@ def cmd_flywheel(args):
                 file=sys.stderr,
             )
             sys.exit(2)
+    elif action == "maintain":
+        # kaizen-ledger-retention-v1 P3 — governed maintenance passes.
+        if getattr(args, "retention", False):
+            sys.exit(flywheel_cli.cli_maintain_retention(
+                dry_run=getattr(args, "dry_run", False),
+            ))
+        print(
+            "Usage: autonomaton flywheel maintain --retention [--dry-run]",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     else:
         print(
             "Usage: autonomaton flywheel "
-            "{list,scan,show,approve,reject,acknowledge,patterns,memory} [--help]",
+            "{list,scan,show,approve,reject,acknowledge,patterns,memory,"
+            "maintain} [--help]",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -10612,6 +10624,27 @@ def main():
     )
     flywheel_memory_reject_p.add_argument(
         "--reason", help="Optional rejection reason",
+    )
+
+    # kaizen-ledger-retention-v1 P3 — governed maintenance passes over the
+    # Kaizen ledger. Declarative knobs live in the ledger_retention block of
+    # ~/.grove/flywheel.config.yaml; --dry-run prints the full prune plan
+    # and writes nothing.
+    flywheel_maintain_p = flywheel_subparsers.add_parser(
+        "maintain",
+        help="Governed maintenance passes (ledger retention)",
+    )
+    flywheel_maintain_p.add_argument(
+        "--retention",
+        action="store_true",
+        help="Run one ledger-retention pass (prune aged window-bounded "
+             "telemetry to the archive; dispositions always preserved)",
+    )
+    flywheel_maintain_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Print the full prune plan; write nothing",
     )
 
     flywheel_parser.set_defaults(func=cmd_flywheel)

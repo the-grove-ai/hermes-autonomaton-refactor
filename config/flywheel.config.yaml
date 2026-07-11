@@ -58,3 +58,38 @@ fault_triage:
   # in-window count exceeds the acknowledged count by this factor (or a new
   # session appears and the count grew at all). Must be a number >= 1.0.
   reraise_growth: 1.5
+
+# kaizen-ledger-retention-v1 — governed retention over ~/.grove/.kaizen_ledger/.
+# Run by `autonomaton flywheel maintain --retention` (systemd timer on the
+# gateway; --dry-run prints the plan and writes nothing). Pruned lines are
+# ARCHIVED to ~/.grove/.kaizen_ledger_archive/ under the same filename —
+# never destroyed. kaizen_disposition and quarantine_skill_disposition
+# events are preserved at ANY age (fault-triage acknowledge baselines,
+# fleet artifact terminal states, the strict-promotion gate all read them
+# unbounded); unparseable or unknown-type lines are always kept.
+ledger_retention:
+  # Master switch. false ⇒ `maintain --retention` prints and exits 0.
+  # Must be a boolean.
+  enabled: true
+
+  # Window-bounded telemetry (tool_selection, final_response, andon_halt,
+  # red_resolution, andon_disposition, ...) older than this many days is
+  # pruned to the archive. Must be an integer >= 1 and at least as large as
+  # the widest detector window (disposition_promotion.window_days, 30).
+  retention_days: 30
+
+  # Extra stillness required beyond retention_days before a FILE is
+  # touched: only files whose mtime is older than retention_days +
+  # cold_buffer_hours are eligible. Hot files a live writer might still
+  # append to are never read or rewritten. Must be an integer >= 1.
+  cold_buffer_hours: 24
+
+  # At most this many eligible files are processed per run; the rest wait
+  # for the next timer firing. Bounds a single run's I/O. Must be >= 1.
+  batch_max_files: 100
+
+  # Size cap for the proposals.jsonl.quarantine sidecar (damaged-row
+  # evidence). When an append would land in a sidecar already larger than
+  # this, the file rotates to .quarantine.1 (single generation) first.
+  # Must be an integer >= 1. Default 1 MiB.
+  sidecar_max_bytes: 1048576
