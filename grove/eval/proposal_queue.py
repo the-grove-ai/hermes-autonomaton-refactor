@@ -727,11 +727,34 @@ def _quarantine_lines(target: Path, dropped_lines: List[str]) -> None:
     directory) before a rewrite destroys them. The CALLER must hold ``_lock``.
     Deliberately NOT best-effort: a quarantine write failure aborts the
     mutation rather than silently destroying a damaged row (Jidoka — the
-    rewrite must not proceed over unpreserved data). No rotation — lifecycle
-    punted to kaizen-ledger-retention-v1."""
+    rewrite must not proceed over unpreserved data).
+
+    kaizen-ledger-retention-v1 P4 — single-generation size-cap rotation:
+    when the sidecar already exceeds ``ledger_retention.sidecar_max_bytes``
+    it rotates to ``.quarantine.1`` (clobbering any prior ``.1``) before the
+    append. The ROTATION leg alone is best-effort — quarantine rows are
+    corruption evidence, so a rotation failure (bad config, filesystem
+    error) never blocks the append; the size breach surfaces on the next
+    retention run's report instead."""
     if not dropped_lines:
         return
     qpath = target.parent / (target.name + ".quarantine")
+    try:
+        if qpath.exists():
+            from grove.ledger_retention import load_retention_config
+            cap = load_retention_config().sidecar_max_bytes
+            if qpath.stat().st_size > cap:
+                import os
+                os.replace(qpath, qpath.parent / (qpath.name + ".1"))
+                logger.warning(
+                    "[proposal_queue] quarantine sidecar exceeded %d bytes — "
+                    "rotated to %s.1 (single generation)", cap, qpath.name,
+                )
+    except Exception as exc:  # noqa: BLE001 — rotation leg only; append proceeds
+        logger.error(
+            "[proposal_queue] sidecar rotation failed: %r — appending anyway",
+            exc,
+        )
     with open(qpath, "a", encoding="utf-8") as fh:
         for raw in dropped_lines:
             fh.write(raw + "\n")

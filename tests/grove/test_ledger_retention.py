@@ -331,3 +331,86 @@ def test_cli_failure_files_andon_and_exits_nonzero(monkeypatch, capsys):
     assert halts[0]["source"] == "ledger_retention"
     assert halts[0]["check"] == "retention_run"
     assert "engine exploded" in halts[0]["detail"]
+
+
+# ── P4: quarantine sidecar rotation (proposal_queue) ─────────────────────
+
+
+def _sidecar_cap(cap: int):
+    (_grove_home() / "flywheel.config.yaml").write_text(
+        f"ledger_retention:\n  sidecar_max_bytes: {cap}\n"
+    )
+
+
+def test_sidecar_rotation_trigger(tmp_path):
+    """Sidecar over the cap rotates to .quarantine.1 before the append;
+    the fresh sidecar holds only the new lines."""
+    from grove.eval.proposal_queue import _quarantine_lines
+
+    _sidecar_cap(50)
+    target = tmp_path / "proposals.jsonl"
+    qpath = tmp_path / "proposals.jsonl.quarantine"
+    qpath.write_text("OLD-" * 20 + "\n")  # 81 B > 50 B cap
+
+    _quarantine_lines(target, ["fresh-evidence-row"])
+
+    rotated = tmp_path / "proposals.jsonl.quarantine.1"
+    assert rotated.read_text().startswith("OLD-")
+    assert _lines(qpath) == ["fresh-evidence-row"]
+
+
+def test_sidecar_rotation_failure_never_blocks_append(tmp_path, monkeypatch):
+    """A rotation failure logs and the append still lands — corruption
+    evidence is never dropped for a housekeeping error."""
+    import os as os_mod
+    from grove.eval.proposal_queue import _quarantine_lines
+
+    _sidecar_cap(10)
+    target = tmp_path / "proposals.jsonl"
+    qpath = tmp_path / "proposals.jsonl.quarantine"
+    qpath.write_text("X" * 100 + "\n")  # over cap → rotation attempted
+
+    def _boom(src, dst):
+        raise OSError("rotation denied")
+
+    monkeypatch.setattr(os_mod, "replace", _boom)
+    _quarantine_lines(target, ["must-survive"])
+
+    assert not (tmp_path / "proposals.jsonl.quarantine.1").exists()
+    content = _lines(qpath)
+    assert content[0].startswith("X")  # old content still there (no rotate)
+    assert content[-1] == "must-survive"  # append landed anyway
+
+
+def test_sidecar_dot1_single_generation_overwrite(tmp_path):
+    """A second rotation clobbers the prior .1 — exactly one generation."""
+    from grove.eval.proposal_queue import _quarantine_lines
+
+    _sidecar_cap(30)
+    target = tmp_path / "proposals.jsonl"
+    qpath = tmp_path / "proposals.jsonl.quarantine"
+    rotated = tmp_path / "proposals.jsonl.quarantine.1"
+
+    qpath.write_text("GEN1-" * 10 + "\n")            # over cap
+    _quarantine_lines(target, ["row-a"])             # rotation 1
+    assert rotated.read_text().startswith("GEN1-")
+
+    qpath.write_text("GEN2-" * 10 + "\n")            # over cap again
+    _quarantine_lines(target, ["row-b"])             # rotation 2 clobbers .1
+    assert rotated.read_text().startswith("GEN2-")
+    assert "GEN1-" not in rotated.read_text()
+    assert _lines(qpath) == ["row-b"]
+
+
+def test_sidecar_under_cap_no_rotation(tmp_path):
+    """Under the cap: plain append, no .1 created."""
+    from grove.eval.proposal_queue import _quarantine_lines
+
+    _sidecar_cap(1000)
+    target = tmp_path / "proposals.jsonl"
+    qpath = tmp_path / "proposals.jsonl.quarantine"
+    qpath.write_text("small\n")
+
+    _quarantine_lines(target, ["row"])
+    assert not (tmp_path / "proposals.jsonl.quarantine.1").exists()
+    assert _lines(qpath) == ["small", "row"]
