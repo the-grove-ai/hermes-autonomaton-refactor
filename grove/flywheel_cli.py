@@ -1341,6 +1341,82 @@ def _approve_skill_synthesis(
     return f"skill {name!r} (.andon/ + proposed record)", applied
 
 
+def cli_maintain_retention(*, dry_run: bool = False) -> int:
+    """``flywheel maintain --retention`` — one governed ledger-retention pass
+    (kaizen-ledger-retention-v1 P3).
+
+    Loads the declarative ``ledger_retention`` block (absent → defaults,
+    invalid → fail loud), runs :func:`grove.ledger_retention.run_retention`,
+    and prints the plan (``--dry-run``: full per-file prune plan, ZERO
+    writes) or the live RunReport. ``enabled: false`` prints and exits 0.
+
+    ANY failure files an ``andon_halt`` (source=ledger_retention) under a
+    cli-<utc-timestamp> sentinel session AND exits non-zero. Filing into the
+    ledger mid-failure is safe by construction: the filing appends to a NEW
+    hot file, and retention rewrites touch only cold files — the two can
+    never collide on one file.
+    """
+    from grove.ledger_retention import load_retention_config, run_retention
+
+    try:
+        config = load_retention_config()
+        if not config.enabled:
+            print("ledger retention disabled (ledger_retention.enabled: false)")
+            return 0
+        report = run_retention(
+            retention_days=config.retention_days,
+            cold_buffer_hours=config.cold_buffer_hours,
+            batch_max_files=config.batch_max_files,
+            dry_run=dry_run,
+        )
+        header = (
+            "PRUNE PLAN (dry run — nothing written)"
+            if dry_run else "RETENTION RUN"
+        )
+        print(f"{header} — cutoff {report.cutoff}")
+        print(
+            f"files: total={report.files_total} hot={report.files_hot} "
+            f"scanned={report.files_scanned} skipped={report.files_skipped} "
+            f"rewritten={report.files_rewritten} moved={report.files_moved}"
+        )
+        print(
+            f"lines: kept={report.lines_kept} pruned={report.lines_pruned} "
+            f"unparseable-kept={report.lines_unparseable}; "
+            f"bytes archived={report.bytes_archived}"
+        )
+        if dry_run:
+            for fr in report.file_reports:
+                if fr.action in ("rewritten", "moved"):
+                    extra = (
+                        f", unparseable-kept {fr.lines_unparseable}"
+                        if fr.lines_unparseable else ""
+                    )
+                    print(
+                        f"  {fr.action:9s} {fr.path} — keep {fr.lines_kept}, "
+                        f"prune {fr.lines_pruned} ({fr.bytes_pruned} B){extra}"
+                    )
+        return 0
+    except Exception as exc:  # noqa: BLE001 — surface + file + non-zero
+        print(f"ledger retention FAILED: {exc!r}", file=sys.stderr)
+        try:
+            from datetime import datetime, timezone
+            from grove.kaizen_ledger import KaizenLedger
+            session_id = "cli-" + datetime.now(timezone.utc).strftime(
+                "%Y%m%dT%H%M%S%fZ"
+            )
+            KaizenLedger(session_id=session_id).record(
+                "andon_halt",
+                source="ledger_retention",
+                check="retention_run",
+                detail=repr(exc)[:500],
+            )
+        except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor
+            logger.error(
+                "[flywheel] retention filing leg failed: %r", file_exc,
+            )
+        return 1
+
+
 def _record_kaizen_disposition(
     proposal: RoutingProposal,
     *,

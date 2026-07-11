@@ -85,6 +85,9 @@ COMPONENT_SOURCES = frozenset({
     "tier_ratchet",
     "proposal_queue",
     "portal_render",
+    # kaizen-ledger-retention-v1 P3 — a failed `flywheel maintain --retention`
+    # run files here; registered so the filing is triage-classifiable.
+    "ledger_retention",
 })
 
 

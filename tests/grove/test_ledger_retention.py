@@ -217,3 +217,117 @@ def test_dry_run_writes_nothing(tmp_path):
     assert (ledger / "g.jsonl").read_text() == before
     assert not archive.exists()
     assert not state.exists()
+
+
+# ── P3: config loader (fault_triage precedent) ───────────────────────────
+
+
+def test_loader_absent_file_and_block_defaults(tmp_path):
+    from grove.ledger_retention import RetentionConfig, load_retention_config
+
+    cfg = load_retention_config(tmp_path / "nope.yaml")  # absent file
+    assert cfg == RetentionConfig()
+
+    p = tmp_path / "flywheel.config.yaml"
+    p.write_text("fault_triage:\n  min_events: 5\n")  # absent block
+    assert load_retention_config(p) == RetentionConfig()
+
+    p.write_text(
+        "ledger_retention:\n  retention_days: 45\n  enabled: false\n"
+    )
+    cfg = load_retention_config(p)
+    assert cfg.retention_days == 45 and cfg.enabled is False
+    assert cfg.cold_buffer_hours == 24  # absent key → default
+
+
+def test_loader_invalid_values_fail_loud(tmp_path):
+    from grove.ledger_retention import load_retention_config
+
+    p = tmp_path / "flywheel.config.yaml"
+    p.write_text("ledger_retention:\n  retention_days: 0\n")
+    with pytest.raises(ValueError, match="retention_days must be >= 1"):
+        load_retention_config(p)
+    p.write_text("ledger_retention:\n  enabled: 'yes'\n")
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        load_retention_config(p)
+    p.write_text("ledger_retention:\n  sidecar_max_bytes: true\n")
+    with pytest.raises(ValueError, match="sidecar_max_bytes must be an integer"):
+        load_retention_config(p)
+
+
+# ── P3: CLI (flywheel maintain --retention) ──────────────────────────────
+
+
+def _grove_home():
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home())
+
+
+def test_cli_dry_run_prints_plan_writes_nothing(capsys):
+    from grove.flywheel_cli import cli_maintain_retention
+    from grove.ledger_retention import default_archive_dir, default_state_path
+
+    ledger = _grove_home() / ".kaizen_ledger"
+    _write(ledger / "cli-old.jsonl", [_event("tool_selection", age_days=300)])
+    before = (ledger / "cli-old.jsonl").read_text()
+
+    # now is real wall-clock here; a 300-day-old event + mtime is cold and
+    # prunable under the default 30d window regardless of today's date.
+    rc = cli_maintain_retention(dry_run=True)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "PRUNE PLAN (dry run — nothing written)" in out
+    assert "cli-old.jsonl" in out and "prune 1" in out
+    assert (ledger / "cli-old.jsonl").read_text() == before
+    assert not default_archive_dir().exists()
+    assert not default_state_path().exists()
+
+
+def test_cli_live_run_prunes_and_reports(capsys):
+    from grove.flywheel_cli import cli_maintain_retention
+    from grove.ledger_retention import default_archive_dir
+
+    ledger = _grove_home() / ".kaizen_ledger"
+    _write(ledger / "cli-live.jsonl", [_event("tool_selection", age_days=300)])
+
+    rc = cli_maintain_retention()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "RETENTION RUN" in out and "moved=1" in out
+    assert not (ledger / "cli-live.jsonl").exists()
+    assert len(_lines(default_archive_dir() / "cli-live.jsonl")) == 1
+
+
+def test_cli_disabled_exits_zero(capsys):
+    from grove.flywheel_cli import cli_maintain_retention
+
+    (_grove_home() / "flywheel.config.yaml").write_text(
+        "ledger_retention:\n  enabled: false\n"
+    )
+    rc = cli_maintain_retention()
+    assert rc == 0
+    assert "disabled" in capsys.readouterr().out
+
+
+def test_cli_failure_files_andon_and_exits_nonzero(monkeypatch, capsys):
+    from grove import ledger_retention as lr
+    from grove.flywheel_cli import cli_maintain_retention
+
+    def _boom(**kw):
+        raise RuntimeError("engine exploded")
+
+    monkeypatch.setattr(lr, "run_retention", _boom)
+    rc = cli_maintain_retention()
+    assert rc == 1
+    assert "ledger retention FAILED" in capsys.readouterr().err
+
+    halts = []
+    for f in (_grove_home() / ".kaizen_ledger").glob("cli-*.jsonl"):
+        for line in f.read_text().splitlines():
+            e = json.loads(line)
+            if e.get("event_type") == "andon_halt":
+                halts.append(e)
+    assert len(halts) == 1
+    assert halts[0]["source"] == "ledger_retention"
+    assert halts[0]["check"] == "retention_run"
+    assert "engine exploded" in halts[0]["detail"]
