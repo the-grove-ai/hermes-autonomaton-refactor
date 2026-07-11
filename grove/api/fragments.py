@@ -704,6 +704,46 @@ class _RenderView:
         self.evidence = p.get("evidence") or []
 
 
+# silent-degradation-sweep-v1 — one render-failure filing per poisoned record
+# per process lifetime, keyed (pid, exc-signature): repeated page loads of the
+# same failing card never storm the ledger (KaizenLedger.record appends
+# unconditionally, no dedup), while a NEW failure mode on the same record
+# files fresh. In-process only — the gateway is a single systemd process.
+_RENDER_FILING_MEMO: set = set()
+
+
+def _file_render_andon(
+    check: str, ptype, pid: str, short_id: str, exc: Exception,
+) -> None:
+    """File a card-render failure as FACTS (source=portal_render) into the
+    Kaizen ledger so fault triage aggregates recurrences. Best-effort with an
+    error-log floor (the grove/fleet/observability.py precedent) — the card
+    fallback is already the operator surface; filing must never break the
+    feed. No conversation session in the render path → the cli-<utc-timestamp>
+    sentinel (the _record_kaizen_disposition precedent)."""
+    try:
+        detail = repr(exc)[:500]
+        memo_key = (pid, detail)  # (record, exc-signature)
+        if memo_key in _RENDER_FILING_MEMO:
+            return
+        _RENDER_FILING_MEMO.add(memo_key)
+        from datetime import datetime, timezone
+        from grove.kaizen_ledger import KaizenLedger
+        session_id = "cli-" + datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        )
+        KaizenLedger(session_id=session_id).record(
+            "andon_halt",
+            source="portal_render",
+            check=check,
+            detail=detail,
+            ptype=str(ptype),
+            short_id=short_id,
+        )
+    except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor stands
+        logger.error("[portal] kaizen filing leg failed: %r", file_exc)
+
+
 def _defect_card_html(pid: str, short_id: str, ptype) -> str:
     """proposal-card-legibility-v1 Phase 3 (Rider 3) — an APPROVABLE proposal
     whose summary or diff renderer is missing/raised. The operator must never
@@ -859,6 +899,7 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
                 "[portal] approvable card render failed for %s (%s): %r — "
                 "DEFECT card, dispositions withheld", ptype, pid, exc,
             )
+            _file_render_andon("approvable_card", ptype, pid, short_id, exc)
             return _defect_card_html(pid, short_id, ptype)
         body = (
             f'<p>{_esc(summary)}</p>'
@@ -874,6 +915,7 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
                 "[portal] render-only card renderer failed for %s (%s): %r — "
                 "verbatim sj fallback", ptype, pid, exc,
             )
+            _file_render_andon("render_only", ptype, pid, short_id, exc)
             summary = view.semantic_justification or f"{ptype} proposal {short_id}"
         body = f'<p>{_esc(summary)}</p>'
 
