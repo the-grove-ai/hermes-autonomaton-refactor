@@ -30,3 +30,31 @@ disposition_promotion:
   # Rolling window, in days, over which approvals and vetoes are counted.
   # Dispositions older than this are ignored. Must be an integer >= 1.
   window_days: 30
+
+# kaizen-fault-triage-v1 — the recurring-fault detector reads andon_halt +
+# red_resolution ledger events, groups them by schema-aware fault class
+# (fleet worker/check/error-signature; dispatcher tool/matched-rule;
+# RED tool/matched-rule), and stages a fault_triage proposal when a class
+# recurs. The card leads with a deterministic judgment; acknowledge means
+# "seen, keep watching" (it re-surfaces on material growth), dismiss means
+# "not a real pattern" (suppressed for the window).
+fault_triage:
+  # Minimum in-window events for one fault class before a proposal stages.
+  # Must be an integer >= 1.
+  min_events: 5
+
+  # Minimum DISTINCT sessions those events must span. Defaults to 1 because
+  # fleet worker ledgers key session ids on fleet:<worker>:<run>, so a hot
+  # single-worker fault can legitimately live in one session file. Raise to
+  # demand cross-session spread. Must be an integer >= 1.
+  min_sessions: 1
+
+  # Sliding window, in days. Events older than this are ignored — a cold
+  # fault class that stopped recurring ages out instead of firing forever
+  # on an un-rotated ledger. Must be an integer >= 1.
+  window_days: 14
+
+  # Re-raise gate after an acknowledge: the class re-surfaces when its
+  # in-window count exceeds the acknowledged count by this factor (or a new
+  # session appears and the count grew at all). Must be a number >= 1.0.
+  reraise_growth: 1.5

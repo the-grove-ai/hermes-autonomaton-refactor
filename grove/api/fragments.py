@@ -652,6 +652,17 @@ _PROPOSAL_VERB_ROUTES = {
     "reject": (
         "/portal/actions/proposals/{pid}/reject", "Reject", "btn-reject", None,
     ),
+    # kaizen-fault-triage-v1 — directions, not receipts. Acknowledge = "seen,
+    # keep watching, tell me if it changes" (re-surfaces on material growth);
+    # dismiss = "not a real pattern, stop proposing" (window suppression).
+    "acknowledge": (
+        "/portal/actions/proposals/{pid}/acknowledge", "Acknowledge",
+        "btn-approve", None,
+    ),
+    "dismiss": (
+        "/portal/actions/proposals/{pid}/dismiss", "Dismiss", "btn-reject",
+        None,
+    ),
 }
 
 
@@ -699,9 +710,19 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
         ev_summary = f"{len(evidence)} item(s)"
     else:
         ev_summary = str(evidence) if evidence else ""
-    actions = _proposal_actions_html(
-        pid, short_id, offers_approve=_type_offers_approve(ptype)
-    )
+    # kaizen-fault-triage-v1 — a verb-bearing type renders ITS verb set
+    # (acknowledge/dismiss), not the generic approve/reject pair. Artifact
+    # types are partitioned out of this feed (C3), so today this branch
+    # serves fault_triage cards.
+    from grove.eval.proposal_queue import PROPOSAL_VERBS
+
+    verbs = PROPOSAL_VERBS.get(ptype)
+    if verbs:
+        actions = _verb_actions_html(pid, short_id, verbs)
+    else:
+        actions = _proposal_actions_html(
+            pid, short_id, offers_approve=_type_offers_approve(ptype)
+        )
     return (
         f'<div class="card" id="proposal-{short_id}">'
         f'<h4><span class="badge">{_esc(ptype)}</span></h4>'

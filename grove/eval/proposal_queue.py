@@ -168,6 +168,18 @@ PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING = "forge_artifact_pending"
 # (promote / reject / suggest_revision) are producer-parametrized in C1a/C1b-1;
 # forge keeps forge_artifact_pending, byte-identical.
 PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING = "fleet_artifact_pending"
+# kaizen-fault-triage-v1 — a recurring Andon-class fault pattern detected in
+# the Kaizen ledger (grove.eval.fault_triage.FaultTriageDetector). A fault
+# REPORT, not a fix: identity is the fault signature only —
+#   {"source": "fleet_worker"|"dispatcher_halt"|"red_resolution",
+#    <key fields per source>, "error_signature": str}
+# — so any future remediation enrichment (proposed_config_diff,
+# remediation_plan, …) rides identity-EXCLUDED fields and never forks the
+# dedup. RENDER-ONLY (no PROPOSAL_HANDLERS row → structurally unapprovable);
+# affordances are the verb set below: acknowledge ("seen, keep watching,
+# tell me if it changes" — the detector re-stages only on material growth)
+# and dismiss (strictly negative feedback — suppressed for the window).
+PROPOSAL_TYPE_FAULT_TRIAGE = "fault_triage"
 # Verb affordances per proposal type. The portal iterates this to render action
 # buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
 # to the iterator — the shape is deliberately open. The generic fleet type
@@ -175,6 +187,10 @@ PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING = "fleet_artifact_pending"
 PROPOSAL_VERBS: Dict[str, Tuple[str, ...]] = {
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING: ("promote", "reject"),
     PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING: ("promote", "reject"),
+    # kaizen-fault-triage-v1 — directions, not receipts: acknowledge keeps
+    # watching (re-raise on material growth), dismiss suppresses the class
+    # for the window. No approve — there is no apply path at T1.
+    PROPOSAL_TYPE_FAULT_TRIAGE: ("acknowledge", "dismiss"),
 }
 _LEGACY_ROUTING_TYPE = "routing_update"  # Sprint 47 spelling
 
@@ -362,6 +378,11 @@ class RoutingProposal:
         # (``portal action 'x' keeps failing …``), so it stands on its own —
         # wrapping it in 'I noticed I could' would read as broken grammar.
         if self.type == PROPOSAL_TYPE_PORTAL_ACTION_FAILURE:
+            return core
+        # kaizen-fault-triage-v1 — the core IS the interpreted judgment line
+        # ("<subject> is hitting the same <fault> repeatedly — one defect,
+        # active, worsening."); it stands on its own, Kaizen speaking.
+        if self.type == PROPOSAL_TYPE_FAULT_TRIAGE:
             return core
         return f"I noticed I could {core}"
 

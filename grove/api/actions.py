@@ -82,6 +82,9 @@ _DISPOSITION_LABEL = {
     "approve": "approved",
     "reject": "rejected",
     "dismiss": "dismissed",
+    # kaizen-fault-triage-v1 — a direction, not a receipt: "seen, keep
+    # watching, tell me if it changes."
+    "acknowledge": "acknowledged",
 }
 
 # Badge colour per shown disposition: green = applied, red = rejected, neutral
@@ -90,6 +93,7 @@ _DISPOSITION_BADGE = {
     "approved": "badge badge-green",
     "rejected": "badge badge-red",
     "dismissed": "badge",
+    "acknowledged": "badge badge-green",
 }
 
 
@@ -310,6 +314,43 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
         if mount == "card":
             return _html_fragment(render_disposition_transient(
                 _pl, "reject", message="Rejected"))
+        return _resolved_card(
+            short_id, type_label, _DISPOSITION_LABEL[action], summary
+        )
+
+    # kaizen-fault-triage-v1 — acknowledge is a DIRECTION ("seen, keep
+    # watching, tell me if it changes"), gated to types whose PROPOSAL_VERBS
+    # declare it. Dequeue + record the acknowledged in-window count (the
+    # detector's re-raise baseline); dismiss below stays strictly negative
+    # feedback so the two signals never blur.
+    if action == "acknowledge":
+        from grove.eval.proposal_queue import PROPOSAL_VERBS
+        from grove.flywheel_cli import _acknowledged_count
+
+        if "acknowledge" not in PROPOSAL_VERBS.get(proposal.type, ()):
+            msg = (
+                f"Proposal type {proposal.type} does not support acknowledge."
+            )
+            return await _loud_action_failure(
+                f'<div class="card" id="proposal-{short_id}">'
+                f'<h4><span class="badge">{_esc(type_label)}</span> '
+                f'<span class="badge badge-yellow">refused</span></h4>'
+                f'<p>{_esc(summary)}</p>'
+                f'<div class="meta error">{_esc(msg)}</div>'
+                f'</div>',
+                failure_class="proposal_type_not_acknowledgeable",
+                action="proposal_acknowledge",
+                message=msg,
+                status=422,
+            )
+        acknowledged_count = _acknowledged_count(proposal)
+        proposal_queue.remove(proposal.proposal_id)
+        _record_kaizen_disposition(
+            proposal,
+            disposition="acknowledged",
+            reason=reason,
+            extra={"acknowledged_count": acknowledged_count},
+        )
         return _resolved_card(
             short_id, type_label, _DISPOSITION_LABEL[action], summary
         )
@@ -668,6 +709,11 @@ async def handle_proposal_reject(request: web.Request) -> web.Response:
 
 async def handle_proposal_dismiss(request: web.Request) -> web.Response:
     return await _dispatch_proposal_action(request, "dismiss")
+
+
+async def handle_proposal_acknowledge(request: web.Request) -> web.Response:
+    # kaizen-fault-triage-v1 — verb-gated inside _apply_routing.
+    return await _dispatch_proposal_action(request, "acknowledge")
 
 
 async def handle_dock_goal_update(request: web.Request) -> web.Response:
@@ -1662,6 +1708,12 @@ def register_action_routes(app: web.Application) -> None:
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/dismiss",
         _with_nav_refresh(handle_proposal_dismiss),
+    )
+    # kaizen-fault-triage-v1 — acknowledge retires a fault card from the
+    # queue (nav counts change), recording the keep-watching direction.
+    app.router.add_post(
+        "/portal/actions/proposals/{proposal_id}/acknowledge",
+        _with_nav_refresh(handle_proposal_acknowledge),
     )
     # propose-approve-deadlock-v1 Phase 1b-ii — the RED .env two-step confirm
     # (mint-capable). /approve (above) issues the confirm nonce; this applies it.
