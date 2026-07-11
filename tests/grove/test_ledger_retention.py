@@ -1,0 +1,219 @@
+"""kaizen-ledger-retention-v1 P2 — retention engine safety pins.
+
+Real files in tmp dirs; the only fake is the clock (injectable ``now``).
+Each safety property from the module docstring gets its own pin.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from grove.ledger_retention import (
+    PRESERVE_EVENT_TYPES,
+    run_retention,
+)
+
+_NOW = datetime(2026, 7, 11, 12, 0, 0, tzinfo=timezone.utc)
+_CUTOFF = _NOW - timedelta(days=30)
+
+
+def _event(event_type="tool_selection", *, age_days=0.0, **fields):
+    ts = (_NOW - timedelta(days=age_days)).isoformat()
+    return json.dumps({
+        "event_type": event_type, "session_id": "s1", "timestamp": ts,
+        **fields,
+    })
+
+
+def _write(path: Path, lines, *, mtime_age_days=40.0):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(l + "\n" for l in lines), encoding="utf-8")
+    mtime = (_NOW - timedelta(days=mtime_age_days)).timestamp()
+    os.utime(path, (mtime, mtime))
+
+
+def _dirs(tmp_path):
+    return (tmp_path / "ledger", tmp_path / "archive",
+            tmp_path / "state.json")
+
+
+def _run(tmp_path, **kw):
+    ledger, archive, state = _dirs(tmp_path)
+    return run_retention(
+        ledger_dir=ledger, archive_dir=archive, state_path=state,
+        retention_days=30, cold_buffer_hours=24, now=_NOW, **kw,
+    )
+
+
+def _lines(path: Path):
+    if not path.exists():
+        return []
+    return [l for l in path.read_text(encoding="utf-8").splitlines() if l]
+
+
+def test_preserve_rules_never_prune_disposition_types(tmp_path):
+    """kaizen_disposition + quarantine_skill_disposition survive at ANY age;
+    aged window-bounded lines around them prune."""
+    ledger, archive, state = _dirs(tmp_path)
+    lines = [
+        _event("kaizen_disposition", age_days=300, proposal_id="p1"),
+        _event("quarantine_skill_disposition", age_days=300, skill_name="s"),
+        _event("tool_selection", age_days=300),
+        _event("andon_halt", age_days=300),
+    ]
+    _write(ledger / "old-session.jsonl", lines, mtime_age_days=299)
+
+    report = _run(tmp_path)
+    kept = _lines(ledger / "old-session.jsonl")
+    assert {json.loads(l)["event_type"] for l in kept} == set(
+        PRESERVE_EVENT_TYPES
+    )
+    archived = _lines(archive / "old-session.jsonl")
+    assert {json.loads(l)["event_type"] for l in archived} == {
+        "tool_selection", "andon_halt",
+    }
+    assert report.lines_pruned == 2 and report.lines_kept == 2
+
+
+def test_cutoff_boundary_exact(tmp_path):
+    """ts == cutoff keeps (>= cutoff); one second older prunes."""
+    ledger, archive, _ = _dirs(tmp_path)
+    at_cutoff = json.dumps({
+        "event_type": "tool_selection", "session_id": "s",
+        "timestamp": _CUTOFF.isoformat(),
+    })
+    just_older = json.dumps({
+        "event_type": "tool_selection", "session_id": "s",
+        "timestamp": (_CUTOFF - timedelta(seconds=1)).isoformat(),
+    })
+    _write(ledger / "b.jsonl", [at_cutoff, just_older])
+
+    report = _run(tmp_path)
+    assert _lines(ledger / "b.jsonl") == [at_cutoff]
+    assert _lines(archive / "b.jsonl") == [just_older]
+    assert report.lines_pruned == 1 and report.lines_kept == 1
+
+
+def test_cold_file_stricture_hot_file_untouched(tmp_path):
+    """A file with recent mtime is never read or rewritten, even if it
+    contains aged prunable lines."""
+    ledger, archive, _ = _dirs(tmp_path)
+    lines = [_event("tool_selection", age_days=300)]
+    _write(ledger / "hot.jsonl", lines, mtime_age_days=1.0)  # inside buffer
+    before = (ledger / "hot.jsonl").read_text()
+
+    report = _run(tmp_path)
+    assert (ledger / "hot.jsonl").read_text() == before
+    assert not (archive / "hot.jsonl").exists()
+    assert report.files_hot == 1 and report.files_scanned == 0
+
+
+def test_archive_before_replace_ordering(tmp_path, monkeypatch):
+    """A crash at the source rewrite (os.replace) must find the pruned
+    lines ALREADY fsync'd in the archive — duplicate on crash, never lose."""
+    ledger, archive, _ = _dirs(tmp_path)
+    keep_line = _event("tool_selection", age_days=1)
+    prune_line = _event("tool_selection", age_days=300)
+    _write(ledger / "c.jsonl", [keep_line, prune_line])
+
+    real_replace = os.replace
+
+    def _crash_on_source_replace(src, dst):
+        if str(dst).endswith("c.jsonl") and ".tmp" in str(src):
+            raise OSError("simulated crash at rewrite")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _crash_on_source_replace)
+    with pytest.raises(OSError, match="simulated crash"):
+        _run(tmp_path)
+
+    # Pruned line durably archived BEFORE the failed rewrite; source intact.
+    assert _lines(archive / "c.jsonl") == [prune_line]
+    assert set(_lines(ledger / "c.jsonl")) == {keep_line, prune_line}
+
+
+def test_zero_kept_moves_whole_file(tmp_path):
+    """Every line prunable → the file MOVES to the archive; no empty stub."""
+    ledger, archive, _ = _dirs(tmp_path)
+    lines = [_event("tool_selection", age_days=300) for _ in range(3)]
+    _write(ledger / "allold.jsonl", lines)
+
+    report = _run(tmp_path)
+    assert not (ledger / "allold.jsonl").exists()
+    assert _lines(archive / "allold.jsonl") == lines
+    assert report.files_moved == 1 and report.files_rewritten == 0
+
+
+def test_unparseable_lines_kept_counted(tmp_path):
+    """No JSON / unknown event type / no recognizable ts ⇒ KEEP + count."""
+    ledger, archive, _ = _dirs(tmp_path)
+    garbage = "{not json"
+    unknown = json.dumps({
+        "event_type": "future_event_type", "session_id": "s",
+        "timestamp": (_NOW - timedelta(days=300)).isoformat(),
+    })
+    no_ts = json.dumps({"event_type": "tool_selection", "session_id": "s"})
+    prunable = _event("tool_selection", age_days=300)
+    _write(ledger / "d.jsonl", [garbage, unknown, no_ts, prunable])
+
+    report = _run(tmp_path)
+    assert _lines(ledger / "d.jsonl") == [garbage, unknown, no_ts]
+    assert _lines(archive / "d.jsonl") == [prunable]
+    assert report.lines_unparseable == 3
+    assert report.lines_kept == 3 and report.lines_pruned == 1
+
+
+def test_scan_state_skips_fully_retained_on_second_run(tmp_path):
+    """A file with nothing to prune is verdicted fully-retained; the second
+    run skips it via the (mtime, size) key without reading it."""
+    ledger, archive, state = _dirs(tmp_path)
+    # Eligible (old mtime) but all lines preserved-type → fully retained.
+    lines = [_event("kaizen_disposition", age_days=300, proposal_id="p")]
+    _write(ledger / "e.jsonl", lines)
+
+    r1 = _run(tmp_path)
+    assert r1.files_scanned == 1 and r1.files_skipped == 0
+    assert json.loads(state.read_text())[str(ledger / "e.jsonl")][
+        "verdict"] == "fully-retained"
+
+    r2 = _run(tmp_path)
+    assert r2.files_scanned == 0 and r2.files_skipped == 1
+    assert _lines(ledger / "e.jsonl") == lines  # untouched throughout
+
+
+def test_batch_bound_limits_files_per_run(tmp_path):
+    """At most batch_max_files eligible files are processed per run."""
+    ledger, archive, _ = _dirs(tmp_path)
+    for i in range(5):
+        _write(ledger / f"f{i}.jsonl",
+               [_event("tool_selection", age_days=300)])
+
+    report = _run(tmp_path, batch_max_files=2)
+    assert report.files_scanned == 2
+    assert report.files_moved == 2
+    remaining = sorted(p.name for p in ledger.glob("*.jsonl"))
+    assert len(remaining) == 3  # the rest wait for the next run
+
+
+def test_dry_run_writes_nothing(tmp_path):
+    """--dry-run substrate: full plan computed, zero writes — no archive,
+    no rewrite, no scan-state."""
+    ledger, archive, state = _dirs(tmp_path)
+    _write(ledger / "g.jsonl", [
+        _event("tool_selection", age_days=300),
+        _event("kaizen_disposition", age_days=300, proposal_id="p"),
+    ])
+    before = (ledger / "g.jsonl").read_text()
+
+    report = _run(tmp_path, dry_run=True)
+    assert report.dry_run is True
+    assert report.lines_pruned == 1 and report.lines_kept == 1
+    assert report.files_rewritten == 1  # planned, not performed
+    assert (ledger / "g.jsonl").read_text() == before
+    assert not archive.exists()
+    assert not state.exists()
