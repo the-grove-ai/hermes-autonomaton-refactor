@@ -42,7 +42,7 @@ import yaml
 
 from hermes_constants import get_wiki_path
 
-from grove.t1_call import call_t1
+from grove.t1_call import T1TruncationError, call_t1
 from grove.wiki.adapters import NormalizedDoc
 
 if TYPE_CHECKING:
@@ -153,24 +153,61 @@ class _SemanticPage:
 
 # ── prompts ─────────────────────────────────────────────────────────────
 
+# P2 (wiki-writer-structured-output-v1): Writer and Editor emit the page as a
+# FORCED wiki_page tool call — validated args, no prose parse, no frontmatter-
+# format instructions anywhere in these prompts. The Evaluator's _EVAL_TOOL
+# below is the in-file precedent (same tier, same transport).
+
 _WRITER_SYSTEM = (
     "You compact a source document into one canonical wiki page for the Grove "
-    "Autonomaton's living cellar. Output a Markdown document that begins with a "
-    "YAML frontmatter block containing EXACTLY these keys: title (string), "
-    "topics (list of strings), key_entities (list of strings). After the "
-    "closing '---', write the page body: a short summary, the key findings, and "
-    "relationships to prior knowledge. Canonicalize vocabulary. Do NOT include "
-    "any other frontmatter keys — source, timestamps, and confidence are set by "
-    "the system, not by you. Output ONLY the document: begin immediately with "
-    "the '---' line, with no preamble and no surrounding code fences."
+    "Autonomaton's living cellar. Call the wiki_page tool exactly once with: "
+    "title (string), topics (list of strings), key_entities (list of "
+    "strings), and body — the page body in Markdown: a short summary, the key "
+    "findings, and relationships to prior knowledge. Canonicalize vocabulary. "
+    "Source, timestamps, and confidence are set by the system, not by you."
 )
 
 _EDITOR_SYSTEM = (
-    "You revise a canonical wiki page to fix the listed issues. Output the same "
-    "Markdown+frontmatter format (title, topics, key_entities, then body). Output "
-    "ONLY the document: begin immediately with the '---' line, with no preamble "
-    "and no surrounding code fences. Your revision is final."
+    "You revise a canonical wiki page to fix the listed issues. Call the "
+    "wiki_page tool exactly once with all four revised fields (title, topics, "
+    "key_entities, body). Your revision is final."
 )
+
+# The forced Writer/Editor tool: the page's four semantic fields as validated
+# args. Anthropic-style shape; call_t1 reshapes generically for the
+# chat_completions arm (_to_openai_tool), so this constant is transport-blind.
+_WIKI_PAGE_TOOL: Dict[str, Any] = {
+    "name": "wiki_page",
+    "description": (
+        "Emit the canonical wiki page as structured fields. body is the full "
+        "Markdown page body — no frontmatter, no delimiters; the system "
+        "renders the page file."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "canonical page title"},
+            "topics": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "canonicalized topic tags",
+            },
+            "key_entities": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "named entities central to the page",
+            },
+            "body": {
+                "type": "string",
+                "description": (
+                    "the complete page body in Markdown: short summary, key "
+                    "findings, relationships to prior knowledge"
+                ),
+            },
+        },
+        "required": ["title", "topics", "key_entities", "body"],
+    },
+}
 
 
 def _writer_prompt(doc: NormalizedDoc) -> str:
@@ -211,13 +248,14 @@ def compact(
     Returns the written page. Raises :class:`MalformedWriterOutput` if the
     Writer or Editor emits output that is not a valid page.
     """
-    # 1. Writer (always).
-    writer_text = call_t1(
+    # 1. Writer (always) — forced wiki_page tool (P2); args validated by
+    # _parse_semantic_page, the retained Andon.
+    semantic = _call_page_tool(
         _writer_prompt(normalized),
         system=_WRITER_SYSTEM,
         max_tokens=_WRITER_MAX_TOKENS,
+        role="writer",
     )
-    semantic = _parse_semantic_page(writer_text)
 
     # 2. Evaluator (always).
     verdict = _validate_verdict(
@@ -237,12 +275,12 @@ def compact(
             verdict["quality_score"],
             verdict["issues"],
         )
-        editor_text = call_t1(
+        semantic = _call_page_tool(
             _editor_prompt(semantic.body, verdict["issues"]),
             system=_EDITOR_SYSTEM,
             max_tokens=_EDITOR_MAX_TOKENS,
+            role="editor",
         )
-        semantic = _parse_semantic_page(editor_text)
         editor_ran = True
 
     # Deterministic, pipeline-owned fields.
@@ -442,85 +480,71 @@ def project_memory(
 # ── parsing / validation (fail loud) ────────────────────────────────────
 
 
-def _parse_semantic_page(text: str) -> _SemanticPage:
-    """Single chokepoint for BOTH Writer and Editor output (Phase 4).
+def _call_page_tool(
+    prompt: str, *, system: str, max_tokens: int, role: str
+) -> _SemanticPage:
+    """One forced wiki_page call, guarded by the P0/P1 truncation ladder.
 
-    Tolerates two common LLM formatting wrappers — a surrounding code fence and
-    leading preamble prose — then locates the frontmatter block by LINE anchor
-    (a line that is exactly ``---``), so a body markdown horizontal rule is
-    never mistaken for the delimiter. This bends on *formatting*, never on
-    *missing data*: a response with no frontmatter block, unparseable YAML, a
-    missing/empty title, or an empty body still raises (the existing required-
-    field validation backstops any mis-anchor into a loud failure).
+    Cap-hit (T1TruncationError — the router's native_finish_reason truth
+    signal, surfaced by call_t1's chat_completions arm) → ONE raised-cap
+    retry (P0: identical-at-cap retry is deterministic 0/6; raised-cap 2/2)
+    → on a second cap-hit, MalformedWriterOutput. Validated args build the
+    SemanticPage directly; :func:`_parse_semantic_page` is the Andon.
     """
-    if not isinstance(text, str) or not text.strip():
-        raise MalformedWriterOutput("writer/editor returned empty output")
-
-    cleaned = _strip_code_fence(text)
-    fm_str, body = _extract_frontmatter_block(cleaned)
     try:
-        meta = yaml.safe_load(fm_str)
-    except yaml.YAMLError as exc:
-        raise MalformedWriterOutput(f"unparseable frontmatter: {exc}") from exc
-    if not isinstance(meta, dict):
-        raise MalformedWriterOutput("frontmatter is not a mapping")
+        args = call_t1(
+            prompt, system=system, tool=_WIKI_PAGE_TOOL, max_tokens=max_tokens
+        )
+    except T1TruncationError:
+        raised = 2 * max_tokens
+        logger.warning(
+            "[wiki] %s wiki_page call truncated at max_tokens=%d; retrying "
+            "once at %d.", role, max_tokens, raised,
+        )
+        try:
+            args = call_t1(
+                prompt, system=system, tool=_WIKI_PAGE_TOOL, max_tokens=raised
+            )
+        except T1TruncationError as exc:
+            raise MalformedWriterOutput(
+                f"{role} output truncated even after the raised-cap retry "
+                f"({raised} tokens): {exc}"
+            ) from exc
+    return _parse_semantic_page(args)
 
-    title = meta.get("title")
+
+def _parse_semantic_page(args: Any) -> _SemanticPage:
+    """Single chokepoint for BOTH Writer and Editor output — the Andon (P2).
+
+    Shrunk from the prose/frontmatter parser to ARG VALIDATION: the page's
+    four semantic fields arrive as forced wiki_page tool args, so no parse of
+    prose remains anywhere in the pipeline. The failure contract is
+    unchanged — empty, missing, or mistyped fields raise
+    :class:`MalformedWriterOutput` exactly as the prose parser did.
+    """
+    if not isinstance(args, dict):
+        raise MalformedWriterOutput(
+            f"wiki_page args are not an object: {type(args).__name__}"
+        )
+    title = args.get("title")
     if not isinstance(title, str) or not title.strip():
         raise MalformedWriterOutput("missing or empty 'title'")
-    if not body.strip():
+    body = args.get("body")
+    if not isinstance(body, str) or not body.strip():
         raise MalformedWriterOutput("page body is empty")
 
     return _SemanticPage(
         title=title.strip(),
-        topics=_as_str_list(meta.get("topics"), "topics"),
-        key_entities=_as_str_list(meta.get("key_entities"), "key_entities"),
+        topics=_as_str_list(args.get("topics"), "topics"),
+        key_entities=_as_str_list(args.get("key_entities"), "key_entities"),
         body=body,
     )
 
 
+# Retained for the canonical page FILE format (an untouched invariant):
+# _read_lineage_key anchors on lines that are exactly ``---`` when reading
+# EXISTING pages from disk. Model output no longer carries frontmatter.
 _FRONTMATTER_DELIM = re.compile(r"^---\s*$")
-
-
-def _strip_code_fence(text: str) -> str:
-    """Remove a single wrapping triple-backtick code fence if present
-    (```` ```markdown `` … `` ``` ````). Leaves unfenced text untouched."""
-    stripped = text.strip()
-    if not stripped.startswith("```"):
-        return text
-    lines = stripped.splitlines()
-    lines = lines[1:]  # drop the opening fence line (``` or ```lang)
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]  # drop the closing fence line
-    return "\n".join(lines)
-
-
-def _extract_frontmatter_block(text: str) -> tuple:
-    """Return (frontmatter_str, body_str), anchoring on LINES that are exactly
-    ``---`` — not any ``---`` substring — so a body horizontal rule is never
-    mistaken for the delimiter. Leading preamble before the opener is dropped.
-    Raises if no opener/closer line exists (fail loud on missing frontmatter)."""
-    lines = text.splitlines()
-    open_idx = next(
-        (i for i, ln in enumerate(lines) if _FRONTMATTER_DELIM.match(ln)), None
-    )
-    if open_idx is None:
-        raise MalformedWriterOutput(
-            "output has no YAML frontmatter block (no '---' delimiter line)"
-        )
-    close_idx = next(
-        (
-            j
-            for j in range(open_idx + 1, len(lines))
-            if _FRONTMATTER_DELIM.match(lines[j])
-        ),
-        None,
-    )
-    if close_idx is None:
-        raise MalformedWriterOutput("output frontmatter block is not terminated")
-    fm_str = "\n".join(lines[open_idx + 1 : close_idx])
-    body = "\n".join(lines[close_idx + 1 :]).lstrip("\n")
-    return fm_str, body
 
 
 def _as_str_list(value: Any, field: str) -> List[str]:

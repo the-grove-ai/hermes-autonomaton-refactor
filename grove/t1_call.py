@@ -50,6 +50,22 @@ logger = logging.getLogger(__name__)
 # The tier this primitive targets, by name (routing.config.yaml key).
 _T1_TIER = "T1"
 
+
+class T1TruncationError(ValueError):
+    """A forced-tool T1 call was cut at the output-token cap.
+
+    wiki-writer-structured-output-v1 P2, carrying the P0 wire findings:
+    OpenRouter rewrites a provider cap-hit to top-level
+    ``finish_reason: "tool_calls"`` — the truth is the router's
+    ``native_finish_reason: "length"`` extra field. Raised when a
+    chat_completions forced-tool response is cap-cut, whether the truncated
+    JSON fails to parse (the common case — unterminated string) OR happens to
+    parse valid-but-shorter (the silent-damage class this exception exists to
+    kill). Subclasses ValueError so existing callers' error handling is
+    unchanged; callers that can retry catch THIS type and re-call at a raised
+    cap (P0: identical-at-cap retry is deterministic 0/6; raised-cap 2/2).
+    """
+
 # Default output ceiling when the caller does not specify one. Callers size
 # this per call (a Writer wants more than an Evaluator).
 _DEFAULT_MAX_TOKENS = 4096
@@ -149,7 +165,7 @@ def call_t1(
 
         if tool is not None:
             return _extract_openai_tool_input(response, tool["name"])
-        return _extract_openai_text(response)
+        return _extract_openai_text(response)  # text mode: byte-preserved
 
     # Any other api_mode (bedrock_converse, codex_responses, …) is not a surface
     # this primitive speaks. Fail loud rather than issue a mis-shaped call.
@@ -242,9 +258,23 @@ def _extract_openai_tool_input(response, tool_name: str) -> Dict[str, Any]:
         raise ValueError(
             f"T1 (chat_completions) returned no choices: {response!r}"
         )
+    # P2 truncation guard (P0 finding 1, wire-byte confirmed): the router's
+    # native_finish_reason is the truthful cap-hit signal — the top-level
+    # finish_reason reads "tool_calls" even when the provider cut mid-argument.
+    # Either field saying "length" marks the response truncated. The pydantic
+    # extra field is absent on non-OpenRouter providers → None → no effect.
+    _truncated = "length" in (
+        getattr(choices[0], "finish_reason", None),
+        getattr(choices[0], "native_finish_reason", None),
+    )
     message = choices[0].message
     tool_calls = getattr(message, "tool_calls", None) or []
     if not tool_calls or not getattr(tool_calls[0], "function", None):
+        if _truncated:
+            raise T1TruncationError(
+                f"T1 (chat_completions) forced-tool response cap-cut before any "
+                f"tool call materialized (max_tokens too low): {message!r}"
+            )
         raise ValueError(
             f"T1 (chat_completions) returned no tool_calls; forced tool_choice "
             f"failed — the model may not support function calling: {message!r}"
@@ -255,7 +285,25 @@ def _extract_openai_tool_input(response, tool_name: str) -> Dict[str, Any]:
             f"T1 (chat_completions) returned tool {fn.name!r}, expected "
             f"{tool_name!r}"
         )
-    return json.loads(fn.arguments)
+    try:
+        args = json.loads(fn.arguments)
+    except json.JSONDecodeError:
+        if _truncated:
+            raise T1TruncationError(
+                f"T1 (chat_completions) tool arguments cap-cut mid-JSON "
+                f"({len(fn.arguments or '')} chars; unterminated) — retry at a "
+                f"raised max_tokens"
+            ) from None
+        raise  # non-truncated malformed JSON: byte-equivalent to pre-P2
+    if _truncated:
+        # Parsed BUT cap-cut: a valid-but-shorter body is the silent damage
+        # class P0 proved possible — fail loud, never return short data.
+        raise T1TruncationError(
+            f"T1 (chat_completions) response hit the output cap yet parsed "
+            f"cleanly — refusing possibly-shortened tool args (tool "
+            f"{tool_name!r})"
+        )
+    return args
 
 
 def _extract_openai_text(response) -> str:

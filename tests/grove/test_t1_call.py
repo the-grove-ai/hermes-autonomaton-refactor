@@ -295,8 +295,14 @@ class _FakeOAIMessage:
 
 
 class _FakeOAIChoice:
-    def __init__(self, message):
+    def __init__(self, message, finish_reason=None, native_finish_reason=None):
         self.message = message
+        # P2 truncation-guard fields: finish_reason is the (possibly router-
+        # rewritten) top-level signal; native_finish_reason is OpenRouter's
+        # untranslated provider truth. Both default None (pre-P2 fakes carried
+        # neither attribute — getattr in the guard treats absent as None).
+        self.finish_reason = finish_reason
+        self.native_finish_reason = native_finish_reason
 
 
 class _FakeOAIUsage:
@@ -450,6 +456,106 @@ def test_chat_completions_tool_fails_loud_when_no_tool_calls(monkeypatch):
     )
     with pytest.raises((ValueError, RuntimeError), match="(?i)tool"):
         t1_call.call_t1("evaluate", tool=_TOOL)
+
+
+# ── P2 truncation guard (wiki-writer-structured-output-v1; P0 findings) ────
+#
+# The chat_completions forced-tool arm surfaces a cap-hit as T1TruncationError
+# so callers can retry at a raised cap. Truth signal: finish_reason OR the
+# OpenRouter extra field native_finish_reason == "length" (P0 finding 1: the
+# router rewrites the top-level field to "tool_calls" on a cap-cut). Behavior
+# is byte-equivalent for non-truncated responses.
+
+
+def _oai_tool_fr(name, arguments, finish_reason=None, native_finish_reason=None):
+    msg = _FakeOAIMessage(tool_calls=[_FakeOAIToolCall(name, arguments)])
+    return _FakeOAIResponse(
+        [_FakeOAIChoice(msg, finish_reason=finish_reason,
+                        native_finish_reason=native_finish_reason)]
+    )
+
+
+def test_truncation_native_length_with_cut_json_raises_t1truncation(monkeypatch):
+    # The P0 wire shape verbatim: finish_reason lies ("tool_calls"), native
+    # says "length", args cut mid-string.
+    _install_openai(
+        monkeypatch,
+        response=_oai_tool_fr(
+            "verdict", '{"title":"x","body":"cut mid str',
+            finish_reason="tool_calls", native_finish_reason="length",
+        ),
+    )
+    with pytest.raises(t1_call.T1TruncationError):
+        t1_call.call_t1("p", tool=_TOOL)
+
+
+def test_truncation_native_length_with_PARSED_json_still_raises(monkeypatch):
+    # The silent-damage class: cap-hit whose truncated JSON happens to parse
+    # (cut at a value boundary) must NOT return a shorter body.
+    _install_openai(
+        monkeypatch,
+        response=_oai_tool_fr(
+            "verdict", '{"title":"x","body":"short"}',
+            finish_reason="tool_calls", native_finish_reason="length",
+        ),
+    )
+    with pytest.raises(t1_call.T1TruncationError, match="parsed cleanly"):
+        t1_call.call_t1("p", tool=_TOOL)
+
+
+def test_truncation_top_level_length_also_detected(monkeypatch):
+    _install_openai(
+        monkeypatch,
+        response=_oai_tool_fr(
+            "verdict", '{"title":"x","body":"cut',
+            finish_reason="length",
+        ),
+    )
+    with pytest.raises(t1_call.T1TruncationError):
+        t1_call.call_t1("p", tool=_TOOL)
+
+
+def test_non_truncated_bad_json_stays_jsondecodeerror(monkeypatch):
+    # Byte-equivalent pre-P2 behavior: malformed args WITHOUT a cap-hit signal
+    # propagate as json.JSONDecodeError (a ValueError), not T1TruncationError.
+    import json as _json
+
+    _install_openai(
+        monkeypatch,
+        response=_oai_tool_fr("verdict", '{"title": broken', finish_reason="stop"),
+    )
+    with pytest.raises(_json.JSONDecodeError):
+        t1_call.call_t1("p", tool=_TOOL)
+
+
+def test_truncation_before_any_tool_call_raises_t1truncation(monkeypatch):
+    # Cap so low no tool call materialized: truncation, not "model can't call".
+    _install_openai(
+        monkeypatch,
+        response=_FakeOAIResponse(
+            [_FakeOAIChoice(_FakeOAIMessage(content=""),
+                            native_finish_reason="length")]
+        ),
+    )
+    with pytest.raises(t1_call.T1TruncationError):
+        t1_call.call_t1("p", tool=_TOOL)
+
+
+def test_t1truncation_is_a_valueerror():
+    # Existing callers catching ValueError keep catching (subclass contract).
+    assert issubclass(t1_call.T1TruncationError, ValueError)
+
+
+def test_clean_tool_response_with_stop_reason_unchanged(monkeypatch):
+    # finish_reason present-and-normal must not perturb the happy path.
+    _install_openai(
+        monkeypatch,
+        response=_oai_tool_fr(
+            "verdict", '{"title":"x","body":"full"}',
+            finish_reason="tool_calls", native_finish_reason="stop",
+        ),
+    )
+    assert t1_call.call_t1("p", tool=_TOOL) == {"title": "x", "body": "full"}
 
 
 def test_chat_completions_cost_reads_openai_token_fields(monkeypatch):
