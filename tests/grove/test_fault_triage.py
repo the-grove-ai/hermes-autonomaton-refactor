@@ -219,6 +219,28 @@ def test_judgment_line_byte_stable(tmp_path):
     ) == expected
 
 
+def test_judgment_line_pin_fixed_fixture():
+    """proposal-card-legibility-v1 Phase 2 PIN — byte-exact current output of
+    the pure template for fixed inputs. This is the conformance floor the
+    Phase 3 portal recomposition builds on: any drift in the judgment line is
+    a regression, not a restyle. Required to exist BEFORE Phase 3 work."""
+    assert judgment_line(
+        "terminal", "RED shell.effect.red (secret:operand)",
+        "recurring", True,
+    ) == (
+        "terminal is hitting the same RED shell.effect.red (secret:operand) "
+        "repeatedly — one defect, recurring, worsening."
+    )
+    assert judgment_line(
+        "cultivator", "resolver_failed fault (RuntimeError: Event loop is closed)",
+        "active", False,
+    ) == (
+        "cultivator is hitting the same resolver_failed fault "
+        "(RuntimeError: Event loop is closed) repeatedly — "
+        "one defect, active."
+    )
+
+
 def test_worsening_derivation_rate_split():
     window_start = _NOW - timedelta(days=14)
     recent = [_NOW - timedelta(days=1), _NOW - timedelta(days=2),
@@ -369,3 +391,86 @@ def test_thresholds_loader_defaults_and_validation(tmp_path):
     low.write_text("fault_triage:\n  reraise_growth: 0.5\n", encoding="utf-8")
     with pytest.raises(ValueError, match="reraise_growth"):
         load_fault_triage_thresholds(low)
+
+
+# ── structured detail envelope (proposal-card-legibility-v1 Phase 2) ────
+
+
+def test_detail_normalizes_red_resolution(tmp_path):
+    """red_resolution samples → (date, triggering_tool, resolution); the
+    envelope round-trips through the registered codec; sj is unchanged as
+    the verbatim fallback source."""
+    from grove.kaizen.rendering import FaultTriageDetail, decode_detail
+
+    ledger = tmp_path / "ledger"
+    for i in range(5):
+        _write_ledger(ledger, f"s{i % 3}", [
+            _red(ts=_ts(days=1 + i), session=f"s{i % 3}"),
+        ])
+    proposal = _detect(ledger)[0]
+    assert proposal.detail is not None
+    decoded = decode_detail(proposal)
+    assert isinstance(decoded, FaultTriageDetail)
+    # first / middle / last of 5 events → 3 samples, dates ascending.
+    assert len(decoded.samples) == 3
+    for s in decoded.samples:
+        assert s.subject == "terminal"
+        assert s.outcome == "cancel"
+        # date-only — no time component, no microseconds.
+        assert len(s.ts) == 10 and s.ts.count("-") == 2
+    assert [s.ts for s in decoded.samples] == sorted(s.ts for s in decoded.samples)
+    # sj (the fallback source) still carries judgment + counts + raw samples.
+    assert proposal.semantic_justification.splitlines()[0].startswith("terminal is hitting")
+    assert "Samples: " in proposal.semantic_justification
+
+
+def test_detail_normalizes_fleet_and_dispatcher(tmp_path):
+    """fleet_worker → (date, worker, check); dispatcher_halt →
+    (date, intents[0].tool_name, matched_rule)."""
+    from grove.kaizen.rendering import decode_detail
+
+    fleet = tmp_path / "fleet"
+    for i in range(5):
+        _write_ledger(fleet, f"s{i % 2}", [
+            _fleet_halt(ts=_ts(days=1 + i), session=f"s{i % 2}"),
+        ])
+    decoded = decode_detail(_detect(fleet)[0])
+    assert {(s.subject, s.outcome) for s in decoded.samples} == {
+        ("cultivator", "resolver_failed"),
+    }
+
+    disp = tmp_path / "disp"
+    for i in range(5):
+        _write_ledger(disp, f"s{i % 2}", [
+            _dispatcher_halt(ts=_ts(days=1 + i), session=f"s{i % 2}"),
+        ])
+    decoded = decode_detail(_detect(disp)[0])
+    assert {(s.subject, s.outcome) for s in decoded.samples} == {
+        ("terminal", "shell.effect.default"),
+    }
+
+
+def test_decode_detail_absent_and_malformed():
+    """Absent detail → None (legacy queue rows keep rendering via sj);
+    malformed detail → ValueError (fail loud — the render caller owns the
+    fallback, never a silent blank)."""
+    from grove.kaizen.rendering import decode_detail
+
+    class _Legacy:
+        type = "fault_triage"
+        detail = None
+
+    assert decode_detail(_Legacy()) is None
+
+    class _Malformed:
+        type = "fault_triage"
+        detail = {"samples": [{"ts": "2026-07-11"}]}  # missing subject/outcome
+
+    with pytest.raises(ValueError, match="missing field"):
+        decode_detail(_Malformed())
+
+    class _Uncodeced:
+        type = "routing_adjustment"
+        detail = {"anything": True}
+
+    assert decode_detail(_Uncodeced()) is None

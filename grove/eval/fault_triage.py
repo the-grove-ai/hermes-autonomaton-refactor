@@ -58,6 +58,7 @@ from grove.eval.proposal_queue import (
     _now_iso,
     compute_proposal_id,
 )
+from grove.kaizen.rendering import FaultSample, FaultTriageDetail
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +253,53 @@ def judgment_line(
         f"{subject} is hitting the same {descriptor} repeatedly — "
         f"one defect, {tail}."
     )
+
+
+def _normalize_sample(
+    source: str, ts: datetime, event: Dict[str, Any],
+) -> FaultSample:
+    """One raw ledger event → a compact deterministic ``FaultSample``
+    (proposal-card-legibility-v1 Phase 2).
+
+    Pure per-source field mapping over the SAME schema-aware fields
+    ``_classify`` keys on (GATE-B Q3) — no inference, no free text:
+
+    * ``red_resolution``  → (date, triggering_tool, resolution)
+    * ``dispatcher_halt`` → (date, intents[0].tool_name, matched_rule)
+    * ``fleet_worker``    → (date, worker, check)
+
+    ``ts`` is the event's already-parsed UTC timestamp (date-only on the
+    card — no microsecond ISO noise). ``resolution`` is not a ``_classify``
+    gate field, so it can legitimately be absent → ``"?"`` (the established
+    missing-field placeholder), never a crash.
+    """
+    date = ts.date().isoformat()
+    if source == "fleet_worker":
+        return FaultSample(
+            ts=date,
+            subject=str(event.get("worker") or "?"),
+            outcome=str(event.get("check") or "?"),
+        )
+    if source == "dispatcher_halt":
+        intents = event.get("intents") or []
+        tool = (
+            intents[0].get("tool_name")
+            if intents and isinstance(intents[0], dict) else None
+        )
+        return FaultSample(
+            ts=date,
+            subject=str(tool or "?"),
+            outcome=str(event.get("matched_rule") or "?"),
+        )
+    if source == "red_resolution":
+        return FaultSample(
+            ts=date,
+            subject=str(event.get("triggering_tool") or "?"),
+            outcome=str(event.get("resolution") or "?"),
+        )
+    # _classify emits only the three sources above; a new source reaching
+    # here without a mapping is a wiring defect — fail loud (no (?, ?) fold).
+    raise ValueError(f"no FaultSample mapping for fault source {source!r}")
 
 
 # ── group state ──────────────────────────────────────────────────────────
@@ -572,6 +620,16 @@ class FaultTriageDetector:
             raw = json.dumps(events[i][2], sort_keys=True, default=str)
             samples.append(raw[:400])
 
+        # proposal-card-legibility-v1 Phase 2 — the SAME sampled events,
+        # normalized per-source into the structured, identity-excluded
+        # ``detail`` envelope (date · subject · outcome) so render surfaces
+        # never parse the sj text. The sj body below is UNCHANGED — it
+        # remains the verbatim fallback source.
+        detail = FaultTriageDetail(samples=[
+            _normalize_sample(group.source, events[i][0], events[i][2])
+            for i in sample_indexes
+        ]).to_dict()
+
         body = (
             f"{judgment}\n"
             f"Seen {count} times across {len(sessions)} session(s) in the "
@@ -609,4 +667,5 @@ class FaultTriageDetector:
             ),
             semantic_justification=body,
             proposer="fault_triage",
+            detail=detail,
         )

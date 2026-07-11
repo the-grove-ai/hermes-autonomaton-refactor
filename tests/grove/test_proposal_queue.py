@@ -205,3 +205,50 @@ class TestQueueAppendRead:
         # read_all skips the corrupted line at debug; no crash.
         loaded = read_all(path=queue)
         assert len(loaded) == 1
+
+
+# ── detail envelope (proposal-card-legibility-v1 Phase 2) ────────────
+
+
+class TestDetailEnvelope:
+    def test_identity_excluded_by_signature(self) -> None:
+        """The hash seed is type|payload|evidence and NOTHING else — detail
+        (like lease/proposer/source_patterns) is structurally excluded because
+        compute_proposal_id has no parameter for it. Pin the signature so a
+        future envelope field can't quietly join the identity."""
+        import inspect
+        params = set(inspect.signature(compute_proposal_id).parameters)
+        assert params == {"type", "payload", "evidence"}
+
+    def test_to_dict_omits_none_detail(self) -> None:
+        """A detail-less proposal serializes WITHOUT the key — never null."""
+        data = _proposal().to_dict()
+        assert "detail" not in data
+
+    def test_to_dict_carries_detail_when_set(self, tmp_path: Path) -> None:
+        detail = {"samples": [{"ts": "2026-07-11", "subject": "terminal",
+                               "outcome": "cancel"}]}
+        prop = RoutingProposal(
+            **{**_proposal().to_dict(), "evidence": ("t_001", "t_002"),
+               "detail": detail},
+        )
+        assert prop.to_dict()["detail"] == detail
+        # Round-trips through the queue file intact.
+        queue = tmp_path / "proposals.jsonl"
+        append(prop, path=queue)
+        assert read_all(path=queue)[0].detail == detail
+
+    def test_read_absent_and_null_both_none(self, tmp_path: Path) -> None:
+        """Legacy record (no key) and explicit null both deserialize to None."""
+        queue = tmp_path / "proposals.jsonl"
+        prop = _proposal()
+        append(prop, path=queue)  # written WITHOUT a detail key
+        as_null = dict(prop.to_dict())
+        as_null["proposal_id"] = "sha256:" + "0" * 64
+        as_null["detail"] = None  # explicit null on disk
+        with open(queue, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(as_null) + "\n")
+        loaded = read_all(path=queue)
+        assert len(loaded) == 2
+        assert loaded[0].detail is None
+        assert loaded[1].detail is None
