@@ -35,7 +35,6 @@ def _fleet_halt(*, worker="cultivator", check="resolver_failed",
     return {
         "event_type": "andon_halt", "source": "fleet_worker",
         "worker": worker, "check": check, "detail": detail,
-        "go_forward_options": ["opt"],
         "session_id": session, "timestamp": ts,
     }
 

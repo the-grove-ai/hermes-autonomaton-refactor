@@ -274,16 +274,10 @@ def test_resolver_andon_surfaced_not_dispatched(monkeypatch, dispatch_spy):
     assert "resolver_cold_mcp" in surfaced
 
 
-# ── observability: Kaizen proposes go-forward options ────────────────────────
+# ── observability: Andon files facts only ────────────────────────────────────
 
 
-def test_go_forward_options_keyed_by_check():
-    opts = observability.go_forward_options("index_surface_unwired")
-    assert opts and any("Wire" in o for o in opts)
-    assert observability.go_forward_options("totally_unknown") == observability._DEFAULT_OPTIONS
-
-
-def test_surface_andon_files_kaizen_with_options_and_log_floor(caplog):
+def test_surface_andon_files_kaizen_facts_only_and_log_floor(caplog):
     import json
     from hermes_constants import get_hermes_home
     from pathlib import Path
@@ -292,10 +286,15 @@ def test_surface_andon_files_kaizen_with_options_and_log_floor(caplog):
         "forge", "run9", "worker exited 1: boom", check="nonzero_exit", loop=None
     )
     assert res["surfaced"] and res["broadcast_scheduled"] is False
-    assert res["options"]  # recommender, not just reporter
-    # Kaizen leg wrote an andon_halt with the options
+    # Kaizen leg wrote an andon_halt carrying facts only — payload is exactly
+    # the fact schema plus the ledger envelope (event_type/session_id/timestamp).
     ledger = Path(get_hermes_home()) / ".kaizen_ledger" / "fleet_forge_run9.jsonl"
     assert ledger.exists()
     entry = json.loads(ledger.read_text().splitlines()[-1])
     assert entry["event_type"] == "andon_halt"
-    assert entry["go_forward_options"] and entry["source"] == "fleet_worker"
+    assert set(entry) == {
+        "event_type", "session_id", "timestamp",
+        "source", "worker", "run", "check", "detail",
+    }
+    assert entry["source"] == "fleet_worker"
+    assert "go_forward_options" not in entry
