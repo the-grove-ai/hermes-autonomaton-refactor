@@ -97,7 +97,10 @@ def _build_justification(
     Queries the active memory index for operator context related to the
     cluster. Additive — ANY failure (no store, empty index, query error)
     returns "" and the proposal still generates. This is the one sanctioned
-    silent degradation: an un-enriched proposal is still a valid proposal.
+    degradation — and it degrades LOUDLY (WARN + an ``andon_halt`` filing in
+    the Kaizen ledger; silent-degradation-sweep-v1), never silently: an
+    un-enriched proposal is still a valid proposal, but the operator can see
+    the enrichment leg is broken.
     """
     if memory_store is None:
         return ""
@@ -115,7 +118,28 @@ def _build_justification(
             justification += f" Also: {records[1].content}"
         return justification
     except Exception as exc:  # noqa: BLE001 — enrichment never blocks generation
-        logger.debug("[tier_ratchet] memory enrichment failed: %r", exc)
+        logger.warning("[tier_ratchet] memory enrichment failed: %r", exc)
+        # silent-degradation-sweep-v1 — file the degradation as FACTS so fault
+        # triage aggregates recurrences. The scan runs in a process with no
+        # conversation session, so the filing lands under the dedicated
+        # cli-<utc-timestamp> sentinel (the _record_kaizen_disposition
+        # precedent). Filing leg is best-effort with an error-log floor;
+        # generation is never blocked by enrichment telemetry.
+        try:
+            from datetime import datetime, timezone
+            from grove.kaizen_ledger import KaizenLedger
+            session_id = "cli-" + datetime.now(timezone.utc).strftime(
+                "%Y%m%dT%H%M%S%fZ"
+            )
+            KaizenLedger(session_id=session_id).record(
+                "andon_halt",
+                source="tier_ratchet",
+                check="memory_enrichment",
+                detail=repr(exc)[:500],
+                intent_class=intent_class,
+            )
+        except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor stands
+            logger.error("[tier_ratchet] kaizen filing leg failed: %r", file_exc)
         return ""
 
 
