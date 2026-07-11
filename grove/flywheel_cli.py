@@ -33,6 +33,7 @@ import yaml
 from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_CONSOLIDATION,
     PROPOSAL_TYPE_DOCK_MUTATION,
+    PROPOSAL_TYPE_FAULT_TRIAGE,
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
     PROPOSAL_TYPE_PATTERN_DEMOTION,
     PROPOSAL_TYPE_PATTERN_PROMOTION,
@@ -65,6 +66,8 @@ __all__ = [
     "cli_reject",
     "run_tier_ratchet_scan",
     "run_disposition_promotion_scan",
+    "run_fault_triage_scan",
+    "cli_acknowledge",
     "compose_offering",
 ]
 
@@ -290,6 +293,11 @@ _PUSH_PRIORITY = {
     # insight and every mechanical tweak. Fractional slot keeps the
     # contract-tested integers intact. (Proposed default; PM rules the rank.)
     PROPOSAL_TYPE_PORTAL_ACTION_FAILURE: 0.5,
+    # kaizen-fault-triage-v1 — a recurring fault class is the same incident
+    # family as an actively-failing portal action: it shares the 0.5 slot
+    # (sort_key tiebreaks within the slot) and surfaces ahead of memory
+    # insights and mechanical tweaks.
+    PROPOSAL_TYPE_FAULT_TRIAGE: 0.5,
     "memory_context": 1,                      # == PROPOSAL_TYPE_MEMORY_CONTEXT
     # consolidation-ratchet-v1 — a permanent-policy graduation outranks a
     # transient routing tweak but yields to a fresh memory insight. A fractional
@@ -608,6 +616,48 @@ def run_disposition_promotion_scan(
     return queued_new, deduped
 
 
+def run_fault_triage_scan(
+    *,
+    ledger_dir: Optional[Path] = None,
+    queue_path: Optional[Path] = None,
+    thresholds: Optional[Any] = None,
+    now: Optional[Any] = None,
+) -> Tuple[int, int]:
+    """Run the fault-triage detector over the Kaizen ledger; queue its
+    ``fault_triage`` proposals. kaizen-fault-triage-v1.
+
+    Third INDEPENDENT ledger-fed Flywheel signal sharing the ``flywheel scan
+    --propose`` cadence (the TierRatchet / disposition-promotion coexistence
+    pattern — no coupled enable flags). Idempotent: identity is the stable
+    fault signature, so a re-run over unchanged ledger state DEDUPS via
+    ``proposal_queue.append`` returning False; re-staging after an operator
+    acknowledge/dismiss is governed by the detector's own ledger-read
+    suppression (grove.eval.fault_triage), not here.
+
+    Returns ``(queued_new, deduped)``.
+    """
+    from grove.eval.proposal_queue import append as _append
+    from grove.eval.fault_triage import (
+        FaultTriageDetector,
+        load_fault_triage_thresholds,
+    )
+
+    if thresholds is None:
+        thresholds = load_fault_triage_thresholds()
+    detector = FaultTriageDetector(
+        ledger_dir=ledger_dir, thresholds=thresholds,
+    )
+    proposals = detector.detect(now=now)
+    target = queue_path or default_queue_path()
+    queued_new = deduped = 0
+    for proposal in proposals:
+        if _append(proposal, path=target):
+            queued_new += 1
+        else:
+            deduped += 1
+    return queued_new, deduped
+
+
 # ── scan (T0 pattern cache — Sprint 48) ──────────────────────────────
 
 
@@ -652,6 +702,19 @@ def cli_scan(
         else:
             print(
                 "YELLOW promotions: no repeated approvals meet the threshold."
+            )
+        print()
+
+        ft_new, ft_dup = run_fault_triage_scan(queue_path=queue_path)
+        if ft_new or ft_dup:
+            print(
+                f"Fault triage: queued {ft_new} fault_triage proposal(s)"
+                + (f", {ft_dup} already pending (deduped)" if ft_dup else "")
+                + "."
+            )
+        else:
+            print(
+                "Fault triage: no recurring fault class meets the threshold."
             )
         print()
 
@@ -1628,6 +1691,7 @@ def _record_kaizen_disposition(
     applied_result: Optional[Dict[str, Any]] = None,
     reason: Optional[str] = None,
     ledger_dir: Optional[Path] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Write one ``kaizen_disposition`` ledger event for an operator action.
 
@@ -1664,6 +1728,12 @@ def _record_kaizen_disposition(
         fields["applied_result"] = applied_result
     if reason is not None:
         fields["reason"] = reason
+    # kaizen-fault-triage-v1 — additive structured payload (e.g. the
+    # acknowledged in-window count the detector reads back as its re-raise
+    # baseline). Never overrides the core fields above.
+    if extra:
+        for key, value in extra.items():
+            fields.setdefault(key, value)
     ledger.record("kaizen_disposition", **fields)
 
 
@@ -1800,6 +1870,78 @@ def _reject_pattern_demotion(proposal: RoutingProposal) -> None:
                 "[flywheel] could not re-activate pattern %s: %r",
                 pattern_id, exc,
             )
+
+
+def _acknowledged_count(proposal: RoutingProposal) -> int:
+    """Parse the in-window count from the proposal's source_patterns audit.
+
+    kaizen-fault-triage-v1 — the detector stamps ``count=N`` into the
+    identity-excluded audit tuple; the acknowledge disposition records it as
+    the "tell me if it changes" baseline. Absent/malformed → 0 (the class
+    re-surfaces loudly rather than going quietly dark).
+    """
+    for token in proposal.source_patterns:
+        if isinstance(token, str) and token.startswith("count="):
+            try:
+                return int(token[len("count="):])
+            except ValueError:
+                return 0
+    return 0
+
+
+def cli_acknowledge(
+    partial_id: str,
+    *,
+    queue_path: Optional[Path] = None,
+    ledger_dir: Optional[Path] = None,
+) -> int:
+    """Acknowledge a proposal: dequeue + record the direction. No apply.
+
+    kaizen-fault-triage-v1 — "seen, keep watching, tell me if it changes."
+    A DIRECTION, not a receipt: the disposition event carries the
+    acknowledged in-window count, and FaultTriageDetector re-stages the same
+    fault class only when it materially changes (growth past
+    ``fault_triage.reraise_growth``, or a new session plus any growth).
+    Distinct from dismiss, which stays strictly negative feedback —
+    overloading dismiss would make noise-rejection and fault-acknowledgment
+    indistinguishable. Available ONLY to types whose ``PROPOSAL_VERBS``
+    declare the verb; everything else keeps approve/reject semantics.
+    """
+    from grove.eval.proposal_queue import PROPOSAL_VERBS
+
+    proposal = _resolve_proposal(partial_id, queue_path=queue_path)
+    if proposal is None:
+        print(f"No proposal matches {partial_id!r}.", file=sys.stderr)
+        return 1
+    if "acknowledge" not in PROPOSAL_VERBS.get(proposal.type, ()):
+        print(
+            f"Proposal type {proposal.type!r} does not support acknowledge — "
+            f"use approve or reject.",
+            file=sys.stderr,
+        )
+        return 1
+
+    acknowledged_count = _acknowledged_count(proposal)
+    target = queue_path or default_queue_path()
+    removed = remove(proposal.proposal_id, path=target)
+    if not removed:
+        print(
+            f"Proposal {proposal.proposal_id} was not in the queue "
+            f"(already removed?).",
+            file=sys.stderr,
+        )
+        return 1
+    _record_kaizen_disposition(
+        proposal,
+        disposition="acknowledged",
+        ledger_dir=ledger_dir,
+        extra={"acknowledged_count": acknowledged_count},
+    )
+    print(
+        f"Acknowledged {proposal.proposal_id.split(':')[-1][:12]} — "
+        f"watching; it re-surfaces if it materially changes."
+    )
+    return 0
 
 
 def cli_reject(
@@ -2053,6 +2195,23 @@ def _summary_forge_artifact_pending(proposal: "RoutingProposal") -> str:
 register_renderer(
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING, _summary_forge_artifact_pending
 )
+
+
+def _summary_fault_triage(proposal: "RoutingProposal") -> str:
+    """kaizen-fault-triage-v1 — the one-line body IS the detector's judgment
+    line (deterministic template over the group's evidence, byte-stable per
+    group; amendment 3a). The full card body (judgment + evidence + samples)
+    rides semantic_justification; this surfaces its first line."""
+    body = getattr(proposal, "semantic_justification", "") or ""
+    first_line = body.splitlines()[0] if body.strip() else ""
+    return first_line or "recurring fault pattern detected"
+
+
+# kaizen-fault-triage-v1 — RENDER-ONLY (no PROPOSAL_HANDLERS row, so approve
+# is structurally unoffered); registered straight into RENDER_REGISTRY, the
+# portal_action_failure shape. Dispositions are the acknowledge/dismiss verb
+# set (PROPOSAL_VERBS), not approve/apply.
+register_renderer(PROPOSAL_TYPE_FAULT_TRIAGE, _summary_fault_triage)
 
 
 def _handler_for(proposal_type: str) -> ProposalHandler:
