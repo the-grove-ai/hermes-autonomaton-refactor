@@ -19,7 +19,8 @@ Discipline:
   on demand.
 * **Tolerate absent dirs** — a missing sink (e.g. cultivator, which has never
   run) is skipped silently by design. An absent dir is not an error; a
-  present-but-malformed file IS (the adapter raises, A2).
+  present-but-malformed file IS — loud PER FILE (quarantined with a WARNING,
+  P3 GATE-B F2), never a scan abort.
 * **Strict glob** — each dir is globbed with only its adapter's pattern, so
   off-contract residue (e.g. ``thinkpiece-*.md`` in the researcher sink) is
   never picked up.
@@ -32,8 +33,9 @@ import functools
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from grove.wiki.adapters import (
     ADAPTERS,
@@ -47,6 +49,111 @@ from grove.wiki.pipeline import CanonicalPage, compact, project_dock
 logger = logging.getLogger(__name__)
 
 _LEDGER_REL = Path(".index") / "ingest_state.json"
+
+# ── per-file quarantine (wiki-writer-structured-output-v1 P3, GATE-B F2) ──
+#
+# No single file may abort the scan. A candidate that fails to compact is
+# QUARANTINED: skipped + ledger-marked + the walk CONTINUES, so every other
+# file in the same scan keeps its ledger entry. The quarantine record is an
+# ADDITIVE ledger value shape — a healthy entry stays a float mtime; a
+# quarantined/parked entry is a dict (derive-on-read; no migration, existing
+# ledgers stay valid).
+#
+# Retry policy (ruling): NOT the 60s identical-walk hammer. Post-quarantine
+# retries back off at ~1 → ~10 → ~60 poll-cycle multiples (the poller's
+# default cadence is 60s); after the 3rd retry fails the file is PARKED —
+# permanently skipped for that mtime. An mtime change on a quarantined or
+# parked file resets everything (the file changed; it is a new candidate) —
+# operator touch is the designed re-ingest path, live-proven in the P2 bake.
+
+_QUARANTINE_BACKOFF_SECONDS = (60.0, 600.0, 3600.0)  # ~1 / ~10 / ~60 cycles
+_MAX_QUARANTINE_RETRIES = 3
+
+
+def _quarantine_entry(ledger: Dict[str, Any], key: str) -> Optional[Dict[str, Any]]:
+    """The quarantine record for *key*, or None (healthy float / absent)."""
+    entry = ledger.get(key)
+    return entry if isinstance(entry, dict) else None
+
+
+def _mark_failed(
+    ledger: Dict[str, Any], key: str, mtime: float, exc: BaseException, now: float
+) -> None:
+    """Record one compaction failure for *key* IN PLACE (F2 state machine).
+
+    Fresh failure → ``quarantined`` (attempts=0, first backoff) with ONE
+    WARNING — the journald-visible line. Retry failure → attempts advance at
+    the next backoff step, quiet at INFO. Retry cap reached → ``parked``
+    with ONE terminal WARNING; a parked file is never retried for that
+    mtime. A prior record for a DIFFERENT mtime never carries over — the
+    changed file already re-entered as a new candidate.
+    """
+    reason = f"{type(exc).__name__}: {exc}"
+    prev = _quarantine_entry(ledger, key)
+    if prev is not None and prev.get("mtime") != mtime:
+        prev = None  # different bytes — a fresh candidate's failure history
+    if prev is None:
+        ledger[key] = {
+            "state": "quarantined",
+            "reason": reason,
+            "mtime": mtime,
+            "first_failed_at": datetime.fromtimestamp(
+                now, tz=timezone.utc
+            ).isoformat(),
+            "attempts": 0,
+            "next_retry_at": now + _QUARANTINE_BACKOFF_SECONDS[0],
+        }
+        logger.warning(
+            "[wiki] QUARANTINED %s — %s (scan continues; retry in ~%ds)",
+            key, reason, int(_QUARANTINE_BACKOFF_SECONDS[0]),
+        )
+        return
+    attempts = int(prev.get("attempts", 0)) + 1
+    if attempts >= _MAX_QUARANTINE_RETRIES:
+        entry = {**prev, "state": "parked", "attempts": attempts, "reason": reason}
+        entry.pop("next_retry_at", None)
+        ledger[key] = entry
+        logger.warning(
+            "[wiki] PARKED %s after %d failed retries — %s; skipped until the "
+            "file changes (touch to re-candidate).", key, attempts, reason,
+        )
+        return
+    ledger[key] = {
+        **prev,
+        "attempts": attempts,
+        "reason": reason,
+        "next_retry_at": now + _QUARANTINE_BACKOFF_SECONDS[
+            min(attempts, len(_QUARANTINE_BACKOFF_SECONDS) - 1)
+        ],
+    }
+    logger.info(
+        "[wiki] quarantine retry %d/%d failed for %s — %s",
+        attempts, _MAX_QUARANTINE_RETRIES, key, reason,
+    )
+
+
+def _quarantine_should_skip(
+    ledger: Dict[str, Any], key: str, mtime: float, now: float
+) -> bool:
+    """True when *key* is quarantined/parked for THIS mtime and not yet due.
+
+    An mtime mismatch clears the record (new candidate, attempts reset) and
+    returns False — the caller tries immediately. Parked at same mtime is a
+    terminal silent skip; quarantined at same mtime skips quietly until its
+    ``next_retry_at`` elapses.
+    """
+    entry = _quarantine_entry(ledger, key)
+    if entry is None:
+        return False
+    if entry.get("mtime") != mtime:
+        ledger.pop(key, None)  # the file changed — fresh candidate
+        return False
+    if entry.get("state") == "parked":
+        return True  # terminal for this mtime; no per-cycle log
+    if now < float(entry.get("next_retry_at", 0)):
+        logger.debug("[wiki] %s quarantined; backoff pending.", key)
+        return True
+    return False
 
 # The Dock manifest, relative to the hermes home. The watcher treats it as one
 # more observed target alongside the fleet sinks (Sprint K2).
@@ -169,7 +276,7 @@ def _ingest_one(
     *,
     adapter: Optional[Adapter],
     wiki_root: Path,
-    ledger: Dict[str, float],
+    ledger: Dict[str, Any],
 ) -> Optional[CanonicalPage]:
     """The shared per-file body: mtime-ledger short-circuit -> adapter.parse ->
     compact -> ledger write. Mutates ``ledger`` in place; the caller owns its
@@ -203,8 +310,10 @@ def scan_and_ingest(
 
     The directory walker over :func:`_ingest_one` — the same per-file body
     :func:`ingest_file` funnels through, so the scanner shares the one
-    idempotency gate rather than forking it. A malformed file that matches its
-    adapter's glob raises (A2) — the scan fails loud rather than skipping it.
+    idempotency gate rather than forking it. A malformed file that matches
+    its adapter's glob is loud PER FILE (P3, GATE-B F2): it is quarantined
+    with a WARNING and the walk continues — no single file aborts the scan,
+    and every successfully compacted file keeps its ledger entry.
 
     ``debounce_seconds`` is a partial-write guard for the autonomous poller
     (cellar-link-resolution-v1 Scope 2): a fleet sink file whose mtime is
@@ -228,14 +337,29 @@ def scan_and_ingest(
 
     def _scan_source(source: Path, adapter: Adapter) -> None:
         """Per-file scan body shared by the fleet glob walk and the
-        record-driven package walk: debounce guard → _ingest_one. Tolerates a
-        file that vanishes between enumeration and read (P2 Mitigation 1 —
-        e.g. a future purge racing the scan): a FileNotFoundError is a
-        graceful skip, never a crashed scan. Adapter parse failures (A2) still
-        raise — a PRESENT-but-malformed file stays loud."""
+        record-driven package walk: quarantine gate → debounce guard →
+        _ingest_one. Tolerates a file that vanishes between enumeration and
+        read (P2 Mitigation 1 — e.g. a future purge racing the scan): a
+        FileNotFoundError is a graceful skip, never a crashed scan.
+
+        P3 (GATE-B F2): a PRESENT-but-malformed file is still LOUD — but per
+        FILE, not per scan. Any per-file failure (adapter parse A2,
+        MalformedWriterOutput, transport errors) quarantines that file and
+        the walk CONTINUES; every other file this scan keeps its ledger
+        entry. The pre-P3 scan-abort-before-_save_ledger behavior is dead.
+        """
+        try:
+            st_mtime = source.stat().st_mtime
+        except FileNotFoundError:
+            logger.debug(
+                "[wiki] %s vanished mid-scan; skipping (purge race).", source,
+            )
+            return
+        if _quarantine_should_skip(ledger, str(source), st_mtime, now):
+            return
         try:
             if debounce_seconds > 0:
-                age = now - source.stat().st_mtime
+                age = now - st_mtime
                 if age < debounce_seconds:
                     # Younger than the debounce window — likely still being
                     # written. Defer to the next scan rather than compact a torn
@@ -253,6 +377,9 @@ def scan_and_ingest(
                 "[wiki] %s vanished mid-scan; skipping (purge race).",
                 source,
             )
+            return
+        except Exception as exc:  # noqa: BLE001 — F2: isolate, mark, continue
+            _mark_failed(ledger, str(source), st_mtime, exc, now)
             return
         if page is not None:
             pages.append(page)
@@ -289,15 +416,38 @@ def scan_and_ingest(
     dock_path = home / _DOCK_REL
     if dock_path.is_file():
         mtime = dock_path.stat().st_mtime
-        if ledger.get(str(dock_path)) != mtime:
-            dock_pages = project_dock(wiki_root=root, dock_path=dock_path)
-            ledger[str(dock_path)] = mtime
-            pages.extend(dock_pages)
-            logger.info(
-                "[wiki] dock reconcile -> %d page(s)", len(dock_pages)
-            )
+        if ledger.get(str(dock_path)) != mtime and not _quarantine_should_skip(
+            ledger, str(dock_path), mtime, now
+        ):
+            # P3: the manifest is one more candidate — a malformed dock.yaml
+            # quarantines like any file instead of aborting the scan (F2).
+            # An operator edit is an mtime change → immediate re-candidate.
+            try:
+                dock_pages = project_dock(wiki_root=root, dock_path=dock_path)
+            except Exception as exc:  # noqa: BLE001 — F2
+                _mark_failed(ledger, str(dock_path), mtime, exc, now)
+            else:
+                ledger[str(dock_path)] = mtime
+                pages.extend(dock_pages)
+                logger.info(
+                    "[wiki] dock reconcile -> %d page(s)", len(dock_pages)
+                )
 
     _save_ledger(ledger_path, ledger)
+    quarantined = sum(
+        1 for v in ledger.values()
+        if isinstance(v, dict) and v.get("state") == "quarantined"
+    )
+    parked = sum(
+        1 for v in ledger.values()
+        if isinstance(v, dict) and v.get("state") == "parked"
+    )
+    if quarantined or parked:
+        # One INFO summary per scan (never per-file lines for parked files).
+        logger.info(
+            "[wiki] scan summary: %d ingested, %d quarantined, %d parked.",
+            len(pages), quarantined, parked,
+        )
     return pages
 
 
@@ -317,11 +467,14 @@ async def poll_forever(
     runs in a thread executor — a slow compaction never stalls the gateway event
     loop.
 
-    Resilience vs. fail-loud: a malformed sink file makes one scan raise. The
-    loop logs it loudly (``logger.exception``) and continues to the next cycle —
-    letting the exception kill the task would silently end ALL future ingests,
-    the worse failure. ``CancelledError`` (a ``BaseException``) is not caught, so
-    the loop tears down cleanly on shutdown.
+    Resilience vs. fail-loud: a malformed sink file no longer aborts a scan
+    (P3 per-file quarantine handles it inside :func:`scan_and_ingest`); this
+    catch now guards only NON-per-file failures (e.g. a half-declared
+    capability in the record enumeration). The loop logs those loudly
+    (``logger.exception``) and continues to the next cycle — letting the
+    exception kill the task would silently end ALL future ingests, the worse
+    failure. ``CancelledError`` (a ``BaseException``) is not caught, so the
+    loop tears down cleanly on shutdown.
     """
     loop = asyncio.get_running_loop()
     while True:
@@ -347,12 +500,14 @@ async def poll_forever(
 # ── ledger (mtime state; mirrors the index meta-table intent) ───────────
 
 
-def _load_ledger(path: Path) -> Dict[str, float]:
+def _load_ledger(path: Path) -> Dict[str, Any]:
+    """Ledger values: float mtime (healthy ingested) OR a quarantine record
+    dict (P3, derive-on-read — the two shapes coexist, no migration)."""
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _save_ledger(path: Path, ledger: Dict[str, float]) -> None:
+def _save_ledger(path: Path, ledger: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(ledger, indent=2, sort_keys=True), encoding="utf-8")

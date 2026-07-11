@@ -187,14 +187,30 @@ def test_purge_race_vanished_file_is_skipped(home, tmp_path, monkeypatch):
     assert [p.source for p in pages] == [str(d / "cover-letter.md")]
 
 
-def test_empty_package_file_fails_loud(home, tmp_path, monkeypatch):
-    """A2 posture preserved: PRESENT-but-malformed (empty) stays loud."""
+def test_empty_package_file_fails_loud(home, tmp_path, monkeypatch, caplog):
+    """A2 posture preserved PER FILE (P3 quarantine, GATE-B F2): a PRESENT-
+    but-malformed (empty) package file stays loud — WARNING + quarantine
+    record naming the MalformedSourceDoc reason — and the scan completes
+    instead of aborting."""
+    import json as _json
+
     _install_t1(monkeypatch)
     _install_records(monkeypatch, {"skill.fleet.x": _cap(_DECLARED)})
     d = _package(home)
     (d / "resume.md").write_text("", encoding="utf-8")
-    with pytest.raises(MalformedSourceDoc, match="is empty"):
-        scan_and_ingest(wiki_root=tmp_path / "wiki", hermes_home=home)
+    with caplog.at_level("WARNING"):
+        scan_and_ingest(wiki_root=tmp_path / "wiki", hermes_home=home)  # no raise
+    assert any(
+        "QUARANTINED" in r.message and "resume.md" in r.message
+        for r in caplog.records if r.levelname == "WARNING"
+    )
+    ledger = _json.loads(
+        (tmp_path / "wiki" / ".index" / "ingest_state.json").read_text()
+    )
+    entry = ledger[str(d / "resume.md")]
+    assert entry["state"] == "quarantined"
+    assert "MalformedSourceDoc" in entry["reason"]
+    assert "is empty" in entry["reason"]
 
 
 # ── generality (Verdict E extension) ─────────────────────────────────────

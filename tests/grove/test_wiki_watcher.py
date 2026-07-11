@@ -4,8 +4,9 @@ Sprint K1 (living-cellar-v1) Phase 5. The watcher walks the four fleet sink
 dirs (derived from FLEET_ADAPTERS) under the hermes home, glob-matches each
 with its adapter, skips files unchanged by mtime, and compacts new/changed docs
 through the pipeline. It tolerates absent dirs (cultivator), ignores off-glob
-files, fails loud on a glob-matching malformed file (A2), and uses NO event
-watcher / NO write_file hook — lazy/poll only.
+files, is loud PER FILE on a glob-matching malformed candidate (P3 quarantine,
+GATE-B F2 — never a scan abort), and uses NO event watcher / NO write_file
+hook — lazy/poll only.
 """
 
 from __future__ import annotations
@@ -154,15 +155,27 @@ def test_absent_cultivator_dir_tolerated(monkeypatch, tmp_path):
     assert "cultivator_prospects" not in {p.source_type for p in pages}
 
 
-def test_glob_match_malformed_file_fails_loud(monkeypatch, tmp_path):
+def test_glob_match_malformed_file_is_loud_per_file_not_per_scan(
+    monkeypatch, tmp_path, caplog
+):
+    """P3 (GATE-B F2) — migrated from the pre-P3 scan-abort pin: a glob-
+    matching malformed file is STILL loud (WARNING + quarantine record), but
+    per FILE. The scan completes. (The pre-P3 behavior — pytest.raises(
+    MalformedSourceDoc) aborting the whole scan — is the class this phase
+    kills; the poison-file pins below carry the full contract.)"""
     _install_t1(monkeypatch)
     home, wiki = _home_with_sinks(tmp_path)
     # a brief-*.json that matches the glob but violates the shape
     (home / "researcher" / "brief-2026-06-25-bad.json").write_text(
         json.dumps({"generated_at": "x"}), encoding="utf-8"
     )
-    with pytest.raises(MalformedSourceDoc):
-        scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    with caplog.at_level("WARNING"):
+        pages = scan_and_ingest(wiki_root=wiki, hermes_home=home)  # must not raise
+    assert len(pages) == 3  # every healthy sink file compacted
+    assert any(
+        "QUARANTINED" in r.message and "brief-2026-06-25-bad.json" in r.message
+        for r in caplog.records if r.levelname == "WARNING"
+    )
 
 
 # ── lazy/poll only — no event watcher, no write hook ────────────────────
@@ -413,3 +426,193 @@ async def test_poller_survives_scan_exception(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert len(calls) >= 2  # first cycle raised, the loop continued
+
+
+# ── P3 per-file quarantine (wiki-writer-structured-output-v1, GATE-B F2) ────
+#
+# No single file may abort the scan. Poison-file isolation, bounded backoff
+# (~1/~10/~60 poll-cycle multiples), parked terminal state, mtime reset, and
+# the one-WARNING-per-transition log discipline.
+
+
+def _poison(home, name="brief-2026-06-25-poison.json"):
+    """A glob-matching researcher brief that deterministically fails
+    adapter.parse (MalformedSourceDoc) — the poison candidate."""
+    p = home / "researcher" / name
+    p.write_text(json.dumps({"generated_at": "x"}), encoding="utf-8")
+    return p
+
+
+def _ledger(wiki):
+    return json.loads(
+        (wiki / ".index" / "ingest_state.json").read_text(encoding="utf-8")
+    )
+
+
+def _freeze_time(monkeypatch, t):
+    monkeypatch.setattr(watcher.time, "time", lambda: t)
+
+
+def test_poison_file_isolated_healthy_files_keep_ledger(monkeypatch, tmp_path):
+    """THE pin for this phase: poison + healthy candidates in ONE scan →
+    healthy files compact AND their ledger entries are SAVED; the poison file
+    is quarantined; the scan completes. (Negative control run against the
+    pre-P3 watcher at commit time: pre-P3, the scan raises
+    MalformedSourceDoc, zero pages return, and NO ledger file is written —
+    this test fails there on the first assert.)"""
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)
+    poison = _poison(home)
+    pages = scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert {p.source_type for p in pages} == {
+        "scout_digest", "researcher_brief", "drafter_draft"
+    }
+    led = _ledger(wiki)  # persisted to DISK — the pre-P3 abort lost this
+    healthy = [v for v in led.values() if isinstance(v, (int, float))]
+    assert len(healthy) == 3
+    q = led[str(poison)]
+    assert q["state"] == "quarantined"
+    assert q["attempts"] == 0
+    assert "MalformedSourceDoc" in q["reason"]
+    assert q["mtime"] == poison.stat().st_mtime
+    assert q["first_failed_at"]
+    # second scan immediately after: healthy files unchanged-skip, poison in
+    # backoff → nothing recompacted, nothing raised
+    assert scan_and_ingest(wiki_root=wiki, hermes_home=home) == []
+
+
+def test_backoff_schedule_advances_then_parks(monkeypatch, tmp_path):
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)
+    poison = _poison(home)
+    t0 = 1_800_000_000.0
+
+    _freeze_time(monkeypatch, t0)
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    q = _ledger(wiki)[str(poison)]
+    assert (q["state"], q["attempts"]) == ("quarantined", 0)
+    assert q["next_retry_at"] == t0 + 60.0
+
+    # 30s later: backoff pending → attempts must NOT advance
+    _freeze_time(monkeypatch, t0 + 30)
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert _ledger(wiki)[str(poison)]["attempts"] == 0
+
+    # due (>60s): retry 1 fails → attempts 1, next at +600
+    _freeze_time(monkeypatch, t0 + 61)
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    q = _ledger(wiki)[str(poison)]
+    assert (q["state"], q["attempts"]) == ("quarantined", 1)
+    assert q["next_retry_at"] == t0 + 61 + 600.0
+
+    # retry 2 fails → attempts 2, next at +3600
+    _freeze_time(monkeypatch, t0 + 700)
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    q = _ledger(wiki)[str(poison)]
+    assert (q["state"], q["attempts"]) == ("quarantined", 2)
+    assert q["next_retry_at"] == t0 + 700 + 3600.0
+
+    # retry 3 fails → PARKED, terminal, no next_retry_at
+    _freeze_time(monkeypatch, t0 + 5000)
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    q = _ledger(wiki)[str(poison)]
+    assert (q["state"], q["attempts"]) == ("parked", 3)
+    assert "next_retry_at" not in q
+
+    # parked: never retried again for this mtime (attempts frozen)
+    for t in (t0 + 10_000, t0 + 100_000, t0 + 1_000_000):
+        _freeze_time(monkeypatch, t)
+        scan_and_ingest(wiki_root=wiki, hermes_home=home)
+        assert _ledger(wiki)[str(poison)] == q
+
+
+def test_mtime_change_resets_parked_file(monkeypatch, tmp_path):
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)
+    poison = _poison(home)
+    t0 = 1_800_000_000.0
+    for t in (t0, t0 + 61, t0 + 700, t0 + 5000):  # drive to parked
+        _freeze_time(monkeypatch, t)
+        scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert _ledger(wiki)[str(poison)]["state"] == "parked"
+
+    # operator touch (still poison content): immediate re-candidate, fresh
+    # quarantine with attempts RESET — not a parked skip, not attempts=4.
+    os.utime(poison, (t0, t0 + 6000))
+    _freeze_time(monkeypatch, t0 + 6001)
+    scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    q = _ledger(wiki)[str(poison)]
+    assert (q["state"], q["attempts"]) == ("quarantined", 0)
+    assert q["mtime"] == t0 + 6000
+
+    # fix the file + touch: quarantine clears to a healthy float entry
+    poison.write_text(json.dumps(_researcher_brief()), encoding="utf-8")
+    os.utime(poison, (t0, t0 + 7000))
+    _freeze_time(monkeypatch, t0 + 7001)
+    pages = scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert [p.source_type for p in pages] == ["researcher_brief"]
+    assert _ledger(wiki)[str(poison)] == t0 + 7000
+
+
+def test_log_discipline_one_warning_per_transition(monkeypatch, tmp_path, caplog):
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)
+    _poison(home)
+    t0 = 1_800_000_000.0
+
+    def _warnings():
+        return [r for r in caplog.records if r.levelname == "WARNING"]
+
+    with caplog.at_level("INFO", logger="grove.wiki.watcher"):
+        # first quarantine: exactly ONE WARNING
+        _freeze_time(monkeypatch, t0)
+        scan_and_ingest(wiki_root=wiki, hermes_home=home)
+        assert len(_warnings()) == 1 and "QUARANTINED" in _warnings()[0].message
+        # summary line carries the counts
+        assert any(
+            "scan summary" in r.message and "1 quarantined" in r.message
+            for r in caplog.records
+        )
+
+        # intermediate retries: quiet at INFO — no new WARNINGs
+        caplog.clear()
+        for t in (t0 + 61, t0 + 700):
+            _freeze_time(monkeypatch, t)
+            scan_and_ingest(wiki_root=wiki, hermes_home=home)
+        assert _warnings() == []
+        assert sum(
+            1 for r in caplog.records if "quarantine retry" in r.message
+        ) == 2
+
+        # park transition: exactly ONE terminal WARNING
+        caplog.clear()
+        _freeze_time(monkeypatch, t0 + 5000)
+        scan_and_ingest(wiki_root=wiki, hermes_home=home)
+        assert len(_warnings()) == 1 and "PARKED" in _warnings()[0].message
+
+        # parked thereafter: zero per-cycle records at WARNING, no per-file
+        # lines — only the one summary INFO per scan
+        caplog.clear()
+        for t in (t0 + 10_000, t0 + 20_000, t0 + 30_000):
+            _freeze_time(monkeypatch, t)
+            scan_and_ingest(wiki_root=wiki, hermes_home=home)
+        assert _warnings() == []
+        assert all(
+            "poison" not in r.message or "scan summary" in r.message
+            for r in caplog.records
+        )
+        assert sum(1 for r in caplog.records if "scan summary" in r.message) == 3
+
+
+def test_dock_failure_quarantines_not_aborts(monkeypatch, tmp_path):
+    """The manifest is one more candidate (F2): a project_dock failure
+    quarantines dock.yaml; fleet files in the same scan keep their entries."""
+    _install_t1(monkeypatch)
+    home, wiki = _home_with_sinks(tmp_path)
+    (home / "dock").mkdir()
+    (home / "dock" / "dock.yaml").write_text("goals: [", encoding="utf-8")  # bad YAML
+    pages = scan_and_ingest(wiki_root=wiki, hermes_home=home)
+    assert len(pages) == 3  # fleet files unaffected
+    led = _ledger(wiki)
+    q = led[str(home / "dock" / "dock.yaml")]
+    assert q["state"] == "quarantined"
