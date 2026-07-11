@@ -346,3 +346,87 @@ def test_append_dedup_blindness_documented_unchanged(tmp_path):
     assert pq.append(p, path=qp) is True  # dedup blind to the damaged row
     lines = [l for l in qp.read_text().splitlines() if l.strip()]
     assert len(lines) == 2
+
+
+# ── Phase 5 (site d): portal render-failure filings + storm guard ────────
+
+
+def _card_dict(*, pid_seed, ptype, payload, sj="the verbatim sj"):
+    return {
+        "proposal_id": "sha256:" + (pid_seed * 64)[:64],
+        "type": ptype,
+        "payload": payload,
+        "semantic_justification": sj,
+        "evidence": ["e1"],
+        "created_at": _TS,
+    }
+
+
+def _portal_halts():
+    return [h for h in _all_ledger_halts() if h["source"] == "portal_render"]
+
+
+def test_approvable_render_failure_files_once_card_unchanged():
+    """An approvable card whose diff renderer raises: DEFECT card exactly as
+    before (no disposition buttons), plus ONE filing across repeated page
+    loads (memo keyed (pid, exc-signature))."""
+    from grove.api.fragments import _proposal_card_html
+
+    p = _card_dict(
+        pid_seed="a", ptype="routing_adjustment",
+        payload={"rule": "bogus_rule", "add_intents": ["x"]},
+    )
+
+    html_1 = _proposal_card_html(None, p)
+    html_2 = _proposal_card_html(None, p)  # second page load
+
+    assert "DEFECT — mutation cannot be rendered" in html_1
+    assert "hermes flywheel show" in html_1
+    assert "btn" not in html_1  # dispositions withheld
+    assert html_2 == html_1  # card output unchanged by the filing leg
+
+    halts = _portal_halts()
+    assert len(halts) == 1  # one filing per poisoned record per process
+    halt = halts[0]
+    assert halt["check"] == "approvable_card"
+    assert halt["ptype"] == "routing_adjustment"
+    assert halt["short_id"] == p["proposal_id"].split(":")[-1][:12]
+    assert "bogus_rule" in halt["detail"] or "ValueError" in halt["detail"]
+
+
+def test_render_only_failure_files_and_falls_back_to_sj():
+    """A render-only type with no registered renderer: verbatim-sj fallback
+    exactly as before, plus a filing with check=render_only."""
+    from grove.api.fragments import _proposal_card_html
+
+    p = _card_dict(
+        pid_seed="b", ptype="sds_bogus_type", payload={},
+        sj="fallback body survives",
+    )
+
+    html = _proposal_card_html(None, p)
+    assert "fallback body survives" in html  # verbatim sj fallback
+
+    halts = [h for h in _portal_halts() if h["check"] == "render_only"]
+    assert len(halts) == 1
+    assert halts[0]["ptype"] == "sds_bogus_type"
+
+
+def test_new_signature_files_fresh():
+    """The memo suppresses only the SAME (pid, exc-signature): a different
+    poisoned record files fresh."""
+    from grove.api.fragments import _proposal_card_html
+
+    p1 = _card_dict(pid_seed="c", ptype="sds_bogus_type", payload={})
+    p2 = _card_dict(pid_seed="d", ptype="sds_bogus_type", payload={})
+
+    _proposal_card_html(None, p1)
+    _proposal_card_html(None, p1)  # repeat → suppressed
+    _proposal_card_html(None, p2)  # new pid → new key → fresh filing
+
+    halts = [h for h in _portal_halts() if h["ptype"] == "sds_bogus_type"]
+    assert len(halts) == 2
+    assert {h["short_id"] for h in halts} == {
+        p1["proposal_id"].split(":")[-1][:12],
+        p2["proposal_id"].split(":")[-1][:12],
+    }
