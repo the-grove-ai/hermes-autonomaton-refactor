@@ -473,3 +473,89 @@ def test_decode_detail_absent_and_malformed():
         detail = {"anything": True}
 
     assert decode_detail(_Uncodeced()) is None
+
+
+# ── component-source classification (silent-degradation-sweep-v1) ────────
+
+
+def _component_halt(*, source="kaizen_push", check="push_pipeline",
+                    detail="ValueError('No renderer for proposal type')",
+                    ts, session):
+    return {
+        "event_type": "andon_halt", "source": source,
+        "check": check, "detail": detail,
+        "session_id": session, "timestamp": ts,
+    }
+
+
+def test_component_sources_classify():
+    """Each COMPONENT_SOURCES member classifies to a (source, check) key
+    with the detail identity-excluded (error_signature stays '')."""
+    from grove.eval.fault_triage import COMPONENT_SOURCES
+
+    detector = FaultTriageDetector(ledger_dir=Path("/nonexistent"))
+    for source in sorted(COMPONENT_SOURCES):
+        event = _component_halt(
+            source=source, check="some_check",
+            ts=_ts(days=1), session="s1",
+        )
+        classified = detector._classify(event)
+        assert classified is not None, source
+        key, src, payload, subject, descriptor = classified
+        assert key == (source, "some_check")
+        assert src == source
+        assert subject == source
+        assert payload == {
+            "source": source, "check": "some_check", "error_signature": "",
+        }
+        assert descriptor == "some_check failure"
+
+
+def test_component_source_requires_check():
+    """A component filing without a check is not a usable signal — skipped,
+    never folded into a (?, ?) bucket."""
+    detector = FaultTriageDetector(ledger_dir=Path("/nonexistent"))
+    event = _component_halt(check="", ts=_ts(days=1), session="s1")
+    del event["check"]
+    assert detector._classify(event) is None
+
+
+def test_unknown_component_source_still_skipped():
+    """A source OUTSIDE the frozenset falls through the dispatcher-shape
+    check exactly as before — no tool/rule fields → None."""
+    detector = FaultTriageDetector(ledger_dir=Path("/nonexistent"))
+    event = _component_halt(
+        source="not_a_registered_component", ts=_ts(days=1), session="s1",
+    )
+    assert detector._classify(event) is None
+
+
+def test_component_filings_aggregate_to_one_proposal(tmp_path):
+    """N same-identity filings (same source+check, varying details) meet
+    the threshold and stage exactly ONE proposal; samples decode."""
+    from grove.kaizen.rendering import decode_detail
+
+    ledger = tmp_path / "ledger"
+    events = [
+        _component_halt(
+            detail=f"ValueError('renderer missing #{i}')",
+            ts=_ts(days=i), session="gateway",
+        )
+        for i in range(5)
+    ]
+    _write_ledger(ledger, "gateway", events)
+
+    proposals = _detect(ledger)
+    assert len(proposals) == 1
+    p = proposals[0]
+    assert p.payload == {
+        "source": "kaizen_push", "check": "push_pipeline",
+        "error_signature": "",
+    }
+    assert "kaizen_push is hitting the same push_pipeline failure" in (
+        p.semantic_justification
+    )
+    decoded = decode_detail(p)
+    assert {(s.subject, s.outcome) for s in decoded.samples} == {
+        ("kaizen_push", "push_pipeline"),
+    }
