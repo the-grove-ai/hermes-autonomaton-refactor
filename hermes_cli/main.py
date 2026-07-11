@@ -5511,6 +5511,8 @@ def cmd_flywheel(args):
         sys.exit(flywheel_cli.cli_reject(
             args.proposal_id, reason=getattr(args, "reason", None),
         ))
+    elif action == "acknowledge":
+        sys.exit(flywheel_cli.cli_acknowledge(args.proposal_id))
     elif action == "patterns":
         # Sprint 49 — T0 cache operator controls.
         patterns_action = getattr(args, "patterns_action", None)
@@ -5552,7 +5554,7 @@ def cmd_flywheel(args):
     else:
         print(
             "Usage: autonomaton flywheel "
-            "{list,scan,show,approve,reject,patterns,memory} [--help]",
+            "{list,scan,show,approve,reject,acknowledge,patterns,memory} [--help]",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -10536,6 +10538,15 @@ def main():
     flywheel_reject_p.add_argument(
         "--reason",
         help="Optional rejection reason (recorded at INFO log level)",
+    )
+
+    flywheel_acknowledge_p = flywheel_subparsers.add_parser(
+        "acknowledge",
+        help="Acknowledge a staged fault-class proposal (keep watching)",
+    )
+    flywheel_acknowledge_p.add_argument(
+        "proposal_id",
+        help="Full sha256:... id, bare hash, or unique short prefix (>=8 chars)",
     )
 
     # Sprint 49 — T0 Pattern Cache operator controls: flywheel patterns
