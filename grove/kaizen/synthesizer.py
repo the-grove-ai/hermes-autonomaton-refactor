@@ -88,6 +88,26 @@ must not pass.
 """
 
 
+# Forced-tool envelope for the T3 self-review verdict — the exact JSON shape
+# _REVIEW_SYSTEM_PROMPT describes, carried as a tool schema (Anthropic shape;
+# _t3_call reshapes for chat_completions) so BOTH api_mode arms return
+# structured arguments instead of free text.
+_REVIEW_VERDICT_TOOL: Dict[str, Any] = {
+    "name": "skill_review_verdict",
+    "description": "Record the review verdict for the auto-drafted SKILL.md.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "coherent": {"type": "boolean"},
+            "parametrized": {"type": "boolean"},
+            "safe": {"type": "boolean"},
+            "reason": {"type": "string"},
+        },
+        "required": ["coherent", "parametrized", "safe", "reason"],
+    },
+}
+
+
 # ── Tier-3 call surface ──────────────────────────────────────────────────
 
 
@@ -96,8 +116,9 @@ def _resolve_t3_runtime() -> Optional[dict]:
 
     Mirrors ``grove.classify._telemetry_tier_runtime`` but binds to T3. Returns
     None (logged) rather than raising when no router is configured, T3 is not
-    declared, or T3 does not resolve to an Anthropic-native tier — synthesis is
-    a background nicety and must degrade quietly at the tier boundary.
+    declared, or T3 resolves an api_mode ``_t3_call`` does not speak —
+    synthesis is a background nicety and must degrade quietly at the tier
+    boundary.
     """
     try:
         from grove.providers import _ensure_router, resolve_tier_to_runtime
@@ -110,11 +131,14 @@ def _resolve_t3_runtime() -> Optional[dict]:
             return None
         tier_config = router.get_tier_config("T3")
         runtime = resolve_tier_to_runtime(tier_config)
-        if runtime.get("api_mode") != "anthropic_messages":
+        if runtime.get("api_mode") not in (
+            "anthropic_messages", "chat_completions",
+        ):
             logger.warning(
-                "[kaizen.synthesizer] T3 resolves api_mode %r; synthesizer "
-                "requires an Anthropic-native tier — skipping.",
-                runtime.get("api_mode"),
+                "[kaizen.synthesizer] T3 resolves unsupported api_mode %r "
+                "(model=%r); bind T3 to an anthropic_messages or "
+                "chat_completions provider — skipping.",
+                runtime.get("api_mode"), runtime.get("model"),
             )
             return None
         return runtime
@@ -131,35 +155,116 @@ def _t3_call(
     user_content: str,
     *,
     max_tokens: int,
-    prefill: Optional[str] = None,
-) -> Optional[str]:
-    """Issue one Anthropic-native T3 call; return the text or None on error.
+    tool: Optional[Dict[str, Any]] = None,
+) -> Optional[Any]:
+    """Issue one T3 call; return the result or None on error.
 
-    Reuses ``agent.anthropic_adapter.build_anthropic_client`` for
-    credential-aware client construction, matching ``grove.classify``'s
-    classifier call. ``prefill`` forces a leading token (e.g. ``"{"`` to coerce
-    JSON) and is re-prepended to the returned text.
+    Branches on the tier's resolved ``api_mode`` (template:
+    ``grove.t1_call.call_t1``). ``anthropic_messages`` reuses
+    ``agent.anthropic_adapter.build_anthropic_client`` for credential-aware
+    client construction, matching ``grove.classify``'s classifier call;
+    ``chat_completions`` drives any OpenAI-compatible provider. With ``tool``
+    (Anthropic tool shape) the call forces that tool and returns its parsed
+    arguments dict; without it, returns the response text. Best-effort on
+    both arms: any failure — unsupported api_mode, transport error, missing
+    or mis-named tool call — logs a WARNING and returns None, never raising
+    into the caller.
     """
     try:
-        from agent.anthropic_adapter import build_anthropic_client
+        api_mode = runtime.get("api_mode")
+        if api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client
 
-        client = build_anthropic_client(
-            api_key=runtime.get("api_key") or "",
-            base_url=runtime.get("base_url") or None,
+            client = build_anthropic_client(
+                api_key=runtime.get("api_key") or "",
+                base_url=runtime.get("base_url") or None,
+            )
+            kwargs: Dict[str, Any] = {
+                "model": runtime["model"],
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_content}],
+            }
+            if tool is not None:
+                kwargs["tools"] = [tool]
+                kwargs["tool_choice"] = {"type": "tool", "name": tool["name"]}
+            response = client.messages.create(**kwargs)
+            if tool is not None:
+                for block in response.content or ():
+                    if (
+                        getattr(block, "type", None) == "tool_use"
+                        and getattr(block, "name", None) == tool["name"]
+                    ):
+                        return dict(block.input)
+                raise ValueError(
+                    f"T3 returned no {tool['name']!r} tool_use block: "
+                    f"{response.content!r}"
+                )
+            return response.content[0].text if response.content else ""
+
+        if api_mode == "chat_completions":
+            # Lazy import keeps the ~800ms openai/pydantic load off the
+            # module-import path, matching the Anthropic branch's local
+            # import.
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=runtime.get("api_key") or "",
+                base_url=runtime.get("base_url") or None,
+            )
+            messages: List[Dict[str, str]] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+            kwargs = {
+                "model": runtime["model"],
+                "max_tokens": max_tokens,
+                "messages": messages,
+            }
+            if tool is not None:
+                # Reshape the Anthropic tool shape into the OpenAI
+                # function-tool envelope, mirroring grove.t1_call._to_openai_tool.
+                kwargs["tools"] = [{
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters": tool["input_schema"],
+                    },
+                }]
+                kwargs["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": tool["name"]},
+                }
+
+            # openrouter-zero-retention-routing-v1: attach the operator's
+            # OpenRouter provider routing (order/data_collection/fallbacks)
+            # verbatim, when this is an OpenRouter call and routing is
+            # configured. No-op otherwise.
+            from grove.providers import openrouter_provider_pref
+
+            _pp = openrouter_provider_pref(runtime)
+            if _pp:
+                kwargs["extra_body"] = {"provider": _pp}
+
+            response = client.chat.completions.create(**kwargs)
+            message = response.choices[0].message
+            if tool is not None:
+                calls = message.tool_calls or []
+                if not calls or calls[0].function.name != tool["name"]:
+                    raise ValueError(
+                        f"T3 (chat_completions) returned no {tool['name']!r} "
+                        f"tool call: {message!r}"
+                    )
+                return json.loads(calls[0].function.arguments)
+            return message.content or ""
+
+        raise ValueError(
+            f"unsupported T3 api_mode {api_mode!r} "
+            f"(model={runtime.get('model')!r}); bind T3 to an "
+            f"anthropic_messages or chat_completions provider in "
+            f"routing.config.yaml."
         )
-        messages: List[Dict[str, str]] = [
-            {"role": "user", "content": user_content},
-        ]
-        if prefill is not None:
-            messages.append({"role": "assistant", "content": prefill})
-        response = client.messages.create(
-            model=runtime["model"],
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=messages,
-        )
-        text = response.content[0].text if response.content else ""
-        return (prefill + text) if prefill is not None else text
     except Exception as exc:  # noqa: BLE001
         logger.warning("[kaizen.synthesizer] T3 call failed: %r", exc)
         return None
@@ -244,19 +349,15 @@ def validate_skill_md(
     rt = runtime or _resolve_t3_runtime()
     if rt is None:
         return False, "T3 self-review unavailable (tier unresolved)."
-    raw = _t3_call(
+    verdict = _t3_call(
         rt,
         _REVIEW_SYSTEM_PROMPT,
         f"Review this SKILL.md:\n\n{skill_md}",
         max_tokens=_REVIEW_MAX_TOKENS,
-        prefill="{",
+        tool=_REVIEW_VERDICT_TOOL,
     )
-    if not raw:
+    if not verdict:
         return False, "T3 self-review call failed."
-    try:
-        verdict = json.loads(raw)
-    except json.JSONDecodeError:
-        return False, "T3 self-review returned unparseable JSON."
     if not (
         verdict.get("coherent")
         and verdict.get("parametrized")
