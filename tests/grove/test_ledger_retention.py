@@ -414,3 +414,35 @@ def test_sidecar_under_cap_no_rotation(tmp_path):
     _quarantine_lines(target, ["row"])
     assert not (tmp_path / "proposals.jsonl.quarantine.1").exists()
     assert _lines(qpath) == ["small", "row"]
+
+
+# ── P5: parity --since completeness advisory ─────────────────────────────
+
+
+def test_parity_warns_when_since_predates_cutoff(capsys):
+    """--since older than now - retention_days ⇒ stderr WARNING naming the
+    cutoff and the archive; the parity run itself proceeds unchanged."""
+    from datetime import datetime, timedelta, timezone as _tz
+    from grove.capability_feed_parity import main
+
+    old_since = (datetime.now(_tz.utc) - timedelta(days=90)).isoformat()
+    until = datetime.now(_tz.utc).isoformat()
+    rc = main(["--since", old_since, "--until", until])
+    captured = capsys.readouterr()
+    assert rc == 0  # empty stores → no real mismatches; behavior unchanged
+    assert "WARNING" in captured.err
+    assert "live ledger may be incomplete" in captured.err
+    assert ".kaizen_ledger_archive" in captured.err
+    assert "Parity window" in captured.out  # summary still prints
+
+
+def test_parity_no_warning_inside_window(capsys):
+    from datetime import datetime, timedelta, timezone as _tz
+    from grove.capability_feed_parity import main
+
+    since = (datetime.now(_tz.utc) - timedelta(days=2)).isoformat()
+    until = datetime.now(_tz.utc).isoformat()
+    rc = main(["--since", since, "--until", until])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "WARNING" not in captured.err
