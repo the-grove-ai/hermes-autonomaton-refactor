@@ -14,8 +14,14 @@ from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE, get_red_pending_s
 
 
 def _rp(pid, created_at, ptype="routing_update"):
+    # proposal-card-legibility-v1 follow-up: routing_update renders through the
+    # approvable diff renderer, which requires a VALID routing rule — an empty
+    # payload raised (Unknown routing rule: None) and rendered a DEFECT card
+    # without the created_at meta this file asserts on.
     return RoutingProposal(
-        proposal_id=pid, type=ptype, payload={}, evidence=(), eval_hash="e",
+        proposal_id=pid, type=ptype,
+        payload={"rule": "downward", "add_intents": ["greet"]},
+        evidence=(), eval_hash="e",
         created_at=created_at,
     )
 
