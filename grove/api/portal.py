@@ -826,7 +826,8 @@ def _iter_ledger_terminal_events():
     :func:`_ledger_terminal_dispositions` and :func:`_ledger_slug_to_uid`.
     ``slug`` is the ``applied_result`` slug when carried (C2/P1 enrich both
     promote and reject with unit_id + slug), else None."""
-    ledger_dir = Path(get_hermes_home()) / ".kaizen_ledger"
+    from grove.kaizen_ledger import default_ledger_dir
+    ledger_dir = default_ledger_dir()
     if not ledger_dir.is_dir():
         return
     for lf in sorted(ledger_dir.glob("*.jsonl")):

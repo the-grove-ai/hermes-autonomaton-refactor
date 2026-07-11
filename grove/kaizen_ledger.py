@@ -61,7 +61,19 @@ from typing import Any, Dict, Iterator, List, Optional
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["KaizenLedger"]
+__all__ = ["KAIZEN_LEDGER_DIRNAME", "KaizenLedger", "default_ledger_dir"]
+
+
+# kaizen-ledger-retention-v1 P1 — the ONE spelling of the ledger directory
+# name. Every production construction site consumes default_ledger_dir();
+# the dotted literal appears nowhere else.
+KAIZEN_LEDGER_DIRNAME = ".kaizen_ledger"
+
+
+def default_ledger_dir() -> Path:
+    """Resolve ``~/.grove/.kaizen_ledger`` via the standard hermes_home."""
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / KAIZEN_LEDGER_DIRNAME
 
 
 class KaizenLedger:
@@ -156,8 +168,7 @@ class KaizenLedger:
                 ``~/.grove/.kaizen_ledger/``. Tests pass a tmp path.
         """
         if ledger_dir is None:
-            from hermes_constants import get_hermes_home
-            ledger_dir = Path(get_hermes_home()) / ".kaizen_ledger"
+            ledger_dir = default_ledger_dir()
         self._dir = Path(ledger_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._session_id = str(session_id)

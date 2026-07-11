@@ -361,8 +361,8 @@ class FaultTriageDetector:
         thresholds: Optional[FaultTriageThresholds] = None,
     ) -> None:
         if ledger_dir is None:
-            from hermes_constants import get_hermes_home
-            ledger_dir = Path(get_hermes_home()) / ".kaizen_ledger"
+            from grove.kaizen_ledger import default_ledger_dir
+            ledger_dir = default_ledger_dir()
         self._ledger_dir = Path(ledger_dir)
         self._thresholds = thresholds or FaultTriageThresholds()
 
