@@ -280,6 +280,8 @@ class RoutingProposal:
     # None. A non-None lease marks the proposal as being processed by an in-flight
     # operator tap; ``set_lease`` is a CAS (409 on a held lease) and the
     # startup-only ``sweep_stuck_leases`` reverts any lease still held at boot.
+    # ``detail`` (below) rides the SAME exclusion — enriching a proposal with a
+    # structured render envelope never forks its identity.
     lease: Optional[Dict[str, Any]] = None
     # proposal-proposer-attribution-v1 — the PRODUCER that emitted this proposal
     # (fleet ``skill_id`` / detector name / ``"governance"`` / ``"portal_failure"`` /
@@ -288,6 +290,15 @@ class RoutingProposal:
     # identity. Legacy on-disk records (no key) deserialize to ``"unattributed"`` via
     # this default — no migration; on-disk records untouched.
     proposer: str = "unattributed"
+    # proposal-card-legibility-v1 Phase 2 — structured, RENDER-READY evidence
+    # envelope (e.g. fault_triage normalized samples), typed per-type by the
+    # codecs in grove.kaizen.rendering. id-EXCLUDED like ``lease``/``proposer``
+    # (compute_proposal_id inputs are unchanged — see the lease comment above);
+    # serialized present-key-only (omit when None, never ``"detail": null``);
+    # absent and null both deserialize to None. Appended LAST so no positional
+    # construction shifts. semantic_justification remains the verbatim
+    # operator-facing fallback source — detail supplements, never replaces it.
+    detail: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -303,6 +314,11 @@ class RoutingProposal:
         # churn. Only an attributed proposal carries the key.
         if data.get("proposer") == "unattributed":
             data.pop("proposer", None)
+        # Present-key only (mirrors ``lease``): a detail-less proposal serializes
+        # WITHOUT a ``detail`` key — never ``"detail": null`` (proposal-card-
+        # legibility-v1 Phase 2).
+        if data.get("detail") is None:
+            data.pop("detail", None)
         return data
 
     # ── KaizenRenderable (kaizen-proposal-surface-unification-v1) ─────────

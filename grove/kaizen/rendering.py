@@ -24,7 +24,8 @@ before any renderer runs) or disposition (apply paths resolve through
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
 
 from grove.eval.proposal_queue import (
     _LEGACY_ROUTING_TYPE,
@@ -503,3 +504,92 @@ register_renderer(
 # portal_action_failure shape. Dispositions are the acknowledge/dismiss verb
 # set (PROPOSAL_VERBS), not approve/apply.
 register_renderer(PROPOSAL_TYPE_FAULT_TRIAGE, _summary_fault_triage)
+
+
+# ── structured detail codecs (proposal-card-legibility-v1 Phase 2) ────
+#
+# A proposal's ``detail`` envelope (RoutingProposal.detail — identity-excluded,
+# omit-when-None) carries STRUCTURED, render-ready evidence so render surfaces
+# never parse semantic_justification text. Codecs map a proposal type to a
+# ``from_dict`` decoder; a type with no codec simply has no typed detail
+# (decode_detail → None). Malformed detail raises ValueError — fail loud; the
+# render caller owns the fallback (Phase 3: verbatim sj + warning log).
+
+
+@dataclass(frozen=True)
+class FaultSample:
+    """One normalized fault event: ``ts`` (YYYY-MM-DD date only — no
+    microsecond ISO noise on the card), ``subject`` (who faulted), ``outcome``
+    (what happened). Field mapping per source is the producer's contract
+    (``fault_triage._normalize_sample``)."""
+
+    ts: str
+    subject: str
+    outcome: str
+
+    def to_dict(self) -> Dict[str, str]:
+        return {"ts": self.ts, "subject": self.subject, "outcome": self.outcome}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "FaultSample":
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"FaultSample must be a dict, got {type(data).__name__}"
+            )
+        missing = [k for k in ("ts", "subject", "outcome") if k not in data]
+        if missing:
+            raise ValueError(f"FaultSample missing field(s): {', '.join(missing)}")
+        return cls(
+            ts=str(data["ts"]),
+            subject=str(data["subject"]),
+            outcome=str(data["outcome"]),
+        )
+
+
+@dataclass(frozen=True)
+class FaultTriageDetail:
+    """The fault_triage detail envelope: the sampled raw events, normalized
+    to compact deterministic lines at BUILD time (producer-side), so the card
+    renders ``date · subject · outcome`` with zero inference."""
+
+    samples: List[FaultSample]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"samples": [s.to_dict() for s in self.samples]}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "FaultTriageDetail":
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"fault_triage detail must be a dict, got {type(data).__name__}"
+            )
+        raw = data.get("samples")
+        if not isinstance(raw, list):
+            raise ValueError("fault_triage detail has no 'samples' list")
+        return cls(samples=[FaultSample.from_dict(s) for s in raw])
+
+
+DETAIL_CODECS: Dict[str, Callable[[Dict[str, Any]], Any]] = {}
+
+
+def register_detail_codec(
+    type_name: str, decoder: Callable[[Dict[str, Any]], Any],
+) -> None:
+    DETAIL_CODECS[type_name] = decoder
+
+
+def decode_detail(proposal: Any) -> Optional[Any]:
+    """Typed ``detail`` for a proposal — None when the envelope is absent or
+    the type has no registered codec; ValueError (from the codec) when the
+    envelope is present but malformed. Read-only: never mutates the proposal.
+    """
+    raw = getattr(proposal, "detail", None)
+    if raw is None:
+        return None
+    decoder = DETAIL_CODECS.get(getattr(proposal, "type", "") or "")
+    if decoder is None:
+        return None
+    return decoder(raw)
+
+
+register_detail_codec(PROPOSAL_TYPE_FAULT_TRIAGE, FaultTriageDetail.from_dict)
