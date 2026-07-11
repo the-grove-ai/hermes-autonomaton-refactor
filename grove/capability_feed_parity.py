@@ -272,6 +272,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     if start is None or end is None:
         ap.error("--since/--until must be ISO-8601")
     rb = [b for b in (_parse_ts(x) for x in args.restart) if b]
+    # kaizen-ledger-retention-v1 P5 — completeness advisory. Retention prunes
+    # window-bounded telemetry older than retention_days to the archive, so a
+    # parity window reaching past that cutoff reads an incomplete LIVE ledger:
+    # ledger-side invocations there may sit in the archive, not missing.
+    # Advisory only — the run proceeds unchanged.
+    import sys
+    from grove.ledger_retention import default_archive_dir, load_retention_config
+    retention_days = load_retention_config().retention_days
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    if start < cutoff:
+        print(
+            f"WARNING: --since {start.isoformat()} predates the retention "
+            f"cutoff — the live ledger may be incomplete before "
+            f"{cutoff.date().isoformat()} (retention_days={retention_days}); "
+            f"pruned events are archived at {default_archive_dir()}",
+            file=sys.stderr,
+        )
     rep = run_parity(start, end, restart_boundaries=rb)
     print(rep.summary())
     return 0 if not rep.real_mismatches else 1
