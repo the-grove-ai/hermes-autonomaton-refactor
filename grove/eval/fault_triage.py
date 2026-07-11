@@ -26,6 +26,7 @@ Group keys are schema-aware per source (GATE-B Q3 — the fleet fault stream
 carries ``worker``/``check``/``detail`` and NO tool/rule):
 
 * ``source: fleet_worker`` ``andon_halt`` → ``(worker, check, error_signature)``
+* component ``andon_halt`` (``source`` in ``COMPONENT_SOURCES``) → ``(source, check)``
 * dispatcher ``andon_halt``              → ``(intents[0].tool_name, matched_rule)``
 * ``red_resolution``                     → ``(triggering_tool, matched_rule)``
 
@@ -63,6 +64,7 @@ from grove.kaizen.rendering import FaultSample, FaultTriageDetail
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "COMPONENT_SOURCES",
     "FaultTriageThresholds",
     "load_fault_triage_thresholds",
     "FaultTriageDetector",
@@ -70,6 +72,20 @@ __all__ = [
     "derive_activity",
     "judgment_line",
 ]
+
+
+# silent-degradation-sweep-v1 — non-fleet components whose fail-loud filings
+# (``andon_halt`` with this ``source`` + a ``check``) this detector classifies.
+# Fault identity for these is ``(source, check)`` — the per-instance ``detail``
+# (a repr'd exception) is deliberately identity-excluded, mirroring how the
+# dispatcher/red shapes carry ``error_signature: ""``. A source NOT in this
+# set falls through the dispatcher-shape check exactly as before.
+COMPONENT_SOURCES = frozenset({
+    "kaizen_push",
+    "tier_ratchet",
+    "proposal_queue",
+    "portal_render",
+})
 
 
 # ── declarative thresholds ───────────────────────────────────────────────
@@ -297,8 +313,17 @@ def _normalize_sample(
             subject=str(event.get("triggering_tool") or "?"),
             outcome=str(event.get("resolution") or "?"),
         )
-    # _classify emits only the three sources above; a new source reaching
-    # here without a mapping is a wiring defect — fail loud (no (?, ?) fold).
+    # silent-degradation-sweep-v1 — component filings mirror the fleet shape:
+    # subject/outcome are the identity fields (source, check); dates carry the
+    # per-instance variation, exactly like fleet_worker's (worker, check).
+    if source in COMPONENT_SOURCES:
+        return FaultSample(
+            ts=date,
+            subject=str(event.get("source") or "?"),
+            outcome=str(event.get("check") or "?"),
+        )
+    # _classify emits only the sources above; a new source reaching here
+    # without a mapping is a wiring defect — fail loud (no (?, ?) fold).
     raise ValueError(f"no FaultSample mapping for fault source {source!r}")
 
 
@@ -431,6 +456,26 @@ class FaultTriageDetector:
                 key = ("fleet_worker", str(worker), str(check), sig)
                 descriptor = f"{check} fault ({sig})" if sig else f"{check} fault"
                 return key, "fleet_worker", payload, str(worker), descriptor
+            # silent-degradation-sweep-v1 — component filings (kaizen push,
+            # tier ratchet, proposal queue, portal render). Identity is
+            # ``(source, check)``; the repr'd exception in ``detail`` is
+            # per-instance color, never identity. Missing ``check`` → not a
+            # usable signal → skipped (the established missing-field rule).
+            component_source = event.get("source")
+            if component_source in COMPONENT_SOURCES:
+                check = event.get("check")
+                if not check:
+                    return None
+                payload = {
+                    "source": str(component_source),
+                    "check": str(check),
+                    "error_signature": "",
+                }
+                key = (str(component_source), str(check))
+                return (
+                    key, str(component_source), payload,
+                    str(component_source), f"{check} failure",
+                )
             intents = event.get("intents") or []
             tool = None
             if intents and isinstance(intents[0], dict):
