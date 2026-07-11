@@ -5576,16 +5576,6 @@ class AIAgent:
             )
             chosen = eligible[0]
             surfaced.add(chosen.short_id)  # one-at-a-time, once per session
-            # crystallization-cadence-v1 (Gap 1) — record the surfaced memory
-            # proposal in the GLOBAL ever-pushed ledger so it never auto-pushes
-            # again in a later session (the session-scoped surfaced set above
-            # resets on a session boundary; this does not).
-            if getattr(chosen, "type", "") == "memory_context":
-                try:
-                    from tools.flywheel_review_tool import _mark_pushed_memory_id
-                    _mark_pushed_memory_id(chosen.short_id)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("[kaizen-offerings] pushed-ledger mark skipped: %r", exc)
             # agent-ux-critical-fixes — record the surfaced proposal so a later
             # bare 'approve'/'dismiss' (no id) resolves to it. The push note
             # shows no id and review_proposals can list dozens of near-identical
@@ -5611,6 +5601,20 @@ class AIAgent:
             offer = compose_offering(
                 chosen, is_push=True, portal_base_url=_portal_base
             )
+            # crystallization-cadence-v1 (Gap 1) — record the surfaced memory
+            # proposal in the GLOBAL ever-pushed ledger so it never auto-pushes
+            # again in a later session (the session-scoped surfaced set above
+            # resets on a session boundary; this does not).
+            # silent-degradation-sweep-v1 — deliberately AFTER compose_offering:
+            # marking before compose meant a failed compose permanently retired
+            # the proposal from auto-push without it ever being displayed. A
+            # failed compose now leaves the mark unwritten → still push-eligible.
+            if getattr(chosen, "type", "") == "memory_context":
+                try:
+                    from tools.flywheel_review_tool import _mark_pushed_memory_id
+                    _mark_pushed_memory_id(chosen.short_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[kaizen-offerings] pushed-ledger mark skipped: %r", exc)
             # kaizen-push-cadence-v1.1 — persist cooldown + dedup so they survive
             # the gateway's per-turn agent rebuild. surfaced_connectors is owned
             # by the connector-offer surface (written there); preserve it as read.
@@ -5623,7 +5627,26 @@ class AIAgent:
             )
             return final_response.rstrip() + "\n\n" + offer
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[kaizen-offerings] push append skipped: %r", exc)
+            logger.warning("[kaizen-offerings] push append skipped: %r", exc)
+            # silent-degradation-sweep-v1 — file the push failure as FACTS into
+            # this session's Kaizen ledger so fault triage aggregates
+            # recurrences into one interpreted proposal. Filing leg is
+            # best-effort with an error-log floor (the
+            # grove/fleet/observability.py precedent); the operator's answer is
+            # never blocked by push telemetry.
+            try:
+                from grove.kaizen_ledger import KaizenLedger
+                KaizenLedger(session_id=_sid or "unknown").record(
+                    "andon_halt",
+                    source="kaizen_push",
+                    check="push_pipeline",
+                    detail=repr(exc)[:500],
+                    turn=_turn,
+                )
+            except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor stands
+                logger.error(
+                    "[kaizen-offerings] kaizen filing leg failed: %r", file_exc,
+                )
             return final_response
 
     def _push_relevance_ok(
