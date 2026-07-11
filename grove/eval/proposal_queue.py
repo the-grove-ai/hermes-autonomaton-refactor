@@ -468,16 +468,87 @@ def default_queue_path() -> Path:
     return Path(get_hermes_home()) / "proposals.jsonl"
 
 
-def _read_records(path: Path) -> List[RoutingProposal]:
-    """Stream RoutingProposals from ``path``; skip malformed lines.
+# silent-degradation-sweep-v1 — one filing per (check, file-signature), where
+# the signature is a digest of the file's unparseable lines: repeated reads of
+# the same damage file ONCE per gateway process; a genuinely new corruption
+# files fresh. In-process only, no new persistent state (gateway is a single
+# systemd process; the memo is per-gateway by construction).
+_DROP_FILING_MEMO: set = set()
 
-    Malformed lines log at debug and are skipped — the queue is
-    operator-facing and must not crash on a damaged entry.
+
+def _drop_check(raw_line: str) -> str:
+    """``check`` value for a schema-mismatch drop — best-effort ``type``
+    extraction from the raw row; anything short of a typed dict is
+    ``schema_mismatch:unknown``."""
+    try:
+        data = json.loads(raw_line)
+    except json.JSONDecodeError:
+        return "schema_mismatch:unknown"
+    if isinstance(data, dict) and data.get("type"):
+        return f"schema_mismatch:{data.get('type')}"
+    return "schema_mismatch:unknown"
+
+
+def _file_drop_andon(
+    path: Path, dropped: List[Tuple[int, str, str, str]],
+) -> None:
+    """File the read's drops as FACTS — one throttled ``andon_halt`` per
+    ``check`` class (source=proposal_queue) into the Kaizen ledger, NEVER into
+    this queue (no re-entry into the store that failed). Best-effort with an
+    error-log floor (the grove/fleet/observability.py precedent). The scan has
+    no conversation session → the cli-<utc-timestamp> sentinel."""
+    try:
+        digest = hashlib.sha256(
+            "\n".join(raw for (_no, raw, _check, _detail) in dropped)
+            .encode("utf-8")
+        ).hexdigest()
+        by_check: Dict[str, List[Tuple[int, str, str, str]]] = {}
+        for item in dropped:
+            by_check.setdefault(item[2], []).append(item)
+        ledger = None
+        for check in sorted(by_check):
+            key = (check, str(path), digest)
+            if key in _DROP_FILING_MEMO:
+                continue
+            _DROP_FILING_MEMO.add(key)
+            if ledger is None:
+                from grove.kaizen_ledger import KaizenLedger
+                session_id = "cli-" + datetime.now(timezone.utc).strftime(
+                    "%Y%m%dT%H%M%S%fZ"
+                )
+                ledger = KaizenLedger(session_id=session_id)
+            items = by_check[check]
+            ledger.record(
+                "andon_halt",
+                source="proposal_queue",
+                check=check,
+                detail=(
+                    f"{len(items)} unparseable line(s) in {path} "
+                    f"(lines {', '.join(str(i[0]) for i in items)}); "
+                    f"sample: {items[0][3]}"
+                )[:500],
+            )
+    except Exception as exc:  # noqa: BLE001 — filing leg, log floor stands
+        logger.error("[proposal_queue] kaizen filing leg failed: %r", exc)
+
+
+def _read_records(path: Path) -> Tuple[List[RoutingProposal], List[str]]:
+    """Stream RoutingProposals from ``path``.
+
+    silent-degradation-sweep-v1 — returns ``(records, dropped_lines)``: the
+    parseable rows plus every unparseable raw line VERBATIM. A drop is no
+    longer invisible: nonzero drops surface as ONE WARNING per read (count +
+    line numbers) and a throttled per-check ``andon_halt`` filing
+    (:func:`_file_drop_andon`). Read-only callers discard element two;
+    mutating callers quarantine it (:func:`_quarantine_lines`) before
+    rewriting, so a damaged row is preserved on disk — never destroyed by an
+    unrelated rewrite.
     """
     if not path.exists():
         logger.info("[proposal_queue] queue file does not exist: %s", path)
-        return []
+        return [], []
     out: List[RoutingProposal] = []
+    dropped: List[Tuple[int, str, str, str]] = []  # (line_no, raw, check, detail)
     with open(path, "r", encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, start=1):
             line = line.strip()
@@ -490,6 +561,7 @@ def _read_records(path: Path) -> List[RoutingProposal]:
                     "[proposal_queue] malformed record line %d in %s: %r",
                     line_no, path, exc,
                 )
+                dropped.append((line_no, line, "json_decode", repr(exc)))
                 continue
             if isinstance(data.get("evidence"), list):
                 data["evidence"] = tuple(data["evidence"])
@@ -513,7 +585,16 @@ def _read_records(path: Path) -> List[RoutingProposal]:
                     "[proposal_queue] schema mismatch line %d in %s: %r",
                     line_no, path, exc,
                 )
-    return out
+                dropped.append((line_no, line, _drop_check(line), repr(exc)))
+    if dropped:
+        logger.warning(
+            "[proposal_queue] %d unparseable line(s) in %s (lines: %s) — "
+            "preserved in file until quarantined on the next queue mutation",
+            len(dropped), path,
+            ", ".join(str(item[0]) for item in dropped),
+        )
+        _file_drop_andon(path, dropped)
+    return out, [item[1] for item in dropped]
 
 
 def append(
@@ -543,7 +624,11 @@ def append(
     target = Path(path) if path is not None else default_queue_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
-        existing = _read_records(target)
+        # silent-degradation-sweep-v1 — dedup blindness DOCUMENTED-UNCHANGED:
+        # the scan sees only parseable rows, so a duplicate of an unparseable
+        # row can re-append. The drop itself now WARNs + files (inside
+        # _read_records); append never rewrites, so dropped lines stay put.
+        existing, _dropped = _read_records(target)
         for existing_proposal in existing:
             if existing_proposal.proposal_id == proposal.proposal_id:
                 return False
@@ -554,10 +639,14 @@ def append(
 
 
 def read_all(*, path: Optional[Path] = None) -> List[RoutingProposal]:
-    """Return all pending proposals in append order."""
+    """Return all pending proposals in append order.
+
+    Signature byte-compatible: drops are surfaced (WARN + filing) inside
+    ``_read_records``; the read-only path discards them."""
     target = Path(path) if path is not None else default_queue_path()
     with _lock:
-        return _read_records(target)
+        records, _dropped = _read_records(target)
+        return records
 
 
 def read(
@@ -568,7 +657,8 @@ def read(
     """Look up one proposal by ``proposal_id``."""
     target = Path(path) if path is not None else default_queue_path()
     with _lock:
-        for proposal in _read_records(target):
+        records, _dropped = _read_records(target)
+        for proposal in records:
             if proposal.proposal_id == proposal_id:
                 return proposal
     return None
@@ -583,27 +673,18 @@ def remove(
 
     Returns True on removal, False when no proposal matched.
     Rewrites the file omitting the matched record so the queue stays
-    JSON-Lines-clean (no tombstones, no commented-out lines).
+    JSON-Lines-clean (no tombstones, no commented-out lines). Unparseable
+    lines are quarantined before the rewrite (silent-degradation-sweep-v1) —
+    the rewrite writes ONLY parseable rows, and never destroys a damaged one.
     """
     target = Path(path) if path is not None else default_queue_path()
     with _lock:
-        existing = _read_records(target)
+        existing, dropped_lines = _read_records(target)
         keep = [p for p in existing if p.proposal_id != proposal_id]
         if len(keep) == len(existing):
             return False
-        if keep:
-            tmp = target.with_suffix(target.suffix + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as fh:
-                for proposal in keep:
-                    fh.write(
-                        json.dumps(
-                            proposal.to_dict(), sort_keys=True, default=str,
-                        )
-                        + "\n"
-                    )
-            tmp.replace(target)
-        else:
-            target.unlink()
+        _quarantine_lines(target, dropped_lines)
+        _write_records(target, keep)
     return True
 
 
@@ -640,6 +721,26 @@ def _write_records(target: Path, records: List["RoutingProposal"]) -> None:
             pass
 
 
+def _quarantine_lines(target: Path, dropped_lines: List[str]) -> None:
+    """silent-degradation-sweep-v1 — append unparseable raw lines VERBATIM to
+    the append-only quarantine sidecar (``<queue>.quarantine``, same
+    directory) before a rewrite destroys them. The CALLER must hold ``_lock``.
+    Deliberately NOT best-effort: a quarantine write failure aborts the
+    mutation rather than silently destroying a damaged row (Jidoka — the
+    rewrite must not proceed over unpreserved data). No rotation — lifecycle
+    punted to kaizen-ledger-retention-v1."""
+    if not dropped_lines:
+        return
+    qpath = target.parent / (target.name + ".quarantine")
+    with open(qpath, "a", encoding="utf-8") as fh:
+        for raw in dropped_lines:
+            fh.write(raw + "\n")
+    logger.warning(
+        "[proposal_queue] quarantined %d unparseable line(s) from %s -> %s",
+        len(dropped_lines), target, qpath,
+    )
+
+
 def set_lease(
     proposal_id: str,
     *,
@@ -657,12 +758,13 @@ def set_lease(
     target = Path(path) if path is not None else default_queue_path()
     stamp = at or datetime.now(timezone.utc).isoformat()
     with _lock:
-        records = _read_records(target)
+        records, dropped_lines = _read_records(target)
         for i, p in enumerate(records):
             if p.proposal_id == proposal_id:
                 if p.lease is not None:
                     return LEASE_ALREADY_HELD
                 records[i] = replace(p, lease={"held_by": holder, "held_at": stamp})
+                _quarantine_lines(target, dropped_lines)
                 _write_records(target, records)
                 return LEASE_ACQUIRED
     return LEASE_NOT_FOUND
@@ -675,12 +777,13 @@ def clear_lease(proposal_id: str, *, path: Optional[Path] = None) -> bool:
     TIMEOUT (the executor thread survives; clearing would let a re-tap double-write)."""
     target = Path(path) if path is not None else default_queue_path()
     with _lock:
-        records = _read_records(target)
+        records, dropped_lines = _read_records(target)
         for i, p in enumerate(records):
             if p.proposal_id == proposal_id:
                 if p.lease is None:
                     return False
                 records[i] = replace(p, lease=None)
+                _quarantine_lines(target, dropped_lines)
                 _write_records(target, records)
                 return True
     return False
@@ -703,11 +806,12 @@ def finalize_proposal_state(
     the proposal was already gone (idempotent — a double-finalize is a no-op)."""
     target = Path(path) if path is not None else default_queue_path()
     with _lock:
-        records = _read_records(target)
+        records, dropped_lines = _read_records(target)
         proposal = next((p for p in records if p.proposal_id == proposal_id), None)
         if proposal is None:
             return False
         keep = [p for p in records if p.proposal_id != proposal_id]
+        _quarantine_lines(target, dropped_lines)
         _write_records(target, keep)
     from grove.flywheel_cli import _record_kaizen_disposition
 
@@ -730,7 +834,7 @@ def sweep_stuck_leases(*, path: Optional[Path] = None) -> List["RoutingProposal"
     target = Path(path) if path is not None else default_queue_path()
     reverted: List["RoutingProposal"] = []
     with _lock:
-        records = _read_records(target)
+        records, dropped_lines = _read_records(target)
         changed = False
         for i, p in enumerate(records):
             if p.lease is not None:
@@ -738,6 +842,7 @@ def sweep_stuck_leases(*, path: Optional[Path] = None) -> List["RoutingProposal"
                 records[i] = replace(p, lease=None)
                 changed = True
         if changed:
+            _quarantine_lines(target, dropped_lines)
             _write_records(target, records)
     for p in reverted:
         logger.warning(
