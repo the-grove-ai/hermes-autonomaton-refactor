@@ -20,6 +20,13 @@ tier_rule:
     strategy: shadow_compare
     confidence_threshold: 0.95
     shadow_window: 20
+# aux-model-bindings-v1 P4 — exact-model pin. The forge worker binds to this
+# slug at spawn, bypassing the T2 tier model (the minimax-m3 P0 class: an
+# operator tier swap must not silently re-model the forge). Fleet-only: the
+# Mylo path refuses this binding type until the governance sprint.
+model_binding:
+  type: model
+  model: z-ai/glm-5.2
 zone: yellow
 telemetry:
   feed: intent_feed
