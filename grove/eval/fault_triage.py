@@ -88,6 +88,10 @@ COMPONENT_SOURCES = frozenset({
     # kaizen-ledger-retention-v1 P3 — a failed `flywheel maintain --retention`
     # run files here; registered so the filing is triage-classifiable.
     "ledger_retention",
+    # aux-model-bindings-v1 P3 — the Mylo-path exact-model rebind refusal
+    # (check=model_binding_mylo_refusal) files here; registered so the
+    # tripwire is triage-visible while exact-model bindings stay fleet-only.
+    "skill_binding",
 })
 
 
