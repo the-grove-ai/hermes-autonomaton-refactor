@@ -683,3 +683,254 @@ def test_effective_finish_reason_folds_native_truth():
     assert f("stop", False, "stop") == "stop"
     assert f(None, False, None) == "stop"
     assert f("length", False, None) == "length"
+
+
+# ── post-staging quality gate (drafter-quality-checks-v1 P3) ────────────────
+#
+# The ONE transport-agnostic gate site: staged outcome → evaluate → (on fail)
+# one governed redraft → success event with the four rider fields. The gate
+# informs disposition; it never withholds staged work.
+
+
+_QUALITY_GATE = {
+    "rubric_version": "1.0",
+    "criteria": ["specific claim", "grounded evidence"],
+    "threshold": 0.7,
+    "redraft_limit": 1,
+    "evaluator_tier": "T1",
+}
+
+_GATED_GOV = {
+    "write_zone": {
+        "staging_dir": "prod/pending_review",
+        "canonical_dir": "prod",
+        "retention": {"policy": "persist", "archive_dir": ".archive"},
+    },
+    "emission_preconditions": {
+        "terminal_artifact": {
+            "tool": "write_file",
+            "path_pattern": "draft-*.md",
+            "emit": {"transport": "tool"},
+        }
+    },
+    "quality_gate": dict(_QUALITY_GATE),
+}
+
+_UNIT_PAYLOAD = {"units": [1], "unit_id": "u1", "source_path": "/s", "source_name": "s"}
+_DRAFT1_ARGS = {"files": {"draft-u1.md": "# Draft one\nfirst body\n"}}
+_DRAFT2_ARGS = {"files": {"draft-u1.md": "# Draft two\nrevised body\n"}}
+
+_QUALITY_KEYS = ("quality_score", "rubric_version", "redraft_count", "evaluator_model")
+
+
+def _verdict(status, score, issues=(), model="stub/eval-model"):
+    return {
+        "status": status,
+        "quality_score": score,
+        "complete": status == "pass",
+        "accurate": status == "pass",
+        "issues": list(issues),
+        "rubric_version": "1.0",
+        "threshold": 0.7,
+        "evaluator_tier": "T1",
+        "evaluator_model": None if status == "skipped_oversize" else model,
+        "context_keys_used": [],
+        "context_keys_missing": [],
+        "detail": "",
+    }
+
+
+def _stub_evaluator(monkeypatch, tmp_path, verdicts):
+    """Stub evaluate_draft with a scripted verdict sequence; capture calls.
+    Also pins GROVE home to tmp so the archive helper resolves there."""
+    calls = []
+    seq = list(verdicts)
+
+    def fake_evaluate(record, staged_files, task_context=None):
+        calls.append({"files": dict(staged_files), "task_context": task_context})
+        v = seq.pop(0)
+        if isinstance(v, Exception):
+            raise v
+        return dict(v)
+
+    monkeypatch.setattr("grove.fleet.quality.evaluate_draft", fake_evaluate)
+    monkeypatch.setattr(
+        "grove.utils.fs_utils._grove_home_realpath", lambda: str(tmp_path)
+    )
+    return calls
+
+
+def test_gated_pass_rides_event(monkeypatch, tmp_path):
+    calls = _stub_evaluator(monkeypatch, tmp_path, [_verdict("pass", 0.85)])
+    ev, agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _GATED_GOV, _UNIT_PAYLOAD, [_emit_step(_DRAFT1_ARGS)]
+    )
+    assert ev["status"] == "success"
+    assert ev["quality_score"] == 0.85
+    assert ev["rubric_version"] == "1.0"
+    assert ev["redraft_count"] == 0
+    assert ev["evaluator_model"] == "stub/eval-model"
+    # detail is byte-identical to the ungated shape on a pass:
+    assert ev["detail"] == "completed=True; unit=u1; transport=tool"
+    assert len(agent.calls) == 1  # no redraft turn
+    # the evaluator saw draft content, NEVER the identity envelope:
+    assert "meta.json" not in calls[0]["files"]
+    assert calls[0]["files"]["draft-u1.md"].startswith("# Draft one")
+    # criteria-only record → no task context (A1):
+    assert calls[0]["task_context"] is None
+
+
+def test_ungated_event_carries_four_null_keys(monkeypatch, tmp_path):
+    def forbidden(*a, **k):
+        raise AssertionError("evaluator must not run for an ungated record")
+
+    monkeypatch.setattr("grove.fleet.quality.evaluate_draft", forbidden)
+    ev, _, _ = _drive_worker(
+        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD, [_emit_step(_FORGE_ARGS)]
+    )
+    assert ev["status"] == "success"
+    for key in _QUALITY_KEYS:
+        assert key in ev and ev[key] is None, key
+
+
+def test_gated_fail_redrafts_once_and_lock_reengages(monkeypatch, tmp_path):
+    calls = _stub_evaluator(
+        monkeypatch,
+        tmp_path,
+        [_verdict("fail", 0.4, issues=["issue-A verbatim", "issue-B verbatim"]),
+         _verdict("pass", 0.9)],
+    )
+    ev, agent, _ = _drive_worker(
+        monkeypatch,
+        tmp_path,
+        _GATED_GOV,
+        _UNIT_PAYLOAD,
+        [_emit_step(_DRAFT1_ARGS), _emit_step(_DRAFT2_ARGS)],
+    )
+    assert ev["status"] == "success"
+    assert ev["quality_score"] == 0.9
+    assert ev["redraft_count"] == 1
+    assert "; redrafted draft1_archived=" in ev["detail"]
+    # (c) the redraft re-prompt: fresh continuation carrying the issues
+    # verbatim, authorizing exactly one further emit.
+    assert len(agent.calls) == 2
+    redraft_call = agent.calls[1]
+    assert "issue-A verbatim" in redraft_call["prompt"]
+    assert "issue-B verbatim" in redraft_call["prompt"]
+    assert "EXACTLY ONE more time" in redraft_call["prompt"]
+    assert redraft_call["history"] is not None  # emit-ladder continuation shape
+    # (a) draft #1 archived to the write_zone archive location (never overwrite):
+    archived = list((tmp_path / "prod" / ".archive").glob("u1-*"))
+    assert len(archived) == 1
+    assert (archived[0] / "draft-u1.md").read_text(encoding="utf-8").startswith(
+        "# Draft one"
+    )
+    # (d) the re-staged package is draft #2:
+    staged = tmp_path / "sink" / "u1" / "draft-u1.md"
+    assert staged.read_text(encoding="utf-8").startswith("# Draft two")
+    # both evaluations saw the respective drafts:
+    assert calls[0]["files"]["draft-u1.md"].startswith("# Draft one")
+    assert calls[1]["files"]["draft-u1.md"].startswith("# Draft two")
+    # R-B4 post-condition: the lock re-engaged on the redraft emit — a THIRD
+    # emit_package call hits the lock refusal.
+    third = json.loads(fleet_emit_tool._handle_emit_package(_DRAFT1_ARGS))
+    assert "already emitted and locked" in third["error"]
+
+
+def test_gated_fail_after_redraft_still_proceeds(monkeypatch, tmp_path):
+    """(e) proceed regardless — a second failing verdict still succeeds the
+    run, final score attached."""
+    _stub_evaluator(
+        monkeypatch, tmp_path,
+        [_verdict("fail", 0.4, issues=["x"]), _verdict("fail", 0.5, issues=["y"])],
+    )
+    ev, agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _GATED_GOV, _UNIT_PAYLOAD,
+        [_emit_step(_DRAFT1_ARGS), _emit_step(_DRAFT2_ARGS)],
+    )
+    assert ev["status"] == "success"
+    assert ev["quality_score"] == 0.5
+    assert ev["redraft_count"] == 1
+    assert len(agent.calls) == 2  # exactly ONE redraft cycle, no second loop
+
+
+def test_redraft_no_package_restores_draft1(monkeypatch, tmp_path):
+    """A redraft that never re-emits restores draft #1 from the archive and
+    proceeds on the ORIGINAL verdict — the gate never withholds work."""
+    _stub_evaluator(
+        monkeypatch, tmp_path, [_verdict("fail", 0.4, issues=["z"])]
+    )
+    prose = {"messages": [{"role": "assistant", "content": "sorry"}], "completed": True}
+    ev, agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _GATED_GOV, _UNIT_PAYLOAD,
+        [_emit_step(_DRAFT1_ARGS), prose],
+    )
+    assert ev["status"] == "success"
+    assert ev["quality_score"] == 0.4  # original verdict rides
+    assert ev["redraft_count"] == 1
+    assert "; redraft_no_package draft1_restored" in ev["detail"]
+    # draft #1 is back in the staging sink; the archive slot is empty again:
+    staged = tmp_path / "sink" / "u1" / "draft-u1.md"
+    assert staged.read_text(encoding="utf-8").startswith("# Draft one")
+    assert list((tmp_path / "prod" / ".archive").glob("u1-*")) == []
+
+
+def test_skipped_oversize_proceeds_with_null_score(monkeypatch, tmp_path):
+    _stub_evaluator(monkeypatch, tmp_path, [_verdict("skipped_oversize", None)])
+    ev, agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _GATED_GOV, _UNIT_PAYLOAD, [_emit_step(_DRAFT1_ARGS)]
+    )
+    assert ev["status"] == "success"
+    assert ev["quality_score"] is None
+    assert ev["rubric_version"] == "1.0"  # gated-and-skipped ≠ ungated
+    assert ev["redraft_count"] == 0
+    assert ev["evaluator_model"] is None
+    assert len(agent.calls) == 1  # skip never redrafts
+
+
+def test_evaluator_exception_is_loud_andon(monkeypatch, tmp_path):
+    from grove.fleet.errors import FleetWorkerAndon
+
+    _stub_evaluator(monkeypatch, tmp_path, [RuntimeError("provider 500")])
+    with pytest.raises(FleetWorkerAndon) as exc_info:
+        _drive_worker(
+            monkeypatch, tmp_path, _GATED_GOV, _UNIT_PAYLOAD,
+            [_emit_step(_DRAFT1_ARGS)],
+        )
+    assert exc_info.value.check == "evaluator_call_failed"
+    assert "provider 500" in str(exc_info.value)
+
+
+def test_context_inputs_resolved_from_dispatch_payload(monkeypatch, tmp_path):
+    """A1 (R-A12): the gate resolves context_inputs against the dispatch
+    payload and passes the PRESENT subset; a missing key never fails the run."""
+    gov = {
+        **_GATED_GOV,
+        "quality_gate": dict(_QUALITY_GATE, context_inputs=["angle", "not_in_payload"]),
+    }
+    calls = _stub_evaluator(monkeypatch, tmp_path, [_verdict("pass", 0.8)])
+    payload = dict(_UNIT_PAYLOAD, angle="contrarian take")
+    ev, _, _ = _drive_worker(
+        monkeypatch, tmp_path, gov, payload, [_emit_step(_DRAFT1_ARGS)]
+    )
+    assert ev["status"] == "success"
+    assert calls[0]["task_context"] == {"angle": "contrarian take"}
+
+
+def test_sentinel_gated_worker_evaluates_too(monkeypatch, tmp_path):
+    """Transport-agnostic (R-A2): the SAME gate site fires on a sentinel
+    producer's staged package."""
+    gov = {**_SENTINEL_GOV, "quality_gate": dict(_QUALITY_GATE)}
+    run_id = "rid55"
+    msgs = _sentinel_messages(run_id[:8], _SENTINEL_FILES)
+    calls = _stub_evaluator(monkeypatch, tmp_path, [_verdict("pass", 0.75)])
+    ev, _, _ = _drive_worker(
+        monkeypatch, tmp_path, gov, _ROWS_PAYLOAD,
+        [{"messages": msgs, "completed": True}], run_id=run_id,
+    )
+    assert ev["status"] == "success" and ev["slug"] == "acme-pm"
+    assert ev["quality_score"] == 0.75
+    assert ev["redraft_count"] == 0
+    # identity envelope excluded on the sentinel path too:
+    assert "meta.json" not in calls[0]["files"]
+    assert set(calls[0]["files"]) == {"resume.md", "cover-letter.md"}
