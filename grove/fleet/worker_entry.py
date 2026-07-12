@@ -1572,6 +1572,46 @@ def _setup_worker_logging() -> None:
         root.setLevel(logging.INFO)
 
 
+# binding-telemetry-v1 P3 — dead_pinned_slug classification at the ONE
+# uncaught-exception chokepoint. A model slug that was cataloged at pin time
+# and later dies at the provider spawns fine (spawn validates SHAPE only,
+# GATE-B F3) and fails at call time as a provider 4xx. Classify ONLY the
+# UNAMBIGUOUS model-not-found signature; ALL ambiguity keeps the generic
+# check — "No endpoints found" (an OpenRouter routing/retention-filter
+# artifact, not proof of nonexistence), 5xx, timeouts, and generic 400s all
+# stay "uncaught". When in doubt, generic.
+_DEAD_SLUG_PHRASES = (
+    "not a valid model",
+    "model not found",
+    "no such model",
+    "unknown model",
+)
+
+
+def _is_dead_pinned_slug(exc: BaseException) -> bool:
+    """True ONLY for an unambiguous provider model-does-not-exist failure:
+    an HTTP-status-bearing error (the SDK's APIStatusError family exposes
+    ``status_code``) at 400/404 whose message names model nonexistence."""
+    if getattr(exc, "status_code", None) not in (400, 404):
+        return False
+    msg = str(exc).lower()
+    if any(p in msg for p in _DEAD_SLUG_PHRASES):
+        return True
+    return "model" in msg and "does not exist" in msg
+
+
+def _uncaught_check(exc: BaseException) -> str:
+    """The failed-event ``check`` for an exception reaching main()'s
+    chokepoint: an upstream-stamped check wins; the dead-pin signature is the
+    one classified class; everything else is the structural default."""
+    stamped = getattr(exc, "check", None)
+    if stamped:
+        return stamped
+    if _is_dead_pinned_slug(exc):
+        return "dead_pinned_slug"
+    return "uncaught"
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(prog="grove.fleet.worker_entry")
     parser.add_argument("--worker-id", required=True)
@@ -1597,7 +1637,7 @@ def main(argv: Optional[list] = None) -> int:
             skill_id="",
             status="failed",
             detail=f"{type(exc).__name__}: {exc}",
-            check=getattr(exc, "check", None) or "uncaught",
+            check=_uncaught_check(exc),
         )
         event["traceback"] = traceback.format_exc()
 
