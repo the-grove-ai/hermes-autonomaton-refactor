@@ -16933,6 +16933,20 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     # reaps finished workers and dispatches due ones off-thread.
     fleet_manager = FleetManager(loop=loop)
 
+    # skill-invocation-path-integrity-v1 P1 — one-shot boot collision scan.
+    # Groups skill record ids by slug tail and WARNs on any collision (the
+    # invoke path refuses ambiguous slugs per-call). LOG-ONLY by contract:
+    # never raises, never blocks the ticker.
+    try:
+        from grove.capability_registry import scan_skill_slug_collisions
+
+        _collisions = scan_skill_slug_collisions()
+        logger.info(
+            "Skill slug collision scan: %d collision(s)", len(_collisions)
+        )
+    except Exception as e:  # noqa: BLE001 — boot must never fail on the scan
+        logger.warning("Skill slug collision scan failed: %r", e)
+
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
     while not stop_event.is_set():
