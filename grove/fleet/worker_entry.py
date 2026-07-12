@@ -724,6 +724,22 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         session_db = SessionDB(db_path=paths.session_db_path(worker_id))
         skill_name = _derive_skill_name(cap, worker_id)
         model, max_tokens, runtime = _resolve_worker_runtime(cap, worker_id)
+        # binding-governance-surfaces-v1 P4 — binding-identity telemetry rider
+        # (GATE-A D9/FLAG-9: no intent record fires on the fleet plane, so the
+        # terminal EVENT carries the effective model identity). Derived from
+        # values in scope at spawn, on BOTH resolve branches: the same
+        # mb.type=="model" predicate the resolver just honored (a malformed pin
+        # already Andon'd inside _resolve_worker_runtime, so reaching here means
+        # the predicate and the resolution agree).
+        _mb = getattr(cap, "model_binding", None)
+        binding_kw = dict(
+            model=model,
+            tier=f"T{cap.tier_rule.preferred}",
+            binding_source=(
+                "pinned" if (_mb is not None and _mb.type == "model")
+                else "inherited"
+            ),
+        )
 
         # The per-spawn RuntimeContext carries the base config; the fleet L2 floor
         # (Dispatcher.get_authorized_tools, platform=='fleet') is config-blind, so no
@@ -782,6 +798,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 "failed",
                 detail=f"governed denial: {tgh}",
                 check="governed_denial",
+                **binding_kw,
             )
 
         # ── wiki-writer-structured-output-v1 P1 — emit lifecycle ladder ──
@@ -825,6 +842,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                         "failed",
                         detail=f"governed denial: {tgh}",
                         check="governed_denial",
+                        **binding_kw,
                     )
 
             emitted = fleet_emit_tool.emitted()
@@ -845,6 +863,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                         staged=list(emitted["staged"]),
                         slug=unit_id,
                         unit_id=unit_id,
+                        **binding_kw,
                     )
                 row_id, fit_score = _row_identity(emitted, payload)
                 return _event(
@@ -860,6 +879,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                     slug=emitted["slug"],
                     row_id=row_id,
                     fit_score=fit_score,
+                    **binding_kw,
                 )
             # No lock — fall through to the sentinel extraction (dual-read):
             # a tool-flagged producer that emitted sentinel blocks anyway is
@@ -932,6 +952,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 detail=fail_detail,
                 check=fail_check,
                 raw_text_path=_persist_raw_output(worker_id, run_id, final_text),
+                **binding_kw,
             )
         if declarative:
             unit_id = payload["unit_id"]
@@ -947,6 +968,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 staged=[str(p) for p in staged],
                 slug=unit_id,
                 unit_id=unit_id,
+                **binding_kw,
             )
         staged = stage_package(sink, extracted["slug"], extracted["files"])
         row_id, fit_score = _row_identity(extracted, payload)
@@ -960,6 +982,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             slug=extracted["slug"],
             row_id=row_id,
             fit_score=fit_score,
+            **binding_kw,
         )
     finally:
         clear_session_vars(tokens)
@@ -997,6 +1020,9 @@ def _event(
     fit_score: Optional[Any] = None,
     raw_text_path: Optional[str] = None,
     unit_id: Optional[str] = None,
+    model: Optional[str] = None,
+    tier: Optional[str] = None,
+    binding_source: Optional[str] = None,
 ) -> Dict[str, Any]:
     # fleet-pipeline-v1 P2 (A1) — additive fields the reap emitter reads OFF the
     # event (never parsed from detail/paths). None for workers that don't produce
@@ -1016,6 +1042,14 @@ def _event(
         "row_id": row_id,
         "fit_score": fit_score,
         "raw_text_path": raw_text_path,
+        # binding-governance-surfaces-v1 P4 — binding-identity rider (GATE-A
+        # D9: the fleet plane writes no intent record, so the terminal event
+        # is where the effective model identity lands). Same additive-field
+        # precedent as raw_text_path: always present, None when the run
+        # terminated before spawn resolution (no_work, main()'s failed shape).
+        "model": model,
+        "tier": tier,
+        "binding_source": binding_source,
         "ts": _now_iso(),
     }
     # fleet-review-unification-v1 C1b-2 — the stable unit_id, ADDED ONLY when set (a

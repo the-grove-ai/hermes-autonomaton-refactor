@@ -43,7 +43,9 @@ def test_no_bleed_two_skills_resolve_independently():
     assert b.tier == "T1"
 
 
-# ── aux-model-bindings-v1: type=model is fleet-only — Mylo path refuses ───────
+# ── type=model is fleet-only — Mylo path refuses (binding-governance-
+# surfaces-v1 P4: WARNING only, NO andon filing — the plane boundary is
+# by-design behavior now that the governance surfaces exist) ─────────────────
 
 
 def _sentinel_andon_halts():
@@ -61,39 +63,35 @@ def _sentinel_andon_halts():
     return events
 
 
-def _assert_refusal(skill_name):
-    """Shared body: refuse + file + continue, detail names the skill verbatim."""
-    binding = ModelBinding(type="model", model="pin-org/pin-model")
-    r = resolve_skill_tier(
-        operator_active=False, model_binding=binding, turn_tier="T1",
-        skill_name=skill_name,
-    )
-    # No raise (caller fires on failed invoke_skill attempts — a turn must
-    # never detonate), no rebind: the turn default is preserved.
-    assert (r.tier, r.reason) == ("T1", "model_binding_mylo_refusal")
-    halts = _sentinel_andon_halts()
-    assert len(halts) == 1  # exactly one filing
-    ev = halts[0]
-    assert ev["source"] == "skill_binding"
-    assert ev["check"] == "model_binding_mylo_refusal"
-    assert repr(skill_name) in ev["detail"]
-    assert "fleet-only" in ev["detail"]
-    assert "pin-org/pin-model" in ev["detail"]
-
-
-def test_model_pin_on_mylo_path_refuses_files_and_continues(caplog):
+def _assert_refusal(skill_name, caplog):
+    """Shared body: refuse + WARN + continue — and file NOTHING (P4)."""
     import logging
 
+    binding = ModelBinding(type="model", model="pin-org/pin-model")
     with caplog.at_level(logging.WARNING, logger="grove.skill_binding"):
-        _assert_refusal("forge-jobsearch")
-    assert "forge-jobsearch" in caplog.text  # warning names the skill
+        r = resolve_skill_tier(
+            operator_active=False, model_binding=binding, turn_tier="T1",
+            skill_name=skill_name,
+        )
+    # No raise, no rebind: the turn default is preserved (behavior unchanged
+    # from aux-model-bindings-v1 — only the filing was demoted).
+    assert (r.tier, r.reason) == ("T1", "model_binding_mylo_refusal")
+    # P4 — the refusal files NO ledger event; the WARNING is the log surface.
+    assert _sentinel_andon_halts() == []
+    assert skill_name in caplog.text
+    assert "pin-org/pin-model" in caplog.text
+    assert "T1" in caplog.text  # the turn tier the run continues at
 
 
-def test_model_pin_refusal_identical_for_traversal_shaped_name():
+def test_model_pin_on_mylo_path_refuses_warns_and_continues(caplog):
+    _assert_refusal("forge-jobsearch", caplog)
+
+
+def test_model_pin_refusal_identical_for_traversal_shaped_name(caplog):
     # Phase 0 finding: invoke_skill("fleet/<name>") traverses the nested skills
     # dir and skill_record_for_name resolves the slashed form to the same fleet
     # record — the refusal must behave identically on that shape.
-    _assert_refusal("fleet/forge-jobsearch")
+    _assert_refusal("fleet/forge-jobsearch", caplog)
 
 
 def test_tier_override_still_resolves_after_model_branch():

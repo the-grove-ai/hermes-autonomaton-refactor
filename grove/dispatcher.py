@@ -662,6 +662,11 @@ class Dispatcher:
         # inversion (mostly tests).
         self._intent_store = intent_store
         self._turn_counter: int = 0
+        # binding-governance-surfaces-v1 P4 — skills whose Mylo-plane pin
+        # refusal has already been surfaced conversationally this session
+        # (once-per-session-per-skill dedup for the answer-then-surface
+        # notice set in _rebind_agent_for_skill).
+        self._binding_refusal_notified: set = set()
         # Per-turn state — reset at the top of every ``dispatch_turn``.
         # Read at terminal write sites (FinalResponse, Drop, exception)
         # to populate the IntentRecord without threading state through
@@ -3327,6 +3332,23 @@ class Dispatcher:
             operator_active=operator_active, model_binding=model_binding, turn_tier=turn_tier,
             skill_name=skill_name,
         )
+
+        # binding-governance-surfaces-v1 P4 — once-per-session-per-skill
+        # conversational notice on a Mylo-plane pin refusal (answer-then-
+        # surface: the agent-resident pending payload is consumed by
+        # run_agent._append_binding_refusal_notice at final-response
+        # assembly). The seen-set lives on the Dispatcher (session-scoped;
+        # a gateway agent rebuild resets it — same accepted degradation as
+        # the uncertainty-andon shown flag: a stale advisory is cheap,
+        # silence is not).
+        if res.reason == "model_binding_mylo_refusal":
+            if skill_name not in self._binding_refusal_notified:
+                self._binding_refusal_notified.add(skill_name)
+                agent._binding_refusal_notice = {
+                    "skill": skill_name,
+                    "model": getattr(model_binding, "model", None),
+                    "tier": turn_tier,
+                }
 
         # Build a decision at the resolved tier directly (no re-classification);
         # get_tier_config fails loud if the tier is not configured.

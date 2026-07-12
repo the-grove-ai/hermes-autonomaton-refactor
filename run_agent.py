@@ -5834,6 +5834,33 @@ class AIAgent:
             logger.debug("[uncertainty-andon] offer append skipped: %r", exc)
             return final_response
 
+    def _append_binding_refusal_notice(self, final_response: str) -> str:
+        """binding-governance-surfaces-v1 P4 — surface a Mylo-plane pin
+        refusal ALONGSIDE the answer (answer-then-surface, mirroring the
+        uncertainty Andon). The Dispatcher sets the agent-resident pending
+        payload in ``_rebind_agent_for_skill`` at most once per session per
+        skill (its ``_binding_refusal_notified`` seen-set is the dedup); this
+        hook only consumes and renders it. Advisory-only: the skill already
+        ran, at the turn tier — nothing failed. Best-effort; never blocks the
+        turn or raises into it.
+        """
+        if not final_response:
+            return final_response
+        try:
+            notice = getattr(self, "_binding_refusal_notice", None)
+            if not notice:
+                return final_response
+            self._binding_refusal_notice = None  # consume — dedup lives on the Dispatcher
+            offer = (
+                f"_Note: `{notice['skill']}` is pinned to {notice['model']} "
+                f"for fleet; this interactive run uses turn tier "
+                f"{notice['tier']}._"
+            )
+            return final_response.rstrip() + "\n\n" + offer
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[binding-notice] offer append skipped: %r", exc)
+            return final_response
+
     def _connector_offer_retry(self, server_name: str) -> None:
         """Operator 'Retry' disposition (Ruling 2): clear the connect-breaker
         AND evict this connector's offer ids from the shown-set, so a
@@ -17881,6 +17908,10 @@ class AIAgent:
             # intent was unclassified, the core tool set was used; advise the
             # operator alongside the answer (answer-then-surface, once per session).
             final_response = self._append_uncertainty_andon_offer(final_response)
+            # binding-governance-surfaces-v1 P4 — once-per-session-per-skill
+            # notice when a fleet-only model pin was refused on this
+            # interactive turn (answer-then-surface).
+            final_response = self._append_binding_refusal_notice(final_response)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.

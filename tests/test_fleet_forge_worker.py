@@ -355,7 +355,7 @@ class _FakeSessionDB:
         pass
 
 
-def _drive_no_package(monkeypatch, tmp_path, messages, run_id="rid0"):
+def _drive_no_package(monkeypatch, tmp_path, messages, run_id="rid0", cap=None):
     """Drive the REAL run_worker to the no_package branch.
 
     ``run_conversation`` returns ``messages`` that carry no delimited blocks, so the
@@ -367,6 +367,12 @@ def _drive_no_package(monkeypatch, tmp_path, messages, run_id="rid0"):
 
     class _Cap:
         id = "skill.fleet.forge-jobsearch"
+        # binding-governance-surfaces-v1 P4 — run_worker now derives the
+        # binding-telemetry rider from the record; the fake must satisfy
+        # the real contract (tier_rule.preferred; model_binding optional).
+        class tier_rule:
+            preferred = 2
+        model_binding = None
 
     class _Agent:
         def run_conversation(self, prompt, task_id=None):
@@ -377,7 +383,9 @@ def _drive_no_package(monkeypatch, tmp_path, messages, run_id="rid0"):
             self.agent = _Agent()
 
     monkeypatch.setattr(_paths, "get_hermes_home", lambda: str(tmp_path))
-    monkeypatch.setattr(worker_entry, "_load_capability_for", lambda wid: _Cap())
+    monkeypatch.setattr(
+        worker_entry, "_load_capability_for", lambda wid: (cap or _Cap())
+    )
     monkeypatch.setattr(
         worker_entry, "_resolve_declared_sink", lambda cap, wid: tmp_path / "sink"
     )
@@ -431,6 +439,45 @@ def test_no_package_regression_status_check_detail_prefix(monkeypatch, tmp_path)
     assert ev["detail"].startswith(_NO_PACKAGE_DETAIL_PREFIX)
     assert "reason: no-files" in ev["detail"]          # the fail-loud reason is surfaced
     assert "raw_text_path" in ev                       # additive field present
+
+
+# ── binding-governance-surfaces-v1 P4: binding-identity telemetry rider ──────
+# GATE-A D9/FLAG-9 — no intent record fires on the fleet plane, so the terminal
+# event carries the effective model identity, on BOTH resolve branches.
+
+
+def test_event_carries_binding_rider_inherited(monkeypatch, tmp_path):
+    # The harness _Cap has model_binding=None -> inherited branch. model comes
+    # from the (stubbed) resolver, tier from the record's preferred tier.
+    ev = _drive_no_package(
+        monkeypatch, tmp_path, [{"role": "assistant", "content": "prose"}]
+    )
+    assert ev["model"] == "m"
+    assert ev["tier"] == "T2"
+    assert ev["binding_source"] == "inherited"
+
+
+def test_event_carries_binding_rider_pinned(monkeypatch, tmp_path):
+    class _PinnedCap:
+        id = "skill.fleet.forge-jobsearch"
+
+        class tier_rule:
+            preferred = 2
+
+        class model_binding:
+            type = "model"
+            model = "pin-org/pin-model"
+
+    ev = _drive_no_package(
+        monkeypatch, tmp_path, [{"role": "assistant", "content": "prose"}],
+        cap=_PinnedCap(),
+    )
+    # model still reports what the (stubbed) resolver returned — the REAL
+    # resolver swaps the tier model for the pin, pinned separately in
+    # test_fleet_worker_runtime; binding_source derives from the record.
+    assert ev["binding_source"] == "pinned"
+    assert ev["tier"] == "T2"
+    assert ev["model"] == "m"
 
 
 def test_event_accepts_additive_raw_text_path():
