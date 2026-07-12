@@ -3440,8 +3440,13 @@ def _render_unit_detail(cap: Any, skill: str, unit_name: str, pid) -> web.Respon
             content = _render_file_html(text, suffix)
     generated = (f' &middot; generated {_esc(_relative_age(unit["mtime"]))}'
                  if unit else "")
+    # drafter-quality-checks-v1 P5c — the evaluator score chip on the PACKAGE
+    # unit header too (the P4 chip landed on the C4 flat-artifact header; a
+    # staged package unit renders HERE — placement gap caught by the first
+    # live gated unit). Empty when the unit carries no quality fields.
     header = (
-        f'<h2>{title} {_fleet_zone_badge(cap.zone.value)}</h2>'
+        f'<h2>{title} {_fleet_zone_badge(cap.zone.value)}'
+        f'{_quality_chip(unit or {})}</h2>'
         f'<p class="page-sub">{_esc(skill)}{generated} &middot; {sub_tail}</p>'
     )
 
