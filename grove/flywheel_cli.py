@@ -389,6 +389,43 @@ def run_fault_triage_scan(
     return queued_new, deduped
 
 
+def run_binding_scan(
+    *,
+    events_root: Optional[Path] = None,
+    queue_path: Optional[Path] = None,
+    tombstone_path: Optional[Path] = None,
+    now: Optional[Any] = None,
+) -> Tuple[int, int]:
+    """Run the binding-telemetry producer over the fleet worker event stream;
+    queue its ``model_binding`` proposals. binding-telemetry-v1 P2.
+
+    Fourth INDEPENDENT signal sharing the ``flywheel scan --propose`` cadence
+    (the fault-triage coexistence pattern — no coupled enable flags).
+    Idempotent per (skill, evidence_hash): identical evidence DEDUPS via
+    ``proposal_queue.append`` returning False; a pending model_binding
+    proposal for a skill suppresses stacking; rejection tombstones (R-B2)
+    suppress re-filing until material change. Returns ``(queued_new,
+    deduped)``.
+    """
+    from grove.eval.binding_scan import build_binding_proposals
+    from grove.eval.proposal_queue import append as _append
+
+    target = queue_path or default_queue_path()
+    proposals = build_binding_proposals(
+        events_root=events_root,
+        tombstone_path=tombstone_path,
+        queue_path=target,
+        now=now,
+    )
+    queued_new = deduped = 0
+    for proposal in proposals:
+        if _append(proposal, path=target):
+            queued_new += 1
+        else:
+            deduped += 1
+    return queued_new, deduped
+
+
 # ── scan (T0 pattern cache — Sprint 48) ──────────────────────────────
 
 
@@ -446,6 +483,22 @@ def cli_scan(
         else:
             print(
                 "Fault triage: no recurring fault class meets the threshold."
+            )
+        print()
+
+        # binding-telemetry-v1 P2 — the FOURTH independent signal, same
+        # coexistence pattern.
+        bt_new, bt_dup = run_binding_scan(queue_path=queue_path)
+        if bt_new or bt_dup:
+            print(
+                f"Binding telemetry: queued {bt_new} model_binding proposal(s)"
+                + (f", {bt_dup} already pending (deduped)" if bt_dup else "")
+                + "."
+            )
+        else:
+            print(
+                "Binding telemetry: no skill has sufficient cross-model "
+                "evidence."
             )
         print()
 
@@ -1619,6 +1672,23 @@ def cli_approve(
 # ── reject ───────────────────────────────────────────────────────────
 
 
+def _reject_model_binding(proposal: RoutingProposal) -> None:
+    # binding-telemetry-v1 P2 — write the R-B2 suppression tombstone. Tolerant
+    # like every reject_callback (the operator must always be able to dismiss
+    # a queued item): a store-write failure logs loud and the rejection
+    # proceeds — the proposal may re-surface next scan and be re-rejected,
+    # never the reverse.
+    try:
+        from grove.eval.binding_scan import record_tombstone
+
+        record_tombstone(proposal)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[flywheel] could not record binding tombstone for %s: %r",
+            proposal.proposal_id, exc,
+        )
+
+
 def _reject_pattern_promotion(proposal: RoutingProposal) -> None:
     # Sprint 48 — a rejected pattern is marked rejected in pattern_cache.db so
     # the scanner NEVER re-proposes the same pattern (3e). The compiled entry
@@ -1916,6 +1986,12 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         diff_renderer=_model_binding_to_diff,
         apply_callback=_approve_model_binding,
         apply_label_prefix="Model binding applied: ",
+        # binding-telemetry-v1 P2 — rejection writes the R-B2 suppression
+        # tombstone (the pattern_promotion → tombstone precedent): the scan
+        # will not re-file this (skill, baseline, proposed, rubric) rebind
+        # until a MATERIAL change (new observed model / binding changed /
+        # rubric bumped — the latter two structural via the key).
+        reject_callback=_reject_model_binding,
     ),
     PROPOSAL_TYPE_ZONE_PROMOTION: ProposalHandler(
         summary_renderer=_summary_zone_promotion,
