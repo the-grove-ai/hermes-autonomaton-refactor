@@ -2031,7 +2031,12 @@ class Dispatcher:
                         # skill's resolved tier BEFORE its next completion reasons
                         # over the skill. Fires on every invoke_skill (bindingless
                         # -> turn default) so skill A's tier cannot leak to skill B.
-                        self._apply_skill_tier_binding(agent, _batch)
+                        # skill-invocation-path-integrity-v1 P5 — the executor's
+                        # ToolResults ride along so only a SUCCESSFUL invocation
+                        # rebinds (a failed exploratory call must not move tiers).
+                        self._apply_skill_tier_binding(
+                            agent, _batch, exec_results=_exec_results
+                        )
                     else:
                         _exec_results = []
                     # GRV-009 E3 C4 — tool_batch_executed retired. The unified
@@ -3349,23 +3354,76 @@ class Dispatcher:
             pass  # telemetry must never break a turn
         return res.tier
 
-    def _apply_skill_tier_binding(self, agent: Any, batch: Any) -> None:
+    @staticmethod
+    def _invoke_result_success(result: Any) -> bool:
+        """True when an invoke_skill ToolResult indicates a successful load
+        (skill-invocation-path-integrity-v1 P5): transport success AND the
+        handler's JSON envelope not ``success: false`` (the handler reports
+        not-found / refusal inside its envelope without raising)."""
+        if result is None or not getattr(result, "success", False):
+            return False
+        content = getattr(result, "content", None)
+        if isinstance(content, str):
+            try:
+                envelope = _json_mod.loads(content)
+            except ValueError:
+                return True  # non-JSON content — transport success stands
+            if isinstance(envelope, dict) and envelope.get("success") is False:
+                return False
+        return True
+
+    def _apply_skill_tier_binding(
+        self, agent: Any, batch: Any, exec_results: Optional[List[Any]] = None,
+    ) -> None:
         """If this executed batch invoked a skill, rebind for the last such skill
-        so the agent's next completion reasons over it at its resolved tier."""
+        so the agent's next completion reasons over it at its resolved tier.
+
+        skill-invocation-path-integrity-v1 P5 — the rebind fires only for a
+        SUCCESSFUL invocation (see :meth:`_invoke_result_success`): a failed
+        exploratory call must not move the agent's tier. *exec_results* is the
+        executor's ToolResult list for this batch (one per intent, input
+        order); ``None`` (legacy/test callers) preserves the pre-P5
+        assume-success behavior — the production call site always passes it.
+
+        The P4 ``recordless_allow`` annotation is deliberately UPSTREAM of the
+        success gate (PM ruling): a failed recordless invocation is still
+        backfill telemetry, so the annotation fires for EVERY executed
+        invoke_skill intent regardless of handler outcome.
+        """
+        results_by_id: Dict[str, Any] = {}
+        if exec_results:
+            for r in exec_results:
+                rid = getattr(r, "intent_id", None)
+                if rid:
+                    results_by_id[rid] = r
         last_skill: Optional[str] = None
-        for intent in batch:
-            if getattr(intent, "tool_name", None) == "invoke_skill":
-                a = getattr(intent, "arguments", None)
-                if isinstance(a, dict) and isinstance(a.get("name"), str) and a["name"].strip():
-                    last_skill = a["name"].strip()
-                    # skill-invocation-path-integrity-v1 P4 — this hook fires
-                    # only for EXECUTED batches (a halted/denied batch never
-                    # reaches it), so a NONE resolution here is precisely an
-                    # executed recordless invocation. Annotation-only: the
-                    # legacy-allow disposition is unchanged and no andon files.
-                    from grove.capability_registry import resolve_skill_record
-                    if resolve_skill_record(last_skill).status == "none":
-                        self._current_turn_recordless_allow = True
+        for idx, intent in enumerate(batch):
+            if getattr(intent, "tool_name", None) != "invoke_skill":
+                continue
+            a = getattr(intent, "arguments", None)
+            if not (
+                isinstance(a, dict)
+                and isinstance(a.get("name"), str)
+                and a["name"].strip()
+            ):
+                continue
+            name = a["name"].strip()
+            # P4 — this hook fires only for EXECUTED batches (a halted/denied
+            # batch never reaches it), so a NONE resolution here is precisely
+            # an executed recordless invocation. Annotation-only, success-
+            # independent: the legacy-allow disposition is unchanged and no
+            # andon files.
+            from grove.capability_registry import resolve_skill_record
+            if resolve_skill_record(name).status == "none":
+                self._current_turn_recordless_allow = True
+            # P5 — success gate (rebind candidates only).
+            if exec_results is not None:
+                result = results_by_id.get(getattr(intent, "call_id", None))
+                if result is None and idx < len(exec_results):
+                    result = exec_results[idx]
+                if not self._invoke_result_success(result):
+                    continue
+            last_skill = name
         if last_skill is not None:
             self._rebind_agent_for_skill(agent, last_skill)
 
