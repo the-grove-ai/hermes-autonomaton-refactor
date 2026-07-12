@@ -167,6 +167,63 @@ def test_transport_error_propagates(eval_env, monkeypatch):
         evaluate_draft(_Cap(), _FILES)
 
 
+# ── TRUNCATION LADDER (P5b — transport class only) ───────────────────────────
+
+
+def test_truncation_retries_once_at_raised_cap(eval_env, monkeypatch):
+    """Cap-cut verdict → ONE retry at the raised rung → success. The live
+    Andon class (reasoning model burns the cap on chain-of-thought before the
+    forced tool call materializes), run tqa-verify-20260712b."""
+    from grove.t1_call import T1TruncationError
+
+    caps = []
+
+    def laddered(prompt, *, system=None, tool=None, max_tokens=None, tier=None):
+        caps.append(max_tokens)
+        if len(caps) == 1:
+            raise T1TruncationError("cap-cut before any tool call materialized")
+        return dict(_GOOD_VERDICT)
+
+    monkeypatch.setattr(quality, "call_t1", laddered)
+    v = evaluate_draft(_Cap(), _FILES)
+    assert v["status"] == "pass"
+    assert caps == [quality._EVAL_MAX_TOKENS, quality._EVAL_RETRY_MAX_TOKENS]
+
+
+def test_double_truncation_propagates_loud(eval_env, monkeypatch):
+    from grove.t1_call import T1TruncationError
+
+    caps = []
+
+    def always_cut(prompt, *, system=None, tool=None, max_tokens=None, tier=None):
+        caps.append(max_tokens)
+        raise T1TruncationError("still cap-cut")
+
+    monkeypatch.setattr(quality, "call_t1", always_cut)
+    with pytest.raises(T1TruncationError):
+        evaluate_draft(_Cap(), _FILES)
+    assert caps == [quality._EVAL_MAX_TOKENS, quality._EVAL_RETRY_MAX_TOKENS]
+
+
+def test_malformed_verdict_never_retries(eval_env, monkeypatch):
+    """Structural validation stays no-retry — the ladder is transport-only."""
+    calls = []
+
+    def malformed(*a, **k):
+        calls.append(1)
+        return {"complete": True}  # missing required keys
+
+    monkeypatch.setattr(quality, "call_t1", malformed)
+    with pytest.raises(MalformedVerdict):
+        evaluate_draft(_Cap(), _FILES)
+    assert len(calls) == 1
+
+
+def test_cap_constants_pinned():
+    assert quality._EVAL_MAX_TOKENS == 4096
+    assert quality._EVAL_RETRY_MAX_TOKENS == 8192
+
+
 # ── SIZE GUARD (R-B3, combined input per A1) ─────────────────────────────────
 
 
