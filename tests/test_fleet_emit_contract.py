@@ -934,3 +934,74 @@ def test_sentinel_gated_worker_evaluates_too(monkeypatch, tmp_path):
     # identity envelope excluded on the sentinel path too:
     assert "meta.json" not in calls[0]["files"]
     assert set(calls[0]["files"]) == {"resume.md", "cover-letter.md"}
+
+
+# ── dead_pinned_slug classification (binding-telemetry-v1 P3) ────────────────
+#
+# Conservative signature matrix at main()'s uncaught chokepoint: ONLY the
+# unambiguous provider model-does-not-exist class is classified; every
+# ambiguity (routing artifacts, 5xx, timeouts, generic 400s) stays generic.
+
+
+class _FakeStatusError(Exception):
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        if status_code is not None:
+            self.status_code = status_code
+
+
+@pytest.mark.parametrize(
+    "message,status,expected",
+    [
+        # UNAMBIGUOUS — classified:
+        ("The model `x/dead` does not exist", 404, "dead_pinned_slug"),
+        ("x/dead is not a valid model ID", 400, "dead_pinned_slug"),
+        ("Model not found: x/dead", 404, "dead_pinned_slug"),
+        ("no such model 'x/dead'", 400, "dead_pinned_slug"),
+        ("Unknown model x/dead", 404, "dead_pinned_slug"),
+        # AMBIGUOUS — untouched:
+        ("No endpoints found for x/dead", 404, "uncaught"),   # routing/retention artifact
+        ("model not found", 502, "uncaught"),                  # wrong status class
+        ("model not found", None, "uncaught"),                 # no status (timeout/conn)
+        ("invalid request: bad temperature", 400, "uncaught"), # generic 400
+        ("The resource does not exist", 404, "uncaught"),      # no 'model' in message
+        ("upstream connect error", 503, "uncaught"),
+    ],
+)
+def test_dead_pinned_slug_signature_matrix(message, status, expected):
+    exc = _FakeStatusError(message, status_code=status)
+    assert worker_entry._uncaught_check(exc) == expected
+
+
+def test_stamped_check_always_wins():
+    from grove.fleet.errors import FleetWorkerAndon
+
+    exc = FleetWorkerAndon("boom", check="evaluator_call_failed")
+    assert worker_entry._uncaught_check(exc) == "evaluator_call_failed"
+    plain = RuntimeError("kaboom")
+    assert worker_entry._uncaught_check(plain) == "uncaught"
+
+
+def test_main_event_carries_dead_pinned_slug(monkeypatch, tmp_path):
+    """Drive main() whole: an unambiguous provider 404 out of run_worker →
+    the terminal event carries check=dead_pinned_slug + traceback."""
+    from grove.fleet import paths as _paths
+
+    monkeypatch.setattr(_paths, "get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        worker_entry, "_read_inbox_payload", lambda w, r: {"rows": []}
+    )
+
+    def boom(worker_id, run_id, payload):
+        raise _FakeStatusError(
+            "The model `prov/dead-slug` does not exist", status_code=404
+        )
+
+    monkeypatch.setattr(worker_entry, "run_worker", boom)
+    rc = worker_entry.main(["--worker-id", "forge", "--run-id", "deadrun1"])
+    assert rc == 1
+    ev = json.loads(_paths.event_path("forge", "deadrun1").read_text())
+    assert ev["status"] == "failed"
+    assert ev["check"] == "dead_pinned_slug"
+    assert "dead-slug" in ev["detail"]
+    assert ev["quality_score"] is None  # rider keys present on failed shape too
