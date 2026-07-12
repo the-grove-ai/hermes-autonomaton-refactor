@@ -206,6 +206,14 @@ class FleetManager:
                     "unit_id": unit_id,
                     "skill_id": skill_id,
                     "canonical_sink": canonical_sink,
+                    # drafter-quality-checks-v1 P4 — the quality rider, read OFF
+                    # the event fields (the canonical channel, same discipline as
+                    # slug/unit_id above). Always-present-null precedent: null on
+                    # every ungated producer's proposals.
+                    "quality_score": event.get("quality_score"),
+                    "rubric_version": event.get("rubric_version"),
+                    "redraft_count": event.get("redraft_count"),
+                    "evaluator_model": event.get("evaluator_model"),
                 }
                 pid, appended = file_agentless(
                     type=PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,

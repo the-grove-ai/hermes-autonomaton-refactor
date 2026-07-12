@@ -936,6 +936,14 @@ def _resolve_unit_state(uid, producer, staged, canon, feedback, open_props,
         if include_prop and prop is not None:
             r["proposal_id"] = prop.proposal_id
             r["proposal_type"] = prop.type
+            # drafter-quality-checks-v1 P4 — the quality rider rides the OPEN
+            # proposal's payload (manager threads it off the event, the
+            # canonical channel) into the unit dict for the detail-header
+            # chip. Absent/null on ungated producers → no keys, no chip.
+            ppl = getattr(prop, "payload", None) or {}
+            if ppl.get("quality_score") is not None or ppl.get("rubric_version") is not None:
+                r["quality_score"] = ppl.get("quality_score")
+                r["quality_rubric_version"] = ppl.get("rubric_version")
         return r
 
     # (1) TOPOLOGICAL SUPREMACY — canonical presence wins (mv-sink promoted).
