@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 WORKER_MAX_ITERATIONS = 50
 
+# The self-authored (Option 2, forge-style) sentinel triad — the required set
+# the package parser enforces. Hoisted (drafter-quality-checks-v1 P3) so the
+# first-pass extraction and the redraft re-extraction share one declaration.
+_SELF_AUTHORED_REQUIRED = {"resume.md", "cover-letter.md", "meta.json"}
+
 
 def _now_iso() -> str:
     # Runtime process (not a resumable workflow script) — wall clock is fine.
@@ -613,6 +618,344 @@ def _persist_raw_output(worker_id: str, run_id: str, text: str) -> Optional[str]
         return None
 
 
+# ---------------------------------------------------------------------------
+# drafter-quality-checks-v1 P3 — the post-staging quality gate.
+#
+# ONE transport-agnostic gate site (R-A2): run_worker normalizes every success
+# path (tool-emitted, sentinel, and the F6 dual-read fallback) into a common
+# staging outcome, then calls _apply_quality_gate exactly once, BEFORE the
+# success event. The gate keys on record-block presence only (R-A11): a record
+# without a valid governance.quality_gate passes through untouched except for
+# the four always-present null rider fields.
+#
+# The gate informs disposition; it NEVER withholds staged work: pass,
+# skipped_oversize, fail-after-redraft, and even a redraft that produces no
+# package (draft #1 restored from the archive) all proceed to the success
+# event with the final score attached.
+# ---------------------------------------------------------------------------
+
+_UNGATED_QUALITY_KW: Dict[str, Any] = {
+    "quality_score": None,
+    "rubric_version": None,
+    "redraft_count": None,
+    "evaluator_model": None,
+}
+
+
+def _quality_task_context(gate: Dict[str, Any], payload: Any) -> Optional[Dict[str, Any]]:
+    """A1 (R-A12) — resolve the gate's declared ``context_inputs`` against the
+    dispatch payload (the SAME payload the prompt renderer consumes). Returns
+    the present subset; a missing declared key is noted by the evaluator in
+    the verdict (``context_keys_missing``), never a run failure. None when the
+    record declares no context_inputs (criteria-only evaluation)."""
+    keys = list(gate.get("context_inputs") or [])
+    if not keys:
+        return None
+    if not isinstance(payload, dict):
+        return {}
+    return {k: payload[k] for k in keys if k in payload}
+
+
+def _evaluate_or_andon(cap, worker_id: str, staged_files: Dict[str, str], task_context):
+    """Run the evaluator; convert ANY evaluator exception into the Andon the
+    reap → ledger → triage chain consumes (R-A10: catch-and-log is a SPEC
+    violation — an evaluator failure rides the failed-event loudly)."""
+    from grove.fleet import quality as fleet_quality
+    from grove.fleet.errors import FleetWorkerAndon
+
+    # meta.json is the runtime identity envelope (every transport stages one),
+    # not draft content — the rubric evaluates the draft, not the plumbing.
+    draft_files = {k: v for k, v in staged_files.items() if k != "meta.json"}
+    try:
+        return fleet_quality.evaluate_draft(cap, draft_files, task_context)
+    except Exception as exc:
+        raise FleetWorkerAndon(
+            f"quality-gate evaluator call failed for record {cap.id!r}: "
+            f"{type(exc).__name__}: {exc} — the declared rubric could not be "
+            f"applied; failing loud",
+            worker_id=worker_id,
+            check="evaluator_call_failed",
+        ) from exc
+
+
+def _archive_staged_draft(cap, worker_id: str, sink: Path, slug: str) -> str:
+    """(a) Archive the below-threshold draft #1 OUT of the staging sink into
+    the write_zone archive location — ``<canonical_dir>/<archive_dir>/
+    <slug>-<utc-ts>/``, the shipped reject-archive naming (actions.py
+    ``_archive_forge_slug``, canonized by the purge core). One atomic rename
+    within the one ~/.grove mount; the timestamped destination never
+    overwrites (R-A6 — and a same-instant collision makes the rename itself
+    fail loud rather than merge)."""
+    from datetime import datetime, timezone
+
+    from grove.fleet.errors import FleetWorkerAndon
+    from grove.utils.fs_utils import _grove_home_realpath, _grove_subdir_realpath
+
+    gov = cap.governance if isinstance(getattr(cap, "governance", None), dict) else {}
+    wz = gov.get("write_zone") or {}
+    canonical = wz.get("canonical_dir")
+    if not canonical:
+        raise FleetWorkerAndon(
+            f"capability {cap.id!r} declares a quality_gate but no "
+            f"governance.write_zone.canonical_dir — the redraft cycle has no "
+            f"declared archive location for draft #1",
+            worker_id=worker_id,
+            check="no_archive_location",
+        )
+    archive_rel = (wz.get("retention") or {}).get("archive_dir") or ".archive"
+    grove = _grove_home_realpath()
+    canonical_root = Path(_grove_subdir_realpath(canonical, grove))
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = canonical_root / archive_rel / f"{slug}-{ts}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    (sink / slug).rename(dest)
+    return str(dest)
+
+
+def _restore_archived_draft(sink: Path, slug: str, archive_path: str) -> None:
+    """Put draft #1 back when the redraft produced no package — the gate never
+    withholds work. A restore failure raises loudly (main() → failed event)."""
+    Path(archive_path).rename(sink / slug)
+
+
+def _apply_quality_gate(
+    *,
+    cap,
+    worker_id: str,
+    run_id: str,
+    payload: Any,
+    agent,
+    sink: Path,
+    transport: str,
+    declarative: bool,
+    content_files: Optional[List[str]],
+    result: Dict[str, Any],
+    staged_list: List[str],
+    staged_files: Dict[str, str],
+    pkg_slug: str,
+    success_detail: str,
+):
+    """The ONE post-staging quality-gate site (R-A2, transport-agnostic).
+
+    Returns ``(quality_kw, staged_list, pkg_slug, success_detail)`` — the four
+    event rider fields plus the (possibly re-staged) paths/slug/detail. An
+    ungated record returns the four null keys and everything else untouched
+    (byte-identical event behavior for ungated workers).
+    """
+    from grove.fleet import quality as fleet_quality
+
+    gate = fleet_quality.quality_gate_declaration(cap)
+    if gate is None:
+        return dict(_UNGATED_QUALITY_KW), staged_list, pkg_slug, success_detail
+
+    task_context = _quality_task_context(gate, payload)
+    verdict = _evaluate_or_andon(cap, worker_id, staged_files, task_context)
+    redraft_count = 0
+
+    # Fail + a redraft budget (schema validates redraft_limit == 1 in v1) →
+    # one governed redraft cycle. Pass and skipped_oversize proceed as-is.
+    if verdict["status"] == "fail" and int(gate["redraft_limit"]) > 0:
+        redraft_count = 1
+        staged_list, staged_files, pkg_slug, verdict, success_detail = _redraft_cycle(
+            cap=cap,
+            worker_id=worker_id,
+            run_id=run_id,
+            payload=payload,
+            agent=agent,
+            sink=sink,
+            transport=transport,
+            declarative=declarative,
+            content_files=content_files,
+            result=result,
+            staged_list=staged_list,
+            staged_files=staged_files,
+            pkg_slug=pkg_slug,
+            success_detail=success_detail,
+            verdict=verdict,
+            task_context=task_context,
+        )
+
+    quality_kw = {
+        "quality_score": verdict["quality_score"],
+        "rubric_version": verdict["rubric_version"],
+        "redraft_count": redraft_count,
+        "evaluator_model": verdict["evaluator_model"],
+    }
+    return quality_kw, staged_list, pkg_slug, success_detail
+
+
+def _redraft_cycle(
+    *,
+    cap,
+    worker_id: str,
+    run_id: str,
+    payload: Any,
+    agent,
+    sink: Path,
+    transport: str,
+    declarative: bool,
+    content_files: Optional[List[str]],
+    result: Dict[str, Any],
+    staged_list: List[str],
+    staged_files: Dict[str, str],
+    pkg_slug: str,
+    success_detail: str,
+    verdict: Dict[str, Any],
+    task_context,
+):
+    """One governed redraft cycle (v1: exactly one, schema-enforced).
+
+    (a) archive draft #1 (never overwrite, R-A6) → (b) tool path: reset +
+    re-arm the emit tool with the SAME record-derived spec (the lock
+    re-engages on the redraft emit, R-B4) → (c) ONE fresh continuation
+    re-prompt via ``run_conversation(next_prompt, conversation_history=
+    history)`` — the emit-ladder pattern — carrying the verdict issues
+    verbatim and authorizing exactly one further emission → (d) re-stage +
+    re-evaluate ONCE → (e) proceed regardless: the final verdict rides the
+    event whether it passed or not.
+
+    A redraft that produces NO package (or hits a governed denial) restores
+    draft #1 from the archive and proceeds on the ORIGINAL verdict — the gate
+    informs disposition; it never withholds work.
+
+    Returns ``(staged_list, staged_files, pkg_slug, verdict, success_detail)``.
+    """
+    from grove.governance_halt import TerminalGovernanceHalt
+
+    archive_path = _archive_staged_draft(cap, worker_id, sink, pkg_slug)
+    logger.info(
+        "[fleet:%s] quality gate failed (score=%s < threshold=%s); draft #1 "
+        "archived to %s; running one governed redraft.",
+        worker_id,
+        verdict["quality_score"],
+        verdict["threshold"],
+        archive_path,
+    )
+
+    if transport == "tool":
+        from tools import fleet_emit_tool
+        from tools.registry import invalidate_check_fn_cache
+
+        # Re-derive the SAME record-declared spec (deterministic) and re-arm:
+        # reset() disarms the run-scoped lock; configure() re-engages the
+        # contract so the authorized redraft emit stages-and-locks exactly like
+        # the first (R-B4: a third call hits the lock refusal).
+        emit_decl = _emit_declaration(cap)
+        expected_files, meta_keys, unit_slug, synth = _derive_emit_spec(
+            emit_decl,
+            declarative=declarative,
+            content_files=content_files,
+            payload=payload,
+            worker_id=worker_id,
+        )
+        fleet_emit_tool.reset()
+        fleet_emit_tool.configure(
+            expected_files=expected_files,
+            meta_required_keys=meta_keys,
+            sink=sink,
+            slug=unit_slug,
+            synth_meta=synth,
+        )
+        invalidate_check_fn_cache()
+
+    bullets = "\n".join(f"- {i}" for i in verdict["issues"]) or (
+        "- (no specific issues listed)"
+    )
+    channel = (
+        "call emit_package EXACTLY ONE more time with the complete revised "
+        "file(s)"
+        if transport == "tool"
+        else "re-emit the complete revised file(s) using the same delimited "
+        "protocol as before"
+    )
+    redraft_prompt = (
+        "Your draft was evaluated against the skill's quality rubric "
+        f"(score {verdict['quality_score']:.2f}, threshold "
+        f"{verdict['threshold']:.2f}) and did not pass.\n"
+        f"Issues to fix:\n{bullets}\n\n"
+        f"Produce a complete REVISED draft that addresses every issue, then "
+        f"{channel}. Do not reply with prose."
+    )
+    history = result.get("messages")
+    try:
+        result2 = agent.run_conversation(
+            redraft_prompt, conversation_history=history, task_id=run_id
+        )
+    except TerminalGovernanceHalt as tgh:
+        logger.warning(
+            "[fleet:%s] governed denial during the redraft cycle (%s); draft #1 "
+            "restored and proceeding on the original verdict.",
+            worker_id,
+            tgh,
+        )
+        _restore_archived_draft(sink, pkg_slug, archive_path)
+        return (
+            staged_list,
+            staged_files,
+            pkg_slug,
+            verdict,
+            success_detail + "; redraft_denied draft1_restored",
+        )
+
+    # (d) re-stage — same recovery machinery as the first pass, one attempt.
+    new_staged: Optional[List[str]] = None
+    new_files: Optional[Dict[str, str]] = None
+    new_slug = pkg_slug
+    if transport == "tool":
+        emitted2 = fleet_emit_tool.emitted()
+        if emitted2 is not None:
+            new_staged = list(emitted2["staged"])
+            new_files = dict(emitted2["files"])
+            new_slug = pkg_slug if declarative else emitted2["slug"]
+    else:
+        from grove.fleet.staging import stage_package
+
+        if declarative:
+            extracted2, _reason2 = _extract_declarative_content(
+                result2.get("messages"), run_id[:8], sink, content_files
+            )
+            if extracted2 is not None:
+                files2 = dict(extracted2["files"])
+                files2["meta.json"] = _synthesize_meta(payload, worker_id, pkg_slug)
+                new_staged = [str(p) for p in stage_package(sink, pkg_slug, files2)]
+                new_files = files2
+        else:
+            extracted2, _reason2 = _extract_fleet_package(
+                result2.get("messages"), run_id[:8], sink, _SELF_AUTHORED_REQUIRED
+            )
+            if extracted2 is not None:
+                new_slug = extracted2["slug"]
+                new_staged = [
+                    str(p) for p in stage_package(sink, new_slug, extracted2["files"])
+                ]
+                new_files = dict(extracted2["files"])
+
+    if new_staged is None or new_files is None:
+        logger.warning(
+            "[fleet:%s] redraft produced no package; draft #1 restored and "
+            "proceeding on the original verdict.",
+            worker_id,
+        )
+        _restore_archived_draft(sink, pkg_slug, archive_path)
+        return (
+            staged_list,
+            staged_files,
+            pkg_slug,
+            verdict,
+            success_detail + "; redraft_no_package draft1_restored",
+        )
+
+    # Re-evaluate ONCE; (e) proceed regardless — the final score rides.
+    verdict2 = _evaluate_or_andon(cap, worker_id, new_files, task_context)
+    return (
+        new_staged,
+        new_files,
+        new_slug,
+        verdict2,
+        success_detail + f"; redrafted draft1_archived={archive_path}",
+    )
+
+
 def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
     """Execute one worker run and return its terminal-state event dict.
 
@@ -801,6 +1144,16 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 **binding_kw,
             )
 
+        # drafter-quality-checks-v1 P3 — normalized staging outcome. Each
+        # branch (tool-emitted, sentinel, F6 dual-read fallback) fills these,
+        # then falls into the SINGLE quality-gate site + success emission at
+        # the bottom (R-A2). None = not yet staged.
+        staged_list: Optional[List[str]] = None
+        staged_files: Dict[str, str] = {}
+        pkg_slug = ""
+        event_kw: Dict[str, Any] = {}
+        success_detail = ""
+
         # ── wiki-writer-structured-output-v1 P1 — emit lifecycle ladder ──
         # Tool transport only. Lock-on-emit means a locked package was ALREADY
         # validated + atomically staged by the handler; here the run recovers
@@ -849,38 +1202,28 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             if emitted is not None:
                 # Locked = validated + staged (handler staged atomically via
                 # the same jailed stage_package the sentinel path uses).
+                # drafter-quality-checks-v1 P3 — the success emission moved to
+                # the single post-staging gate site below (R-A2); this branch
+                # now only NORMALIZES the staging outcome. Detail strings are
+                # byte-identical to the pre-P3 events.
+                staged_list = list(emitted["staged"])
+                staged_files = dict(emitted["files"])
                 if declarative:
                     unit_id = payload["unit_id"]
-                    return _event(
-                        worker_id,
-                        run_id,
-                        cap.id,
-                        "success",
-                        detail=(
-                            f"completed={result.get('completed')}; "
-                            f"unit={unit_id}; transport=tool"
-                        ),
-                        staged=list(emitted["staged"]),
-                        slug=unit_id,
-                        unit_id=unit_id,
-                        **binding_kw,
+                    pkg_slug = unit_id
+                    event_kw = {"unit_id": unit_id}
+                    success_detail = (
+                        f"completed={result.get('completed')}; "
+                        f"unit={unit_id}; transport=tool"
                     )
-                row_id, fit_score = _row_identity(emitted, payload)
-                return _event(
-                    worker_id,
-                    run_id,
-                    cap.id,
-                    "success",
-                    detail=(
+                else:
+                    row_id, fit_score = _row_identity(emitted, payload)
+                    pkg_slug = emitted["slug"]
+                    event_kw = {"row_id": row_id, "fit_score": fit_score}
+                    success_detail = (
                         f"completed={result.get('completed')}; "
                         f"slug={emitted['slug']}; transport=tool"
-                    ),
-                    staged=list(emitted["staged"]),
-                    slug=emitted["slug"],
-                    row_id=row_id,
-                    fit_score=fit_score,
-                    **binding_kw,
-                )
+                    )
             # No lock — fall through to the sentinel extraction (dual-read):
             # a tool-flagged producer that emitted sentinel blocks anyway is
             # still accepted this migration phase (F6).
@@ -892,96 +1235,122 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         # slug dir, jailed by is_relative_to(sink). The skill never self-writes — so a
         # wall-clock kill cannot leave a half-written file the portal reads. The
         # per-run tag (run_id[:8]) frames the sentinels; forge names its required set.
-        if declarative:
-            # Declarative: parse the content file(s) only; the runtime synthesizes
-            # meta.json (identity) and stages the package under the resolver's unit_id.
-            extracted, reason = _extract_declarative_content(
-                result.get("messages"), run_id[:8], sink, content_files
-            )
-        else:
-            # (f) Option 2: self-authored forge triad — the skill names its files and
-            # authors meta.json; the runtime stages under the slug meta declares.
-            extracted, reason = _extract_fleet_package(
-                result.get("messages"),
-                run_id[:8],
-                sink,
-                {"resume.md", "cover-letter.md", "meta.json"},
-            )
-        if extracted is None:
-            # fleet-failure-forensics-v1 — the model produced output but it did not
-            # parse to a valid package; that output is discarded, leaving zero
-            # diagnostic without this. Enrich detail with the fail-loud reason + a
-            # bounded preview and persist the FULL raw text to an events/<run_id>.raw.txt
-            # sidecar. status + check are preserved EXACTLY (reap keys on them); only
-            # detail is enriched and the additive raw_text_path is added.
-            # P1: a tool-transport run whose FINAL turn is still truncation-shaped
-            # (after the bounded raised-cap retry) fails as its own Andon class,
-            # emit_truncation — distinct from no_package so the reap/portal can
-            # tell "model never emitted" from "the cap ate the emission".
-            final_text = _final_assistant_text(result.get("messages") or [])
-            preview = (
-                (final_text[:800] + "…") if len(final_text) > 800 else final_text
-            ).strip()
-            if transport == "tool" and _is_truncation_result(result):
-                fail_check = "emit_truncation"
-                fail_detail = (
-                    "emit_package was never locked and the final turn was "
-                    "truncation-shaped even after the bounded raised-cap retry "
-                    "(P1 truncation guard); sentinel dual-read also found no "
-                    f"package (reason: {reason}); final assistant message was: "
-                    f"{preview!r}"
-                )
-            elif transport == "tool":
-                fail_check = "no_package"
-                fail_detail = (
-                    "emit_package was never called (after one bounded re-prompt) "
-                    "and the sentinel dual-read found no package "
-                    f"(reason: {reason}); final assistant message was: {preview!r}"
+        # (P3: skipped entirely when the tool path already locked + normalized.)
+        if staged_list is None:
+            if declarative:
+                # Declarative: parse the content file(s) only; the runtime synthesizes
+                # meta.json (identity) and stages the package under the resolver's unit_id.
+                extracted, reason = _extract_declarative_content(
+                    result.get("messages"), run_id[:8], sink, content_files
                 )
             else:
-                fail_check = "no_package"
-                fail_detail = (
-                    "delimited emit did not parse to a valid fleet_package "
-                    f"(reason: {reason}); final assistant message was: {preview!r}"
+                # (f) Option 2: self-authored forge triad — the skill names its files and
+                # authors meta.json; the runtime stages under the slug meta declares.
+                extracted, reason = _extract_fleet_package(
+                    result.get("messages"),
+                    run_id[:8],
+                    sink,
+                    _SELF_AUTHORED_REQUIRED,
                 )
-            return _event(
-                worker_id,
-                run_id,
-                cap.id,
-                "failed",
-                detail=fail_detail,
-                check=fail_check,
-                raw_text_path=_persist_raw_output(worker_id, run_id, final_text),
-                **binding_kw,
-            )
-        if declarative:
-            unit_id = payload["unit_id"]
-            files = dict(extracted["files"])
-            files["meta.json"] = _synthesize_meta(payload, worker_id, unit_id)
-            staged = stage_package(sink, unit_id, files)
-            return _event(
-                worker_id,
-                run_id,
-                cap.id,
-                "success",
-                detail=f"completed={result.get('completed')}; unit={unit_id}",
-                staged=[str(p) for p in staged],
-                slug=unit_id,
-                unit_id=unit_id,
-                **binding_kw,
-            )
-        staged = stage_package(sink, extracted["slug"], extracted["files"])
-        row_id, fit_score = _row_identity(extracted, payload)
+            if extracted is None:
+                # fleet-failure-forensics-v1 — the model produced output but it did not
+                # parse to a valid package; that output is discarded, leaving zero
+                # diagnostic without this. Enrich detail with the fail-loud reason + a
+                # bounded preview and persist the FULL raw text to an events/<run_id>.raw.txt
+                # sidecar. status + check are preserved EXACTLY (reap keys on them); only
+                # detail is enriched and the additive raw_text_path is added.
+                # P1: a tool-transport run whose FINAL turn is still truncation-shaped
+                # (after the bounded raised-cap retry) fails as its own Andon class,
+                # emit_truncation — distinct from no_package so the reap/portal can
+                # tell "model never emitted" from "the cap ate the emission".
+                final_text = _final_assistant_text(result.get("messages") or [])
+                preview = (
+                    (final_text[:800] + "…") if len(final_text) > 800 else final_text
+                ).strip()
+                if transport == "tool" and _is_truncation_result(result):
+                    fail_check = "emit_truncation"
+                    fail_detail = (
+                        "emit_package was never locked and the final turn was "
+                        "truncation-shaped even after the bounded raised-cap retry "
+                        "(P1 truncation guard); sentinel dual-read also found no "
+                        f"package (reason: {reason}); final assistant message was: "
+                        f"{preview!r}"
+                    )
+                elif transport == "tool":
+                    fail_check = "no_package"
+                    fail_detail = (
+                        "emit_package was never called (after one bounded re-prompt) "
+                        "and the sentinel dual-read found no package "
+                        f"(reason: {reason}); final assistant message was: {preview!r}"
+                    )
+                else:
+                    fail_check = "no_package"
+                    fail_detail = (
+                        "delimited emit did not parse to a valid fleet_package "
+                        f"(reason: {reason}); final assistant message was: {preview!r}"
+                    )
+                return _event(
+                    worker_id,
+                    run_id,
+                    cap.id,
+                    "failed",
+                    detail=fail_detail,
+                    check=fail_check,
+                    raw_text_path=_persist_raw_output(worker_id, run_id, final_text),
+                    **binding_kw,
+                )
+            if declarative:
+                unit_id = payload["unit_id"]
+                files = dict(extracted["files"])
+                files["meta.json"] = _synthesize_meta(payload, worker_id, unit_id)
+                staged = stage_package(sink, unit_id, files)
+                staged_list = [str(p) for p in staged]
+                staged_files = files
+                pkg_slug = unit_id
+                event_kw = {"unit_id": unit_id}
+                success_detail = f"completed={result.get('completed')}; unit={unit_id}"
+            else:
+                staged = stage_package(sink, extracted["slug"], extracted["files"])
+                row_id, fit_score = _row_identity(extracted, payload)
+                staged_list = [str(p) for p in staged]
+                staged_files = dict(extracted["files"])
+                pkg_slug = extracted["slug"]
+                event_kw = {"row_id": row_id, "fit_score": fit_score}
+                success_detail = (
+                    f"completed={result.get('completed')}; slug={extracted['slug']}"
+                )
+
+        # ── drafter-quality-checks-v1 P3 — the ONE quality-gate site (R-A2),
+        # after the staging outcome is known on every transport (tool,
+        # sentinel, and the F6 dual-read fallback), BEFORE the success event.
+        # Ungated records pass through byte-identical except the four
+        # always-present null rider fields.
+        quality_kw, staged_list, pkg_slug, success_detail = _apply_quality_gate(
+            cap=cap,
+            worker_id=worker_id,
+            run_id=run_id,
+            payload=payload,
+            agent=agent,
+            sink=sink,
+            transport=transport,
+            declarative=declarative,
+            content_files=content_files,
+            result=result,
+            staged_list=staged_list,
+            staged_files=staged_files,
+            pkg_slug=pkg_slug,
+            success_detail=success_detail,
+        )
         return _event(
             worker_id,
             run_id,
             cap.id,
             "success",
-            detail=f"completed={result.get('completed')}; slug={extracted['slug']}",
-            staged=[str(p) for p in staged],
-            slug=extracted["slug"],
-            row_id=row_id,
-            fit_score=fit_score,
+            detail=success_detail,
+            staged=staged_list,
+            slug=pkg_slug,
+            **event_kw,
+            **quality_kw,
             **binding_kw,
         )
     finally:
@@ -1023,6 +1392,10 @@ def _event(
     model: Optional[str] = None,
     tier: Optional[str] = None,
     binding_source: Optional[str] = None,
+    quality_score: Optional[float] = None,
+    rubric_version: Optional[str] = None,
+    redraft_count: Optional[int] = None,
+    evaluator_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     # fleet-pipeline-v1 P2 (A1) — additive fields the reap emitter reads OFF the
     # event (never parsed from detail/paths). None for workers that don't produce
@@ -1050,6 +1423,14 @@ def _event(
         "model": model,
         "tier": tier,
         "binding_source": binding_source,
+        # drafter-quality-checks-v1 P3 — the quality-gate rider (same additive
+        # always-present precedent as the binding rider above): null on every
+        # UNGATED worker's events and on failed/no_work shapes; populated only
+        # when a record-declared quality_gate evaluated this run's draft.
+        "quality_score": quality_score,
+        "rubric_version": rubric_version,
+        "redraft_count": redraft_count,
+        "evaluator_model": evaluator_model,
         "ts": _now_iso(),
     }
     # fleet-review-unification-v1 C1b-2 — the stable unit_id, ADDED ONLY when set (a
