@@ -3307,6 +3307,7 @@ class Dispatcher:
         operator_active = bool(_resolve_operator_tier(None) or _resolve_operator_model(None))
         res = resolve_skill_tier(
             operator_active=operator_active, model_binding=model_binding, turn_tier=turn_tier,
+            skill_name=skill_name,
         )
 
         # Build a decision at the resolved tier directly (no re-classification);
