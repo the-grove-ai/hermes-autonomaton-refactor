@@ -38,6 +38,7 @@ from grove.api.fragments import (
     _short_id,
     _swappable_tiers,
     render_alert_banner,
+    render_binding_row,
     render_disposition_transient,
     render_forge_publish_card,
     render_goal_card,
@@ -907,6 +908,104 @@ async def handle_tier_model_revert(request: web.Request) -> web.Response:
     )
 
 
+def _fresh_binding_row_html(skill: str, catalog, error: str | None = None) -> str:
+    """Re-render one binding row from a FRESH read (N2 — the response reflects
+    post-write state). An unresolvable skill renders an honest inline card
+    rather than fabricating a row."""
+    from grove.api.binding_view import binding_row
+
+    row = binding_row(skill)
+    if row is None:
+        return (
+            f'<div class="card"><h4>{_esc(skill)}</h4>'
+            f'<div class="meta error">No fleet capability record carries this '
+            f'skill name.</div></div>'
+        )
+    return render_binding_row(row, catalog, error=error)
+
+
+async def _binding_action(request: web.Request, *, action: str,
+                          binding_for) -> web.Response:
+    """Shared pin/unpin mechanics (the tier-swap template): form parse →
+    catalog membership (pin only) → the ONE sanctioned writer → re-render the
+    row from a fresh read. Failure ladder: client input → 400; writer refusal
+    (BindingWriteError) → 422; anything unexpected → the loud failure path
+    (broadcast + Kaizen filing + banner) at 500."""
+    from grove.capability_registry import BindingWriteError, set_model_binding
+
+    data = await request.post()
+    skill = str(data.get("skill") or "").strip()
+    model_slug = str(data.get("model_slug") or "").strip()
+    catalog = load_catalog()
+
+    if not skill:
+        return await _loud_action_failure(
+            '<div class="card"><div class="meta error">Missing skill.</div></div>',
+            failure_class="binding_missing_skill",
+            action=action,
+            message="Binding action posted without a skill name.",
+            status=400,
+            file_kaizen=False,
+        )
+
+    binding = binding_for(model_slug)
+    if binding is not None and model_slug not in {m["slug"] for m in catalog}:
+        return await _loud_action_failure(
+            _fresh_binding_row_html(
+                skill, catalog,
+                error=f"Model {model_slug!r} is not in the catalog.",
+            ),
+            failure_class="binding_model_off_catalog",
+            action=action,
+            message=f"Model {model_slug!r} is not in the catalog.",
+            status=400,
+        )
+
+    try:
+        set_model_binding(skill, binding, surface="portal")
+    except BindingWriteError as exc:
+        return await _loud_action_failure(
+            _fresh_binding_row_html(skill, catalog, error=str(exc)),
+            failure_class="binding_write_refused",
+            action=action,
+            message=str(exc),
+            status=422,
+        )
+    except Exception as exc:  # noqa: BLE001 — unexpected → loud, never a 500 blank
+        return await _loud_action_failure(
+            _fresh_binding_row_html(skill, catalog, error=str(exc)),
+            failure_class="binding_unexpected",
+            action=action,
+            message=f"Unexpected failure: {exc}",
+            status=500,
+        )
+
+    logger.info("[portal.actions] binding %s: %s -> %r", action, skill,
+                binding)
+    return _html_fragment(_fresh_binding_row_html(skill, catalog))
+
+
+async def handle_binding_pin(request: web.Request) -> web.Response:
+    """Pin a fleet skill to an exact model. Form body: ``skill`` +
+    ``model_slug`` (must be in the catalog — the ONE authority). Calls the
+    sole binding writer with surface="portal"; success re-renders the row
+    from a fresh read (binding-governance-surfaces-v1)."""
+    return await _binding_action(
+        request, action="binding_pin",
+        binding_for=lambda slug: {"type": "model", "model": slug},
+    )
+
+
+async def handle_binding_unpin(request: web.Request) -> web.Response:
+    """Clear a fleet skill's model pin (binding=None through the sole writer).
+    The skill returns to tier inheritance; success re-renders the row from a
+    fresh read."""
+    return await _binding_action(
+        request, action="binding_unpin",
+        binding_for=lambda slug: None,
+    )
+
+
 # fleet-pipeline-v1 P3 — bounded publish. A hang beyond this becomes an in-process
 # TimeoutError; the promote route then KEEPS the lease held (the run_in_executor
 # thread survives wait_for cancel and would double-write if a re-tap started).
@@ -1740,6 +1839,10 @@ def register_action_routes(app: web.Application) -> None:
     # portal-model-swap-v1 — tier model swap + revert
     app.router.add_post("/portal/actions/routing/swap", handle_tier_model_swap)
     app.router.add_post("/portal/actions/routing/revert", handle_tier_model_revert)
+    # binding-governance-surfaces-v1 — per-skill model pin/unpin (Auxiliary
+    # group); both route through the sole sanctioned CapabilityBindingWriter.
+    app.router.add_post("/portal/actions/binding/pin", handle_binding_pin)
+    app.router.add_post("/portal/actions/binding/unpin", handle_binding_unpin)
     # forge-jobsearch-v1 — operator Publish tap (Drive-first, Notion-last)
     app.router.add_post("/portal/actions/forge/{slug}/publish", handle_forge_publish)
     # fleet-pipeline-v1 P3 — bespoke async Promote tap (set_lease -> bounded
