@@ -241,6 +241,10 @@ def test_manager_emits_fleet_artifact_pending_for_drafter(monkeypatch):
     assert captured["payload"] == {
         "slug": "moon-bot", "unit_id": "moon-bot",
         "skill_id": "skill.fleet.drafter", "canonical_sink": "drafter",
+        # drafter-quality-checks-v1 P4 — the quality rider (always-present,
+        # null when the event carries no gate fields).
+        "quality_score": None, "rubric_version": None,
+        "redraft_count": None, "evaluator_model": None,
     }
     assert captured["evidence"] == ("moon-bot",)
 

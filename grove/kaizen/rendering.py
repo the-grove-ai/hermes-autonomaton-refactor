@@ -367,6 +367,16 @@ def _summary_fleet_artifact_pending(proposal: RoutingProposal) -> str:
     slug = pl.get("slug", "?")
     unit = pl.get("unit_id", "?")
     base = f"fleet draft staged for review: {slug} (unit {unit})"
+    # drafter-quality-checks-v1 P4 — quality interpolation, the fit_score idiom
+    # (see _summary_forge_artifact_pending above). A gated draft carries a
+    # score; a gated-but-oversize draft carries rubric_version with a null
+    # score (the skip annotation); an ungated producer carries neither and
+    # renders byte-identically to pre-P4.
+    score = pl.get("quality_score")
+    if score is not None:
+        base += f" (quality {score})"
+    elif pl.get("rubric_version") is not None:
+        base += " (quality skipped: oversize)"
     justification = getattr(proposal, "semantic_justification", "") or ""
     return f"{base} — {justification}" if justification and justification != base else base
 

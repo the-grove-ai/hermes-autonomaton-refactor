@@ -2435,7 +2435,7 @@ async def handle_fleet_artifact_fragment(request: web.Request) -> web.Response:
         rev_chip = f' <span class="state-chip">rev {rc}</span>' if rc else ""
         header = (
             f"<h2>{_esc(filename)} {_state_chip(unit['governance_state'])}"
-            f"{rev_chip}</h2>"
+            f"{rev_chip}{_quality_chip(unit)}</h2>"
             f'<p class="page-sub">{_esc(skill_name)} &middot; generated '
             f'{_esc(_relative_age(unit["mtime"]))} &middot; unit_id '
             f'<span class="mono">{_esc(unit["unit_id"])}</span></p>'
@@ -2722,6 +2722,22 @@ def _state_chip(state: str) -> str:
     label, _rail, chip = _state_meta(state)
     return (f'<span class="state-chip {chip}"><span class="dot"></span>'
             f'{_esc(label)}</span>')
+
+
+def _quality_chip(unit: dict) -> str:
+    """drafter-quality-checks-v1 P4 — the evaluator's score as a header chip
+    (the rev-chip idiom: plain state-chip span, leading space, empty when
+    inapplicable). Score present → ``quality 0.85``; a gated-but-skipped
+    draft (rubric version present, score null) annotates the skip; an
+    ungated unit carries neither key and renders nothing. ``_esc(str(...))``
+    rather than numeric formatting — a read-side view must not 500 on one
+    malformed payload value."""
+    score = unit.get("quality_score")
+    if score is not None:
+        return f' <span class="state-chip">quality {_esc(str(score))}</span>'
+    if unit.get("quality_rubric_version"):
+        return ' <span class="state-chip">quality skipped (oversize)</span>'
+    return ""
 
 
 def _disposition_bar(pid: str, remote_sink: bool, revision_count: int = 0,
