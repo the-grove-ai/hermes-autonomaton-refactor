@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from grove.t1_call import call_t1
+from grove.t1_call import T1TruncationError, call_t1
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +45,19 @@ logger = logging.getLogger(__name__)
 # (schema: grove/capability.py _quality_gate_shape_error).
 _DEFAULT_EVALUATOR_TIER = "T1"
 
-# Verdict output ceiling — the cellar Evaluator precedent
-# (grove/wiki/pipeline.py _EVAL_MAX_TOKENS).
-_EVAL_MAX_TOKENS = 1024
+# Verdict output ceiling. P5b: raised from the cellar's 1024 — a REASONING
+# evaluator binding (deepseek-v4-pro, the first live T-QA bind) spends its
+# budget thinking BEFORE the forced tool call materializes, and 1024 cap-cut
+# every verdict (live Andon, run tqa-verify-20260712b). 4096 matches the
+# T-QA tier's declared max_tokens; call_t1 passes the caller's cap verbatim
+# (no tier-side clamp on this path).
+_EVAL_MAX_TOKENS = 4096
+
+# The raised rung of the truncation ladder — ONE bounded retry on a cap-cut
+# verdict (the cellar _call_page_tool precedent; P0 findings: identical-at-cap
+# retry is deterministic 0/6, raised-cap 2/2). A second truncation propagates
+# loud. Provider headroom verified (384K completion ceiling on the live bind).
+_EVAL_RETRY_MAX_TOKENS = 8192
 
 # R-B3 — the COMBINED input budget (task context + criteria + staged draft),
 # in characters. ~50K tokens at the 4-chars/token heuristic: comfortably
@@ -199,12 +209,32 @@ def evaluate_draft(
     # KeyError on an unknown tier propagates loudly.
     envelope["evaluator_model"] = _tier_model(evaluator_tier)
 
-    raw = call_t1(
-        prompt,
-        tool=_VERDICT_TOOL,
-        max_tokens=_EVAL_MAX_TOKENS,
-        tier=evaluator_tier,
-    )
+    # P5b truncation ladder (transport class ONLY — structural verdict
+    # validation below stays no-retry): a reasoning model can burn the cap on
+    # chain-of-thought before the forced tool call materializes. ONE bounded
+    # raised-cap retry; a second cap-cut propagates loud and the gate site
+    # converts it to the evaluator_call_failed Andon.
+    try:
+        raw = call_t1(
+            prompt,
+            tool=_VERDICT_TOOL,
+            max_tokens=_EVAL_MAX_TOKENS,
+            tier=evaluator_tier,
+        )
+    except T1TruncationError:
+        logger.warning(
+            "[fleet.quality] %s: verdict cap-cut at max_tokens=%d; retrying "
+            "once at %d (truncation ladder).",
+            getattr(record, "id", "<no id>"),
+            _EVAL_MAX_TOKENS,
+            _EVAL_RETRY_MAX_TOKENS,
+        )
+        raw = call_t1(
+            prompt,
+            tool=_VERDICT_TOOL,
+            max_tokens=_EVAL_RETRY_MAX_TOKENS,
+            tier=evaluator_tier,
+        )
     verdict = _validate_verdict(raw)
 
     score = _clamp01(float(verdict["quality_score"]))
