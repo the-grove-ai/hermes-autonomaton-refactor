@@ -305,32 +305,107 @@ def _binding_phrase(binding: Any) -> str:
     return f"{btype or '?'} binding"
 
 
+def _fmt_rate(value) -> str:
+    """A 0-1 rate as a percentage; anything non-numeric degrades to its str
+    (binding-telemetry-v1 P4 read-side discipline: visible, never a raise)."""
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _fmt_score(mean, variance) -> str:
+    if mean is None:
+        return "—"
+    out = str(mean)
+    if variance is not None:
+        out += f" ±{variance}"
+    return out
+
+
+def _binding_evidence_render(eb: Dict[str, Any]) -> Dict[str, Any]:
+    """binding-telemetry-v1 P4 — the evidence table for the offering frame.
+
+    Formats the producer's evidence_block into plain-string rows the portal's
+    approvable card renders inside its escaped ``<pre>`` diff (yaml.safe_dump
+    → _esc — the escape layer is the portal's; this stays pure data). Every
+    field is defensive: a malformed value renders AS ITS STRING rather than
+    raising — a diff_renderer exception would withhold the card's
+    dispositions (DEFECT card), which is exactly the failure this avoids.
+    """
+    arms_rows = []
+    for a in eb.get("arms") or []:
+        if not isinstance(a, dict):
+            arms_rows.append(str(a))
+            continue
+        notes = [
+            label
+            for label, flag in (
+                ("self-judged", "self_judged"),
+                ("family-judged", "family_judged"),
+                ("mixed-judge", "mixed_judge"),
+            )
+            if a.get(flag)
+        ]
+        arms_rows.append(
+            f"{a.get('model', '?')}: n={a.get('n', '?')}, "
+            f"success {_fmt_rate(a.get('success_rate'))}, "
+            f"score {_fmt_score(a.get('score_mean'), a.get('score_variance'))}, "
+            f"redraft {_fmt_rate(a.get('redraft_rate'))}"
+            + (f" [{', '.join(notes)}]" if notes else "")
+        )
+    return {
+        "class": str(eb.get("class", "?")),
+        "window": f"{eb.get('window_days', '?')}d",
+        "rubric_version": eb.get("rubric_version"),
+        "observed_models": [str(m) for m in (eb.get("observed_models") or [])],
+        "arms": arms_rows,
+        "annotations": [str(x) for x in (eb.get("annotations") or [])],
+    }
+
+
 def _summary_model_binding(proposal: RoutingProposal) -> str:
-    """Natural-language binding offer — skill + before/after, no record ids."""
+    """Natural-language binding offer — skill + before/after, no record ids.
+    binding-telemetry-v1 P4: a producer-filed proposal (evidence_block
+    present) appends its evidence class tag; a hand-filed proposal renders
+    byte-identically to pre-P4."""
     p = proposal.payload or {}
     skill = p.get("skill", "?")
     proposed = p.get("proposed_binding")
     previous = p.get("previous_binding")
     was = _binding_phrase(previous) if previous else "inheriting its tier model"
     if proposed is None:
-        return (
+        base = (
             f"Clear the model pin on '{skill}' (currently {was}) — it returns "
             f"to tier inheritance. Apply?"
         )
-    if isinstance(proposed, dict) and proposed.get("type") == "model":
-        return (
+    elif isinstance(proposed, dict) and proposed.get("type") == "model":
+        base = (
             f"Pin '{skill}' to {proposed.get('model', '?')} for fleet runs "
             f"(currently {was}). Apply?"
         )
-    return f"Set '{skill}' to {_binding_phrase(proposed)} (currently {was}). Apply?"
+    else:
+        base = f"Set '{skill}' to {_binding_phrase(proposed)} (currently {was}). Apply?"
+    eb = p.get("evidence_block")
+    if isinstance(eb, dict):
+        arms = eb.get("arms") or []
+        base += (
+            f" Evidence: {eb.get('class', '?')} class, {len(arms)} arm(s) "
+            f"over {eb.get('window_days', '?')}d."
+        )
+    return base
 
 
 def _model_binding_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     """The one-record change the operator reviews before approving. Keyed on
     the skill name — the record file path resolves at apply time through the
-    canonical slug-tail resolver, never at render time."""
+    canonical slug-tail resolver, never at render time. binding-telemetry-v1
+    P4: a producer-filed proposal carries its evidence table alongside the
+    change; hand-filed diffs are byte-identical to pre-P4."""
     p = proposal.payload or {}
-    return {
+    diff: Dict[str, Any] = {
         f"capability record: {p.get('skill', '?')}": {
             "model_binding": {
                 "-before": p.get("previous_binding"),
@@ -338,6 +413,10 @@ def _model_binding_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
             },
         },
     }
+    eb = p.get("evidence_block")
+    if isinstance(eb, dict):
+        diff["evidence"] = _binding_evidence_render(eb)
+    return diff
 
 
 def _summary_forge_artifact_pending(proposal: RoutingProposal) -> str:
