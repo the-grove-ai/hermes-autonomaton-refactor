@@ -4615,19 +4615,36 @@ class Dispatcher:
         # reaches .andon by the operator approving its skill_synthesis proposal
         # through the flywheel gate (B1 — grove.flywheel_cli), so
         # ``proposal_path().exists()`` is authoritative here.
+        #
+        # skill-invocation-path-integrity-v1 P3 — the quarantine lookup keys on
+        # the slug-tail-derived FLAT name (quarantine dirs are flat), so a
+        # category-qualified invocation ("fleet/<name>") of a quarantined skill
+        # classifies yellow instead of dead-ending at .andon/fleet/<name>. The
+        # as-given name is still checked as a fallback (defense-in-depth: a
+        # nested quarantine dir, should one ever exist, stays gated). Both
+        # return paths join the record-zone max() below.
         if tool_name == "invoke_skill" and isinstance(args, dict):
             inv_name = args.get("name")
             if isinstance(inv_name, str) and inv_name.strip():
                 from grove.skills import proposal_path
-                if proposal_path(inv_name.strip()).exists():
+                _given = inv_name.strip()
+                _tail = _given.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+                _hit = next(
+                    (n for n in (_tail, _given) if n and proposal_path(n).exists()),
+                    None,
+                )
+                if _hit is not None:
                     from grove.zones import ZoneResult
-                    return ZoneResult(
-                        zone="yellow",
-                        matched_rule=(
-                            "skill.quarantine.andon "
-                            f"(.grove/skills/.andon/{inv_name.strip()})"
+                    return Dispatcher._raise_zone_to_skill_record(
+                        ZoneResult(
+                            zone="yellow",
+                            matched_rule=(
+                                "skill.quarantine.andon "
+                                f"(.grove/skills/.andon/{_hit})"
+                            ),
+                            source="invoke_skill_quarantine",
                         ),
-                        source="invoke_skill_quarantine",
+                        _given,
                     )
         # Generic path: the action string IS the bare tool_name, matching
         # the convention in zones.schema.yaml::tool_zones (entries like
@@ -4636,7 +4653,47 @@ class Dispatcher:
         # strings no schema entry could ever match, making every non-
         # terminal tool default-yellow regardless of configuration.
         action = tool_name if tool_name else "unknown"
-        return _classify(action)
+        result = _classify(action)
+        if tool_name == "invoke_skill" and isinstance(args, dict):
+            inv_name = args.get("name")
+            if isinstance(inv_name, str) and inv_name.strip():
+                result = Dispatcher._raise_zone_to_skill_record(
+                    result, inv_name.strip()
+                )
+        return result
+
+    @staticmethod
+    def _raise_zone_to_skill_record(zone_result: Any, skill_name: str) -> Any:
+        """Effective zone for an invoke_skill intent = max(classified zone,
+        record zone) on green<yellow<red (skill-invocation-path-integrity-v1
+        P3). The record is resolved via the P1 canonical slug-tail resolver —
+        UNCACHED per the P1-gate ruling (the invoke path already pays per-call
+        registry loads; caching is the banked capability-hot-reload debt).
+        NONE / AMBIGUOUS leave the classified zone unchanged (the P2 guard
+        refuses ambiguity at the handler); the max() only ever RAISES a zone,
+        never lowers one, so an operator zone rule that greens the intent
+        class cannot silently green a yellow/red record.
+        """
+        from grove.capability_registry import resolve_skill_record
+
+        res = resolve_skill_record(skill_name)
+        if res.status != "resolved":
+            return zone_result
+        record_zone = getattr(res.record.zone, "value", str(res.record.zone))
+        order = {"green": 0, "yellow": 1, "red": 2}
+        if order.get(record_zone, 0) <= order.get(zone_result.zone, 0):
+            return zone_result
+        from grove.zones import ZoneResult
+        return ZoneResult(
+            zone=record_zone,
+            matched_rule=f"skill.record.zone ({res.record_id})",
+            source="invoke_skill_record_zone",
+            reason=(
+                f"capability record {res.record_id} declares zone="
+                f"{record_zone}; raised from classified "
+                f"{zone_result.zone!r} (effective zone = max rule)"
+            ),
+        )
 
     # ── Phase 5 helpers (disposition flow + pending_andon marker) ────────
 
