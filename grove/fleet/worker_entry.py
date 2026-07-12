@@ -24,11 +24,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import traceback
+from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 WORKER_MAX_ITERATIONS = 50
 
@@ -121,11 +125,37 @@ def _resolve_worker_runtime(cap, worker_id: str):
     Pins the tier explicitly (no LLM classification, classify=False) and reuses
     the sanctioned route -> runtime chain. No routing config = a worker cannot
     resolve a model = fail loud (never a blind default).
+
+    aux-model-bindings-v1 — a record-declared exact-model pin
+    (``model_binding: {type: model, model: <slug>}``) bypasses the tier's
+    MODEL while preserving the tier envelope (provider, max_tokens, and the
+    credential runtime resolved against the PINNED slug). A malformed slug
+    fails the spawn loud — never a quiet fallback to the tier model (GATE-B
+    F3): a dead pin must halt the worker, not silently inherit the tier.
     """
     from grove.fleet.errors import FleetWorkerAndon
     from grove.providers import resolve_tier_to_runtime, route_for_agent
 
     tier = f"T{cap.tier_rule.preferred}"
+    mb = getattr(cap, "model_binding", None)
+    pinned: Optional[str] = None
+    if mb is not None and mb.type == "model":
+        slug = (mb.model or "").strip()
+        halves = slug.split("/")
+        if not slug or len(halves) != 2 or not halves[0] or not halves[1]:
+            raise FleetWorkerAndon(
+                f"capability {cap.id!r} declares model_binding.type=model with a "
+                f"malformed slug {mb.model!r} — expected '<provider-org>/<model>' "
+                f"with non-empty halves; refusing to spawn (no tier fallback)",
+                worker_id=worker_id,
+                check="model_binding_malformed_slug",
+            )
+        pinned = slug
+        logger.info(
+            "model_binding: pinned=%s bypassing tier=T%d",
+            pinned,
+            cap.tier_rule.preferred,
+        )
     routed = route_for_agent(explicit_tier=tier, classify=False)
     if routed is None:
         raise FleetWorkerAndon(
@@ -134,8 +164,15 @@ def _resolve_worker_runtime(cap, worker_id: str):
             worker_id=worker_id,
             check="no_routing_config",
         )
-    runtime = resolve_tier_to_runtime(routed.tier_config)
-    return routed.tier_config.model, routed.tier_config.max_tokens, runtime
+    tier_config = routed.tier_config
+    if pinned is not None:
+        # Frozen dataclass — replace, never mutate (the router caches its
+        # TierConfig instances). Credential resolution below then sees the
+        # pinned slug, so api_key/base_url/api_mode match the model actually
+        # called; provider + max_tokens carry from the tier envelope.
+        tier_config = dc_replace(tier_config, model=pinned)
+    runtime = resolve_tier_to_runtime(tier_config)
+    return tier_config.model, tier_config.max_tokens, runtime
 
 
 def _build_worker_prompt(

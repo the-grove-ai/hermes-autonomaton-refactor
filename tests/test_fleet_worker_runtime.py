@@ -244,3 +244,106 @@ def test_missing_inbox_is_catastrophic_failed_event():
     event = json.loads(paths.event_path(wid, rid).read_text())
     assert event["status"] == "failed"
     assert event["check"] == "inbox_missing"
+
+
+# ── aux-model-bindings-v1: exact-model pin at the worker runtime seam ─────────
+
+
+def _routing_stub(monkeypatch, tier_model="tier-org/tier-model", provider="openrouter"):
+    """Stub route_for_agent + resolve_tier_to_runtime; capture what the
+    credential bridge receives so the pin's envelope coherence is assertable."""
+    from types import SimpleNamespace
+
+    import grove.providers as providers
+    from grove.router import TierConfig
+
+    tc = TierConfig(
+        tier="T2", handler=None, provider=provider, model=tier_model,
+        max_tokens=1234, max_latency_ms=None, description="stub",
+    )
+    seen: dict = {}
+
+    def fake_route(explicit_tier=None, classify=True, **kw):
+        seen["explicit_tier"] = explicit_tier
+        return SimpleNamespace(tier_config=tc)
+
+    def fake_resolve(tier_config):
+        seen["resolved_tier_config"] = tier_config
+        return {"model": tier_config.model, "provider": tier_config.provider,
+                "api_key": "k", "base_url": "u", "api_mode": "chat_completions",
+                "credential_pool": None, "auth_type": "api_key"}
+
+    monkeypatch.setattr(providers, "route_for_agent", fake_route)
+    monkeypatch.setattr(providers, "resolve_tier_to_runtime", fake_resolve)
+    return seen
+
+
+def _forge_with_binding(binding):
+    d = _forge_record().to_dict()
+    if binding is None:
+        d.pop("model_binding", None)
+    else:
+        d["model_binding"] = binding
+    return Capability.from_dict(d)
+
+
+def test_model_pin_binds_exact_slug_not_tier_model(monkeypatch, caplog):
+    # F5 anti-masking pin: the pinned slug DIFFERS from the tier model, and the
+    # Agent-bound model must be the pin — a tier-model pass-through would fail here.
+    seen = _routing_stub(monkeypatch, tier_model="tier-org/tier-model")
+    cap = _forge_with_binding({"type": "model", "model": "pin-org/pin-model"})
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="grove.fleet.worker_entry"):
+        model, max_tokens, runtime = worker_entry._resolve_worker_runtime(cap, "forge")
+    assert model == "pin-org/pin-model"
+    assert runtime["model"] == "pin-org/pin-model"
+    # Envelope coherence: credential bridge saw the PINNED slug with the tier's
+    # provider; max_tokens carried from the tier config.
+    assert seen["resolved_tier_config"].model == "pin-org/pin-model"
+    assert seen["resolved_tier_config"].provider == "openrouter"
+    assert max_tokens == 1234
+    # Exact branch payload (GATE-B F5) — asserted verbatim, inside the branch only.
+    assert "model_binding: pinned=pin-org/pin-model bypassing tier=T2" in caplog.text
+
+
+def test_no_binding_tier_path_unchanged(monkeypatch):
+    seen = _routing_stub(monkeypatch, tier_model="tier-org/tier-model")
+    cap = _forge_with_binding(None)
+    model, max_tokens, runtime = worker_entry._resolve_worker_runtime(cap, "forge")
+    assert model == "tier-org/tier-model"
+    assert seen["resolved_tier_config"].model == "tier-org/tier-model"
+    assert seen["explicit_tier"] == "T2"  # forge tier_rule.preferred == 2
+    assert max_tokens == 1234
+
+
+@pytest.mark.parametrize("bad_slug", [
+    "noslash", "a/b/c", "/half", "half/", "   ", "",
+])
+def test_malformed_pinned_slug_fails_spawn_loud(monkeypatch, bad_slug):
+    # Spawn-side shape guard, independent of record-load validation (which the
+    # direct ModelBinding construction here deliberately bypasses). NO tier
+    # fallback under any failure (GATE-B F3).
+    from grove.capability import ModelBinding
+
+    _routing_stub(monkeypatch)
+    cap = _forge_with_binding(None)
+    cap.model_binding = ModelBinding(type="model", model=bad_slug)
+    with pytest.raises(FleetWorkerAndon) as ei:
+        worker_entry._resolve_worker_runtime(cap, "forge")
+    assert ei.value.check == "model_binding_malformed_slug"
+
+
+def test_tier_override_binding_leaves_fleet_tier_path_unchanged(monkeypatch, caplog):
+    # tier_override remains a Mylo-path (invoke_skill rebind) concept; the fleet
+    # seam takes only the type=model branch. Existing behavior byte-identical:
+    # tier model returned, no pin log emitted.
+    import logging
+
+    seen = _routing_stub(monkeypatch, tier_model="tier-org/tier-model")
+    cap = _forge_with_binding({"type": "tier_override", "tier": "T2"})
+    with caplog.at_level(logging.INFO, logger="grove.fleet.worker_entry"):
+        model, _, _ = worker_entry._resolve_worker_runtime(cap, "forge")
+    assert model == "tier-org/tier-model"
+    assert seen["resolved_tier_config"].model == "tier-org/tier-model"
+    assert "model_binding: pinned=" not in caplog.text
