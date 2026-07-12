@@ -73,32 +73,19 @@ INVOKE_SKILL_SCHEMA = {
 }
 
 
-def _skill_record_state(skill_name: str):
-    """Return the ``LifecycleState`` of the capability record whose frontmatter
-    name matches *skill_name*, or ``None`` if no kind=skill record matches.
+def _resolve_record(skill_name: str):
+    """The P1 canonical slug-tail resolution for *skill_name* — the guard's
+    single record-lookup seam (skill-invocation-path-integrity-v1 P2).
 
-    GRV-010 C1b (B14) — mirrors the projection in ``grove.skill_index`` (which
-    keeps non-executable records out of the offered index). ``None`` means
-    "no record" (legacy/no-record skill), which the caller treats as "do not
-    block" — the guard only refuses a record that EXISTS and is non-executable.
+    Replaces the retired ``_skill_record_state`` exact-frontmatter-name match:
+    flat (``forge-jobsearch``) and category-qualified (``fleet/forge-jobsearch``)
+    shapes now key on the SAME record. Returns a
+    :class:`grove.capability_registry.SkillResolution`; module-level so tests
+    monkeypatch this seam.
     """
-    try:
-        from grove.capability import CapabilityKind
-        from grove.capability_registry import load_capabilities
-        from grove.skill_index import parse_skill_frontmatter
-        records = load_capabilities()
-    except Exception:
-        return None
-    for rec in records.values():
-        if getattr(rec, "kind", None) is not CapabilityKind.SKILL:
-            continue
-        try:
-            fm, _ = parse_skill_frontmatter(rec.context.payload)
-        except Exception:
-            continue
-        if str(fm.get("name") or "").strip() == skill_name:
-            return rec.lifecycle.state
-    return None
+    from grove.capability_registry import resolve_skill_record
+
+    return resolve_skill_record(skill_name)
 
 
 def invoke_skill(
@@ -149,28 +136,83 @@ def invoke_skill(
             ensure_ascii=False,
         )
 
-    # GRV-010 C1b (B14) — the green/active path executes silently, so a record
-    # whose lifecycle state is outside EXECUTABLE_STATES (a deprecated/rejected
-    # skill whose active directory lingers on disk) must NOT run here. The
-    # .andon/yellow path is the Dispatcher-gated try-before-promote and is
-    # exempt — Stage 04 already fired on it via the quarantine zone rule.
-    if zone == "green":
-        from grove.capability import EXECUTABLE_STATES
-        _rec_state = _skill_record_state(skill_name)
-        if _rec_state is not None and _rec_state not in EXECUTABLE_STATES:
-            _state_label = getattr(_rec_state, "value", str(_rec_state))
+    # skill-invocation-path-integrity-v1 P2 — the guard keys on the RESOLVED
+    # capability record (P1 canonical slug-tail resolver), not exact
+    # frontmatter-name equality, so flat and category-qualified
+    # ("fleet/<name>") invocations key identically. Dispositions:
+    #   * no record   -> allow (legacy semantics: external / pre-C2 skills)
+    #   * ambiguous   -> refuse, naming every colliding record id
+    #   * resolved    -> the record's lifecycle state must AGREE with the
+    #     disk-inferred state (active tree <=> EXECUTABLE_STATES; .andon <=>
+    #     proposed); any record/disk divergence refuses, naming both states.
+    res = _resolve_record(skill_name)
+    if res.status == "ambiguous":
+        logger.warning(
+            "[invoke_skill] ambiguous skill slug for %r -> %s; refusing",
+            skill_name,
+            list(res.matches),
+        )
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Skill name '{skill_name}' is ambiguous — its slug "
+                    f"matches multiple capability records: "
+                    f"{', '.join(res.matches)}. Give the records unique "
+                    f"trailing id segments before this skill can run."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if res.status == "resolved":
+        from grove.capability import EXECUTABLE_STATES, LifecycleState
+
+        _rec_state = res.record.lifecycle.state
+        _state_label = getattr(_rec_state, "value", str(_rec_state))
+        if zone == "green" and _rec_state not in EXECUTABLE_STATES:
+            logger.warning(
+                "[invoke_skill] record/disk divergence for %r: record %s "
+                "state %r vs disk location 'active tree'; refusing",
+                skill_name,
+                res.record_id,
+                _state_label,
+            )
             return json.dumps(
                 {
                     "success": False,
                     "error": (
-                        f"Skill '{skill_name}' has a non-executable lifecycle "
-                        f"state ({_state_label}); refusing to run. Only "
-                        f"active / managed / refined skills execute "
+                        f"Skill '{skill_name}' (record {res.record_id}) has a "
+                        f"non-executable lifecycle state ({_state_label}) but "
+                        f"its directory sits in the active tree — record/disk "
+                        f"state divergence; refusing to run. Only active / "
+                        f"managed / refined records execute "
                         f"(EXECUTABLE_STATES @ grove/capability.py)."
                     ),
                 },
                 ensure_ascii=False,
             )
+        if zone == "yellow" and _rec_state is not LifecycleState.PROPOSED:
+            logger.warning(
+                "[invoke_skill] record/disk divergence for %r: record %s "
+                "state %r vs disk location '.andon quarantine'; refusing",
+                skill_name,
+                res.record_id,
+                _state_label,
+            )
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Skill '{skill_name}' (record {res.record_id}) has "
+                        f"lifecycle state ({_state_label}) but its directory "
+                        f"sits in the .andon quarantine (which implies state "
+                        f"'proposed') — record/disk state divergence; "
+                        f"refusing to run."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+    # res.status == "none" -> no governing record: legacy-allow (unchanged).
 
     target = base / (file_path.strip() if isinstance(file_path, str) and file_path.strip() else "SKILL.md")
     # Confine reads to the skill directory — a file_path must not escape it.

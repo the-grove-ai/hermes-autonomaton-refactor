@@ -383,6 +383,24 @@ class TestDockOfferNotTheater:
 # ── Phase 4 — invoke_skill EXECUTABLE_STATES guard ───────────────────────────
 
 
+def _fake_resolution(state=None):
+    """A SkillResolution stand-in for the guard's _resolve_record seam.
+
+    skill-invocation-path-integrity-v1 P2 — the guard rekeyed from
+    _skill_record_state (exact frontmatter name) to the canonical resolver;
+    these pins patch the new seam with the same three shapes (non-executable
+    record / executable record / no record). Assertions unchanged.
+    """
+    from types import SimpleNamespace
+
+    from grove.capability_registry import SkillResolution
+
+    if state is None:
+        return SkillResolution("none", None, None, ())
+    record = SimpleNamespace(lifecycle=SimpleNamespace(state=state))
+    return SkillResolution("resolved", record, "skill.test.record", ("skill.test.record",))
+
+
 class TestInvokeSkillExecutableGuard:
     def test_green_path_refuses_non_executable_record(self, grove_home, monkeypatch):
         from grove.capability import LifecycleState
@@ -393,7 +411,8 @@ class TestInvokeSkillExecutableGuard:
 
         import tools.invoke_skill_tool as ist
         monkeypatch.setattr(
-            ist, "_skill_record_state", lambda name: LifecycleState.DEPRECATED,
+            ist, "_resolve_record",
+            lambda name: _fake_resolution(LifecycleState.DEPRECATED),
         )
         result = json.loads(ist.invoke_skill(name="ghost"))
         assert result["success"] is False
@@ -407,7 +426,8 @@ class TestInvokeSkillExecutableGuard:
 
         import tools.invoke_skill_tool as ist
         monkeypatch.setattr(
-            ist, "_skill_record_state", lambda name: LifecycleState.ACTIVE,
+            ist, "_resolve_record",
+            lambda name: _fake_resolution(LifecycleState.ACTIVE),
         )
         result = json.loads(ist.invoke_skill(name="live"))
         assert result["success"] is True
@@ -420,6 +440,6 @@ class TestInvokeSkillExecutableGuard:
         active.write_text("---\nname: legacy\ndescription: d\n---\n\nBody.\n")
 
         import tools.invoke_skill_tool as ist
-        monkeypatch.setattr(ist, "_skill_record_state", lambda name: None)
+        monkeypatch.setattr(ist, "_resolve_record", lambda name: _fake_resolution(None))
         result = json.loads(ist.invoke_skill(name="legacy"))
         assert result["success"] is True
