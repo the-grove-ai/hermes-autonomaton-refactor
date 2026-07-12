@@ -51,6 +51,9 @@ __all__ = [
     "register_skills_in_tree",
     "skill_record_id_for_name",
     "skill_record_for_name",
+    "SkillResolution",
+    "resolve_skill_record",
+    "scan_skill_slug_collisions",
     "set_skill_pinned",
     "update_lifecycle_fields",
 ]
@@ -493,6 +496,118 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
 
 
+def _skill_name_slug(name: str) -> str:
+    """The canonical slug-tail of a skill name (skill-invocation-path-integrity-v1).
+
+    THE one slug computation for every skill-name resolver: take the last
+    ``/``-segment (category-qualified ``fleet/forge-jobsearch``), then the last
+    ``:``-segment, then slugify. Flat, category-qualified, and colon-qualified
+    shapes all resolve to the same slug.
+    """
+    return _slug(name.rsplit("/", 1)[-1].rsplit(":", 1)[-1])
+
+
+def _skill_matches(name: str) -> List[tuple]:
+    """Every kind=skill record whose id trailing segment matches *name*'s slug.
+
+    The shared scan behind :func:`resolve_skill_record` and the legacy
+    single-result helpers — one slug computation, one match rule, no forks.
+    Returns ``(record_id, Capability)`` pairs sorted by id (deterministic).
+    An unloadable registry returns ``[]`` (parity with the legacy helpers'
+    ``None``; the invoke-path guard treats no-record as legacy-allow).
+    """
+    from grove.capability import CapabilityKind
+
+    slug = _skill_name_slug(name)
+    if not slug:
+        return []
+    try:
+        caps = load_capabilities()
+    except CapabilityLoadError:
+        return []
+    return sorted(
+        (
+            (cid, cap)
+            for cid, cap in caps.items()
+            if cap.kind is CapabilityKind.SKILL and cid.rsplit(".", 1)[-1] == slug
+        ),
+        key=lambda pair: pair[0],
+    )
+
+
+class SkillResolution(NamedTuple):
+    """Result of :func:`resolve_skill_record` (skill-invocation-path-integrity-v1).
+
+    ``status`` is one of ``"resolved"`` (exactly one record: ``record`` +
+    ``record_id`` set), ``"none"`` (no record governs the name — the legacy-
+    allow shape), or ``"ambiguous"`` (the slug matches >1 record id trailing
+    segment; ``matches`` carries every colliding id, sorted).
+    """
+
+    status: str
+    record: Optional[Capability]
+    record_id: Optional[str]
+    matches: tuple
+
+
+def resolve_skill_record(name: str) -> SkillResolution:
+    """Canonically resolve a skill name to its governing capability record.
+
+    Slug-tail resolution (the one canonical resolver): flat, category-
+    qualified (``fleet/<name>``), and colon-qualified shapes all key on the
+    same slug. Exactly one match → ``resolved``; zero → ``none``; more than
+    one → ``ambiguous`` with the colliding ids (the invoke path refuses;
+    the boot scan logs).
+    """
+    matches = _skill_matches(name)
+    if not matches:
+        return SkillResolution("none", None, None, ())
+    if len(matches) > 1:
+        return SkillResolution(
+            "ambiguous", None, None, tuple(cid for cid, _ in matches)
+        )
+    cid, cap = matches[0]
+    return SkillResolution("resolved", cap, cid, (cid,))
+
+
+def scan_skill_slug_collisions() -> Dict[str, List[str]]:
+    """Boot-time slug-collision scan (skill-invocation-path-integrity-v1 P1).
+
+    Groups every kind=skill record id by its trailing segment and logs each
+    group with more than one member at WARNING, naming every colliding id.
+    LOG-ONLY: never raises, never halts startup — a collision degrades to
+    per-invoke ambiguity refusal, not a boot failure. Returns the collision
+    map (slug -> sorted ids) for tests and callers that want the census.
+    """
+    from grove.capability import CapabilityKind
+
+    try:
+        caps = load_capabilities()
+    except Exception as exc:  # noqa: BLE001 — log-only by contract
+        logger.warning(
+            "[capability_registry] skill slug collision scan skipped — "
+            "registry unloadable: %r",
+            exc,
+        )
+        return {}
+    groups: Dict[str, List[str]] = {}
+    for cid, cap in caps.items():
+        if cap.kind is not CapabilityKind.SKILL:
+            continue
+        groups.setdefault(cid.rsplit(".", 1)[-1], []).append(cid)
+    collisions = {
+        slug: sorted(ids) for slug, ids in groups.items() if len(ids) > 1
+    }
+    for slug, ids in sorted(collisions.items()):
+        logger.warning(
+            "[capability_registry] skill slug collision: %r -> %s "
+            "(invoke_skill refuses ambiguous resolutions for this slug)",
+            slug,
+            ids,
+        )
+    return collisions
+
+
 def skill_record_id_for_name(name: str) -> Optional[str]:
     """The kind=skill record id whose name-slug matches *name*, or None.
 
@@ -500,36 +615,20 @@ def skill_record_id_for_name(name: str) -> Optional[str]:
     (promote/reject/revoke) use this to find the record governing an on-disk
     skill, matching the trailing id segment (the slug). Returns None when no
     record governs the skill (external skills, pre-C2 legacy .andon proposals).
+    Delegates to the shared scan; on a slug collision returns the first id in
+    sorted order (deterministic; the legacy scan's first-match was load-order).
     """
-    from grove.capability import CapabilityKind
-
-    slug = _slug(name.rsplit("/", 1)[-1].rsplit(":", 1)[-1])
-    if not slug:
-        return None
-    try:
-        for cid, cap in load_capabilities().items():
-            if cap.kind is CapabilityKind.SKILL and cid.rsplit(".", 1)[-1] == slug:
-                return cid
-    except CapabilityLoadError:
-        return None
-    return None
+    matches = _skill_matches(name)
+    return matches[0][0] if matches else None
 
 
 def skill_record_for_name(name: str):
     """The kind=skill :class:`Capability` whose name-slug matches *name*, or None
-    (GRV-009 E6b C2-bridge — the CLI reads state/pinned from the record)."""
-    from grove.capability import CapabilityKind
-
-    slug = _slug(name.rsplit("/", 1)[-1].rsplit(":", 1)[-1])
-    if not slug:
-        return None
-    try:
-        for cid, cap in load_capabilities().items():
-            if cap.kind is CapabilityKind.SKILL and cid.rsplit(".", 1)[-1] == slug:
-                return cap
-    except CapabilityLoadError:
-        return None
-    return None
+    (GRV-009 E6b C2-bridge — the CLI reads state/pinned from the record).
+    Delegates to the shared scan; see :func:`skill_record_id_for_name` for the
+    collision tiebreak."""
+    matches = _skill_matches(name)
+    return matches[0][1] if matches else None
 
 
 def set_skill_pinned(name: str, pinned: bool) -> bool:
