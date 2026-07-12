@@ -699,6 +699,9 @@ class Dispatcher:
         # names; only single-invocation turns yield a clean executable
         # pattern (set on the intent record below).
         self._current_turn_tool_invocations: List[Dict[str, Any]] = []
+        # skill-invocation-path-integrity-v1 P4 — per-turn recordless-invoke
+        # marker (see the per-turn reset + _apply_skill_tier_binding).
+        self._current_turn_recordless_allow: bool = False
         self._current_turn_user_message: Optional[str] = None
         self._current_turn_outcome_written: bool = False
         # Sprint 31 Phase 2 — api_call_count rides the ToolBatchYield
@@ -1559,6 +1562,10 @@ class Dispatcher:
         # tier the last invoke_skill rebound the agent to, which subsequent
         # reasoning holds until the next routing event / turn end. Reset per turn.
         self._current_turn_skill_bound_tier = None
+        # skill-invocation-path-integrity-v1 P4 — did this turn execute an
+        # invoke_skill with no governing capability record? Reset per turn;
+        # set in _apply_skill_tier_binding (post-execution only).
+        self._current_turn_recordless_allow = False
         self._current_turn_user_message = user_message
         self._current_turn_outcome_written = False
         # Sprint 30 — reset per-turn escalation counter + events list.
@@ -2673,6 +2680,12 @@ class Dispatcher:
                 escalation_count=self._current_turn_escalations,
                 response_content=_resp_content,
                 tool_invocation=_tool_invocation,
+                # skill-invocation-path-integrity-v1 P4 — executed invoke_skill
+                # with NONE resolution this turn (set in
+                # _apply_skill_tier_binding; annotation-only, never an andon).
+                recordless_allow=getattr(
+                    self, "_current_turn_recordless_allow", False
+                ),
             )
             self._intent_store.append(record)
             self._current_turn_outcome_written = True
@@ -3345,6 +3358,14 @@ class Dispatcher:
                 a = getattr(intent, "arguments", None)
                 if isinstance(a, dict) and isinstance(a.get("name"), str) and a["name"].strip():
                     last_skill = a["name"].strip()
+                    # skill-invocation-path-integrity-v1 P4 — this hook fires
+                    # only for EXECUTED batches (a halted/denied batch never
+                    # reaches it), so a NONE resolution here is precisely an
+                    # executed recordless invocation. Annotation-only: the
+                    # legacy-allow disposition is unchanged and no andon files.
+                    from grove.capability_registry import resolve_skill_record
+                    if resolve_skill_record(last_skill).status == "none":
+                        self._current_turn_recordless_allow = True
         if last_skill is not None:
             self._rebind_agent_for_skill(agent, last_skill)
 

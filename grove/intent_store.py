@@ -173,6 +173,13 @@ class IntentRecord:
     response_content: Optional[str] = None
     tool_invocation: Optional[str] = None
 
+    # skill-invocation-path-integrity-v1 P4 — True when this turn EXECUTED an
+    # invoke_skill whose name the canonical resolver could not map to any
+    # capability record (NONE resolution: external / pre-C2 legacy skills).
+    # The legacy-allow path stays allowed; this annotation makes recordless
+    # traffic measurable from the intent feed. Never an andon.
+    recordless_allow: bool = False
+
 
 class IntentStore:
     """Append-only JSON Lines store for IntentRecords.
