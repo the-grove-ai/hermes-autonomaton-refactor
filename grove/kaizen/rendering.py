@@ -293,6 +293,53 @@ def _dock_mutation_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     }
 
 
+def _binding_phrase(binding: Any) -> str:
+    """Human phrase for a model_binding dict (binding-governance-surfaces-v1)."""
+    if not isinstance(binding, dict):
+        return "tier inheritance"
+    btype = binding.get("type")
+    if btype == "model":
+        return f"pinned to {binding.get('model', '?')}"
+    if btype == "tier_override":
+        return f"tier override {binding.get('tier', '?')}"
+    return f"{btype or '?'} binding"
+
+
+def _summary_model_binding(proposal: RoutingProposal) -> str:
+    """Natural-language binding offer — skill + before/after, no record ids."""
+    p = proposal.payload or {}
+    skill = p.get("skill", "?")
+    proposed = p.get("proposed_binding")
+    previous = p.get("previous_binding")
+    was = _binding_phrase(previous) if previous else "inheriting its tier model"
+    if proposed is None:
+        return (
+            f"Clear the model pin on '{skill}' (currently {was}) — it returns "
+            f"to tier inheritance. Apply?"
+        )
+    if isinstance(proposed, dict) and proposed.get("type") == "model":
+        return (
+            f"Pin '{skill}' to {proposed.get('model', '?')} for fleet runs "
+            f"(currently {was}). Apply?"
+        )
+    return f"Set '{skill}' to {_binding_phrase(proposed)} (currently {was}). Apply?"
+
+
+def _model_binding_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """The one-record change the operator reviews before approving. Keyed on
+    the skill name — the record file path resolves at apply time through the
+    canonical slug-tail resolver, never at render time."""
+    p = proposal.payload or {}
+    return {
+        f"capability record: {p.get('skill', '?')}": {
+            "model_binding": {
+                "-before": p.get("previous_binding"),
+                "+after": p.get("proposed_binding"),
+            },
+        },
+    }
+
+
 def _summary_forge_artifact_pending(proposal: RoutingProposal) -> str:
     """fleet-pipeline-v1 P2 — a fleet worker staged a draft package for operator
     review. RENDER-ONLY w.r.t. the generic SYNC approve machinery (no

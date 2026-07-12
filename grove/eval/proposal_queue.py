@@ -45,6 +45,7 @@ __all__ = [
     "PROPOSAL_TYPE_MEMORY_CONTEXT",
     "PROPOSAL_TYPE_CONSOLIDATION",
     "PROPOSAL_TYPE_DOCK_MUTATION",
+    "PROPOSAL_TYPE_MODEL_BINDING",
     "PROPOSAL_TYPE_PORTAL_ACTION_FAILURE",
     "PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING",
     "PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING",
@@ -135,6 +136,19 @@ PROPOSAL_TYPE_CONSOLIDATION = "consolidation_proposal"
 #    "goal": {"id", "name", "keywords", "vector", "status", "definition_of_done",
 #             "source_record_ids"}}
 PROPOSAL_TYPE_DOCK_MUTATION = "dock_mutation"
+# binding-governance-surfaces-v1 — a proposed model_binding change on a
+# kind=skill capability record. Flows through THIS RoutingProposal queue and
+# the flywheel CLI approve path; the apply handler is the ONE sanctioned
+# writer (grove.capability_registry.set_model_binding), called with
+# surface="proposal_apply" + this proposal's id so the writer's own
+# capability_binding_mutation ledger event joins the kaizen_disposition.
+# Payload shape (identity-bearing — a proposal to move A→B is distinct from
+# None→B by design):
+#   {"skill": str (slug-tail-resolvable name),
+#    "proposed_binding": dict|None (None = clear the pin),
+#    "previous_binding": dict|None (binding at stage time),
+#    "evidence_summary": str (optional, renderer fallback)}
+PROPOSAL_TYPE_MODEL_BINDING = "model_binding"
 # portal-action-error-surfacing-v1 (Phase 1) — a portal action handler's failure
 # disposition, filed AGENTLESSLY (no LLM turn) straight from the handler's error
 # branch via :func:`file_agentless_proposal`, so the Kaizen flywheel can
@@ -389,6 +403,11 @@ class RoutingProposal:
         # could'. Its own frame.
         if self.type == PROPOSAL_TYPE_DOCK_MUTATION:
             return f"I've observed a pattern worth tracking — {core}"
+        # binding-governance-surfaces-v1 — a model binding is a governance
+        # recommendation the operator ratifies (like consolidation), not an
+        # opportunistic 'I could'. Its own frame.
+        if self.type == PROPOSAL_TYPE_MODEL_BINDING:
+            return f"I'm recommending a model binding change — {core}"
         # portal-action-error-surfacing-v1 — an incident report, not an
         # opportunistic 'I could'. The summary core is already a full clause
         # (``portal action 'x' keeps failing …``), so it stands on its own —
