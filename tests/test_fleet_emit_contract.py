@@ -450,6 +450,10 @@ def _drive_worker(monkeypatch, tmp_path, cap_gov, payload, script, run_id="rid1"
     class _Cap:
         id = "skill.fleet.forge-jobsearch"
         governance = cap_gov
+        # binding-governance-surfaces-v1 P4 — see forge-worker harness note.
+        class tier_rule:
+            preferred = 2
+        model_binding = None
 
     agent = _ScriptedAgent(script)
 
