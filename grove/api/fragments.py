@@ -1833,6 +1833,138 @@ async def handle_routing_panel(request: web.Request) -> web.Response:
     )
 
 
+def render_binding_row(row: dict, catalog: list, error: str | None = None) -> str:
+    """One Auxiliary binding row — a self-contained ``<div id="binding-{skill}">``
+    so HTMX swaps it alone (tier-card parity). Shows the effective-binding state
+    copy, the plane qualification (where a pin applies — stated plainly), a
+    model dropdown fed from the catalog ONLY, a Pin button, and an Unpin button
+    rendered only when a pin is on record. ``error`` renders inline so a failed
+    action keeps the row and shows why (C3 parity)."""
+    skill = row["skill"]
+    skill_e = _esc(skill)
+    current = (row.get("binding") or {}).get("model") if row.get("pinned") else None
+    worker = row.get("worker")
+    if worker:
+        wbits = f'worker {_esc(worker["id"])}'
+        if not worker.get("enabled"):
+            wbits += " (disabled)"
+    else:
+        wbits = "no worker registered"
+
+    unpin_btn = ""
+    if row.get("pinned"):
+        unpin_btn = (
+            f'<button type="button" class="btn btn-secondary" '
+            f'hx-post="/portal/actions/binding/unpin" hx-include="closest form" '
+            f'hx-target="#binding-{skill_e}" hx-swap="outerHTML">Unpin</button>'
+        )
+    error_html = f'<div class="meta error">{_esc(error)}</div>' if error else ""
+
+    return (
+        f'<div class="card" id="binding-{skill_e}">'
+        f'<h4>{skill_e} <span class="badge">{_esc(row["state"])}</span></h4>'
+        f'<div class="meta">{wbits}</div>'
+        f'<div class="meta">{_esc(row["plane_note"])}</div>'
+        f'<form class="binding-form">'
+        f'<input type="hidden" name="skill" value="{skill_e}">'
+        f'<select name="model_slug">'
+        f'{_model_options_html(catalog, current)}</select>'
+        f'<button type="button" class="btn" '
+        f'hx-post="/portal/actions/binding/pin" hx-include="closest form" '
+        f'hx-target="#binding-{skill_e}" hx-swap="outerHTML">Pin</button>'
+        f'{unpin_btn}'
+        f'</form>'
+        f'{error_html}'
+        f'</div>'
+    )
+
+
+def render_binding_fragment(config, catalog: list, rows: list) -> str:
+    """The grouped binding page (binding-governance-surfaces-v1): Telemetry /
+    Primary (T1–T3 tier cards, the existing swap surface) / Auxiliary
+    (per-worker binding rows, Producers then Observers). One fragment, one
+    catalog authority — every dropdown on this page feeds from the SAME
+    ``load_catalog()`` list."""
+    telemetry_cards = "".join(
+        render_tier_card(t, (config or {}).get(t), catalog)
+        for t in _swappable_tiers() if t == "Telemetry"
+    )
+    primary_cards = "".join(
+        render_tier_card(t, (config or {}).get(t), catalog)
+        for t in _swappable_tiers() if t != "Telemetry"
+    )
+    producers = [r for r in rows if r.get("group") == "producer"]
+    observers = [r for r in rows if r.get("group") != "producer"]
+    producer_rows = "".join(render_binding_row(r, catalog) for r in producers)
+    observer_rows = "".join(render_binding_row(r, catalog) for r in observers)
+    aux_html = ""
+    if producers:
+        aux_html += f"<h4>Producers</h4><div>{producer_rows}</div>"
+    if observers:
+        aux_html += f"<h4>Observers</h4><div>{observer_rows}</div>"
+    if not aux_html:
+        aux_html = '<p class="placeholder">No fleet skills registered.</p>'
+
+    return (
+        '<div id="binding-panel">'
+        "<h2>Model bindings</h2>"
+        '<p class="meta">Tier swaps apply to every turn at that tier. A skill '
+        "pin applies to that skill's fleet worker runs; the interactive agent "
+        "keeps the turn tier.</p>"
+        "<h3>Telemetry</h3>"
+        f'<div class="tier-cards">{telemetry_cards}</div>'
+        "<h3>Primary</h3>"
+        f'<div class="tier-cards">{primary_cards}</div>'
+        "<h3>Auxiliary</h3>"
+        f"{aux_html}"
+        "</div>"
+    )
+
+
+async def handle_binding_panel(request: web.Request) -> web.Response:
+    """The Bindings nav panel — grouped binding page as a fragment for
+    ``#center-panel``. Reachable via the hash router at
+    ``/portal#fragments/binding/panel``. Fresh reads on every render (N2)."""
+    from grove.api.binding_view import binding_rows
+    from grove.config.model_catalog import load_catalog
+
+    catalog = load_catalog()
+    return _html_fragment(
+        render_binding_fragment(_live_tier_preferences(), catalog, binding_rows())
+    )
+
+
+async def handle_binding_page(request: web.Request) -> web.Response:
+    """Serve the standalone ``/portal/binding`` page (full HTML, opened
+    directly in a browser) — the routing-page pattern applied to the grouped
+    binding surface."""
+    from grove.api.binding_view import binding_rows
+    from grove.config.model_catalog import load_catalog
+
+    catalog = load_catalog()
+    fragment = render_binding_fragment(
+        _live_tier_preferences(), catalog, binding_rows()
+    )
+    return web.Response(
+        text=(
+            "<!DOCTYPE html>\n"
+            '<html lang="en">\n<head>\n'
+            '<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            "<title>Operator Portal — Model Bindings</title>\n"
+            '<link rel="stylesheet" href="/portal/static/style.css">\n'
+            '<script src="/portal/static/htmx.min.js" defer></script>\n'
+            "</head>\n<body>\n"
+            '<header class="topbar"><div class="brand">grove-autonomaton '
+            '<span class="brand-sub">Model Bindings</span></div></header>\n'
+            '<main class="layout"><section class="center-panel">'
+            f"{fragment}"
+            "</section></main>\n</body>\n</html>\n"
+        ),
+        content_type="text/html",
+    )
+
+
 def render_model_context(slug: str, catalog: list) -> str:
     """The ``#right-panel`` detail for one catalog model — display name, slug,
     provider, display-only cost, notes, and which tiers currently bind it.
@@ -3397,6 +3529,10 @@ def register_fragment_routes(app: web.Application) -> None:
     app.router.add_get("/portal/fragments/routing/panel", handle_routing_panel)
     # portal-models-nav-v1 — model detail for the right-panel (?model_slug=...)
     app.router.add_get("/portal/fragments/routing/model", handle_model_context)
+    # binding-governance-surfaces-v1 — grouped binding page (Telemetry /
+    # Primary / Auxiliary): standalone full-HTML page + in-shell fragment.
+    app.router.add_get("/portal/binding", handle_binding_page)
+    app.router.add_get("/portal/fragments/binding/panel", handle_binding_panel)
     # fleet-ui-reconciliation-v1 C2 — the data-driven Fleet outline for the
     # sidebar (loaded on shell boot + on the fleet-disposition refresh event).
     app.router.add_get("/portal/fragments/nav/fleet", handle_fleet_nav)
