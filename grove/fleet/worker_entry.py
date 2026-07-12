@@ -1117,12 +1117,54 @@ def _read_inbox_payload(worker_id: str, run_id: str) -> Any:
     return data.get("payload")
 
 
+def _setup_worker_logging() -> None:
+    """aux-model-bindings-v1 P4 (ruling i-b) — worker-process observability.
+
+    The worker is Popen'd as its own process and never inherits the gateway's
+    logging config, so without this its INFO records are dropped (unconfigured
+    root logger; Python's lastResort handler is WARNING+). Two legs:
+
+    * ``setup_logging(mode="cron")`` — the rotating-file stack (idempotent by
+      its own ``_logging_initialized`` latch). ``cron`` because the worker is
+      a headless scheduled process: not an operator terminal (``cli``), and
+      ``gateway`` would misdirect component records into gateway.log.
+    * one stderr ``StreamHandler`` at INFO — journald sees only the process's
+      inherited stdout/stderr (the runner's Popen does not redirect), and
+      setup_logging attaches file handlers ONLY, so this leg is what makes
+      worker INFO journald-visible. Tagged + checked for idempotence.
+
+    Best-effort with a stderr floor: a worker must never fail its run over
+    logging setup.
+    """
+    try:
+        from hermes_logging import setup_logging
+
+        setup_logging(mode="cron")
+    except Exception as exc:  # noqa: BLE001 — observability leg, never fatal
+        print(f"[fleet.worker] setup_logging failed: {exc!r}", file=sys.stderr)
+    root = logging.getLogger()
+    for h in root.handlers:
+        if getattr(h, "_fleet_worker_stderr", False):
+            return  # already attached (idempotence guard)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(
+        logging.Formatter("%(levelname)s %(name)s %(message)s")
+    )
+    handler._fleet_worker_stderr = True  # type: ignore[attr-defined]
+    root.addHandler(handler)
+    if root.level == logging.NOTSET or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(prog="grove.fleet.worker_entry")
     parser.add_argument("--worker-id", required=True)
     parser.add_argument("--run-id", required=True)
     args = parser.parse_args(argv)
     worker_id, run_id = args.worker_id, args.run_id
+
+    _setup_worker_logging()
 
     from grove.fleet import paths
     from grove.fleet.staging import write_terminal_event
