@@ -75,6 +75,33 @@ def test_malformed_binding_fails_loud(bad):
         Capability.from_dict(_skill_dict(bad))
 
 
+# ── aux-model-bindings-v1 — type="model" (exact provider-slug pin) ───────────
+
+
+def test_model_pin_round_trips():
+    cap = Capability.from_dict(_skill_dict({"type": "model", "model": "z-ai/glm-5.2"}))
+    assert isinstance(cap.model_binding, ModelBinding)
+    assert cap.model_binding.type == "model"
+    assert cap.model_binding.model == "z-ai/glm-5.2"
+    assert cap.model_binding.tier is None
+    d = cap.to_dict()
+    assert d["model_binding"] == {"type": "model", "model": "z-ai/glm-5.2"}
+    assert Capability.from_dict(d).to_dict() == d  # stable round-trip
+
+
+@pytest.mark.parametrize("bad", [
+    {"type": "model"},                                   # missing model slug
+    {"type": "model", "model": ""},                      # empty slug
+    {"type": "model", "model": "   "},                   # whitespace-only slug
+    {"type": "model", "model": "z-ai/glm-5.2", "tier": "T2"},  # model forbids tier
+    {"type": "tier_override", "tier": "T2", "model": "z-ai/glm-5.2"},  # tier_override forbids model
+    {"type": "specialty", "model": "z-ai/glm-5.2"},      # specialty forbids model
+])
+def test_malformed_model_pin_fails_loud(bad):
+    with pytest.raises(ValueError):
+        Capability.from_dict(_skill_dict(bad))
+
+
 def test_binding_on_non_skill_record_fails_loud():
     with pytest.raises(ValueError, match="only valid on kind=skill"):
         Capability.from_dict(

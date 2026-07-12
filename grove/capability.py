@@ -337,7 +337,9 @@ class Failure:
 # operator routing.config.yaml > this binding > turn default; operator config is
 # inviolate at the top. tier_override targets the inference tiers only (T0 is the
 # Pattern Cache, Telemetry is the classifier — neither is a skill reasoning tier).
-_MODEL_BINDING_TYPES: frozenset[str] = frozenset({"tier_override", "specialty"})
+_MODEL_BINDING_TYPES: frozenset[str] = frozenset(
+    {"tier_override", "specialty", "model"}
+)
 _MODEL_BINDING_TIERS: frozenset[str] = frozenset({"T1", "T2", "T3"})
 
 
@@ -345,6 +347,12 @@ _MODEL_BINDING_TIERS: frozenset[str] = frozenset({"T1", "T2", "T3"})
 class ModelBinding:
     type: str
     tier: str | None = None
+    # aux-model-bindings-v1 — type="model" pins an exact provider slug
+    # (e.g. "z-ai/glm-5.2"). Fleet-only until the governance sprint: the
+    # Mylo-path resolver refuses it (skill proceeds at turn default and an
+    # andon_halt is filed); the fleet worker boot seam honors it, bypassing
+    # tier resolution. Carries no tier — the two are mutually exclusive.
+    model: str | None = None
 
 
 # ── The Capability record ────────────────────────────────────────────────────
@@ -738,10 +746,35 @@ class Capability:
                         f"model_binding.type=tier_override requires tier in "
                         f"{sorted(_MODEL_BINDING_TIERS)}; got {mb.tier!r}"
                     )
+                if mb.model is not None:
+                    raise ValueError(
+                        "model_binding.type=tier_override carries no model — "
+                        "an exact-model pin uses type=model instead"
+                    )
+            elif mb.type == "model":
+                # aux-model-bindings-v1 — exact-model pin. Requires a
+                # non-empty slug; carries no tier (the pin bypasses tier
+                # resolution entirely, so a tier here would be dead config
+                # masquerading as live — fail loud).
+                if not isinstance(mb.model, str) or not mb.model.strip():
+                    raise ValueError(
+                        "model_binding.type=model requires a non-empty "
+                        f"model slug; got {mb.model!r}"
+                    )
+                if mb.tier is not None:
+                    raise ValueError(
+                        "model_binding.type=model carries no tier — the pin "
+                        f"bypasses tier resolution (got tier={mb.tier!r})"
+                    )
             else:  # specialty — reserved, honored-no-op; carries no tier
                 if mb.tier is not None:
                     raise ValueError(
                         "model_binding.type=specialty carries no tier "
+                        "(validated-but-no-op, reserved for Auxiliary Inference)"
+                    )
+                if mb.model is not None:
+                    raise ValueError(
+                        "model_binding.type=specialty carries no model "
                         "(validated-but-no-op, reserved for Auxiliary Inference)"
                     )
 
@@ -891,6 +924,8 @@ class Capability:
             mb: dict = {"type": self.model_binding.type}
             if self.model_binding.tier is not None:
                 mb["tier"] = self.model_binding.tier
+            if self.model_binding.model is not None:
+                mb["model"] = self.model_binding.model
             d["model_binding"] = mb
         # background-worker-runtime-v1 — emit only when non-empty, so every
         # existing record's serialized shape is unchanged (parity with the
@@ -1028,7 +1063,9 @@ class Capability:
         # R5 — per-skill model binding (present-key only; absent -> None default).
         if "model_binding" in d and d["model_binding"] is not None:
             mb = d["model_binding"]
-            kwargs["model_binding"] = ModelBinding(type=mb.get("type"), tier=mb.get("tier"))
+            kwargs["model_binding"] = ModelBinding(
+                type=mb.get("type"), tier=mb.get("tier"), model=mb.get("model")
+            )
 
         # background-worker-runtime-v1 — read_surfaces (present-key only; absent
         # -> empty-list default). Carried verbatim; validate() checks the
