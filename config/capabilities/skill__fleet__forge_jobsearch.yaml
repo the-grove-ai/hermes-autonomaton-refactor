@@ -229,5 +229,27 @@ governance:
           title_from_meta: [company, role]
   approval_handoff:
     mode: action_surface_publish
+  # forge-quality-gate-v1 — the HOW-WELL gate (drafter-quality-checks-v1
+  # machinery; FIRST rollout-by-config-flip: zero new code, this block is the
+  # whole feature). Context-aware (A1): the evaluator receives the dispatch
+  # payload's selected row (Role / Company / Persona / Rationale / Tier) and,
+  # on revision runs, the operator's revision_directive — absent keys are
+  # noted in the verdict, never a failure. The JD full text is NOT in the
+  # payload (scout Link → JD capture is forge-jd-context-v1); rubric v1.1 is
+  # RESERVED for JD-grounded criteria once that lands. career-corpus.md is a
+  # worker read surface, not payload — the judge checks internal consistency
+  # and specificity, not corpus provenance.
+  quality_gate:
+    rubric_version: "1.0"
+    context_inputs: [rows, revision_directive]
+    criteria:
+      - "Every claim, skill, and accomplishment is internally consistent across resume and cover letter, specific, and bounded — no naked metrics, no unverifiable superlatives, no invented credentials"
+      - "The package's strongest content maps to the task context's Role, Persona, and Rationale; ordering and emphasis reflect that positioning, not generic resume convention"
+      - "Role-relevant terms appear only where the surrounding experience genuinely supports them — no unsupported keyword assembly"
+      - "Reads as compelling, coherent prose to a human evaluator — specific, active, quantified where the material allows"
+      - "Cover letter makes one specific case for fit tied to the named Company and Role from the task context, not a template"
+    threshold: 0.9
+    redraft_limit: 1
+    evaluator_tier: "T-QA"
 read_surfaces:
 - corpus_file
