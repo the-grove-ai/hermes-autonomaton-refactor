@@ -123,6 +123,22 @@ routing:
       cost_per_mtok_input: 0.15
       cost_per_mtok_output: 0.60
 
+    T-QA:
+      provider: openrouter
+      model: deepseek/deepseek-v4-pro
+      description: |
+        Quality evaluator — the fleet quality gate's judge
+        (drafter-quality-checks-v1). Scores a staged draft against a
+        capability record's declared rubric via one forced tool call.
+        Bound separately so rebinding T1 (the dispatch floor) never
+        silently changes the judge, and vice versa (the Telemetry-tier
+        precedent). Requires reliable forced tool_choice; the 1M
+        context comfortably holds rubric + draft.
+        Price: ~$0.44 / ~$0.87 per million input / output tokens.
+      max_tokens: 4096
+      cost_per_mtok_input: 0.435
+      cost_per_mtok_output: 0.87
+
     T2:
       provider: openrouter
       # Direct Anthropic alternative (requires ANTHROPIC_API_KEY):
@@ -415,6 +431,10 @@ tier_budgets:
     cellar_context_ceiling: 1000
 
   Telemetry:                # Classifier tier — a forced-tool classification call
+    context: []             # that composes no agent prefill, so no heavy blocks
+                            # (exact-cover D7: provider-backed tier needs an entry)
+
+  T-QA:                     # Quality-evaluator tier — a forced-tool verdict call
     context: []             # that composes no agent prefill, so no heavy blocks
                             # (exact-cover D7: provider-backed tier needs an entry)
 

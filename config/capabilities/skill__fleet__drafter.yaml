@@ -274,6 +274,26 @@ governance:
     retention:
       policy: persist
       archive_dir: ".archive"
+  # drafter-quality-checks-v1 P5 — the HOW-WELL gate. Declared DATA the generic
+  # harness keys on (block presence only, R-A11): the staged draft is evaluated
+  # by one forced-tool T-QA verdict BEFORE the success event; below-threshold
+  # gets ONE governed redraft (draft #1 archived to the retention archive_dir,
+  # never overwritten); the final score rides the worker event + the review
+  # proposal. The gate informs disposition; it never withholds work. Rubric
+  # operator-approved 2026-07-12. evaluator_tier T-QA is the dedicated judge
+  # tier (routing.config.yaml) — independent of T1 rebinding and of this
+  # record's own producer pin.
+  quality_gate:
+    rubric_version: "1.0"
+    criteria:
+      - "Makes one specific, falsifiable central claim — not a survey of considerations"
+      - "Opens with the reveal or tension, not context-setting preamble"
+      - "Every statistic, quote, or attribution is grounded in the provided source material — nothing fabricated"
+      - "Evidence is specific (named examples, numbers, dates), not generic assertion"
+      - "Register matches the operator's voice: direct, active, no corporate filler or hedging"
+    threshold: 0.7
+    redraft_limit: 1
+    evaluator_tier: "T-QA"
   emission_preconditions:
     required_tool_classes:
       - class: skill_invocation
