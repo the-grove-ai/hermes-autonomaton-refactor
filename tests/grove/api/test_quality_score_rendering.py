@@ -153,6 +153,35 @@ def test_unit_dict_carries_quality_from_open_proposal(grove_home):
     assert "quality 0.72" in F._quality_chip(r)
 
 
+def test_package_unit_detail_header_carries_chip(grove_home):
+    """P5c — the C2 PACKAGE unit detail header renders the score chip (the
+    placement gap the first live gated unit exposed: P4's chip sat on the C4
+    flat-artifact header only)."""
+    from grove.api import fragments as frag
+    from grove.capability_registry import load_capabilities
+    from grove.eval import proposal_queue
+    from grove.eval.proposal_queue import PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING as T
+
+    d = grove_home / "drafter" / "pending_review" / "moon-bot"
+    d.mkdir(parents=True)
+    (d / "draft-moon-bot.md").write_text("---\ntitle: X\n---\nbody", encoding="utf-8")
+    (d / "meta.json").write_text(
+        json.dumps({"unit_id": "moon-bot", "slug": "moon-bot"}), encoding="utf-8"
+    )
+    proposal_queue.file_agentless(
+        type=T,
+        payload=dict(_BASE_PAYLOAD, quality_score=0.72, rubric_version="1.0",
+                     redraft_count=0, evaluator_model="m/x"),
+        evidence=("moon-bot",),
+        justification="test",
+        proposer="skill.fleet.drafter",
+    )
+    cap = load_capabilities()["skill.fleet.drafter"]
+    resp = frag._render_unit_detail(cap, "drafter", "moon-bot", None)
+    assert resp.status == 200
+    assert "quality 0.72" in resp.text
+
+
 def test_unit_dict_omits_quality_when_ungated(grove_home):
     from grove.api import portal
     from grove.capability_registry import load_capabilities
