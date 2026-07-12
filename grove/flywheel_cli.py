@@ -34,6 +34,7 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_CONSOLIDATION,
     PROPOSAL_TYPE_DOCK_MUTATION,
     PROPOSAL_TYPE_FAULT_TRIAGE,
+    PROPOSAL_TYPE_MODEL_BINDING,
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
     PROPOSAL_TYPE_PATTERN_DEMOTION,
     PROPOSAL_TYPE_PATTERN_PROMOTION,
@@ -71,10 +72,12 @@ from grove.kaizen.rendering import (  # noqa: F401
     _diff_zone_promotion,
     _dock_mutation_to_diff,
     _ensure_memory_renderer,
+    _model_binding_to_diff,
     _routing_adjustment_to_diff,
     _summary_consolidation,
     _summary_dock_mutation,
     _summary_fault_triage,
+    _summary_model_binding,
     _summary_forge_artifact_pending,
     _summary_pattern_demotion,
     _summary_pattern_promotion,
@@ -158,6 +161,10 @@ _PUSH_PRIORITY = {
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT: 2,
     PROPOSAL_TYPE_ZONE_PROMOTION: 3,
     PROPOSAL_TYPE_SKILL_PROMOTION: 3,
+    # binding-governance-surfaces-v1 — a binding recommendation is the same
+    # mechanical-governance family as zone/skill promotion: it yields to
+    # incidents, memory insights, policy graduations, and routing tweaks.
+    PROPOSAL_TYPE_MODEL_BINDING: 3,
     PROPOSAL_TYPE_PATTERN_PROMOTION: 4,
     PROPOSAL_TYPE_PATTERN_DEMOTION: 4,
 }
@@ -866,6 +873,54 @@ def _approve_dock_mutation(
         "machine_file": str(target),
     }
     return target, applied
+
+
+def _approve_model_binding(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+) -> Tuple[Path, Dict[str, Any]]:
+    """Apply a model_binding proposal — write the binding through the ONE
+    sanctioned writer (binding-governance-surfaces-v1).
+
+    Delegates to :func:`grove.capability_registry.set_model_binding`
+    (resolve → lock → in-lock re-verify → backup → validate + catalog check →
+    atomic replace). The writer files its own ``capability_binding_mutation``
+    ledger event; ``surface="proposal_apply"`` + this proposal's id land in
+    that event so it joins the ``kaizen_disposition`` the approve path records.
+    ``previous_binding`` in the payload is stage-time advisory context only —
+    the writer captures the REAL pre-write binding for the audit event. The
+    ``machine_path`` kwarg (the routing machine file) is unused here; the
+    writer resolves the record's own file (dock_mutation parity).
+    """
+    from grove.capability_registry import set_model_binding
+
+    payload = proposal.payload or {}
+    skill = payload.get("skill")
+    if not isinstance(skill, str) or not skill.strip():
+        raise ValueError(
+            f"model_binding proposal {proposal.proposal_id} payload missing a "
+            f"non-empty skill name"
+        )
+    if "proposed_binding" not in payload:
+        raise ValueError(
+            f"model_binding proposal {proposal.proposal_id} payload missing "
+            f"proposed_binding (None clears; a dict sets)"
+        )
+    result = set_model_binding(
+        skill,
+        payload.get("proposed_binding"),
+        surface="proposal_apply",
+        proposal_id=proposal.proposal_id,
+    )
+    applied = {
+        "skill": skill,
+        "record_id": result.record_id,
+        "previous_binding": result.previous_binding,
+        "new_binding": result.new_binding,
+        "record_file": str(result.path),
+    }
+    return result.path, applied
 
 
 def _reload_default_router() -> None:
@@ -1855,6 +1910,12 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         diff_renderer=_dock_mutation_to_diff,
         apply_callback=_approve_dock_mutation,
         apply_label_prefix="Added Dock goal: ",
+    ),
+    PROPOSAL_TYPE_MODEL_BINDING: ProposalHandler(
+        summary_renderer=_summary_model_binding,
+        diff_renderer=_model_binding_to_diff,
+        apply_callback=_approve_model_binding,
+        apply_label_prefix="Model binding applied: ",
     ),
     PROPOSAL_TYPE_ZONE_PROMOTION: ProposalHandler(
         summary_renderer=_summary_zone_promotion,
