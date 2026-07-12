@@ -547,6 +547,86 @@ def _validate_emit(governance, record_id: str) -> None:
     ta["emit_error"] = err
 
 
+# ---------------------------------------------------------------------------
+# drafter-quality-checks-v1 P1 — governance.quality_gate validation.
+#
+# The OPTIONAL quality_gate declaration is the SOURCE OF TRUTH for a fleet
+# producer's HOW-WELL gate: the harness keys on block PRESENCE only, never on
+# producer identity (R-A11 — rubric is data; envelope is fixed). Shape:
+#   quality_gate:
+#     rubric_version: "1.0"        # required non-empty str
+#     criteria: [str, ...]         # required non-empty list of non-empty str
+#     threshold: 0.7               # required number in [0.0, 1.0]
+#     redraft_limit: 1             # required int; v1 supports exactly 1
+#     evaluator_tier: "T1"         # optional non-empty str (consumer default "T1")
+#     context_inputs: [key, ...]   # optional (SPEC amendment A1 / R-A12):
+#                                  #  dispatch-payload keys passed to the
+#                                  #  evaluator as task context; absent →
+#                                  #  criteria-only evaluation
+# Rides the emit-block non-destructive pattern exactly: a malformed block logs
+# a LOUD warning naming the record + offending field and gains a sibling
+# ``quality_gate_error`` — consumers treat error-present as gate-absent (fail
+# closed: no evaluation, no redraft). Loading never fails on quality_gate
+# errors; the operator's block is never deleted.
+# ---------------------------------------------------------------------------
+
+_QUALITY_GATE_KEYS: frozenset = frozenset({
+    "rubric_version", "criteria", "threshold", "redraft_limit",
+    "evaluator_tier", "context_inputs",
+})
+
+
+def _quality_gate_shape_error(qg) -> str | None:
+    """Return the offending-field description for a malformed quality_gate
+    block, or None when the shape is valid. Strict — unknown keys are
+    malformed (predictable degradation over silent tolerance)."""
+    if not isinstance(qg, dict):
+        return "quality_gate (must be a mapping)"
+    unknown = set(qg) - _QUALITY_GATE_KEYS
+    if unknown:
+        return f"unknown key(s) {sorted(unknown)}"
+    rv = qg.get("rubric_version")
+    if not isinstance(rv, str) or not rv.strip():
+        return "'rubric_version' (required non-empty str)"
+    if not _str_list_ok(qg.get("criteria")):
+        return "'criteria' (required non-empty list of non-empty str)"
+    t = qg.get("threshold")
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0.0 <= t <= 1.0:
+        return "'threshold' (required number in [0.0, 1.0])"
+    rl = qg.get("redraft_limit")
+    if isinstance(rl, bool) or not isinstance(rl, int) or rl != 1:
+        return "'redraft_limit' (required int; v1 supports exactly 1)"
+    if "evaluator_tier" in qg:
+        et = qg["evaluator_tier"]
+        if not isinstance(et, str) or not et.strip():
+            return "'evaluator_tier' (non-empty str)"
+    if "context_inputs" in qg and not _str_list_ok(qg["context_inputs"]):
+        return "'context_inputs' (non-empty list of non-empty str)"
+    return None
+
+
+def _validate_quality_gate(governance, record_id: str) -> None:
+    """Validate ``governance.quality_gate`` IN PLACE. Malformed: warn LOUD
+    (record + field) and set a machine-readable ``quality_gate_error`` string
+    BESIDE the block (consumers treat error-present as gate-absent → no
+    evaluation, fail closed). The operator's block itself is never deleted —
+    a registry write-back must not destroy a fixable declaration."""
+    if not isinstance(governance, dict):
+        return
+    if "quality_gate" not in governance:
+        return
+    err = _quality_gate_shape_error(governance["quality_gate"])
+    if err is None:
+        governance.pop("quality_gate_error", None)
+        return
+    _pres_logger.warning(
+        "[capability] %s: governance.quality_gate is malformed — %s; "
+        "declaration treated as ABSENT (no quality evaluation). Fix the "
+        "quality_gate block in the capability record.", record_id, err,
+    )
+    governance["quality_gate_error"] = err
+
+
 @dataclass(kw_only=True)
 class Capability:
     id: str  # governance-bearing — no default
@@ -1058,6 +1138,10 @@ class Capability:
             # wiki-writer-structured-output-v1 P1 — the SECOND validated-optional
             # terminal_artifact sibling (emit), same non-destructive discipline.
             _validate_emit(d["governance"], d.get("id", "<no id>"))
+            # drafter-quality-checks-v1 P1 — the THIRD validated-optional block
+            # (quality_gate, a TOP-LEVEL governance sibling of
+            # emission_preconditions), same non-destructive discipline.
+            _validate_quality_gate(d["governance"], d.get("id", "<no id>"))
             kwargs["governance"] = d["governance"]
 
         # R5 — per-skill model binding (present-key only; absent -> None default).
