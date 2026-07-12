@@ -38,8 +38,11 @@ except ImportError:  # pragma: no cover - non-POSIX
     fcntl = None
 
 __all__ = [
+    "BindingWriteError",
+    "BindingWriteResult",
     "CapabilityLoadError",
     "default_capabilities_dir",
+    "set_model_binding",
     "load_capabilities",
     "transition_record",
     "TransitionResult",
@@ -71,6 +74,16 @@ class CapabilityLoadError(RuntimeError):
 
     The message names the offending file and (via the wrapped validation error)
     the offending field.
+    """
+
+
+class BindingWriteError(RuntimeError):
+    """A model_binding write was refused or failed (binding-governance-surfaces-v1).
+
+    Raised by :func:`set_model_binding` on resolution refusal (none/ambiguous/
+    inside-lock mismatch), lock contention (operator-initiated writes fail loud,
+    never silently defer), binding validation failure, or catalog-membership
+    failure. The live record file is restored from backup before this raises.
     """
 
 
@@ -471,6 +484,257 @@ def update_lifecycle_fields(
             return False  # contended — caller may retry
         try:
             return _apply()
+        finally:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+    finally:
+        fd.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# binding-governance-surfaces-v1 — CapabilityBindingWriter.
+#
+# ``set_model_binding`` is the ONE sanctioned writer for the model_binding
+# field on kind=skill records (GATE-A P1: no writer existed; transition_record
+# and update_lifecycle_fields are lifecycle-scoped by construction). Sibling of
+# ``transition_record``: same per-record advisory lock, same tempfile+fsync+
+# os.replace atomic write. Differences, deliberate:
+#   * resolution is by skill NAME through resolve_skill_record() — the
+#     canonical slug-tail resolver — and is RE-VERIFIED inside the held lock
+#     (a registry that shifted between resolve and lock refuses, never writes
+#     the wrong record);
+#   * lock contention raises loud (BindingWriteError) instead of deferring —
+#     the caller is an operator action or a proposal apply, not the curator's
+#     retry loop; a silent no-op here would be a fail-silent;
+#   * the writer files its OWN ledger audit event (capability_binding_mutation)
+#     on success — adjudication R5: do not replicate the tier-swap audit
+#     weakness (backup + logger only).
+# No hot-reload step: the registry is read per-call, so the next
+# load_capabilities() sees the new binding.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class BindingWriteResult(NamedTuple):
+    path: Path
+    record_id: str
+    previous_binding: Optional[Dict[str, Any]]
+    new_binding: Optional[Dict[str, Any]]
+
+
+_BINDING_KEYS = frozenset({"type", "tier", "model"})
+
+
+def _binding_to_dict(mb: Any) -> Optional[Dict[str, Any]]:
+    """Present-key-only dict form of a ModelBinding (mirrors Capability.to_dict)."""
+    if mb is None:
+        return None
+    d: Dict[str, Any] = {"type": mb.type}
+    if mb.tier is not None:
+        d["tier"] = mb.tier
+    if mb.model is not None:
+        d["model"] = mb.model
+    return d
+
+
+def _file_binding_mutation_event(
+    *,
+    skill: str,
+    record_id: str,
+    previous_binding: Optional[Dict[str, Any]],
+    new_binding: Optional[Dict[str, Any]],
+    surface: str,
+    proposal_id: Optional[str],
+) -> None:
+    """File the writer's own audit event (R5 — the writer audits itself).
+
+    Component-filer pattern (skill_binding refusal precedent): no CLI session
+    of its own, so the event lands under a ``cli-<utc-timestamp>`` sentinel
+    session. Error-log floor: the mutation has already landed atomically when
+    this runs, so a filing failure must not misreport the write as failed —
+    it logs at ERROR and stands.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from grove.kaizen_ledger import KaizenLedger
+
+        session_id = "cli-" + datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        )
+        KaizenLedger(session_id=session_id).record(
+            "capability_binding_mutation",
+            skill=skill,
+            record_id=record_id,
+            previous_binding=previous_binding,
+            new_binding=new_binding,
+            surface=surface,
+            proposal_id=proposal_id,
+        )
+    except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor stands
+        logger.error(
+            "[capability_registry] capability_binding_mutation filing failed "
+            "(mutation itself SUCCEEDED): %r",
+            file_exc,
+        )
+
+
+def set_model_binding(
+    name: str,
+    binding: Optional[Dict[str, Any]],
+    *,
+    surface: str,
+    proposal_id: Optional[str] = None,
+) -> BindingWriteResult:
+    """Set or clear ``model_binding`` on the kind=skill record governing *name*.
+
+    The sole sanctioned model_binding writer. ``binding=None`` clears the
+    field; a dict (``{"type": ..., "tier": ..., "model": ...}``) sets it.
+    *surface* names the mutation origin (``portal`` / ``proposal_apply`` / …)
+    and lands in the audit event verbatim; *proposal_id* joins the event to a
+    Kaizen proposal when the write is a proposal apply.
+
+    Sequence: resolve → lock → re-verify resolution inside the lock → backup
+    ``.bak`` → mutate → validate (``cap.validate()`` + catalog membership for
+    ``type=model``) → atomic replace → ledger event. Any failure after backup
+    restores the original bytes and re-raises.
+
+    Raises :class:`BindingWriteError` on refusal (unresolved/ambiguous name,
+    inside-lock resolution mismatch, lock contention, malformed binding dict,
+    validation or catalog-membership failure).
+    """
+    if binding is not None:
+        if not isinstance(binding, dict) or not binding:
+            raise BindingWriteError(
+                f"set_model_binding: binding must be None or a non-empty dict; "
+                f"got {binding!r}"
+            )
+        unknown = set(binding) - _BINDING_KEYS
+        if unknown:
+            raise BindingWriteError(
+                f"set_model_binding: unknown binding keys {sorted(unknown)!r}; "
+                f"allowed: {sorted(_BINDING_KEYS)}"
+            )
+
+    res = resolve_skill_record(name)
+    if res.status == "ambiguous":
+        raise BindingWriteError(
+            f"set_model_binding: skill name {name!r} is ambiguous — its slug "
+            f"matches multiple capability records: {', '.join(res.matches)}. "
+            f"Refusing to write."
+        )
+    if res.status != "resolved" or res.record_id is None:
+        raise BindingWriteError(
+            f"set_model_binding: no capability record governs skill name "
+            f"{name!r} — a binding without a record is dead config. Refusing "
+            f"to write."
+        )
+    record_id = res.record_id
+
+    search_dirs = [default_capabilities_dir(), grove_home_capabilities_dir()]
+    path = None
+    for d in search_dirs:
+        if d.is_dir():
+            path = _record_path_for_id(record_id, d)
+            if path is not None:
+                break
+    if path is None:
+        raise BindingWriteError(
+            f"set_model_binding: resolved record {record_id!r} has no backing "
+            f"file in {[str(d) for d in search_dirs]}"
+        )
+
+    def _locked_write() -> BindingWriteResult:
+        # Re-verify INSIDE the held lock: the registry may have shifted between
+        # the pre-lock resolve and lock acquisition (record renamed, collision
+        # introduced). Same record, still unique, or refuse.
+        res2 = resolve_skill_record(name)
+        if res2.status != "resolved" or res2.record_id != record_id:
+            raise BindingWriteError(
+                f"set_model_binding: resolution changed under the lock — "
+                f"pre-lock {record_id!r}, in-lock status={res2.status!r} "
+                f"record_id={res2.record_id!r}. Refusing to write."
+            )
+
+        original = path.read_bytes()
+        bak_path = path.with_suffix(path.suffix + ".bak")
+        bak_path.write_bytes(original)
+
+        try:
+            from grove.capability import ModelBinding
+
+            cap = Capability.from_yaml(original.decode("utf-8"))
+            previous = _binding_to_dict(cap.model_binding)
+            new_mb = (
+                None
+                if binding is None
+                else ModelBinding(
+                    type=binding.get("type"),
+                    tier=binding.get("tier"),
+                    model=binding.get("model"),
+                )
+            )
+            cap.model_binding = new_mb
+            # Mutation is post-construction, so __post_init__ has not seen it —
+            # validate explicitly (kind=skill guard, type/tier/model shape).
+            try:
+                cap.validate()
+            except ValueError as exc:
+                raise BindingWriteError(
+                    f"set_model_binding: proposed binding failed record "
+                    f"validation: {exc}"
+                ) from exc
+
+            if new_mb is not None and new_mb.type == "model":
+                from grove.config.model_catalog import load_catalog
+
+                slugs = {m["slug"] for m in load_catalog()}
+                if new_mb.model not in slugs:
+                    raise BindingWriteError(
+                        f"set_model_binding: model {new_mb.model!r} is not in "
+                        f"the model catalog — a pin to an off-catalog slug is "
+                        f"dead config. Refusing to write."
+                    )
+
+            _atomic_write_yaml(path, cap.to_yaml())
+        except BaseException:
+            # Restore the record to its pre-mutation bytes, then fail loud.
+            path.write_bytes(original)
+            raise
+
+        new = _binding_to_dict(new_mb)
+        _file_binding_mutation_event(
+            skill=name,
+            record_id=record_id,
+            previous_binding=previous,
+            new_binding=new,
+            surface=surface,
+            proposal_id=proposal_id,
+        )
+        logger.info(
+            "[capability_registry] model_binding written: %s %s -> %s "
+            "(surface=%s)",
+            record_id,
+            previous,
+            new,
+            surface,
+        )
+        return BindingWriteResult(path, record_id, previous, new)
+
+    if fcntl is None:  # pragma: no cover - non-POSIX best-effort
+        return _locked_write()
+
+    lock_path = path.with_suffix(".yaml.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = open(lock_path, "a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            raise BindingWriteError(
+                f"set_model_binding: record {record_id!r} is locked by another "
+                f"writer — retry when the contending write completes"
+            )
+        try:
+            return _locked_write()
         finally:
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
     finally:

@@ -155,6 +155,14 @@ class KaizenLedger:
         # + evidence_count, and for applied the applied_result dict, for
         # rejected the optional reason.
         "kaizen_disposition",
+        # binding-governance-surfaces-v1 — a model_binding write through the
+        # sanctioned CapabilityBindingWriter (capability_registry.
+        # set_model_binding). The writer files this ITSELF on success
+        # (adjudication R5 — config writers must not audit by backup+logger
+        # alone). Carries skill + record_id + previous_binding + new_binding
+        # + surface (portal / proposal_apply / …) + proposal_id (null unless
+        # the write is a proposal apply).
+        "capability_binding_mutation",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:
