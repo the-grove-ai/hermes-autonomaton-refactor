@@ -82,16 +82,24 @@ def call_t1(
     system: Optional[str] = None,
     tool: Optional[Dict[str, Any]] = None,
     max_tokens: int = _DEFAULT_MAX_TOKENS,
+    tier: Optional[str] = None,
 ) -> Union[str, Dict[str, Any]]:
-    """Make one T1 call and return its result.
+    """Make one structured tier call and return its result.
 
     ``tool`` present → forced tool call; returns the tool's structured
     ``input`` dict. ``tool`` absent → plain-text completion; returns the
-    concatenated text. Branches on the T1 tier's ``api_mode``
+    concatenated text. Branches on the resolved tier's ``api_mode``
     (``anthropic_messages`` | ``chat_completions``); any other value raises.
     Raises loudly on a malformed response.
+
+    ``tier`` (drafter-quality-checks-v1 P2, additive): resolve THIS tier by
+    name instead of the historic ``"T1"`` default — the quality-gate evaluator
+    resolves its record-declared ``evaluator_tier`` through the same by-name
+    primitive (R-A5: evaluator tier independent of the producer pin). ``None``
+    → ``"T1"``, so every pre-existing call site is behavior-identical. An
+    unknown tier name raises the router's loud KeyError — never a fallback.
     """
-    runtime, tier_config = _resolve_t1_runtime()
+    runtime, tier_config = _resolve_t1_runtime(tier or _T1_TIER)
     api_mode = runtime.get("api_mode")
 
     # wiki-pipeline-provider-agnostic-v1: branch on the wire protocol the T1
@@ -179,8 +187,13 @@ def call_t1(
 # ── tier resolution (public API, by name) ──────────────────────────────
 
 
-def _resolve_t1_runtime():
-    """Resolve the T1 ``(runtime, tier_config)`` via the public router API.
+def _resolve_t1_runtime(tier_name: str = _T1_TIER):
+    """Resolve a tier's ``(runtime, tier_config)`` via the public router API.
+
+    drafter-quality-checks-v1 P2: parameterized by tier NAME (default the
+    historic ``"T1"``) so :func:`call_t1` consumers can target the tier a
+    capability record declares. Resolution stays by-name through the public
+    router — no classification, no private imports.
 
     A1: no import of the private ``_telemetry_tier_runtime``. A fresh CLI
     process may not have initialized the module router yet — initialize it
@@ -196,12 +209,12 @@ def _resolve_t1_runtime():
     from grove.providers import resolve_tier_to_runtime
 
     try:
-        tier_config = grove_router.get_tier_config(_T1_TIER)
+        tier_config = grove_router.get_tier_config(tier_name)
     except RuntimeError:
         # Router not initialized (fresh process). Initialize and retry — a
         # required dependency made ready, not an error swallowed.
         grove_router.initialize()
-        tier_config = grove_router.get_tier_config(_T1_TIER)
+        tier_config = grove_router.get_tier_config(tier_name)
 
     return resolve_tier_to_runtime(tier_config), tier_config
 
