@@ -1,11 +1,18 @@
 # kaizen-ledger-retention-v1 P6 — daily off-peak firing of the retention
-# service. 08:30 UTC is early-morning EDT (03:30/04:30 local), off-peak for
-# the operator. Persistent=true catches up a missed firing after downtime.
+# service. Early-morning EDT (~04:33 local), off-peak for the operator.
+# Persistent=true catches up a missed firing after downtime.
+#
+# test-baseline-hygiene R-T6: fire at :33, OFF the watchdog's every-5-minutes
+# grid (*/5 hits :30/:35), plus 60s jitter — so a retention pass never starts
+# on the same tick the watchdog runs `doctor --reap`. Defense-in-depth behind
+# the reaper's service-cgroup guard (doctor_lifecycle._service_cgroup_of),
+# which is the primary fix for the SIGTERM collision.
 [Unit]
 Description=Daily Grove ledger retention (off-peak)
 
 [Timer]
-OnCalendar=*-*-* 08:30:00 UTC
+OnCalendar=*-*-* 08:33:00 UTC
+RandomizedDelaySec=60
 Persistent=true
 Unit=grove-ledger-retention.service
 

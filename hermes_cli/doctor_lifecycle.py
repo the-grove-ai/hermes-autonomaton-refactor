@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import fcntl
 import glob
+import logging
 import os
 import signal
 import sqlite3
@@ -33,6 +34,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+
+_LOG = logging.getLogger(__name__)
 
 # Unambiguous Grove CLI cmdline markers. The `-m hermes_cli.main ...` form
 # (how the gateway service launches) and the `.venv/bin/hermes ...` console
@@ -76,10 +79,41 @@ def gateway_tree_pids(gw_pid: Optional[int]) -> set:
     return pids
 
 
+def _read_proc_cgroup(pid: int) -> Optional[str]:
+    """Raw ``/proc/<pid>/cgroup`` text, or None on macOS (no /proc), a dead
+    pid, or any read error. Isolated as a seam so the reaper's service-cgroup
+    guard is testable without a live cgroup hierarchy."""
+    try:
+        return Path(f"/proc/{pid}/cgroup").read_text()
+    except OSError:
+        return None
+
+
+def _service_cgroup_of(pid: int) -> Optional[str]:
+    """The systemd ``*.service`` cgroup path *pid* belongs to, or None.
+
+    A crashed/stranded process reparented to PID 1 detaches into a user
+    session scope (``…/session-N.scope``) or ``init.scope`` — no ``.service``
+    segment. A live systemd-launched unit (e.g. the ledger-retention oneshot)
+    is ALSO reparented to PID 1 but still sits inside its service cgroup — that
+    is the distinction the bare PPID-1 orphan heuristic misses. Linux-only;
+    returns None where /proc is absent (macOS)."""
+    text = _read_proc_cgroup(pid)
+    if not text:
+        return None
+    for line in text.splitlines():
+        path = line.rsplit(":", 1)[-1].strip()
+        if any(seg.endswith(".service") for seg in path.split("/")):
+            return path
+    return None
+
+
 def find_orphaned_grove_processes(protected: set) -> List[Dict[str, Any]]:
     """Grove CLI processes reparented to PID 1 (crashed predecessors) that are
     NOT part of the live gateway tree. Identified by the Grove CLI markers
-    only — never by node/npm."""
+    only — never by node/npm. A PID-1-parented Grove process that still sits
+    inside an active ``*.service`` cgroup is a systemd-launched unit (e.g. the
+    ledger-retention oneshot), NOT a crash orphan — it is spared."""
     orphans: List[Dict[str, Any]] = []
     me = os.getpid()
     try:
@@ -95,8 +129,20 @@ def find_orphaned_grove_processes(protected: set) -> List[Dict[str, Any]]:
             if info.get("ppid") != 1:
                 continue
             cmd = " ".join(info.get("cmdline") or [])
-            if _is_grove_cli_cmd(cmd):
-                orphans.append({"pid": pid, "cmd": cmd})
+            if not _is_grove_cli_cmd(cmd):
+                continue
+            svc = _service_cgroup_of(pid)
+            if svc is not None:
+                # Live systemd-launched Grove oneshot — PID-1-parented like a
+                # crash orphan but inside its service cgroup. Sparing it stops
+                # the watchdog from SIGTERMing a running unit mid-pass
+                # (the retention-timer collision, test-baseline-hygiene R-T6).
+                _LOG.info(
+                    "doctor: sparing PID %d — inside active service cgroup %s",
+                    pid, svc,
+                )
+                continue
+            orphans.append({"pid": pid, "cmd": cmd})
         except Exception:
             continue
     return orphans
