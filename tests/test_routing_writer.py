@@ -165,3 +165,46 @@ def test_catalog_schema_validation_failures():
               "input_cost_per_mtok": "1.0", "output_cost_per_mtok": 2}],
             Path("t.yaml"),
         )
+
+
+# ----- R-W4: RoutingConfigWriter self-audit (ledger rider) -------------------
+
+
+async def test_swap_files_routing_config_mutation_event(writer, monkeypatch):
+    """The writer audits itself: an apply_mutation files a routing_config_mutation
+    Kaizen event under a cli-<utc> sentinel session with surface_class=scope_defining
+    (mirrors capability_registry._file_binding_mutation_event)."""
+    w, cfg = writer
+    captured = []
+    from grove import kaizen_ledger as kl
+    monkeypatch.setattr(
+        kl.KaizenLedger, "record",
+        lambda self, event_type, **fields: captured.append(
+            (self.session_id, event_type, fields)
+        ),
+    )
+    await w.swap_tier_model("T2", "deepseek/deepseek-chat")
+    events = [c for c in captured if c[1] == "routing_config_mutation"]
+    assert len(events) == 1
+    sid, _et, fields = events[0]
+    assert sid.startswith("cli-")                       # sentinel session
+    assert fields["surface_class"] == "scope_defining"
+    assert "T2" in fields["label"]
+    assert fields["config_path"] == str(cfg)
+
+
+async def test_ledger_filing_failure_does_not_fail_the_mutation(writer, monkeypatch, caplog):
+    """Error-log floor: the mutation lands atomically BEFORE filing, so a ledger
+    failure must NOT misreport the write as failed — it logs ERROR and stands."""
+    import logging
+    w, cfg = writer
+    from grove import kaizen_ledger as kl
+
+    def _boom(self, *a, **k):
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr(kl.KaizenLedger, "record", _boom)
+    with caplog.at_level(logging.ERROR):
+        await w.swap_tier_model("T2", "deepseek/deepseek-chat")  # must NOT raise
+    assert "deepseek/deepseek-chat" in cfg.read_text()  # mutation still landed
+    assert any("filing failed" in r.getMessage() for r in caplog.records)
