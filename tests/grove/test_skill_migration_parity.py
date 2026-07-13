@@ -46,6 +46,10 @@ _GOLDEN = _FIX / "skill_index_golden.txt"
 # the golden emits them" resolves to no. A4 halts on any green skill record off
 # this list. Fleet Phase 1 added scout + researcher as GREEN (drafter +
 # cultivator are YELLOW and so are NOT signed here).
+# test-baseline-hygiene R-T4: scout-jobsearch signed GREEN — born green in
+# scout-jobsearch-v1 (6e6429e0d, "first browser-consuming fleet skill"); its
+# capability record declares zone: green by ruled design. forge-jobsearch stays
+# YELLOW (like drafter/cultivator) and is therefore NOT signed here.
 _SIGNED_GREEN = {
     "skill.content.jim-voice-writing-style",
     "skill.content.linkedin-thinkpiece",
@@ -53,6 +57,7 @@ _SIGNED_GREEN = {
     "skill.upstream-sync-register.upstream-sync-register",
     "skill.fleet.scout",
     "skill.fleet.researcher",
+    "skill.fleet.scout-jobsearch",
 }
 
 
