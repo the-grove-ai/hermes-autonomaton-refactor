@@ -354,18 +354,30 @@ class GenericPackageAdapter(Adapter):
         )
 
 
-# ── operator_curated (path-invoked) ─────────────────────────────────────
+# ── plain-text adapters (path-invoked + ambient-session) ─────────────────
 
 
-class OperatorCuratedAdapter(Adapter):
-    source_type = "operator_curated"
-    glob = None  # path-invoked; never glob-walked
+class _PlainTextAdapter(Adapter):
+    """Shared parser for plain ``.md``/``.txt`` sources with best-effort
+    optional frontmatter — the operator_curated discipline (fails loud only on
+    an empty/unreadable file; unparseable frontmatter falls back to
+    whole-file-as-body, logged not swallowed). Subclasses set ``source_type``;
+    the parse body reads ``self.source_type`` so each subclass logs honestly
+    and its ``NormalizedDoc`` carries its own label. No recurrence
+    (``lineage_key`` stays the base None) — these sources never supersede.
+
+    notes-research-ingest-v1: extracted verbatim from OperatorCuratedAdapter
+    so the ambient-session adapter shares the EXACT parse behavior with a
+    distinct provenance label; operator_curated's NormalizedDoc output is
+    byte-identical (only the debug-log wording is now self.source_type)."""
 
     def parse(self, path: Path) -> NormalizedDoc:
         path = Path(path)
         text = _read_text(path)
         if not text.strip():
-            raise MalformedSourceDoc(f"operator_curated source {path.name} is empty")
+            raise MalformedSourceDoc(
+                f"{self.source_type} source {path.name} is empty"
+            )
 
         dock_goal_refs: List[str] = []
         body = text
@@ -379,9 +391,9 @@ class OperatorCuratedAdapter(Adapter):
                 # parse is tolerated — treat the whole file as body. Logged, not
                 # swallowed silently.
                 logger.debug(
-                    "[wiki] operator_curated %s: frontmatter did not parse; "
-                    "treating entire file as body (best-effort).",
-                    path.name,
+                    "[wiki] %s %s: frontmatter did not parse; treating entire "
+                    "file as body (best-effort).",
+                    self.source_type, path.name,
                 )
             else:
                 if isinstance(meta, dict):
@@ -397,6 +409,25 @@ class OperatorCuratedAdapter(Adapter):
         )
 
 
+class OperatorCuratedAdapter(_PlainTextAdapter):
+    source_type = "operator_curated"
+    glob = None  # path-invoked; never glob-walked
+
+
+class AgentSessionAdapter(_PlainTextAdapter):
+    """Attended-session artifacts (notes-research-ingest-v1) — files an agent
+    (Mylo) writes to ~/.grove/notes/ and ~/.grove/research/ during an ATTENDED
+    session. Distinct provenance from operator_curated: NOT operator-vetted.
+    RULING (banked): attended-session artifacts may auto-ingest into ambient
+    context with honest provenance — approval happened in-loop at creation;
+    unattended-run artifacts always gate. These dirs are attended surfaces by
+    definition, so the poll walks them (see grove.wiki.watcher scan-path
+    registration). The label renders as its own knowledge-browser category."""
+
+    source_type = "agent_session"
+    glob = None  # walked by the watcher's explicit ambient-dir loop, not the fleet glob
+
+
 # ── registries ──────────────────────────────────────────────────────────
 
 FLEET_ADAPTERS: Tuple[Adapter, ...] = (
@@ -407,10 +438,11 @@ FLEET_ADAPTERS: Tuple[Adapter, ...] = (
 )
 
 _OPERATOR_CURATED = OperatorCuratedAdapter()
+_AGENT_SESSION = AgentSessionAdapter()
 
 # Keyed by source_type for Phase 4 (pipeline) and Phase 5 (watcher/CLI) dispatch.
 ADAPTERS: Dict[str, Adapter] = {
-    a.source_type: a for a in (*FLEET_ADAPTERS, _OPERATOR_CURATED)
+    a.source_type: a for a in (*FLEET_ADAPTERS, _OPERATOR_CURATED, _AGENT_SESSION)
 }
 
 

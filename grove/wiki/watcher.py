@@ -50,6 +50,22 @@ logger = logging.getLogger(__name__)
 
 _LEDGER_REL = Path(".index") / "ingest_state.json"
 
+# ── attended-session ambient surfaces (notes-research-ingest-v1) ─────────
+#
+# RULING (banked): attended-session artifacts may auto-ingest into ambient
+# context with honest provenance — approval happened in-loop at creation.
+# Unattended-run artifacts always gate. ~/.grove/notes/ and ~/.grove/research/
+# are attended-session surfaces BY DEFINITION (an agent writes them during an
+# operator-present session), so the poll walks them like a fleet sink — but
+# under the ``agent_session`` label, NEVER operator_curated: that label would
+# assert the operator vetted the document, corrupting Cellar provenance for
+# agent-authored research (the binding-governance audit-chain principle). Each
+# dir is a flat ambient surface — no pending_review concept applies. Strict
+# glob: ``.md``/``.txt`` only (Layer 2 / research-routing-coherence-v1 fixes
+# format at the source; off-glob residue is ignored, never errored).
+_AGENT_SESSION_DIRS = ("notes", "research")
+_AGENT_SESSION_GLOBS = ("*.md", "*.txt")
+
 # ── per-file quarantine (wiki-writer-structured-output-v1 P3, GATE-B F2) ──
 #
 # No single file may abort the scan. A candidate that fails to compact is
@@ -236,6 +252,29 @@ def _record_adapter_for(source: Path) -> Optional[Adapter]:
     return None
 
 
+def _agent_session_adapter_for(source: Path) -> Optional[Adapter]:
+    """The agent_session adapter for a file DIRECTLY inside an attended-session
+    ambient dir (``$GROVE_HOME/notes/`` or ``research/``), else None — the
+    explicit-path caller's mirror of the scanner's ambient walk (the
+    _record_adapter_for symmetry). Filename extension is NOT re-checked here:
+    the scanner constrains extensions via its glob; a manual ingest of any
+    text file the operator points at these dirs earns the honest agent_session
+    label rather than the mislabel operator_curated. Nested paths (a subdir
+    under research/) do NOT match — only files one level in, matching the
+    flat-surface scan."""
+    from hermes_constants import get_hermes_home
+
+    src = Path(source).resolve()
+    try:
+        home = Path(get_hermes_home()).resolve()
+    except (OSError, ValueError):
+        return None
+    for rel_dir in _AGENT_SESSION_DIRS:
+        if src.parent == (home / rel_dir).resolve():
+            return ADAPTERS["agent_session"]
+    return None
+
+
 def ingest_file(
     path,
     *,
@@ -287,8 +326,12 @@ def _ingest_one(
     """
     if adapter is None:
         # Resolution order: fleet glob (filename-only, unchanged) → declared
-        # canonical_subdirs sink (path-aware, P2 S1) → operator_curated.
+        # canonical_subdirs sink (path-aware, P2 S1) → attended-session ambient
+        # dir (path-aware, notes-research-ingest-v1 — the no-second-ingest-path
+        # symmetry: a manual `hermes wiki ingest ~/.grove/research/x.md` labels
+        # agent_session, NEVER operator_curated) → operator_curated.
         adapter = (fleet_adapter_for(source) or _record_adapter_for(source)
+                   or _agent_session_adapter_for(source)
                    or ADAPTERS["operator_curated"])
     mtime = source.stat().st_mtime
     if ledger.get(str(source)) == mtime:
@@ -406,6 +449,27 @@ def scan_and_ingest(
             continue
         for source in _iter_package_files(sink):
             _scan_source(source, adapter)
+
+    # Attended-session ambient walk (notes-research-ingest-v1) — parallel to
+    # the fleet + record loops, riding the SAME ledger + debounce + per-file
+    # quarantine via _scan_source. Each declared dir is globbed .md/.txt only
+    # and ingested under the agent_session adapter (honest provenance; see the
+    # _AGENT_SESSION_DIRS ruling above). Absent dirs are skipped by design.
+    _agent_session_adapter = ADAPTERS["agent_session"]
+    for rel_dir in _AGENT_SESSION_DIRS:
+        ambient = home / rel_dir
+        if not ambient.is_dir():
+            logger.debug("[wiki] ambient dir %s absent; skipping.", ambient)
+            continue
+        seen: set = set()
+        for pattern in _AGENT_SESSION_GLOBS:
+            for source in sorted(ambient.glob(pattern)):
+                # A dir globbed by two patterns never double-scans a file (no
+                # overlap between *.md and *.txt, but guard anyway).
+                if source in seen:
+                    continue
+                seen.add(source)
+                _scan_source(source, _agent_session_adapter)
 
     # Dock observed-target branch (Sprint K2) — parallel to the fleet loop,
     # riding the SAME ledger dict + single save. Acts ONLY when the manifest
