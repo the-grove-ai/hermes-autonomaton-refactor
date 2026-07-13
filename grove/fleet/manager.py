@@ -64,9 +64,24 @@ def _canonical_sink_for_skill(skill_id: Optional[str]) -> Optional[str]:
 
 
 class FleetManager:
-    def __init__(self, loop: Optional[Any] = None, workers_path: Optional[Any] = None):
+    def __init__(
+        self,
+        loop: Optional[Any] = None,
+        workers_path: Optional[Any] = None,
+        override_path: Optional[Any] = None,
+    ):
         self._loop = loop
         self._workers_path = workers_path
+        # fleet-hygiene-sweep P4 — the node-local enable-flag overlay path
+        # (None → the real <GROVE_HOME>/fleet_workers.override.yaml at call
+        # time). Passed EXPLICITLY into every load so overrides apply even when
+        # _workers_path is an explicit (test) registry.
+        self._override_path = override_path
+        # Edge-trigger latch for the R-B3 fail-closed override state: the
+        # reason string while in fail-closed, None while healthy. Fire ONE
+        # Andon at onset, log recovery — no per-tick spam (the refusal-demotion
+        # no-spam precedent).
+        self._override_fail_reason: Optional[str] = None
         self._running: Dict[str, WorkerHandle] = {}
         self._last_dispatch: Dict[str, datetime] = {}
 
@@ -259,8 +274,32 @@ class FleetManager:
     # ── dispatch ───────────────────────────────────────────────────────────────
 
     def _maybe_dispatch(self, now: datetime) -> None:
+        # P4 — resolve the enable-flag overlay path and EDGE-TRIGGER the
+        # fail-closed Andon at onset (once), log recovery, re-arm. The loader
+        # already fails closed (all workers disabled) + logs CRITICAL; this
+        # surfaces the transition to the operator bus without per-tick spam.
+        from grove.fleet.config import fleet_workers_override_path, override_health
+
+        ov_path = self._override_path or fleet_workers_override_path()
+        health = override_health(ov_path)
+        if health is not None and self._override_fail_reason is None:
+            surface_fleet_andon(
+                "<override>", "enable_override",
+                f"enable-flag override unusable ({health}) — ALL fleet workers "
+                f"disabled (fail-closed) until fixed",
+                check="enable_override_fail_closed", loop=self._loop,
+            )
+            self._override_fail_reason = health
+        elif health is None and self._override_fail_reason is not None:
+            logger.info(
+                "[fleet.manager] enable-flag override recovered — fleet re-armed."
+            )
+            self._override_fail_reason = None
+
         try:
-            workers = load_fleet_workers(self._workers_path)
+            workers = load_fleet_workers(
+                self._workers_path, override_path=ov_path
+            )
         except FleetWorkerAndon as exc:
             surface_fleet_andon(
                 "<registry>", "load", str(exc), check=exc.check, loop=self._loop

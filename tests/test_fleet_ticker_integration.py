@@ -298,3 +298,42 @@ def test_surface_andon_files_kaizen_facts_only_and_log_floor(caplog):
     }
     assert entry["source"] == "fleet_worker"
     assert "go_forward_options" not in entry
+
+
+# ── fleet-hygiene-sweep P4 — enable-override edge-triggered Andon ──────────────
+
+
+def test_override_failclosed_andon_edge_triggered(captured_andons, tmp_path):
+    """R-B3 onset fires ONE Andon across N ticks; recovery re-arms (a second
+    onset fires again). The disabled worker never dispatches (fail-closed)."""
+    reg = tmp_path / "workers.yaml"
+    reg.write_text(
+        "workers:\n  - {id: forge, skill: skill.fleet.forge-jobsearch, enabled: true}\n",
+        encoding="utf-8",
+    )
+    ov = tmp_path / "override.yaml"
+    now = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+
+    def _fails():
+        return [a for a in captured_andons
+                if a.get("check") == "enable_override_fail_closed"]
+
+    m = manager_mod.FleetManager(workers_path=reg, override_path=ov)
+
+    # onset — a broken override, 5 ticks → exactly ONE Andon
+    ov.write_text("workers:\n  forge: {enabled: false\n  {{{ broken", encoding="utf-8")
+    for _ in range(5):
+        m._maybe_dispatch(now)
+    assert len(_fails()) == 1
+
+    # recovery — a healthy override, one tick → no new Andon, re-armed
+    ov.write_text("workers:\n  forge: {enabled: false}\n", encoding="utf-8")
+    m._maybe_dispatch(now)
+    assert len(_fails()) == 1
+    assert m._override_fail_reason is None
+
+    # second onset — break again → a second Andon fires (re-arm proven)
+    ov.write_text("workers: [ not a mapping", encoding="utf-8")
+    for _ in range(3):
+        m._maybe_dispatch(now)
+    assert len(_fails()) == 2
