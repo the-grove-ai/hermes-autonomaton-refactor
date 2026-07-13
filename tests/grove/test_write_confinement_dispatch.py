@@ -66,6 +66,29 @@ def test_extract_nonwrite_tool_is_empty():
     assert extract_write_targets("read_file", {"path": "/a/b.txt"}) == []
 
 
+def test_write_target_extraction_covers_every_file_write_tool():
+    """routing-scope-wall-v1 R-W5 — whitelist-sync tripwire.
+
+    The scope-wall (Seam β + the execution guard) keys on the targets
+    extract_write_targets yields. So EVERY file_write-class tool (TOOL_CLASS_MAP)
+    MUST be handled by extract_write_targets, or a scope-defining write through
+    that tool is a silent blind spot. If this fails, a new write-class tool was
+    registered without wiring it into extract_write_targets — the banked debt
+    item write-target-extraction-universality. Wire the new tool into
+    extract_write_targets (and the sensitive/governed walls) before shipping it.
+    """
+    from grove.tool_classes import TOOL_CLASS_MAP
+    file_write_tools = {n for n, c in TOOL_CLASS_MAP.items() if c == "file_write"}
+    assert file_write_tools, "no file_write tools in TOOL_CLASS_MAP — map changed?"
+    probe = {"path": "/tmp/probe.txt", "mode": "replace", "content": "x"}
+    unhandled = {t for t in file_write_tools if not extract_write_targets(t, probe)}
+    assert not unhandled, (
+        "file_write-class tools NOT handled by extract_write_targets — scope-wall "
+        "blind spot (debt: write-target-extraction-universality): "
+        f"{sorted(unhandled)}"
+    )
+
+
 # ── dispatcher integration: refuse BEFORE classification ─────────────────────
 
 
