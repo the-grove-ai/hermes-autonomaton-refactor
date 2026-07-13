@@ -112,7 +112,12 @@ def _ledger_events(tmp_path: Path) -> list[dict]:
 
 
 def test_pin_happy_path(caps_env, tmp_path):
+    # fleet-hygiene-sweep P2 — the pin lands in the STATE overlay; the bundled
+    # DEFINITION stays byte-clean (the deploy-immune post-condition).
+    from grove.capability_registry import capability_state_dir, load_capabilities
+
     path = _mint(caps_env, _skill_cap("skill.demo.bindtest-alpha"))
+    defn_before = path.read_bytes()
 
     result = set_model_binding(
         "bindtest-alpha", {"type": "model", "model": "z-ai/glm-5.2"},
@@ -122,11 +127,15 @@ def test_pin_happy_path(caps_env, tmp_path):
     assert result.record_id == "skill.demo.bindtest-alpha"
     assert result.previous_binding is None
     assert result.new_binding == {"type": "model", "model": "z-ai/glm-5.2"}
-    reloaded = Capability.from_yaml(path.read_text(encoding="utf-8"))
+    # definition untouched — the whole point
+    assert path.read_bytes() == defn_before
+    # composed load renders the pin from state
+    reloaded = load_capabilities()["skill.demo.bindtest-alpha"]
     assert reloaded.model_binding is not None
-    assert reloaded.model_binding.type == "model"
     assert reloaded.model_binding.model == "z-ai/glm-5.2"
-    assert path.with_suffix(path.suffix + ".bak").exists()
+    # state file exists at the overlay
+    state_file = capability_state_dir() / "skill__demo__bindtest-alpha.yaml"
+    assert state_file.is_file()
 
 
 # ── UNPIN clears the field ────────────────────────────────────────────────────
@@ -145,10 +154,13 @@ def test_unpin_clears_field(caps_env, tmp_path):
 
     assert result.previous_binding == {"type": "model", "model": "z-ai/glm-5.2"}
     assert result.new_binding is None
-    text = path.read_text(encoding="utf-8")
-    assert "model_binding" not in text  # present-key-only round-trip
-    reloaded = Capability.from_yaml(text)
-    assert reloaded.model_binding is None
+    # P2 — the DEFINITION still carries its seed pin (definitions are read-only
+    # to the writer); the composed load reflects the state's cleared pin.
+    from grove.capability_registry import load_capabilities
+
+    assert "model_binding" in path.read_text(encoding="utf-8")  # defn untouched
+    reloaded = load_capabilities()["skill.demo.bindtest-beta"]
+    assert reloaded.model_binding is None  # state clears it (model_binding: null)
 
 
 # ── AMBIGUOUS refusal ─────────────────────────────────────────────────────────
@@ -293,3 +305,63 @@ def test_previous_binding_captured(caps_env, tmp_path):
         "type": "model", "model": "anthropic/claude-haiku-4.5",
     }
     assert events[0]["proposal_id"] is None
+
+
+# ── fleet-hygiene-sweep P2 — state overlay (Option B: uniform) ────────────────
+
+
+def test_minted_overlay_record_pin_composes(caps_env, tmp_path):
+    """Ruling B — a MINTED (whole-file overlay) record's pin also flows to the
+    state overlay and composes back correctly (deploy-immunity preserved; the
+    superseded 'still whole-file' line becomes this composition pin)."""
+    from grove.capability_registry import (
+        capability_state_dir,
+        grove_home_capabilities_dir,
+        load_capabilities,
+    )
+
+    # mint the record into the whole-file overlay dir (not the repo bundled dir)
+    overlay_dir = grove_home_capabilities_dir()
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    cap = _skill_cap("skill.demo.minted-one")
+    (overlay_dir / "skill__demo__minted-one.yaml").write_text(
+        cap.to_yaml(), encoding="utf-8"
+    )
+
+    set_model_binding(
+        "minted-one", {"type": "model", "model": "z-ai/glm-5.2"}, surface="portal",
+    )
+
+    # state sidecar written; overlay definition byte-clean; composed load pins
+    assert (capability_state_dir() / "skill__demo__minted-one.yaml").is_file()
+    reloaded = load_capabilities()["skill.demo.minted-one"]
+    assert reloaded.model_binding.model == "z-ai/glm-5.2"
+
+
+def test_mint_gate_refuses_orphaned_state(caps_env, tmp_path):
+    """R-B4 — minting an id that already has a state sidecar (no definition)
+    refuses: minting onto stale state would silently resurrect it."""
+    from grove.capability_registry import (
+        CapabilityLoadError,
+        _mint_skill_record,
+        capability_state_dir,
+    )
+    from grove.capability import LifecycleState, Provenance
+
+    # a non-empty registry so the dedup load succeeds (real system has 153)
+    _mint(caps_env, _skill_cap("skill.demo.seedrec"))
+
+    # plant an orphaned state file at the id the mint would produce
+    state_dir = capability_state_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "skill__demo__ghosttest.yaml").write_text(
+        "id: skill.demo.ghosttest\nmodel_binding:\n  type: model\n  model: z-ai/glm-5.2\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CapabilityLoadError, match="orphaned state"):
+        _mint_skill_record(
+            "ghosttest", "demo", "---\nname: ghosttest\n---\nbody",
+            provenance=Provenance.AGENT_PROPOSED, state=LifecycleState.PROPOSED,
+            filename_tag="installed",
+        )

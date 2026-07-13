@@ -171,17 +171,26 @@ def test_gate_survives_lifecycle_write(tmp_path):
     path = caps_dir / "skill__test__qualitygate.yaml"
     path.write_text(cap.to_yaml(), encoding="utf-8")
 
+    state_dir = tmp_path / "state"
     result = transition_record(
         "skill.test.qualitygate",
         LifecycleState.REFINED,
         actor="test",
         reason="quality_gate write-path pin",
         directory=caps_dir,
+        state_dir=state_dir,
     )
     assert result.status == "applied"
-    reloaded = _yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert reloaded["lifecycle"]["state"] == "refined"
-    assert reloaded["governance"]["quality_gate"] == _VALID_GATE
+    # fleet-hygiene-sweep P2 — the transition writes the STATE overlay
+    # (state=refined + decision_log); the DEFINITION (with its quality_gate)
+    # stays byte-clean and read-only.
+    st = _yaml.safe_load(
+        (state_dir / "skill__test__qualitygate.yaml").read_text(encoding="utf-8")
+    )
+    assert st["lifecycle"]["state"] == "refined"
+    defn = _yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert defn["lifecycle"]["state"] == "active"                 # definition untouched
+    assert defn["governance"]["quality_gate"] == _VALID_GATE
 
 
 @pytest.fixture
@@ -208,7 +217,12 @@ def test_gate_survives_model_binding_write(caps_env):
     set_model_binding(
         "qualitygate", {"type": "model", "model": "z-ai/glm-5.2"}, surface="portal"
     )
-    reloaded = Capability.from_yaml(path.read_text(encoding="utf-8"))
+    # fleet-hygiene-sweep P2 — the pin lands in the STATE overlay; the composed
+    # load carries BOTH the definition's quality_gate AND the state's pin (the
+    # anti-shadow guarantee: state merges a field, never masks the record).
+    from grove.capability_registry import load_capabilities
+
+    reloaded = load_capabilities()["skill.test.qualitygate"]
     assert reloaded.model_binding is not None
     assert reloaded.governance["quality_gate"] == _VALID_GATE
 

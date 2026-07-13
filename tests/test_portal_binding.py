@@ -187,8 +187,13 @@ async def test_pin_happy_path_rerenders_fresh(client, caps_env):
     assert "pinned: z-ai/glm-5.2" in body               # fresh post-write read
     assert "Unpin" in body                              # unpin now offered
     assert 'id="alert-banner"' not in body              # no failure banner
-    reloaded = Capability.from_yaml(path.read_text(encoding="utf-8"))
-    assert reloaded.model_binding.model == "z-ai/glm-5.2"
+    # fleet-hygiene-sweep P2 — the pin lands in the state overlay; the composed
+    # load renders it, the bundled definition stays clean.
+    from grove.capability_registry import load_capabilities
+
+    assert load_capabilities()["skill.fleet.bindui-alpha"].model_binding.model == (
+        "z-ai/glm-5.2"
+    )
 
 
 async def test_unpin_happy_path(client, caps_env):
@@ -202,7 +207,10 @@ async def test_unpin_happy_path(client, caps_env):
     assert r.status == 200
     body = await r.text()
     assert "inherits T2" in body
-    assert "model_binding" not in path.read_text(encoding="utf-8")
+    # P2 — definition keeps its seed pin (read-only); composed load reflects clear
+    from grove.capability_registry import load_capabilities
+
+    assert load_capabilities()["skill.fleet.bindui-beta"].model_binding is None
 
 
 async def test_pin_off_catalog_model_400(client, caps_env, monkeypatch):
