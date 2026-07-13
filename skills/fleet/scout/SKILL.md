@@ -1,4 +1,5 @@
 ---
+created_by: bundled
 name: scout
 description: "Social monitoring scout — scans X and web for engagement opportunities in the distributed-AI conversation, drafts on-voice candidate responses, writes structured report. Fleet Phase 1 reference implementation."
 version: 1.0.0

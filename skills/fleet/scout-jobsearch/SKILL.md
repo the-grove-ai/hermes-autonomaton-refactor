@@ -1,4 +1,5 @@
 ---
+created_by: bundled
 name: scout-jobsearch
 description: "LinkedIn job search scout — scans job listings across persona-mapped searches and saved jobs, fit-scores against career-corpus personas, writes scored entries to Notion Job Opportunities DB. Fleet browser-consuming reference implementation."
 version: 1.0.0

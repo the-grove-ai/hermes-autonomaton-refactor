@@ -1,4 +1,5 @@
 ---
+created_by: bundled
 name: researcher
 description: "Deep-research skill — accepts an article URL or body, runs a Socratic exchange to capture operator intent, then researches against LLM-Wiki, Notion, and web. Produces structured brief that bridges to Drafter. Fleet Phase 1 reference implementation."
 version: 1.0.0

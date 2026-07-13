@@ -1,4 +1,5 @@
 ---
+created_by: bundled
 name: drafter
 description: "Content drafter — consumes Researcher briefs, applies formal voice lock (jim-voice-writing-style + linkedin-thinkpiece), targets specific output formats, stages for operator approval. Yellow zone: output represents the operator's public voice. Fleet Phase 1 reference implementation."
 version: 1.0.0

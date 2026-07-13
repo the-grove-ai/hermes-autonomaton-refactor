@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: red
+tier: T1
 name: markdown-to-notion
 description: Intelligently saves markdown files and content to Notion with automatic chunking for large documents, category routing to the thought capture database (b5eb61c0-af3f-4a43-9b5d-6e28f97377b8), and support for both mobile and desktop workflows. Use when the user asks to save, log, capture, or store markdown content, documents, notes, or thoughts to Notion. Also triggers on phrases like "remember this", "save to Notion", "capture thought", or "log this".
 ---
