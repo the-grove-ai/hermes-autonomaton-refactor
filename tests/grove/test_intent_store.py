@@ -184,11 +184,13 @@ class TestIntentStoreAppendAndRead:
 
 class TestOutcomeEnforcement:
     def test_valid_outcomes_set_contents(self):
+        """R-T3: closed set includes governance_terminated (e8d592c11, GRV-010 C3)."""
         # The closed set is part of the Phase 4 provisional-write
         # contract; lock it down so an accidental edit elsewhere
         # surfaces in test failure rather than a runtime ValueError.
         assert VALID_OUTCOMES == frozenset({
             "pending", "success", "drop", "error", "correction",
+            "governance_terminated",
         })
 
     @pytest.mark.parametrize("outcome", sorted(VALID_OUTCOMES))

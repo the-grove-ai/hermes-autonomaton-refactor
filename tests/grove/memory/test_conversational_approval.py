@@ -79,35 +79,38 @@ def _memory_records():
 # ── review_proposals (unified listing) ────────────────────────────────────
 
 def test_review_only_routing():
+    """Ruled STALE, realigned per ccaaf3ae4 (structured proposals with ordinals)."""
     _stage_routing()
     out = json.loads(review_proposals())
     assert out["success"] is True
     assert out["pending_count"] == 1
-    blob = " ".join(out["proposals"])
+    blob = " ".join(p["display"] for p in out["proposals"])
     assert "code_generation" in blob
     assert "memory_context" not in blob
 
 
 def test_review_only_memory():
+    """Ruled STALE, realigned per ccaaf3ae4 (structured proposals with ordinals)."""
     short = _stage_memory(_memory_proposal(content="Prefers CLI for deploys."))
     out = json.loads(review_proposals())
     assert out["success"] is True
     assert out["pending_count"] == 1
-    blob = " ".join(out["proposals"])
+    blob = " ".join(p["display"] for p in out["proposals"])
     assert "memory_context" in blob
     assert "Prefers CLI for deploys." in blob
-    assert short in blob
+    assert short in {p["id"] for p in out["proposals"]}
 
 
 def test_review_both_types():
+    """Ruled STALE, realigned per ccaaf3ae4 (structured proposals with ordinals)."""
     _stage_routing()
     short = _stage_memory(_memory_proposal(content="A learned fact."))
     out = json.loads(review_proposals())
     assert out["pending_count"] == 2
-    blob = " ".join(out["proposals"])
+    blob = " ".join(p["display"] for p in out["proposals"])
     assert "code_generation" in blob          # routing
     assert "A learned fact." in blob          # memory
-    assert short in blob
+    assert short in {p["id"] for p in out["proposals"]}
 
 
 def test_review_none():
@@ -168,10 +171,11 @@ def test_reject_memory_id_dismisses():
 
 
 def test_review_then_approve_memory_roundtrip():
+    """Ruled STALE, realigned per ccaaf3ae4 (structured proposals with ordinals)."""
     short = _stage_memory(_memory_proposal(content="Round-trip fact."))
     listing = json.loads(review_proposals())
-    blob = " ".join(listing["proposals"])
-    assert short in blob                       # id discoverable via review
+    ids = {p["id"] for p in listing["proposals"]}
+    assert short in ids                        # id discoverable via review
 
     out = json.loads(approve_proposal(short))  # ...and accepted by approve
     assert out["success"] is True

@@ -73,6 +73,14 @@ def _agent():
     a.session_id = ""
     a._user_turn_count = 0
     a._surfaced_proposal_ids = set()
+    # portal-links P1 (a5139bf29): the push path resolves the portal base URL
+    # from self._runtime_ctx.config (run_agent.py _config_load_or →
+    # _runtime_ctx.config, run_agent.py:2775-2778). A fixture without it makes
+    # compose_offering's resolve_portal_base_url branch AttributeError and the
+    # whole push get swallowed (run_agent.py:5629-5630). An empty config dict is
+    # the minimal real shape — resolve_portal_base_url(config={}) yields the
+    # loopback portal base.
+    a._runtime_ctx = types.SimpleNamespace(config={})
     return a
 
 
@@ -153,12 +161,19 @@ def test_push_priority_memory_above_routing():
 # 7. Merged push — higher priority (memory) surfaces first
 
 def test_merged_push_memory_before_routing():
+    """portal-reader-contract-fix-v1 + a5139bf29: memory proposals now carry
+    requires_portal_review, so compose_offering emits the compact portal-link
+    NOTIFICATION (rendering.py:567-572) rather than inline memory content. The
+    chosen memory proposal (priority 1) still wins over routing — proven by the
+    portal-link push appearing while routing content ('code_generation') does
+    not surface this turn."""
     from run_agent import AIAgent
     _stage_routing()                 # eligible (created now)
     _stage_memory(content="Memory wins.")
     agent = _agent()
     out = AIAgent._append_pending_offer(agent, "Answer.")
-    assert "Memory wins." in out                  # memory (priority 1) first
+    assert "New proposals await your review" in out   # memory (pri 1) → portal link
+    assert "/portal#fragments/proposals/pending" in out
     assert "code_generation" not in out           # routing not surfaced this turn
 
 
@@ -176,10 +191,14 @@ def test_merged_push_memory_eligible_when_relevant():
     # crystallization-cadence-v1: prior-session memory is eligible despite no
     # session window — WHEN relevant to the turn's intent (OperatorPreference
     # on a 'conversation' turn, set by the autouse fixture).
+    """portal-reader-contract-fix-v1 + a5139bf29: the eligible memory push now
+    surfaces as the compact portal-link notification (rendering.py:567-572), not
+    inline content — the assertion checks the push appears, preserving intent."""
     from run_agent import AIAgent
     _stage_memory(content="Prior-session memory.")
     out = AIAgent._append_pending_offer(_agent(), "Answer.")
-    assert "Prior-session memory." in out
+    assert "New proposals await your review" in out
+    assert "/portal#fragments/proposals/pending" in out
 
 
 def test_merged_push_memory_suppressed_when_irrelevant(monkeypatch):
@@ -200,11 +219,14 @@ def test_merged_push_memory_suppressed_when_irrelevant(monkeypatch):
 # 9. Merged push — shown-set dedup across types
 
 def test_merged_push_dedup():
+    """portal-reader-contract-fix-v1 + a5139bf29: the first push surfaces as the
+    compact portal-link notification (rendering.py:567-572); dedup still holds —
+    the second turn re-surfaces nothing (shown-set), returning the bare answer."""
     from run_agent import AIAgent
     _stage_memory(content="Only one.")
     agent = _agent()
     first = AIAgent._append_pending_offer(agent, "A.")
-    assert "Only one." in first
+    assert "New proposals await your review" in first
     second = AIAgent._append_pending_offer(agent, "B.")
     assert second == "B."                          # already shown
 
@@ -219,12 +241,17 @@ def test_merged_push_nothing_pending():
 # 11 & 12. review_proposals — one path, both types
 
 def test_review_unified_both_types():
+    """ccaaf3ae4 (kaizen-no-id-display): review_proposals now returns
+    out['proposals'] as ordinal-tagged DICTS {'ordinal', 'display', 'id'}
+    (flywheel_review_tool.py:385-392), not display strings. Both types are still
+    surfaced/reviewable through the one path — asserted against the 'display'
+    (type-tagged render) and 'id' (short id) fields of each dict."""
     from tools.flywheel_review_tool import review_proposals
     _stage_routing()
     short = _stage_memory(content="A learned fact.")
     out = json.loads(review_proposals())
     assert out["pending_count"] == 2
-    blob = " ".join(out["proposals"])
+    blob = " ".join(f'{p["display"]} {p["id"]}' for p in out["proposals"])
     assert "code_generation" in blob              # routing
     assert "A learned fact." in blob              # memory
     assert short in blob
