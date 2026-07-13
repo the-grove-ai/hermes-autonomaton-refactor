@@ -165,10 +165,27 @@ class TestUnrecognizedProviderRaises:
 
 
 class TestRepoTemplateTierResolution:
-    """For each tier in ``config/routing.config.yaml``, the AIAgent
-    constructs with the correct api_mode given that tier's settings.
+    """For each real cognition tier in ``config/routing.config.yaml``, the
+    repo template's ruled resolution yields a correct, consistent api_mode.
     The operator-flagged "missing test category."
+
+    Ruled change (commit b7164702d, "repo-template-cleanup: OpenRouter as
+    default, remove Anthropic-native T1 constraint"; reinforced by
+    classifier-provider-agnostic-v1 and telemetry-tier-decoupling-v1): the
+    repo config now binds T1/T2/T3 to ``provider: openrouter`` with no
+    ``api_mode`` key and OpenRouter-prefixed models. The wire protocol is
+    derived from the provider via ``determine_api_mode`` — OpenRouter's
+    ``openai_chat`` transport resolves to ``chat_completions`` against the
+    canonical OpenRouter endpoint — and the agent is then constructed with
+    that mode. These assertions were previously written for the retired
+    Anthropic-native binding (``anthropic_messages`` against
+    ``api.anthropic.com``) and are realigned here to the OpenRouter default.
     """
+
+    #: Canonical OpenRouter endpoint (run_agent's documented default; the
+    #: provider overlay carries no base_url_override, only the
+    #: OPENROUTER_BASE_URL env hook, so the config declares no base_url).
+    OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
     @pytest.fixture
     def repo_tiers(self) -> dict:
@@ -177,35 +194,39 @@ class TestRepoTemplateTierResolution:
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         return cfg["routing"]["tier_preferences"]
 
-    def test_t1_anthropic_messages(self, repo_tiers: dict) -> None:
-        spec = repo_tiers["T1"]
+    def _assert_tier_chat_completions(self, spec: dict) -> None:
+        """Mirror the production resolution path: derive api_mode from the
+        tier's provider via ``determine_api_mode`` (the resolver
+        ``AIAgent.switch_model`` uses), then construct the agent and confirm
+        it honors that mode. Sanctioned by commit b7164702d.
+        """
+        from hermes_cli.providers import determine_api_mode
+        provider = spec.get("provider", "")
+        api_mode = spec.get("api_mode") or determine_api_mode(
+            provider, self.OPENROUTER_BASE_URL
+        )
         agent = _build_agent(
-            provider=spec.get("provider", ""),
-            api_mode=spec.get("api_mode"),
-            base_url="https://api.anthropic.com",
+            provider=provider,
+            api_mode=api_mode,
+            base_url=self.OPENROUTER_BASE_URL,
             model=spec["model"],
         )
-        assert agent.api_mode == "anthropic_messages"
+        assert agent.api_mode == "chat_completions"
 
-    def test_t2_anthropic_messages(self, repo_tiers: dict) -> None:
-        spec = repo_tiers["T2"]
-        agent = _build_agent(
-            provider=spec.get("provider", ""),
-            api_mode=spec.get("api_mode"),
-            base_url="https://api.anthropic.com",
-            model=spec["model"],
-        )
-        assert agent.api_mode == "anthropic_messages"
+    def test_t1_chat_completions(self, repo_tiers: dict) -> None:
+        """T1 resolves to chat_completions under the OpenRouter default
+        (b7164702d)."""
+        self._assert_tier_chat_completions(repo_tiers["T1"])
 
-    def test_t3_anthropic_messages(self, repo_tiers: dict) -> None:
-        spec = repo_tiers["T3"]
-        agent = _build_agent(
-            provider=spec.get("provider", ""),
-            api_mode=spec.get("api_mode"),
-            base_url="https://api.anthropic.com",
-            model=spec["model"],
-        )
-        assert agent.api_mode == "anthropic_messages"
+    def test_t2_chat_completions(self, repo_tiers: dict) -> None:
+        """T2 resolves to chat_completions under the OpenRouter default
+        (b7164702d)."""
+        self._assert_tier_chat_completions(repo_tiers["T2"])
+
+    def test_t3_chat_completions(self, repo_tiers: dict) -> None:
+        """T3 resolves to chat_completions under the OpenRouter default
+        (b7164702d)."""
+        self._assert_tier_chat_completions(repo_tiers["T3"])
 
 
 # ── Test D — Explicit api_mode is honored ────────────────────────────

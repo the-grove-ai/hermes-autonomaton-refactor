@@ -146,6 +146,8 @@ def test_current_session_proposal_pushes(tmp_path: Path) -> None:
 
 
 def test_one_at_a_time_highest_priority(tmp_path: Path) -> None:
+    """Highest-priority proposal surfaces first; the push cadence guard then
+    holds further same-turn pushes (kaizen-push-cadence-v1 a89575e16)."""
     from run_agent import AIAgent
     from grove.eval.proposal_queue import default_queue_path, read_all
 
@@ -157,8 +159,12 @@ def test_one_at_a_time_highest_priority(tmp_path: Path) -> None:
     first = AIAgent._append_pending_offer(agent, "Done.")
     # Highest priority surfaced = skill_synthesis (its summary mentions "skill").
     assert "skill" in first.lower()
-    # One-at-a-time: a second call surfaces the next (routing), not a repeat.
+    # test-baseline-hygiene R-T3 (kaizen-push-cadence-v1 a89575e16): the push
+    # cadence guard suppresses any further push within _PUSH_COOLDOWN_TURNS, so
+    # a same-turn second call is held (returns the bare response) rather than
+    # surfacing the next-priority proposal. Only the highest-priority proposal
+    # (skill_synthesis) surfaces this cooldown window.
     second = AIAgent._append_pending_offer(agent, "Done.")
-    assert "date_arithmetic" in second
-    # Third call: both guarded → nothing.
+    assert second == "Done."
+    # Third same-turn call likewise suppressed by the cooldown.
     assert AIAgent._append_pending_offer(agent, "Done.") == "Done."
