@@ -4676,7 +4676,18 @@ class Dispatcher:
         if tool_name == "propose_governance_change" and isinstance(args, dict):
             from grove.zones import ZoneResult
             from tools.governance_tool import classify_governance_target
-            if classify_governance_target(args.get("target_file")) == "red":
+            from grove.utils.fs_utils import is_scope_defining
+            _gov_target = args.get("target_file")
+            # routing-scope-wall-v1 R-W3 — a scope-defining target is RED through
+            # this door too (coherent with Seam β + the shell path), superseding
+            # the prior .env-only red. Target-keyed via is_scope_defining.
+            if is_scope_defining(_gov_target):
+                return ZoneResult(
+                    zone="red",
+                    matched_rule=f"scope_defining:{_gov_target}",
+                    source="governance_change",
+                )
+            if classify_governance_target(_gov_target) == "red":
                 return ZoneResult(
                     zone="red",
                     matched_rule="governance_write:.env",
@@ -4747,6 +4758,23 @@ class Dispatcher:
                         ),
                         _given,
                     )
+        # routing-scope-wall-v1 R-W3 (Seam β) — target-keyed scope-defining RED.
+        # A write intent whose RESOLVED target is a scope-defining authority
+        # surface classifies RED here, surface-coherent with the shell path
+        # (grove/shell_effects.py is_scope_defining → RED) and dominating the
+        # bare-tool YELLOW below. The decision is keyed ONLY on the target via
+        # is_scope_defining — no tool-name/surface branch; extract_write_targets
+        # yields [] for non-write tools, so this is a natural no-op for them.
+        from tools.file_tools import extract_write_targets as _ewt
+        from grove.utils.fs_utils import is_scope_defining as _isd
+        for _wt in _ewt(tool_name, args):
+            if _isd(_wt):
+                from grove.zones import ZoneResult
+                return ZoneResult(
+                    zone="red",
+                    matched_rule=f"scope_defining:{_wt}",
+                    source="scope_wall",
+                )
         # Generic path: the action string IS the bare tool_name, matching
         # the convention in zones.schema.yaml::tool_zones (entries like
         # ``terminal``, ``calendar.read``, ``notion_search``). The earlier
