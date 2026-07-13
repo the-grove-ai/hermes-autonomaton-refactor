@@ -279,6 +279,8 @@ def test_registry_keyed_by_source_type():
         "drafter_draft",
         "cultivator_prospects",
         "operator_curated",
+        # notes-research-ingest-v1 — the attended-session ambient adapter
+        "agent_session",
     }
     assert {a.source_type for a in FLEET_ADAPTERS} == {
         "scout_digest",
