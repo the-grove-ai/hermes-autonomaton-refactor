@@ -110,3 +110,23 @@ def test_untracked_litter_beside_real_drift_still_halts(repo, tmp_path):
     rc, err = _run_guard(repo, tmp_path / "grove")
     assert rc == 1
     assert "skill__demo__x.yaml" in err
+
+
+def test_embed_under_set_u_does_not_abort(repo, tmp_path):
+    """The deploy embeds this guard's SOURCE into a `set -euo pipefail` heredoc.
+    The auto-invoke block must be set -u safe (BASH_SOURCE[0] unbound when
+    embedded) — else the deploy aborts before the explicit call. Rehearse the
+    exact embed shape: set -u, source, then call."""
+    script = (
+        f'set -euo pipefail\n'
+        f'source "{GUARD}"\n'
+        f'check_capability_drift "{repo}"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env={"HOME": str(tmp_path / "grove"), "GROVE_HOME": str(tmp_path / "grove"),
+             "PATH": _path()},
+    )
+    # clean tree → exit 0, and crucially NO "unbound variable" abort
+    assert proc.returncode == 0, proc.stderr
+    assert "unbound variable" not in proc.stderr
