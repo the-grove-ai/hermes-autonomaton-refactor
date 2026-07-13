@@ -158,3 +158,92 @@ def test_patch_out_of_confinement_refused_before_prompt(tmp_path, monkeypatch):
     d.dispatch_turn(agent, user_message="hi")
     assert agent._exec_called is False
     assert prompted == []
+
+
+# ── routing-scope-wall-v1 R-W3 — Seam β: target-keyed scope-defining RED ──────
+
+
+def _classify(tool_name, args):
+    import grove.dispatch as _gd
+    return Dispatcher._classify_one_intent(
+        ToolIntent(tool_name=tool_name, arguments=args, call_id="c1"), _gd
+    )
+
+
+def test_write_file_to_scope_defining_is_red(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
+    (tmp_path / "grove").mkdir()
+    zr = _classify("write_file", {
+        "path": str(tmp_path / "grove" / "routing.config.yaml"), "content": "x",
+    })
+    assert zr.zone == "red"
+    assert "scope_defining" in (zr.matched_rule or "")
+
+
+def test_patch_to_scope_defining_is_red(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
+    (tmp_path / "grove").mkdir()
+    zr = _classify("patch", {
+        "mode": "replace", "path": str(tmp_path / "grove" / "zones.schema.yaml"),
+    })
+    assert zr.zone == "red"
+
+
+def test_write_file_autonomaton_overlay_is_red(tmp_path, monkeypatch):
+    # the new R-W2 authority surfaces are RED via the generic write tools too.
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
+    (tmp_path / "grove").mkdir()
+    zr = _classify("write_file", {
+        "path": str(tmp_path / "grove" / "routing.autonomaton.yaml"), "content": "x",
+    })
+    assert zr.zone == "red"
+
+
+def test_write_file_nonscope_grove_target_stays_yellow(tmp_path, monkeypatch):
+    # a non-scope-defining write still classifies YELLOW (bare-tool default) —
+    # the wall is target-keyed, not a blanket ~/.grove RED.
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
+    (tmp_path / "grove" / "memory").mkdir(parents=True)
+    zr = _classify("write_file", {
+        "path": str(tmp_path / "grove" / "memory" / "note.txt"), "content": "x",
+    })
+    assert zr.zone == "yellow"
+
+
+def test_propose_governance_change_scope_defining_is_red(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
+    (tmp_path / "grove").mkdir()
+    zr = _classify("propose_governance_change", {
+        "target_file": str(tmp_path / "grove" / "routing.config.yaml"), "content": "x",
+    })
+    assert zr.zone == "red"
+
+
+def test_propose_governance_change_nonscope_dock_stays_yellow(tmp_path, monkeypatch):
+    # a Dock goal file is governance-writable YELLOW, not scope-defining.
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
+    (tmp_path / "grove" / "dock" / "goals").mkdir(parents=True)
+    zr = _classify("propose_governance_change", {
+        "target_file": str(tmp_path / "grove" / "dock" / "goals" / "g.yaml"), "content": "x",
+    })
+    assert zr.zone == "yellow"
+
+
+def test_confinement_denies_whole_intent_if_any_target_out_of_union(tmp_path, monkeypatch):
+    # 0b regression pin (G3 minimal-fix branch is DEAD): _enforce_write_confinement
+    # extracts ALL targets from one intent; a single out-of-union endpoint denies
+    # the whole intent/batch before classification. A Move with one allowed and one
+    # out-of-union endpoint must NOT execute.
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
+    (tmp_path / "grove").mkdir()
+    prompted: List = []
+    msgs: List[Dict] = []
+    agent = _agent(msgs)
+    good = str(tmp_path / "ok.txt")  # /tmp → allowed
+    patch = f"*** Begin Patch\n*** Move File: {good} -> /etc/evil.txt\n*** End Patch\n"
+    intents = [ToolIntent(tool_name="patch", arguments={"mode": "patch", "patch": patch}, call_id="c1")]
+    agent._run_turn_generator = lambda **kw: _synthetic_generator(intents, {"final_response": "d"})
+    d = Dispatcher(sovereign_prompt_handler=lambda halt: prompted.append(halt) or "deny")
+    d.dispatch_turn(agent, user_message="hi")
+    assert agent._exec_called is False  # whole intent denied on the out-of-union endpoint
+    assert prompted == []               # denied pre-classification, no prompt

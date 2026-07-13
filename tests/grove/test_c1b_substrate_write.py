@@ -145,21 +145,28 @@ class TestGovernanceDispatcherClassification:
         zr = Dispatcher._classify_one_intent(self._intent(str(grove_home / ".env")), _gd)
         assert zr.zone == "red"
 
-    def test_yaml_target_classifies_yellow(self, grove_home):
+    def test_yaml_target_classifies_red(self, grove_home):
+        # routing-scope-wall-v1 R-W3: scope-defining governance targets
+        # (zones.schema/routing.config) now classify RED through the
+        # propose_governance_change door, superseding the prior C1b YELLOW —
+        # editing zone rules expands the agent's own authority.
         from grove import dispatch as _gd
         from grove.dispatcher import Dispatcher
         zr = Dispatcher._classify_one_intent(
             self._intent(str(grove_home / "zones.schema.yaml")), _gd,
         )
-        assert zr.zone == "yellow"
+        assert zr.zone == "red"
 
-    def test_dock_target_classifies_yellow(self, grove_home):
+    def test_dock_target_classifies_red(self, grove_home):
+        # routing-scope-wall-v1 R-W3 (ruling b, no carve-out): dock/dock.yaml is
+        # scope-defining, so it classifies RED through this door too. dock/goals/**
+        # (not scope-defining) stays YELLOW. Debt: dock-manifest-scope-membership.
         from grove import dispatch as _gd
         from grove.dispatcher import Dispatcher
         zr = Dispatcher._classify_one_intent(
             self._intent(str(grove_home / "dock" / "dock.yaml")), _gd,
         )
-        assert zr.zone == "yellow"
+        assert zr.zone == "red"
 
 
 class TestGovernanceWriteAndLedger:
@@ -360,7 +367,11 @@ class TestDockOfferNotTheater:
     handler can run. The offer precedes the effect; it is not theater."""
 
     def test_dock_proposal_halts_before_write(self, grove_home):
-        from grove.dispatcher import AndonPermissionHalt, Dispatcher
+        # routing-scope-wall-v1 R-W3: dock/dock.yaml is scope-defining → the halt
+        # is now RED (AndonResolutionHalt), superseding the prior YELLOW
+        # AndonPermissionHalt. Either way the synchronous halt fires during
+        # classification, so no write occurs.
+        from grove.dispatcher import AndonResolutionHalt, Dispatcher
         from grove.intents import ToolIntent
 
         target = grove_home / "dock" / "dock.yaml"
@@ -374,7 +385,7 @@ class TestDockOfferNotTheater:
             call_id="dock1",
         )
         d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
-        with pytest.raises(AndonPermissionHalt):
+        with pytest.raises(AndonResolutionHalt):
             d._classify_intents_batch_and_halt_or_raise([intent])
         # The synchronous halt fired during classification — no write occurred.
         assert not target.exists()
