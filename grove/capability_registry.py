@@ -42,6 +42,7 @@ __all__ = [
     "BindingWriteResult",
     "CapabilityLoadError",
     "default_capabilities_dir",
+    "capability_state_dir",
     "set_model_binding",
     "load_capabilities",
     "transition_record",
@@ -106,6 +107,145 @@ def grove_home_capabilities_dir() -> Path:
     """
     from hermes_constants import get_hermes_home
     return Path(get_hermes_home()) / "capabilities"
+
+
+def capability_state_dir() -> Path:
+    """The node-local capability STATE overlay: ``<GROVE_HOME>/capabilities/state``.
+
+    fleet-hygiene-sweep — the deploy-immune residence for operator-mutable
+    capability STATE (model_binding, lifecycle mutables, the transition audit
+    log), layered field-wise over the repo-bundled DEFINITIONS by
+    :func:`load_capabilities`. Distinct from ``grove_home_capabilities_dir``
+    (the whole-file overlay for MINTED records, byte-untouched here): state
+    files never carry a whole record, only the allowlisted mutable keys keyed
+    by ``id``. Absent dir → the merge is a no-op (fresh-install path)."""
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / "capabilities" / "state"
+
+
+# fleet-hygiene-sweep R-A9 — the STATE allowlist, derived exactly from the
+# writer census (set_model_binding / transition_record / update_lifecycle_
+# fields). Top-level keys, and the per-block sub-key allowlists. ``id`` is the
+# record SELECTOR (identity, not state). ANY key outside these sets makes the
+# state file invalid → R-B1 fallback (drop STATE, keep pure definition, loud).
+_STATE_TOP_KEYS: FrozenSet[str] = frozenset(
+    {"id", "model_binding", "lifecycle", "lineage"}
+)
+_STATE_LIFECYCLE_KEYS: FrozenSet[str] = frozenset(
+    {"state", "pinned", "use_count", "last_used"}
+)
+_STATE_LINEAGE_KEYS: FrozenSet[str] = frozenset({"decision_log"})
+
+
+class _StateFileInvalid(Exception):
+    """A state file is unparseable, mis-keyed, or fails post-merge validation —
+    the R-B1 signal: that record drops STATE and falls back to its pure
+    definition (never drops the record, never poisons the load)."""
+
+
+def _read_state_file(path: Path) -> "tuple[str, Dict[str, Any]]":
+    """Parse + allowlist-check ONE state file. Returns ``(record_id, state)``.
+
+    Raises :class:`_StateFileInvalid` on a torn/partial read (atomic-write
+    tolerance), a non-mapping doc, a missing/blank ``id``, or ANY key outside
+    the allowlist (top-level or within lifecycle/lineage). No merge yet — this
+    is pure shape validation so the caller logs file+key precisely."""
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise _StateFileInvalid(f"unreadable/unparseable ({exc})") from exc
+    if not isinstance(doc, dict):
+        raise _StateFileInvalid("state file is not a mapping")
+    rid = doc.get("id")
+    if not isinstance(rid, str) or not rid.strip():
+        raise _StateFileInvalid("state file missing a non-empty 'id'")
+    unknown = set(doc) - _STATE_TOP_KEYS
+    if unknown:
+        raise _StateFileInvalid(f"unknown top-level key(s) {sorted(unknown)}")
+    lc = doc.get("lifecycle")
+    if lc is not None:
+        if not isinstance(lc, dict):
+            raise _StateFileInvalid("'lifecycle' must be a mapping")
+        bad = set(lc) - _STATE_LIFECYCLE_KEYS
+        if bad:
+            raise _StateFileInvalid(f"unknown lifecycle key(s) {sorted(bad)}")
+    ln = doc.get("lineage")
+    if ln is not None:
+        if not isinstance(ln, dict):
+            raise _StateFileInvalid("'lineage' must be a mapping")
+        bad = set(ln) - _STATE_LINEAGE_KEYS
+        if bad:
+            raise _StateFileInvalid(f"unknown lineage key(s) {sorted(bad)}")
+    return rid, doc
+
+
+def _compose_state(cap: Capability, state: Dict[str, Any]) -> Capability:
+    """Field-wise merge: apply the state's allowlisted keys onto the DEFINITION
+    dict, then reconstruct — ``from_dict`` re-runs ``validate()`` in
+    ``__post_init__``, so a malformed value (bad model_binding shape, illegal
+    state) raises here and the caller falls back (R-B1). decision_log is a FULL
+    REPLACEMENT (R-A9): the writer carries the seed entries forward, so the
+    state list is the complete chain — never concatenated at load.
+
+    Present-key semantics: a key ABSENT from the state file leaves the
+    definition's value; ``model_binding: null`` in state CLEARS the pin."""
+    d = cap.to_dict()
+    if "model_binding" in state:
+        mb = state["model_binding"]
+        if mb is None:
+            d.pop("model_binding", None)
+        else:
+            d["model_binding"] = mb
+    lc = state.get("lifecycle") or {}
+    for key in _STATE_LIFECYCLE_KEYS:
+        if key in lc:
+            d.setdefault("lifecycle", {})[key] = lc[key]
+    ln = state.get("lineage") or {}
+    if "decision_log" in ln:
+        d.setdefault("lineage", {})["decision_log"] = ln["decision_log"]
+    try:
+        return Capability.from_dict(d)
+    except Exception as exc:  # noqa: BLE001 — R-B1: surface, caller falls back
+        raise _StateFileInvalid(f"post-merge validation failed: {exc}") from exc
+
+
+def _compose_state_overlay(records: Dict[str, Capability]) -> None:
+    """Layer the node-local STATE overlay over the loaded DEFINITIONS in place.
+
+    Absent state dir → no-op (fresh install). For each state file: match its
+    ``id`` to a loaded record and field-merge; a state file for an unknown id
+    is a GHOST (warn + skip, never raise — do not poison the load). A per-file
+    failure (torn read, mis-keyed, bad value) drops THAT record's state and
+    keeps its pure definition, logged CRITICAL with file + reason (R-B1)."""
+    state_dir = capability_state_dir()
+    if not state_dir.is_dir():
+        return
+    for path in sorted(state_dir.glob("*.yaml")):
+        try:
+            rid, state = _read_state_file(path)
+        except _StateFileInvalid as exc:
+            logger.critical(
+                "[grove.capability_registry] STATE overlay file %s is invalid "
+                "(%s) — the affected record falls back to its pure definition; "
+                "no state applied. Fix or remove the file.", path, exc,
+            )
+            continue
+        if rid not in records:
+            logger.warning(
+                "[grove.capability_registry] STATE overlay file %s targets id "
+                "%r which no loaded definition carries — ghost state, ignored.",
+                path, rid,
+            )
+            continue
+        try:
+            records[rid] = _compose_state(records[rid], state)
+        except _StateFileInvalid as exc:
+            logger.critical(
+                "[grove.capability_registry] STATE overlay for %r (%s) is "
+                "invalid (%s) — dropping STATE for this record, using its pure "
+                "definition. Fix or remove the file.", rid, path, exc,
+            )
+            # records[rid] retains the pre-merge pure-definition Capability.
 
 
 def _validate_binding_uniqueness(records: Dict[str, Capability]) -> None:
@@ -258,6 +398,13 @@ def load_capabilities(directory: Optional[Path] = None) -> Dict[str, Capability]
             f"no capability records found in {default_capabilities_dir()}"
             if directory is None else f"no capability records found in {directory}"
         )
+
+    # fleet-hygiene-sweep — layer node-local STATE (model_binding, lifecycle
+    # mutables, decision_log) over the DEFINITIONS. Skipped for an explicit
+    # *directory* load (test/transition isolation, parity with the whole-file
+    # overlay skip above). Absent state dir → no-op. Per-record R-B1 fallback.
+    if directory is None:
+        _compose_state_overlay(records)
 
     # A4 collection-level invariant — strict 1:1 tool ownership across records.
     _validate_binding_uniqueness(records)
