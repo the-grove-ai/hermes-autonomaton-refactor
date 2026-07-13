@@ -4676,12 +4676,13 @@ class Dispatcher:
         if tool_name == "propose_governance_change" and isinstance(args, dict):
             from grove.zones import ZoneResult
             from tools.governance_tool import classify_governance_target
-            from grove.utils.fs_utils import is_scope_defining
+            from grove.utils.fs_utils import is_scope_defining, is_governed_path
             _gov_target = args.get("target_file")
             # routing-scope-wall-v1 R-W3 — a scope-defining target is RED through
             # this door too (coherent with Seam β + the shell path), superseding
-            # the prior .env-only red. Target-keyed via is_scope_defining.
-            if is_scope_defining(_gov_target):
+            # the prior .env-only red. Composed predicate carves out the .andon
+            # authoring quarantine (is_governed_path), same as the other sites.
+            if is_scope_defining(_gov_target) and is_governed_path(_gov_target):
                 return ZoneResult(
                     zone="red",
                     matched_rule=f"scope_defining:{_gov_target}",
@@ -4766,9 +4767,16 @@ class Dispatcher:
         # is_scope_defining — no tool-name/surface branch; extract_write_targets
         # yields [] for non-write tools, so this is a natural no-op for them.
         from tools.file_tools import extract_write_targets as _ewt
-        from grove.utils.fs_utils import is_scope_defining as _isd
+        from grove.utils.fs_utils import (
+            is_scope_defining as _isd,
+            is_governed_path as _igp,
+        )
         for _wt in _ewt(tool_name, args):
-            if _isd(_wt):
+            # Composed predicate — scope-defining AND not the allowlisted authoring
+            # quarantine (~/.grove/skills/.andon/, carved out by is_governed_path).
+            # The file-tool door permits .andon drafts; the shell path (bare
+            # is_scope_defining) does not. Asymmetry is deliberate.
+            if _isd(_wt) and _igp(_wt):
                 from grove.zones import ZoneResult
                 return ZoneResult(
                     zone="red",

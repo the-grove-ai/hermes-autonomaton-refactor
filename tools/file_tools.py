@@ -838,6 +838,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             "Refusing to write internal read_file status text as file content. "
             "Re-read the file or reconstruct the intended file contents before writing."
         )
+    # routing-scope-wall-v1 R-W5 — execution-time scope-defining re-verification.
+    _verify_scope_defining_execution("write_file", {"path": path, "content": content})
     try:
         # GRV-010 C1b — governed-path wall (before any resolution/write).
         _reject_governed_path(path, task_id)
@@ -926,6 +928,57 @@ def extract_write_targets(tool_name: str, args: dict) -> list:
     return targets
 
 
+def _verify_scope_defining_execution(tool_name: str, args: dict) -> None:
+    """routing-scope-wall-v1 R-W5 — execution-time TOCTOU re-verification.
+
+    Immediately before a physical write, re-resolve every target and re-check
+    is_scope_defining. A scope-defining target reaching the write executor is
+    legitimate ONLY as an operator-approved RED re-dispatch: the approved-effect
+    ContextVar (set by grove.red_pending_store.approve_red_proposal — the same
+    mechanism the terminal guard consumes) must match this write's realpath-
+    canonical effect signature. Anything else — a write classified non-RED whose
+    target became scope-defining via a late symlink/path swap, or a direct
+    bypass — fails LOUD with a TerminalGovernanceHalt (BaseException; the
+    executor's ``except Exception`` cannot swallow it) and the write does NOT
+    execute. The realpath-canonical signature MISMATCH is the swap detector.
+    """
+    from grove.utils.fs_utils import is_scope_defining, is_governed_path
+    # Composed predicate: a scope-defining authority file that is NOT the
+    # allowlisted authoring quarantine (~/.grove/skills/.andon/, carved out by
+    # is_governed_path). The file-tool path is the sanctioned authoring door, so
+    # .andon drafts are permitted here — unlike the shell path, which walls the
+    # whole skills tree with bare is_scope_defining. (Asymmetry is deliberate.)
+    offending = next(
+        (t for t in extract_write_targets(tool_name, args)
+         if is_scope_defining(t) and is_governed_path(t)),
+        None,
+    )
+    if offending is None:
+        return
+    from grove.red_execution_context import approved_effect_var
+    from grove.effect_signature import canonical_effect_signature
+    _approved = approved_effect_var.get()
+    if _approved is not None and canonical_effect_signature(tool_name, args) == _approved:
+        return  # operator-approved RED re-dispatch — the effect matches
+    logger.error(
+        "[scope-wall] HALT: execution-time scope-defining write to %s (tool=%s) "
+        "without a matching RED approval (approved_effect=%s); the write did NOT "
+        "execute.",
+        offending, tool_name, "none" if _approved is None else "mismatch",
+    )
+    from grove.governance_halt import GovernanceHaltContext, TerminalGovernanceHalt
+    raise TerminalGovernanceHalt(
+        GovernanceHaltContext(
+            trigger="governance_error",
+            tool_name=tool_name,
+            zone="red",
+            matched_rule=f"scope_defining:{offending}",
+            reason="scope-defining write reached execution without RED approval",
+            detail=str(offending),
+        )
+    )
+
+
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default") -> str:
@@ -941,6 +994,22 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+    # routing-scope-wall-v1 R-W5 — execution-time scope-defining re-verification.
+    # Reconstruct only the model-passed args (non-None; replace_all only when set)
+    # so the canonical effect signature matches the minted one for an approved
+    # RED re-dispatch; a mismatch (incl. an unrecoverable arg shape) fails closed.
+    _patch_args = {"mode": mode}
+    if path is not None:
+        _patch_args["path"] = path
+    if old_string is not None:
+        _patch_args["old_string"] = old_string
+    if new_string is not None:
+        _patch_args["new_string"] = new_string
+    if patch is not None:
+        _patch_args["patch"] = patch
+    if replace_all:
+        _patch_args["replace_all"] = replace_all
+    _verify_scope_defining_execution("patch", _patch_args)
     try:
         # GRV-010 C1b — governed-path wall on every target (replace path + each
         # V4A Update/Add/Delete path) before any resolution/write.

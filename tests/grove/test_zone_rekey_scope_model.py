@@ -182,6 +182,33 @@ class TestCapabilitiesStatePin:
         assert is_scope_defining(outside) is False
 
 
+class TestQuarantineOnlyDoor:
+    # routing-scope-wall-v1 R-W1/R-W3/R-W5 — the FILE-TOOL wall fires on the
+    # composed predicate is_scope_defining(t) AND is_governed_path(t). This pins
+    # that the composed predicate's ONLY exception is the .andon authoring
+    # quarantine: every scope-defining member/prefix is walled, .andon is the sole
+    # survivor. Tripwire — if is_governed_path ever grows another carve-out, the
+    # wall fails loud here instead of silently inheriting it.
+    def test_every_scope_defining_member_walled_andon_sole_survivor(self, grove_home):
+        from grove.utils import fs_utils as fu
+
+        def _walled(rel):
+            t = grove_home / rel
+            return fu.is_scope_defining(t) and fu.is_governed_path(t)
+
+        for f in fu._SCOPE_DEFINING_FILES:
+            assert _walled(f), f"scope-defining file not walled by composed predicate: {f}"
+        for p in fu._SCOPE_DEFINING_DIR_PREFIXES:
+            assert _walled(f"{p}/x.yaml"), f"scope-defining prefix not walled: {p}"
+
+        # The .andon quarantine is the SOLE survivor: scope-defining, yet the
+        # composed predicate lets it through (is_governed_path allowlists it).
+        andon = grove_home / "skills" / ".andon" / "draft" / "SKILL.md"
+        assert fu.is_scope_defining(andon) is True
+        assert fu.is_governed_path(andon) is False
+        assert not (fu.is_scope_defining(andon) and fu.is_governed_path(andon))
+
+
 class TestScopeWallPrecondition:
     # Ruling (B): plain unset GROVE_HOME keeps the ~/.grove default; fail closed
     # ONLY when the effective grove root is degenerate (empty/relative/unresolvable).
