@@ -592,9 +592,26 @@ def _reset_module_state():
     # GRV-009 E5 C-SEAM5 — the routed tier is per-turn global state set fresh by
     # the router each turn in production; reset it between tests so a prior test's
     # routed tier cannot leak into the C-SEAM5 secondary tier-eligibility gate.
+    # test-baseline-hygiene R-T1 — _last_classification is the sibling per-turn
+    # global (providers.record_routing sets both at once); reset it too so a prior
+    # test's classification cannot leak into a later test's routed dispatch path.
     try:
         from grove import providers as _prov_mod
         _prov_mod._last_routed_tier = None
+        _prov_mod._last_classification = None
+    except Exception:
+        pass
+
+    # test-baseline-hygiene R-T1 — grove.router._default_router is a module-level
+    # singleton CognitiveRouter bound to the first caller's config. Left populated
+    # by a sibling test on the same xdist worker, it forces a cross-provider tier
+    # bind (switch_model) onto later dispatch/write-confinement tests whose
+    # synthetic AIAgent fixtures assume the vanilla no-router path — surfacing as
+    # AttributeError('AIAgent' has no attribute 'api_key'). Reset so the next
+    # route_for_agent() resolves fresh against the current test's config.
+    try:
+        from grove import router as _router_mod
+        _router_mod._default_router = None
     except Exception:
         pass
 
