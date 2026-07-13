@@ -128,6 +128,85 @@ class TestIsScopeDefining:
         assert is_scope_defining(grove_home / "dock") is True
 
 
+# ── routing-scope-wall-v1 R-W1 — set additions + prefix strictness ───────────
+
+
+class TestScopeWallAdditions:
+    def test_routing_autonomaton_yaml(self, grove_home):
+        # the machine routing overlay — sibling of routing.config.yaml, authority.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "routing.autonomaton.yaml") is True
+
+    def test_zones_autonomaton_yaml(self, grove_home):
+        # runtime zone overlay — grants GREEN zones, so it is authority.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "zones.autonomaton.yaml") is True
+
+    def test_fleet_workers_override_yaml(self, grove_home):
+        # per-worker enable overrides — controls autonomous fleet execution.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "fleet_workers.override.yaml") is True
+
+    def test_routing_profiles_subtree(self, grove_home):
+        # alternate tier presets — routing authority; the whole subtree is RED.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "routing-profiles" / "gemma-mac.yaml") is True
+
+    def test_routing_profiles_dir_itself(self, grove_home):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "routing-profiles") is True
+
+    def test_routing_profiles_backups_not_trapped(self, grove_home):
+        # strict path-separator matching: a sibling dir that merely SHARES the
+        # prefix string must NOT be trapped by the routing-profiles subtree.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "routing-profiles-backups" / "old.yaml") is False
+
+    def test_dock_autonomaton_yaml_stays_out(self, grove_home):
+        # the machine half of the Dock is a GREEN workspace, NOT scope-defining.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "dock" / "dock.autonomaton.yaml") is False
+
+
+class TestCapabilitiesStatePin:
+    # Finding-2 ruling: no separate capabilities/state/ entry — the existing
+    # "capabilities" prefix already covers it. Pin both directions.
+    def test_capabilities_state_subtree_is_scope_defining(self, grove_home):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "capabilities" / "state" / "s.yaml") is True
+
+    def test_repo_config_capabilities_outside_grove_is_not(self, grove_home, tmp_path):
+        # the repo config/capabilities/ tree resolves OUTSIDE ~/.grove → not scope-defining.
+        from grove.utils.fs_utils import is_scope_defining
+        outside = tmp_path.parent / "repo_config" / "capabilities" / "x.yaml"
+        assert is_scope_defining(outside) is False
+
+
+class TestScopeWallPrecondition:
+    # Ruling (B): plain unset GROVE_HOME keeps the ~/.grove default; fail closed
+    # ONLY when the effective grove root is degenerate (empty/relative/unresolvable).
+    def test_unset_env_uses_grove_default_normal_classification(self, monkeypatch):
+        monkeypatch.delenv("GROVE_HOME", raising=False)
+        from grove.utils.fs_utils import is_scope_defining
+        # a clearly-outside path stays False — NOT fail-closed-all-True.
+        assert is_scope_defining("/tmp/definitely-outside-grove-xyz-rw1") is False
+
+    def test_relative_grove_root_fails_closed(self):
+        from grove.utils.fs_utils import is_scope_defining
+        # a relative root is CWD-dependent and untrustworthy → every path RED.
+        assert is_scope_defining("/tmp/anything", grove_home="relative/grove") is True
+        assert is_scope_defining("/etc/passwd", grove_home="./foo") is True
+
+    def test_empty_grove_root_fails_closed(self):
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining("/tmp/anything", grove_home="") is True
+
+    def test_unresolvable_grove_root_fails_closed(self):
+        from grove.utils.fs_utils import is_scope_defining
+        # absolute but unresolvable (embedded NUL) → realpath raises → fail closed.
+        assert is_scope_defining("/tmp/x", grove_home="/tmp/\x00bad") is True
+
+
 # ── _classify_write_zone (SPEC tests 11-13) ──────────────────────────────────
 
 
