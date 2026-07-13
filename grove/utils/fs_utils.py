@@ -126,6 +126,18 @@ _SCOPE_DEFINING_FILES = frozenset({
     # The agent cannot write its own grants; only the operator can create or
     # revoke standing grants via authenticated grant management commands.
     "grants.yaml",
+    # routing-scope-wall-v1 R-W1 — the machine-authored overlays that redefine
+    # authority alongside their operator .config/.schema twins. The RED wall
+    # covered routing.config.yaml but not its flywheel-written overlay; a write
+    # to either rebinds routing, so both are scope-defining.
+    "routing.autonomaton.yaml",
+    # The runtime zone overlay literally grants GREEN zones to patterns — writing
+    # it expands the agent's own authority. (dock.autonomaton.yaml is deliberately
+    # OUT: it is the machine's GREEN goal-workspace half of the Dock.)
+    "zones.autonomaton.yaml",
+    # Per-worker enable overrides — controls whether Yellow/Red fleet workers run
+    # autonomously; deploy-immune authority, never an autonomous write.
+    "fleet_workers.override.yaml",
 })
 
 # Whole subtrees (relative to GROVE_HOME) that are scope-defining. The live skill
@@ -136,6 +148,11 @@ _SCOPE_DEFINING_FILES = frozenset({
 _SCOPE_DEFINING_DIR_PREFIXES = (
     "skills",
     "capabilities",
+    # routing-scope-wall-v1 R-W1 — alternate tier presets are routing authority;
+    # the whole subtree is scope-defining. Strict path-separator matching below
+    # keeps a sibling like `routing-profiles-backups/` from being trapped.
+    # (capabilities/state/ needs no entry — the `capabilities` prefix covers it.)
+    "routing-profiles",
 )
 
 # Flattened surface set (files + dir subtrees), relative to GROVE_HOME.
@@ -163,11 +180,20 @@ def is_scope_defining(path: object, grove_home: object = None) -> bool:
     """
     from hermes_constants import get_hermes_home
 
+    # routing-scope-wall-v1 R-W1 — the containment check is only trustworthy
+    # against an ABSOLUTE grove root. An empty or relative GROVE_HOME (e.g.
+    # GROVE_HOME=./foo) would realpath against the CWD into a misleading root, so
+    # fail closed: every path is scope-defining (RED) until the root is
+    # trustworthy. A plain-unset env keeps get_hermes_home's ~/.grove default
+    # (absolute), so normal operation is unchanged (ruling B).
+    raw_grove = os.path.expanduser(
+        str(grove_home) if grove_home is not None else str(get_hermes_home())
+    )
+    if not raw_grove or not os.path.isabs(raw_grove):
+        return True
     try:
         resolved = os.path.realpath(os.path.expanduser(str(path)))
-        grove = os.path.realpath(
-            str(grove_home) if grove_home is not None else get_hermes_home()
-        )
+        grove = os.path.realpath(raw_grove)
     except (OSError, ValueError):
         return True  # unresolvable → fail closed (treated as scope-defining)
 
