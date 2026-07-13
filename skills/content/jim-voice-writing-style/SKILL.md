@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T1
 name: jim-voice-writing-style
 description: Teaches Claude to write in Jim Calhoun's distinctive voice—strategic, concise, and client-ready like a senior McKinsey associate with journalistic clarity. Use this skill when creating executive communications, strategy documents, product plans, consulting deliverables, pitch materials, or any professional writing that represents Jim's work. Apply when writing business content, client-facing materials, thought leadership, or strategic analyses.
 ---

@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: red
+tier: T1
 name: notion-research-documentation
 description: Searches across your Notion workspace, synthesizes findings from multiple pages, and creates comprehensive research documentation saved as new Notion pages. Turns scattered information into structured reports with proper citations and actionable insights.
 ---

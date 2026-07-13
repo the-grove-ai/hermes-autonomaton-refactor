@@ -1,4 +1,7 @@
 ---
+created_by: bundled
+zone: green
+tier: T1
 name: linkedin-thinkpiece
 description: Transform source material into Jim Calhoun's strategic tech commentary for LinkedIn. Use when the user says "write a LinkedIn piece about...", "turn this into a LinkedIn thinkpiece", "LinkedIn draft from...", "thinkpiece on...", or requests LinkedIn long-form content on technology, AI, or infrastructure topics. Produces 800-2,500 word thought leadership with claim-based headers, specific evidence, and reveal-and-reframe architecture. Supports three modes — standard analysis (1,500-2,500 words), short reaction (800-1,200 words), and thread-seed (150-300 words).
 ---
