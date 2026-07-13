@@ -62,7 +62,11 @@ PY
 }
 
 # Direct invocation: `check-capability-drift.sh <repo_dir>` runs the guard.
-# (When SOURCED — the deploy embed + the test — this block is skipped.)
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+# (When SOURCED — the deploy embed + the test — this block is skipped.) The
+# ``:-`` defaults keep this safe under ``set -u``: when the source is EMBEDDED
+# into the deploy heredoc rather than run as a file, BASH_SOURCE[0]/$0 may be
+# unset, and an unguarded expansion would abort the deploy before the explicit
+# call. Embedded → both empty → not equal → skipped (the explicit call runs).
+if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ] && [ -n "${BASH_SOURCE[0]:-}" ]; then
   check_capability_drift "${1:-.}"
 fi
