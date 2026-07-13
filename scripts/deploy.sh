@@ -53,11 +53,20 @@ echo "▸ Deploying origin/main to ${INSTANCE} (${ZONE})"
 # Login guest agent, so neither sudo call prompts. (Sprint 59 deploy.sh
 # assumed the remote ran as hermes; corrected inline during the Sprint 60
 # deploy — its first real end-to-end run.)
+# fleet-hygiene-sweep P3 — embed the pre-reset drift guard's SOURCE (this
+# Mac's current copy) into the remote command, so the guard runs on the VM
+# BEFORE the reset without depending on the VM's pre-reset checkout carrying
+# it. Runtime state lives in ~/.grove/capabilities/state/; a dirty
+# config/capabilities/ at deploy time halts loud (R-B5).
+GUARD_SRC="$(cat "$(dirname "$0")/check-capability-drift.sh")"
+
 REMOTE_CMD="$(cat <<REMOTE
 set -euo pipefail
 sudo -u hermes -H bash -s <<'HERMES'
 set -euo pipefail
 cd "${REPO_DIR}"
+${GUARD_SRC}
+check_capability_drift "${REPO_DIR}"
 git fetch origin main
 git reset --hard origin/main
 .venv/bin/pip install -e ".[web,mcp,dev]" --quiet
