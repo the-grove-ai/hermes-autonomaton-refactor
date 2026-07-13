@@ -130,6 +130,37 @@ def _tier_entry(data: Any, tier: str) -> Any:
     return entry
 
 
+def _file_routing_mutation_event(label: str, config_path: str) -> None:
+    """routing-scope-wall-v1 R-W4 — the writer audits itself (mirrors
+    grove.capability_registry._file_binding_mutation_event).
+
+    routing.config.yaml is a scope-defining authority surface; the sole
+    sanctioned writer must leave a Kaizen-ledger trail. Component-filer pattern:
+    RoutingConfigWriter has no CLI session of its own, so the event lands under a
+    ``cli-<utc-timestamp>`` sentinel session. Error-log floor: this runs AFTER the
+    mutation has landed atomically, so a filing failure must not misreport the
+    write as failed — it logs at ERROR and stands.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from grove.kaizen_ledger import KaizenLedger
+
+        session_id = "cli-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        KaizenLedger(session_id=session_id).record(
+            "routing_config_mutation",
+            label=label,
+            config_path=config_path,
+            surface_class="scope_defining",
+        )
+    except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor stands
+        logger.error(
+            "[routing_writer] routing_config_mutation filing failed "
+            "(mutation itself SUCCEEDED): %r",
+            file_exc,
+        )
+
+
 class RoutingConfigWriter:
     """Single-writer pipeline for ``routing.config.yaml``.
 
@@ -261,6 +292,10 @@ class RoutingConfigWriter:
             op_path.write_bytes(backup)
             raise
 
+        # R-W4 — self-audit AFTER the mutation has landed atomically. Outside the
+        # try so a ledger failure never triggers the restore (the write succeeded);
+        # the error-log floor inside the filer handles a down ledger.
+        _file_routing_mutation_event(label, str(op_path))
         logger.info("[routing_writer] applied: %s (%s)", label, op_path)
 
     # ----- internals ---------------------------------------------------------
