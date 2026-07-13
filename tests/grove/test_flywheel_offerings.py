@@ -110,7 +110,14 @@ def _agent(session_start):
     # so a Review link is appended but the substring assertions below are
     # unaffected). Without it, AttributeError is swallowed by the push path's
     # broad except and the offer silently vanishes.
-    return SimpleNamespace(session_start=session_start, _config_load_or=lambda: {})
+    # test-baseline-hygiene R-T2 (kaizen-push-cadence-v1 a89575e16): the cooldown
+    # guard reads self._PUSH_COOLDOWN_TURNS; mirror the AIAgent class value (3) so
+    # the once-per-cooldown check runs instead of raising AttributeError.
+    return SimpleNamespace(
+        session_start=session_start,
+        _config_load_or=lambda: {},
+        _PUSH_COOLDOWN_TURNS=3,
+    )
 
 
 def test_past_session_proposal_does_not_push(tmp_path: Path) -> None:

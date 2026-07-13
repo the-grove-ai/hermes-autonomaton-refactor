@@ -428,7 +428,15 @@ class TestQuietAppend:
         )
         # kaizen-offerings: session_start must precede the staged proposal's
         # created_at for it to be current-session push-eligible.
-        fake_self = SimpleNamespace(session_start=datetime.now() - timedelta(hours=1))
+        # test-baseline-hygiene R-T2: the push path reads _config_load_or (portal
+        # base URL, portal-link-reliability-v1) and the second call reads
+        # _PUSH_COOLDOWN_TURNS (kaizen-push-cadence-v1 a89575e16). Mirror the
+        # AIAgent class values so the offer is appended and the cooldown guard runs.
+        fake_self = SimpleNamespace(
+            session_start=datetime.now() - timedelta(hours=1),
+            _config_load_or=lambda: {},
+            _PUSH_COOLDOWN_TURNS=3,
+        )
         first = AIAgent._append_pending_offer(fake_self, "Done.")
         # The push offer points at the review/approve loop, in-register.
         # kaizen-voice-conformance — conversational, no CLI syntax.

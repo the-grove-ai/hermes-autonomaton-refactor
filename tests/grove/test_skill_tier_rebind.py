@@ -22,7 +22,12 @@ from grove.capability import ModelBinding
 REPO = Path(__file__).resolve().parents[2]
 
 
-@pytest.fixture(scope="module", autouse=True)
+# test-baseline-hygiene R-T1a: function scope (not module) so the router is
+# re-initialized after conftest's per-test _default_router reset (R-T1). A
+# module-scoped init ran once and was then nulled before each test, leaving
+# get_tier_config() with no router. Function scope runs after the conftest
+# reset (conftest autouse precedes test-module autouse) and restores it.
+@pytest.fixture(autouse=True)
 def _init_router():
     router.initialize(REPO / "config" / "routing.config.yaml")
 
