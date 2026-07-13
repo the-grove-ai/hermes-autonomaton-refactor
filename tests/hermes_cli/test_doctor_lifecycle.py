@@ -46,6 +46,52 @@ def test_orphan_scan_excludes_live_tree_and_never_matches_node(monkeypatch):
     assert pids == {999, 777}  # live gateway protected; node never matched; live-parent & non-orphan excluded
 
 
+# ── retention-reaper guard: spare systemd-launched oneshots (R-T6) ────
+
+
+def test_orphan_scan_spares_active_service_cgroup(monkeypatch, caplog):
+    """A PID-1-parented Grove CLI process that sits inside an active *.service
+    cgroup (a systemd-launched oneshot like the ledger-retention timer's
+    service) is SPARED and logged — it is not a crash orphan. A shell-
+    reparented process in a user session scope (no .service) is still reaped.
+    Closes the watchdog-vs-retention SIGTERM collision (test-baseline-hygiene
+    R-T6)."""
+    import logging
+    import psutil
+    procs = [
+        # the retention oneshot: Type=oneshot, reparented to PID 1, living in
+        # its service cgroup — must be SPARED, not SIGTERM'd mid-pass
+        _fake_proc(531668, 1, ["/home/hermes/.venv/bin/hermes", "flywheel", "maintain", "--retention"]),
+        # a genuinely stranded chat reparented into a user session scope
+        # (no .service segment) — must still be REAPED
+        _fake_proc(999, 1, ["python", "-m", "hermes_cli.main", "chat"]),
+    ]
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(procs))
+    cgroups = {
+        531668: "0::/system.slice/grove-ledger-retention.service\n",
+        999: "0::/user.slice/user-1000.slice/session-3.scope\n",
+    }
+    monkeypatch.setattr(dl, "_read_proc_cgroup", lambda pid: cgroups.get(pid), raising=False)
+
+    with caplog.at_level(logging.INFO):
+        orphans = dl.find_orphaned_grove_processes(protected=set())
+    pids = {o["pid"] for o in orphans}
+    assert pids == {999}  # retention oneshot spared; shell-scope orphan reaped
+    assert "531668" in caplog.text  # spared pid is logged
+
+
+def test_service_cgroup_guard_is_noop_without_proc(monkeypatch):
+    """macOS / no-/proc path: _read_proc_cgroup returns None, so the guard is a
+    no-op and a genuine Grove orphan is still reaped (behavior unchanged)."""
+    import psutil
+    procs = [_fake_proc(999, 1, ["python", "-m", "hermes_cli.main", "chat"])]
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(procs))
+    monkeypatch.setattr(dl, "_read_proc_cgroup", lambda pid: None, raising=False)
+
+    orphans = dl.find_orphaned_grove_processes(protected=set())
+    assert {o["pid"] for o in orphans} == {999}
+
+
 def test_is_grove_cli_cmd_never_matches_bare_node():
     assert dl._is_grove_cli_cmd("python -m hermes_cli.main gateway run")
     assert dl._is_grove_cli_cmd("/x/.venv/bin/hermes chat")
