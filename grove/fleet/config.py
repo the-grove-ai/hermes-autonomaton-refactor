@@ -15,6 +15,7 @@ asserted explicitly. Both guards are applied.
 from __future__ import annotations
 
 import io
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -22,10 +23,30 @@ from typing import Any, Dict, Optional
 from grove.fleet.errors import FleetWorkerAndon
 from grove.fleet.paths import validate_worker_id
 
+logger = logging.getLogger(__name__)
+
 
 def default_fleet_workers_path() -> Path:
     """The repo-default registry: ``<repo>/config/fleet_workers.yaml``."""
     return Path(__file__).resolve().parents[2] / "config" / "fleet_workers.yaml"
+
+
+def fleet_workers_override_path() -> Path:
+    """The node-local enable-flag overlay: ``<GROVE_HOME>/fleet_workers.override.yaml``.
+
+    fleet-hygiene-sweep P4 — the deploy-immune residence for per-worker
+    ``enabled`` overrides, layered over the repo-bundled operational registry
+    (the capability state-overlay analog for the fleet enable flag, which the
+    D5 finding showed was repo-resident and reset-wiped). Shape::
+
+        workers:
+          forge:    {enabled: false}
+          drafter:  {enabled: true}
+
+    A worker NOT named keeps its bundled default (anti-masking). Absent file →
+    no-op. Unparseable → ALL workers disabled + loud (fail-closed, R-B3)."""
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / "fleet_workers.override.yaml"
 
 
 @dataclass
@@ -119,13 +140,109 @@ def _from_dict(d: Dict[str, Any]) -> WorkerConfig:
     return cfg
 
 
-def load_fleet_workers(path: Optional[Path] = None) -> Dict[str, WorkerConfig]:
+def _disable_all(result: Dict[str, WorkerConfig]) -> None:
+    for cfg in result.values():
+        cfg.enabled = False
+
+
+def _classify_override(override_path: Path):
+    """Parse + classify the enable-flag override. Returns
+    ``(fail_reason_or_None, overrides_mapping_or_None)``:
+
+    * ``(None, None)`` — absent, or present-but-empty ``workers`` block (no-op);
+    * ``(None, {id: entry})`` — a well-formed override mapping to apply;
+    * ``(reason, None)`` — R-B3 fail-closed (unparseable / ``workers`` not a
+      mapping); the caller disables ALL workers, loud.
+
+    The ONE parse+classify both :func:`_apply_enable_overrides` (the write side)
+    and :func:`override_health` (the manager's edge-trigger probe) share, so the
+    fail-closed verdict is identical from either entry point."""
+    if not override_path.exists():
+        return None, None
+    from ruamel.yaml import YAML
+
+    yaml = YAML(typ="safe")
+    yaml.allow_duplicate_keys = False
+    try:
+        data = yaml.load(io.StringIO(override_path.read_text(encoding="utf-8")))
+    except Exception as exc:  # noqa: BLE001 — R-B3 fail-closed, never raise
+        return f"unparseable ({exc})", None
+    overrides = (data or {}).get("workers")
+    if overrides is None:
+        return None, None  # present but empty — no-op
+    if not isinstance(overrides, dict):
+        return (
+            f"'workers' must be a mapping of id -> {{enabled: bool}} "
+            f"(got {type(overrides).__name__})"
+        ), None
+    return None, overrides
+
+
+def override_health(override_path: Optional[Path] = None) -> Optional[str]:
+    """None when the enable-flag override is absent or usable; a short reason
+    string when it is in the R-B3 fail-closed state (unparseable / mis-shaped).
+    The manager probes this each tick to EDGE-TRIGGER a single Andon at onset
+    (no per-tick spam) and log recovery — the refusal-demotion no-spam
+    precedent. Pure read; never raises."""
+    reason, _ = _classify_override(override_path or fleet_workers_override_path())
+    return reason
+
+
+def _apply_enable_overrides(
+    result: Dict[str, WorkerConfig], override_path: Path
+) -> None:
+    """Layer node-local per-worker ``enabled`` overrides over the bundled
+    registry IN PLACE (fleet-hygiene-sweep P4). Absent file → no-op. R-B3:
+    an unparseable override (or a mis-shaped ``workers`` block) DISABLES ALL
+    workers and logs CRITICAL — fail-closed, gateway lives (no raise). A ghost
+    override for an unknown worker is warned + ignored (R-B4 spirit); a
+    malformed per-worker entry disables THAT worker (fail-closed); a worker not
+    named keeps its bundled default (anti-masking)."""
+    reason, overrides = _classify_override(override_path)
+    if reason is not None:
+        logger.critical(
+            "[fleet.config] enable-flag override %s is %s — ALL fleet workers "
+            "DISABLED (fail-closed); gateway lives. Fix or remove the file.",
+            override_path, reason,
+        )
+        _disable_all(result)
+        return
+    if overrides is None:
+        return  # absent or empty — no-op
+    for wid, ov in overrides.items():
+        if wid not in result:
+            logger.warning(
+                "[fleet.config] enable-flag override names unknown worker %r — "
+                "ghost override, ignored.", wid,
+            )
+            continue
+        if not isinstance(ov, dict) or not isinstance(ov.get("enabled"), bool):
+            logger.warning(
+                "[fleet.config] enable-flag override for %r is malformed "
+                "(need {enabled: bool}, got %r) — disabling that worker "
+                "(fail-closed).", wid, ov,
+            )
+            result[wid].enabled = False
+            continue
+        result[wid].enabled = ov["enabled"]
+
+
+def load_fleet_workers(
+    path: Optional[Path] = None,
+    *,
+    override_path: Optional[Path] = None,
+) -> Dict[str, WorkerConfig]:
     """Load the fleet-worker registry, keyed by worker id.
 
     Fail-loud on: unreadable/malformed file, duplicate YAML keys within any
     mapping (ruamel ``allow_duplicate_keys=False``), a missing/mistyped
     ``workers`` key, or a duplicate worker id across list entries. An empty
     registry (``workers: []``) is valid and returns ``{}``.
+
+    fleet-hygiene-sweep P4 — after the bundled load, layer the node-local
+    enable-flag overlay (``<GROVE_HOME>/fleet_workers.override.yaml``) for the
+    default load; an explicit *path* skips it unless an *override_path* is
+    given (test isolation, parity with the capability state-overlay skip).
     """
     target = Path(path) if path is not None else default_fleet_workers_path()
     if not target.exists():
@@ -186,4 +303,13 @@ def load_fleet_workers(path: Optional[Path] = None) -> Dict[str, WorkerConfig]:
                 check="duplicate_worker_id",
             )
         result[cfg.id] = cfg
+
+    # P4 — layer the enable-flag overlay (default load, or an explicit test
+    # override_path). An explicit registry path without an override_path stays
+    # isolated (no overlay), matching load_capabilities(directory=…).
+    if path is None:
+        _apply_enable_overrides(result, override_path or fleet_workers_override_path())
+    elif override_path is not None:
+        _apply_enable_overrides(result, override_path)
+
     return result
