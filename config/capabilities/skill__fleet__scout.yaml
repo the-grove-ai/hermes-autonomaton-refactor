@@ -278,10 +278,3 @@ governance:
           preview_count: 2
   approval_handoff:
     mode: ingest_post
-# drafter-quality-checks-v1 P5a — operator's live portal pin (binding panel,
-# 2026-07-10/11), ported from the VM checkout so deploy's git reset is
-# lossless (FLAG-A). The bundled-dir-vs-overlay seam is flagged on the
-# workstream page.
-model_binding:
-  type: model
-  model: deepseek/deepseek-v4-pro
