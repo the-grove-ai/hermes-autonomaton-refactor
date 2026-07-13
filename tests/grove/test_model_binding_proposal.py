@@ -155,10 +155,17 @@ def test_end_to_end_queue_to_apply(caps_env, tmp_path):
     handler = _handler_for(queued[0].type)  # registry dispatch resolves
     target, applied = handler.apply_callback(queued[0], machine_path=None)
 
-    assert target == record_path
+    # fleet-hygiene-sweep P2 — apply writes the STATE overlay; the definition
+    # is untouched, the composed load renders the pin.
+    from grove.capability_registry import capability_state_dir, load_capabilities
+
+    assert target == capability_state_dir() / "skill__demo__bindprop-alpha.yaml"
     assert applied["record_id"] == "skill.demo.bindprop-alpha"
     assert applied["new_binding"] == {"type": "model", "model": "z-ai/glm-5.2"}
-    reloaded = Capability.from_yaml(record_path.read_text(encoding="utf-8"))
+    assert Capability.from_yaml(
+        record_path.read_text(encoding="utf-8")
+    ).model_binding is None  # definition clean
+    reloaded = load_capabilities()["skill.demo.bindprop-alpha"]
     assert reloaded.model_binding.model == "z-ai/glm-5.2"
 
 
@@ -180,7 +187,11 @@ def test_apply_unpin_clears_record(caps_env, tmp_path):
     target, applied = _approve_model_binding(proposal)
     assert applied["new_binding"] is None
     assert applied["previous_binding"] == {"type": "model", "model": "z-ai/glm-5.2"}
-    assert "model_binding" not in record_path.read_text(encoding="utf-8")
+    # P2 — definition keeps its seed pin (read-only); composed load reflects clear
+    from grove.capability_registry import load_capabilities
+
+    assert "model_binding" in record_path.read_text(encoding="utf-8")  # defn untouched
+    assert load_capabilities()["skill.demo.bindprop-beta"].model_binding is None
 
 
 def test_apply_refuses_malformed_payload(caps_env):

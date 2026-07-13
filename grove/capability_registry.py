@@ -248,6 +248,71 @@ def _compose_state_overlay(records: Dict[str, Capability]) -> None:
             # records[rid] retains the pre-merge pure-definition Capability.
 
 
+# ── state WRITE path (fleet-hygiene-sweep P2) ────────────────────────────
+#
+# The three runtime writers (set_model_binding / transition_record /
+# update_lifecycle_fields) target the STATE overlay, NEVER the bundled
+# definition — that is the whole point: definitions are read-only to the
+# runtime so deploy-by-reset cannot destroy operator state. Each writer reads
+# the COMPOSED record (definition + current state, R-A9), applies its mutation,
+# and writes the COMPLETE allowlisted snapshot to the state file (so
+# decision_log replacement is lossless — the seed + all prior entries ride the
+# composed record forward). Same lock + atomic + .bak discipline as before, at
+# the new target.
+
+
+def _state_path_for_id(cap_id: str, state_dir: Path) -> Path:
+    """The state file for *cap_id*: ``<state_dir>/<id with . -> __>.yaml`` — the
+    mint filename idiom, so the file is human-locatable. The ``id`` INSIDE the
+    file is authoritative for the loader; the filename is cosmetic."""
+    return Path(state_dir) / f"{cap_id.replace('.', '__')}.yaml"
+
+
+def _state_snapshot_dict(cap: Capability) -> Dict[str, Any]:
+    """Serialize the allowlisted MUTABLE surface of *cap* to a state dict.
+
+    The complete snapshot every write: ``model_binding`` (null when unpinned —
+    an honest clear), the four lifecycle mutables, and the full decision_log.
+    Reuses ``to_dict`` for the exact per-block shapes the loader re-parses."""
+    d = cap.to_dict()
+    snapshot: Dict[str, Any] = {"id": cap.id}
+    snapshot["model_binding"] = d.get("model_binding")  # None when unpinned
+    lc = d["lifecycle"]
+    snapshot["lifecycle"] = {k: lc[k] for k in _STATE_LIFECYCLE_KEYS if k in lc}
+    snapshot["lineage"] = {"decision_log": d["lineage"]["decision_log"]}
+    return snapshot
+
+
+def _compose_for_write(def_path: Path, state_path: Path) -> Capability:
+    """Read the COMPOSED record for a writer (R-A9): the definition overlaid
+    with its CURRENT state file, if any. A corrupt existing state file fails
+    LOUD here — a writer must never silently clobber unreadable operator state
+    (distinct from the loader's read-side R-B1 fallback, which keeps the record
+    loadable; a write demands the state be legible first)."""
+    cap = Capability.from_yaml(def_path.read_text(encoding="utf-8"))
+    if state_path.exists():
+        _rid, state = _read_state_file(state_path)  # raises _StateFileInvalid loud
+        cap = _compose_state(cap, state)
+    return cap
+
+
+def _write_state_snapshot(cap: Capability, state_path: Path) -> bytes:
+    """Atomically write *cap*'s allowlisted snapshot to *state_path* (.bak of any
+    prior bytes first, for the caller's restore-on-failure). Returns the prior
+    bytes (b'' when the file is new) so the caller can roll back."""
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    prior = state_path.read_bytes() if state_path.exists() else b""
+    if prior:
+        state_path.with_suffix(state_path.suffix + ".bak").write_bytes(prior)
+    import yaml as _yaml
+
+    _atomic_write_yaml(
+        state_path,
+        _yaml.safe_dump(_state_snapshot_dict(cap), sort_keys=False, allow_unicode=True),
+    )
+    return prior
+
+
 def _validate_binding_uniqueness(records: Dict[str, Capability]) -> None:
     """Strict 1:1 tool-to-record ownership (GRV-009 E5 Amendment A4).
 
@@ -477,15 +542,19 @@ def _atomic_write_yaml(path: Path, text: str) -> None:
 
 
 def _transition_locked(
-    path: Path,
+    def_path: Path,
+    state_path: Path,
     to_state: LifecycleState,
     actor: str,
     reason: str,
     evidence: Optional[List[str]],
     lifecycle_fields: Dict[str, Any],
 ) -> TransitionResult:
-    """Re-read the record under the held lock, transition, atomically write."""
-    cap = Capability.from_yaml(path.read_text(encoding="utf-8"))
+    """Compose the record (def + state) under the held lock, transition, write
+    the STATE snapshot (fleet-hygiene-sweep P2). The transition appends to the
+    COMPOSED decision_log, so the snapshot carries seed + all prior entries +
+    the new one forward losslessly (R-A9)."""
+    cap = _compose_for_write(def_path, state_path)
     current = cap.lifecycle.state
     # Legality pre-check: a terminal/managed record (no legal exits) is SKIPPED,
     # never raised — the curator no-throw contract.
@@ -500,7 +569,7 @@ def _transition_locked(
             )
         setattr(cap.lifecycle, key, value)
 
-    _atomic_write_yaml(path, cap.to_yaml())
+    _write_state_snapshot(cap, state_path)
     return TransitionResult(TRANSITION_APPLIED, record)
 
 
@@ -512,14 +581,16 @@ def transition_record(
     reason: str,
     evidence: Optional[List[str]] = None,
     directory: Optional[Path] = None,
+    state_dir: Optional[Path] = None,
     **lifecycle_fields: Any,
 ) -> TransitionResult:
-    """Mutate a capability record's lifecycle state on disk (the SOLE write path).
+    """Mutate a capability record's lifecycle state — writing the STATE overlay
+    (fleet-hygiene-sweep P2), never the bundled definition.
 
-    Acquires a non-blocking per-record advisory lock, re-reads the record,
-    validates + applies the transition, and writes atomically. ``lifecycle_fields``
-    (e.g. ``use_count=…``, ``last_used=…``, ``pinned=…``) are applied alongside the
-    state change.
+    Acquires a non-blocking per-record advisory lock, reads the COMPOSED record
+    (definition + current state), validates + applies the transition, and writes
+    the state snapshot atomically. ``lifecycle_fields`` (e.g. ``use_count=…``,
+    ``last_used=…``, ``pinned=…``) are applied alongside the state change.
 
     Returns a :class:`TransitionResult`:
       * APPLIED  — transition legal and written (``.record`` is the TransitionRecord)
@@ -551,12 +622,15 @@ def transition_record(
             f"{[str(d) for d in search_dirs]}"
         )
 
+    state_path = _state_path_for_id(cap_id, state_dir or capability_state_dir())
+
     if fcntl is None:  # pragma: no cover - non-POSIX best-effort
         return _transition_locked(
-            path, to_state, actor, reason, evidence, lifecycle_fields
+            path, state_path, to_state, actor, reason, evidence, lifecycle_fields
         )
 
-    lock_path = path.with_suffix(".yaml.lock")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(".yaml.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = open(lock_path, "a+", encoding="utf-8")
     try:
@@ -568,7 +642,8 @@ def transition_record(
             return TransitionResult(TRANSITION_DEFERRED, None)
         try:
             return _transition_locked(
-                path, to_state, actor, reason, evidence, lifecycle_fields
+                path, state_path, to_state, actor, reason, evidence,
+                lifecycle_fields,
             )
         finally:
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
@@ -580,16 +655,17 @@ def update_lifecycle_fields(
     cap_id: str,
     *,
     directory: Optional[Path] = None,
+    state_dir: Optional[Path] = None,
     **fields: Any,
 ) -> bool:
-    """Write NON-state lifecycle fields (e.g. ``pinned``) to a record without a
-    state transition — the registry write path for the CLI pin toggle and any
-    telemetry-on-record (GRV-009 E6b C2-bridge).
+    """Write NON-state lifecycle fields (e.g. ``pinned``) to a record's STATE
+    overlay (fleet-hygiene-sweep P2), never the bundled definition — the
+    registry write path for the CLI pin toggle and any telemetry-on-record.
 
-    Same per-record advisory lock + atomic replace as ``transition_record``.
-    Returns True when written, False on lock contention (caller may retry).
-    Raises :class:`CapabilityLoadError` when no record carries *cap_id* or an
-    unknown lifecycle field is given.
+    Reads the COMPOSED record, applies the fields, writes the state snapshot
+    under the same per-record advisory lock. Returns True when written, False
+    on lock contention (caller may retry). Raises :class:`CapabilityLoadError`
+    when no record carries *cap_id* or an unknown lifecycle field is given.
     """
     if directory is not None:
         search_dirs = [Path(directory)]
@@ -607,21 +683,24 @@ def update_lifecycle_fields(
             f"{[str(d) for d in search_dirs]}"
         )
 
+    state_path = _state_path_for_id(cap_id, state_dir or capability_state_dir())
+
     def _apply() -> bool:
-        cap = Capability.from_yaml(path.read_text(encoding="utf-8"))
+        cap = _compose_for_write(path, state_path)
         for key, value in fields.items():
             if not hasattr(cap.lifecycle, key):
                 raise CapabilityLoadError(
                     f"update_lifecycle_fields: unknown lifecycle field {key!r}"
                 )
             setattr(cap.lifecycle, key, value)
-        _atomic_write_yaml(path, cap.to_yaml())
+        _write_state_snapshot(cap, state_path)
         return True
 
     if fcntl is None:  # pragma: no cover - non-POSIX best-effort
         return _apply()
 
-    lock_path = path.with_suffix(".yaml.lock")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(".yaml.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = open(lock_path, "a+", encoding="utf-8")
     try:
@@ -789,6 +868,12 @@ def set_model_binding(
             f"file in {[str(d) for d in search_dirs]}"
         )
 
+    # fleet-hygiene-sweep P2 — the write TARGET is the state overlay, not the
+    # bundled definition (`path`). The definition is read-only to this writer;
+    # its role now is only to compose the current effective binding for the
+    # audit event's `previous`.
+    state_path = _state_path_for_id(record_id, capability_state_dir())
+
     def _locked_write() -> BindingWriteResult:
         # Re-verify INSIDE the held lock: the registry may have shifted between
         # the pre-lock resolve and lock acquisition (record renamed, collision
@@ -801,50 +886,53 @@ def set_model_binding(
                 f"record_id={res2.record_id!r}. Refusing to write."
             )
 
-        original = path.read_bytes()
-        bak_path = path.with_suffix(path.suffix + ".bak")
-        bak_path.write_bytes(original)
+        from grove.capability import ModelBinding
 
-        try:
-            from grove.capability import ModelBinding
-
-            cap = Capability.from_yaml(original.decode("utf-8"))
-            previous = _binding_to_dict(cap.model_binding)
-            new_mb = (
-                None
-                if binding is None
-                else ModelBinding(
-                    type=binding.get("type"),
-                    tier=binding.get("tier"),
-                    model=binding.get("model"),
-                )
+        # R-A9 — read the COMPOSED record (definition + current state) so the
+        # snapshot carries lifecycle + decision_log forward losslessly and
+        # `previous` reflects the effective binding, not just the definition.
+        cap = _compose_for_write(path, state_path)
+        previous = _binding_to_dict(cap.model_binding)
+        new_mb = (
+            None
+            if binding is None
+            else ModelBinding(
+                type=binding.get("type"),
+                tier=binding.get("tier"),
+                model=binding.get("model"),
             )
-            cap.model_binding = new_mb
-            # Mutation is post-construction, so __post_init__ has not seen it —
-            # validate explicitly (kind=skill guard, type/tier/model shape).
-            try:
-                cap.validate()
-            except ValueError as exc:
+        )
+        cap.model_binding = new_mb
+        # Mutation is post-construction — validate explicitly (kind=skill
+        # guard, type/tier/model shape).
+        try:
+            cap.validate()
+        except ValueError as exc:
+            raise BindingWriteError(
+                f"set_model_binding: proposed binding failed record "
+                f"validation: {exc}"
+            ) from exc
+
+        if new_mb is not None and new_mb.type == "model":
+            from grove.config.model_catalog import load_catalog
+
+            slugs = {m["slug"] for m in load_catalog()}
+            if new_mb.model not in slugs:
                 raise BindingWriteError(
-                    f"set_model_binding: proposed binding failed record "
-                    f"validation: {exc}"
-                ) from exc
+                    f"set_model_binding: model {new_mb.model!r} is not in "
+                    f"the model catalog — a pin to an off-catalog slug is "
+                    f"dead config. Refusing to write."
+                )
 
-            if new_mb is not None and new_mb.type == "model":
-                from grove.config.model_catalog import load_catalog
-
-                slugs = {m["slug"] for m in load_catalog()}
-                if new_mb.model not in slugs:
-                    raise BindingWriteError(
-                        f"set_model_binding: model {new_mb.model!r} is not in "
-                        f"the model catalog — a pin to an off-catalog slug is "
-                        f"dead config. Refusing to write."
-                    )
-
-            _atomic_write_yaml(path, cap.to_yaml())
+        prior = _write_state_snapshot(cap, state_path)  # .bak + atomic
+        # Verify the write composes back cleanly; roll back on any corruption.
+        try:
+            _compose_for_write(path, state_path)
         except BaseException:
-            # Restore the record to its pre-mutation bytes, then fail loud.
-            path.write_bytes(original)
+            if prior:
+                state_path.write_bytes(prior)
+            else:
+                state_path.unlink(missing_ok=True)
             raise
 
         new = _binding_to_dict(new_mb)
@@ -857,19 +945,20 @@ def set_model_binding(
             proposal_id=proposal_id,
         )
         logger.info(
-            "[capability_registry] model_binding written: %s %s -> %s "
-            "(surface=%s)",
+            "[capability_registry] model_binding written to state overlay: "
+            "%s %s -> %s (surface=%s)",
             record_id,
             previous,
             new,
             surface,
         )
-        return BindingWriteResult(path, record_id, previous, new)
+        return BindingWriteResult(state_path, record_id, previous, new)
 
     if fcntl is None:  # pragma: no cover - non-POSIX best-effort
         return _locked_write()
 
-    lock_path = path.with_suffix(".yaml.lock")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(".yaml.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = open(lock_path, "a+", encoding="utf-8")
     try:
@@ -1169,6 +1258,20 @@ def _mint_skill_record(
             return None
     elif any(target.glob("*.yaml")) and cap_id in load_capabilities(target):
         return None
+
+    # fleet-hygiene-sweep R-B4 — mint gate against the STATE overlay: a new id
+    # must not already carry orphaned state (a prior record's residue at the
+    # same id). State without a definition is a ghost the loader ignores, but
+    # minting a definition ONTO it would silently resurrect stale state — refuse.
+    if directory is None:
+        state_path = _state_path_for_id(cap_id, capability_state_dir())
+        if state_path.exists():
+            raise CapabilityLoadError(
+                f"_mint_skill_record: id {cap_id!r} has an existing state file "
+                f"({state_path}) but no definition — orphaned state must be "
+                f"removed before minting this id (R-B4). Refusing to mint onto "
+                f"stale state."
+            )
 
     cap = Capability(
         id=cap_id,
