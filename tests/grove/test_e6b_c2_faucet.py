@@ -159,8 +159,11 @@ def test_transition_deferred_nothing_moves(grove_home, monkeypatch):
     skills.write_proposal(name, body)
     cap_id = reg.skill_record_id_for_name(name)
 
-    # Hold the record's lock like a concurrent write -> transition DEFERS.
-    lock_path = rec_path.with_suffix(".yaml.lock")
+    # fleet-hygiene-sweep P2 — the transition locks the STATE overlay path, not
+    # the definition record; hold THAT lock to simulate the concurrent write.
+    state_path = reg.capability_state_dir() / f"{cap_id.replace('.', '__')}.yaml"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(".yaml.lock")
     holder = open(lock_path, "a+", encoding="utf-8")
     try:
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX)

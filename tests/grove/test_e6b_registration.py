@@ -73,13 +73,18 @@ def test_transition_record_defers_under_contention(tmp_path):
     record_path = caps / "skill__demo__foo.yaml"
     record_path.write_text(cap.to_yaml(), encoding="utf-8")
 
-    lock_path = record_path.with_suffix(".yaml.lock")
+    # fleet-hygiene-sweep P2 — the transition locks + writes the STATE overlay,
+    # not the definition; hold the STATE lock to simulate contention.
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_path = state_dir / "skill__demo__foo.yaml"
+    lock_path = state_path.with_suffix(".yaml.lock")
     holder = open(lock_path, "a+", encoding="utf-8")
     try:
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX)  # simulate the active turn
         result = reg.transition_record(
             "skill.demo.foo", LifecycleState.DEPRECATED,
-            actor="curator", reason="inactive", directory=caps,
+            actor="curator", reason="inactive", directory=caps, state_dir=state_dir,
         )
     finally:
         fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
@@ -87,24 +92,37 @@ def test_transition_record_defers_under_contention(tmp_path):
 
     assert result.status == reg.TRANSITION_DEFERRED
     assert result.record is None
-    # The on-disk record is unchanged — still ACTIVE.
-    reloaded = Capability.from_yaml(record_path.read_text(encoding="utf-8"))
-    assert reloaded.lifecycle.state is LifecycleState.ACTIVE
+    # Nothing written under contention: the definition is still ACTIVE and no
+    # state snapshot landed.
+    assert Capability.from_yaml(
+        record_path.read_text(encoding="utf-8")
+    ).lifecycle.state is LifecycleState.ACTIVE
+    assert not state_path.exists()
 
 
 def test_transition_record_applies_when_uncontended(tmp_path):
+    import yaml as _yaml
+
     caps = tmp_path / "caps"
     caps.mkdir()
     (caps / "skill__demo__foo.yaml").write_text(
         _skill_cap("skill.demo.foo", state=LifecycleState.ACTIVE).to_yaml(), encoding="utf-8"
     )
+    state_dir = tmp_path / "state"
     result = reg.transition_record(
         "skill.demo.foo", LifecycleState.DEPRECATED,
-        actor="curator", reason="inactive", directory=caps,
+        actor="curator", reason="inactive", directory=caps, state_dir=state_dir,
     )
     assert result.status == reg.TRANSITION_APPLIED
-    reloaded = Capability.from_yaml((caps / "skill__demo__foo.yaml").read_text(encoding="utf-8"))
-    assert reloaded.lifecycle.state is LifecycleState.DEPRECATED
+    # fleet-hygiene-sweep P2 — the new state lands in the STATE overlay; the
+    # definition stays read-only (ACTIVE).
+    st = _yaml.safe_load(
+        (state_dir / "skill__demo__foo.yaml").read_text(encoding="utf-8")
+    )
+    assert st["lifecycle"]["state"] == "deprecated"
+    assert Capability.from_yaml(
+        (caps / "skill__demo__foo.yaml").read_text(encoding="utf-8")
+    ).lifecycle.state is LifecycleState.ACTIVE
 
 
 def test_transition_record_skips_terminal_managed(tmp_path):
