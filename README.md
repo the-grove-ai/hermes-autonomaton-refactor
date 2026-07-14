@@ -231,4 +231,4 @@ This work stands on [NousResearch's Hermes Agent](https://github.com/NousResearc
 
 ---
 
-*Architecture is the guarantee; policy is the promise. Model independence is not theater.*
+*Architectural guarantees beat policy promises every time.*
