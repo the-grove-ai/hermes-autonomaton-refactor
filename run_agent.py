@@ -12637,6 +12637,11 @@ class AIAgent:
             function_name, reason, intent=intent, tier=tier, record=record
         )
         logging.warning("[grove.seam5] %s", msg)
+        # operator-mutable-admission-v1 P3 — emit ONE capability_refusals record
+        # so the Flywheel can observe admission friction. Side-effect only: the
+        # verdict below is returned regardless of the emit's outcome (governance
+        # is NOT downstream of telemetry).
+        self._emit_capability_refusal(function_name, reason, intent, tier, record)
         return json.dumps(
             {
                 "error": msg,
@@ -12648,6 +12653,41 @@ class AIAgent:
             },
             ensure_ascii=False,
         )
+
+    def _emit_capability_refusal(
+        self, function_name: str, reason: str, intent: Any, tier: Any, record: Any,
+    ) -> None:
+        """Emit ONE capability_refusals record (P3) — deterministic, side-effect
+        only. A write failure is a LOUD Andon but NEVER flips the refusal into an
+        admit and NEVER swallows the refusal: the caller has already built the
+        verdict and returns it regardless. Governance is not downstream of
+        telemetry. No LLM in this path (mirrors _seam5_refusal_message fields)."""
+        from grove import capability_refusals as _refusals
+
+        turn_id = getattr(
+            getattr(self, "_dispatcher_singleton", None), "_current_turn_id", None
+        )
+        session_id = getattr(self, "session_id", None)
+        try:
+            _refusals.emit(
+                {
+                    "tool": function_name,
+                    "reason": reason,
+                    "intent": intent,
+                    "tier": tier,
+                    "governing_record": record.id if record is not None else None,
+                    "session_id": session_id,
+                    "platform": getattr(self, "platform", None),
+                    "turn_id": turn_id or session_id,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 — loud, but verdict is upstream
+            logging.critical(
+                "[grove.capability_refusals] ANDON: refusals-feed write failed "
+                "(%r) for tool=%r — the refusal is STILL enforced (governance is "
+                "not downstream of telemetry); admission verdict unchanged.",
+                exc, function_name,
+            )
 
     def _seam5_admission_refusal(self, function_name: str) -> Optional[str]:
         """PRIMARY (C-SEAM5, D1 universal): refuse a tool the model named that was
