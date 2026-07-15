@@ -307,11 +307,15 @@ def test_real_records_disclosure_modes_match_golden():
     ), "a disclosure:fallback record survived fallback-retirement-v1"
     assert "yuanbao_read" not in caps and "feishu_write" not in caps  # B1 deletes
     # Class A — flipped to proactive CORE (always:true, offered on every intent).
-    for rid in ("todo", "send_message", "kanban_read", "kanban_write"):
+    # homeassistant_read joined via operator-mutable-admission-v1 Phase 2 (green
+    # read de-gated from its wrong system_admin intent default; still carries
+    # intents:[system_admin], now moot under always:true).
+    for rid in ("todo", "send_message", "kanban_read", "kanban_write",
+                "homeassistant_read"):
         assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
         assert caps[rid].trigger.always, rid
     # Class B2 / C — proactive but INTENT-GATED (always:false, non-empty intents).
-    for rid in ("discord", "homeassistant_read", "spotify_write",
+    for rid in ("discord", "spotify_write",
                 "discord_admin", "computer_use"):
         assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
         assert not caps[rid].trigger.always and caps[rid].trigger.intents, rid
