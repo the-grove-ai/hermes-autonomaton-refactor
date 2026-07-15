@@ -286,22 +286,28 @@ class FleetManager:
             )
 
     def _publish_unattended(self, wid: str, run_id: str, skill_id: str, event: dict) -> None:
-        """forge-unattended-publish-v1 P2 — fire the atomic Drive door for an
-        ARMED forge worker's staged package, unattended.
+        """forge-unattended-publish-v1 P3 — fire the atomic Drive door for an
+        ARMED forge worker's staged package, then make the local state coherent.
 
         DRIVE-ONLY (invariant 3): the door (``publish_application_package``)
-        never speaks to Notion; the status flip stays portal-owned. This branch
-        imports and calls NOTHING Notion/MCP — physical isolation.
+        never speaks to Notion; the status flip stays portal-owned. This method
+        imports and calls NOTHING Notion/MCP — physical isolation. The local
+        coherence (canonicalize + archive) and the audit event are filesystem /
+        memory-store writes only.
 
         Inputs (invariant 2): ``row_id`` is EVENT-sourced (the authoritative row
         identity); ``company`` / ``role`` are untrusted LABELS from meta.json;
         resume/cover are FIXED filenames jail-rooted in the staging slug dir. The
         door SELF-ACQUIRES its OAuth token — no token is passed.
 
-        Outcomes: success (door returns a dict) → an operator-visible published
-        event carrying the Drive result, REPLACING the proposal. Failure
-        (PublishError / token-refresh error / partial state) → a LOUD Andon
-        carrying the partial state. No swallow, no proposal on failure.
+        Ordering (publish-FIRST — never canonicalize before a confirmed publish):
+          door → PublishError/token error → Andon (publish failed), STOP.
+          → canonicalize + archive → failure → Andon carrying folder_link
+            ("on Drive but local state stuck"), STOP.
+          → memory audit event (FleetPublishedUnattended, honest provenance) →
+            emit failure → Andon carrying folder_link (publish + coherence STAND,
+            never unwound), STOP.
+          → operator info event (carries folder_link — the publish-time link).
         """
         from pathlib import Path
 
@@ -319,7 +325,8 @@ class FleetManager:
             )
             return
 
-        resolved = resolve_forge_package(Path(get_hermes_home()), slug)
+        home = Path(get_hermes_home())
+        resolved = resolve_forge_package(home, slug)
         if not isinstance(resolved, ResolvedForgePackage):
             surface_fleet_andon(
                 wid, run_id,
@@ -332,6 +339,7 @@ class FleetManager:
         from grove.forge import publish_application_package
         from grove.forge.publish import PublishError
 
+        # ── door publish (FIRST — the confirmed external effect) ──
         try:
             result = publish_application_package(
                 str(row_id),
@@ -356,24 +364,111 @@ class FleetManager:
             )
             return
 
+        folder_link = result.get("folder_link")
+        folder_id = result.get("folder_id")
+        sink = _canonical_sink_for_skill(skill_id) or "forge"
+
+        # ── mechanism 3 — local coherence (canonicalize + archive, publish-first
+        #    satisfied). On failure the artifact is ON DRIVE but the portal would
+        #    show it stuck; surface a loud Andon carrying the clickable link and
+        #    STOP (never a misleading success info event over stuck local state).
+        try:
+            canonical_files = self._canonicalize_and_archive(home, sink, slug, resolved)
+        except OSError as exc:
+            surface_fleet_andon(
+                wid, run_id,
+                f"unattended publish for {slug!r} is ON DRIVE ({folder_link}) but "
+                f"the LOCAL promoted-state write FAILED: {exc} — the portal will "
+                f"not show it promoted until repaired",
+                check="publish_canonicalize_failed", loop=self._loop,
+                extra={"folder_link": folder_link, "folder_id": folder_id},
+            )
+            return
+
+        # ── mechanism 1 — honest-provenance audit (fleet memory event). An emit
+        #    failure NEVER unwinds the publish/canonicalize (a confirmed Drive
+        #    write is not rolled back), but it is SURFACED loudly (Andon-class) —
+        #    the same no-silent-sovereign-write-record discipline as the two
+        #    branches above. The Andon carries folder_link and is clear that the
+        #    artifact IS on Drive and local state IS coherent; only the durable
+        #    audit record failed. It replaces the success info event for this run.
+        try:
+            from datetime import datetime, timezone
+
+            from grove.memory.events import FleetPublishedUnattended, new_event_id
+            from grove.memory.store import MemoryStore
+
+            MemoryStore(base_dir=home).append_event(FleetPublishedUnattended(
+                event_id=new_event_id(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                unit_id=str(row_id),
+                slug=slug,
+                producer=skill_id,
+                sink=sink,
+                folder_link=folder_link,
+                folder_id=folder_id,
+                provenance="publication.unattended",
+                canonical_files=list(canonical_files or []),
+            ))
+        except Exception as exc:  # noqa: BLE001 — surface loudly; NEVER unwind the publish
+            surface_fleet_andon(
+                wid, run_id,
+                f"unattended publish for {slug!r} succeeded and is ON DRIVE "
+                f"({folder_link}) with local state coherent, but the durable AUDIT "
+                f"record FAILED to persist: {exc!r} — the publish STANDS (not "
+                f"unwound); the audit trail is incomplete",
+                check="publish_audit_emit_failed", loop=self._loop,
+                extra={"folder_link": folder_link, "folder_id": folder_id},
+            )
+            return
+
+        # ── operator info event (carries the door's folder_link) ──
         surface_fleet_event(
             wid, run_id,
             f"published {slug!r} to Drive unattended "
-            f"({result.get('status')}): {result.get('folder_link')}",
+            f"({result.get('status')}): {folder_link}",
             event="fleet_published", loop=self._loop,
             extra={
                 "skill_id": skill_id,
                 "slug": slug,
                 "row_id": str(row_id),
                 "status": result.get("status"),
-                "folder_id": result.get("folder_id"),
-                "folder_link": result.get("folder_link"),
+                "folder_id": folder_id,
+                "folder_link": folder_link,
             },
         )
         logger.info(
             "[fleet.manager] unattended publish OK for %s (status=%s, folder=%s)",
-            slug, result.get("status"), result.get("folder_link"),
+            slug, result.get("status"), folder_link,
         )
+
+    @staticmethod
+    def _canonicalize_and_archive(home, sink: str, slug: str, resolved) -> list:
+        """forge-unattended-publish-v1 P3 (mechanism 3) — filesystem coherence.
+
+        Move the two drafts into the per-unit canonical subdir
+        (``<home>/<sink>/<slug>/``), then archive the now-meta-only staged dir so
+        ``staged-gone + canonical-present`` makes the fleet view resolve the unit
+        ``promoted`` via rule 1 (grove/api/portal.py:962-975). Notion-free.
+        Raises ``OSError`` on any move failure (the caller Andons carrying the
+        folder_link). Returns the canonical file paths.
+        """
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        from grove.utils.fs_utils import canonicalize_files
+
+        canonical_dir = home / sink / slug
+        canonical_files = canonicalize_files(
+            [Path(resolved.resume_path), Path(resolved.cover_path)], canonical_dir
+        )
+        staged_dir = resolved.slug_dir
+        if staged_dir.is_dir():
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            dest = home / sink / ".archive" / f"{slug}-{ts}"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            staged_dir.rename(dest)  # atomic within the one ~/.grove mount
+        return canonical_files
 
     # ── dispatch ───────────────────────────────────────────────────────────────
 

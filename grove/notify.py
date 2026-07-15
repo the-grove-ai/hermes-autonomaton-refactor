@@ -88,7 +88,13 @@ async def broadcast_to_operator(
     # ── Leg 1: the always-on CLI/substrate log. Fires first, unconditionally.
     # getattr-with-default so an unknown ``severity`` can never AttributeError
     # the log floor — it falls back to ``logger.error``.
-    getattr(logger, severity, logger.error)("[ACTION FAILURE] %s", content)
+    # forge-unattended-publish-v1 P3 (mechanism 2) — the prefix is severity-
+    # conditional: a non-failure notice (info/debug, e.g. a fleet published-event)
+    # gets a clean line; error/warning KEEP ``[ACTION FAILURE]`` byte-for-byte, so
+    # every existing failure caller (all at the default ``error`` severity) is
+    # unchanged.
+    _prefix = "" if severity in ("info", "debug") else "[ACTION FAILURE] "
+    getattr(logger, severity, logger.error)("%s%s", _prefix, content)
 
     reached: List[str] = []
     failed: List[str] = []
