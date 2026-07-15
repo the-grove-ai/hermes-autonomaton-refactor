@@ -1211,6 +1211,42 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _seam5_refusal_message(function_name, reason, *, intent, tier, record=None):
+    """Build the C-SEAM5 refusal string (GRV-009 §V legibility).
+
+    Names the governing capability record and its human-readable admission rule
+    (trigger.intents/always/disclosure + config path) so the operator can see and
+    edit WHY a tool was withheld. The routing tier is reported but marked
+    non-determinative — the offered surface is gated by intent-match against the
+    record, not the tier (the tier gate is inert since fallback-retirement-v1).
+    Pure: no context reads, so it is unit-testable without an Agent.
+    """
+    base = (
+        f"Tool {function_name!r} refused by the execution-admission seam "
+        f"(GRV-009 E5 C-SEAM5): {reason}. Offering is the governance; execution "
+        f"honors it."
+    )
+    if record is not None:
+        gov = (
+            f" Admission is governed by the tool's capability record "
+            f"config/capabilities/{record.id}.yaml — NOT the routing tier. "
+            f"This turn's intent {intent!r} is not admitted by "
+            f"{record.id}.trigger.intents {sorted(record.trigger.intents)} "
+            f"(always={record.trigger.always}, "
+            f"disclosure={record.trigger.disclosure.value!r}). To offer "
+            f"{function_name!r} for this intent, edit that record (add the intent, "
+            f"or set always: true). tier={tier} is non-determinative."
+        )
+    else:
+        gov = (
+            f" Admission is governed by the per-turn offered surface (capability "
+            f"records + mcp_allow), NOT the routing tier. No capability record "
+            f"governs {function_name!r}. tier={tier} is non-determinative; "
+            f"intent={intent!r}."
+        )
+    return base + gov
+
+
 class _AgentInterruptAdapter:
     """Adapts AIAgent's interrupt state to the ToolExecutor's
     InterruptToken protocol.
@@ -12589,16 +12625,16 @@ class AIAgent:
     def _seam5_refusal(self, function_name: str, reason: str) -> str:
         """The fail-loud refusal payload (the executor's block_message idiom):
         no silent execution, full diagnostic surfaced to the model + a loud log.
-        GRV-009 E5 C-SEAM5 — offering IS the governance; execution honors it."""
+        GRV-009 E5 C-SEAM5 — offering IS the governance; execution honors it.
+        The message names the governing capability record (GRV-009 §V), not the
+        tier, which is non-determinative for admission."""
         from grove.providers import current_classification, current_tier
         cls = current_classification()
         intent = cls.intent_class if cls else None
         tier = current_tier()
-        msg = (
-            f"Tool {function_name!r} refused by the execution-admission seam "
-            f"(GRV-009 E5 C-SEAM5): {reason}. tier={tier} intent={intent}. A tool "
-            f"must be OFFERED this turn to execute — offering is the governance, "
-            f"execution honors it."
+        record = self._seam5_tool_records().get(function_name)
+        msg = _seam5_refusal_message(
+            function_name, reason, intent=intent, tier=tier, record=record
         )
         logging.warning("[grove.seam5] %s", msg)
         return json.dumps(
@@ -12606,8 +12642,9 @@ class AIAgent:
                 "error": msg,
                 "andon": "execution_admission",
                 "tool": function_name,
-                "tier": tier,
                 "intent": intent,
+                "tier": tier,
+                "governing_record": record.id if record is not None else None,
             },
             ensure_ascii=False,
         )
