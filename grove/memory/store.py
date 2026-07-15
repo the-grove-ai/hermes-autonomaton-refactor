@@ -25,6 +25,7 @@ from typing import Dict, Iterator, List, Optional
 
 from grove.memory.events import (
     FleetPromoteAccepted,
+    FleetPublishedUnattended,
     MemoryAccessed,
     MemoryCreated,
     MemoryDeprecated,
@@ -58,6 +59,7 @@ _EVENT_TYPES = {
     "MemoryAccessed": MemoryAccessed,
     "MemoryGraduated": MemoryGraduated,
     "FleetPromoteAccepted": FleetPromoteAccepted,
+    "FleetPublishedUnattended": FleetPublishedUnattended,
 }
 
 
@@ -224,6 +226,11 @@ class MemoryStore:
                 # OBSERVATIONAL (promoted-artifact-persistence-v1 P3) — the
                 # operator-acceptance event is Flywheel food, not a record:
                 # the fold is a deliberate no-op; the projection is unchanged.
+                pass
+            elif isinstance(ev, FleetPublishedUnattended):
+                # OBSERVATIONAL (forge-unattended-publish-v1 P3) — the autonomous
+                # publish audit is Flywheel food, not a record: no-op fold, same
+                # as the acceptance sibling.
                 pass
 
         self._index = records

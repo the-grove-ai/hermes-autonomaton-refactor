@@ -1,11 +1,15 @@
-"""forge-unattended-publish-v1 P2 — the fire-point.
+"""forge-unattended-publish-v1 P2/P3 — the fire-point and its three pre-arming
+mechanisms.
 
-Hermetic end-to-end tests of the manager forge branch: the real hard-AND gate
-(mode == action_surface_publish AND overlay-armed publication.unattended), the
-jail-rooted resolver, and the two outcomes (published-event vs Andon). The Drive
-door is monkeypatched — NO real Drive write, NO real OAuth. GROVE_HOME is a tmp
-dir, so the authorization overlay, the staging jail, and every path resolve
-inside the fixture.
+Hermetic end-to-end tests of the manager forge branch: the real hard-AND gate,
+the jail-rooted resolver, and — for an ARMED success — the three P3 mechanisms:
+  (3) filesystem coherence: canonicalize + archive so the item renders promoted;
+  (1) honest-provenance audit: a FleetPublishedUnattended memory event;
+  (2) [notify prefix — tested separately in test_notify_prefix.py].
+
+The Drive door is monkeypatched (NO real Drive write). GROVE_HOME is a tmp dir,
+so the authorization overlay, the staging jail, the canonical/archive dirs, the
+memory log, and the kaizen ledger all resolve inside the fixture.
 """
 
 import json
@@ -27,7 +31,6 @@ def grove_home(tmp_path, monkeypatch):
 
 
 def _stage_package(home: Path, slug: str, meta: dict) -> Path:
-    """Write a staged forge package (meta.json + the two fixed drafts)."""
     slug_dir = home / "forge" / "pending_review" / slug
     slug_dir.mkdir(parents=True)
     (slug_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
@@ -37,7 +40,6 @@ def _stage_package(home: Path, slug: str, meta: dict) -> Path:
 
 
 def _arm(home: Path, value) -> None:
-    """Write the operator STATE overlay that grants publication.unattended."""
     state_dir = home / "capabilities" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     p = _state_path_for_id(SKILL_ID, state_dir)
@@ -50,10 +52,30 @@ def _event(slug: str, **over) -> dict:
     return e
 
 
+def _read_memory_events(home: Path) -> list:
+    p = home / "memory_records.jsonl"
+    if not p.is_file():
+        return []
+    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def _ledger_event_types(home: Path) -> set:
+    d = home / ".kaizen_ledger"
+    types = set()
+    if d.is_dir():
+        for f in d.glob("*.jsonl"):
+            for ln in f.read_text(encoding="utf-8").splitlines():
+                try:
+                    types.add(json.loads(ln).get("event_type"))
+                except json.JSONDecodeError:
+                    pass
+    return types
+
+
 @pytest.fixture
 def spies(monkeypatch):
     """Spy on the door, the two outcome surfaces, the proposal filer, and the
-    portal Notion-bearing wrapper (must never be reached from the loop)."""
+    Notion-bearing portal wrapper (must never be reached from the loop)."""
     calls = {"door": [], "event": [], "andon": [], "proposal": [], "portal_core": []}
 
     def door(row_id, company, role, resume_path, cover_path, **kw):
@@ -73,13 +95,10 @@ def spies(monkeypatch):
         manager_mod, "surface_fleet_andon",
         lambda *a, **k: calls["andon"].append((a, k)) or {"surfaced": True},
     )
-    # file_agentless is imported lazily inside the branch from grove.eval.proposal_queue.
     monkeypatch.setattr(
         "grove.eval.proposal_queue.file_agentless",
         lambda **k: calls["proposal"].append(k) or ("pid-1", True),
     )
-    # Physical isolation guard: the Notion-bearing portal wrapper must not be
-    # reachable from the loop branch. Spy so a stray call would be visible.
     import grove.api.actions as actions
     monkeypatch.setattr(
         actions, "_forge_publish_core",
@@ -88,36 +107,119 @@ def spies(monkeypatch):
     return calls
 
 
-def _fire(home, slug, event):
+def _fire(event):
     manager_mod.FleetManager()._maybe_emit_artifact_proposal(WID, RUN, event)
 
 
-def test_armed_success_publishes_no_proposal_no_notion(grove_home, spies):
+def test_armed_success_full_coherence(grove_home, spies):
     _stage_package(grove_home, "s1", {"row_id": "META-ROW", "company": "Acme", "role": "PM"})
     _arm(grove_home, "true")
-    _fire(grove_home, "s1", _event("s1"))
+    _fire(_event("s1"))
 
-    # Door called once with jail-rooted inputs: row_id EVENT-sourced, company/role
-    # LABELS from meta, paths the fixed names inside the staging slug dir.
+    # Door called with jail-rooted inputs (row_id EVENT-sourced, not meta's).
     assert len(spies["door"]) == 1
     d = spies["door"][0]
     slug_dir = grove_home / "forge" / "pending_review" / "s1"
-    assert d["row_id"] == "ROW-1"  # from the event, not meta's "META-ROW"
+    assert d["row_id"] == "ROW-1"
     assert (d["company"], d["role"]) == ("Acme", "PM")
     assert d["resume_path"] == str((slug_dir / "resume.md").resolve())
-    assert d["cover_path"] == str((slug_dir / "cover-letter.md").resolve())
-    assert d["kw"] == {}  # no token / no gapi passed — door self-acquires
+    assert d["kw"] == {}  # door self-acquires token; nothing extra passed
 
-    # Published event emitted; NO proposal; NO Notion/portal-core call.
+    # Mechanism 3 — canonicalized + staged dir archived → renders promoted (rule 1).
+    canon = grove_home / "forge" / "s1"
+    assert (canon / "resume.md").is_file() and (canon / "cover-letter.md").is_file()
+    assert not slug_dir.exists()  # archived away → staged-gone
+    assert list((grove_home / "forge" / ".archive").glob("s1-*"))
+
+    # Mechanism 1 — honest-provenance audit event with folder_link.
+    pubs = [e for e in _read_memory_events(grove_home)
+            if e.get("__type__") == "FleetPublishedUnattended"]
+    assert len(pubs) == 1
+    assert pubs[0]["folder_link"] == "https://drive/FOLDER-1"
+    assert pubs[0]["provenance"] == "publication.unattended"
+    assert pubs[0]["unit_id"] == "ROW-1"
+
+    # Info event carries the door's folder_link (the operator's clickable link).
     assert len(spies["event"]) == 1
-    assert spies["event"][0][1].get("event") == "fleet_published"
+    assert spies["event"][0][1]["extra"]["folder_link"] == "https://drive/FOLDER-1"
+
+    # NO kaizen_disposition; NO proposal; NO Notion/portal-core; NO Andon.
+    assert "kaizen_disposition" not in _ledger_event_types(grove_home)
     assert spies["proposal"] == []
-    assert spies["andon"] == []
     assert spies["portal_core"] == []
+    assert spies["andon"] == []
+
+
+def test_armed_publish_ok_canonicalize_fails_andons_with_link(grove_home, spies, monkeypatch):
+    _stage_package(grove_home, "s2", {"row_id": "M", "company": "Acme", "role": "PM"})
+    _arm(grove_home, "true")
+
+    def boom(*a, **k):
+        raise OSError("canonical write refused")
+
+    monkeypatch.setattr(
+        manager_mod.FleetManager, "_canonicalize_and_archive",
+        staticmethod(boom),
+    )
+    _fire(_event("s2"))
+
+    # Published on Drive, but local coherence failed → loud Andon carrying the link.
+    assert len(spies["door"]) == 1
+    assert len(spies["andon"]) == 1
+    _a, kw = spies["andon"][0]
+    assert kw.get("check") == "publish_canonicalize_failed"
+    assert kw.get("extra", {}).get("folder_link") == "https://drive/FOLDER-1"
+    # No misleading success info event over stuck local state; no audit either.
+    assert spies["event"] == []
+    assert [e for e in _read_memory_events(grove_home)
+            if e.get("__type__") == "FleetPublishedUnattended"] == []
+
+
+def test_armed_audit_emit_failure_is_surfaced_not_swallowed(grove_home, spies, monkeypatch):
+    _stage_package(grove_home, "s8", {"row_id": "M", "company": "Acme", "role": "PM"})
+    _arm(grove_home, "true")
+
+    # The audit append raises AFTER publish + canonicalize have both succeeded.
+    from grove.memory.store import MemoryStore
+
+    def boom(self, event):
+        raise OSError("memory log write refused")
+
+    monkeypatch.setattr(MemoryStore, "append_event", boom)
+    _fire(_event("s8"))
+
+    # Publish + canonicalize STAND — never unwound.
+    assert len(spies["door"]) == 1
+    canon = grove_home / "forge" / "s8"
+    assert (canon / "resume.md").is_file() and (canon / "cover-letter.md").is_file()
+    assert not (grove_home / "forge" / "pending_review" / "s8").exists()  # archived
+
+    # Surfaced loudly (Andon-class), carrying folder_link; NOT swallowed.
+    assert len(spies["andon"]) == 1
+    _a, kw = spies["andon"][0]
+    assert kw.get("check") == "publish_audit_emit_failed"
+    assert kw.get("extra", {}).get("folder_link") == "https://drive/FOLDER-1"
+    # The Andon replaces the success info event for this run.
+    assert spies["event"] == []
+
+
+def test_audit_event_is_unattended_provenance_not_a_disposition(grove_home, spies):
+    _stage_package(grove_home, "s3", {"row_id": "M", "company": "Acme", "role": "PM"})
+    _arm(grove_home, "true")
+    _fire(_event("s3"))
+
+    pubs = [e for e in _read_memory_events(grove_home)
+            if e.get("__type__") == "FleetPublishedUnattended"]
+    assert len(pubs) == 1
+    # Honest provenance: the grant, NOT an operator disposition.
+    assert pubs[0]["provenance"] == "publication.unattended"
+    # It is a fleet memory event, NOT an operator-acceptance nor a ledger disposition.
+    assert pubs[0]["__type__"] != "FleetPromoteAccepted"
+    assert "kaizen_disposition" not in _ledger_event_types(grove_home)
 
 
 def test_armed_publish_error_fires_andon_with_partial_state(grove_home, spies, monkeypatch):
-    _stage_package(grove_home, "s2", {"row_id": "M", "company": "Acme", "role": "PM"})
+    _stage_package(grove_home, "s4", {"row_id": "M", "company": "Acme", "role": "PM"})
     _arm(grove_home, "true")
 
     from grove.forge.publish import PublishError
@@ -126,49 +228,49 @@ def test_armed_publish_error_fires_andon_with_partial_state(grove_home, spies, m
         raise PublishError("drive exploded", {"folder_id": "PARTIAL"})
 
     monkeypatch.setattr("grove.forge.publish_application_package", boom)
-    _fire(grove_home, "s2", _event("s2"))
+    _fire(_event("s4"))
 
-    assert spies["proposal"] == []  # no proposal on failure
+    assert spies["proposal"] == []
     assert len(spies["andon"]) == 1
     _a, kw = spies["andon"][0]
     assert kw.get("check") == "publish_failed"
     assert kw.get("extra", {}).get("partial_state") == {"folder_id": "PARTIAL"}
     assert spies["event"] == []
+    # publish-FIRST: nothing was canonicalized (staged dir untouched).
+    assert (grove_home / "forge" / "pending_review" / "s4").exists()
+    assert not (grove_home / "forge" / "s4").exists()
 
 
 def test_armed_out_of_jail_meta_path_ignored(grove_home, spies):
-    # meta.json injects an out-of-jail resume path; the resolver must ignore it
-    # and resolve the FIXED name inside the slug dir.
     _stage_package(
-        grove_home, "s3",
-        {"row_id": "M", "company": "Acme", "role": "PM",
-         "resume_path": "/etc/passwd", "resume": "../../../../etc/passwd"},
+        grove_home, "s5",
+        {"row_id": "M", "company": "Acme", "role": "PM", "resume_path": "/etc/passwd"},
     )
     _arm(grove_home, "true")
-    _fire(grove_home, "s3", _event("s3"))
+    _fire(_event("s5"))
 
-    slug_dir = grove_home / "forge" / "pending_review" / "s3"
+    slug_dir = grove_home / "forge" / "pending_review" / "s5"
     d = spies["door"][0]
     assert d["resume_path"] == str((slug_dir / "resume.md").resolve())
     assert "/etc/passwd" not in d["resume_path"]
 
 
 def test_not_armed_absent_takes_proposal_path(grove_home, spies):
-    # No overlay at all → not armed → existing proposal path, no door call.
-    _stage_package(grove_home, "s4", {"row_id": "M", "company": "Acme", "role": "PM"})
-    _fire(grove_home, "s4", _event("s4"))
+    _stage_package(grove_home, "s6", {"row_id": "M", "company": "Acme", "role": "PM"})
+    _fire(_event("s6"))
 
     assert spies["door"] == []
     assert spies["event"] == []
     assert len(spies["proposal"]) == 1
     assert spies["proposal"][0]["type"] == "forge_artifact_pending"
+    # not armed → nothing canonicalized, staged dir intact.
+    assert (grove_home / "forge" / "pending_review" / "s6").exists()
 
 
 def test_not_armed_false_takes_proposal_path(grove_home, spies):
-    # Overlay present but unattended: false → not armed → proposal path.
-    _stage_package(grove_home, "s5", {"row_id": "M", "company": "Acme", "role": "PM"})
+    _stage_package(grove_home, "s7", {"row_id": "M", "company": "Acme", "role": "PM"})
     _arm(grove_home, "false")
-    _fire(grove_home, "s5", _event("s5"))
+    _fire(_event("s7"))
 
     assert spies["door"] == []
     assert len(spies["proposal"]) == 1

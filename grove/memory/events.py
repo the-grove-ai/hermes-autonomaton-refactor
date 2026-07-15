@@ -23,6 +23,7 @@ __all__ = [
     "MemoryAccessed",
     "MemoryGraduated",
     "FleetPromoteAccepted",
+    "FleetPublishedUnattended",
     "MemoryEvent",
     "new_event_id",
     "new_record_id",
@@ -134,6 +135,32 @@ class FleetPromoteAccepted:
     canonical_files: List[str]          # P1 canonical copies (from the promote)
 
 
+@dataclass(frozen=True)
+class FleetPublishedUnattended:
+    """Autonomous Drive publish of a fleet unit under the ``publication.unattended``
+    grant (forge-unattended-publish-v1 P3).
+
+    The HONEST-PROVENANCE sibling of :class:`FleetPromoteAccepted`: there was NO
+    operator disposition and NO proposal — the publish fired from the ticker
+    because the operator ARMED the standing grant. Distinct from acceptance so the
+    Flywheel never mistakes an autonomous publish for an operator's judgment.
+    OBSERVATIONAL — projects no :class:`MemoryRecord` (the fold is a no-op).
+    Producer-blind: ``producer`` is the skill_id, ``sink`` the declared
+    canonical_dir. Carries the Drive result (``folder_link`` / ``folder_id``) so
+    the audit is self-contained without a Notion read."""
+
+    event_id: str                       # "evt_" + uuid8
+    timestamp: str                      # ISO-8601 UTC
+    unit_id: str                        # stable unit identity (event-sourced row_id)
+    slug: Optional[str]                 # staged package slug (None if absent)
+    producer: Optional[str]             # skill_id (e.g. skill.fleet.<name>)
+    sink: Optional[str]                 # declared write_zone.canonical_dir value
+    folder_link: Optional[str]          # the Drive folder link (door return)
+    folder_id: Optional[str]            # the Drive folder id (door return)
+    provenance: str                     # "publication.unattended" — grant, no operator act
+    canonical_files: List[str]          # local canonical copies (mechanism 3)
+
+
 MemoryEvent = Union[
     MemoryCreated,
     MemorySuperseded,
@@ -141,4 +168,5 @@ MemoryEvent = Union[
     MemoryAccessed,
     MemoryGraduated,
     FleetPromoteAccepted,
+    FleetPublishedUnattended,
 ]
