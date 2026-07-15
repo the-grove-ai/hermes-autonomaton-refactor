@@ -141,12 +141,18 @@ models:
     input_cost_per_mtok: 0.1875   # USD/Mtok — display-only, verified qwen/qwen3.6-flash (live 2026-06-30)
     output_cost_per_mtok: 1.125   # USD/Mtok — display-only
     notes: "Cheap, fast, 1M context. Fleet candidate."
-  - slug: "x-ai/grok-4.3"
-    display_name: "Grok 4.3"
+  - slug: "xiaomi/mimo-v2.5"
+    display_name: "MiMo-V2.5"
     provider: openrouter
-    input_cost_per_mtok: 1.25     # USD/Mtok — display-only, verified x-ai/grok-4.3
-    output_cost_per_mtok: 2.5    # USD/Mtok — display-only
-    notes: "xAI frontier."
+    input_cost_per_mtok: 0.1     # USD/Mtok — display-only, verified xiaomi/mimo-v2.5 (live 2026-07-14)
+    output_cost_per_mtok: 0.28   # USD/Mtok — display-only
+    notes: "Xiaomi, very cheap, 1M context. Fleet candidate."
+  - slug: "x-ai/grok-4.5"
+    display_name: "Grok 4.5"
+    provider: openrouter
+    input_cost_per_mtok: 2     # USD/Mtok — display-only, verified x-ai/grok-4.5 (live 2026-07-14)
+    output_cost_per_mtok: 6    # USD/Mtok — display-only
+    notes: "xAI frontier, 500K context."
   - slug: "openai/gpt-5.1"
     display_name: "GPT-5.1"
     provider: openrouter
