@@ -88,6 +88,13 @@ _READ_ONLY_TOOLS = frozenset({
     "sort", "uniq", "cut", "comm", "readlink", "realpath", "basename", "dirname",
     "du", "tree",
 })
+# read-only-compound-green-relief-v1 Phase 2 — pathless read-only stdin-readers
+# eligible for BOUNDED GREEN inheritance in a pipeline. Each reads its pipe input
+# (no path operand), so it carries no effect of its own; in a compound it clears
+# GREEN only when its upstream is itself GREEN-eligible (transitive, pipeline
+# order). A subset of _READ_ONLY_TOOLS — the "filter/sink" verbs, not source
+# readers like cat (which reach GREEN via their in-scope path operand).
+_STDIN_READERS = frozenset({"head", "wc", "sort", "uniq", "cut", "tail", "grep"})
 
 # Google-Workspace read subcommands (read → GREEN; everything else → YELLOW).
 _GAPI_READ = frozenset({
@@ -874,6 +881,105 @@ def _classify_argv(
     return (_YELLOW, f"cmd:{exe}:{sig}")
 
 
+# ── read-only-compound-green-relief-v1 Phase 2 — unified GREEN predicate ──────
+
+
+def _is_clean_stdin_reader(node: object) -> bool:
+    """True iff *node* is a pathless read-only stdin-reader eligible for bounded
+    GREEN inheritance. Its verb is in :data:`_STDIN_READERS`, it carries NO path
+    operand (reads the pipe, not a file), NO env-prefix (Phase 1 execution-vector
+    floor), NO input feed, and only benign output redirects. Such a node clears
+    GREEN only when its pipeline input comes from a GREEN-eligible upstream — the
+    caller (:func:`_command_is_green`) enforces that. A node the walker cannot
+    positively place here is NOT clean → not GREEN (whitelist semantics)."""
+    argv_raw, redirects, has_input_feed, has_env_assignment = _extract_command(node)
+    if has_input_feed:
+        return False
+    argv = _strip_env(argv_raw)
+    if has_env_assignment or len(argv) < len(argv_raw):
+        return False  # env-prefix present → execution-vector floor (Phase 1)
+    leaf, red_sig, _dyn, env_wrapped = _resolve_leaf(argv)
+    if red_sig is not None or env_wrapped or not leaf:
+        return False
+    if _basename(leaf[0]) not in _STDIN_READERS:
+        return False
+    if any(_path_like(t) for t in _positionals(leaf[1:])):
+        return False  # a path operand → reads a file, not the pipe (not pathless)
+    if not all(_is_benign_sink(r) for r in redirects):
+        return False
+    return True
+
+
+def _node_has_real_mutation(node: object) -> bool:
+    """True iff *node* performs a REAL state mutation (read-only-compound-green-
+    relief-v1 Phase 2 amendment — the read-only-effect constraint): an
+    :data:`_FS_MUTATORS` verb (cp / mv / touch / mkdir / rm / …), OR an output
+    redirect to a NON-benign-sink target (a real file write). A node whose only
+    write is a benign sink (``2>/dev/null`` and the other 4 :data:`_BENIGN_WRITE_SINKS`)
+    is NOT a mutation and stays eligible — LOAD-BEARING for the GATE-A
+    ``cat …/jobs.json 2>/dev/null`` node. Gates on the WRITE EFFECT, never the
+    pattern_key string."""
+    argv_raw, redirects, _has_input_feed, _has_env = _extract_command(node)
+    if any(not _is_benign_sink(r) for r in redirects):
+        return True  # a real (non-benign) file write
+    leaf, red_sig, _dyn, _env_wrapped = _resolve_leaf(_strip_env(argv_raw))
+    if red_sig is not None or not leaf:
+        return False
+    return _basename(leaf[0]) in _FS_MUTATORS
+
+
+def _upstream_index(
+    infos: List[Tuple[object, int, str]], i: int, stage: int
+) -> Optional[int]:
+    """Index of the node feeding node *i*'s pipeline input: the nearest preceding
+    ``j < i`` whose stage is ``stage - 1``. Pipeline nodes are contiguous in walk
+    order, so this resolves to the immediate upstream within the same pipeline.
+    None at a pipeline head (stage 0 — no piped input)."""
+    if stage <= 0:
+        return None
+    for j in range(i - 1, -1, -1):
+        if infos[j][1] == stage - 1:
+            return j
+    return None
+
+
+def _command_is_green(infos: List[Tuple[object, int, str]]) -> bool:
+    """The unified complete-surface GREEN predicate over the fully-walked node
+    list — the SINGLE command-promotion decision point (Phase 2).
+
+    *infos* is ``[(node, pipe_stage, zone), …]`` in walk order. Returns True iff
+    EVERY node is GREEN-eligible, where a node is eligible when it is classified
+    GREEN at the node level (in-scope read, find-read, granted-workspace write,
+    promoted skill), OR it is a clean pathless read-only stdin-reader
+    (:func:`_is_clean_stdin_reader`) whose upstream is transitively GREEN-eligible
+    (evaluated in pipeline order, left to right). A pathless stdin-reader with no
+    GREEN upstream does NOT clear. Callers guarantee no node is RED (RED
+    short-circuits upstream). Whitelist: anything not positively eligible → not
+    GREEN → the compound floors to YELLOW.
+
+    read-only-effect constraint (Phase 2 amendment): a COMPOUND (len > 1) is
+    promoted GREEN only if NO node performs a real state mutation
+    (:func:`_node_has_real_mutation` — an ``_FS_MUTATORS`` verb or a non-benign-sink
+    write). A benign-sink-only write (``2>/dev/null``) is not a mutation and stays
+    eligible. Single-node (len == 1) green-writes are UNTOUCHED — the restriction
+    is compound-only."""
+    n = len(infos)
+    if n > 1 and any(
+        _node_has_real_mutation(node) for node, _stage, _zone in infos
+    ):
+        return False
+    eligible = [False] * n
+    for i, (node, stage, zone) in enumerate(infos):
+        if zone == _GREEN:
+            eligible[i] = True
+        elif zone == _YELLOW and _is_clean_stdin_reader(node):
+            up = _upstream_index(infos, i, stage)
+            eligible[i] = up is not None and eligible[up]
+        else:
+            eligible[i] = False
+    return all(eligible)
+
+
 # ── Public entrypoint ────────────────────────────────────────────────────────
 
 
@@ -914,12 +1020,14 @@ def classify_shell_effect(command: str) -> ZoneResult:
     worst = _GREEN
     sigs: List[str] = []
     red_reason: Optional[str] = None
+    infos: List[Tuple[object, int, str]] = []  # (node, pipe_stage, zone)
     for node, stage in ctx.commands:
         zone, sig = _classify_node(node, stage)
         sigs.append(sig)
         if zone == _RED and red_reason is None:
             red_reason = sig
         worst = _max_zone(worst, zone)
+        infos.append((node, stage, zone))
 
     signature = "||".join(sorted(sigs))
 
@@ -932,12 +1040,20 @@ def classify_shell_effect(command: str) -> ZoneResult:
             f"A command effect requires sovereign approval: {red_reason}.{andon}",
             signature,
         )
-    # GREEN only for a SINGLE simple promoted-skill/read command with no other
-    # effecting node. Any chaining or extra effect drops to YELLOW.
-    if worst == _GREEN and len(ctx.commands) == 1:
+    # read-only-compound-green-relief-v1 Phase 2 — the unified complete-surface
+    # GREEN predicate (:func:`_command_is_green`) is the SINGLE command-promotion
+    # decision point, replacing the prior single-node gate. A command is GREEN iff
+    # no node is RED (handled above) and every node is GREEN-eligible: classified
+    # GREEN at the node level (in-scope read, find-read, granted-workspace write,
+    # promoted skill), OR a clean pathless stdin-reader (head/wc/sort/uniq/cut/tail/
+    # grep) whose pipeline input transitively comes from a GREEN-eligible upstream.
+    # This widens the gate to admit read compounds (e.g. ``cat ~/.grove/x | head``);
+    # the only permitted movement is YELLOW→GREEN.
+    if _command_is_green(infos):
         return _result(
             _GREEN, "shell.effect.green",
-            "Promoted-skill / read execution, or a granted-workspace write.",
+            "Promoted-skill / read execution (incl. inherited pipeline reads), or "
+            "a granted-workspace write.",
             signature,
         )
     # A quarantined (.andon) skill execution carries a ".andon" matched_rule so
