@@ -226,6 +226,16 @@ governance:
           title_from_meta: [company, role]
   approval_handoff:
     mode: action_surface_publish
+  # forge-unattended-publish-v1 P1 — publication-autonomy grant (INERT this
+  # phase; no fire-point reads it yet — Phase 2 wires it). Fail-closed default:
+  # absent ≡ false, and the project ships it false — the Foundation never grants
+  # unattended publish in the bundled record. The operator grants it (per node)
+  # via the ~/.grove/capabilities/state/ overlay, matching the enable-flag
+  # override precedent. Its SOLE reader is the strict, deny-by-default
+  # publication_unattended_authorized(); a corrupt overlay denies, never
+  # resilient-falls-back to this value.
+  publication:
+    unattended: false
   # forge-quality-gate-v1 — the HOW-WELL gate (drafter-quality-checks-v1
   # machinery; FIRST rollout-by-config-flip: zero new code, this block is the
   # whole feature). Context-aware (A1): the evaluator receives the dispatch

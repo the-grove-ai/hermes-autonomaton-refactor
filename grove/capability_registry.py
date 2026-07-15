@@ -44,6 +44,7 @@ __all__ = [
     "default_capabilities_dir",
     "capability_state_dir",
     "read_admission_overlay",
+    "publication_unattended_authorized",
     "set_admission_overlay",
     "set_model_binding",
     "load_capabilities",
@@ -134,12 +135,22 @@ _STATE_TOP_KEYS: FrozenSet[str] = frozenset(
     {"id", "model_binding", "lifecycle", "lineage",
      # operator-mutable-admission-v1 P1 — ADDITIVE admission keys. Read per-turn
      # at the builder (grove.context_budget), NOT applied by _compose_state.
-     "added_intents", "force_always"}
+     "added_intents", "force_always",
+     # forge-unattended-publish-v1 P1 — operator-mutable publication-autonomy
+     # grant. Allowlisted so the operator CAN grant it via STATE overlay (the
+     # enable-flag override precedent), but DELIBERATELY NOT applied by
+     # _compose_state — the merged runtime Capability never carries it. Its SOLE
+     # reader is publication_unattended_authorized(), a strict fail-closed read.
+     "publication"}
 )
 _STATE_LIFECYCLE_KEYS: FrozenSet[str] = frozenset(
     {"state", "pinned", "use_count", "last_used"}
 )
 _STATE_LINEAGE_KEYS: FrozenSet[str] = frozenset({"decision_log"})
+# forge-unattended-publish-v1 P1 — the only publication sub-key. A malformed
+# publication block (non-mapping, unknown sub-key, non-bool unattended) is the
+# R-B1 signal in _read_state_file, and DENY in publication_unattended_authorized.
+_STATE_PUBLICATION_KEYS: FrozenSet[str] = frozenset({"unattended"})
 
 
 class _StateFileInvalid(Exception):
@@ -192,6 +203,20 @@ def _read_state_file(path: Path) -> "tuple[str, Dict[str, Any]]":
     fa = doc.get("force_always")
     if fa is not None and not isinstance(fa, bool):
         raise _StateFileInvalid("'force_always' must be a boolean")
+    # forge-unattended-publish-v1 P1 — publication block, shape-checked here so a
+    # malformed grant is the R-B1 signal (mistyped unattended never silently
+    # reads as authorized). unattended must be a real bool: isinstance(1, bool)
+    # is False, so a truthy int/str is rejected, not coerced.
+    pub = doc.get("publication")
+    if pub is not None:
+        if not isinstance(pub, dict):
+            raise _StateFileInvalid("'publication' must be a mapping")
+        bad = set(pub) - _STATE_PUBLICATION_KEYS
+        if bad:
+            raise _StateFileInvalid(f"unknown publication key(s) {sorted(bad)}")
+        un = pub.get("unattended")
+        if un is not None and not isinstance(un, bool):
+            raise _StateFileInvalid("'publication.unattended' must be a boolean")
     return rid, doc
 
 
@@ -303,6 +328,76 @@ def read_admission_overlay(
             continue  # a pure model_binding/lifecycle state file — no admission keys
         out[rid] = (frozenset(added), force)
     return out
+
+
+# ── forge-unattended-publish-v1 P1 — publication authorization (fail-closed) ──
+
+
+def publication_unattended_authorized(
+    record_id: str,
+    *,
+    directory: Optional[Path] = None,
+    state_dir: Optional[Path] = None,
+) -> bool:
+    """Strict, fail-closed read of ``governance.publication.unattended`` for a
+    record. Returns ``True`` ONLY when the effective value ``is True`` (a real
+    Python bool). Every other outcome returns ``False``: an absent field, a
+    ``false`` value, a string ``"false"`` or any non-bool, a missing overlay, or
+    a corrupt/unparseable overlay entry for this record.
+
+    DELIBERATE DIVERGENCE from the R-B1 read-resilient STATE merge
+    (``_compose_state_overlay``): there, a corrupt overlay for a record DROPS the
+    state and the record keeps its pure-definition value. Here, a corrupt overlay
+    entry for this record DENIES — it never resolves to the definition/template
+    value. Deny is the only fallback. This is why the read targets the per-record
+    STATE file directly and interprets ``_StateFileInvalid`` as ``False`` (and a
+    surfaced config error), rather than going through the resilient merge.
+
+    Resolution order:
+      1. The operator STATE overlay (``<state_dir>/<id . → __>.yaml``): if the
+         file exists but is invalid → DENY. If it carries
+         ``publication.unattended`` → that value governs (``is True``).
+      2. Otherwise the repo DEFINITION's ``governance.publication.unattended``
+         (absent ≡ ``False``). The bundled record ships this absent/false.
+
+    forge-unattended-publish-v1 P1 is INERT: no caller wires this yet.
+    """
+    # 1. Operator STATE overlay — read STRICTLY for THIS record's own file.
+    sd = Path(state_dir) if state_dir is not None else capability_state_dir()
+    ov_path = _state_path_for_id(record_id, sd)
+    if ov_path.exists():
+        try:
+            _rid, doc = _read_state_file(ov_path)
+        except _StateFileInvalid as exc:
+            logger.error(
+                "[grove.capability_registry] publication authorization DENIED for "
+                "%r — STATE overlay %s is invalid (%s). Fail-closed: no resilient "
+                "fallback to the definition. Fix or remove the file.",
+                record_id, ov_path, exc,
+            )
+            return False
+        pub = doc.get("publication")
+        if isinstance(pub, dict) and "unattended" in pub:
+            return pub.get("unattended") is True
+        # Overlay present but silent on publication → the definition governs.
+
+    # 2. Repo DEFINITION — pure (no state overlay); absent field ≡ deny.
+    def_dir = Path(directory) if directory is not None else default_capabilities_dir()
+    try:
+        defs = load_capabilities(directory=def_dir)
+    except CapabilityLoadError as exc:
+        logger.error(
+            "[grove.capability_registry] publication authorization DENIED for %r — "
+            "definition load failed (%s).", record_id, exc,
+        )
+        return False
+    cap = defs.get(record_id)
+    if cap is None or not isinstance(cap.governance, dict):
+        return False
+    pub = cap.governance.get("publication")
+    if not isinstance(pub, dict):
+        return False
+    return pub.get("unattended") is True
 
 
 def set_admission_overlay(
