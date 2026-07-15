@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from grove.eval.proposal_queue import (
     _LEGACY_ROUTING_TYPE,
+    PROPOSAL_TYPE_ADMISSION_FRICTION,
     PROPOSAL_TYPE_FAULT_TRIAGE,
     PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
@@ -676,6 +677,55 @@ register_renderer(
 # portal_action_failure shape. Dispositions are the acknowledge/dismiss verb
 # set (PROPOSAL_VERBS), not approve/apply.
 register_renderer(PROPOSAL_TYPE_FAULT_TRIAGE, _summary_fault_triage)
+
+
+def _summary_admission_friction(proposal: RoutingProposal) -> str:
+    """Natural-language admission-friction offer — the record, the additive verb,
+    and the refusal-recurrence evidence. No 'zone' jargon in the operator line;
+    the evidence names the intents that recurred."""
+    p = proposal.payload or {}
+    record = p.get("record", "?")
+    verb = p.get("verb")
+    eb = p.get("evidence_block") if isinstance(p.get("evidence_block"), dict) else {}
+    arms = eb.get("arms") or []
+    if verb == "force_always":
+        intents = ", ".join(eb.get("distinct_intents") or [])
+        base = (
+            f"Offer '{record}' on every request — it was refused across "
+            f"{len(arms)} intents ({intents}) that each recurred past threshold. "
+            f"Apply?"
+        )
+    else:
+        add = p.get("add_intents") or []
+        intent = add[0] if add else "?"
+        count = arms[0].get("count", "?") if arms else "?"
+        base = (
+            f"Offer '{record}' for '{intent}' requests — it was refused there "
+            f"{count} time(s) over {eb.get('window_days', '?')}d. Apply?"
+        )
+    return base
+
+
+def _admission_friction_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """The additive overlay change + its refusal-recurrence evidence table."""
+    p = proposal.payload or {}
+    eb = p.get("evidence_block") if isinstance(p.get("evidence_block"), dict) else {}
+    diff: Dict[str, Any] = {
+        "record": p.get("record"),
+        "overlay_edit": (
+            {"force_always": True}
+            if p.get("verb") == "force_always"
+            else {"added_intents": p.get("add_intents") or []}
+        ),
+        "target": "~/.grove/capabilities/state (additive; repo definition untouched)",
+        "evidence": eb.get("arms") or [],
+        "window_days": eb.get("window_days"),
+        "threshold": eb.get("threshold"),
+    }
+    return diff
+
+
+register_renderer(PROPOSAL_TYPE_ADMISSION_FRICTION, _summary_admission_friction)
 
 
 # ── structured detail codecs (proposal-card-legibility-v1 Phase 2) ────

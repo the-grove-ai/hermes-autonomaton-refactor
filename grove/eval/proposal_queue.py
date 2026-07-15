@@ -49,6 +49,7 @@ __all__ = [
     "PROPOSAL_TYPE_PORTAL_ACTION_FAILURE",
     "PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING",
     "PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING",
+    "PROPOSAL_TYPE_ADMISSION_FRICTION",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -194,6 +195,14 @@ PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING = "fleet_artifact_pending"
 # tell me if it changes" — the detector re-stages only on material growth)
 # and dismiss (strictly negative feedback — suppressed for the window).
 PROPOSAL_TYPE_FAULT_TRIAGE = "fault_triage"
+# operator-mutable-admission-v1 P4 — recurring C-SEAM5 admission friction observed
+# in the capability_refusals feed (grove.eval.admission_friction). ADDITIVE-only
+# and APPROVABLE: the approval writes the ~/.grove admission overlay via the
+# sanctioned set_admission_overlay writer. payload identity is
+#   {"record": <governing_record>, "verb": "add_intents"|"force_always",
+#    "add_intents": [<intent>]}  (force_always omits add_intents)
+# — the evidence_block (recurrence arms) rides identity-EXCLUDED fields.
+PROPOSAL_TYPE_ADMISSION_FRICTION = "admission_friction"
 # Verb affordances per proposal type. The portal iterates this to render action
 # buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
 # to the iterator — the shape is deliberately open. The generic fleet type
