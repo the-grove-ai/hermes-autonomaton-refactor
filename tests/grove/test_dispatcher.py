@@ -529,16 +529,31 @@ class TestClassifyOneIntentHierarchicalBridge:
             get_hermes_home() / "skills" / "productivity"
             / "google-workspace" / "scripts" / "calendar_read.py"
         )
+        # GRV-010 C1a — classification is now by AST effect (grove/shell_effects.py),
+        # not the regex hierarchical rule. A bare script under ~/.grove/skills/ (a
+        # promoted skill) classifies GREEN, by effect.
         intent = ToolIntent(
+            tool_name="terminal",
+            arguments={"command": f"python3 {script}"},
+        )
+        result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
+        assert result.zone == "green"
+        assert result.source == "shell_effect"
+
+        # read-only-compound-green-relief-v1 Phase 1 — a leading env-prefix
+        # assignment (here the historical ``GAPI=/tmp/key.json`` credential prefix)
+        # is an execution vector the AST cannot vet, so its PRESENCE now floors the
+        # node to YELLOW even for a promoted skill. Supersedes the pre-sprint GREEN
+        # for the env-prefixed invocation form.
+        env_prefixed_intent = ToolIntent(
             tool_name="terminal",
             arguments={"command": f"GAPI=/tmp/key.json python3 {script}"},
         )
-        result = Dispatcher._classify_one_intent(intent, _grove_dispatch)
-        # GRV-010 C1a — classification is now by AST effect (grove/shell_effects.py),
-        # not the regex hierarchical rule. A script under ~/.grove/skills/ (a
-        # promoted skill) still classifies GREEN, by effect.
-        assert result.zone == "green"
-        assert result.source == "shell_effect"
+        env_result = Dispatcher._classify_one_intent(
+            env_prefixed_intent, _grove_dispatch,
+        )
+        assert env_result.zone == "yellow"
+        assert env_result.source == "shell_effect"
 
     def test_sudo_command_classifies_red_via_hierarchical_rule(self):
         # The terminal hierarchical entry encodes sudo/su/doas as red

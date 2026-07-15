@@ -167,22 +167,33 @@ def _walk(node: object, ctx: _Ctx, pipe_stage: int = 0) -> None:
 _INPUT_FEED_REDIRECTS = frozenset({"<", "<<", "<<<"})
 
 
-def _extract_command(node: object) -> Tuple[List[str], List[str], bool]:
-    """Return (argv words, output-redirect targets, has_input_feed) for one
-    CommandNode.
+def _extract_command(node: object) -> Tuple[List[str], List[str], bool, bool]:
+    """Return (argv words, output-redirect targets, has_input_feed,
+    has_env_assignment) for one CommandNode.
 
     Output redirects (``>`` / ``>>`` / ``&>`` …) yield target words for the
     governed-write check. Input-feed redirects (``<`` / ``<<`` / ``<<<``) set
     *has_input_feed* — a herestring or file fed to stdin is opaque (C3a),
     classified RED regardless of receiver (no allowlist).
+
+    *has_env_assignment* (read-only-compound-green-relief-v1 Phase 1) is True when
+    the node carries a shell-level leading ``NAME=val`` assignment prefix. bashlex
+    tags these ``kind == "assignment"`` — a DISTINCT node from a ``word``, so they
+    never enter *argv* (and so ``_strip_env`` over *argv* cannot see them). Their
+    PRESENCE floors the node to YELLOW (an execution-vector prefix the AST cannot
+    vet); the value is never inspected. The ``env`` binary's ``VAR=val`` argument,
+    by contrast, arrives as a ``word`` and is caught in ``_resolve_leaf``.
     """
     argv: List[str] = []
     redirects: List[str] = []
     has_input_feed = False
+    has_env_assignment = False
     for part in getattr(node, "parts", []) or []:
         pkind = getattr(part, "kind", None)
         if pkind == "word":
             argv.append(part.word)
+        elif pkind == "assignment":
+            has_env_assignment = True
         elif pkind == "redirect":
             rtype = getattr(part, "type", None)
             if rtype in _INPUT_FEED_REDIRECTS:
@@ -192,7 +203,7 @@ def _extract_command(node: object) -> Tuple[List[str], List[str], bool]:
             word = getattr(out, "word", None) if out is not None else None
             if word:
                 redirects.append(word)
-    return argv, redirects, has_input_feed
+    return argv, redirects, has_input_feed, has_env_assignment
 
 
 def _is_assignment(token: str) -> bool:
@@ -421,29 +432,46 @@ def _strip_wrapper(exe: str, rest: List[str]) -> Tuple[Optional[List[str]], Opti
 
 def _resolve_leaf(
     argv: List[str], depth: int = 0, dynamic: bool = False,
-) -> Tuple[Optional[List[str]], Optional[str], bool]:
+    env_prefixed: bool = False,
+) -> Tuple[Optional[List[str]], Optional[str], bool, bool]:
     """Recurse execution-modifier wrappers to the ultimate leaf argv.
 
-    Returns (leaf_argv, None, dynamic) or (None, red_signature, dynamic). The
-    *dynamic* flag rides along — set once an ``xargs`` is crossed (the leaf's
-    operands then come from stdin, not statically bounded). NEVER returns the
-    wrapper's own classification.
+    Returns (leaf_argv, None, dynamic, env_prefixed) or
+    (None, red_signature, dynamic, env_prefixed). The *dynamic* flag rides along —
+    set once an ``xargs`` is crossed (the leaf's operands then come from stdin, not
+    statically bounded). *env_prefixed* rides along too
+    (read-only-compound-green-relief-v1 Phase 1) — set once an ``env`` wrapper
+    carrying a ``NAME=val`` assignment operand is crossed: that assignment is an
+    execution-vector prefix (LD_PRELOAD / BASH_ENV / …) the AST cannot vet, so the
+    caller floors the node to YELLOW. PRESENCE only — the value is never inspected.
+    NEVER returns the wrapper's own classification.
     """
     if depth > MAX_WRAPPER_DEPTH:
-        return None, "opacity:wrapper-depth", dynamic
+        return None, "opacity:wrapper-depth", dynamic, env_prefixed
     if not argv:
-        return None, "opacity:wrapper-empty", dynamic
+        return None, "opacity:wrapper-empty", dynamic, env_prefixed
     exe = _basename(argv[0])
     if exe not in _WRAPPERS:
-        return argv, None, dynamic  # leaf reached
-    operand, err = _strip_wrapper(exe, argv[1:])
+        return argv, None, dynamic, env_prefixed  # leaf reached
+    rest = argv[1:]
+    operand, err = _strip_wrapper(exe, rest)
     if err is not None:
-        return None, err, dynamic
+        return None, err, dynamic, env_prefixed
+    if exe == "env":
+        # An ``env`` wrapper that consumed a NAME=val assignment operand is an
+        # execution-vector prefix. Detect PRESENCE only (never inspect the value):
+        # any consumed token ahead of the operand that parses as an assignment,
+        # or a split-string (``env -S``) whose first token is one.
+        consumed = rest[: len(rest) - len(operand)] if len(operand) <= len(rest) else rest
+        if any(_is_assignment(t) for t in consumed) or (
+            operand and _is_assignment(operand[0])
+        ):
+            env_prefixed = True
     if exe == "xargs":
         dynamic = True
     if not _is_literal_command_word(operand[0]):
-        return None, "opacity:wrapper-dynamic", dynamic
-    return _resolve_leaf(operand, depth + 1, dynamic)
+        return None, "opacity:wrapper-dynamic", dynamic, env_prefixed
+    return _resolve_leaf(operand, depth + 1, dynamic, env_prefixed)
 
 
 def _is_andon_wrapper_sig(sig: str) -> bool:
@@ -655,30 +683,46 @@ def _classify_find(rest: List[str]) -> Tuple[str, str]:
 
 def _classify_node(node: object, pipe_stage: int) -> Tuple[str, str]:
     """Classify ONE command node → (zone, effect-signature)."""
-    argv_raw, redirects, has_input_feed = _extract_command(node)
+    argv_raw, redirects, has_input_feed, has_env_assignment = _extract_command(node)
     # Input-stream opacity: a herestring / file fed to stdin is invisible to
     # static analysis → RED, regardless of receiver (no allowlist — awk
     # system(), sed `e` would re-open the bypass on the receiving side).
     if has_input_feed:
         return (_RED, "opacity:input-redirect")
-    return _classify_argv(argv_raw, pipe_stage, redirects)
+    return _classify_argv(
+        argv_raw, pipe_stage, redirects, env_assignment=has_env_assignment,
+    )
 
 
 def _classify_argv(
     argv_raw: List[str], pipe_stage: int, redirects: List[str],
-    dynamic_targets: bool = False,
+    dynamic_targets: bool = False, env_assignment: bool = False,
 ) -> Tuple[str, str]:
     """Classify a leaf argv (post-extraction). Recurses execution-modifier
     wrappers to the real leaf before classifying. *dynamic_targets* is True when
-    the operands arrive from stdin (xargs) and so are not statically bounded."""
+    the operands arrive from stdin (xargs) and so are not statically bounded.
+    *env_assignment* is True when the node carried a shell-level ``NAME=val``
+    assignment prefix (bashlex ``kind == "assignment"``, invisible to *argv_raw*);
+    read-only-compound-green-relief-v1 Phase 1 floors such a node to YELLOW."""
     argv = _strip_env(argv_raw)
+    # read-only-compound-green-relief-v1 Phase 1 — env-prefix detection. The inline
+    # shell prefix arrives as a bashlex ``assignment`` node (dropped before
+    # *argv_raw*), surfaced by _extract_command as *env_assignment*. The redundant
+    # ``_strip_env`` length check also catches an assignment WORD leading *argv_raw*
+    # (e.g. a find ``-exec`` token). Either way PRESENCE floors to YELLOW below; the
+    # value is never inspected. The ``env`` wrapper form is detected inside
+    # _resolve_leaf and OR-ed in after wrapper resolution.
+    env_prefixed = env_assignment or (len(argv) < len(argv_raw))
     if not argv:
         return (_YELLOW, "empty")
 
     # Wrapper recursion → resolve to the ultimate leaf (env/nice/timeout/xargs …).
-    leaf, red_sig, dynamic_targets = _resolve_leaf(argv, dynamic=dynamic_targets)
+    leaf, red_sig, dynamic_targets, env_wrapped = _resolve_leaf(
+        argv, dynamic=dynamic_targets,
+    )
     if red_sig is not None:
         return (_RED, red_sig)  # ANDON-WRAPPER (depth / flag / dynamic / no-operand)
+    env_prefixed = env_prefixed or env_wrapped
     argv = leaf
 
     full0 = argv[0]
@@ -740,7 +784,14 @@ def _classify_argv(
 
     # find — classify by its action flags (real effect), not blanket-mutator.
     if exe == "find":
-        return _classify_find(rest)
+        _zf, _sf = _classify_find(rest)
+        # read-only-compound-green-relief-v1 Phase 1 — the env-prefix disqualifier
+        # also covers find's read GREEN (``govread:find``): find is the sole GREEN
+        # site upstream of the main floor below, so gate it here. RED / YELLOW find
+        # outcomes are untouched (tighten-only).
+        if env_prefixed and _zf == _GREEN:
+            return (_YELLOW, _sf)
+        return (_zf, _sf)
 
     # Catastrophic delete.
     if exe == "rm" and _is_catastrophic_rm(rest):
@@ -760,6 +811,20 @@ def _classify_argv(
         for t in mutator_targets:
             if _classify_write_zone(t) == _RED:
                 return (_RED, f"govwrite:{exe}")
+
+    # read-only-compound-green-relief-v1 Phase 1 — env-prefix GREEN-disqualifier.
+    # A leading env-prefix assignment (inline ``NAME=val cmd`` or the ``env``
+    # wrapper form) is an execution vector the AST cannot vet (LD_PRELOAD /
+    # BASH_ENV / …). Its PRESENCE alone floors this node to YELLOW — the value is
+    # never inspected or allowlisted. Placed AFTER every RED check (tighten-only: a
+    # RED node stays RED) and BEFORE any GREEN promotion, so a single env-prefixed
+    # node also drags a compound off GREEN (most-restrictive-wins). Phase 2 owns
+    # the promotion/inheritance relief.
+    if env_prefixed:
+        sig = "argv:" + hashlib.sha1(
+            json.dumps(argv, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        return (_YELLOW, f"cmd:{exe}:{sig}")
 
     # Promoted-skill execution (GREEN/YELLOW by script).
     #   direct:        ~/.grove/skills/foo/run.py [args]
