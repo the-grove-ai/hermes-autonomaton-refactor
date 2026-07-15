@@ -93,3 +93,22 @@ ledger_retention:
   # this, the file rotates to .quarantine.1 (single generation) first.
   # Must be an integer >= 1. Default 1 MiB.
   sidecar_max_bytes: 1048576
+
+# operator-mutable-admission-v1 P4 — the admission_friction detector reads the
+# capability_refusals feed (~/.grove/.capability_refusals/refusals.jsonl) and,
+# when a tool is repeatedly refused for the same classified intent, proposes an
+# ADDITIVE admission-overlay edit (add the intent, or force_always:true for a
+# GREEN record refused across many intents). Approval writes ~/.grove only; the
+# repo definition is never touched. All keys must be integers >= 1.
+admission_friction:
+  # Minimum refusals of the same (governing_record, intent) arm, within
+  # window_days, before an add-intent proposal is armed.
+  friction_threshold: 3
+
+  # Rolling window, in days, over the refusals feed. Older refusals are ignored.
+  window_days: 30
+
+  # For a GREEN record ONLY: the number of DISTINCT intents (each over
+  # friction_threshold) that, once accrued, escalate the proposal from
+  # per-intent add-intent to a single force_always:true offer.
+  green_force_always_distinct_intents: 3

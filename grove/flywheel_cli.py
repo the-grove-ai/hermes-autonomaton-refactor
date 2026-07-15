@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import yaml
 
 from grove.eval.proposal_queue import (
+    PROPOSAL_TYPE_ADMISSION_FRICTION,
     PROPOSAL_TYPE_CONSOLIDATION,
     PROPOSAL_TYPE_DOCK_MUTATION,
     PROPOSAL_TYPE_FAULT_TRIAGE,
@@ -64,6 +65,7 @@ from grove.kaizen.rendering import (  # noqa: F401
     _OFFERING_PUSH_ASK,
     _OFFERING_PUSH_PREFIX,
     _VALID_SINK_NAMES,
+    _admission_friction_to_diff,
     _consolidation_to_diff,
     _diff_pattern_demotion,
     _diff_pattern_promotion,
@@ -76,6 +78,7 @@ from grove.kaizen.rendering import (  # noqa: F401
     _routing_adjustment_to_diff,
     _summary_consolidation,
     _summary_dock_mutation,
+    _summary_admission_friction,
     _summary_fault_triage,
     _summary_model_binding,
     _summary_forge_artifact_pending,
@@ -380,6 +383,41 @@ def run_fault_triage_scan(
     )
     proposals = detector.detect(now=now)
     target = queue_path or default_queue_path()
+    queued_new = deduped = 0
+    for proposal in proposals:
+        if _append(proposal, path=target):
+            queued_new += 1
+        else:
+            deduped += 1
+    return queued_new, deduped
+
+
+def run_admission_friction_scan(
+    *,
+    refusals_path: Optional[Path] = None,
+    tombstone_path: Optional[Path] = None,
+    config_path: Optional[Path] = None,
+    queue_path: Optional[Path] = None,
+    now: Optional[Any] = None,
+) -> Tuple[int, int]:
+    """Run the admission_friction producer over the capability_refusals feed and
+    queue its ``admission_friction`` proposals. operator-mutable-admission-v1 P4.
+
+    A fifth INDEPENDENT signal sharing the ``flywheel scan --propose`` cadence
+    (the fault-triage / binding-telemetry coexistence pattern — no coupled enable
+    flags). Idempotent per arm: identical evidence DEDUPS via
+    ``proposal_queue.append`` returning False; dismissal tombstones (~/.grove)
+    suppress re-filing per (record, intent). Returns ``(queued_new, deduped)``."""
+    from grove.eval.admission_friction import build_admission_friction_proposals
+    from grove.eval.proposal_queue import append as _append
+
+    target = queue_path or default_queue_path()
+    proposals = build_admission_friction_proposals(
+        refusals_path=refusals_path,
+        tombstone_path=tombstone_path,
+        config_path=config_path,
+        now=now,
+    )
     queued_new = deduped = 0
     for proposal in proposals:
         if _append(proposal, path=target):
@@ -1689,6 +1727,70 @@ def _reject_model_binding(proposal: RoutingProposal) -> None:
         )
 
 
+def _approve_admission_friction(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+) -> Tuple[Path, Dict[str, Any]]:
+    """Apply an admission_friction proposal — write the ADDITIVE overlay through
+    the ONE sanctioned writer (grove.capability_registry.set_admission_overlay).
+
+    The writer targets ``~/.grove/capabilities/state`` ONLY; the repo definition
+    is consulted read-only to validate the record id exists and is NEVER written.
+    There is no code route from here to ``config/capabilities/`` — repo-write is
+    structurally unreachable (operator-mutable-admission-v1 P4 invariant)."""
+    from grove.capability_registry import (
+        capability_state_dir,
+        set_admission_overlay,
+        _state_path_for_id,
+    )
+
+    payload = proposal.payload or {}
+    record = payload.get("record")
+    verb = payload.get("verb")
+    if not isinstance(record, str) or not record.strip():
+        raise ValueError(
+            f"admission_friction proposal {proposal.proposal_id} payload missing a "
+            f"non-empty record"
+        )
+    if verb == "add_intents":
+        intents = payload.get("add_intents") or []
+        status = set_admission_overlay(record, add_intents=list(intents))
+    elif verb == "force_always":
+        status = set_admission_overlay(record, force_always=True)
+    else:
+        raise ValueError(
+            f"admission_friction proposal {proposal.proposal_id}: unknown verb "
+            f"{verb!r} (only add_intents / force_always are additive)"
+        )
+    target = _state_path_for_id(record, capability_state_dir())
+    applied = {
+        "record": record,
+        "verb": verb,
+        "add_intents": payload.get("add_intents"),
+        "overlay_file": str(target),
+        "status": status,
+    }
+    return target, applied
+
+
+def _reject_admission_friction(proposal: RoutingProposal) -> None:
+    # operator-mutable-admission-v1 P4 — write the (record, intent) suppression
+    # tombstone to ~/.grove (durable across git reset). Tolerant like every
+    # reject_callback: a store-write failure logs loud and the rejection
+    # proceeds — the proposal may re-surface next scan and be re-rejected, never
+    # the reverse.
+    try:
+        from grove.eval.admission_friction import record_tombstone
+
+        record_tombstone(proposal)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[flywheel] could not record admission_friction tombstone for %s: %r",
+            proposal.proposal_id, exc,
+        )
+
+
 def _reject_pattern_promotion(proposal: RoutingProposal) -> None:
     # Sprint 48 — a rejected pattern is marked rejected in pattern_cache.db so
     # the scanner NEVER re-proposes the same pattern (3e). The compiled entry
@@ -1992,6 +2094,16 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         # until a MATERIAL change (new observed model / binding changed /
         # rubric bumped — the latter two structural via the key).
         reject_callback=_reject_model_binding,
+    ),
+    PROPOSAL_TYPE_ADMISSION_FRICTION: ProposalHandler(
+        summary_renderer=_summary_admission_friction,
+        diff_renderer=_admission_friction_to_diff,
+        apply_callback=_approve_admission_friction,
+        apply_label_prefix="Admission overlay applied: ",
+        # operator-mutable-admission-v1 P4 — rejection writes the (record, intent)
+        # suppression tombstone to ~/.grove (durable across git reset); the scan
+        # will not re-file that arm. A dismiss of (A, X) never suppresses (A, Y).
+        reject_callback=_reject_admission_friction,
     ),
     PROPOSAL_TYPE_ZONE_PROMOTION: ProposalHandler(
         summary_renderer=_summary_zone_promotion,
