@@ -27,7 +27,7 @@ from grove.fleet import runner
 from grove.fleet.cadence import cadence_due, in_quiet_hours
 from grove.fleet.config import WorkerConfig, load_fleet_workers
 from grove.fleet.errors import FleetWorkerAndon, OperatorActionRequired
-from grove.fleet.observability import surface_fleet_andon
+from grove.fleet.observability import surface_fleet_andon, surface_fleet_event
 from grove.fleet.reap import enforce_wall_clock, remove_pidfile
 from grove.fleet.resolvers import resolve_input_state
 from grove.fleet.runner import WorkerHandle
@@ -243,6 +243,20 @@ class FleetManager:
                 )
                 return
 
+            # forge-unattended-publish-v1 P2 — hard-AND gate at the fire-point.
+            # Conjunct 1 (mode == action_surface_publish) is already satisfied
+            # (checked above). Conjunct 2 is the operator's overlay-armed
+            # publication.unattended, read ONLY via publication_unattended_
+            # authorized — the merged Capability never carries the field. ARMED
+            # → fire the atomic Drive door directly and RETURN; the published
+            # event replaces the proposal. UN-ARMED (absent/false, the shipped
+            # default) → fall through to the existing proposal path, unchanged.
+            from grove.capability_registry import publication_unattended_authorized
+
+            if publication_unattended_authorized(skill_id) is True:
+                self._publish_unattended(wid, run_id, skill_id, event)
+                return
+
             row_id = event.get("row_id")
             fit_score = event.get("fit_score")
             payload = {
@@ -270,6 +284,96 @@ class FleetManager:
                 wid, run_id, f"failed to emit artifact proposal: {exc}",
                 check="artifact_emit_failed", loop=self._loop,
             )
+
+    def _publish_unattended(self, wid: str, run_id: str, skill_id: str, event: dict) -> None:
+        """forge-unattended-publish-v1 P2 — fire the atomic Drive door for an
+        ARMED forge worker's staged package, unattended.
+
+        DRIVE-ONLY (invariant 3): the door (``publish_application_package``)
+        never speaks to Notion; the status flip stays portal-owned. This branch
+        imports and calls NOTHING Notion/MCP — physical isolation.
+
+        Inputs (invariant 2): ``row_id`` is EVENT-sourced (the authoritative row
+        identity); ``company`` / ``role`` are untrusted LABELS from meta.json;
+        resume/cover are FIXED filenames jail-rooted in the staging slug dir. The
+        door SELF-ACQUIRES its OAuth token — no token is passed.
+
+        Outcomes: success (door returns a dict) → an operator-visible published
+        event carrying the Drive result, REPLACING the proposal. Failure
+        (PublishError / token-refresh error / partial state) → a LOUD Andon
+        carrying the partial state. No swallow, no proposal on failure.
+        """
+        from pathlib import Path
+
+        from hermes_constants import get_hermes_home
+        from grove.forge.resolve import ResolvedForgePackage, resolve_forge_package
+
+        slug = event.get("slug")  # non-empty (validated upstream)
+        row_id = event.get("row_id")
+        if not row_id:
+            surface_fleet_andon(
+                wid, run_id,
+                f"unattended publish aborted for {slug!r} — success event carries "
+                f"no row_id (the Drive/Notion row identity)",
+                check="publish_no_row_id", loop=self._loop,
+            )
+            return
+
+        resolved = resolve_forge_package(Path(get_hermes_home()), slug)
+        if not isinstance(resolved, ResolvedForgePackage):
+            surface_fleet_andon(
+                wid, run_id,
+                f"unattended publish aborted for {slug!r} — cannot resolve staged "
+                f"package: {resolved.reason}",
+                check=f"publish_unresolved_{resolved.kind}", loop=self._loop,
+            )
+            return
+
+        from grove.forge import publish_application_package
+        from grove.forge.publish import PublishError
+
+        try:
+            result = publish_application_package(
+                str(row_id),
+                resolved.company,
+                resolved.role,
+                resolved.resume_path,
+                resolved.cover_path,
+            )
+        except PublishError as exc:
+            surface_fleet_andon(
+                wid, run_id,
+                f"unattended Drive publish FAILED for {slug!r}: {exc}",
+                check="publish_failed", loop=self._loop,
+                extra={"partial_state": getattr(exc, "partial_state", None)},
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 — token/RefreshError/etc — loud, never swallowed
+            surface_fleet_andon(
+                wid, run_id,
+                f"unattended Drive publish ERRORED for {slug!r}: {exc!r}",
+                check="publish_error", loop=self._loop,
+            )
+            return
+
+        surface_fleet_event(
+            wid, run_id,
+            f"published {slug!r} to Drive unattended "
+            f"({result.get('status')}): {result.get('folder_link')}",
+            event="fleet_published", loop=self._loop,
+            extra={
+                "skill_id": skill_id,
+                "slug": slug,
+                "row_id": str(row_id),
+                "status": result.get("status"),
+                "folder_id": result.get("folder_id"),
+                "folder_link": result.get("folder_link"),
+            },
+        )
+        logger.info(
+            "[fleet.manager] unattended publish OK for %s (status=%s, folder=%s)",
+            slug, result.get("status"), result.get("folder_link"),
+        )
 
     # ── dispatch ───────────────────────────────────────────────────────────────
 
