@@ -298,3 +298,15 @@ class TestCompoundReadInheritanceGreen:
         # LOAD-BEARING: a benign-sink-only write (2>/dev/null) is NOT a mutation,
         # so a benign-sink read node stays GREEN-eligible inside a compound.
         assert C(f"cat {grove_home / 'x'} 2>/dev/null | head").zone == "green"
+
+    def test_dev_urandom_source_stays_yellow(self, grove_home):
+        # An out-of-scope device source (/dev/urandom) is not GREEN-eligible, so
+        # the downstream reader cannot inherit — the compound stays YELLOW.
+        assert C("cat /dev/urandom | sort").zone == "yellow"
+
+    def test_env_prefix_single_node_read_is_yellow(self, grove_home):
+        # Phase 1 floor, pinned in the acceptance surface: an env-prefix demotes an
+        # otherwise-GREEN in-scope single-node read to YELLOW (execution-vector).
+        # (SPEC lists ``LD_PRELOAD=/tmp/evil.so ls ~/.grove/config``; the fixture's
+        # grove_home stands in for ~/.grove so the would-be-GREEN read is hermetic.)
+        assert C(f"LD_PRELOAD=/tmp/evil.so ls {grove_home / 'config'}").zone == "yellow"
