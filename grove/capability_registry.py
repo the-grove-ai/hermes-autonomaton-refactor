@@ -43,6 +43,8 @@ __all__ = [
     "CapabilityLoadError",
     "default_capabilities_dir",
     "capability_state_dir",
+    "read_admission_overlay",
+    "set_admission_overlay",
     "set_model_binding",
     "load_capabilities",
     "transition_record",
@@ -129,7 +131,10 @@ def capability_state_dir() -> Path:
 # record SELECTOR (identity, not state). ANY key outside these sets makes the
 # state file invalid → R-B1 fallback (drop STATE, keep pure definition, loud).
 _STATE_TOP_KEYS: FrozenSet[str] = frozenset(
-    {"id", "model_binding", "lifecycle", "lineage"}
+    {"id", "model_binding", "lifecycle", "lineage",
+     # operator-mutable-admission-v1 P1 — ADDITIVE admission keys. Read per-turn
+     # at the builder (grove.context_budget), NOT applied by _compose_state.
+     "added_intents", "force_always"}
 )
 _STATE_LIFECYCLE_KEYS: FrozenSet[str] = frozenset(
     {"state", "pinned", "use_count", "last_used"}
@@ -176,6 +181,17 @@ def _read_state_file(path: Path) -> "tuple[str, Dict[str, Any]]":
         bad = set(ln) - _STATE_LINEAGE_KEYS
         if bad:
             raise _StateFileInvalid(f"unknown lineage key(s) {sorted(bad)}")
+    # operator-mutable-admission-v1 P1 — ADDITIVE admission keys, shape-checked
+    # here so a malformed value is the R-B1 signal (caller falls back to the pure
+    # definition; per-turn reader logs an Andon warning and applies no additions).
+    ai = doc.get("added_intents")
+    if ai is not None and (
+        not isinstance(ai, list) or not all(isinstance(x, str) for x in ai)
+    ):
+        raise _StateFileInvalid("'added_intents' must be a list of strings")
+    fa = doc.get("force_always")
+    if fa is not None and not isinstance(fa, bool):
+        raise _StateFileInvalid("'force_always' must be a boolean")
     return rid, doc
 
 
@@ -248,6 +264,154 @@ def _compose_state_overlay(records: Dict[str, Capability]) -> None:
             # records[rid] retains the pre-merge pure-definition Capability.
 
 
+# ── operator-mutable-admission-v1 P1 — additive admission overlay (per-turn) ──
+
+
+def read_admission_overlay(
+    state_dir: Optional[Path] = None,
+) -> "Dict[str, tuple[FrozenSet[str], bool]]":
+    """The ADDITIVE admission overlay, read FRESH on every call (no cache).
+
+    Returns ``{record_id: (frozenset(added_intents), force_always_bool)}`` for
+    every state file that declares at least one additive admission key. The
+    builder (``grove.context_budget``) calls this per resolution so an operator
+    (or Kaizen) edit takes effect on the NEXT turn with no restart — the
+    deploy-immune sovereignty seam for admission.
+
+    Read-resilient (I2): a torn / mis-keyed / mistyped file logs ONE Andon
+    warning and is SKIPPED — that record simply gets no additions and falls back
+    to its repo definition. Never raises, never returns partial garbage. Because
+    the merge is additive-only, a skipped record can only ever *keep* the repo
+    surface, never shrink it. Absent dir → empty map (fresh install)."""
+    sd = Path(state_dir) if state_dir is not None else capability_state_dir()
+    out: Dict[str, tuple[FrozenSet[str], bool]] = {}
+    if not sd.is_dir():
+        return out
+    for path in sorted(sd.glob("*.yaml")):
+        try:
+            rid, doc = _read_state_file(path)
+        except _StateFileInvalid as exc:
+            logger.warning(
+                "[grove.capability_registry] admission overlay file %s is invalid "
+                "(%s) — that record falls back to its repo definition; no "
+                "additions applied.", path, exc,
+            )
+            continue
+        added = doc.get("added_intents") or []
+        force = doc.get("force_always") is True
+        if not added and not force:
+            continue  # a pure model_binding/lifecycle state file — no admission keys
+        out[rid] = (frozenset(added), force)
+    return out
+
+
+def set_admission_overlay(
+    cap_id: str,
+    *,
+    add_intents: Optional[List[str]] = None,
+    force_always: Optional[bool] = None,
+    directory: Optional[Path] = None,
+    state_dir: Optional[Path] = None,
+) -> str:
+    """The SOLE sanctioned writer for the additive admission overlay (P1).
+
+    UNIONs *add_intents* into the record's ``added_intents`` and/or sets
+    ``force_always: true`` on the record's ``~/.grove/capabilities/state`` file,
+    preserving any Capability-state keys (model_binding / lifecycle / lineage)
+    already in that file. Same lock + atomic + ``.bak`` discipline as the other
+    state writers.
+
+    WRITE-STRICT (fail loud): rejects a non-list *add_intents*, a non-str intent,
+    any *force_always* other than ``True`` (additive-only — a default is removed
+    by editing the repo definition, never by operator state), and a no-op call.
+    Raises :class:`CapabilityLoadError` when no definition carries *cap_id*.
+
+    Returns ``"applied"`` or ``"deferred"`` (lock contended — caller retries)."""
+    if add_intents is not None and (
+        not isinstance(add_intents, list)
+        or not all(isinstance(x, str) for x in add_intents)
+    ):
+        raise ValueError(
+            "set_admission_overlay: add_intents must be a list of strings"
+        )
+    if force_always is not None and force_always is not True:
+        raise ValueError(
+            "set_admission_overlay: force_always accepts only True — a default is "
+            "removed by editing the repo definition, never by operator state"
+        )
+    if not add_intents and force_always is None:
+        raise ValueError(
+            "set_admission_overlay: no-op — provide add_intents and/or "
+            "force_always=True"
+        )
+
+    if directory is not None:
+        search_dirs = [Path(directory)]
+    else:
+        search_dirs = [default_capabilities_dir(), grove_home_capabilities_dir()]
+    path = None
+    for d in search_dirs:
+        if d.is_dir():
+            path = _record_path_for_id(cap_id, d)
+            if path is not None:
+                break
+    if path is None:
+        raise CapabilityLoadError(
+            f"set_admission_overlay: no capability record with id {cap_id!r} in "
+            f"{[str(d) for d in search_dirs]}"
+        )
+
+    state_path = _state_path_for_id(cap_id, state_dir or capability_state_dir())
+
+    def _apply() -> str:
+        prior: Dict[str, Any] = {}
+        if state_path.exists():
+            try:
+                loaded = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    prior = loaded
+            except yaml.YAMLError:
+                prior = {}  # torn prior; .bak below retains the bytes
+        merged = dict(prior)
+        merged["id"] = cap_id
+        if add_intents:
+            existing = merged.get("added_intents")
+            if not isinstance(existing, list):
+                existing = []
+            merged["added_intents"] = sorted(
+                {x for x in existing if isinstance(x, str)} | set(add_intents)
+            )
+        if force_always is True:
+            merged["force_always"] = True
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        prior_bytes = state_path.read_bytes() if state_path.exists() else b""
+        if prior_bytes:
+            state_path.with_suffix(state_path.suffix + ".bak").write_bytes(prior_bytes)
+        _atomic_write_yaml(
+            state_path,
+            yaml.safe_dump(merged, sort_keys=False, allow_unicode=True),
+        )
+        return "applied"
+
+    if fcntl is None:  # pragma: no cover - non-POSIX best-effort
+        return _apply()
+
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(".yaml.lock")
+    fd = open(lock_path, "a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            return "deferred"
+        try:
+            return _apply()
+        finally:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+    finally:
+        fd.close()
+
+
 # ── state WRITE path (fleet-hygiene-sweep P2) ────────────────────────────
 #
 # The three runtime writers (set_model_binding / transition_record /
@@ -306,9 +470,25 @@ def _write_state_snapshot(cap: Capability, state_path: Path) -> bytes:
         state_path.with_suffix(state_path.suffix + ".bak").write_bytes(prior)
     import yaml as _yaml
 
+    snapshot = _state_snapshot_dict(cap)
+    # operator-mutable-admission-v1 P1 — carry the ADDITIVE admission keys forward.
+    # This writer owns only the Capability-state surface; it must NOT erase the
+    # operator's added_intents / force_always written by set_admission_overlay to
+    # the SAME state file (one sovereignty seam). A torn prior falls through to a
+    # Capability-only snapshot — the .bak retains the operator bytes for recovery.
+    if prior:
+        try:
+            prior_doc = _yaml.safe_load(prior)
+            if isinstance(prior_doc, dict):
+                for _k in ("added_intents", "force_always"):
+                    if _k in prior_doc:
+                        snapshot[_k] = prior_doc[_k]
+        except _yaml.YAMLError:
+            pass
+
     _atomic_write_yaml(
         state_path,
-        _yaml.safe_dump(_state_snapshot_dict(cap), sort_keys=False, allow_unicode=True),
+        _yaml.safe_dump(snapshot, sort_keys=False, allow_unicode=True),
     )
     return prior
 

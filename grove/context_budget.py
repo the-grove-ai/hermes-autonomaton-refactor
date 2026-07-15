@@ -444,6 +444,55 @@ def reset_caps_index_cache() -> None:
     _caps_index_cache = None
 
 
+def _effective_caps_index() -> List[tuple]:
+    """The cached repo projection with the ADDITIVE admission overlay merged in,
+    read PER TURN (operator-mutable-admission-v1 P1).
+
+    The repo projection (``_caps_index``) stays cached; the overlay is read fresh
+    on every call (``read_admission_overlay`` — small flat files, no cache) so an
+    operator/Kaizen edit takes effect on the next turn with no restart. Merge is
+    ADDITIVE-ONLY, applied here so ALL builder branches (always / intent /
+    complexity) see the merged values:
+
+        effective_intents = repo trigger.intents  ∪  added_intents
+        effective_always  = repo trigger.always  OR  force_always
+
+    Structurally cannot shrink the offered surface (union + OR only). An overlay
+    read failure logs and falls back to the repo-only projection — never raises
+    into admission, never empties the surface (I2)."""
+    base = _caps_index()
+    try:
+        from grove.capability_registry import read_admission_overlay
+        overlay = read_admission_overlay()
+    except Exception as exc:  # noqa: BLE001 — overlay I/O never breaks admission
+        logger.warning(
+            "[grove.context_budget] admission overlay read failed (%r) — "
+            "resolving with repo definitions only.", exc,
+        )
+        overlay = {}
+    if not overlay:
+        return base
+    merged: List[tuple] = []
+    for row in base:
+        cap_id, disclosure, always, intents, eligible, native_tools = row
+        add = overlay.get(cap_id)
+        if add is None:
+            merged.append(row)
+            continue
+        added_intents, force_always = add
+        merged.append(
+            (
+                cap_id,
+                disclosure,
+                always or force_always,
+                intents | added_intents,
+                eligible,
+                native_tools,
+            )
+        )
+    return merged
+
+
 def _registry_allowed_names(
     intent_class: Optional[str],
     complexity_signal: Optional[str],
@@ -476,7 +525,7 @@ def _registry_allowed_names(
     unknown = intent_class is None or intent_class == "unknown"
     cx_high = complexity_signal in ("complex", "novel")
     names: Set[str] = set()
-    for _cap_id, disclosure, always, intents, _eligible, native_tools in _caps_index():
+    for _cap_id, disclosure, always, intents, _eligible, native_tools in _effective_caps_index():
         # Precedence: complexity is checked BEFORE always. Some exploratory records
         # (browser_read, delegate_task) carry disclosure=complexity AND always=True;
         # complexity must win so they ride ONLY complex/novel turns, never every
