@@ -540,6 +540,23 @@ def cli_scan(
             )
         print()
 
+        # operator-mutable-admission-v1 P5 — the FIFTH independent signal, same
+        # coexistence pattern (no coupled enable flags): the admission_friction
+        # producer over the LIVE capability_refusals feed.
+        af_new, af_dup = run_admission_friction_scan(queue_path=queue_path)
+        if af_new or af_dup:
+            print(
+                f"Admission friction: queued {af_new} admission_friction "
+                f"proposal(s)"
+                + (f", {af_dup} already pending (deduped)" if af_dup else "")
+                + "."
+            )
+        else:
+            print(
+                "Admission friction: no recurring refusal meets the threshold."
+            )
+        print()
+
     from grove.eval.pattern_compiler import (
         scan_candidates, load_pattern_cache_config,
     )
@@ -1509,12 +1526,27 @@ def cli_maintain_retention(*, dry_run: bool = False) -> int:
         if not config.enabled:
             print("ledger retention disabled (ledger_retention.enabled: false)")
             return 0
-        report = run_retention(
+        # operator-mutable-admission-v1 P5 — ONE retention seam for ALL feeds. A
+        # thin per-dir entrypoint: run_retention (untouched) is called once for the
+        # default kaizen-ledger dir and once for the capability_refusals feed dir,
+        # with the SAME declarative knobs. Reports are summed for the print.
+        from grove.capability_refusals import refusals_dir as _refusals_dir
+
+        _kw = dict(
             retention_days=config.retention_days,
             cold_buffer_hours=config.cold_buffer_hours,
             batch_max_files=config.batch_max_files,
             dry_run=dry_run,
         )
+        report = run_retention(**_kw)
+        _refusals_report = run_retention(ledger_dir=_refusals_dir(), **_kw)
+        for _f in (
+            "files_total", "files_scanned", "files_skipped", "files_hot",
+            "files_rewritten", "files_moved", "lines_kept", "lines_pruned",
+            "lines_unparseable", "bytes_archived",
+        ):
+            setattr(report, _f, getattr(report, _f) + getattr(_refusals_report, _f))
+        report.file_reports.extend(_refusals_report.file_reports)
         header = (
             "PRUNE PLAN (dry run — nothing written)"
             if dry_run else "RETENTION RUN"
