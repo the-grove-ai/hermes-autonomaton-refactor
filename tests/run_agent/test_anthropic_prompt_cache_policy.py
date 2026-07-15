@@ -74,6 +74,33 @@ class TestOpenRouter:
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_qwen3_7_max_on_openrouter_caches_with_envelope_layout(self):
+        # Qwen REQUIRES explicit cache_control (it does NOT auto-cache), and
+        # OpenRouter's Qwen route accepts the markers. Without this a qwen/* tier
+        # bound via provider=openrouter served 0% cache hits and re-billed the
+        # full prompt every turn. (Covers the exact catalog model.)
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="qwen/qwen3.7-max",
+        )
+        should, native = agent._anthropic_prompt_cache_policy()
+        assert should is True
+        assert native is False  # OpenRouter envelope layout
+
+    def test_grok_on_openrouter_does_not_inject_cache_control(self):
+        # Grok auto-caches server-side; the repo must NOT inject cache_control
+        # (it reads cached_tokens from the response instead). Guards the qwen
+        # branch from over-matching.
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="x-ai/grok-4.5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
 
 class TestThirdPartyAnthropicGateway:
     """Third-party gateways speaking the Anthropic protocol (MiniMax, Zhipu GLM, LiteLLM)."""
@@ -246,16 +273,20 @@ class TestQwenAlibabaFamily:
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
-    def test_qwen_on_openrouter_not_affected(self):
-        # Qwen via OpenRouter falls through — OpenRouter has its own
-        # upstream caching arrangement for Qwen (provider-dependent).
+    def test_qwen_on_openrouter_caches_with_envelope_layout(self):
+        # Qwen via OpenRouter injects cache_control (envelope layout): Qwen does
+        # NOT auto-cache and OpenRouter's Qwen route accepts the markers — the
+        # same upstream the Nous-Portal path below proxies to. The prior
+        # "OpenRouter has its own upstream arrangement (provider-dependent)"
+        # assumption was stale: passing markers is harmless where a backend
+        # already caches and load-bearing where it doesn't.
         agent = _make_agent(
             provider="openrouter",
             base_url="https://openrouter.ai/api/v1",
             api_mode="chat_completions",
             model="qwen/qwen3-coder",
         )
-        assert agent._anthropic_prompt_cache_policy() == (False, False)
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
     def test_qwen_on_nous_portal_caches_with_envelope_layout(self):
         # Nous Portal Qwen takes the same envelope-layout cache_control
