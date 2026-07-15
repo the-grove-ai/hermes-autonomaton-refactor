@@ -4731,14 +4731,15 @@ class AIAgent:
             return True, True
         if (is_openrouter or is_nous_portal) and is_claude:
             return True, False
-        # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
-        # cache_control path as Portal Claude. Portal proxies to OpenRouter
-        # and the upstream Qwen route accepts cache_control markers; without
-        # this branch the alibaba-family check below only matches
-        # provider=opencode/alibaba and Portal traffic falls through to
-        # (False, False), serving 0% cache hits and re-billing the full
-        # prompt on every turn.
-        if is_nous_portal and "qwen" in model_lower:
+        # OpenRouter / Nous Portal Qwen (e.g. qwen3.7-max, qwen3.6-plus) takes
+        # the same envelope-layout cache_control path as Portal/OpenRouter Claude
+        # — both proxy to OpenRouter and the upstream Qwen route accepts
+        # cache_control markers. Qwen does NOT auto-cache, so without this branch
+        # the alibaba-family check below only matches provider=opencode/alibaba,
+        # and a qwen/* binding via provider=openrouter (or Portal) falls through
+        # to (False, False), serving 0% cache hits and re-billing the full prompt
+        # every turn.
+        if (is_openrouter or is_nous_portal) and "qwen" in model_lower:
             return True, False
         if is_anthropic_wire and is_claude:
             # Third-party Anthropic-compatible gateway.
