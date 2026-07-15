@@ -998,6 +998,7 @@
     "video_generate",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -1051,6 +1052,7 @@
     "todo",
     "video_generate",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -1123,6 +1125,7 @@
     "video_generate",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -1176,6 +1179,7 @@
     "todo",
     "video_generate",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -1747,6 +1751,7 @@
     "video_analyze",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -1811,6 +1816,7 @@
     "terminal",
     "todo",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -1894,6 +1900,7 @@
     "video_analyze",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -1958,6 +1965,7 @@
     "terminal",
     "todo",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -5220,6 +5228,7 @@
     "video_generate",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -5273,6 +5282,7 @@
     "todo",
     "video_generate",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -5345,6 +5355,7 @@
     "video_generate",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -5398,6 +5409,7 @@
     "todo",
     "video_generate",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -5969,6 +5981,7 @@
     "video_analyze",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -6033,6 +6046,7 @@
     "terminal",
     "todo",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -6116,6 +6130,7 @@
     "video_analyze",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -6180,6 +6195,7 @@
     "terminal",
     "todo",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -9442,6 +9458,7 @@
     "video_generate",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -9495,6 +9512,7 @@
     "todo",
     "video_generate",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -9567,6 +9585,7 @@
     "video_generate",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -9620,6 +9639,7 @@
     "todo",
     "video_generate",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -10191,6 +10211,7 @@
     "video_analyze",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -10255,6 +10276,7 @@
     "terminal",
     "todo",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -10338,6 +10360,7 @@
     "video_analyze",
     "vision_analyze",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
@@ -10402,6 +10425,7 @@
     "terminal",
     "todo",
     "web_extract",
+    "web_search",
     "write_file",
     "x_search"
   ],
