@@ -76,7 +76,7 @@ def _ledger_event_types(home: Path) -> set:
 def spies(monkeypatch):
     """Spy on the door, the two outcome surfaces, the proposal filer, and the
     Notion-bearing portal wrapper (must never be reached from the loop)."""
-    calls = {"door": [], "event": [], "andon": [], "proposal": [], "portal_core": []}
+    calls = {"door": [], "andon": [], "proposal": [], "portal_core": []}
 
     def door(row_id, company, role, resume_path, cover_path, **kw):
         calls["door"].append(
@@ -87,10 +87,6 @@ def spies(monkeypatch):
                 "folder_id": "FOLDER-1", "folder_link": "https://drive/FOLDER-1"}
 
     monkeypatch.setattr("grove.forge.publish_application_package", door)
-    monkeypatch.setattr(
-        manager_mod, "surface_fleet_event",
-        lambda *a, **k: calls["event"].append((a, k)) or {"surfaced": True},
-    )
     monkeypatch.setattr(
         manager_mod, "surface_fleet_andon",
         lambda *a, **k: calls["andon"].append((a, k)) or {"surfaced": True},
@@ -123,7 +119,7 @@ def test_armed_success_full_coherence(grove_home, spies):
     assert d["row_id"] == "ROW-1"
     assert (d["company"], d["role"]) == ("Acme", "PM")
     assert d["resume_path"] == str((slug_dir / "resume.md").resolve())
-    assert d["kw"] == {}  # door self-acquires token; nothing extra passed
+    assert d["kw"] == {"operator_initiated": False}  # I4 — honest provenance (door still self-acquires its token)
 
     # Mechanism 3 — canonicalized + staged dir archived → renders promoted (rule 1).
     canon = grove_home / "forge" / "s1"
@@ -139,9 +135,23 @@ def test_armed_success_full_coherence(grove_home, spies):
     assert pubs[0]["provenance"] == "publication.unattended"
     assert pubs[0]["unit_id"] == "ROW-1"
 
-    # Info event carries the door's folder_link (the operator's clickable link).
-    assert len(spies["event"]) == 1
-    assert spies["event"][0][1]["extra"]["folder_link"] == "https://drive/FOLDER-1"
+    # I1 — the per-publish ping is retired; the operator surface is now the
+    # windowed digest (report-on-change over the durable feed). The fresh publish
+    # reports ONCE as 'published' (new); a later 'exists' re-audit of the SAME
+    # unit is SUPPRESSED — the anti-flood core (N unchanged re-runs must not be N
+    # pings). loop=None → return-only, no broadcast.
+    from grove.fleet.digest import emit_publish_digest
+    assert emit_publish_digest() == {
+        "emitted": True, "new": 1, "updated": 0, "window": 1}
+    with (grove_home / "memory_records.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "__type__": "FleetPublishedUnattended", "event_id": "evt-exists",
+            "timestamp": "2026-07-16T00:00:00+00:00", "unit_id": "ROW-1",
+            "slug": "s1", "producer": SKILL_ID, "sink": "forge",
+            "folder_link": "https://drive/FOLDER-1", "folder_id": "FOLDER-1",
+            "provenance": "publication.unattended", "canonical_files": [],
+            "status": "exists"}) + "\n")
+    assert emit_publish_digest()["emitted"] is False
 
     # NO kaizen_disposition; NO proposal; NO Notion/portal-core; NO Andon.
     assert "kaizen_disposition" not in _ledger_event_types(grove_home)
@@ -170,7 +180,6 @@ def test_armed_publish_ok_canonicalize_fails_andons_with_link(grove_home, spies,
     assert kw.get("check") == "publish_canonicalize_failed"
     assert kw.get("extra", {}).get("folder_link") == "https://drive/FOLDER-1"
     # No misleading success info event over stuck local state; no audit either.
-    assert spies["event"] == []
     assert [e for e in _read_memory_events(grove_home)
             if e.get("__type__") == "FleetPublishedUnattended"] == []
 
@@ -200,7 +209,6 @@ def test_armed_audit_emit_failure_is_surfaced_not_swallowed(grove_home, spies, m
     assert kw.get("check") == "publish_audit_emit_failed"
     assert kw.get("extra", {}).get("folder_link") == "https://drive/FOLDER-1"
     # The Andon replaces the success info event for this run.
-    assert spies["event"] == []
 
 
 def test_audit_event_is_unattended_provenance_not_a_disposition(grove_home, spies):
@@ -235,7 +243,6 @@ def test_armed_publish_error_fires_andon_with_partial_state(grove_home, spies, m
     _a, kw = spies["andon"][0]
     assert kw.get("check") == "publish_failed"
     assert kw.get("extra", {}).get("partial_state") == {"folder_id": "PARTIAL"}
-    assert spies["event"] == []
     # publish-FIRST: nothing was canonicalized (staged dir untouched).
     assert (grove_home / "forge" / "pending_review" / "s4").exists()
     assert not (grove_home / "forge" / "s4").exists()
@@ -260,7 +267,6 @@ def test_not_armed_absent_takes_proposal_path(grove_home, spies):
     _fire(_event("s6"))
 
     assert spies["door"] == []
-    assert spies["event"] == []
     assert len(spies["proposal"]) == 1
     assert spies["proposal"][0]["type"] == "forge_artifact_pending"
     # not armed → nothing canonicalized, staged dir intact.

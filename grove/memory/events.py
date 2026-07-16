@@ -159,6 +159,9 @@ class FleetPublishedUnattended:
     folder_id: Optional[str]            # the Drive folder id (door return)
     provenance: str                     # "publication.unattended" — grant, no operator act
     canonical_files: List[str]          # local canonical copies (mechanism 3)
+    status: Optional[str] = None        # door result.status ("published"/"exists");
+    #                                     None on legacy events (I1 additive enrich,
+    #                                     read-tolerant: absent → digest baselines once)
 
 
 MemoryEvent = Union[
