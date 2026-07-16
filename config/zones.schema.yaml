@@ -434,6 +434,13 @@ tool_zones:
   review_grants:                             green
   revoke_grant:                              yellow
 
+  # ── write-routing-coherence-v1 fix-part-3 — publication-autonomy grant ─────
+  # set_publication_state grants/revokes governance.publication.unattended into
+  # the deploy-immune ~/.grove/capabilities/state overlay (never the repo
+  # definition). Governance mutation → yellow so the Sovereign Prompt governs the
+  # arm/disarm; the operator's approval of that prompt IS the grant.
+  set_publication_state:                     yellow
+
   # ── GRV-001 Stage 04 — andon skill governance tools (andon_tool) ──────────
   # andon_list is read-only → green. promote/reject/revoke mutate sovereignty
   # state → red (scope-defining writes). Red + valid Grant Token = execute;
