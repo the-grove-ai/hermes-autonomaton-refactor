@@ -110,11 +110,36 @@ def _read_new_unattended(processed_count: int) -> Tuple[List[dict], int]:
 
 
 # ── fleet line template ──────────────────────────────────────────────────────
-def _fleet_portal_link() -> str:
+def _fleet_worker(events: List[dict]) -> Optional[str]:
+    """The DOMINANT worker (most-published producer) as its fleet-URL segment — the
+    ``producer`` skill_id's last dotted segment
+    (``skill.fleet.forge-jobsearch`` → ``forge-jobsearch``), which is exactly what
+    ``/portal/fragments/fleet/{skill_name}/`` resolves. Ties break deterministically
+    by name. Returns ``None`` when NO event carries a usable producer — so the caller
+    OMITS the link rather than ever emit a bare, dead ``fleet/`` (the I1 link bug)."""
+    counts: Dict[str, int] = {}
+    for ev in events:
+        producer = (ev.get("producer") or "").strip()
+        if not producer:
+            continue
+        worker = producer.rsplit(".", 1)[-1].strip()
+        if worker:
+            counts[worker] = counts.get(worker, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=lambda w: (counts[w], w))
+
+
+def _fleet_portal_link(worker: str) -> str:
+    """The per-worker fleet-inbox deep link ``{base}/portal#fragments/fleet/<worker>/``
+    — where the just-published units render with their chips + Drive links. NEVER the
+    bare ``fleet/`` trailing-slash form, which dead-ends on the cold-load Knowledge
+    default (the I1 link bug). ``worker`` is always non-empty (the caller omits the
+    link entirely when there is none), so the result is always a resolvable segment."""
     from grove.prompt.portal_links import resolve_portal_base_url
 
     base = (resolve_portal_base_url() or "").rstrip("/")
-    return f"{base}/portal#fragments/fleet/"
+    return f"{base}/portal#fragments/fleet/{worker}/"
 
 
 def _sink_label(events: List[dict]) -> str:
@@ -127,7 +152,7 @@ def _sink_label(events: List[dict]) -> str:
     return "Fleet"
 
 
-def _compose_line(label: str, m: int, k: int, link: str) -> str:
+def _compose_line(label: str, m: int, k: int, link: Optional[str] = None) -> str:
     def _items(n: int) -> str:
         return f"{n} item" if n == 1 else f"{n} items"
 
@@ -137,7 +162,10 @@ def _compose_line(label: str, m: int, k: int, link: str) -> str:
         body = f"published {_items(m)} to Drive unattended"
     else:  # k only
         body = f"updated {_items(k)} on Drive unattended"
-    return f"{label} {body} → {link}"
+    line = f"{label} {body}"
+    # Link is OPTIONAL: appended only when a resolvable per-worker link exists.
+    # A missing worker → NO link (never the bare, dead ``fleet/``).
+    return f"{line} → {link}" if link else line
 
 
 # ── node-local shown-state + watermark (sidecar; NEVER the durable log) ───────
@@ -245,7 +273,8 @@ def emit_publish_digest(*, loop: Optional[Any] = None) -> Dict[str, Any]:
         m, k = len(new_keys), len(changed_keys)
 
         if m or k:
-            link = _fleet_portal_link()
+            worker = _fleet_worker(events)
+            link = _fleet_portal_link(worker) if worker else None
             line = _compose_line(_sink_label(events), m, k, link)
             surface_fleet_digest(
                 line, loop=loop,
