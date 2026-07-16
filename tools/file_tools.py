@@ -942,15 +942,22 @@ def _verify_scope_defining_execution(tool_name: str, args: dict) -> None:
     executor's ``except Exception`` cannot swallow it) and the write does NOT
     execute. The realpath-canonical signature MISMATCH is the swap detector.
     """
-    from grove.utils.fs_utils import is_scope_defining, is_governed_path
+    from grove.utils.fs_utils import is_scope_defining, is_andon_quarantine
     # Composed predicate: a scope-defining authority file that is NOT the
-    # allowlisted authoring quarantine (~/.grove/skills/.andon/, carved out by
-    # is_governed_path). The file-tool path is the sanctioned authoring door, so
-    # .andon drafts are permitted here — unlike the shell path, which walls the
-    # whole skills tree with bare is_scope_defining. (Asymmetry is deliberate.)
+    # allowlisted authoring quarantine (~/.grove/skills/.andon/). The file-tool
+    # path is the sanctioned authoring door, so .andon drafts are permitted here
+    # — unlike the shell path, which walls the whole skills tree with bare
+    # is_scope_defining. (Asymmetry is deliberate.)
+    #
+    # write-routing-coherence-v1 fix-part-1 — the carve-out is now the intent-exact
+    # is_andon_quarantine, NOT is_governed_path. is_governed_path re-imposed the
+    # ~/.grove anchor; once is_scope_defining extended to the running-tree config/
+    # surfaces, that stale conjunct silently demoted a patch to
+    # <repo>/config/capabilities/*.yaml back to Yellow. is_andon_quarantine carves
+    # out ONLY .andon, so those definition writes now halt RED as intended.
     offending = next(
         (t for t in extract_write_targets(tool_name, args)
-         if is_scope_defining(t) and is_governed_path(t)),
+         if is_scope_defining(t) and not is_andon_quarantine(t)),
         None,
     )
     if offending is None:

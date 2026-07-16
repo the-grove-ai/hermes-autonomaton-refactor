@@ -4676,13 +4676,20 @@ class Dispatcher:
         if tool_name == "propose_governance_change" and isinstance(args, dict):
             from grove.zones import ZoneResult
             from tools.governance_tool import classify_governance_target
-            from grove.utils.fs_utils import is_scope_defining, is_governed_path
+            from grove.utils.fs_utils import is_scope_defining, is_andon_quarantine
             _gov_target = args.get("target_file")
             # routing-scope-wall-v1 R-W3 — a scope-defining target is RED through
             # this door too (coherent with Seam β + the shell path), superseding
             # the prior .env-only red. Composed predicate carves out the .andon
-            # authoring quarantine (is_governed_path), same as the other sites.
-            if is_scope_defining(_gov_target) and is_governed_path(_gov_target):
+            # authoring quarantine, same as the other sites.
+            #
+            # write-routing-coherence-v1 fix-part-1 — carve-out is the intent-exact
+            # is_andon_quarantine, NOT is_governed_path (retargeted off the stale
+            # ~/.grove-anchored conjunct — the LAST such composition). Behavior-
+            # identical for this door's valid targets (governance_tool confines it
+            # to ~/.grove, where is_governed_path ≡ not-andon); the change only
+            # removes the rot class that demoted running-tree config/ surfaces.
+            if is_scope_defining(_gov_target) and not is_andon_quarantine(_gov_target):
                 return ZoneResult(
                     zone="red",
                     matched_rule=f"scope_defining:{_gov_target}",
@@ -4769,14 +4776,20 @@ class Dispatcher:
         from tools.file_tools import extract_write_targets as _ewt
         from grove.utils.fs_utils import (
             is_scope_defining as _isd,
-            is_governed_path as _igp,
+            is_andon_quarantine as _iaq,
         )
         for _wt in _ewt(tool_name, args):
             # Composed predicate — scope-defining AND not the allowlisted authoring
-            # quarantine (~/.grove/skills/.andon/, carved out by is_governed_path).
-            # The file-tool door permits .andon drafts; the shell path (bare
-            # is_scope_defining) does not. Asymmetry is deliberate.
-            if _isd(_wt) and _igp(_wt):
+            # quarantine (~/.grove/skills/.andon/). The file-tool door permits
+            # .andon drafts; the shell path (bare is_scope_defining) does not.
+            # Asymmetry is deliberate.
+            #
+            # write-routing-coherence-v1 fix-part-1 — carve-out is the intent-exact
+            # is_andon_quarantine, NOT is_governed_path (which re-imposed the
+            # ~/.grove anchor and, once is_scope_defining extended to the running-
+            # tree config/ surfaces, silently demoted a patch to
+            # <repo>/config/capabilities/*.yaml to Yellow). Now it classifies RED.
+            if _isd(_wt) and not _iaq(_wt):
                 from grove.zones import ZoneResult
                 return ZoneResult(
                     zone="red",
