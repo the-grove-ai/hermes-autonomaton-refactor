@@ -880,6 +880,39 @@ def _ledger_slug_to_uid() -> Dict[str, str]:
     return out
 
 
+def _unattended_published_units(skill_id: str) -> set:
+    """``{slug, unit_id}`` for every ``FleetPublishedUnattended`` event this skill
+    produced — the provenance join that lets rule 1 distinguish an AUTONOMOUS
+    Drive publish (publication.unattended grant, no operator act) from an operator
+    promotion. Dual-key (P5 identity precedent, portal.py:1109-1115): rule 1's
+    canon ``uid`` for these units is the slug, but the event also carries the
+    row-id ``unit_id``, so BOTH identities enter the set. Read-only over the memory
+    event log (same direct-parse discipline as the ledger readers); a malformed or
+    absent log yields the empty set (no false distinction, never a crash)."""
+    log = Path(get_hermes_home()) / "memory_records.jsonl"
+    out: set = set()
+    if not log.is_file():
+        return out
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("__type__") != "FleetPublishedUnattended":
+            continue
+        if ev.get("producer") != skill_id:
+            continue
+        for key in ("slug", "unit_id"):
+            val = ev.get(key)
+            if val:
+                out.add(val)
+    return out
+
+
 def _reverse_pattern(filename: str, pattern: str) -> str:
     """Recover a unit_id from a flat canonical filename by stripping the
     ``terminal_artifact`` pattern's fixed prefix/suffix (the ``*`` is the unit_id):
@@ -909,7 +942,8 @@ def _unit_from_meta(meta_path: Path, dirname: str) -> str:
 
 
 def _resolve_unit_state(uid, producer, staged, canon, feedback, open_props,
-                        ledger, remote_sink, autoclose) -> Optional[dict]:
+                        ledger, remote_sink, unattended_published,
+                        autoclose) -> Optional[dict]:
     """Resolve ONE unit to its four-state governance_state + payload, applying
     topological supremacy (filesystem-first) and the sink-authority rule, and
     queuing any out-of-band proposal auto-close. Returns the artifact payload dict
@@ -971,7 +1005,14 @@ def _resolve_unit_state(uid, producer, staged, canon, feedback, open_props,
                     if p.is_dir() else p.stat().st_size)
         except FileNotFoundError:
             size = None  # vanished mid-read (purge race) — row survives
-        return row("promoted", mt, filename=fn, size=size)
+        # I2 (unattended-publish-legibility-v1) — the additive provenance join.
+        # An unattended Drive publish canonicalizes locally (manager
+        # _canonicalize_and_archive) so it resolves 'promoted' HERE via rule 1;
+        # where the FleetPublishedUnattended set marks this unit, it renders the
+        # DISTINCT 'published' chip instead. The operator-promoted ledger path
+        # (rule 2) is untouched; no event → 'promoted' exactly as before.
+        state = "published_unattended" if uid in unattended_published else "promoted"
+        return row(state, mt, filename=fn, size=size)
 
     # (2) Remote-publish sink (forge) — ledger authoritative for the terminal; the
     #     staged dir may linger post-publish, so the ledger wins over it.
@@ -1029,6 +1070,12 @@ def _list_fleet_units(cap: Any) -> list:
     open_props = _open_artifact_proposals(skill_id)
     feedback = _feedback_units(worker)
     ledger = _ledger_terminal_dispositions() if remote_sink else {}
+    # I2 — the provenance join set (remote sink only; forge is the sole producer
+    # of FleetPublishedUnattended). Dual-keyed on slug + unit_id so it matches
+    # rule 1's canon uid regardless of which identity the join resolves.
+    unattended_published = (
+        _unattended_published_units(skill_id) if remote_sink else set()
+    )
 
     # staged units — nested pending_review/<unit>/meta.json (C1b-2), plus any flat
     # legacy files (grandfathered pre-nesting).
@@ -1127,7 +1174,8 @@ def _list_fleet_units(cap: Any) -> list:
     rows = []
     for uid in uids:
         rec = _resolve_unit_state(uid, producer, staged, canon, feedback,
-                                  open_props, ledger, remote_sink, autoclose)
+                                  open_props, ledger, remote_sink,
+                                  unattended_published, autoclose)
         if rec is not None:
             rows.append(rec)
 
