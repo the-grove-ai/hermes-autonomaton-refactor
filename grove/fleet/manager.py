@@ -347,6 +347,7 @@ class FleetManager:
                 resolved.role,
                 resolved.resume_path,
                 resolved.cover_path,
+                operator_initiated=False,  # I4 — honest provenance: unattended ticker
             )
         except PublishError as exc:
             surface_fleet_andon(

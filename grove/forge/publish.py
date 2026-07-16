@@ -175,6 +175,7 @@ def publish_application_package(
     resume_path: str,
     cover_letter_path: str,
     *,
+    operator_initiated: bool = True,
     gapi: Optional[GapiFn] = None,
     audit_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -183,7 +184,9 @@ def publish_application_package(
     Args mirror the locked contract; ``gapi`` and ``audit_path`` are keyword-only
     testability seams with production defaults (the real ``_run_gapi`` adapter and
     ``$GROVE_HOME/forge/published.jsonl``) — they do not change the single-door
-    shape.
+    shape. ``operator_initiated`` records the calling door's REAL provenance in the
+    audit line (``True`` = operator's Publish tap, ``False`` = unattended ticker);
+    it defaults ``True`` so the operator path stays byte-identical.
 
     Returns one of:
       * ``{"status": "exists", "created": False, "row_id", "folder_id",
@@ -272,7 +275,7 @@ def publish_application_package(
         }
 
     audit = {
-        "operator_initiated": True,
+        "operator_initiated": operator_initiated,
         "row_id": row_id,
         "company": company,
         "role": role,
