@@ -1,0 +1,79 @@
+# publication_grant_write.yaml — in-conversation publication-autonomy grant verb record.
+# write-routing-coherence-v1 fix-part-3: set_publication_state writes
+# governance.publication.unattended into the deploy-immune
+# ~/.grove/capabilities/state overlay (never the repo definition), closing the
+# raw-write incentive behind the forge-arming misfire. Yellow zone: the grant is a
+# governed config mutation gated by the Sovereign Prompt (the operator's approval
+# of THAT prompt is the grant). always:true so the operator can arm/disarm a fleet
+# worker at any time.
+# family=publication_grant  zone=yellow  tiers=[1,2,3]  disclosure=proactive  trigger=always
+id: publication_grant_write
+kind: verb
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - set_publication_state
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'In-conversation publication-autonomy grant (governed, zone yellow). Tools:
+    set_publication_state.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: '2026-07-15T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-07-15T00:00:00+00:00'
+    from_state: new
+    to_state: approved
+    reason: 'write-routing-coherence-v1 fix-part-3: admit set_publication_state through
+      a capability record; tool registered in tools.publication_grant_tool but needs
+      a record or get_admitted_tools() filters it out'
+    evidence:
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: publication_grant_write'
+  - 'subsystem: publication-autonomy grant (tools.publication_grant_tool)'
+  - 'check: tool registered + zone mapped in zones.schema.yaml + ~/.grove/capabilities/state writable via set_publication_state'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

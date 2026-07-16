@@ -507,6 +507,117 @@ def set_admission_overlay(
         fd.close()
 
 
+def set_publication_state(
+    record_id: str,
+    value: bool,
+    *,
+    directory: Optional[Path] = None,
+    state_dir: Optional[Path] = None,
+) -> str:
+    """The SOLE sanctioned writer for the operator publication-autonomy grant
+    (``governance.publication.unattended``) — write-routing-coherence-v1 fix-part-3.
+
+    Sets ``publication: {unattended: <value>}`` on the record's
+    ``~/.grove/capabilities/state`` file, preserving any other Capability-state
+    keys (``model_binding`` / ``lifecycle`` / ``lineage`` / ``added_intents`` /
+    ``force_always``) already there. Same lock + atomic + ``.bak`` discipline as
+    :func:`set_admission_overlay`.
+
+    STATE-OVERLAY-ONLY / REPO-WRITE-INCAPABLE: the repo definition is consulted
+    READ-ONLY (to validate *record_id* exists); the ONLY path written is
+    ``_state_path_for_id(record_id, state_dir)`` under
+    :func:`capability_state_dir`. There is no code route from here to
+    ``config/capabilities/`` — the grant is deploy-immune, so the ``git reset
+    --hard`` misfire class (a grant patched into the deployed definition, then
+    silently reverted on the next deploy) is structurally closed.
+
+    The state filename is resolved by the SAME resolver the reader
+    (:func:`publication_unattended_authorized`) uses — ``_state_path_for_id``
+    (id ``.`` → ``__``) — so a record id like ``skill.fleet.forge-jobsearch``
+    canonically lands in ``skill__fleet__forge-jobsearch.yaml`` (NOT the
+    definition file's ``skill__fleet__forge_jobsearch.yaml``); write and read
+    agree on the file by construction.
+
+    WRITE-STRICT (fail loud): rejects a blank *record_id* and a non-bool *value*
+    (``bool`` is checked explicitly — no truthy/falsy coercion; a scalar grant is
+    set, never inferred). Raises :class:`CapabilityLoadError` when no definition
+    carries *record_id*.
+
+    Returns ``"applied"`` or ``"deferred"`` (lock contended — caller retries)."""
+    if not isinstance(record_id, str) or not record_id.strip():
+        raise ValueError(
+            "set_publication_state: record_id must be a non-empty string"
+        )
+    # A REAL bool only. bool is a subclass of int, so an explicit isinstance check
+    # rejects 1/0/"true" — the ANDON: never force-fit a coercion onto the grant.
+    if not isinstance(value, bool):
+        raise ValueError(
+            "set_publication_state: value must be a real bool (True/False), got "
+            f"{type(value).__name__}"
+        )
+    record_id = record_id.strip()
+
+    if directory is not None:
+        search_dirs = [Path(directory)]
+    else:
+        search_dirs = [default_capabilities_dir(), grove_home_capabilities_dir()]
+    path = None
+    for d in search_dirs:
+        if d.is_dir():
+            path = _record_path_for_id(record_id, d)
+            if path is not None:
+                break
+    if path is None:
+        raise CapabilityLoadError(
+            f"set_publication_state: no capability record with id {record_id!r} in "
+            f"{[str(d) for d in search_dirs]}"
+        )
+
+    state_path = _state_path_for_id(record_id, state_dir or capability_state_dir())
+
+    def _apply() -> str:
+        prior: Dict[str, Any] = {}
+        if state_path.exists():
+            try:
+                loaded = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    prior = loaded
+            except yaml.YAMLError:
+                prior = {}  # torn prior; .bak below retains the bytes
+        merged = dict(prior)
+        merged["id"] = record_id
+        # Whole-block set: `publication` has exactly one allowlisted sub-key
+        # (`unattended`), so there is no sub-key merge to force-fit onto the bool.
+        merged["publication"] = {"unattended": value}
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        prior_bytes = state_path.read_bytes() if state_path.exists() else b""
+        if prior_bytes:
+            state_path.with_suffix(state_path.suffix + ".bak").write_bytes(prior_bytes)
+        _atomic_write_yaml(
+            state_path,
+            yaml.safe_dump(merged, sort_keys=False, allow_unicode=True),
+        )
+        return "applied"
+
+    if fcntl is None:  # pragma: no cover - non-POSIX best-effort
+        return _apply()
+
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(".yaml.lock")
+    fd = open(lock_path, "a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            return "deferred"
+        try:
+            return _apply()
+        finally:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+    finally:
+        fd.close()
+
+
 # ── state WRITE path (fleet-hygiene-sweep P2) ────────────────────────────
 #
 # The three runtime writers (set_model_binding / transition_record /
