@@ -15,6 +15,7 @@
     --zone-yellow: #c9a227;
     --zone-red:    #cf4b4b;
     --error:       #cf4b4b;
+    --accent-violet: #8b7cf6;  /* I2 published-unattended — provenance-distinct from promoted-green */
     --radius:      6px;
     --gap:         1rem;
     /* fleet-ui-reconciliation-v1 C1 — the two layout primitives (the only
@@ -474,6 +475,7 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .review-card.rail-needs_review       { border-left-color: var(--zone-yellow); }
 .review-card.rail-revision_requested { border-left-color: var(--accent); }
 .review-card.rail-promoted           { border-left-color: var(--zone-green); }
+.review-card.rail-published_unattended { border-left-color: var(--accent-violet); }
 .review-card.rail-rejected           { border-left-color: var(--zone-red); }
 .review-card.rail-legacy             { border-left-color: var(--border); }
 
@@ -490,6 +492,7 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .chip-needs_review       { color: var(--zone-yellow); background: color-mix(in srgb, var(--zone-yellow) 12%, var(--bg-elev)); }
 .chip-revision_requested { color: var(--accent);      background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev)); }
 .chip-promoted           { color: var(--zone-green);  background: color-mix(in srgb, var(--zone-green) 12%, var(--bg-elev)); }
+.chip-published_unattended { color: var(--accent-violet); background: color-mix(in srgb, var(--accent-violet) 12%, var(--bg-elev)); }
 .chip-rejected           { color: var(--zone-red);    background: color-mix(in srgb, var(--zone-red) 12%, var(--bg-elev)); }
 .chip-legacy             { color: var(--text-dim); }
 
@@ -548,6 +551,8 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
     border-bottom-right-radius: var(--radius); }
 .disp-strip.rail-promoted           { border-top-color: var(--zone-green);
     color: var(--zone-green); }
+.disp-strip.rail-published_unattended { border-top-color: var(--accent-violet);
+    color: var(--accent-violet); }
 .disp-strip.rail-revision_requested { border-top-color: var(--accent);
     color: var(--accent); }
 .disp-strip.rail-rejected.dim       { border-top-color: var(--border);
@@ -652,6 +657,7 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .dot-needs_review       { background: var(--zone-yellow); }
 .dot-revision_requested { background: var(--accent); }
 .dot-promoted           { background: var(--zone-green); }
+.dot-published_unattended { background: var(--accent-violet); }
 .dot-rejected           { background: var(--zone-red); }
 .dot-legacy             { background: var(--text-dim); }
 
@@ -709,6 +715,7 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .disposition-dock.rail-needs_review       { border-top-color: var(--zone-yellow); }
 .disposition-dock.rail-revision_requested { border-top-color: var(--accent); }
 .disposition-dock.rail-promoted           { border-top-color: var(--zone-green); }
+.disposition-dock.rail-published_unattended { border-top-color: var(--accent-violet); }
 .disposition-dock.rail-rejected           { border-top-color: var(--zone-red); }
 .dock-meta { color: var(--text-dim); font-size: 0.82rem; margin-bottom: 0.5rem; }
 .dock-meta .unit { color: var(--text); font-weight: 600; }

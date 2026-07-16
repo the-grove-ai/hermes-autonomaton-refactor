@@ -2108,6 +2108,7 @@ _STATE_ORDER = (
     ("needs_review", "needs review"),
     ("revision_requested", "redrafting"),
     ("promoted", "promoted"),
+    ("published_unattended", "published"),
     ("rejected", "rejected"),
     ("legacy", "legacy"),
 )
@@ -2628,7 +2629,14 @@ def _publish_affordance(cap: Any, unit_key: str, meta: dict,
     'Publish unavailable' notice (a missing machine field like the row id is
     caught fail-loud by the publish action itself)."""
     if meta and all(meta.get(k) for k in title_keys or []):
-        return render_forge_publish_card(unit_key)
+        # I3 — read-side folder_link join: a durable published.jsonl audit for
+        # this unit's row_id makes Open-in-Drive render on a plain GET reload,
+        # not only on the synchronous publish POST. No durable link → no link;
+        # the card renders as before (honest absence, never a fabricated path).
+        from grove.forge.publish import latest_published_folder_link
+        row_id = meta.get("row_id")
+        folder_link = latest_published_folder_link(row_id) if row_id else None
+        return render_forge_publish_card(unit_key, folder_link=folder_link)
     return (
         f'<div class="card" id="forge-publish-{_esc(unit_key)}">'
         f'<h4>Publish unavailable</h4>'
@@ -2688,6 +2696,7 @@ _STATE_META = {
     "needs_review":       ("needs review", "rail-needs_review", "chip-needs_review"),
     "revision_requested": ("redrafting", "rail-revision_requested", "chip-revision_requested"),
     "promoted":           ("promoted", "rail-promoted", "chip-promoted"),
+    "published_unattended": ("published", "rail-published_unattended", "chip-published_unattended"),
     "rejected":           ("rejected", "rail-rejected", "chip-rejected"),
     "legacy":             ("legacy", "rail-legacy", "chip-legacy"),
 }
@@ -3158,7 +3167,7 @@ def _review_card(unit: dict, remote_sink: bool, cap: Any = None,
     rc = unit.get("revision_count", 0)
     title = unit.get("filename") or unit["unit_id"]
     ver = f'draft v{rc + 1} &middot; ' if rc > 0 else ""
-    dim = " card-resolved" if state in ("promoted", "rejected") else ""
+    dim = " card-resolved" if state in ("promoted", "published_unattended", "rejected") else ""
     anchor = _short_id(unit.get("proposal_id") or unit["unit_id"])
     producer = unit.get("producer") or ""
     # Title navigates to the unit fragment. HASH-ONLY href (not the canonical

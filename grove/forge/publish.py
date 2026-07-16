@@ -97,6 +97,33 @@ def _audit_path() -> Path:
     return get_hermes_home() / "forge" / "published.jsonl"
 
 
+def latest_published_folder_link(row_id: str) -> Optional[str]:
+    """Read-only accessor over ``published.jsonl``: the ``folder_link`` of the
+    LATEST audit line for ``row_id`` (later lines win), or ``None`` if the row was
+    never published. No write path, no schema change — the legibility read that
+    lets the portal render Open-in-Drive on a fresh GET, not only on the
+    synchronous publish POST. An absent/unreadable log or a malformed line yields
+    ``None`` (the card renders linkless — honest absence, never a crash)."""
+    if not row_id:
+        return None
+    path = _audit_path()
+    if not path.is_file():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    link: Optional[str] = None
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("row_id") == row_id and rec.get("folder_link"):
+            link = rec["folder_link"]
+    return link
+
+
 def _ensure_doc(gapi, folder_id, title, path, label, state):
     """Verify a native Doc named *title* exists in *folder_id*; upsert if missing.
 
