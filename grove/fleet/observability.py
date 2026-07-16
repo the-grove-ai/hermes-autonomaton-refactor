@@ -145,3 +145,45 @@ def surface_fleet_event(
         logger.info("[fleet.observe] %s", report)
 
     return {"surfaced": True, "broadcast_scheduled": scheduled}
+
+
+def surface_fleet_digest(
+    message: str,
+    *,
+    loop: Optional[Any] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Route an AGGREGATE operator notice — the windowed unattended-publish digest
+    (unattended-publish-legibility-v1 I1) — to the operator surface.
+
+    Unlike :func:`surface_fleet_event` (a per-worker-run notice that prefixes
+    ``worker '..' (run ..)``), the digest is a WINDOW-level line and carries NO
+    worker/run identity — the operator line has no run-hash. ``info`` severity (the
+    clean, non-``[ACTION FAILURE]`` prefix), ONE leg, scheduled onto the gateway
+    ``loop`` with a ``logger.info`` floor when there is no loop. The composed
+    ``message`` is passed through verbatim (the caller owns the wording).
+
+    Defensive — never raises into the ticker."""
+    metadata: Dict[str, Any] = {"event": "fleet_publish_digest"}
+    if extra:
+        metadata.update(extra)
+
+    scheduled = False
+    if loop is not None:
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+            from grove.notify import broadcast_to_operator
+
+            safe_schedule_threadsafe(
+                broadcast_to_operator(message, severity="info", metadata=metadata),
+                loop,
+                logger=logger,
+                log_message="fleet digest broadcast scheduling failed",
+            )
+            scheduled = True
+        except Exception as exc:  # noqa: BLE001 — never crash the ticker
+            logger.error("[fleet.observe] digest broadcast leg failed: %r; line:\n%s", exc, message)
+    if not scheduled:
+        logger.info("[fleet.observe] %s", message)
+
+    return {"surfaced": True, "broadcast_scheduled": scheduled}

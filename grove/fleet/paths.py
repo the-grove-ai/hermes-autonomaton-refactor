@@ -43,6 +43,14 @@ def fleet_root() -> Path:
     return Path(get_hermes_home()) / "fleet"
 
 
+def publish_digest_state_path() -> Path:
+    """``$GROVE_HOME/fleet/publish_digest.json`` — the fleet-global (NOT per-worker)
+    node-local shown-state + count-watermark for the unattended-publish digest
+    (unattended-publish-legibility-v1 I1). Deliberately a sidecar, NEVER the
+    durable memory event log the digest tails (the self-reference bar)."""
+    return fleet_root() / "publish_digest.json"
+
+
 def worker_dir(worker_id: str) -> Path:
     """``$GROVE_HOME/fleet/<id>/`` — the worker's private subtree."""
     return fleet_root() / validate_worker_id(worker_id)

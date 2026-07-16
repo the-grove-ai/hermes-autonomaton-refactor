@@ -27,7 +27,7 @@ from grove.fleet import runner
 from grove.fleet.cadence import cadence_due, in_quiet_hours
 from grove.fleet.config import WorkerConfig, load_fleet_workers
 from grove.fleet.errors import FleetWorkerAndon, OperatorActionRequired
-from grove.fleet.observability import surface_fleet_andon, surface_fleet_event
+from grove.fleet.observability import surface_fleet_andon
 from grove.fleet.reap import enforce_wall_clock, remove_pidfile
 from grove.fleet.resolvers import resolve_input_state
 from grove.fleet.runner import WorkerHandle
@@ -92,6 +92,22 @@ class FleetManager:
         now = now or datetime.now(timezone.utc)
         self._reap_running()
         self._maybe_dispatch(now)
+        # I1 — windowed publish digest at the TAIL of the tick (post-append: every
+        # publish this tick already landed in the durable log during _reap_running).
+        self._maybe_emit_publish_digest()
+
+    def _maybe_emit_publish_digest(self) -> None:
+        """I1 (unattended-publish-legibility-v1 MOVE 4) — the windowed publish
+        digest, HOSTED at the tail of the tick (not a dedicated racing tick). The
+        digest owns its own telemetry-first failure posture (it catches and leaves
+        the watermark unadvanced); this guard is the last line so a digest bug can
+        never break the tick."""
+        try:
+            from grove.fleet.digest import emit_publish_digest
+
+            emit_publish_digest(loop=self._loop)
+        except Exception as exc:  # noqa: BLE001 — never crash the tick
+            logger.error("[fleet.manager] publish digest host failed: %r", exc)
 
     # ── reap / death observability ─────────────────────────────────────────────
 
@@ -410,6 +426,8 @@ class FleetManager:
                 folder_id=folder_id,
                 provenance="publication.unattended",
                 canonical_files=list(canonical_files or []),
+                status=result.get("status"),  # I1 — additive feed enrich (door
+                #                                published-vs-exists; digest reads it)
             ))
         except Exception as exc:  # noqa: BLE001 — surface loudly; NEVER unwind the publish
             surface_fleet_andon(
@@ -423,21 +441,11 @@ class FleetManager:
             )
             return
 
-        # ── operator info event (carries the door's folder_link) ──
-        surface_fleet_event(
-            wid, run_id,
-            f"published {slug!r} to Drive unattended "
-            f"({result.get('status')}): {folder_link}",
-            event="fleet_published", loop=self._loop,
-            extra={
-                "skill_id": skill_id,
-                "slug": slug,
-                "row_id": str(row_id),
-                "status": result.get("status"),
-                "folder_id": folder_id,
-                "folder_link": folder_link,
-            },
-        )
+        # ── I1 (unattended-publish-legibility-v1 MOVE 5) — the per-publish
+        #    operator ping is RETIRED here. The durable FleetPublishedUnattended
+        #    event (appended above) is the feed; the windowed digest at the tick
+        #    tail (_maybe_emit_publish_digest) is the SOLE operator surface now,
+        #    deduped across runs. Only the local log floor stays (not a broadcast).
         logger.info(
             "[fleet.manager] unattended publish OK for %s (status=%s, folder=%s)",
             slug, result.get("status"), folder_link,
