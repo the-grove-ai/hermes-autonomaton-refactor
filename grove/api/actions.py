@@ -1069,7 +1069,8 @@ async def _forge_publish_core(slug: str, loop) -> dict:
         result = await loop.run_in_executor(
             None,
             lambda: publish_application_package(
-                row_id, company, role, resume_path, cover_path
+                row_id, company, role, resume_path, cover_path,
+                operator_initiated=True,  # I4 — honest provenance: operator tap
             ),
         )
     except PublishError as exc:
