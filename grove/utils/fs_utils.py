@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "is_governed_path",
+    "is_andon_quarantine",
     "is_scope_defining",
     "is_granted_workspace",
     "is_secret_path",
@@ -88,6 +89,31 @@ def is_governed_path(path: object) -> bool:
     andon = Path(os.path.realpath(grove_home / "skills" / ".andon"))
     allowlisted = (target == andon) or (andon in target.parents)
     return not allowlisted
+
+
+def is_andon_quarantine(path: object) -> bool:
+    """Return ``True`` iff *path* resolves to (or inside) the agent-authoring
+    quarantine ``~/.grove/skills/.andon/`` — the one subtree the file-tool doors
+    allowlist as a Yellow authoring draft even though it lives under the
+    scope-defining skills tree.
+
+    write-routing-coherence-v1 fix-part-1 — extracted from :func:`is_governed_path`
+    (which is left untouched, preserving its ``skill_manager_tool`` consumer) so
+    the file-tool door predicate can be the intent-exact
+    ``is_scope_defining AND not is_andon_quarantine``. The prior
+    ``AND is_governed_path`` re-imposed the ``~/.grove`` anchor and, once
+    :func:`is_scope_defining` extended to the running-tree ``config/`` surfaces,
+    silently excluded them (demoting definition writes to Yellow). An unresolvable
+    path is treated as NOT the quarantine — fail-closed for the doors: the scope
+    wall (``is_scope_defining`` fails closed to RED) still applies."""
+    from hermes_constants import get_hermes_home
+
+    try:
+        target = Path(os.path.realpath(os.path.expanduser(str(path))))
+        andon = Path(os.path.realpath(Path(get_hermes_home()) / "skills" / ".andon"))
+    except (OSError, ValueError):
+        return False
+    return (target == andon) or (andon in target.parents)
 
 
 # ── GRV-001 v2.0 — scope-keyed surface (SHELL governance path ONLY) ───────────
@@ -159,6 +185,100 @@ _SCOPE_DEFINING_DIR_PREFIXES = (
 _SCOPE_DEFINING_ENTRIES = tuple(_SCOPE_DEFINING_FILES) + _SCOPE_DEFINING_DIR_PREFIXES
 
 
+# ── write-routing-coherence-v1 fix-part-1 — running-tree config/ meta-surfaces ─
+#
+# Every GROVE_HOME scope-defining surface above has a version-controlled TWIN
+# under the running tree's ``<repo>/config/`` — the DEFINITION files the deployed
+# clone loads. A ``file_tools`` patch or a shell ``sed`` to
+# ``<repo>/config/capabilities/*.yaml`` redefines the agent's authority exactly
+# as its ``~/.grove`` sibling does, so it must classify RED, not generic Yellow.
+# This set is the repo twin, and it is anchored to ``<module_root>/config/``
+# SPECIFICALLY (never a root-agnostic basename signature) so a granted workspace
+# that merely happens to contain a ``capabilities/`` or ``dock.yaml`` elsewhere is
+# NOT trapped (the over-match guard). ``skills/`` stays OUT: it has no ``config/``
+# twin — it is a pure GROVE_HOME runtime surface, already walled above.
+_REPO_CONFIG_SCOPE_DEFINING_FILES = frozenset({
+    "zones.schema.yaml",
+    "routing.config.yaml",
+    # Canonical nested form, matching the GROVE_HOME entry ``dock/dock.yaml`` — the
+    # repo twin is ``config/dock/dock.yaml`` (dock is a subdir), not a flat file.
+    os.path.join("dock", "dock.yaml"),
+    "write_workspaces.yaml",
+})
+_REPO_CONFIG_SCOPE_DEFINING_DIR_PREFIXES = (
+    "capabilities",
+    # config/routing-profiles/ is the version-controlled twin of the GROVE_HOME
+    # alternate tier presets — routing authority; the whole subtree is scope-
+    # defining. (No skills/ twin exists under config/.)
+    "routing-profiles",
+)
+_REPO_CONFIG_SCOPE_DEFINING_ENTRIES = (
+    tuple(_REPO_CONFIG_SCOPE_DEFINING_FILES)
+    + _REPO_CONFIG_SCOPE_DEFINING_DIR_PREFIXES
+)
+
+
+def _resolve_module_config_root() -> str:
+    """``<repo>/config`` for the running (editable) install, realpath-resolved.
+
+    Same ``__file__`` resolution shape as
+    :func:`grove.capability_registry.default_capabilities_dir`; this module lives
+    one level deeper (``grove/utils/``), so ``parents[2]`` is the repo root.
+
+    Computed ONCE at module load — :func:`is_scope_defining` runs per write
+    classification and must never recompute a ``Path(__file__).resolve()`` per
+    call. FAIL LOUD, NO SILENT FALLBACK (Prime Directive): if the repo root
+    cannot be resolved to an absolute path the running-tree scope wall would
+    silently disable, so raise at import rather than ship a governance hole that
+    quietly demotes definition writes to Yellow."""
+    try:
+        root = os.path.realpath(str(Path(__file__).resolve().parents[2] / "config"))
+    except (OSError, ValueError, IndexError) as exc:
+        raise RuntimeError(
+            "write-routing-coherence-v1: cannot resolve <module_root>/config from "
+            f"__file__={__file__!r} — the running-tree scope wall cannot be "
+            "anchored. Refusing to import with a silently-disabled governance wall."
+        ) from exc
+    if not os.path.isabs(root):
+        raise RuntimeError(
+            "write-routing-coherence-v1: <module_root>/config resolved to the "
+            f"non-absolute path {root!r} — refusing to anchor the scope wall on an "
+            "untrustworthy root."
+        )
+    return root
+
+
+# Module-load constant — resolved once, fail-loud (see above). Never None.
+_MODULE_CONFIG_ROOT = _resolve_module_config_root()
+
+
+def _is_repo_config_scope_defining(resolved: str) -> bool:
+    """``True`` iff *resolved* (already realpath-resolved) lands on a running-tree
+    ``<module_root>/config/`` meta-surface — the repo twin of a GROVE_HOME
+    scope-defining surface (write-routing-coherence-v1 fix-part-1).
+
+    Anchored to :data:`_MODULE_CONFIG_ROOT` SPECIFICALLY: a path outside it is
+    never trapped, so a granted workspace that merely contains a
+    ``capabilities/`` or ``dock.yaml`` elsewhere stays autonomous (over-match
+    guard). Mirrors the GROVE_HOME matcher: exact-surface, inside-subtree, and
+    ancestor-of-a-nested-surface all count."""
+    root = _MODULE_CONFIG_ROOT
+    if resolved != root and not resolved.startswith(root + os.sep):
+        return False
+    rel = os.path.relpath(resolved, root)
+    # config/ itself is the ancestor of every repo meta-surface (rm -rf config).
+    if rel == os.curdir:  # "."
+        return True
+    for entry in _REPO_CONFIG_SCOPE_DEFINING_ENTRIES:
+        # target IS the surface, or lives inside a scope-defining subtree …
+        if rel == entry or rel.startswith(entry + os.sep):
+            return True
+        # … or is an ANCESTOR of a nested surface (``dock`` parents ``dock/dock.yaml``).
+        if entry.startswith(rel + os.sep):
+            return True
+    return False
+
+
 def is_scope_defining(path: object, grove_home: object = None) -> bool:
     """Return ``True`` if *path* resolves to a scope-defining surface inside the
     ``~/.grove`` governance tree — a file or subtree whose mutation would expand
@@ -177,6 +297,13 @@ def is_scope_defining(path: object, grove_home: object = None) -> bool:
     GRV-001 v2.0 scope-keyed check for the SHELL path ONLY; post
     secrets-only-wall-v1 the generic file tools wall on
     :func:`is_secret_path` (secrets + system paths), not on this check.
+
+    write-routing-coherence-v1 fix-part-1 — a SECOND anchor: a path NOT under
+    GROVE_HOME is still scope-defining when it lands on the running tree's
+    ``<module_root>/config/`` meta-surface (the deployed clone's DEFINITION
+    files). This closes the gap where a patch/sed to
+    ``<repo>/config/capabilities/*.yaml`` classified generic Yellow while its
+    ``~/.grove`` twin was RED.
     """
     from hermes_constants import get_hermes_home
 
@@ -198,7 +325,12 @@ def is_scope_defining(path: object, grove_home: object = None) -> bool:
         return True  # unresolvable → fail closed (treated as scope-defining)
 
     if resolved != grove and not resolved.startswith(grove + os.sep):
-        return False
+        # Not under GROVE_HOME. write-routing-coherence-v1 fix-part-1 — the
+        # running tree's <module_root>/config/ meta-surfaces are ALSO scope-
+        # defining (the deployed clone's DEFINITION files), so a patch/sed to
+        # <repo>/config/capabilities/*.yaml is RED here rather than falling
+        # through to generic Yellow.
+        return _is_repo_config_scope_defining(resolved)
 
     rel = os.path.relpath(resolved, grove)
     # The grove root itself is the ancestor of every scope-defining surface:
