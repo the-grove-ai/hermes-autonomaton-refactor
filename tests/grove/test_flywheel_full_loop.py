@@ -178,7 +178,7 @@ def test_tool_respects_b2_no_cluster_gate(tmp_path: Path) -> None:
 # ── zones: the tool is itself governed ───────────────────────────────
 
 
-def test_tool_zones_are_governed() -> None:
+def test_tool_zones_are_governed(hermetic_grove_home) -> None:
     import grove.zones as z
 
     repo = Path(__file__).resolve().parents[2] / "config" / "zones.schema.yaml"

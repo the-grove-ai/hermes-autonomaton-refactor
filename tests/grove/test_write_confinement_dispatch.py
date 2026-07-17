@@ -222,7 +222,7 @@ def test_write_file_autonomaton_overlay_is_red(tmp_path, monkeypatch):
     assert zr.zone == "red"
 
 
-def test_write_file_nonscope_grove_target_stays_yellow(tmp_path, monkeypatch):
+def test_write_file_nonscope_grove_target_stays_yellow(tmp_path, monkeypatch, hermetic_grove_home):
     # a non-scope-defining write still classifies YELLOW (bare-tool default) —
     # the wall is target-keyed, not a blanket ~/.grove RED.
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
