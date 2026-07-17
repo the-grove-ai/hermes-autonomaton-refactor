@@ -180,7 +180,7 @@ class TestClassifyAndMint:
         )
         assert ok is True
 
-    def test_yellow_not_covered_goes_through_disposition_and_denies(self, dispatcher):
+    def test_yellow_not_covered_goes_through_disposition_and_denies(self, hermetic_grove_home, dispatcher):
         # Plugin path (yellow_covered=False): the deny handler runs → not allowed,
         # nothing minted → the primitive would refuse the dispatch.
         ok, why = dispatcher.classify_and_mint("write_file", {"path": "/tmp/x"})

@@ -132,7 +132,7 @@ def test_past_session_proposal_does_not_push(tmp_path: Path) -> None:
     assert out == "Done."  # not pushed
 
 
-def test_current_session_proposal_pushes(tmp_path: Path) -> None:
+def test_current_session_proposal_pushes(tmp_path: Path, hermetic_grove_home) -> None:
     from run_agent import AIAgent
     from grove.eval.proposal_queue import default_queue_path
 
@@ -145,7 +145,7 @@ def test_current_session_proposal_pushes(tmp_path: Path) -> None:
     assert "date_arithmetic" in out
 
 
-def test_one_at_a_time_highest_priority(tmp_path: Path) -> None:
+def test_one_at_a_time_highest_priority(tmp_path: Path, hermetic_grove_home) -> None:
     """Highest-priority proposal surfaces first; the push cadence guard then
     holds further same-turn pushes (kaizen-push-cadence-v1 a89575e16)."""
     from run_agent import AIAgent

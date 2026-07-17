@@ -74,7 +74,7 @@ def test_grant_idempotent(env, no_tmp):
     assert data["write_workspaces"][0]["path"].endswith("proj")
 
 
-def test_grant_tool_classifies_yellow():
+def test_grant_tool_classifies_yellow(hermetic_grove_home):
     import grove.zones as zones
 
     zones.initialize()
