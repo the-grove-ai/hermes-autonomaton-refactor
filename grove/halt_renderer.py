@@ -170,6 +170,31 @@ def _render_tool_boundary(event: HaltEvent) -> str:
             "— sudo / su / doas, never with me. Run it in your terminal, "
             "then tell me the result so I can keep going."
         )
+    # unresolved-writer-execution-path-v1 Fix 2 — RED surfaces that are NOT
+    # privilege escalations. Same butler register (never "denied"/"forbidden", no
+    # governance-implementation vocab), but the copy names the actual abnormality
+    # instead of the privilege wording.
+    # This surface is the ungated/strict BLOCK path — no proposal was stored, so a
+    # portal-approval promise is unkeepable here. Mirror the priv copy's honest
+    # pattern ("run it yourself / give me a different approach"). The store-pending
+    # surface (_render_red_pending_approval) carries the portal link where a
+    # proposal DOES exist.
+    if trigger is HaltTrigger.RED_UNRESOLVED_WRITER:
+        command = event.what_halted.summary or ""
+        snippet = command if len(command) <= 120 else command[:117] + "…"
+        return (
+            f"The command `{snippet}` writes to a target I can't pin down before "
+            "it runs, so I'm holding it rather than guessing. Run it yourself and "
+            "tell me the result so I can keep going, or give me a different approach."
+        )
+    if trigger is HaltTrigger.RED_SOVEREIGN_BOUNDARY:
+        command = event.what_halted.summary or ""
+        snippet = command if len(command) <= 120 else command[:117] + "…"
+        return (
+            f"The command `{snippet}` is one I hold for your decision rather than "
+            "run on my own. Run it yourself and tell me the result so I can keep "
+            "going, or give me a different approach."
+        )
     raise ValueError(
         f"unhandled tool-boundary trigger: {trigger!r}"
     )  # fail-loud, never a silent default surface

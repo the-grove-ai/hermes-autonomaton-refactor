@@ -79,6 +79,18 @@ class HaltTrigger(str, Enum):
     # decision, surfaced via ``can_store_pending``). NON_TERMINAL — the turn
     # continues so the agent can relay the portal-approval link to the operator.
     OPERATOR_STORED_PENDING = "operator_stored_pending"
+    # unresolved-writer-execution-path-v1 Fix 2 — RED tool-boundary surfaces that are
+    # NOT privilege escalations. render_red_surface selects the trigger FROM the
+    # command's classification so the operator copy names the actual abnormality
+    # instead of the privilege copy for every RED. Render-only (constructed by
+    # render_red_surface to pick copy; NOT dispatched, NOT in TERMINAL_TRIGGERS).
+    #
+    # A bucket-3 UNRESOLVED_WRITER (effecting command with an unresolvable write
+    # target, treated as scope-defining) — name the abnormality.
+    RED_UNRESOLVED_WRITER = "red_unresolved_writer"
+    # Any other RED effect that is neither a privilege escalation nor an
+    # UNRESOLVED_WRITER — a neutral "held for your go-ahead" boundary surface.
+    RED_SOVEREIGN_BOUNDARY = "red_sovereign_boundary"
 
 
 class HaltSeverity(str, Enum):

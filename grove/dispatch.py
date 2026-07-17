@@ -253,20 +253,55 @@ def render_red_surface(command: str, zone_result) -> str:
         HaltCapabilities,
         HaltEvent,
         HaltSeverity,
-        HaltTrigger,
         OriginatingLayer,
         WhatHalted,
     )
     from grove.halt_renderer import render_halt_event
 
+    # unresolved-writer-execution-path-v1 Fix 2 — select the trigger (hence the
+    # copy) FROM the command's classification, not a hardcoded PRIVILEGE_REQUIRED.
+    # A privilege escalation genuinely needs the operator's hands; a bucket-3
+    # UNRESOLVED_WRITER should name its own abnormality; every other RED gets a
+    # neutral "held for your go-ahead" surface — never the priv copy by default.
+    trigger = _red_surface_trigger(command, zone_result)
+
     return render_halt_event(HaltEvent(
-        trigger=HaltTrigger.PRIVILEGE_REQUIRED,
+        trigger=trigger,
         what_halted=WhatHalted(summary=command),
         zone=getattr(zone_result, "zone", None),
         severity=HaltSeverity.NON_TERMINAL,
         originating_layer=OriginatingLayer.TOOL_BOUNDARY,
         capabilities=HaltCapabilities(can_cancel=True, can_operator_run=True),
     ))
+
+
+def _red_surface_trigger(command: str, zone_result):
+    """Pick the tool-boundary halt trigger for a RED command from its effect
+    classification — the copy discriminator for :func:`render_red_surface`.
+
+    Precedence: a privilege node (the operator's hands are genuinely required)
+    dominates; then a bucket-3 UNRESOLVED_WRITER (name the abnormality); else a
+    neutral sovereign-boundary surface. The ZoneResult's ``pattern_key`` is the
+    ``"||"``-joined per-node effect sigs (e.g. ``priv:sudo`` /
+    ``UNRESOLVED_WRITER:git:…``). When it is absent (a ``None`` / legacy
+    dot-notation zone_result), classify the command itself so the surface is still
+    self-sufficient and names the right abnormality.
+    """
+    from grove.halt_event import HaltTrigger
+
+    pattern_key = getattr(zone_result, "pattern_key", None)
+    if not pattern_key:
+        try:
+            from grove.shell_effects import classify_shell_effect
+            pattern_key = classify_shell_effect(command).pattern_key or ""
+        except Exception:  # noqa: BLE001 — neutral surface is the safe default
+            pattern_key = ""
+    nodes = pattern_key.split("||")
+    if any(n.startswith("priv:") for n in nodes):
+        return HaltTrigger.PRIVILEGE_REQUIRED
+    if any(n.startswith("UNRESOLVED_WRITER") for n in nodes):
+        return HaltTrigger.RED_UNRESOLVED_WRITER
+    return HaltTrigger.RED_SOVEREIGN_BOUNDARY
 
 
 # ----- Kaizen sovereign prompt -----------------------------------------------
