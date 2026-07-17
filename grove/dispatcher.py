@@ -1967,6 +1967,17 @@ class Dispatcher:
                                 f"Valid: 'once' / 'session' / 'always' / "
                                 f"'deny' per GRV-005 § VI v1.1."
                             )
+                        # containment Phase-2 Change 3 — attempt-stamp every escalated
+                        # (non-green) shell write in this approved batch BEFORE the
+                        # executor runs, so the stamp survives an executor raise. RED
+                        # writes are stamped at store time (_store_pending_red_proposal).
+                        _zr = getattr(halt, "zone_results", None) or []
+                        for _i, _it in enumerate(getattr(halt, "intents", None) or []):
+                            _z = _zr[_i] if _i < len(_zr) else None
+                            if _z is not None and getattr(_z, "zone", None) != "green":
+                                self._emit_shell_write_attempt_stamp(
+                                    _it, _z, disposition, ledger,
+                                )
                     # Green path: execute the batch via the executor.
                     # Sprint 31 Phase 2 — direct invocation, no agent
                     # shim in the path. ``_current_messages`` is still
@@ -5092,6 +5103,58 @@ class Dispatcher:
             f"branch in _resolve_red_halt (GRV-005 §VI)."
         )
 
+    def _emit_shell_write_attempt_stamp(
+        self, intent: Any, zone_result: Any, resolution: str, ledger: Optional[Any],
+    ) -> None:
+        """containment Phase-2 Change 3 — attempt-stamp for an ESCALATED shell write.
+
+        Records {actor, surface, write_target, write_class, pattern_key, resolution,
+        grant_id} to the ledger BEFORE the write executes (YELLOW path) or at store
+        time (RED path), so the attempt is observable even if the executor raises.
+        Diagnostic-grade (banked: the broker sprint hardens the ledger to append-
+        only). NEVER raises — a filing failure is logged and swallowed. Only shell
+        surfaces (terminal / execute_code) are stamped; non-shell intents no-op.
+
+        A standing-grant ('always') execution on later turns bypasses the escalation
+        branch and is NOT stamped — grant_id-bearing provenance for granted
+        executions is Phase-3 scope.
+        """
+        if ledger is None:
+            return
+        tool = getattr(intent, "tool_name", "") or ""
+        if tool not in ("terminal", "execute_code"):
+            return
+        pk = getattr(zone_result, "pattern_key", None) or ""
+        args = getattr(intent, "arguments", None) or {}
+        cmd = ""
+        if isinstance(args, dict):
+            cmd = str(args.get("command", "") or args.get("code", "") or "")
+        # A bucket-3 UNRESOLVED_WRITER has no statically-resolvable write target.
+        if "UNRESOLVED_WRITER" in pk:
+            write_target = "UNRESOLVED_DYNAMIC"
+        else:
+            write_target = cmd or "UNRESOLVED_DYNAMIC"
+        # write_class = the effect-signature category (UNRESOLVED_WRITER / cmd /
+        # govwrite / opacity / priv / …) — parallels containment_violation's
+        # boundary_class.
+        write_class = pk.split(":", 1)[0] if pk else "unknown"
+        try:
+            ledger.record(
+                "escalated_write_attempt",
+                actor="agent",
+                surface=self._platform,
+                write_target=write_target,
+                write_class=write_class,
+                pattern_key=pk,
+                resolution=resolution,
+                grant_id=None,
+            )
+        except Exception as exc:  # noqa: BLE001 — diagnostic stamp, never blocks
+            logger.warning(
+                "[grove.dispatcher] escalated_write_attempt stamp failed "
+                "(non-fatal): %r", exc,
+            )
+
     def _store_pending_red_proposal(
         self,
         agent: Any,
@@ -5124,6 +5187,17 @@ class Dispatcher:
         _tool = getattr(_trig, "tool_name", "") or ""
         _args = dict(getattr(_trig, "arguments", None) or {})
         _rationale = _args.get("rationale") or ""
+
+        # containment Phase-2 Change 3 — attempt-stamp at STORE time (RED path), so a
+        # shell UNRESOLVED_WRITER stored for approval is observable before any later
+        # re-dispatch. No-op for non-shell RED (propose_governance_change, etc.).
+        try:
+            _trig_zr = halt.zone_results[halt.triggering_index]
+        except (AttributeError, IndexError, TypeError):
+            _trig_zr = None
+        self._emit_shell_write_attempt_stamp(
+            _trig, _trig_zr, "store_pending_approval", ledger,
+        )
 
         # ANDON-guard: a payload-less propose_governance_change cannot be stored
         # (nothing to write). Fail loud to Cancel rather than queue a hollow entry.

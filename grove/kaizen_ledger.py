@@ -183,6 +183,12 @@ class KaizenLedger:
         # a silently-cancelled fail-closed write is observable. Carries resolution +
         # pattern_key + triggering_tool + surface.
         "headless_governance_block",
+        # execute-code-meta-surface-containment-v1 Phase-2 Change 3 — attempt-stamp
+        # for an escalated shell write, filed BEFORE execution (YELLOW) or at store
+        # time (RED). Carries actor + surface + write_target + write_class +
+        # pattern_key + resolution + grant_id. Diagnostic-grade until the broker
+        # sprint hardens the ledger to append-only.
+        "escalated_write_attempt",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:
