@@ -77,17 +77,37 @@ def test_builder_strips_nothing_on_tier_at_any_tier(tier, intent):
 def test_victim_table_offered_at_eligible_tiers():
     # The web-verb victims are OFFERED at their eligible tiers on a triggering
     # intent — the regression (refused at execute) is closed.
-    seam = _seam_eligible_map()
-    tools = _all_native_tools()
+    #
+    # test-baseline-hygiene-v2 FG-5: load_capabilities() is uncached (~1.9s/call).
+    # The original derived seam/tools/intent via three helpers that each reloaded
+    # the corpus — 17 loads in one test body (2 upfront + 15 in the victim x tier
+    # loop via _a_triggering_intent) — deterministically crossing the 30s guard.
+    # Snapshot the corpus ONCE and derive both maps from it, reproducing the
+    # helpers' semantics exactly: seam is last-writer-wins per tool; the triggering
+    # intent is the first record carrying the tool with a non-empty intent list.
+    # (The uncached-load latency itself is banked to capability-hot-reload — the
+    # remedy is a process-level cache in production, not a stub here.)
+    seam: dict = {}
+    triggering: dict = {}
+    for c in load_capabilities().values():
+        for t in c.bindings.tools:
+            if _is_mcp(t):
+                continue
+            seam[t] = set(c.tier_rule.eligible)
+            if t not in triggering:
+                ints = list(c.trigger.intents)
+                if ints:
+                    triggering[t] = ints[0]
+    tools = [{"type": "function", "function": {"name": n}} for n in sorted(seam)]
     victims = ["web_search", "web_extract", "session_search", "search_files",
               "write_file"]
     for name in victims:
         if name not in seam:
             continue
         for tier in sorted(seam[name]):
-            # pick an intent the record actually triggers on
+            # an intent the record actually triggers on (precomputed above)
             res = resolve_tools_for_tier(
-                tools, _a_triggering_intent(name), "moderate",
+                tools, triggering.get(name, "research"), "moderate",
                 current_tier=tier,
             )
             assert name in res.allowed_names, (
