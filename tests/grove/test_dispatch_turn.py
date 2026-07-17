@@ -223,6 +223,10 @@ class TestPhase7RunConversationDelegation:
         agent.session_id = "phase7_delegation_session"
         agent.model = "m"
         agent.provider = "p"
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.api_key = ""
+        agent.base_url = ""
         _phase2_executor_stub(agent)
         return agent
 
@@ -337,6 +341,10 @@ class TestDispatcherDispatchTurn:
         agent._current_messages = msgs
         agent.session_id = "test-session"
         agent.model = "claude-sonnet-4-6"
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.api_key = ""
+        agent.base_url = ""
         _phase2_executor_stub(agent)
         return agent
 
@@ -415,6 +423,10 @@ class TestProtocolRoundTrip:
         agent.session_id = "round_trip_session"
         agent.model = "m"
         agent.provider = "p"
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.api_key = ""
+        agent.base_url = ""
 
         def _exec(asst, messages, task_id, api_n):
             for tc in (asst.get("tool_calls") or []):
@@ -447,6 +459,12 @@ class TestProtocolRoundTrip:
         agent._current_messages = msgs
         agent._current_effective_task_id = "t"
         agent._current_api_call_count = 1
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.model = "m"
+        agent.provider = "p"
+        agent.api_key = ""
+        agent.base_url = ""
 
         def _exec(asst, messages, task_id, api_n):
             for tc in (asst.get("tool_calls") or []):
@@ -479,6 +497,10 @@ class TestPhase4ZoneClassification:
         agent._current_messages = msgs
         agent.model = "claude-sonnet-4-6"
         agent.provider = "anthropic"
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.api_key = ""
+        agent.base_url = ""
         _phase2_executor_stub(agent)
         return agent
 
@@ -703,6 +725,10 @@ class TestPhase5SkipDisposition:
         agent._current_messages = msgs
         agent.model = "m"
         agent.provider = "p"
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.api_key = ""
+        agent.base_url = ""
         agent.session_id = "test_skip_session"
         _phase2_executor_stub(agent)
         return agent
@@ -806,6 +832,10 @@ class TestPhase5PendingAndonMarker:
         agent._execute_tool_calls = lambda *a, **k: None
         agent.model = "m"
         agent.provider = "p"
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.api_key = ""
+        agent.base_url = ""
         agent.session_id = "marker_test_session_123"
 
         intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
@@ -858,6 +888,10 @@ class TestPhase5PendingAndonMarker:
         agent._execute_tool_calls = lambda *a, **k: None
         agent.model = "m"
         agent.provider = "p"
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.api_key = ""
+        agent.base_url = ""
         agent.session_id = "buggy_prompt_session"
 
         intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
@@ -975,6 +1009,10 @@ class TestPhase6KaizenLedgerWiring:
         agent._execute_tool_calls = lambda *a, **k: None
         agent.model = "m"
         agent.provider = "p"
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.api_key = ""
+        agent.base_url = ""
         agent.session_id = "phase6_session"
         return agent
 
@@ -1221,6 +1259,10 @@ class TestPhase7BroadcastSessionId:
         agent._execute_tool_calls = lambda *a, **k: None
         agent.model = "m"
         agent.provider = "p"
+        # switch_model dereferences self.api_key/self.base_url on the governed
+        # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+        agent.api_key = ""
+        agent.base_url = ""
         agent.session_id = "phase7_env_test"
         intents = [ToolIntent(tool_name="x", arguments={}, call_id="c1")]
         agent._run_turn_generator = (

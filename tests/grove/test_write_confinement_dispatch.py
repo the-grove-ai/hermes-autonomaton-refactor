@@ -101,6 +101,10 @@ def _agent(msgs: List[Dict]):
     agent.session_id = "wc-dispatch-test"
     agent.model = "m"
     agent.provider = "p"
+    # switch_model dereferences self.api_key/self.base_url on the governed
+    # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__.
+    agent.api_key = ""
+    agent.base_url = ""
     _phase2_executor_stub(agent)
     return agent
 
