@@ -18,7 +18,7 @@ import json
 import pytest
 
 from grove.effect_signature import canonical_effect_signature
-from grove.red_execution_context import approved_effect_var
+from grove.red_execution_context import consumed_signature_var
 from grove.red_pending_store import (
     PendingRedProposal,
     action_proposal_id,
@@ -55,27 +55,36 @@ class TestMintAwareGuard:
         assert _guard("sudo apt-get install -y ffmpeg", "local").get("approved") is False
 
     def test_approved_effect_executes(self):
+        # unresolved-writer-execution-path-v1 Fix 1 — full-args equality: the guard
+        # honors iff canonical_effect_signature("terminal", dispatched_args) equals
+        # the consumed signature. The terminal handler threads the dispatched args
+        # into the guard; here we supply the same {command} the signature was hashed
+        # over.
         cmd = "sudo apt-get install -y ffmpeg"
-        tok = approved_effect_var.set(_sig(cmd))
+        tok = consumed_signature_var.set(_sig(cmd))
         try:
-            r = _guard(cmd, "local")
+            r = _guard(cmd, "local", dispatched_args={"command": cmd})
         finally:
-            approved_effect_var.reset(tok)
+            consumed_signature_var.reset(tok)
         assert r.get("approved") is True and r.get("approved_via_mint") is True
 
     def test_content_binding_different_command_blocked(self):
-        # ContextVar approves command A; a DIFFERENT command B must still block.
-        tok = approved_effect_var.set(_sig("sudo apt-get install -y ffmpeg"))
+        # ContextVar approves command A; a DIFFERENT command B (dispatched as B) must
+        # still block — the recomputed full-args signature differs (content-binding).
+        tok = consumed_signature_var.set(_sig("sudo apt-get install -y ffmpeg"))
         try:
-            assert _guard("sudo rm -rf /home/victim", "local").get("approved") is False
+            assert _guard(
+                "sudo rm -rf /home/victim", "local",
+                dispatched_args={"command": "sudo rm -rf /home/victim"},
+            ).get("approved") is False
         finally:
-            approved_effect_var.reset(tok)
+            consumed_signature_var.reset(tok)
 
     def test_isolation_after_reset_blocked(self):
         cmd = "sudo apt-get install -y ffmpeg"
-        tok = approved_effect_var.set(_sig(cmd))
-        approved_effect_var.reset(tok)
-        assert approved_effect_var.get() is None
+        tok = consumed_signature_var.set(_sig(cmd))
+        consumed_signature_var.reset(tok)
+        assert consumed_signature_var.get() is None
         assert _guard(cmd, "local").get("approved") is False
 
 
@@ -83,11 +92,11 @@ class TestMintAwareGuard:
 class TestCatastrophicCannotBeUnblocked:
     def test_hardline_blocks_even_with_matching_contextvar(self):
         cat = "rm -rf /"
-        tok = approved_effect_var.set(_sig(cat))  # maliciously set to catastrophic's sig
+        tok = consumed_signature_var.set(_sig(cat))  # maliciously set to catastrophic's sig
         try:
             r = _guard(cat, "local")
         finally:
-            approved_effect_var.reset(tok)
+            consumed_signature_var.reset(tok)
         assert r.get("approved") is False
         assert r.get("hardline") is True             # hardline floor fired FIRST
         assert r.get("approved_via_mint") is not True
@@ -128,13 +137,13 @@ class TestOrderingConstraint:
         # a non-catastrophic RED command DOES reach the mint check (reads >= 1).
         import grove.red_execution_context as rec
         cat_spy = _SpyVar(_sig("rm -rf /"))
-        monkeypatch.setattr(rec, "approved_effect_var", cat_spy)
+        monkeypatch.setattr(rec, "consumed_signature_var", cat_spy)
         r = _guard("rm -rf /", "local")
         assert r.get("hardline") is True
         assert cat_spy.reads == 0                     # ContextVar NEVER read for catastrophic
 
         ok_spy = _SpyVar(None)
-        monkeypatch.setattr(rec, "approved_effect_var", ok_spy)
+        monkeypatch.setattr(rec, "consumed_signature_var", ok_spy)
         _guard("sudo apt-get install -y ffmpeg", "local")
         assert ok_spy.reads >= 1                        # non-catastrophic reaches the mint check
 
@@ -160,6 +169,6 @@ class TestApproveExecutes:
         payload = json.loads(res["result"])
         assert payload.get("exit_code") == 0 and payload.get("output")  # actually ran
         # hash-what-you-execute: the ContextVar is cleared after dispatch (fail-safe)
-        assert approved_effect_var.get() is None
+        assert consumed_signature_var.get() is None
         # single-use: the entry was popped
         assert store.get(action_proposal_id(sig)) is None

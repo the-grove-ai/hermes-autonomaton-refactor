@@ -464,34 +464,48 @@ class ToolRegistry:
         # classification or prompt happens here — Stage-04 mint precedes Stage-05
         # consume; the primitive only verifies.
         _gate = getattr(self, "_approval_gate", None)
+        _ctx_token = None
         if _gate is not None and _gate.active:
             from grove.effect_signature import canonical_effect_signature
-            if not _gate.consume(canonical_effect_signature(name, args)):
+            _consumed_sig = canonical_effect_signature(name, args)
+            if not _gate.consume(_consumed_sig):
                 from grove.errors import GovernanceError
                 raise GovernanceError(
                     f"unapproved tool dispatch '{name}': no valid Stage-04 "
                     f"approval token (in-process classifier-skip refused, C1c-i)."
                 )
-        entry = self.get_entry(name)
-        if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            # unresolved-writer-execution-path-v1 Fix 1 — publish the EXACT consumed
+            # signature on a dispatch-scoped ContextVar so an execution-time tool
+            # guard (terminal shell guard / file scope wall) honors THIS gate-approved
+            # effect. Same-thread as the sync handler (terminal is sync — FLAG-5
+            # refuted); reset in the finally so it never leaks past this dispatch.
+            from grove.red_execution_context import consumed_signature_var
+            _ctx_token = consumed_signature_var.set(_consumed_sig)
         try:
-            if entry.is_async:
-                from model_tools import _run_async
-                return _run_async(entry.handler(args, **kwargs))
-            return entry.handler(args, **kwargs)
-        except Exception as e:
-            logger.exception("Tool %s dispatch error: %s", name, e)
-            # Route through the sanitizer so framing tokens / CDATA / fences
-            # in exception strings don't reach the model as structural noise.
-            # See model_tools._sanitize_tool_error for rationale.
-            raw = f"Tool execution failed: {type(e).__name__}: {e}"
+            entry = self.get_entry(name)
+            if not entry:
+                return json.dumps({"error": f"Unknown tool: {name}"})
             try:
-                from model_tools import _sanitize_tool_error
-                sanitized = _sanitize_tool_error(raw)
-            except Exception:
-                sanitized = raw  # defensive: never let the sanitizer block error propagation
-            return json.dumps({"error": sanitized})
+                if entry.is_async:
+                    from model_tools import _run_async
+                    return _run_async(entry.handler(args, **kwargs))
+                return entry.handler(args, **kwargs)
+            except Exception as e:
+                logger.exception("Tool %s dispatch error: %s", name, e)
+                # Route through the sanitizer so framing tokens / CDATA / fences
+                # in exception strings don't reach the model as structural noise.
+                # See model_tools._sanitize_tool_error for rationale.
+                raw = f"Tool execution failed: {type(e).__name__}: {e}"
+                try:
+                    from model_tools import _sanitize_tool_error
+                    sanitized = _sanitize_tool_error(raw)
+                except Exception:
+                    sanitized = raw  # defensive: never let the sanitizer block error propagation
+                return json.dumps({"error": sanitized})
+        finally:
+            if _ctx_token is not None:
+                from grove.red_execution_context import consumed_signature_var
+                consumed_signature_var.reset(_ctx_token)
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

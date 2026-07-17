@@ -3,7 +3,7 @@
 The write executor (write_file / patch) re-checks is_scope_defining immediately
 before the physical write and halts LOUD (TerminalGovernanceHalt, never
 swallowed) unless an operator-approved RED re-dispatch matches this write's
-realpath-canonical effect signature (grove.red_execution_context.approved_effect_var
+realpath-canonical effect signature (grove.red_execution_context.consumed_signature_var
 — the same mechanism the terminal guard consumes). The realpath-canonical
 signature mismatch — not a path-string compare — is the symlink-swap detector.
 """
@@ -51,16 +51,16 @@ def test_scope_defining_patch_without_approval_halts(grove_home):
 
 def test_scope_defining_write_with_matching_approval_proceeds(grove_home):
     from tools.file_tools import write_file_tool
-    from grove.red_execution_context import approved_effect_var
+    from grove.red_execution_context import consumed_signature_var
     from grove.effect_signature import canonical_effect_signature
     target = str(grove_home / "routing.config.yaml")
     content = "schema_version: 1\n"
     sig = canonical_effect_signature("write_file", {"path": target, "content": content})
-    tok = approved_effect_var.set(sig)
+    tok = consumed_signature_var.set(sig)
     try:
         result = write_file_tool(target, content)  # must NOT raise TerminalGovernanceHalt
     finally:
-        approved_effect_var.reset(tok)
+        consumed_signature_var.reset(tok)
     assert "bytes_written" in result  # guard allowed the approved RED re-dispatch
 
 
@@ -74,15 +74,15 @@ def test_nonscope_write_unaffected_by_guard(grove_home):
 
 def test_mismatched_approval_still_halts(grove_home):
     from tools.file_tools import write_file_tool
-    from grove.red_execution_context import approved_effect_var
+    from grove.red_execution_context import consumed_signature_var
     from grove.governance_halt import TerminalGovernanceHalt
     target = str(grove_home / "routing.config.yaml")
-    tok = approved_effect_var.set("some-other-effect-signature")
+    tok = consumed_signature_var.set("some-other-effect-signature")
     try:
         with pytest.raises(TerminalGovernanceHalt):
             write_file_tool(target, "x")
     finally:
-        approved_effect_var.reset(tok)
+        consumed_signature_var.reset(tok)
     assert not Path(target).exists()
 
 
@@ -91,7 +91,7 @@ def test_symlink_swap_signature_mismatch_halts(grove_home, tmp_path):
     # the path resolved to routing.config.yaml does NOT authorize a write after
     # the path is swapped to a DIFFERENT scope-defining target (zones.schema.yaml).
     from tools.file_tools import write_file_tool
-    from grove.red_execution_context import approved_effect_var
+    from grove.red_execution_context import consumed_signature_var
     from grove.effect_signature import canonical_effect_signature
     from grove.governance_halt import TerminalGovernanceHalt
     (grove_home / "routing.config.yaml").write_text("a")
@@ -101,9 +101,9 @@ def test_symlink_swap_signature_mismatch_halts(grove_home, tmp_path):
     sig = canonical_effect_signature("write_file", {"path": str(link), "content": "x"})
     link.unlink()
     link.symlink_to(grove_home / "zones.schema.yaml")  # late swap after approval
-    tok = approved_effect_var.set(sig)
+    tok = consumed_signature_var.set(sig)
     try:
         with pytest.raises(TerminalGovernanceHalt):
             write_file_tool(str(link), "x")
     finally:
-        approved_effect_var.reset(tok)
+        consumed_signature_var.reset(tok)

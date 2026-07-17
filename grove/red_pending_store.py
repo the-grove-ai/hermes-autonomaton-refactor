@@ -469,17 +469,13 @@ def approve_red_proposal(
     gate.activate()
     registry._approval_gate = gate
     gate.mint(entry.effect_signature)
-    # red-action-store-pending-v1 Phase C — publish the approved effect on a
-    # ContextVar for the duration of THIS dispatch so a mint-aware tool guard (the
-    # terminal shell guard) can honor the operator's approval and execute the RED
-    # action instead of re-blocking it. reset(token) in the finally is exception-
-    # safe — the approval never leaks past this single dispatch.
-    from grove.red_execution_context import approved_effect_var
-    _effect_token = approved_effect_var.set(entry.effect_signature)
+    # unresolved-writer-execution-path-v1 Fix 1 — the approved-effect ContextVar is
+    # now published by ``registry.dispatch`` itself (the EXACT gate-CONSUMED
+    # signature), unifying what the gate consumed with what the tool guard honors.
+    # No separate setter here; the gate mint above is claimed inside dispatch.
     try:
         result = registry.dispatch(entry.tool_name, entry.arguments)
     finally:
-        approved_effect_var.reset(_effect_token)
         gate.flush()  # single-use; the entry is already popped and cannot re-fire
 
     # registry.dispatch returns a JSON string; a handler error / GovernanceError
