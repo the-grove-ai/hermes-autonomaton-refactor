@@ -114,7 +114,24 @@ def test_active_prompt_section_excludes_quarantined(
     # Split at the andon section marker; the active portion precedes it.
     marker = "Proposed by you, awaiting promotion"
     active_part = prompt.split(marker)[0]
-    assert "apple-notes" in active_part  # a real migrated record IS active
+    # A real migrated record IS active. Pick an exemplar admitted on THIS host:
+    # ``apple-notes`` (the original literal) is macOS-only and gated off Linux by
+    # the SAME ``skill_matches_platform`` predicate the record-driven builder
+    # applies, so assert some host-admitted migrated record surfaces instead of a
+    # platform-specific one. On macOS ``apple-notes`` is among the admitted set.
+    from agent.skill_utils import parse_frontmatter, skill_matches_platform
+    from grove.capability import CapabilityKind
+    from grove.capability_registry import load_capabilities
+
+    admitted_skill_names = [
+        str(parse_frontmatter(r.context.payload)[0].get("name")
+            or r.id.rsplit(".", 1)[-1])
+        for r in load_capabilities().values()
+        if r.kind is CapabilityKind.SKILL and r.skill is not None
+        and skill_matches_platform(parse_frontmatter(r.context.payload)[0])
+    ]
+    assert admitted_skill_names, "no host-admitted migrated skill records to exercise"
+    assert any(name in active_part for name in admitted_skill_names)  # a real migrated record IS active
     assert "quar-one" not in active_part
     # Flag, don't hide: the quarantined skill IS surfaced — in the andon
     # section, which only exists when there are pending proposals.

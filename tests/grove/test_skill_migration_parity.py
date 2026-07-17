@@ -91,6 +91,8 @@ def test_live_prompt_builder_is_record_driven_and_reproduces_golden():
     guard, which is moot now that the prompt builder itself projects from records."""
     from agent.prompt_builder import build_skills_system_prompt
 
+    from agent.skill_utils import parse_frontmatter, skill_matches_platform
+
     live = build_skills_system_prompt(None, None)
     assert "<available_skills>" in live
     live_lines = set(
@@ -98,9 +100,27 @@ def test_live_prompt_builder_is_record_driven_and_reproduces_golden():
         .split("\n</available_skills>", 1)[0]
         .splitlines()
     )
-    golden = _GOLDEN.read_text(encoding="utf-8")
-    missing = [ln for ln in golden.splitlines() if ln not in live_lines]
-    assert not missing, f"live record-driven index missing golden lines: {missing[:5]}"
+    # Platform-aware expectation. The live builder drops skills whose frontmatter
+    # ``platforms:`` excludes this host (macOS-only skills — the whole ``apple``
+    # category — on Linux) via ``skill_matches_platform`` in
+    # ``_bundled_skill_index_from_records``. Reproject the host-admitted records
+    # through the SAME ``build_skill_index_from_records`` the byte-golden was
+    # frozen from: ``test_record_index_reproduces_golden_byte_for_byte`` proves
+    # ``projection(all records) == golden``, so ``projection(admitted subset)`` is
+    # the golden filtered to this platform (emptied categories fall away). On
+    # macOS every record is admitted, so ``expected == golden`` and this stays
+    # byte-identical to the frozen guard; on Linux the macOS-only skills drop
+    # instead of registering as false regressions. The golden file is untouched.
+    cat_desc = load_skill_category_descriptions()
+    admitted = [
+        r for r in _skill_records()
+        if skill_matches_platform(parse_frontmatter(r.context.payload)[0])
+    ]
+    expected = build_skill_index_from_records(admitted, cat_desc)
+    missing = [ln for ln in expected.splitlines() if ln not in live_lines]
+    assert not missing, (
+        f"live record-driven index missing host-admitted golden lines: {missing[:5]}"
+    )
 
 
 # ── helper fidelity (grove replica == agent original) ─────────────────────────
