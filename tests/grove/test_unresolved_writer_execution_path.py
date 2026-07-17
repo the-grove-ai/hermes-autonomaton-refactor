@@ -258,6 +258,115 @@ class TestFix2RedSurfaceTriggerFromClassification:
         assert "…" in render_red_surface(long_cmd, zr)
 
 
+# ── Fix 3: pending-RED portal card branches by tool; command secrets redacted ─
+
+class _FakeReq:
+    def __init__(self, store):
+        self.app = {"red_pending_store": store}
+
+
+def _put_red(store, tool_name, arguments, *, is_opaque=False, pattern_key=None,
+             description=None):
+    from grove.red_pending_store import (
+        PendingRedProposal, action_proposal_id, describe_red_action,
+    )
+    from grove.effect_signature import canonical_effect_signature
+    if description is None:
+        description, _ = describe_red_action(tool_name, arguments, pattern_key)
+    sig = canonical_effect_signature(tool_name, arguments)
+    pid = action_proposal_id(sig)
+    store.put(PendingRedProposal(
+        proposal_id=pid, tool_name=tool_name, arguments=arguments,
+        effect_signature=sig, description=description, rationale="r",
+        created_at="2026-07-08T00:00:00+00:00", is_opaque=is_opaque,
+        pattern_key=pattern_key,
+    ))
+    return pid
+
+
+def _render_card(store, pid):
+    from grove.api.fragments import _render_red_proposal_card, RED_PENDING_PROPOSAL_TYPE
+    return _render_red_proposal_card(
+        _FakeReq(store), f"{RED_PENDING_PROPOSAL_TYPE}:{pid}", pid[:8])
+
+
+class TestRedactCommandString:
+    def test_bearer_auth_header_redacted(self):
+        from grove.secret_redact import redact_command_string
+        out = redact_command_string(
+            'curl -H "Authorization: Bearer sk-ant-api03-abcdef123456" https://x')
+        assert "sk-ant-api03-abcdef123456" not in out
+        assert "[redacted]" in out
+        assert "Authorization" in out  # header name stays for legibility
+
+    def test_secret_env_assignment_redacted(self):
+        from grove.secret_redact import redact_command_string
+        out = redact_command_string("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG deploy")
+        assert "wJalrXUtnFEMI/K7MDENG" not in out
+        assert "AWS_SECRET_ACCESS_KEY=[redacted]" in out
+        assert "deploy" in out
+
+    def test_bare_token_prefix_redacted(self):
+        from grove.secret_redact import redact_command_string
+        out = redact_command_string("gh auth login --with-token ghp_ABCDEFGHIJ0123456789")
+        assert "ghp_ABCDEFGHIJ0123456789" not in out
+        assert "[redacted]" in out
+
+    def test_password_flag_value_redacted(self):
+        from grove.secret_redact import redact_command_string
+        out = redact_command_string("mysql --password hunter2secretlong -e 'select 1'")
+        assert "hunter2secretlong" not in out
+        assert "[redacted]" in out
+
+    def test_benign_command_untouched(self):
+        from grove.secret_redact import redact_command_string
+        cmd = "git commit -am 'wip' && ls -la /tmp"
+        assert redact_command_string(cmd) == cmd
+
+
+class TestFix3PendingRedCard:
+    def test_shell_card_redacts_command_and_shows_reason_no_masked_value(self):
+        from grove.red_pending_store import get_red_pending_store
+        store = get_red_pending_store()
+        cmd = 'curl -H "Authorization: Bearer sk-ant-api03-LEAKSECRET99999" https://x'
+        pid = _put_red(store, "terminal", {"command": cmd},
+                       pattern_key="UNRESOLVED_WRITER:curl:abc")
+        html = _render_card(store, pid)
+        # secret in the command line never reaches the card
+        assert "LEAKSECRET99999" not in html
+        assert "[redacted]" in html
+        # named reason present; shell card carries NO masked-value line / .env confirm
+        assert "resolved before it runs" in html          # the UNRESOLVED_WRITER reason
+        assert "•••• (masked)" not in html
+        assert ".env write" not in html
+        assert "Approve this RED action?" in html
+
+    def test_credential_card_keeps_masked_value_template(self):
+        from grove.red_pending_store import get_red_pending_store
+        store = get_red_pending_store()
+        pid = _put_red(store, "propose_governance_change",
+                       {"target_file": "~/.grove/.env",
+                        "content": "HF_TOKEN=SUPERSECRETVALUE\n", "rationale": "r"})
+        html = _render_card(store, pid)
+        assert "SUPERSECRETVALUE" not in html
+        assert "•••• (masked)" in html
+        assert "RED — governance write" in html
+        assert "Approve a RED .env write?" in html
+
+    def test_is_credential_write_and_card_reason_accessors(self):
+        from grove.red_pending_store import get_red_pending_store
+        store = get_red_pending_store()
+        shell_pid = _put_red(store, "terminal", {"command": "git commit -am x"},
+                             pattern_key="UNRESOLVED_WRITER:git:abc")
+        cred_pid = _put_red(store, "propose_governance_change",
+                            {"target_file": "~/.grove/.env", "content": "K=v\n",
+                             "rationale": "r"})
+        assert store.is_credential_write(cred_pid) is True
+        assert store.is_credential_write(shell_pid) is False
+        assert "resolved before it runs" in store.card_reason(shell_pid)
+        assert "credentials" in store.card_reason(cred_pid).lower()
+
+
 # ── e2e: store → approve → re-dispatch → EXECUTE, with workdir in the args ────
 
 class TestE2EStoreApproveExecute:
