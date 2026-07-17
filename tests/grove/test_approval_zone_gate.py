@@ -99,14 +99,17 @@ def test_red_zone_verbose_cancel_offers_descoped_alternative(fake_classifier) ->
     """
     from tools.approval import check_all_command_guards
 
-    result = check_all_command_guards("sudo apt install foo", env_type="local")
+    # Phase-2 Change 1: `apt install foo` (apt un-enumerated) is now bucket-3 RED,
+    # so it no longer de-scopes to a within-authority alternative. Use a command
+    # whose de-scoped form stays within authority (mkdir → extracted-target YELLOW).
+    result = check_all_command_guards("sudo mkdir -p /tmp/foo", env_type="local")
     assert result["approved"] is False
     assert result.get("sovereign_red") is True
     # Base privilege surface is preserved (not replaced).
     assert "needs privileges that stay with you" in result["message"]
     # The within-bounds de-scoped form is named + structured.
-    assert result.get("remediation_alternative") == "apt install foo"
-    assert "apt install foo" in result["message"]
+    assert result.get("remediation_alternative") == "mkdir -p /tmp/foo"
+    assert "mkdir -p /tmp/foo" in result["message"]
     assert "de-scoped form" in result["message"]
     # Honest: no false interactive-resume promise, no governance vocab.
     assert "Andon" not in result["message"]
@@ -180,15 +183,17 @@ def test_red_zone_kaizen_alternative_runs_descope(
 
     monkeypatch.setenv("GROVE_INTERACTIVE", "1")
     monkeypatch.setattr("builtins.input", lambda _: "3")
-    result = check_all_command_guards("sudo apt install foo", env_type="local")
-    # The descoped command "apt install foo" classifies as default (yellow),
+    # Phase-2 Change 1: use a command whose de-scoped form is within authority
+    # (mkdir → extracted-target YELLOW); `apt install foo` is now bucket-3 RED.
+    result = check_all_command_guards("sudo mkdir -p /tmp/foo", env_type="local")
+    # The descoped command "mkdir -p /tmp/foo" classifies as default (yellow),
     # which falls through to the existing approval flow. With no
     # GROVE_EXEC_ASK / gateway and is_cli=True the non-interactive guard
     # at the top of check_all_command_guards is not the relevant path; the
-    # existing DANGEROUS_PATTERNS check runs. `apt install` is not in
+    # existing DANGEROUS_PATTERNS check runs. `mkdir` is not in
     # DANGEROUS_PATTERNS, so it should be approved with no further prompts.
     assert result["approved"] is True
-    assert result.get("alternative_command") == "apt install foo"
+    assert result.get("alternative_command") == "mkdir -p /tmp/foo"
     assert result.get("sovereign_choice") == "alternative"
 
 

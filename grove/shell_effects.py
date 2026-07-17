@@ -105,6 +105,27 @@ _GAPI_READ = frozenset({
 _NOTION_READ = frozenset({"search", "get", "query"})
 
 _RED, _YELLOW, _GREEN = "red", "yellow", "green"
+
+# execute-code-meta-surface-containment-v1 Phase-2 Change 1 — bucket-3 fail-closed
+# marker. An effecting shell command that reaches the default (unenumerated, with a
+# write target the AST cannot prove disjoint from the scope-defining set) is treated
+# as scope-defining: RED, non-promotable. The pattern_key is prefixed with this
+# token so chain aggregation (Change 2) can mark the whole chain non-promotable and
+# name the abnormality in the operator-facing reason.
+_UNRESOLVED_WRITER = "UNRESOLVED_WRITER"
+_UNRESOLVED_WRITER_REASON = (
+    "effecting command with unresolvable write target; treated as scope-defining"
+)
+# execute-code-meta-surface-containment-v1 Phase-2 Change 1 (Option B) — CLOSED,
+# LITERAL benign-non-writer set: commands that touch no filesystem (stdout / status /
+# no-op only). Membership is by BARE VERB ONLY — never args-conditional. A node
+# carrying a redirect / FS-mutation / substitution is still classified by its effect
+# node (those checks run FIRST), so this only spares a BARE benign command from the
+# bucket-3 fail-closed default. NOT green (no green-set expansion this sprint).
+_BENIGN_NONWRITERS = frozenset({
+    "echo", "printf", "true", "false", ":", "test", "[",
+    "seq", "sleep", "tty", "id", "uname", "hostname", "pwd",
+})
 _ZONE_RANK = {_GREEN: 0, _YELLOW: 1, _RED: 2}
 
 
@@ -782,10 +803,14 @@ def _classify_argv(
     # Shell interpreters (_SHELL_INTERP) stay RED — checked in the block above.
     if exe in _CODE_INTERP:
         if any(a in ("-c", "-e") or a.startswith(("-c", "-e")) for a in rest):
+            # containment Phase-2 Change 1 — an interpreter -c/-e payload is an
+            # opaque, unresolvable-write vector (bucket 3): RED, non-promotable.
+            # (Was YELLOW per-payload; the payload can write anywhere the AST
+            # cannot see, so it joins the fail-closed default.)
             sig = "argv:" + hashlib.sha1(
                 json.dumps(argv, separators=(",", ":")).encode("utf-8")
             ).hexdigest()[:16]
-            return (_YELLOW, f"opacity:{exe}-c:{sig}")
+            return (_RED, f"{_UNRESOLVED_WRITER}:opacity:{exe}-c:{sig}")
         if pipe_stage > 0:
             return (_RED, f"opacity:pipe-into-{exe}")
 
@@ -810,6 +835,15 @@ def _classify_argv(
     mutator_targets = _positionals(rest)
     if exe in ("chmod", "chown", "chgrp") and mutator_targets:
         mutator_targets = mutator_targets[1:]
+    elif exe == "dd":
+        # containment Phase-2 Change 1 — dd writes to ``of=FILE`` (a k=v operand,
+        # not a positional path); extract the of= target so it reaches the scope
+        # wall instead of being mis-parsed as the literal token ``of=FILE`` (which
+        # realpath-resolved to a bogus relative path and never matched a surface).
+        mutator_targets = [
+            t.split("=", 1)[1] for t in rest
+            if t.startswith("of=") and len(t) > len("of=")
+        ]
     if exe in _FS_MUTATORS:
         # Targets fed from stdin (xargs rm / xargs mv) are unbounded and not
         # statically resolvable → fail closed (RED). xargs echo stays benign.
@@ -874,11 +908,60 @@ def _classify_argv(
     ):
         return (_GREEN, f"govread:{exe}")
 
-    # Default: a parsed-argv-derived signature (comment/whitespace immune).
+    # containment Phase-2 Change 1 — BUCKET 2 (promotable YELLOW). A writer whose
+    # write surface is FULLY ACCOUNTED by the extracted targets, all non-scope-
+    # defining (scope-defining redirects returned RED at the redirect check;
+    # scope-defining / out-of-allowlist mutator targets returned RED govwrite above).
+    # "Fully accounted" holds ONLY for an FS-mutator (its positionals ARE its writes)
+    # or a read-only / benign verb (a redirect is its ONLY write). A BLIND/UNKNOWN
+    # exe with a redirect (``sed -i … > log``, ``git reset … > out``, ``foo … > x``)
+    # writes BEYOND the redirect the AST can see — the redirect does NOT account for
+    # its real (invisible) effect — so it must NOT ride bucket-2; it falls to the
+    # bucket-3 fail-closed default below.
+    if write_targets and (
+        exe in _FS_MUTATORS
+        or exe in _READ_ONLY_TOOLS
+        or exe in _BENIGN_NONWRITERS
+    ):
+        sig = "argv:" + hashlib.sha1(
+            json.dumps(argv, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        return (_YELLOW, f"cmd:{exe}:{sig}")
+
+    # containment Phase-2 Change 1 — KNOWN READER (YELLOW, not a write abnormality).
+    # A read-only tool (_READ_ONLY_TOOLS) with no real write (benign sinks only) is
+    # provably a READ — its operand need not be grove-scoped (govread greened those).
+    # Preserves reads of non-grove paths (cat /etc/hosts, grep x /var/log/y) and bare
+    # stdin-readers (head/wc/… in a pipe) as YELLOW so a read compound can still
+    # inherit GREEN via _command_is_green. Bucket 3 is for WRITE abnormalities only.
+    if exe in _READ_ONLY_TOOLS and all(_is_benign_sink(r) for r in redirects):
+        sig = "argv:" + hashlib.sha1(
+            json.dumps(argv, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        return (_YELLOW, f"cmd:{exe}:{sig}")
+
+    # containment Phase-2 Change 1 (Option B) — BENIGN NON-WRITER (YELLOW). A bare
+    # command from the CLOSED literal _BENIGN_NONWRITERS set touches no filesystem.
+    # Reached ONLY after the redirect-scope wall, FS-mutator wall, extracted-writer
+    # (bucket 2) and known-reader checks — so ``echo > file`` already classified via
+    # its write node and ``echo $(...)`` is substitution-RED upstream. A bare benign
+    # command stays YELLOW rather than tripping the fail-closed default.
+    if exe in _BENIGN_NONWRITERS:
+        sig = "argv:" + hashlib.sha1(
+            json.dumps(argv, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        return (_YELLOW, f"cmd:{exe}:{sig}")
+
+    # containment Phase-2 Change 1 — FAIL-CLOSED default (bucket 3). An effecting
+    # command reaching here is unenumerated with NO extractable write target the AST
+    # can prove safe (git, sed -i, awk/perl -i, ed, patch, curl -o, tar -x, …). RED,
+    # non-promotable. GREEN reads + extracted-target writers returned above;
+    # command/process substitution is RED upstream. Parsed-argv signature is
+    # comment/whitespace-immune.
     sig = "argv:" + hashlib.sha1(
         json.dumps(argv, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
-    return (_YELLOW, f"cmd:{exe}:{sig}")
+    return (_RED, f"{_UNRESOLVED_WRITER}:{exe}:{sig}")
 
 
 # ── read-only-compound-green-relief-v1 Phase 2 — unified GREEN predicate ──────
