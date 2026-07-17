@@ -231,6 +231,11 @@ def _bare_agent(msgs: List[Dict]):
     agent._current_messages = msgs
     agent.model = "m"
     agent.provider = "p"
+    # switch_model's non-Anthropic (openrouter) tier-bind branch dereferences
+    # self.api_key/self.base_url (run_agent.py:3852-3853); object.__new__ skips
+    # __init__ so they must be hand-set or the governed downshift AttributeErrors.
+    agent.api_key = ""
+    agent.base_url = ""
     agent.session_id = "c2a_session"
     agent._exec_called = False
 

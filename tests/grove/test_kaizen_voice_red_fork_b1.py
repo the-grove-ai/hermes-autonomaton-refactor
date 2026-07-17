@@ -71,6 +71,11 @@ def _bare_agent(msgs: List[Dict]) -> Any:
     agent._current_messages = msgs
     agent.model = "claude-sonnet-4-6"
     agent.provider = "anthropic"
+    # switch_model dereferences self.api_key/self.base_url on the governed
+    # tier-bind (run_agent.py:3852-3853); object.__new__ skips __init__, so
+    # hand-set them or the downshift AttributeErrors before the turn runs.
+    agent.api_key = ""
+    agent.base_url = ""
     _phase2_executor_stub(agent)
     return agent
 
