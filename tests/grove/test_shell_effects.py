@@ -215,6 +215,27 @@ class TestBucket3FailClosed:
         assert C("echo $(rm -rf x)").zone == "red"
 
     @pytest.mark.parametrize("cmd", [
+        "git status", "sed -i x f", "python3 -c 'x'", "date", "echo $(x)",
+    ])
+    def test_red_is_not_promotable(self, cmd, grove_home):
+        # Phase-2 Change 2: every RED classification is non-promotable.
+        assert C(cmd).is_promotable is False, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "echo ok", "echo x > /tmp/f", "cat /tmp/n", "uname -a", "tee /tmp/o",
+    ])
+    def test_yellow_is_promotable(self, cmd, grove_home):
+        # Phase-2 Change 2: promotable YELLOW (bucket 2 / benign / reader).
+        assert C(cmd).is_promotable is True, cmd
+
+    def test_chain_strict_and_promotability(self, grove_home):
+        # Phase-2 Change 2: one non-promotable node → the WHOLE chain is
+        # non-promotable (strict AND), even though the other node is benign YELLOW.
+        zr = C("git status; echo ok")
+        assert zr.zone == "red"
+        assert zr.is_promotable is False
+
+    @pytest.mark.parametrize("cmd", [
         "sed -i 's/a/b/' ~/.grove/dock/dock.yaml > /tmp/log",
         "git reset --hard origin/main > /tmp/out 2>&1",
         "some_unknown_tool --flag > /tmp/x",

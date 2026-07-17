@@ -256,8 +256,19 @@ def resolve_always_store(halt: object) -> "Optional[tuple]":
     Totality (H2 GATE-B F2): every currently-mintable halt resolves. None is
     reachable only for governance-shaped halts whose target cannot be
     derived — an unparseable terminal governance command (verb token present,
-    no target), or a native args_derived verb with empty arguments.
+    no target), or a native args_derived verb with empty arguments — OR (Phase-2
+    Change 2) a NON-PROMOTABLE classification (bucket-3 UNRESOLVED_WRITER / any RED
+    shell chain): such a halt has no Always store, so the affordance must not
+    render and the Dispatcher's mint floor must refuse.
     """
+    # containment Phase-2 Change 2 — refuse a standing store for a non-promotable
+    # classification. Read the triggering ZoneResult's is_promotable when present.
+    try:
+        _zr = halt.zone_results[halt.triggering_index]  # type: ignore[attr-defined]
+        if getattr(_zr, "is_promotable", True) is False:
+            return None
+    except (AttributeError, IndexError, TypeError):
+        pass
     try:
         triggering = halt.intents[halt.triggering_index]  # type: ignore[attr-defined]
     except Exception:

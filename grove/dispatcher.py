@@ -397,15 +397,17 @@ RED_RESOLUTIONS = (
 
 
 def headless_red_resolution(halt: "AndonResolutionHalt") -> str:
-    """Default RED-resolution handler — the headless fail-safe Cancel (B1).
+    """Default RED-resolution handler — the headless fail-safe Cancel.
 
-    GATE-DARK: Sprint B1 builds RED PLUMBING ONLY. There is no operator-facing
-    RED menu or input loop yet (that is B2). Absent an injected handler, every
-    RED halt resolves here to Cancel — the workflow is aborted and the turn
-    terminates via ``TerminalGovernanceHalt(red_workflow_cancel)``. De-scoped is
-    reachable only by injecting a hook that returns ``"descoped"`` (exercised
-    headless in tests). Operator-facing selection of Cancel vs De-scoped, and
-    the Operator-Runs-It branch, ship in B2.
+    This is the UNREACHABLE-surface fallback (fleet worker / non-interactive
+    gateway): absent an operator to approve, every RED halt resolves here to
+    Cancel — the workflow is aborted and the turn terminates via
+    ``TerminalGovernanceHalt(red_workflow_cancel)``. De-scoped is reachable by
+    injecting a hook that returns ``"descoped"``. (Original B1 "gate-dark" note
+    superseded: on REACHABLE surfaces _resolve_red_halt now routes RED to
+    STORE_PENDING / OPERATOR_IDENTITY / DENIED_BY_POLICY — red-action-store-
+    pending-v1 Phase A/B, live-proven — rather than falling back to this Cancel.
+    A bucket-3 UNRESOLVED_WRITER cancelled here files headless_governance_block.)
     """
     return RED_RESOLUTION_CANCEL
 
@@ -4923,9 +4925,13 @@ class Dispatcher:
                         feed-worthy OPERATOR_DESCOPED event. Returns the
                         generator's next yield so the caller resumes the loop.
 
-        GATE-DARK: B1 routes RED via the headless handler / default fallback —
-        there is NO operator-facing RED menu (B2). The Operator-Runs-It branch
-        and the resumable bridge are B2.
+        LIVE (red-action-store-pending-v1 Phase A/B; supersedes the original B1
+        "gate-dark" note): on an operator-REACHABLE surface a non-catastrophic RED
+        is stored for approval and re-dispatched (STORE_PENDING); priv:* routes to
+        Operator-Runs-It (OPERATOR_IDENTITY); a deny-listed catastrophic effect is
+        DENIED_BY_POLICY. Only UNREACHABLE surfaces (fleet / non-interactive gateway)
+        fall back to the headless Cancel/De-scope default. Proven live: 32 tests +
+        historical store_pending_approval ledger artifacts for terminal RED.
         """
         _trig = halt.intents[halt.triggering_index]
         _trig_tool = getattr(_trig, "tool_name", None)
@@ -4978,6 +4984,33 @@ class Dispatcher:
                 zone=halt.zone,
                 matched_rule=halt.matched_rule,
                 triggering_tool=getattr(_trig, "tool_name", None),
+            )
+        # containment Phase-2 Change 2 — LOUD headless-cancel. When a bucket-3
+        # UNRESOLVED_WRITER RED is dropped on an UNREACHABLE surface (fleet worker /
+        # non-interactive gateway → headless Cancel/De-scope, not STORE_PENDING),
+        # file a distinct headless_governance_block event so a silently-cancelled
+        # fail-closed write is observable, not lost. ONLY (unreachable AND
+        # UNRESOLVED_WRITER) — reachable store-pending and other RED classes are
+        # already covered by red_resolution above.
+        _pk = getattr(halt, "pattern_key", None) or ""
+        if (
+            "UNRESOLVED_WRITER" in _pk
+            and resolution in (RED_RESOLUTION_CANCEL, RED_RESOLUTION_DESCOPED)
+            and not self._is_operator_reachable()
+        ):
+            if ledger is not None:
+                ledger.record(
+                    "headless_governance_block",
+                    resolution=resolution,
+                    pattern_key=_pk,
+                    triggering_tool=getattr(_trig, "tool_name", None),
+                    surface=self._platform,
+                )
+            logger.warning(
+                "[grove.dispatcher] headless_governance_block: a fail-closed "
+                "UNRESOLVED_WRITER (%s) was %s on an unreachable surface (%s) — no "
+                "operator present to approve; the write did not run.",
+                _pk, resolution, self._platform,
             )
         if resolution == RED_RESOLUTION_CANCEL:
             # Cancel — reuse the terminal mechanism with DISTINCT provenance
@@ -5467,20 +5500,39 @@ class Dispatcher:
             # would create a blanket green zone rule — the bypass bug this model
             # fixes. Only fire for non-governance halts (Yellow zone generics).
             if not self._is_governance_mutation_halt(halt):
-                # H2 structural floor: the resolver is total for yellow
-                # generics (zone_rule at minimum, GATE-B F2); anything else
-                # here is a defect — fail loud, never silently drop the
-                # operator's 'Always'.
-                from grove.grant_recognition import resolve_always_store
-                _store = resolve_always_store(halt)
-                if _store is None or _store[0] != "zone_rule":
-                    raise ValueError(
-                        f"'Always' on a non-governance halt resolved "
-                        f"{_store!r} instead of a zone_rule store — the "
-                        f"Always affordance must not render when no store "
-                        f"applies (H2 structural floor)"
+                # containment Phase-2 Change 2 — a NON-PROMOTABLE classification
+                # (bucket-3 UNRESOLVED_WRITER / any RED shell chain) has no standing
+                # store: the Always affordance must not have rendered, and if
+                # "always" arrives anyway we refuse CLEANLY (no zone rule written),
+                # not via the H2 defect-raise below. is_promotable defaults True, so
+                # every promotable yellow generic still flows through unchanged.
+                _tzr = None
+                try:
+                    _tzr = halt.zone_results[halt.triggering_index]
+                except (AttributeError, IndexError, TypeError):
+                    _tzr = None
+                if _tzr is not None and getattr(_tzr, "is_promotable", True) is False:
+                    logger.warning(
+                        "[grove.dispatcher] refusing 'always' on a non-promotable "
+                        "classification (%s) — no standing grant written; the effect "
+                        "remains per-instance approvable.",
+                        getattr(_tzr, "matched_rule", "?"),
                     )
-                self._apply_zone_promotion(triggering_intent)
+                else:
+                    # H2 structural floor: the resolver is total for yellow
+                    # generics (zone_rule at minimum, GATE-B F2); anything else
+                    # here is a defect — fail loud, never silently drop the
+                    # operator's 'Always'.
+                    from grove.grant_recognition import resolve_always_store
+                    _store = resolve_always_store(halt)
+                    if _store is None or _store[0] != "zone_rule":
+                        raise ValueError(
+                            f"'Always' on a non-governance halt resolved "
+                            f"{_store!r} instead of a zone_rule store — the "
+                            f"Always affordance must not render when no store "
+                            f"applies (H2 structural floor)"
+                        )
+                    self._apply_zone_promotion(triggering_intent)
 
         # Sprint 53.2 — if an "allow once" disposition just let a
         # quarantined (.andon) skill run, flag it so the post-execution
