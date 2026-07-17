@@ -1,14 +1,20 @@
 """GRV-009 E5b C1 — the eager/pull disclosure split, derived from records.
 
-Proves the record-driven split (disclosure_split_sets + build_disclosure_units)
-reproduces the legacy build_manifest split BYTE-FOR-BYTE:
+Snapshots the record-driven split (disclosure_split_sets +
+build_disclosure_units) against the split-parity golden — eager names +
+pull-index string + token counts per tier x intent x complexity cell.
 
-* the split-parity golden (eager names + schema hash + pull-index string + token
-  counts per tier x intent x complexity cell), captured pre-swap;
-* the equivalence gate, run live against the legacy build_manifest on the
-  CURRENT/repo taxonomy (== the VM operator-copy): 0 mismatches, and the
-  structural identity proactive-always == taxonomy.core;
-* _valid_group_names is now the constant catalog (no tool_groups read).
+XFAIL (test-baseline-hygiene-v2): the golden's provider-tool rows
+(web_search/web_extract/gmail/drive-class) are unreproducible under the
+creds-blanked hermetic harness. With no ~/.grove provider config,
+reg.get_definitions omits those tools, so the live split drops them while the
+golden — frozen creds-present — retains them. This is a harness artifact, NOT a
+regression: the live gateway serves them (web_search 248 / web_extract 524 real
+turns). The equivalence gate that once cross-checked this split against the
+legacy build_manifest was retired when build_manifest was deleted (GRV-009 E5b
+C2), so no independent coverage of the provider-tool disclosure split remains;
+the golden is kept as its nominal record. Real fix + coverage restoration:
+split-parity-env-robustness-v1 (Notion 3a0780a78eef81acb549d0d0570e11bc).
 """
 
 from __future__ import annotations
@@ -16,6 +22,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+
+import pytest
 
 from grove.classify import COMPLEXITY_SIGNALS, INTENT_CLASSES
 from grove.context_budget import _name_of, resolve_tools_for_tier
@@ -57,15 +65,30 @@ def _record_split(units, defs_by, res_tools, intent):
     return eager, _index_string(units, set(eager))
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "Provider-tool rows (web_search/web_extract/gmail/drive-class) are "
+        "unreproducible under the creds-blanked hermetic harness; the live "
+        "gateway serves them (web_search 248 / web_extract 524 real turns). No "
+        "independent coverage exists for the provider-tool disclosure split "
+        "(equivalence gate retired GRV-009 E5b; test_disclosure_wiring is "
+        "synthetic). Golden preserved as the nominal record. Real fix + coverage "
+        "restoration: split-parity-env-robustness-v1 "
+        "(Notion 3a0780a78eef81acb549d0d0570e11bc)."
+    ),
+)
 def test_split_parity_matches_golden_byte_for_byte():
     # The C1-determined artifacts: the eager NAME list (ordered), the pull-index
     # STRING (verbatim), and the index token count. These are exactly what the
     # record-driven split computes. The eager toolset's SCHEMA bytes come verbatim
     # from the registry (res.tools) and are NOT changed by C1 — their per-run
-    # identity (record-split eager == legacy eager → same schemas) is proven by
-    # test_equivalence_gate; the frozen cross-run schema hash in the golden is a
-    # reference only (registry availability varies by environment), not asserted
-    # here, so the test tracks C1's change rather than registry env drift.
+    # identity (record-split eager == legacy eager) was formerly cross-checked by
+    # the equivalence gate, retired with build_manifest (GRV-009 E5b C2); no
+    # independent coverage of the provider-tool split now remains (see the module
+    # docstring / split-parity-env-robustness-v1). The frozen cross-run schema
+    # hash in the golden is a reference only (registry availability varies by
+    # environment), not asserted here.
     from agent.model_metadata import estimate_tokens_rough
     golden = json.loads(_GOLDEN.read_text())
     reg, defs_by, tooldicts, budgets = _setup()
