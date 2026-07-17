@@ -177,6 +177,12 @@ class KaizenLedger:
         # ReadOnlyPaths). Filed by tools/code_execution_tool.py on EROFS detection.
         # Carries target + boundary_class + errno + tool + exit_code.
         "containment_violation",
+        # execute-code-meta-surface-containment-v1 Phase-2 Change 2 — a bucket-3
+        # UNRESOLVED_WRITER RED that was dropped (headless Cancel/De-scope) on an
+        # UNREACHABLE surface (no operator to approve). Filed by _resolve_red_halt so
+        # a silently-cancelled fail-closed write is observable. Carries resolution +
+        # pattern_key + triggering_tool + surface.
+        "headless_governance_block",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:

@@ -133,10 +133,12 @@ def _max_zone(a: str, b: str) -> str:
     return a if _ZONE_RANK[a] >= _ZONE_RANK[b] else b
 
 
-def _result(zone: str, rule: str, reason: str, sig: str) -> ZoneResult:
+def _result(
+    zone: str, rule: str, reason: str, sig: str, *, is_promotable: bool = True
+) -> ZoneResult:
     return ZoneResult(
         zone=zone, matched_rule=rule, source="shell_effect",
-        reason=reason, pattern_key=sig,
+        reason=reason, pattern_key=sig, is_promotable=is_promotable,
     )
 
 
@@ -1081,7 +1083,7 @@ def classify_shell_effect(command: str) -> ZoneResult:
             _RED, "shell.opacity.unparseable",
             "Command could not be parsed into an analyzable AST — refusing "
             "(fail-closed: an unanalyzable effect does not run).",
-            "opacity:unparseable",
+            "opacity:unparseable", is_promotable=False,
         )
 
     ctx = _Ctx()
@@ -1094,7 +1096,7 @@ def classify_shell_effect(command: str) -> ZoneResult:
             "Command or process substitution ($(...) / backticks / <(...) / "
             ">(...)) — the ultimate payload is not statically resolvable (a "
             "consumer may EXECUTE the FIFO content); refusing (RED).",
-            "opacity:substitution",
+            "opacity:substitution", is_promotable=False,
         )
 
     if not ctx.commands:
@@ -1104,11 +1106,18 @@ def classify_shell_effect(command: str) -> ZoneResult:
     sigs: List[str] = []
     red_reason: Optional[str] = None
     infos: List[Tuple[object, int, str]] = []  # (node, pipe_stage, zone)
+    # containment Phase-2 Change 2 — strict-AND promotability across nodes. A RED
+    # node (all forms, incl. bucket-3 UNRESOLVED_WRITER) is non-promotable; ONE such
+    # node makes the whole chain non-promotable (an operator "Always" must never ride
+    # a chain containing an unvettable write).
+    promotable = True
     for node, stage in ctx.commands:
         zone, sig = _classify_node(node, stage)
         sigs.append(sig)
         if zone == _RED and red_reason is None:
             red_reason = sig
+        if zone == _RED:
+            promotable = False
         worst = _max_zone(worst, zone)
         infos.append((node, stage, zone))
 
@@ -1118,11 +1127,15 @@ def classify_shell_effect(command: str) -> ZoneResult:
         # Surface ANDON-WRAPPER when the RED came from an unresolvable wrapper
         # operand or exceeded recursion depth (discovery-gate condition).
         andon = " [ANDON-WRAPPER]" if red_reason and _is_andon_wrapper_sig(red_reason) else ""
-        return _result(
-            _RED, f"shell.effect.red ({red_reason}){andon}",
-            f"A command effect requires sovereign approval: {red_reason}.{andon}",
-            signature,
-        )
+        # containment Phase-2 Change 2 — name the abnormality for a bucket-3
+        # UNRESOLVED_WRITER so the operator sees WHY it is fail-closed.
+        if red_reason and red_reason.startswith(_UNRESOLVED_WRITER):
+            _rule = f"shell.effect.red ({_UNRESOLVED_WRITER}){andon}"
+            _reason = f"{_UNRESOLVED_WRITER_REASON}.{andon}"
+        else:
+            _rule = f"shell.effect.red ({red_reason}){andon}"
+            _reason = f"A command effect requires sovereign approval: {red_reason}.{andon}"
+        return _result(_RED, _rule, _reason, signature, is_promotable=False)
     # read-only-compound-green-relief-v1 Phase 2 — the unified complete-surface
     # GREEN predicate (:func:`_command_is_green`) is the SINGLE command-promotion
     # decision point, replacing the prior single-node gate. A command is GREEN iff
@@ -1137,7 +1150,7 @@ def classify_shell_effect(command: str) -> ZoneResult:
             _GREEN, "shell.effect.green",
             "Promoted-skill / read execution (incl. inherited pipeline reads), or "
             "a granted-workspace write.",
-            signature,
+            signature, is_promotable=promotable,
         )
     # A quarantined (.andon) skill execution carries a ".andon" matched_rule so
     # the Dispatcher's quarantine try-before-promote flow fires (it keys on
@@ -1147,4 +1160,4 @@ def classify_shell_effect(command: str) -> ZoneResult:
     if any(s.startswith("skills.andon") for s in sigs):
         rule = "shell.effect.quarantine (.andon)"
         reason = "Quarantined (.andon) skill execution — try-before-promote gate."
-    return _result(_YELLOW, rule, reason, signature)
+    return _result(_YELLOW, rule, reason, signature, is_promotable=promotable)

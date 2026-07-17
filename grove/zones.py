@@ -231,6 +231,13 @@ class ZoneResult:
     source: str
     reason: Optional[str] = None
     pattern_key: Optional[str] = None
+    # execute-code-meta-surface-containment-v1 Phase-2 Change 2 — whether an operator
+    # "Always" may promote this classification to a standing grant / zone rule.
+    # Trailing default True so every existing constructor is unchanged; the shell
+    # classifier sets it False for a bucket-3 UNRESOLVED_WRITER (and any RED chain).
+    # The Always affordance (grove.grant_recognition.resolve_always_store + the
+    # Dispatcher H2 floor) refuses to render when this is False.
+    is_promotable: bool = True
 
 
 class ZoneClassifier:
