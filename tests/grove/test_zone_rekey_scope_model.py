@@ -287,27 +287,29 @@ class TestClassifyShellEffectScope:
         zr = classify_shell_effect(f"echo x > {grove_home / '.env'}")
         assert zr.zone == "red"
 
-    def test_code_interp_redirect_into_granted_workspace_is_yellow(self, grove_home):
-        # operational-toolkit-v1 (Gemini GATE-B): `python -c` reclassified RED→
-        # YELLOW (operator-approvable per-payload). Writing into a GRANTED
-        # workspace (research/ is GREEN) no longer forces RED — the operator sees
-        # the full payload at the YELLOW gate. (Was RED pre-reclassification.)
+    def test_code_interp_redirect_is_red(self, grove_home):
+        # Phase-2 Change 1 (supersedes operational-toolkit-v1): `python -c` is
+        # bucket-3 RED (UNRESOLVED_WRITER) — the opaque payload can write anywhere
+        # the AST cannot see, so it dominates regardless of the visible redirect
+        # target (even a granted workspace). Redirect-target zoning for a
+        # transparent verb is covered in test_shell_effects.
         from grove.shell_effects import classify_shell_effect
         zr = classify_shell_effect(f"python3 -c 'print(1)' > {grove_home / 'research' / 'x'}")
-        assert zr.zone == "yellow"
+        assert zr.zone == "red"
+        assert "UNRESOLVED_WRITER" in (zr.matched_rule or "")
 
-    def test_code_interp_redirect_into_grove_path(self, grove_home):
-        # shell-grove-access-v1: a redirect into a NON-SECRET ~/.grove path is now
-        # YELLOW (operator-approvable), matching write_file — the old blanket
-        # "ungranted ~/.grove → RED" is gone. A redirect into a SECRET stays RED:
-        # the secret wall runs before any benign-zone shortcut, so a benign-looking
-        # `python -c` still cannot smuggle a write to a secret.
+    def test_transparent_verb_redirect_into_grove_path(self, grove_home):
+        # shell-grove-access-v1 + Phase-2 Change 1: a TRANSPARENT verb (echo) whose
+        # redirect target the AST can extract is zoned by that target — a non-secret
+        # ~/.grove path is YELLOW (operator-approvable, matches write_file), a SECRET
+        # stays RED (the secret wall runs before any benign-zone shortcut). (The old
+        # test used `python -c`, which is now bucket-3 RED regardless of target.)
         from grove.shell_effects import classify_shell_effect
         assert classify_shell_effect(
-            f"python3 -c 'print(1)' > {grove_home / 'memory' / 'x'}"
+            f"echo x > {grove_home / 'memory' / 'x'}"
         ).zone == "yellow"
         assert classify_shell_effect(
-            f"python3 -c 'print(1)' > {grove_home / '.env'}"
+            f"echo x > {grove_home / '.env'}"
         ).zone == "red"
 
     def test_rm_rf_grove_root_is_red(self, grove_home):

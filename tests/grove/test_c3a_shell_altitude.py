@@ -52,18 +52,22 @@ class TestWrapperRecursion:
         'timeout 60 python -c "x"',         # → code-interp -c at leaf (YELLOW)
         'stdbuf -oL python -c "import os"',  # → code-interp -c at leaf (YELLOW)
     ])
-    def test_wrapper_recurses_to_yellow_code_interp_leaf(self, cmd, grove_home):
-        # operational-toolkit-v1: a wrapper around `python -c` still recurses to
-        # the leaf; the leaf is now YELLOW (operator-approvable per-payload), not
-        # RED. This proves the recursion reaches the real leaf without a false
-        # RED bubble — the wrapper-recursion contract is preserved.
-        assert C(cmd).zone == "yellow", cmd
+    def test_wrapper_recurses_to_code_interp_leaf(self, cmd, grove_home):
+        # Phase-2 Change 1 (supersedes operational-toolkit-v1): a wrapper around
+        # `python -c` still recurses to the leaf; the leaf is now bucket-3 RED
+        # (UNRESOLVED_WRITER). This proves the recursion reaches the real leaf and
+        # applies the leaf's (now fail-closed) classification, not the wrapper's.
+        zr = C(cmd)
+        assert zr.zone == "red", cmd
+        assert "UNRESOLVED_WRITER" in (zr.matched_rule or ""), cmd
 
     def test_wrapper_does_not_red_benign_leaf(self, grove_home):
         # env/nice/timeout around a benign command stay non-RED (no false bubble
         # in either direction).
         assert C("nice ls -la").zone != "red"
-        assert C("timeout 30 git status").zone != "red"
+        # Phase-2 Change 1: git is now bucket-3 RED, so use an actually-benign leaf
+        # (echo) to assert the wrapper adds no false RED bubble to a benign command.
+        assert C("timeout 30 echo hi").zone != "red"
         assert C("env FOO=bar echo hi").zone != "red"
 
     def test_wrapper_preserves_promoted_skill_green(self, grove_home):
@@ -176,8 +180,10 @@ class TestC1aSeedRegression:
         assert C("rm -rf ~ # ~/.grove/skills/").zone == "red"
 
     def test_benign_yellow_unchanged(self, grove_home):
-        assert C("git status").zone == "yellow"
-        assert C("git status   # noise comment").zone == "yellow"
+        # Phase-2 Change 1: git is bucket-3 RED now; assert benign non-writers
+        # (Option-B closed set) stay YELLOW instead.
+        assert C("echo hi").zone == "yellow"
+        assert C("uname -a").zone == "yellow"
 
     def test_promoted_skill_green_unchanged(self, grove_home):
         assert C(f"python3 {grove_home}/skills/demo/run.py").zone == "green"

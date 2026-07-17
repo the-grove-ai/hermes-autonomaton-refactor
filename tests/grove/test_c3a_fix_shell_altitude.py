@@ -128,11 +128,11 @@ class TestC3aCanonicalNoBackslide:
     def test_still_red(self, cmd, grove_home):
         assert C(cmd).zone == "red", cmd
 
-    def test_wrapped_code_interp_now_yellow(self, grove_home):
-        # operational-toolkit-v1 (Gemini GATE-B): `python -c` reclassified RED→
-        # YELLOW (operator-approvable per-payload). A wrapper around it resolves
-        # to the leaf and is YELLOW too. SHELL interps (env sh -c above) stay RED.
-        assert C('timeout 60 python -c "x"').zone == "yellow"
+    def test_wrapped_code_interp_now_red(self, grove_home):
+        # Phase-2 Change 1 (supersedes operational-toolkit-v1): `python -c` is
+        # bucket-3 RED (UNRESOLVED_WRITER). A wrapper around it resolves to the leaf
+        # and is RED too. SHELL interps (env sh -c above) stay RED.
+        assert C('timeout 60 python -c "x"').zone == "red"
 
     def test_governed_find_delete_red(self, grove_home):
         assert C(f"find {grove_home} -delete").zone == "red"
@@ -144,7 +144,7 @@ class TestC3aCanonicalNoBackslide:
         "find . -name '*.py'",
         "ls | xargs echo",
         "nice ls -la",
-        "timeout 30 git status",
+        "timeout 30 echo hi",  # Phase-2: git status is now bucket-3 RED; use a benign leaf
     ])
     def test_benign_preserved(self, cmd, grove_home):
         assert C(cmd).zone != "red", cmd
