@@ -1041,13 +1041,21 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             dispatched_args: Optional[dict] = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
     presents them as a single combined approval request. This prevents
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
+
+    ``dispatched_args`` is the EXACT arguments dict this tool call was
+    dispatched with (command + workdir + anything else the terminal handler
+    received). On a gate-required RED re-dispatch it lets the honor check
+    recompute ``canonical_effect_signature("terminal", dispatched_args)`` and
+    require byte-exact equality with the gate-CONSUMED signature published on
+    ``consumed_signature_var`` — unresolved-writer-execution-path-v1 Fix 1.
     """
     # Skip containers for both checks
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
@@ -1147,19 +1155,43 @@ def check_all_command_guards(command: str, env_type: str,
             _catastrophic, _cat_desc = detect_hardline_command(command)
             if _catastrophic:
                 return _hardline_block_result(_cat_desc)
-            # MINT-AWARE: honor an operator-approved re-dispatch. Re-hash the EXACT
-            # command about to execute (hash-what-you-execute) and match it against
-            # the approved-effect ContextVar set by approve_red_proposal around
-            # registry.dispatch. A match means the operator approved THIS EXACT
-            # effect via the portal two-step → execute instead of re-blocking.
-            # Fail-CLOSED: any error falls through to the existing block below.
+            # unresolved-writer-execution-path-v1 Fix 1 — UNIFIED-SIGNATURE honoring
+            # (FULL-ARGS EQUALITY). On a GATE-REQUIRED re-dispatch, registry.dispatch
+            # published the EXACT gate-CONSUMED signature —
+            # canonical_effect_signature over the FULL dispatched args (command +
+            # workdir + everything else) — on consumed_signature_var, then invoked
+            # THIS guard's handler with those very args (threaded here as
+            # ``dispatched_args``). A non-None consumed signature means "this dispatch
+            # cleared the Stage-04 gate for this exact effect." We honor iff
+            # ``canonical_effect_signature("terminal", dispatched_args)`` equals the
+            # consumed signature — byte-for-byte the SAME computation the gate ran. No
+            # fragment containment, no arg tolerance: a different command OR a
+            # different workdir yields a different signature and is refused. This is
+            # what removes the command-only-vs-full-args divergence (the live defect):
+            # the gate and the guard now hash identical inputs.
+            #
+            # Present-but-mismatched (a nested dispatch of a DIFFERENT effect under an
+            # approval, or a dispatch whose args we cannot reconstruct because
+            # dispatched_args is absent) fails CLOSED with a distinct
+            # MISSING_APPROVAL_CONTEXT — never render_red_surface. When there is NO
+            # consumed context (an UNGATED call — consumed_signature_var is None), fall
+            # through to the existing sovereign / descope path below (unchanged).
             try:
-                from grove.red_execution_context import approved_effect_var
-                from grove.effect_signature import canonical_effect_signature
-                _approved_effect = approved_effect_var.get()
-                if _approved_effect is not None and canonical_effect_signature(
-                    "terminal", {"command": command}
-                ) == _approved_effect:
+                from grove.red_execution_context import consumed_signature_var
+                _consumed_sig = consumed_signature_var.get()
+            except Exception:  # noqa: BLE001 — fail-closed to the block below
+                _consumed_sig = None
+            if _consumed_sig is not None:
+                _redispatch_sig = None
+                if dispatched_args is not None:
+                    try:
+                        from grove.effect_signature import canonical_effect_signature
+                        _redispatch_sig = canonical_effect_signature(
+                            "terminal", dispatched_args
+                        )
+                    except Exception:  # noqa: BLE001 — fail-closed below
+                        _redispatch_sig = None
+                if _redispatch_sig is not None and _redispatch_sig == _consumed_sig:
                     return {
                         "approved": True,
                         "message": None,
@@ -1169,8 +1201,21 @@ def check_all_command_guards(command: str, env_type: str,
                         "pattern_key": _zone_pattern_key,
                         "approved_via_mint": True,
                     }
-            except Exception:  # noqa: BLE001 — fail-closed to the block below
-                pass
+                # Gate-required but the consumed approval does not match this exact
+                # dispatch: fail-closed, distinct diagnostic — NEVER the sovereignty
+                # surface.
+                return {
+                    "approved": False,
+                    "message": (
+                        "MISSING_APPROVAL_CONTEXT: the gate-consumed approval does "
+                        "not match this command's effect — not authorized to execute."
+                    ),
+                    "zone_classified": "red",
+                    "failure_class": "missing_approval_context",
+                    "matched_rule": _zone.matched_rule,
+                    "zone_reason": _zone_reason,
+                    "pattern_key": _zone_pattern_key,
+                }
             _strict = is_truthy_value(os.getenv("GROVE_ZONE_STRICT"))
             _interactive = is_cli and not is_gateway and not is_ask
             if _strict or not _interactive:

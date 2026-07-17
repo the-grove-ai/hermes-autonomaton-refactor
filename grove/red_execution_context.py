@@ -1,27 +1,37 @@
-"""Approved-effect execution context — red-action-store-pending-v1 Phase C.
+"""Gate-consumed effect-signature execution context — unresolved-writer-execution
+-path-v1 (supersedes red-action-store-pending-v1 Phase C's approved_effect_var).
 
-A ``contextvars.ContextVar`` carrying the effect signature of a governed RED
-re-dispatch that the operator has APPROVED. Set by
-``grove.red_pending_store.approve_red_proposal`` around ``registry.dispatch``;
-read by the terminal guard (``tools.approval.check_all_command_guards``) to honor
-an approved execution — RED shell + a matching approved-effect → execute; else the
-existing block stands.
+A ``contextvars.ContextVar`` carrying the EXACT effect signature the dispatch
+primitive CONSUMED for the tool call currently executing under an active
+``ApprovalGate``. Set by ``tools.registry.ToolRegistry.dispatch`` immediately
+after a successful ``_gate.consume(...)``, and reset (token) in a ``finally`` so
+it never leaks past the single dispatch. Read by execution-time tool guards
+(``tools.approval.check_all_command_guards`` for shell; ``tools.file_tools`` for
+the scope wall) to honor an operator-approved re-dispatch — a matching effect →
+execute; else fail-closed.
 
-``ContextVar`` (NOT ``threading.local``) — Gemini GATE-B mandate: native isolation
-across the gateway's asyncio loop AND its ThreadPoolExecutor turn threads, and
-``reset(token)`` in a ``finally`` is exception-safe so an approved-effect can never
-leak past its single dispatch into another turn/task.
+Unified signature: there is now ONE signature — the one the gate consumed over the
+FULL dispatched args (``canonical_effect_signature(name, args)``). BOTH guards
+honor by byte-exact EQUALITY against it: they recompute
+``canonical_effect_signature`` over the exact dispatched args (the shell guard over
+the terminal args threaded through the handler; the file guard over its tool args)
+and require it to equal the consumed signature. This eliminates the
+command-only-vs-full-args divergence that refused approved shell re-dispatches — a
+different command OR a different non-command arg (e.g. workdir) yields a different
+signature and is refused.
 
-Standalone module (no imports of red_pending_store / approval) so both the setter
-and the reader import it without a cycle.
+``ContextVar`` (NOT ``threading.local``) — native isolation across the gateway's
+asyncio loop AND its ThreadPoolExecutor turn threads; ``reset(token)`` in a
+``finally`` is exception-safe. Standalone module (no imports of registry /
+approval / red_pending_store) so setter and readers import it without a cycle.
 """
 from __future__ import annotations
 
 import contextvars
 from typing import Optional
 
-# The exact minted effect signature of the RED action currently being executed
-# under operator approval, or None when no approved re-dispatch is in flight.
-approved_effect_var: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
-    "grove_approved_effect", default=None
+# The EXACT gate-consumed effect signature of the tool call currently executing
+# under an active ApprovalGate, or None when no gate-consumed dispatch is in flight.
+consumed_signature_var: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "grove_consumed_signature", default=None
 )

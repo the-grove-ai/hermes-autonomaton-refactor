@@ -962,9 +962,9 @@ def _verify_scope_defining_execution(tool_name: str, args: dict) -> None:
     )
     if offending is None:
         return
-    from grove.red_execution_context import approved_effect_var
+    from grove.red_execution_context import consumed_signature_var
     from grove.effect_signature import canonical_effect_signature
-    _approved = approved_effect_var.get()
+    _approved = consumed_signature_var.get()
     if _approved is not None and canonical_effect_signature(tool_name, args) == _approved:
         return  # operator-approved RED re-dispatch — the effect matches
     logger.error(

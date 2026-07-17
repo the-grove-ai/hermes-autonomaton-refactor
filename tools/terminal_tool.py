@@ -321,10 +321,18 @@ from tools.approval import (
 )
 
 
-def _check_all_guards(command: str, env_type: str) -> dict:
-    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
+def _check_all_guards(command: str, env_type: str,
+                      dispatched_args: Optional[dict] = None) -> dict:
+    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback.
+
+    ``dispatched_args`` is the EXACT arguments dict this terminal call was
+    dispatched with; the guard recomputes the canonical effect signature over it
+    to honor a gate-approved RED re-dispatch by byte-exact equality
+    (unresolved-writer-execution-path-v1 Fix 1).
+    """
     return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_get_approval_callback())
+                                  approval_callback=_get_approval_callback(),
+                                  dispatched_args=dispatched_args)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -1708,6 +1716,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    dispatched_args: Optional[dict] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -1902,7 +1911,8 @@ def terminal_tool(
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
         if not force:
-            approval = _check_all_guards(command, env_type)
+            approval = _check_all_guards(command, env_type,
+                                         dispatched_args=dispatched_args)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "approval_required":
@@ -2405,6 +2415,11 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    # Pass the ORIGINAL args dict through so the shell guard can recompute
+    # canonical_effect_signature("terminal", args) — byte-identical to what
+    # registry.dispatch consumed and published on consumed_signature_var — and
+    # honor a gate-approved RED re-dispatch by full-args equality
+    # (unresolved-writer-execution-path-v1 Fix 1).
     return terminal_tool(
         command=args.get("command"),
         background=args.get("background", False),
@@ -2414,6 +2429,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        dispatched_args=args,
     )
 
 def register(reg):
