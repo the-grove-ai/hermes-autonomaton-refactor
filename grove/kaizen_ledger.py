@@ -163,6 +163,20 @@ class KaizenLedger:
         # + surface (portal / proposal_apply / …) + proposal_id (null unless
         # the write is a proposal apply).
         "capability_binding_mutation",
+        # Sprint 50 — routing config mutations through the sanctioned writer
+        # (RoutingConfigWriter.apply_mutation). Written by the writer itself
+        # AFTER the atomic swap lands, so the ledger entry is an audit trail
+        # that the config file moved independently of any session's tool calls.
+        # containment Phase-1 step-4: restored here — grove/config/routing_writer.py
+        # files this type but origin/main's allowlist omitted it (latent bug: every
+        # routing mutation hit the error-floor). Was an uncommitted VM hand-patch;
+        # committed inline so the code deploy does not regress routing-config filing.
+        "routing_config_mutation",
+        # execute-code-meta-surface-containment-v1 Phase-1 — a sandboxed write that
+        # hit the kernel read-only governance boundary (repo config/ tree,
+        # ReadOnlyPaths). Filed by tools/code_execution_tool.py on EROFS detection.
+        # Carries target + boundary_class + errno + tool + exit_code.
+        "containment_violation",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:

@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shlex
 import signal
 import socket
@@ -75,6 +76,77 @@ DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
+
+# ── execute-code-meta-surface-containment-v1 Phase-1 — containment detection ──
+# The repo config/ tree is kernel-read-only to the gateway daemon and its
+# children (systemd ReadOnlyPaths). A sandboxed write there returns EROFS; this
+# turns that raw failure into an auditable provenance signal + an agent-facing
+# classification. Detection is a heuristic on child stderr — LC_ALL=C on the
+# child (set below) makes strerror deterministic so the marker is stable across
+# locales, and the /-rooted fallback catches subprocess writers (git/sed/tee)
+# whose stderr carries no ``[Errno 30]``. It BLOCKS NOTHING; the kernel is the
+# wall. A miss only under-reports.
+_RO_MARKER = "read-only file system"
+_ERRNO30_RE = re.compile(r"\[Errno 30\][^:]*:\s*'([^']+)'")
+_ROOTED_PATH_RE = re.compile(r"(/[^\s':]+)")
+
+
+def _repo_config_root() -> str:
+    """``<repo>/config`` realpath-resolved. This module lives in ``tools/`` so the
+    repo root is ``parents[1]`` of ``__file__`` (module-root anchor, per
+    write-routing-coherence-v1); never hardcoded."""
+    from pathlib import Path
+    return os.path.realpath(str(Path(__file__).resolve().parents[1] / "config"))
+
+
+def _classify_containment(stderr_text: str):
+    """Classify a child EROFS as a containment signal. PURE — unit-testable.
+
+    Returns ``(matched, target, boundary_class)`` where boundary_class is one of
+    ``governance_definition`` | ``system_protect`` | ``other_readonly`` |
+    ``unresolved``. Catches the Python ``OSError`` shape and the subprocess-writer
+    shape (git/sed/tee: the read-only marker with no ``[Errno 30]``). The stored
+    target is redacted when it resolves to a secret path; boundary_class is still
+    computed from the true path. Blocks nothing — a miss only under-reports.
+    """
+    if not stderr_text or _RO_MARKER not in stderr_text.lower():
+        return (False, "", "")
+    target = ""
+    m = _ERRNO30_RE.search(stderr_text)
+    if m:
+        target = m.group(1)
+    else:
+        for line in stderr_text.splitlines():
+            if _RO_MARKER in line.lower():
+                pm = _ROOTED_PATH_RE.search(line)
+                if pm:
+                    target = pm.group(1)
+                break
+    if not target:
+        return (True, "unknown", "unresolved")
+    try:
+        from grove.utils.fs_utils import is_scope_defining, is_secret_path
+        resolved = os.path.realpath(os.path.expanduser(target))
+        cfg = _repo_config_root()
+        if resolved == cfg or resolved.startswith(cfg + os.sep) or is_scope_defining(target):
+            bclass = "governance_definition"
+        elif resolved in ("/usr", "/etc", "/boot") or resolved.startswith(
+            ("/usr/", "/etc/", "/boot/")
+        ):
+            bclass = "system_protect"
+        else:
+            bclass = "other_readonly"
+        # Never let a secret path enter the ledger — redact the stored target,
+        # keep the boundary_class computed from the true path above.
+        if is_secret_path(target):
+            target = "[redacted]"
+    except Exception:
+        # Resolver failure → file the event, never the untrusted path (redaction
+        # may not have run; "unknown" over a possible secret). Best-effort — a
+        # resolver edge never crashes the tool return (error-log-floor ethos).
+        return (True, "unknown", "unresolved")
+    return (True, target, bclass)
+
 
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
@@ -1261,6 +1333,11 @@ def execute_code(
         if _profile_home:
             child_env["HOME"] = _profile_home
 
+        # execute-code-meta-surface-containment-v1 Phase-1 — pin LC_ALL=C so the
+        # child's EROFS strerror ("Read-only file system") is locale-stable for
+        # containment detection (LC_ is a safe env prefix, so it survives scrub).
+        child_env["LC_ALL"] = "C"
+
         # Resolve interpreter + CWD based on execute_code mode.
         #   - strict : today's behavior (sys.executable + tmpdir CWD).
         #   - project: user's venv python + session's working directory, so
@@ -1413,6 +1490,11 @@ def execute_code(
         stdout_text = strip_ansi(stdout_text)
         stderr_text = strip_ansi(stderr_text)
 
+        # execute-code-meta-surface-containment-v1 Phase-1 — classify a governance
+        # containment hit on the PRE-redaction stderr (redaction can rewrite a
+        # path; the classifier does its own secret-redaction of the stored target).
+        _cv_matched, _cv_target, _cv_bclass = _classify_containment(stderr_text)
+
         # Redact secrets (API keys, tokens, etc.) from sandbox output.
         # The sandbox env-var filter (lines 434-454) blocks os.environ access,
         # but scripts can still read secrets from disk (e.g. open('~/.grove/.env')).
@@ -1452,6 +1534,39 @@ def execute_code(
             # Include stderr in output so the LLM sees the traceback
             if stderr_text:
                 result["output"] = stdout_text + "\n--- stderr ---\n" + stderr_text
+            # execute-code-meta-surface-containment-v1 Phase-1 — audit + classify a
+            # governance containment hit. The kernel already blocked the write; this
+            # only records provenance and steers the agent. Filing failure never
+            # alters the primary result (error-log-floor). system_protect /
+            # other_readonly are NOT filed (honest telemetry — governance-only).
+            if _cv_matched and _cv_bclass in ("governance_definition", "unresolved"):
+                try:
+                    from datetime import datetime, timezone
+
+                    from grove.kaizen_ledger import KaizenLedger
+                    _cv_session = os.environ.get("GROVE_SESSION_ID") or (
+                        "cli-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                    )
+                    KaizenLedger(session_id=_cv_session).record(
+                        "containment_violation",
+                        target=_cv_target,
+                        boundary_class=_cv_bclass,
+                        errno=30,
+                        tool="execute_code",
+                        exit_code=exit_code,
+                    )
+                except Exception as _cv_exc:  # noqa: BLE001 — filing leg, log floor stands
+                    logger.error(
+                        "[execute_code] containment_violation filing failed "
+                        "(detection stands; result unaffected): %r", _cv_exc,
+                    )
+                if _cv_bclass == "governance_definition":
+                    result["error"] += (
+                        "\n[containment] Target is a read-only governance surface; "
+                        "writing it via any tool will fail identically. Do not retry "
+                        "— if this change is genuinely required, surface it to the "
+                        "operator."
+                    )
 
         return json.dumps(result, ensure_ascii=False)
 
