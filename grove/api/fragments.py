@@ -57,6 +57,7 @@ from grove.eval.proposal_queue import _type_offers_approve
 from grove.forge import feedback_store
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE
+from grove.secret_redact import redact_command_string
 from grove.api.red_nonce import nonce_key_from_app, red_nonce
 from grove.wiki.index import MalformedWikiPage, _split_frontmatter
 from grove.wiki.links import cellar_page_id
@@ -566,14 +567,24 @@ def _proposal_actions_html(
 
 
 def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
-    """RED ``.env`` proposal card — propose-approve-deadlock-v1 Phase 1b-ii.
+    """RED pending-proposal card — propose-approve-deadlock-v1 Phase 1b-ii,
+    generalized by unresolved-writer-execution-path-v1 Fix 3.
 
-    Pulls the MASKED operator-facing description from the in-memory store
-    singleton (``request.app["red_pending_store"]``); the secret value is NEVER
-    rendered. If the payload is gone (orphan — durable queue row survived a
-    restart, in-memory payload did not) render EXPIRED with a Dismiss affordance,
-    NOT a live approve. Otherwise render a two-step approve form carrying the
-    ``approve``-step CSRF nonce. Not batchable (single-id action row)."""
+    Branches on the entry kind (``store.is_credential_write``):
+
+      * a credential (``.env`` governance) write renders the masked-value template
+        — the secret ``value: •••• (masked)`` line and the ``.env write`` confirm;
+      * every other RED (shell / generic) renders the command/effect card — the
+        redacted command string (secrets in the command line are scrubbed to
+        ``[redacted]`` by :func:`redact_command_string`) plus the ZoneResult named
+        reason, no masked-value line, a tool-neutral confirm.
+
+    The MASKED operator-facing description comes from the in-memory store singleton
+    (``request.app["red_pending_store"]``); the secret value is NEVER rendered. If
+    the payload is gone (orphan — durable queue row survived a restart, in-memory
+    payload did not) render EXPIRED with a Dismiss affordance, NOT a live approve.
+    Otherwise render a two-step approve form carrying the ``approve``-step CSRF
+    nonce. Not batchable (single-id action row)."""
     store = request.app.get("red_pending_store")
     bare = full_pid.split(":", 1)[1] if ":" in full_pid else full_pid
     masked = store.masked_description(bare) if store is not None else None
@@ -582,11 +593,12 @@ def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
 
     if masked is None:
         # ORPHAN → EXPIRED. Dismiss removes the stale durable row (no approve).
+        # Tool-neutral copy — this card is no longer .env-only.
         return (
             f'<div class="card card-expired" id="proposal-{short_id}">'
             f'<h4><span class="badge {badge}">RED</span> '
             f'<span class="badge">expired</span></h4>'
-            f'<p>This pending .env change is no longer available — the gateway '
+            f'<p>This pending action is no longer available — the gateway '
             f'restarted and pending proposals are session-scoped. Re-propose to '
             f'apply it.</p>'
             f'<div class="proposal-actions">'
@@ -598,6 +610,7 @@ def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
         )
 
     nonce = red_nonce(full_pid, "approve", nonce_key_from_app(request.app))
+    is_cred = store.is_credential_write(bare) if store is not None else False
     # red-action-store-pending-v1 Phase B — OPAQUE_DYNAMIC_EFFECT affordance. When
     # the classifier could NOT statically resolve the effect (command substitution,
     # unparseable, dynamic targets), warn that approval authorizes the INTENT to run
@@ -609,24 +622,44 @@ def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
         'not a guaranteed outcome.</div>'
         if opaque else ""
     )
-    # Two-step approve: this POST /approve returns a Confirm card (no mint); the
-    # Confirm card's POST /confirm performs the write. hx-vals carries the nonce.
     # red-action-store-pending-v1 Phase B — per-action-type title (governance write /
     # privileged shell / secret access / opaque command / generic), derived from the
     # stored effect. Generalizes the former hardwired "RED — governance write".
     title = store.card_title(bare) if store is not None else "RED — action"
+
+    # Fix 3 — the credential-write template carries the masked secret line + an
+    # .env-specific confirm; the shell/generic card carries neither. The body is
+    # the store's masked description; for a shell command it is redacted here so an
+    # inline token in the command line never reaches the card.
+    if is_cred:
+        body = _esc(masked)
+        value_line = '<div class="meta">value: •••• (masked)</div>'
+        reason_line = ""
+        confirm = "Approve a RED .env write? You will confirm once more."
+    else:
+        body = _esc(redact_command_string(masked))
+        value_line = ""
+        reason = store.card_reason(bare) if store is not None else None
+        reason_line = (
+            f'<div class="meta meta-reason">{_esc(reason)}</div>' if reason else ""
+        )
+        confirm = "Approve this RED action? You will confirm once more."
+
+    # Two-step approve: this POST /approve returns a Confirm card (no mint); the
+    # Confirm card's POST /confirm performs the action. hx-vals carries the nonce.
     return (
         f'<div class="card card-red" id="proposal-{short_id}">'
         f'<h4><span class="badge {badge}">{_esc(title)}</span></h4>'
-        f'<p>{_esc(masked)}</p>'
+        f'<p>{body}</p>'
+        f'{reason_line}'
         f'{opaque_warning}'
-        f'<div class="meta">value: •••• (masked)</div>'
+        f'{value_line}'
         f'<div class="proposal-actions">'
         f'<button class="btn btn-approve" '
         f'hx-post="/portal/actions/proposals/{pid}/approve" '
         f'hx-vals=\'{{"nonce": "{_esc(nonce)}"}}\' '
         f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
-        f'hx-confirm="Approve a RED .env write? You will confirm once more.">'
+        f'hx-confirm="{_esc(confirm)}">'
         f'Approve</button>'
         f'<button class="btn btn-reject" '
         f'hx-post="/portal/actions/proposals/{pid}/reject" '

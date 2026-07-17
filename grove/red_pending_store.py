@@ -116,6 +116,32 @@ def red_action_title(
     return f"RED — {tool_name}"
 
 
+def red_action_reason(
+    tool_name: str, pattern_key: Optional[str] = None, is_opaque: bool = False
+) -> str:
+    """A short named reason WHY the action is RED — the ZoneResult reason, restated
+    for the pending-RED card (unresolved-writer-execution-path-v1 Fix 3). Resolved
+    from ``tool_name`` / ``pattern_key`` (the ZoneResult.reason text is not
+    persisted); mirrors the :func:`red_action_title` classification so the card's
+    title and reason agree."""
+    pk = str(pattern_key or "")
+    if is_opaque or pk.startswith("opacity:"):
+        return ("Effect not statically resolved — approving authorizes the intent "
+                "to run this string, not a guaranteed outcome.")
+    if tool_name == "propose_governance_change":
+        return "Writes credentials to a governed configuration file."
+    if pk.startswith("priv:"):
+        return "Needs privileges that stay with you — sudo / su / doas."
+    if pk.startswith("UNRESOLVED_WRITER"):
+        return ("Writes to a target that can't be resolved before it runs; "
+                "treated as scope-defining.")
+    if pk.startswith("secret:"):
+        return "Reads a secret-bearing path."
+    if pk.startswith("rm:") or pk.startswith("govwrite:"):
+        return "A destructive or scope-defining shell effect."
+    return "A command effect that requires your approval."
+
+
 def describe_red_action(
     tool_name: str, arguments: dict, pattern_key: Optional[str] = None
 ) -> Tuple[str, bool]:
@@ -352,6 +378,23 @@ class RedPendingStore:
         if entry is None:
             return "RED — action"
         return red_action_title(entry.tool_name, entry.pattern_key, entry.is_opaque)
+
+    def is_credential_write(self, proposal_id: str) -> bool:
+        """True iff the pending action is a credential (``.env`` governance) write —
+        the ONLY card kind that renders the masked-value ``.env`` template
+        (unresolved-writer-execution-path-v1 Fix 3). Every other RED (shell / generic)
+        renders the command/effect card. Resolved from the persisted ``tool_name``;
+        a missing entry is not a credential write."""
+        entry = self.get(proposal_id)
+        return entry is not None and entry.tool_name == "propose_governance_change"
+
+    def card_reason(self, proposal_id: str) -> Optional[str]:
+        """The named RED reason for the card (Fix 3), or None for a missing entry.
+        Resolved from the persisted ``tool_name`` / ``pattern_key`` / ``is_opaque``."""
+        entry = self.get(proposal_id)
+        if entry is None:
+            return None
+        return red_action_reason(entry.tool_name, entry.pattern_key, entry.is_opaque)
 
     def has(self, proposal_id: str) -> bool:
         """True iff a durable payload row exists for *proposal_id*.
