@@ -525,3 +525,9 @@ goal_attachment:
   # Stage 1 retrieval depth — top-k dock_goal projection pages consulted per
   # artifact when scoring goal relevance.
   prefilter_top_k: 3
+
+  # P2 — character cap on the adjudication excerpt stored in the
+  # artifact_goal_attached ledger event. Provenance must survive approval,
+  # but the ledger must not bloat. Truncation is visible in the stored
+  # event (excerpt_truncated + excerpt_full_chars), never silent.
+  excerpt_cap_chars: 600

@@ -57,6 +57,9 @@ _DEFAULTS: Dict[str, Any] = {
     "adjudicator_tier": "T-GA",
     "stage2_candidate_cap": 5,
     "prefilter_top_k": 3,
+    # P2 — bound on the adjudication excerpt stored in the
+    # artifact_goal_attached event (attachment_store.mint_attachment).
+    "excerpt_cap_chars": 600,
 }
 
 # Character bound on artifact content used for BOTH the Stage-1 retrieval
@@ -112,23 +115,34 @@ def load_goal_attachment_config() -> Dict[str, Any]:
 
 
 def attached_artifact_ids() -> Set[str]:
-    """Artifact ids already attached to a goal — SKIPPED by the detector.
+    """Artifact ids already attached to a live goal — SKIPPED by the detector.
 
-    P1 seam: attachment events do not exist yet, so this returns the empty
-    set. P3 (emission + the attachment event type) fills this by scanning
-    the ledger for attachment events, so an already-attached artifact is
-    never re-adjudicated.
+    FILLED in P2: reads the attachment projection
+    (``grove.dock.attachment_store.attached_artifact_ids``, read-time
+    collapse over artifact_goal_attached/detached events). Scoped to LIVE
+    Dock goals (R-9): an attachment whose goal was since pruned contributes
+    nothing, so that artifact is eligible for re-adjudication. Dock absent →
+    no live goals → no exclusions (the detector has already failed loud on
+    a missing Dock before this runs).
     """
-    return set()
+    from grove.dock import load_dock
+    from grove.dock.attachment_store import (
+        attached_artifact_ids as _store_attached,
+    )
+
+    dock = load_dock()
+    live = {g.id for g in dock.goals} if dock is not None else set()
+    return _store_attached(live_goal_ids=live)
 
 
 def suppressed_artifact_ids() -> Set[str]:
     """Artifact ids carrying a rejection tombstone — SKIPPED by the detector.
 
-    P1 seam: the suppression store does not exist yet, so this returns the
-    empty set. P3 fills this from operator-rejection tombstones (the
-    binding-telemetry ``record_tombstone`` precedent), so a rejected
-    attachment is never re-proposed.
+    STILL the empty-set seam in P2 (only the attached seam filled): the
+    suppression store does not exist yet. P3's reject callback fills this
+    from operator-rejection tombstones (the binding-telemetry
+    ``record_tombstone`` precedent), so a rejected attachment is never
+    re-proposed.
     """
     return set()
 
