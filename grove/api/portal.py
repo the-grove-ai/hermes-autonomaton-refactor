@@ -50,7 +50,33 @@ logger = logging.getLogger(__name__)
 
 # Tailscale assigns mesh addresses from the 100.64.0.0/10 CGNAT block.
 _TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
-_LOOPBACK = ("127.0.0.1", "::1")
+
+
+def _peer_authorized(remote: Optional[str]) -> bool:
+    """Loopback or Tailscale-mesh peer, via the ipaddress stdlib.
+
+    artifact-identity-v1 C2 (1b patch): the prior check string-matched
+    ``("127.0.0.1", "::1")`` and gated the CGNAT test on
+    ``remote.startswith("100.")``, so an IPv6-MAPPED mesh peer
+    (``::ffff:100.64.x.x``) — how a dual-stack listener reports an IPv4
+    client — was denied. Mapped addresses now unwrap via ``ipv4_mapped``
+    before the network-membership test; loopback uses ``is_loopback``
+    (covers 127.0.0.0/8, ::1, and ::ffff:127.x.x.x). Unparseable → deny.
+    """
+    if not remote:
+        return False
+    try:
+        # Strip any IPv6 zone id (fe80::1%eth0) — ip_address rejects it.
+        addr = ipaddress.ip_address(remote.split("%", 1)[0])
+    except ValueError:
+        return False
+    if addr.version == 6:
+        mapped = addr.ipv4_mapped
+        if mapped is not None:
+            addr = mapped
+    if addr.is_loopback:
+        return True
+    return addr.version == 4 and addr in _TAILSCALE_CGNAT
 
 
 # ---------------------------------------------------------------------------
@@ -64,21 +90,16 @@ async def portal_auth_middleware(request: web.Request, handler):
     # ever placed in front of the gateway, request.remote will be the proxy's
     # IP. Update this middleware to parse X-Forwarded-For / X-Real-IP in that
     # case.
-    # Both the JSON substrate API (/api/substrate/) and the HTML portal
-    # (/portal, /portal/static, /portal/fragments) get the same localhost /
-    # Tailscale-mesh gate. Everything else (chat, health, OpenAI-compat) passes.
+    # The JSON substrate API (/api/substrate/), the HTML portal (/portal,
+    # /portal/static, /portal/fragments), and the artifact route (/artifact/)
+    # get the same localhost / Tailscale-mesh gate. Everything else (chat,
+    # health, OpenAI-compat) passes.
     if not (request.path.startswith("/api/substrate/")
-            or request.path.startswith("/portal")):
+            or request.path.startswith("/portal")
+            or request.path.startswith("/artifact/")):
         return await handler(request)
-    remote = request.remote
-    if remote in _LOOPBACK:
+    if _peer_authorized(request.remote):
         return await handler(request)
-    if remote and remote.startswith("100."):
-        try:
-            if ipaddress.ip_address(remote) in _TAILSCALE_CGNAT:
-                return await handler(request)
-        except ValueError:
-            pass
     return web.json_response(
         {"error": "forbidden",
          "detail": "Access restricted to localhost or Tailscale mesh"},

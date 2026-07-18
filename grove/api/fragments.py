@@ -272,10 +272,34 @@ async def handle_cellar_listing(request: web.Request) -> web.Response:
     return _html_fragment("".join(parts))
 
 
+def _source_artifact_html(meta: dict) -> str:
+    """artifact-identity-v1 C2 cross-ref: the page's frontmatter ``source:``
+    path rendered as an ``/artifact/<id>`` link. The id derives via the Phase 1
+    helper on the source path AS RECORDED (the unresolved-abspath identity
+    form — the same bytes the cellar hashed, so the ids join). Non-filesystem
+    sources (``dock.yaml#...``, memory-record ids) render as plain text —
+    there is no artifact behind them."""
+    import os as _os
+
+    from grove.artifact_identity import artifact_id as _artifact_id
+    from grove.artifact_identity import canonical_artifact_path as _canon
+
+    src = meta.get("source")
+    if not isinstance(src, str) or not src:
+        return ""
+    if not _os.path.isabs(_os.path.expanduser(src)):
+        return _esc(src)
+    # canonical_artifact_path is idempotent on the recorded abspath form —
+    # this matches the ledger's stamped id byte-for-byte (never realpath).
+    aid = _artifact_id(_canon(src))
+    return f'<a href="/artifact/{_esc(aid)}">{_esc(src)}</a>'
+
+
 def _frontmatter_dl(meta: dict) -> str:
     """Render selected frontmatter fields as a <dl> metadata header."""
     rows = [
         ("source_type", _esc(meta.get("source_type"))),
+        ("source", _source_artifact_html(meta)),
         ("topics", _tags_html(_as_str_list(meta.get("topics")))),
         ("entities", _tags_html(_as_str_list(meta.get("key_entities")))),
         ("confidence", _esc(meta.get("confidence"))),
