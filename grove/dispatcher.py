@@ -4768,7 +4768,7 @@ class Dispatcher:
                 )
                 if _hit is not None:
                     from grove.zones import ZoneResult
-                    return Dispatcher._raise_zone_to_skill_record(
+                    return Dispatcher._invoke_skill_effective_zone(
                         ZoneResult(
                             zone="yellow",
                             matched_rule=(
@@ -4820,42 +4820,104 @@ class Dispatcher:
         if tool_name == "invoke_skill" and isinstance(args, dict):
             inv_name = args.get("name")
             if isinstance(inv_name, str) and inv_name.strip():
-                result = Dispatcher._raise_zone_to_skill_record(
+                result = Dispatcher._invoke_skill_effective_zone(
                     result, inv_name.strip()
                 )
         return result
 
     @staticmethod
-    def _raise_zone_to_skill_record(zone_result: Any, skill_name: str) -> Any:
-        """Effective zone for an invoke_skill intent = max(classified zone,
-        record zone) on green<yellow<red (skill-invocation-path-integrity-v1
-        P3). The record is resolved via the P1 canonical slug-tail resolver —
-        UNCACHED per the P1-gate ruling (the invoke path already pays per-call
-        registry loads; caching is the banked capability-hot-reload debt).
-        NONE / AMBIGUOUS leave the classified zone unchanged (the P2 guard
-        refuses ambiguity at the handler); the max() only ever RAISES a zone,
-        never lowers one, so an operator zone rule that greens the intent
-        class cannot silently green a yellow/red record.
+    def _invoke_skill_effective_zone(zone_result: Any, skill_name: str) -> Any:
+        """Effective zone for an ``invoke_skill`` intent = the RESOLVED, ENABLED
+        skill record's OWN zone (record-authoritative), on green<yellow<red: a
+        green record LOWERS below the invoke_skill verb's yellow, a yellow record
+        HOLDS, a red record RAISES (research-routing-coherence-v1 C1). This
+        SUPERSEDES the prior max()-only ``_raise_zone_to_skill_record`` so a
+        green fleet skill (e.g. researcher) dispatches without a Sovereign gate,
+        while skill-invocation-path-integrity-v1's yellow/red records keep their
+        gate. The record resolves via the P1 canonical slug-tail resolver,
+        UNCACHED per the P1-gate ruling (the invoke path already pays the
+        per-call registry load; caching is the banked hot-reload debt).
+
+        Record authority is scoped to the invoke_skill path ONLY — this helper's
+        sole callers are the two invoke_skill branches in
+        :meth:`_classify_one_intent`; there is no generic verb+record rule and no
+        other verb reaches it.
+
+        RAISE / LOWER ASYMMETRY (research-routing-coherence-v1 C1 delta): any
+        FOUND record may RAISE — a record that DECLARES zone red classifies red
+        even when it is non-executable (a quarantined/retired red record still
+        gets the red treatment). Only a VERIFIED-EXECUTABLE record may LOWER
+        (green below the verb's yellow) or otherwise apply its declared zone.
+        Every red ZoneResult this helper builds sets ``is_promotable=False``
+        (Phase-2 convention; defensive behind ``RED_RESOLUTIONS`` + the H2
+        backstop).
+
+        FAIL-CLOSED / hold arms — the classified ``zone_result`` is returned
+        UNCHANGED (never lowered by an unverified record), so under the verb's
+        yellow floor the effective zone stays yellow-or-worse:
+
+          * the resolver raises                     → hold;
+          * ``status != "resolved"`` / no ``record`` → unresolved / ambiguous
+            slug / missing record → hold;
+          * a NON-EXECUTABLE record (lifecycle state outside
+            ``EXECUTABLE_STATES`` — the SAME execution authority the invoke_skill
+            handler enforces at ``tools/invoke_skill_tool.py``) declaring green
+            or yellow → hold; one declaring RED → raise to red (above);
+          * an unrecognized ``zone`` value on an executable record → hold.
         """
         from grove.capability_registry import resolve_skill_record
+        from grove.capability import EXECUTABLE_STATES
 
-        res = resolve_skill_record(skill_name)
-        if res.status != "resolved":
+        try:
+            res = resolve_skill_record(skill_name)
+        except Exception:  # noqa: BLE001 — fail-closed: keep the classified zone
             return zone_result
+        if res.status != "resolved" or res.record is None:
+            return zone_result  # no verified record → classified holds
         record_zone = getattr(res.record.zone, "value", str(res.record.zone))
-        order = {"green": 0, "yellow": 1, "red": 2}
-        if order.get(record_zone, 0) <= order.get(zone_result.zone, 0):
-            return zone_result
         from grove.zones import ZoneResult
+        lifecycle = getattr(res.record, "lifecycle", None)
+        executable = lifecycle is not None and lifecycle.state in EXECUTABLE_STATES
+        if not executable:
+            # A FOUND-but-non-executable record may still RAISE if it DECLARES
+            # red: a quarantined/retired record declaring red gets the red
+            # treatment even though it cannot execute. Any other declared zone
+            # holds the classified zone (a non-executable green/yellow record
+            # NEVER lowers — only a verified-executable record may).
+            if record_zone == "red":
+                _state = getattr(lifecycle, "state", None)
+                _state_label = getattr(_state, "value", str(_state))
+                return ZoneResult(
+                    zone="red",
+                    matched_rule=(
+                        f"skill.record.zone.raise ({res.record_id}, "
+                        f"non-executable state {_state_label})"
+                    ),
+                    source="invoke_skill_record_zone_raise",
+                    reason=(
+                        f"capability record {res.record_id} declares zone=red "
+                        f"but is non-executable (lifecycle state {_state_label} "
+                        f"outside EXECUTABLE_STATES); a found red record raises "
+                        f"regardless of executability "
+                        f"(research-routing-coherence-v1 C1 delta)"
+                    ),
+                    is_promotable=False,
+                )
+            return zone_result  # non-red, non-executable → classified holds
+        # Verified-executable record: its declared zone is authoritative —
+        # green LOWERS below the verb's yellow, yellow holds, red raises.
+        if record_zone not in ("green", "yellow", "red"):
+            return zone_result
         return ZoneResult(
             zone=record_zone,
             matched_rule=f"skill.record.zone ({res.record_id})",
             source="invoke_skill_record_zone",
             reason=(
                 f"capability record {res.record_id} declares zone="
-                f"{record_zone}; raised from classified "
-                f"{zone_result.zone!r} (effective zone = max rule)"
+                f"{record_zone}; effective zone = record-authoritative "
+                f"(invoke_skill, research-routing-coherence-v1 C1)"
             ),
+            is_promotable=(record_zone != "red"),
         )
 
     # ── Phase 5 helpers (disposition flow + pending_andon marker) ────────
