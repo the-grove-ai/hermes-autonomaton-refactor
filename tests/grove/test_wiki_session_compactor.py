@@ -189,24 +189,29 @@ def test_degenerate_head_only():
     assert out == text[:50]
 
 
-# ── dominant_dock_goal (D6 + A2) ────────────────────────────────────────
+# ── dominant_dock_goal — honest-empty (dock-goal-ref-integrity-v1 M1) ───
+#
+# goal_alignment carries CATEGORY strings, not dock goal ids — the old
+# most-frequent-category derivation poisoned dock_goal_refs with values that
+# could never match goal.id. Until attachment-projection-v1 derives real
+# refs, empty is the honest value, REGARDLESS of what the intent store holds.
 
 
-def test_single_goal():
-    records = [SimpleNamespace(goal_alignment="grow-fleet") for _ in range(3)]
-    assert dominant_dock_goal(_FakeIntentStore(records), "s") == ["grow-fleet"]
+def test_returns_empty_even_with_alignment_records():
+    records = [SimpleNamespace(goal_alignment="direct") for _ in range(3)]
+    assert dominant_dock_goal(_FakeIntentStore(records), "s") == []
 
 
-def test_multiple_goals_picks_dominant():
+def test_returns_empty_with_mixed_alignments():
     records = [
-        SimpleNamespace(goal_alignment="alpha"),
-        SimpleNamespace(goal_alignment="alpha"),
-        SimpleNamespace(goal_alignment="beta"),
+        SimpleNamespace(goal_alignment="direct"),
+        SimpleNamespace(goal_alignment="direct"),
+        SimpleNamespace(goal_alignment="indirect"),
     ]
-    assert dominant_dock_goal(_FakeIntentStore(records), "s") == ["alpha"]
+    assert dominant_dock_goal(_FakeIntentStore(records), "s") == []
 
 
-def test_no_goals():
+def test_returns_empty_with_no_goals():
     records = [
         SimpleNamespace(goal_alignment=None),
         SimpleNamespace(goal_alignment="   "),
@@ -214,7 +219,7 @@ def test_no_goals():
     assert dominant_dock_goal(_FakeIntentStore(records), "s") == []
 
 
-def test_store_error_returns_empty():
+def test_returns_empty_on_store_error():
     class _Boom:
         def filter(self, **_kw):
             raise RuntimeError("intent store down")

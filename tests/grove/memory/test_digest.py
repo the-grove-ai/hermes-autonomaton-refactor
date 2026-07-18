@@ -11,9 +11,11 @@ engine is surface-agnostic (TTY, conversational push, or test stub).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from grove.memory.digest import MemoryProposalHandler, run_digest
 from grove.memory.store import MemoryStore
@@ -22,6 +24,33 @@ from grove.memory.store import MemoryStore
 @pytest.fixture()
 def store(tmp_path):
     return MemoryStore(base_dir=tmp_path)
+
+
+def _install_dock(goals):
+    """Minimal valid dock.yaml in the hermetic GROVE_HOME so the M3 digest
+    belt (dock-goal-ref-integrity-v1) has real goal ids to validate against.
+    ``goals`` is (id, name) pairs."""
+    dock_dir = Path(os.environ["GROVE_HOME"]) / "dock"
+    dock_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "version": 1,
+        "goals": [
+            {
+                "id": gid,
+                "name": name,
+                "vector": "strategic",
+                "status": "accelerating",
+                "definition_of_done": "done",
+                "context_sources": [],
+                "keywords": [],
+                "unlocked_skills": [],
+            }
+            for gid, name in goals
+        ],
+    }
+    (dock_dir / "dock.yaml").write_text(
+        yaml.safe_dump(manifest), encoding="utf-8"
+    )
 
 
 def _create_proposal(content="A fact.", entity_type="DomainFact", confidence=0.9,
@@ -209,3 +238,40 @@ def test_supersede_missing_target_raises(store):
         })
     # nothing was appended to the event log
     assert list(store.read_events()) == []
+
+
+# M3 digest belt (dock-goal-ref-integrity-v1) — validity gate behind the
+# detector's parse-site gate. Validity (ref exists in the dock) is a DISTINCT
+# predicate from push-relevance (goal active now); these tests pin the former.
+
+def test_apply_nulls_invalid_dock_goal_ref_loud(store, caplog):
+    _install_dock([("content-pipeline", "Content Pipeline")])
+    handler = MemoryProposalHandler(store)
+    with caplog.at_level("WARNING", logger="grove.memory.digest"):
+        applied = handler.apply(
+            _create_proposal(dock_goal_ref="invented-goal")
+        )
+    assert applied is True
+    (rec,) = store.projected_records().values()
+    assert rec.dock_goal_ref is None
+    assert any("invented-goal" in r.message for r in caplog.records)
+
+
+def test_apply_carries_valid_dock_goal_ref(store):
+    _install_dock([("content-pipeline", "Content Pipeline")])
+    handler = MemoryProposalHandler(store)
+    applied = handler.apply(
+        _create_proposal(dock_goal_ref="content-pipeline")
+    )
+    assert applied is True
+    (rec,) = store.projected_records().values()
+    assert rec.dock_goal_ref == "content-pipeline"
+
+
+def test_apply_nulls_ref_when_no_dock_installed(store, caplog):
+    # No dock.yaml in the hermetic GROVE_HOME: no ref can be valid.
+    handler = MemoryProposalHandler(store)
+    with caplog.at_level("WARNING", logger="grove.memory.digest"):
+        handler.apply(_create_proposal(dock_goal_ref="content-pipeline"))
+    (rec,) = store.projected_records().values()
+    assert rec.dock_goal_ref is None

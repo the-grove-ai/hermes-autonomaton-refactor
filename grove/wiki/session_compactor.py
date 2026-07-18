@@ -25,7 +25,6 @@ avoid circular dependencies with the pipeline and memory packages.
 from __future__ import annotations
 
 import hashlib
-from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -195,29 +194,23 @@ def _elision_marker(n: int) -> str:
 
 
 def dominant_dock_goal(intent_store: Any, session_id: str) -> List[str]:
-    """Return the SINGLE most-frequent dock-goal ref for ``session_id`` (D6).
+    """Honest-empty (dock-goal-ref-integrity-v1 M1): always return ``[]``.
 
-    Queries the intent store for the session's records, collects non-empty
-    ``goal_alignment`` strings, and returns ``[most_frequent]`` — a single-
-    element list keeps BM25 boosting sharp (D6). Returns ``[]`` when no goals
-    exist.
+    The prior implementation collected ``goal_alignment`` CATEGORY strings
+    (direct/indirect/orthogonal/...) from the session's intent records and
+    returned the most frequent — but ``dock_goal_refs`` holds dock goal IDS,
+    and a category can never match ``goal.id``, so the session-page goal
+    boost never fired. Categories are structurally excluded from refs
+    fields (guarded by the goal-ref conformance test).
 
-    On ANY exception this returns ``[]`` (A2 — goal derivation failure is not
-    fatal; the page is still valuable without goal linking). This is the one
-    SPEC-commanded graceful path in the module, not an ambient guard.
+    Deriving REAL refs for session docs (e.g. joining the session's
+    artifact-attachment events in the goal-spine ledger) is deferred to
+    attachment-projection-v1; until then, empty is the honest value.
+
+    The signature is kept so the ``build_session_doc`` call site is stable
+    for the projection sprint to re-plumb.
     """
-    try:
-        records = intent_store.filter(session_id=session_id)
-        goals = [
-            g
-            for r in records
-            if isinstance((g := getattr(r, "goal_alignment", None)), str) and g.strip()
-        ]
-        if not goals:
-            return []
-        return [Counter(goals).most_common(1)[0][0]]
-    except Exception:  # noqa: BLE001 — A2-commanded graceful path
-        return []
+    return []
 
 
 # ── document build + compaction entry point ─────────────────────────────

@@ -9,6 +9,8 @@ A2 — a file matching its glob but failing its parser shape FAILS LOUD.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 import yaml
@@ -80,6 +82,33 @@ def _drafter_draft(fm_extra=None, body="The draft body."):
     return "---\n" + yaml.safe_dump(fm, sort_keys=False) + "---\n\n" + body + "\n"
 
 
+def _install_dock(goals):
+    """Write a minimal valid dock.yaml into the hermetic GROVE_HOME so the
+    adapter-door ref validation (dock-goal-ref-integrity-v1 M4) has real goal
+    ids/names to match against. ``goals`` is (id, name) pairs."""
+    dock_dir = Path(os.environ["GROVE_HOME"]) / "dock"
+    dock_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "version": 1,
+        "goals": [
+            {
+                "id": gid,
+                "name": name,
+                "vector": "strategic",
+                "status": "accelerating",
+                "definition_of_done": "done",
+                "context_sources": [],
+                "keywords": [],
+                "unlocked_skills": [],
+            }
+            for gid, name in goals
+        ],
+    }
+    (dock_dir / "dock.yaml").write_text(
+        yaml.safe_dump(manifest), encoding="utf-8"
+    )
+
+
 def _write(tmp_path, name, content):
     p = tmp_path / name
     p.write_text(
@@ -138,6 +167,7 @@ def test_doc_carries_source_mtime(tmp_path):
 
 
 def test_dock_goal_refs_extracted_when_present(tmp_path):
+    _install_dock([("grow-fleet", "Grow the Fleet"), ("ship-wiki", "Ship Wiki")])
     p = _write(
         tmp_path,
         "brief-2026-06-25-topic.json",
@@ -145,6 +175,57 @@ def test_dock_goal_refs_extracted_when_present(tmp_path):
     )
     doc = ADAPTERS["researcher_brief"].parse(p)
     assert doc.dock_goal_refs == ["grow-fleet", "ship-wiki"]
+
+
+# ── adapter-door ref validation (dock-goal-ref-integrity-v1 M4) ─────────
+
+
+def test_ref_matching_goal_id_is_kept(tmp_path):
+    _install_dock([("grow-fleet", "Grow the Fleet")])
+    p = _write(
+        tmp_path,
+        "brief-2026-06-25-topic.json",
+        _researcher_brief({"dock_goal_refs": ["grow-fleet"]}),
+    )
+    doc = ADAPTERS["researcher_brief"].parse(p)
+    assert doc.dock_goal_refs == ["grow-fleet"]
+
+
+def test_ref_matching_goal_name_is_mapped_to_id(tmp_path):
+    _install_dock([("grow-fleet", "Grow the Fleet")])
+    p = _write(
+        tmp_path,
+        "brief-2026-06-25-topic.json",
+        _researcher_brief({"dock_goal_refs": ["Grow the Fleet"]}),
+    )
+    doc = ADAPTERS["researcher_brief"].parse(p)
+    assert doc.dock_goal_refs == ["grow-fleet"]
+
+
+def test_ref_matching_nothing_is_dropped_loud(tmp_path, caplog):
+    _install_dock([("grow-fleet", "Grow the Fleet")])
+    p = _write(
+        tmp_path,
+        "brief-2026-06-25-topic.json",
+        _researcher_brief({"dock_goal_refs": ["invented-goal", "grow-fleet"]}),
+    )
+    with caplog.at_level("WARNING", logger="grove.wiki.adapters"):
+        doc = ADAPTERS["researcher_brief"].parse(p)
+    assert doc.dock_goal_refs == ["grow-fleet"]
+    assert any("invented-goal" in r.message for r in caplog.records)
+
+
+def test_refs_all_dropped_when_no_dock_installed(tmp_path, caplog):
+    # No dock.yaml in the hermetic GROVE_HOME: nothing can match — drop, loud.
+    p = _write(
+        tmp_path,
+        "brief-2026-06-25-topic.json",
+        _researcher_brief({"dock_goal_refs": ["grow-fleet"]}),
+    )
+    with caplog.at_level("WARNING", logger="grove.wiki.adapters"):
+        doc = ADAPTERS["researcher_brief"].parse(p)
+    assert doc.dock_goal_refs == []
+    assert any("grow-fleet" in r.message for r in caplog.records)
 
 
 # ── strict glob matching (watcher dispatch) ─────────────────────────────
@@ -226,6 +307,7 @@ def test_operator_curated_plain_md(tmp_path):
 
 
 def test_operator_curated_with_frontmatter(tmp_path):
+    _install_dock([("grow-fleet", "Grow the Fleet")])
     content = (
         "---\ntitle: Note\ndock_goal_refs: [grow-fleet]\n---\n\nthe body text\n"
     )

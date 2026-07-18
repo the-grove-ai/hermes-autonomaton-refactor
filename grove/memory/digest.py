@@ -103,6 +103,25 @@ class MemoryProposalHandler:
         """
         action = proposal.get("action")
         dock_goal_ref = proposal.get("dock_goal_ref")
+        # dock-goal-ref-integrity-v1 M3 — belt behind the detector's parse-site
+        # gate: no ref that is not a dock goal id reaches the event log. NOTE:
+        # validity (the ref EXISTS in the dock — operator + machine goals) is a
+        # DISTINCT predicate from push-relevance (the goal is active NOW,
+        # run_agent.py:5718); do not unify them — a record validly ref'ing a
+        # paused goal must survive here and merely not push there. Cold path:
+        # one load_dock() per approval, and only when a ref is present.
+        if dock_goal_ref is not None:
+            from grove.dock import load_dock
+
+            dock = load_dock()
+            dock_ids = {g.id for g in dock.goals} if dock is not None else set()
+            if dock_goal_ref not in dock_ids:
+                logger.warning(
+                    "[grove.memory.digest] proposal dock_goal_ref %r matches "
+                    "no dock goal id; nulled before apply",
+                    dock_goal_ref,
+                )
+                dock_goal_ref = None
         sources = proposal.get("sources") or []
         # GUARD P3-b — captured from the PRE-supersede projection (before the
         # common tail's rebuild flips the old record to "superseded"); drives

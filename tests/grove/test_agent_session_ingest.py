@@ -180,8 +180,35 @@ def test_nested_subdir_under_research_not_agent_session(env, monkeypatch):
 def test_operator_curated_normalizeddoc_unchanged(tmp_path):
     """The shared-base refactor must leave operator_curated's parse OUTPUT
     byte-identical — same fields, same frontmatter/body split, same
-    dock_goal_refs extraction."""
+    dock_goal_refs extraction (refs valid per the M4 adapter door, so the
+    dock-goal-ref-integrity-v1 validation passes them through untouched)."""
+    import os
+    from pathlib import Path
+
+    import yaml as _yaml
+
     from grove.wiki.adapters import ADAPTERS
+
+    # Minimal dock in the hermetic GROVE_HOME so g1/g2 are real goal ids —
+    # this test pins parse-shape parity, not the M4 door (covered in
+    # test_wiki_adapters).
+    dock_dir = Path(os.environ["GROVE_HOME"]) / "dock"
+    dock_dir.mkdir(parents=True, exist_ok=True)
+    (dock_dir / "dock.yaml").write_text(
+        _yaml.safe_dump({
+            "version": 1,
+            "goals": [
+                {
+                    "id": gid, "name": gid.upper(), "vector": "strategic",
+                    "status": "accelerating", "definition_of_done": "d",
+                    "context_sources": [], "keywords": [],
+                    "unlocked_skills": [],
+                }
+                for gid in ("g1", "g2")
+            ],
+        }),
+        encoding="utf-8",
+    )
 
     p = tmp_path / "note.md"
     p.write_text(
