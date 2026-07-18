@@ -28,7 +28,7 @@ import logging
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import markdown
 import nh3
@@ -294,27 +294,23 @@ def _recent_artifacts(exclude_id: Optional[str] = None) -> List[tuple]:
 # ── the route ───────────────────────────────────────────────────────────────
 
 
-def _resolve_contained(app: web.Application, artifact_id: str) -> Optional[Path]:
-    """Shared id→contained-path resolution (raw route + in-shell fragment):
-    16-hex validation, ledger lookup (lazy index), request-time
-    ``resolve(strict=True)``, allowlist-root containment. Returns the resolved
-    path, or ``None`` for every refusal class — malformed id, unknown id,
-    vanished file, containment escape — so both consumers stay uniform-404."""
-    if not _ID_RE.fullmatch(artifact_id):
-        return None
-
-    recorded = _lookup_artifact_path(app, artifact_id)
-    if recorded is None:
-        return None
-
-    # CONTAINMENT canonical form — request-time strict resolve of the
-    # ledger-recorded path. A file deleted after its emit is a 404, never 500.
+def resolve_recorded_path(
+    recorded: str, roots: Sequence[Path]
+) -> Optional[Path]:
+    """THE containment core (goal-spine-v1 P1, G5 ruling): strict resolve of a
+    ledger-recorded path + allowlist-root containment. App-free — the request
+    handlers and any off-path reader call THIS one implementation; containment
+    is a security boundary and two copies drift (G5: drifted containment is a
+    hole). Returns the resolved path, or ``None`` for every refusal class —
+    vanished file, containment escape — never an exception."""
+    # CONTAINMENT canonical form — call-time strict resolve of the
+    # ledger-recorded path. A file deleted after its emit is a None (the
+    # handlers' 404), never a 500.
     try:
         resolved = Path(recorded).resolve(strict=True)
     except (OSError, RuntimeError):
         return None
 
-    roots: List[Path] = app["artifact_roots"]
     for root in roots:
         try:
             resolved.relative_to(root)
@@ -322,6 +318,39 @@ def _resolve_contained(app: web.Application, artifact_id: str) -> Optional[Path]
         except ValueError:
             continue
     return None
+
+
+def resolve_contained_path(
+    artifact_id: str, *, index: Mapping[str, str], roots: Sequence[Path]
+) -> Optional[Path]:
+    """App-free id→contained-path resolution for off-path readers
+    (goal-spine-v1 P1): 16-hex validation, lookup in a caller-supplied
+    id→path mapping (the :func:`_scan_ledger_index` shape), then the shared
+    containment core. Same refusal contract as the request-handler path:
+    ``None`` for malformed id, unknown id, vanished file, containment
+    escape."""
+    if not _ID_RE.fullmatch(artifact_id):
+        return None
+    recorded = index.get(artifact_id)
+    if recorded is None:
+        return None
+    return resolve_recorded_path(recorded, roots)
+
+
+def _resolve_contained(app: web.Application, artifact_id: str) -> Optional[Path]:
+    """Shared id→contained-path resolution (raw route + in-shell fragment):
+    16-hex validation, ledger lookup (lazy index), then the ONE containment
+    core (:func:`resolve_recorded_path`). Returns the resolved path, or
+    ``None`` for every refusal class — malformed id, unknown id, vanished
+    file, containment escape — so both consumers stay uniform-404."""
+    if not _ID_RE.fullmatch(artifact_id):
+        return None
+
+    recorded = _lookup_artifact_path(app, artifact_id)
+    if recorded is None:
+        return None
+
+    return resolve_recorded_path(recorded, app["artifact_roots"])
 
 
 async def handle_artifact(request: web.Request) -> web.Response:
