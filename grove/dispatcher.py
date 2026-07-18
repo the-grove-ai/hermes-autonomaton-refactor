@@ -670,7 +670,7 @@ class Dispatcher:
         # notice set in _rebind_agent_for_skill).
         self._binding_refusal_notified: set = set()
         # Per-turn state — reset at the top of every ``dispatch_turn``.
-        # Read at terminal write sites (FinalResponse, Drop, exception)
+        # Read at terminal write sites (FinalResponse, exception)
         # to populate the IntentRecord without threading state through
         # every internal call. Per-Dispatcher singleton design means
         # only one turn is in flight per Dispatcher at a time, so this
@@ -2596,7 +2596,7 @@ class Dispatcher:
             outcome: one of the :data:`grove.intent_store.VALID_OUTCOMES`
                 values appropriate to the terminal site.
             final_response_chars: only populated at the FinalResponse
-                terminal; ``None`` at Drop / exception terminals.
+                terminal; ``None`` at the exception terminal.
         """
         if self._intent_store is None:
             return
