@@ -143,6 +143,32 @@ class PendingStoreSovereignHandler:
         self.stored.append({"proposal_id": pid, "tool": tool, "zone": zone})
 
 
+def _resolve_runtime_agent_kwargs() -> Dict[str, Any]:
+    """Model + provider credentials per the cron scheduler precedent
+    (cron/scheduler.py:1307–1480, minimal form): sovereign-config model
+    default + ``resolve_runtime_provider()``. Loud on failure — a turn must
+    never construct against an unresolvable provider (live-prove finding:
+    ProviderDetectionError on an empty model)."""
+    from hermes_cli.config import load_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    cfg = load_config() or {}
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, str):
+        model = model_cfg
+    elif isinstance(model_cfg, dict):
+        model = model_cfg.get("default", "") or ""
+    else:
+        model = ""
+    runtime = resolve_runtime_provider()
+    return dict(
+        model=model,
+        api_key=runtime.get("api_key"),
+        base_url=runtime.get("base_url"),
+        provider=runtime.get("provider"),
+    )
+
+
 def dispatch_continuation_turn(
     instruction_text: str,
     artifact_ids: Optional[List[str]] = None,
@@ -184,13 +210,18 @@ def dispatch_continuation_turn(
         datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     )
     handler = PendingStoreSovereignHandler(parent_artifact_ids=parent_ids)
+    # Runtime model/provider resolution per the cron precedent — construction
+    # with an empty model cannot proceed (live-prove finding:
+    # ProviderDetectionError). Caller-supplied kwargs override.
+    overrides = dict(agent_kwargs or {})
+    resolved = {} if overrides.get("model") else _resolve_runtime_agent_kwargs()
     dispatcher = Dispatcher(
         sovereign_prompt_handler=handler,
         agent_kwargs=dict(
             platform="portal",
             session_id=session_id,
             quiet_mode=True,
-            **(agent_kwargs or {}),
+            **{**resolved, **overrides},
         ),
     )
     handler.bind(dispatcher)

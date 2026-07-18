@@ -261,6 +261,10 @@ def test_dispatch_entry_frame_and_result_shape(grove_home, tmp_path, monkeypatch
     )
 
     monkeypatch.setattr(continuation, "Dispatcher", _FakeDispatcher)
+    monkeypatch.setattr(
+        continuation, "_resolve_runtime_agent_kwargs",
+        lambda: dict(model="m", api_key="k", base_url=None, provider="p"),
+    )
     result = dispatch_continuation_turn("Sharpen the summary.", [pid])
 
     d = _FakeDispatcher.last
@@ -282,6 +286,36 @@ def test_dispatch_entry_frame_and_result_shape(grove_home, tmp_path, monkeypatch
     assert result["halted"] is False
     assert result["pending_items"] == []
     assert result["artifact_ids_written"] == []
+
+
+def test_dispatch_entry_resolves_runtime_provider(grove_home, tmp_path, monkeypatch):
+    """Live-prove regression: with no caller model override, the entry
+    resolves model + provider per the cron precedent BEFORE construction
+    (an empty model raises ProviderDetectionError in prod)."""
+    parent = tmp_path / "p.md"
+    parent.write_text("p", encoding="utf-8")
+    canonical = canonical_artifact_path(str(parent))
+    pid = artifact_id(canonical)
+    KaizenLedger("seed2").record(
+        "artifact_written", path=canonical, artifact_id=pid, turn_id="s#1",
+        active_primary_skill_slug=None, intent_class=None, tool="write_file",
+        parent_artifact_ids=[],
+    )
+    monkeypatch.setattr(continuation, "Dispatcher", _FakeDispatcher)
+    monkeypatch.setattr(
+        continuation, "_resolve_runtime_agent_kwargs",
+        lambda: dict(model="m-x", api_key="k", base_url="b", provider="p"),
+    )
+    dispatch_continuation_turn("go", [pid])
+    kw = _FakeDispatcher.last.agent_kwargs
+    assert kw["model"] == "m-x" and kw["provider"] == "p"
+    # Caller override wins outright (no resolution call needed).
+    monkeypatch.setattr(
+        continuation, "_resolve_runtime_agent_kwargs",
+        lambda: (_ for _ in ()).throw(AssertionError("must not resolve")),
+    )
+    dispatch_continuation_turn("go", [pid], agent_kwargs={"model": "override"})
+    assert _FakeDispatcher.last.agent_kwargs["model"] == "override"
 
 
 def test_dispatch_entry_unknown_parent_fails_loud(grove_home, monkeypatch):
