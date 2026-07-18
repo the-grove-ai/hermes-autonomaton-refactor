@@ -257,6 +257,11 @@ class TestDispatcherPolicy:
         assert len(fb_events) == 1
         assert fb_events[0]["failed_tier"] == "T2"
         assert fb_events[0]["fallback_tier"] == "T1"
+        # skill-adoption-v1 P3 — LEGIBILITY: the downshift stashed an operator-
+        # visible notice (never silent), naming failed -> fallback.
+        assert agent._tier_fallback_notice == {
+            "failed_tier": "T2", "fallback_tier": "T1",
+        }
 
     def test_no_fallback_declared_halts_loud(self, monkeypatch):
         """(c) — declared on the failing tier but the fallback is undeclared /

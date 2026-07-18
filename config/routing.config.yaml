@@ -201,6 +201,12 @@ routing:
       max_tokens: 16384
       cost_per_mtok_input: 5.0
       cost_per_mtok_output: 25.0
+      # skill-adoption-v1 P3 — governed downshift (GRV-010 C2d). When T3's model
+      # is unreachable (network / 5xx / 429 / exhausted credentials), the turn
+      # re-routes THROUGH the Cognitive Router at T2 and re-drives, rather than
+      # failing loud. The downshift is surfaced LEGIBLY to the operator (a
+      # conversational note naming T3 -> T2); it is never silent.
+      fallback_tier: T2
 
   escalation:
     threshold: 0.6
