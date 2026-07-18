@@ -1769,8 +1769,17 @@ class Dispatcher:
             # ledger per GRV-005 § III.
             _tool_selection = getattr(agent, "_last_tool_selection", None)
             if _tool_selection is not None:
+                # research-routing-coherence-v1 C2 — ADDITIVE measurement field
+                # on the existing tool_selection event (no new event type;
+                # EVENT_TYPES + the conformance test are untouched). The week-1
+                # metrics + the F4 over-fire watch read matched_skill_slugs;
+                # empty list on a no-match turn, the matched slugs on a match.
+                _payload = dict(_tool_selection)
+                _payload["matched_skill_slugs"] = self._matched_skill_slugs_for_turn(
+                    agent
+                )
                 try:
-                    ledger.record("tool_selection", **_tool_selection)
+                    ledger.record("tool_selection", **_payload)
                 except Exception as _exc:
                     logger.warning(
                         "[grove.dispatcher] tool_selection ledger write "
@@ -4182,6 +4191,34 @@ class Dispatcher:
         except Exception:
             logger.error("Composer telemetry emit failed", exc_info=True)
         return result.text
+
+    def _matched_skill_slugs_for_turn(self, agent: Any) -> List[str]:
+        """research-routing-coherence-v1 C2 — the skill slugs THIS turn's intent
+        matched, for the additive ``tool_selection`` telemetry field. Shares the
+        exact match rule the composer nudge provider uses
+        (``matched_skill_slugs_for_intent``): ``intent_class`` from the turn's
+        classification, ``valid_tool_names`` + the derived toolsets from the
+        agent. Empty list when there is no classification or no match — the F4
+        over-fire watch reads the delta between this and actual invocations.
+        """
+        classification = getattr(self, "_current_turn_classification", None)
+        intent_class = (
+            getattr(classification, "intent_class", None) if classification else None
+        )
+        if not intent_class:
+            return []
+        valid = getattr(agent, "valid_tool_names", set()) or set()
+        toolsets: Set[str] = set()
+        if self.registry is not None:
+            from model_tools import get_toolset_for_tool
+            toolsets = {
+                ts for ts in (
+                    get_toolset_for_tool(self.registry, t) for t in valid
+                )
+                if ts
+            }
+        from agent.prompt_builder import matched_skill_slugs_for_intent
+        return matched_skill_slugs_for_intent(intent_class, valid, toolsets)
 
     def _compose_and_inject_system_prompt(
         self,

@@ -1137,6 +1137,88 @@ def _bundled_skill_index_from_records(
     return by_cat, dict(load_skill_category_descriptions())
 
 
+# ── research-routing-coherence-v1 C2 — intent→skill disclosure nudge ──────────
+#
+# Mesh-primitive invariant: ZERO skill names in code. The match is field-driven
+# off record data — kind, trigger.intents, lifecycle.state, frontmatter — and
+# the emitted slug is the record-id tail. Nothing about a specific skill is
+# hardcoded here.
+
+_SKILL_NUDGE_TEMPLATE = (
+    "For this request a matching skill is available: {slugs}. Invoke it via "
+    "`invoke_skill` when the operator wants multi-step structured synthesis "
+    "(e.g. a deep-research brief). Do NOT invoke it for simple retrieval or a "
+    "conversational answer — handle those directly."
+)
+
+
+def render_skill_nudge_line(slugs: "list[str]") -> str:
+    """The ONE nudge line (F3 template-lock, research-routing-coherence-v1 C2).
+
+    The ONLY interpolation is the backtick-wrapped slug list — no record
+    description, name prose, or any other record field reaches the prompt.
+    Multi-match renders every slug in one line under the same template.
+    """
+    rendered = ", ".join(f"`{s}`" for s in slugs)
+    return _SKILL_NUDGE_TEMPLATE.format(slugs=rendered)
+
+
+def matched_skill_slugs_for_intent(
+    intent_class: "str | None",
+    available_tools: "set[str] | None",
+    available_toolsets: "set[str] | None",
+    *,
+    disabled: "set[str] | None" = None,
+) -> "list[str]":
+    """Slugs of the kind=skill records this turn's intent should nudge toward
+    (research-routing-coherence-v1 C2). The shared match rule, consumed by BOTH
+    the composer nudge provider and the tool_selection telemetry field.
+
+    A record matches when: ``kind == skill`` AND ``intent_class`` is in a
+    NON-EMPTY ``trigger.intents`` AND the record is platform-admitted + visible
+    (the same filters the bundled index applies) AND EXECUTABLE — lifecycle
+    state in ``EXECUTABLE_STATES`` (the C1 authority: never nudge toward a
+    record that cannot run). Empty/absent ``trigger.intents`` → no match; an
+    empty / falsy ``intent_class`` → no match. Returns sorted, de-duplicated
+    record-id-tail slugs (possibly empty). Field-driven — no skill name in code.
+    """
+    if not intent_class:
+        return []
+    from grove.capability import CapabilityKind, EXECUTABLE_STATES
+    from grove.capability_registry import load_capabilities
+
+    if disabled is None:
+        disabled = get_disabled_skill_names()
+    slugs: list[str] = []
+    for rec in load_capabilities().values():
+        if rec.kind is not CapabilityKind.SKILL or rec.skill is None:
+            continue
+        trigger = getattr(rec, "trigger", None)
+        intents = list(getattr(trigger, "intents", None) or [])
+        if not intents or intent_class not in intents:
+            continue
+        # EXECUTABLE — same authority C1 gates the invoke_skill zone on. A
+        # proposed / deprecated / non-executable record is never nudged toward.
+        lifecycle = getattr(rec, "lifecycle", None)
+        if lifecycle is None or lifecycle.state not in EXECUTABLE_STATES:
+            continue
+        frontmatter, _ = parse_frontmatter(rec.context.payload)
+        if not skill_matches_platform(frontmatter):
+            continue
+        slug = rec.id.rsplit(".", 1)[-1]
+        frontmatter_name = str(frontmatter.get("name") or slug)
+        if frontmatter_name in disabled or slug in disabled:
+            continue
+        if not _skill_should_show(
+            extract_skill_conditions(frontmatter),
+            available_tools,
+            available_toolsets,
+        ):
+            continue
+        slugs.append(slug)
+    return sorted(set(slugs))
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,

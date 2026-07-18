@@ -793,6 +793,49 @@ def _skills_index_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     return SectionResult(label="skills_index", text=text)
 
 
+def _skill_nudge_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
+    """research-routing-coherence-v1 C2 — the intent→skill disclosure nudge.
+
+    Emits ONE line when this turn's classified ``intent_class`` matches an
+    executable, platform-admitted, visible ``kind=skill`` record's
+    ``trigger.intents`` (the shared field-driven match rule in
+    ``agent.prompt_builder.matched_skill_slugs_for_intent`` — zero skill names
+    in code). ``intent_class`` rides ``ctx`` per-turn the same way
+    ``user_message`` does (dispatcher.compose_system_prompt; the accepted
+    recompose cadence — turn-keyword-relevance-v1 precedent). No match, no
+    ``intent_class``, or no skills tooling this turn → no line.
+
+    F3: the line interpolates ONLY the slug(s) (see ``render_skill_nudge_line``);
+    no record prose reaches the prompt. F4: the template names the boundary —
+    multi-step structured synthesis, NOT simple retrieval / conversation.
+    """
+    intent_class = ctx.get("intent_class")
+    if not intent_class:
+        return None
+    valid = ctx.get("valid_tool_names") or set()
+    # Nudge toward invoke_skill only when the turn can actually call it.
+    if "invoke_skill" not in valid:
+        return None
+    registry = ctx.get("registry")
+    avail_toolsets: Set[str] = set()
+    if registry is not None:
+        from model_tools import get_toolset_for_tool
+        avail_toolsets = {
+            toolset for toolset in (
+                get_toolset_for_tool(registry, tool_name) for tool_name in valid
+            )
+            if toolset
+        }
+    from agent.prompt_builder import (
+        matched_skill_slugs_for_intent,
+        render_skill_nudge_line,
+    )
+    slugs = matched_skill_slugs_for_intent(intent_class, valid, avail_toolsets)
+    if not slugs:
+        return None
+    return SectionResult(label="skill_nudge", text=render_skill_nudge_line(slugs))
+
+
 def _alibaba_model_override_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     if ctx.get("provider") != "alibaba":
         return None
@@ -1033,6 +1076,18 @@ def build_default_composer(
         "portal_links",
         build_portal_links_provider(**portal_links_kwargs),
         order=17,
+        tier="volatile",
+    )
+
+    # research-routing-coherence-v1 C2 — the intent→skill disclosure nudge at
+    # volatile:18 (between portal_links:17 and external_memory:30). Registered
+    # SEPARATELY (like portal_links / cellar / memory) so the v0.1
+    # _DEFAULT_SECTIONS byte-for-byte regression stays intact; the provider
+    # returns None whenever the turn's intent matches no executable skill.
+    composer.register_section(
+        "skill_nudge",
+        _skill_nudge_provider,
+        order=18,
         tier="volatile",
     )
     return composer
