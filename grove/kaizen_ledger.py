@@ -35,19 +35,21 @@ session-id-per-file split keeps query scopes narrow and lets
 operators inspect a single session's ledger without parsing a
 shared multi-session file.
 
-Phase 6 records six event types:
+The authoritative set of event types is ``KaizenLedger.EVENT_TYPES``, enforced
+fail-loud in :meth:`record`. It has grown well beyond the original Phase-6 six
+as the governance surface expanded; consult that frozenset for the exact,
+current list. Broadly the ledger records per-turn lifecycle (``final_response``),
+tool-set selection (``tool_selection``), Andon halts and their resolutions
+(``andon_halt`` / ``andon_disposition`` / ``red_resolution``), tier and routing
+changes (``tier_override`` / ``tier_fallback`` / ``routing_config_mutation``),
+governance and capability writes (``governance_change`` /
+``capability_binding_mutation`` / ``grant_execution``), skill-flywheel
+dispositions, containment and write-confinement events, and session-cache
+telemetry.
 
-* ``tool_batch_executed`` — a Green-classified batch ran successfully
-  via the Dispatcher's executor.
-* ``andon_halt`` — the classifier raised AndonHalt at intent yield.
-* ``andon_disposition`` — operator chose Skip or Drop at the
-  Sovereign Prompt.
-* ``final_response`` — the Agent's generator yielded a FinalResponse
-  and the turn completed.
-* ``turn_dropped`` — the operator chose Drop and the turn was
-  abandoned with volatile state flushed.
-* ``tier_override`` — operator (or Sprint 27 escalation handler)
-  bumped the active tier mid-session.
+Green tool executions are NOT recorded here: the capability feed
+(``grove/capability_feed.py``, per-invocation) has been the sole path for
+invocation usage since GRV-009 E3 C4 (12438f1b6 retired ``tool_batch_executed``).
 """
 
 from __future__ import annotations
@@ -99,11 +101,15 @@ class KaizenLedger:
     """
 
     EVENT_TYPES = frozenset({
-        "tool_batch_executed",
+        # ledger-eventtype-hygiene-v1 retirements (registrations removed; both
+        # emitters are already gone, so nothing can file them):
+        #   * tool_batch_executed — retired by 12438f1b6 (GRV-009 E3 C4): the
+        #     capability feed is the sole path for invocation usage.
+        #   * turn_dropped — retired by e46de6efb: the operator "Drop" disposition
+        #     branch (and its emitter) was removed with the v1.0 disposition aliases.
         "andon_halt",
         "andon_disposition",
         "final_response",
-        "turn_dropped",
         "tier_override",
         # Sprint 29 Phase 2 — per-turn tool-set selection. Dispatcher
         # writes this after _maybe_apply_tool_filter runs in the agent,

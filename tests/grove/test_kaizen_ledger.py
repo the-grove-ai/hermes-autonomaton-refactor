@@ -60,12 +60,12 @@ class TestKaizenLedgerConstruction:
 class TestKaizenLedgerRecord:
     def test_record_appends_jsonl_event(self, tmp_path: Path):
         led = KaizenLedger(session_id="s1", ledger_dir=tmp_path)
-        led.record("tool_batch_executed", batch_size=2, latency_ms=42.5)
+        led.record("tier_override", batch_size=2, latency_ms=42.5)
         content = led.path.read_text(encoding="utf-8")
         # One line, parseable JSON
         line = content.strip()
         event = json.loads(line)
-        assert event["event_type"] == "tool_batch_executed"
+        assert event["event_type"] == "tier_override"
         assert event["session_id"] == "s1"
         assert event["batch_size"] == 2
         assert event["latency_ms"] == 42.5
@@ -80,7 +80,7 @@ class TestKaizenLedgerRecord:
 
     def test_record_appends_multiple_events(self, tmp_path: Path):
         led = KaizenLedger(session_id="s1", ledger_dir=tmp_path)
-        led.record("tool_batch_executed", batch_size=1)
+        led.record("tier_override", batch_size=1)
         led.record("andon_halt", zone="red", matched_rule="r")
         led.record("final_response", content_length=10)
         lines = led.path.read_text(encoding="utf-8").splitlines()
@@ -115,13 +115,13 @@ class TestKaizenLedgerRead:
 
     def test_events_streams_back_in_append_order(self, tmp_path: Path):
         led = KaizenLedger(session_id="s1", ledger_dir=tmp_path)
-        led.record("tool_batch_executed", n=1)
+        led.record("tier_override", n=1)
         led.record("andon_halt", n=2)
-        led.record("turn_dropped", n=3)
+        led.record("final_response", n=3)
         events = list(led.events())
         assert [e["n"] for e in events] == [1, 2, 3]
         assert [e["event_type"] for e in events] == [
-            "tool_batch_executed", "andon_halt", "turn_dropped",
+            "tier_override", "andon_halt", "final_response",
         ]
 
     def test_events_skips_malformed_lines(self, tmp_path: Path):
@@ -138,11 +138,11 @@ class TestKaizenLedgerRead:
 
     def test_events_by_type_filters(self, tmp_path: Path):
         led = KaizenLedger(session_id="s1", ledger_dir=tmp_path)
-        led.record("tool_batch_executed", n=1)
+        led.record("tier_override", n=1)
         led.record("andon_halt", n=2)
-        led.record("tool_batch_executed", n=3)
+        led.record("tier_override", n=3)
         halts = led.events_by_type("andon_halt")
-        batches = led.events_by_type("tool_batch_executed")
+        batches = led.events_by_type("tier_override")
         assert len(halts) == 1
         assert len(batches) == 2
         assert halts[0]["n"] == 2
@@ -155,7 +155,7 @@ class TestKaizenLedgerThreadSafety:
 
         def _write_n(start: int, n: int) -> None:
             for i in range(n):
-                led.record("tool_batch_executed", thread_id=start, seq=i)
+                led.record("tier_override", thread_id=start, seq=i)
 
         threads = [
             threading.Thread(target=_write_n, args=(t, 25))
