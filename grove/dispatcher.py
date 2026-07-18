@@ -4675,6 +4675,11 @@ class Dispatcher:
         # executing its contract → a contract_execution provenance event.
         active_slug = getattr(self, "_last_loaded_primary_slug", None)
         contract_writes: List[tuple] = []  # (slug, path), emitted iff batch proceeds
+        # artifact-identity-v1 C1 — (tool_name, target) for EVERY target that
+        # passes all gates; each files an artifact_written identity event iff
+        # the batch proceeds (the batch is the unit of disposition — a refused
+        # batch emits nothing).
+        allowed_writes: List[tuple] = []
 
         # structural-review-gate-v1 — the fleet governance blocks (kind=skill
         # records with a governance key), loaded + cached for this process. The
@@ -4715,7 +4720,42 @@ class Dispatcher:
                         target, fleet_governance
                     ) == active_slug:
                         contract_writes.append((active_slug, target))
+                # artifact-identity-v1 C1 — every gate passed for this target
+                # (a refused target broke out above and never reaches here).
+                allowed_writes.append((tool_name, target))
         if not refusals:
+            # artifact-identity-v1 C1 — the batch proceeds; stamp identity for
+            # every allowed write. Write-strict/read-resilient: a filing fault
+            # is LOUD but never denies the write — the log line names the
+            # EMISSION as the failure so it cannot be read as a write failure.
+            if allowed_writes and ledger is not None:
+                from grove.artifact_identity import (
+                    artifact_id,
+                    canonical_artifact_path,
+                )
+                _classification = getattr(
+                    self, "_current_turn_classification", None
+                )
+                _intent_class = getattr(_classification, "intent_class", None)
+                for _tool, _target in allowed_writes:
+                    try:
+                        _canonical = canonical_artifact_path(_target)
+                        ledger.record(
+                            "artifact_written",
+                            path=_canonical,
+                            artifact_id=artifact_id(_canonical),
+                            turn_id=self._current_turn_id,
+                            active_primary_skill_slug=active_slug,
+                            intent_class=_intent_class,
+                            tool=_tool,
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            "[grove.dispatcher] artifact_written EMISSION failed "
+                            "(identity telemetry only — the write itself "
+                            "proceeds untouched): target=%r error=%r",
+                            _target, _exc,
+                        )
             # C5b — the batch proceeds; file contract_execution for each in-active-
             # sink write (system-derived provenance; no model-authored tags). Ledger
             # write is best-effort — a telemetry fault must not deny the turn.
