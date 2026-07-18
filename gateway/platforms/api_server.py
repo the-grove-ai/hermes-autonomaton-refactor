@@ -3939,6 +3939,11 @@ class APIServerAdapter(BasePlatformAdapter):
             # Operator Portal action surface (Sprint P4) — write endpoints under
             # /portal/actions/* (proposal approve/reject/dismiss, dock status).
             register_action_routes(self._app)
+            # artifact-identity-v1 C2 — read-only GET /artifact/<id> (ledger
+            # id→path lookup, allowlist-root containment). Auth-gated: the
+            # portal middleware's prefix set includes /artifact/.
+            from grove.api.artifacts import register_artifact_routes
+            register_artifact_routes(self._app)
             # Operator Portal composition panel (R2″ node-compositor-view-v1) —
             # read-only GRV-004 composition state at
             # /portal/fragments/composition/panel.
