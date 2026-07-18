@@ -1592,6 +1592,11 @@ class Dispatcher:
         agent._tier_budget = None
         agent._tier_context_blocks = None
         agent._tier_name = None  # Sprint 75 — routed tier for identity gating
+        # artifact-identity-v1 C3 — wipe the artifact-links stash every turn.
+        # The consume hook (_append_artifact_links) clears it on render like
+        # its siblings; this reset guarantees a turn whose response path never
+        # reached the hook cannot leak its links into the next turn's answer.
+        agent._artifact_links_notice = None
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -4740,10 +4745,11 @@ class Dispatcher:
                 for _tool, _target in allowed_writes:
                     try:
                         _canonical = canonical_artifact_path(_target)
+                        _aid = artifact_id(_canonical)
                         ledger.record(
                             "artifact_written",
                             path=_canonical,
-                            artifact_id=artifact_id(_canonical),
+                            artifact_id=_aid,
                             turn_id=self._current_turn_id,
                             active_primary_skill_slug=active_slug,
                             intent_class=_intent_class,
@@ -4756,6 +4762,32 @@ class Dispatcher:
                             "proceeds untouched): target=%r error=%r",
                             _target, _exc,
                         )
+                        continue
+                    # C3 — answer-then-surface stash (the _tier_fallback_notice
+                    # mirror): the recorded artifact rides the turn's answer as
+                    # a portal link. Only a RECORDED artifact is stashed (an
+                    # unrecorded id would render a dead link). Deduped by id —
+                    # same path written twice this turn is one link. Failure is
+                    # loud and decoration-only; the write and its event stand.
+                    if agent is not None:
+                        try:
+                            _links = getattr(
+                                agent, "_artifact_links_notice", None
+                            ) or []
+                            if all(
+                                l.get("artifact_id") != _aid for l in _links
+                            ):
+                                _links.append({
+                                    "artifact_id": _aid,
+                                    "display_name": os.path.basename(_canonical),
+                                })
+                            agent._artifact_links_notice = _links
+                        except Exception as _stash_exc:
+                            logger.warning(
+                                "[grove.dispatcher] artifact link stash failed "
+                                "(answer decoration only — the write and its "
+                                "ledger event stand): %r", _stash_exc,
+                            )
             # C5b — the batch proceeds; file contract_execution for each in-active-
             # sink write (system-derived provenance; no model-authored tags). Ledger
             # write is best-effort — a telemetry fault must not deny the turn.

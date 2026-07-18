@@ -5923,6 +5923,47 @@ class AIAgent:
             logger.debug("[tier-fallback-notice] append skipped: %r", exc)
             return final_response
 
+    def _append_artifact_links(self, final_response: str) -> str:
+        """artifact-identity-v1 C3 — surface portal links for the artifacts this
+        turn's governed writes produced ALONGSIDE the answer (answer-then-
+        surface). The Dispatcher stashes ``_artifact_links_notice`` (a list of
+        {artifact_id, display_name}, deduped by id) at the write-confinement
+        seam; this hook consumes it once and renders the template-locked frame —
+        every value system-derived, the model authors nothing. Rides core
+        final-response assembly, so every surface inherits it. Best-effort:
+        failure never blocks or mutates the answer body (loud log)."""
+        if not final_response:
+            return final_response
+        try:
+            links = getattr(self, "_artifact_links_notice", None)
+            if not links:
+                return final_response
+            self._artifact_links_notice = None  # consume — links ride once
+            from grove.prompt.portal_links import resolve_portal_base_url
+
+            base_url = resolve_portal_base_url()
+            if not base_url:
+                logger.warning(
+                    "[artifact-links] portal base URL unresolvable; artifact "
+                    "link decoration skipped (answer unchanged)."
+                )
+                return final_response
+            lines = "\n".join(
+                f"{link['display_name']}: {base_url}/artifact/"
+                f"{link['artifact_id']}"
+                for link in links
+            )
+            return (
+                final_response.rstrip()
+                + "\n\nArtifacts written this turn:\n"
+                + lines
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[artifact-links] append skipped (answer unchanged): %r", exc,
+            )
+            return final_response
+
     def _connector_offer_retry(self, server_name: str) -> None:
         """Operator 'Retry' disposition (Ruling 2): clear the connect-breaker
         AND evict this connector's offer ids from the shown-set, so a
@@ -18019,6 +18060,10 @@ class AIAgent:
             # unavailable and the turn re-drove on T2, name it alongside the answer
             # (answer-then-surface); never a silent downshift.
             final_response = self._append_tier_fallback_notice(final_response)
+            # artifact-identity-v1 C3 — portal links for this turn's written
+            # artifacts alongside the answer (answer-then-surface; values
+            # system-derived from the artifact_written stash, template-locked).
+            final_response = self._append_artifact_links(final_response)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.
