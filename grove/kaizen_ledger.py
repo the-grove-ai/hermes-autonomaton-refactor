@@ -243,6 +243,23 @@ class KaizenLedger:
         # Emission is write-strict/read-resilient: a filing fault logs loud
         # and the write proceeds untouched.
         "artifact_written",
+        # goal-spine-v1 P2 — attachment MINTED: the sanctioned writer
+        # (grove/dock/attachment_store.py::mint_attachment) attached an
+        # artifact to a Dock goal, with an approving proposal_id (required —
+        # no proposal_id, no attachment). Carries artifact_id + goal_id +
+        # proposal_id + rationale + bounded excerpt (excerpt_truncated /
+        # excerpt_full_chars make truncation visible, never silent). The
+        # writer files this ITSELF; here the ledger event IS the mutation,
+        # so a record() failure RAISES — never the binding-writer error
+        # floor, which would silently claim an attachment that never
+        # happened.
+        "artifact_goal_attached",
+        # goal-spine-v1 P2 — attachment DETACHED (the MemoryDeprecated
+        # idiom): a second event, latest-wins by timestamp at read time —
+        # mint -> detach -> re-mint re-attaches. Requires an
+        # operator-originated reason, NOT a proposal_id. Filed by the same
+        # sanctioned writer module (detach_attachment).
+        "artifact_goal_detached",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:
