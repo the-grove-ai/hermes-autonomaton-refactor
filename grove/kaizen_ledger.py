@@ -234,6 +234,15 @@ class KaizenLedger:
         "grant_execution",
         # T0/session pattern-cache hit telemetry. Emitted grove/dispatcher.py:6288.
         "session_cache_hit",
+        # artifact-identity-v1 C1 — identity stamp for EVERY file-tool write
+        # that exits the write-confinement seam ALLOWED
+        # (grove/dispatcher.py::_enforce_write_confinement). Carries the
+        # canonical path + artifact_id (sha256(canonical path)[:16],
+        # grove.artifact_identity — prefix-joins to the cellar's 8-hex source
+        # hash) + turn_id + active_primary_skill_slug + intent_class + tool.
+        # Emission is write-strict/read-resilient: a filing fault logs loud
+        # and the write proceeds untouched.
+        "artifact_written",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:
