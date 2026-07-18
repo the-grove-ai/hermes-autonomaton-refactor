@@ -302,7 +302,8 @@ def test_cellar_detail_source_links_to_artifact(grove_home):
     src = str(grove_home / "sink" / "item-x.json")
     html = _source_artifact_html({"source": src})
     expected = artifact_id(canonical_artifact_path(src))
-    assert f'href="/artifact/{expected}"' in html
+    # artifact-continuation-v1 C1 — hash-form: the source link stays in-shell.
+    assert f'href="/portal#fragments/artifact/{expected}"' in html
     assert src in html
 
 

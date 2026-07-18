@@ -5948,8 +5948,12 @@ class AIAgent:
                     "link decoration skipped (answer unchanged)."
                 )
                 return final_response
+            # artifact-continuation-v1 C1 — operator links land IN-SHELL via
+            # the hash route (absolute form: chat surfaces need a full URL).
+            # The raw /artifact/ route stays valid for machines; only the
+            # emitted link form changes — the frame is otherwise untouched.
             lines = "\n".join(
-                f"{link['display_name']}: {base_url}/artifact/"
+                f"{link['display_name']}: {base_url}/portal#fragments/artifact/"
                 f"{link['artifact_id']}"
                 for link in links
             )

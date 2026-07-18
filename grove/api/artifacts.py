@@ -217,32 +217,40 @@ def _cellar_page_for(artifact_id: str) -> Optional[str]:
 # ── the route ───────────────────────────────────────────────────────────────
 
 
-async def handle_artifact(request: web.Request) -> web.Response:
-    artifact_id = request.match_info["artifact_id"]
+def _resolve_contained(app: web.Application, artifact_id: str) -> Optional[Path]:
+    """Shared id→contained-path resolution (raw route + in-shell fragment):
+    16-hex validation, ledger lookup (lazy index), request-time
+    ``resolve(strict=True)``, allowlist-root containment. Returns the resolved
+    path, or ``None`` for every refusal class — malformed id, unknown id,
+    vanished file, containment escape — so both consumers stay uniform-404."""
     if not _ID_RE.fullmatch(artifact_id):
-        return _not_found()
+        return None
 
-    recorded = _lookup_artifact_path(request.app, artifact_id)
+    recorded = _lookup_artifact_path(app, artifact_id)
     if recorded is None:
-        return _not_found()
+        return None
 
     # CONTAINMENT canonical form — request-time strict resolve of the
     # ledger-recorded path. A file deleted after its emit is a 404, never 500.
     try:
         resolved = Path(recorded).resolve(strict=True)
     except (OSError, RuntimeError):
-        return _not_found()
+        return None
 
-    roots: List[Path] = request.app["artifact_roots"]
-    contained = False
+    roots: List[Path] = app["artifact_roots"]
     for root in roots:
         try:
             resolved.relative_to(root)
-            contained = True
-            break
+            return resolved
         except ValueError:
             continue
-    if not contained:
+    return None
+
+
+async def handle_artifact(request: web.Request) -> web.Response:
+    artifact_id = request.match_info["artifact_id"]
+    resolved = _resolve_contained(request.app, artifact_id)
+    if resolved is None:
         return _not_found()
 
     suffix = resolved.suffix.lower()
@@ -294,10 +302,112 @@ async def handle_artifact(request: web.Request) -> web.Response:
                     charset=None, attachment_name=resolved.name)
 
 
+# ── in-shell fragment (artifact-continuation-v1 C1) ─────────────────────────
+
+
+def _fragment_not_found() -> web.Response:
+    """Uniform 404 fragment — one body for malformed / unknown / vanished /
+    containment-refused (no oracle, no input reflection)."""
+    from grove.api.fragments import _html_fragment
+
+    return _html_fragment(
+        '<div class="error-card"><h3>Not found</h3>'
+        '<p>No such artifact.</p></div>',
+        status=404,
+    )
+
+
+async def handle_artifact_fragment(request: web.Request) -> web.Response:
+    """GET /portal/fragments/artifact/{id} — the in-shell artifact view.
+
+    Same resolution + containment as the raw route (shared helper — never a
+    parallel path). Markdown renders inside a persistent model-content
+    demarcation container using the PINNED artifact profile plus an
+    unconditional anchor rewrite (nh3-native ``link_rel`` +
+    ``set_tag_attribute_values``: every surviving anchor carries
+    rel="noopener noreferrer" target="_blank"). Non-md classes render
+    metadata + a raw-route link only — no inline content in-shell; the
+    hardened raw endpoint is the isolation surface for those."""
+    from grove.api.fragments import _html_fragment
+
+    artifact_id = request.match_info["artifact_id"]
+    resolved = _resolve_contained(request.app, artifact_id)
+    if resolved is None:
+        return _fragment_not_found()
+
+    esc_id = _html_mod.escape(artifact_id)
+    esc_name = _html_mod.escape(resolved.name)
+    raw_link = (
+        f'<p class="meta"><a href="/artifact/{esc_id}" '
+        f'rel="noopener noreferrer" target="_blank">open raw</a></p>'
+    )
+
+    if resolved.suffix.lower() != ".md":
+        # Metadata-only view: basename + type + raw link. No inline bytes.
+        suffix = _html_mod.escape(resolved.suffix.lower() or "(none)")
+        markup = (
+            f'<article id="artifact-detail">'
+            f'<h2>artifact {esc_id}</h2>'
+            f'<p class="meta">{esc_name} &middot; type {suffix} &middot; '
+            f'served as download only</p>'
+            f'{raw_link}'
+            f'</article>'
+        )
+        return _html_fragment(markup)
+
+    try:
+        text = resolved.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        # Vanished between resolve and read, or declared-md binary content —
+        # fall to the uniform 404 (never inline undecodable bytes in-shell).
+        return _fragment_not_found()
+
+    rendered = nh3.clean(
+        markdown.markdown(text, extensions=["fenced_code", "tables"]),
+        tags=_ARTIFACT_MD_TAGS,
+        attributes=_ARTIFACT_MD_ATTRS,
+        url_schemes=_ARTIFACT_URL_SCHEMES,
+        # Unconditional anchor rewrite, sanitizer-native (atomic with the
+        # clean — no post-parse mutation gap): every surviving anchor opens
+        # outside the shell and never carries the opener reference.
+        link_rel="noopener noreferrer",
+        set_tag_attribute_values={"a": {"target": "_blank"}},
+    )
+
+    page = _cellar_page_for(artifact_id)
+    crossref = ""
+    if page is not None:
+        esc_page = _html_mod.escape(page, quote=True)
+        crossref = (
+            f'<p class="crossref">ingested as '
+            f'<a href="/portal#fragments/cellar/pages/{esc_page}">'
+            f'{esc_page}</a></p>'
+        )
+
+    markup = (
+        f'<article id="artifact-detail">'
+        f'<h2>artifact {esc_id}</h2>'
+        f'<p class="meta">{esc_name}</p>'
+        f'{crossref}{raw_link}'
+        f'<div class="model-content">'
+        f'<div class="model-content-label">model-generated content</div>'
+        f'<div class="page-body">{rendered}</div>'
+        f'</div>'
+        f'</article>'
+    )
+    return _html_fragment(markup)
+
+
 def register_artifact_routes(app: web.Application) -> None:
     """Resolve allowlist roots (loud per-root rejection) and register the
-    read-only artifact route. Gated by portal_auth_middleware — the
-    middleware's prefix set includes /artifact."""
+    read-only artifact routes: the hardened raw route and the in-shell
+    fragment. Both gated by portal_auth_middleware — the prefix set covers
+    /artifact and /portal."""
     app["artifact_roots"] = resolve_artifact_roots()
     app["_artifact_index"] = {}
     app.router.add_get("/artifact/{artifact_id}", handle_artifact)
+    # artifact-continuation-v1 C1 — in-shell view; the shell's generic hash
+    # router maps #fragments/artifact/<id> onto this path.
+    app.router.add_get(
+        "/portal/fragments/artifact/{artifact_id}", handle_artifact_fragment
+    )
