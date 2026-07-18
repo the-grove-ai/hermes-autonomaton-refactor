@@ -136,7 +136,14 @@ class TestStorePendingRouting:
         assert _capture_queue_writes, "expected an opaque queue bridge write"
         bridge = _capture_queue_writes[0]
         assert bridge.type == RED_PENDING_PROPOSAL_TYPE
-        assert bridge.payload == {"zone": "red"}
+        # artifact-continuation-v1 P2 — additive identity-context carrier keys
+        # (1e/1f ruling); zone stays red, bridge stays opaque (no key/diff/path).
+        assert bridge.payload["zone"] == "red"
+        assert bridge.payload["parent_artifact_ids"] == []
+        assert set(bridge.payload) == {
+            "zone", "parent_artifact_ids", "turn_id",
+            "active_primary_skill_slug", "intent_class", "tool",
+        }
         # the .env was NOT written at propose time
         assert not env.exists()
         # resume observation (success, relay-not-replan) — not a re-plan/cancel

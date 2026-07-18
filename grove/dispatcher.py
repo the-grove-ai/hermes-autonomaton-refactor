@@ -1597,6 +1597,16 @@ class Dispatcher:
         # its siblings; this reset guarantees a turn whose response path never
         # reached the hook cannot leak its links into the next turn's answer.
         agent._artifact_links_notice = None
+        # artifact-continuation-v1 P2 — parent lineage stash. A continuation
+        # dispatch entry sets the ONE-SHOT ``_next_turn_parent_artifact_ids``
+        # slot BEFORE driving the turn; this consume initializes the per-turn
+        # stash from it (default empty) and clears the slot, so parents can
+        # never leak into a later turn. Every artifact_written this turn
+        # merges the per-turn list (system-derived; the model authors nothing).
+        self._current_turn_parent_artifact_ids = list(
+            getattr(self, "_next_turn_parent_artifact_ids", None) or []
+        )
+        self._next_turn_parent_artifact_ids = None
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -4742,6 +4752,23 @@ class Dispatcher:
                     self, "_current_turn_classification", None
                 )
                 _intent_class = getattr(_classification, "intent_class", None)
+                # artifact-continuation-v1 P2 — parent lineage merge. Read the
+                # per-turn stash ONCE for the batch; a malformed stash degrades
+                # LOUDLY to [] so the identity event still files (write-strict/
+                # read-resilient: lineage may degrade, identity never blocks).
+                try:
+                    _parent_ids = list(
+                        getattr(
+                            self, "_current_turn_parent_artifact_ids", None
+                        ) or []
+                    )
+                except Exception as _lineage_exc:
+                    logger.warning(
+                        "[grove.dispatcher] parent lineage merge failed "
+                        "(lineage degrades to [] — the write and its identity "
+                        "event stand): %r", _lineage_exc,
+                    )
+                    _parent_ids = []
                 for _tool, _target in allowed_writes:
                     try:
                         _canonical = canonical_artifact_path(_target)
@@ -4754,6 +4781,7 @@ class Dispatcher:
                             active_primary_skill_slug=active_slug,
                             intent_class=_intent_class,
                             tool=_tool,
+                            parent_artifact_ids=list(_parent_ids),
                         )
                     except Exception as _exc:
                         logger.warning(
@@ -5521,7 +5549,29 @@ class Dispatcher:
                 _pq.RoutingProposal(
                     proposal_id=f"{RED_PENDING_PROPOSAL_TYPE}:{pid}",
                     type=RED_PENDING_PROPOSAL_TYPE,
-                    payload={"zone": "red"},
+                    # artifact-continuation-v1 P2 (1e/1f ruling, carrier) —
+                    # the minting turn's identity context rides the queue-row
+                    # payload so confirm-time emission can file a faithful
+                    # artifact_written for the approved write. Additive:
+                    # pre-existing rows without these keys emit with honest
+                    # defaults (null/[]). No secrets — ids and labels only.
+                    payload={
+                        "zone": "red",
+                        "parent_artifact_ids": list(
+                            getattr(
+                                self, "_current_turn_parent_artifact_ids", None
+                            ) or []
+                        ),
+                        "turn_id": self._current_turn_id,
+                        "active_primary_skill_slug": getattr(
+                            self, "_last_loaded_primary_slug", None
+                        ),
+                        "intent_class": getattr(
+                            getattr(self, "_current_turn_classification", None),
+                            "intent_class", None,
+                        ),
+                        "tool": _tool,
+                    },
                     evidence=(),
                     eval_hash=pid,
                     created_at=created_at,

@@ -49,3 +49,68 @@ def artifact_id(canonical_path: str) -> str:
     return hashlib.sha256(
         canonical_path.encode("utf-8")
     ).hexdigest()[:_ARTIFACT_ID_LEN]
+
+
+def emit_approved_artifact_written(
+    tool_name: str, write_targets: list, payload: dict,
+) -> list:
+    """artifact-continuation-v1 P2 (1e/1f ruling) — file ``artifact_written``
+    for an APPROVED stored write at confirm time.
+
+    The approved re-dispatch path (``approve_red_proposal`` →
+    ``registry.dispatch``) never enters the Dispatcher, so the identity seam
+    never sees the write; this core helper closes that gap. The surface
+    (portal confirm handler) only invokes — capability stays here.
+
+    ``write_targets`` come from the seam's own extraction machinery
+    (``extract_write_targets``, returned by ``approve_red_proposal``);
+    ``payload`` is the queue-row carrier holding the ORIGINAL minting turn's
+    identity context. Rows without the carrier keys (pre-existing shape) emit
+    with honest defaults (null / []). Write-strict/read-resilient: a
+    per-target emission failure loud-logs and continues — it never fails the
+    confirm that already executed.
+
+    Returns the list of persisted event dicts (empty on no targets / all
+    failures).
+    """
+    import logging
+
+    from grove.kaizen_ledger import KaizenLedger
+
+    _logger = logging.getLogger(__name__)
+    payload = payload or {}
+    turn_id = payload.get("turn_id")
+    # File under the minting turn's session ledger when derivable from the
+    # standard "{session_id}#{n}" turn-id shape, else a dedicated stream.
+    session = (
+        turn_id.split("#", 1)[0]
+        if isinstance(turn_id, str) and "#" in turn_id
+        else None
+    ) or "approved_writes"
+    events: list = []
+    for target in list(write_targets or []):
+        try:
+            canonical = canonical_artifact_path(target)
+            events.append(
+                KaizenLedger(session).record(
+                    "artifact_written",
+                    path=canonical,
+                    artifact_id=artifact_id(canonical),
+                    turn_id=turn_id,
+                    active_primary_skill_slug=payload.get(
+                        "active_primary_skill_slug"
+                    ),
+                    intent_class=payload.get("intent_class"),
+                    tool=tool_name,
+                    parent_artifact_ids=list(
+                        payload.get("parent_artifact_ids") or []
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — telemetry-only
+            _logger.warning(
+                "[artifact-identity] approved-write EMISSION failed (identity "
+                "telemetry only — the approved write itself stands): "
+                "target=%r error=%r", target, exc,
+            )
+    return events

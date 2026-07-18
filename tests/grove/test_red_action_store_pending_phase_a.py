@@ -123,7 +123,18 @@ class TestStoreRouting:
         # propose's TOCTOU anchor folded into the execute args (byte-identical .env path)
         assert "approved_content_sha256" in entry.arguments
         assert not env.exists()  # nothing written at propose time
-        assert _capture_queue_writes and _capture_queue_writes[0].payload == {"zone": "red"}
+        assert _capture_queue_writes, "expected an opaque queue bridge write"
+        _payload = _capture_queue_writes[0].payload
+        # artifact-continuation-v1 P2 — the payload gained the additive
+        # identity-context carrier keys (1e/1f ruling); zone stays red and the
+        # bridge stays opaque (ids/labels only, no key/diff/path).
+        assert _payload["zone"] == "red"
+        assert _payload["parent_artifact_ids"] == []
+        assert _payload["tool"] == "propose_governance_change"
+        assert set(_payload) == {
+            "zone", "parent_artifact_ids", "turn_id",
+            "active_primary_skill_slug", "intent_class", "tool",
+        }
 
     def test_unreachable_handler_cancels(self, tmp_path):
         d = Dispatcher(sovereign_prompt_handler=non_interactive_deny_handler)
