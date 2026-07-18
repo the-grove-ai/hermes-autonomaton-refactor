@@ -506,7 +506,12 @@ def render_goal_card(goal) -> str:
     keywords = "".join(f'<span class="tag">{_esc(k)}</span>' for k in goal.keywords)
     return (
         f'<div class="card" id="goal-{_esc(goal.id)}" {_ctx_attrs("dock", goal.id)}>'
-        f'<h4>{_esc(goal.name)} '
+        # goal-spine-v1 P4 — the name links into the goal detail fragment.
+        # Hash-only href (the artifact-cross-ref precedent): the anchor is
+        # NESTED inside the _ctx_attrs-clickable card, and hash-only is the
+        # shape the shell's shouldCancel/hashchange router handles.
+        f'<h4><a href="/portal#fragments/goal/{_esc(goal.id)}">'
+        f'{_esc(goal.name)}</a> '
         f'<span class="badge">{_esc(goal.vector)}</span> '
         f'<span class="badge">{_esc(goal.status)}</span></h4>'
         f'<div class="meta">{_esc(goal.definition_of_done)}</div>'
@@ -551,6 +556,124 @@ async def handle_dock_goals(request: web.Request) -> web.Response:
         parts.append(render_goal_card(g))
     parts.append('</div>')
     return _html_fragment("".join(parts))
+
+
+# ---------------------------------------------------------------------------
+# Goal detail fragment (goal-spine-v1 P4) — reads in fragments, the detach
+# WRITE lives in actions.handle_attachment_detach (K3 ruling: the file split
+# IS the read/write boundary).
+# ---------------------------------------------------------------------------
+
+
+def _attachment_entry_html(goal_id: str, event: dict) -> str:
+    """One attached artifact on the goal detail: hash-route link into the
+    artifact fragment, the adjudication excerpt + rationale (the approval's
+    provenance surface), attached-at, and the Detach control — the
+    suggest-revision feedback-block idiom (toggled textarea, ``hx-include``
+    by id, POST per K1). Read-side tolerant: missing fields render empty,
+    never raise."""
+    aid = _esc(str(event.get("artifact_id") or ""))
+    gid = _esc(str(goal_id))
+    reason_id = f"detach-reason-{gid}-{aid}"
+    excerpt = _esc(str(event.get("excerpt") or ""))
+    rationale = _esc(str(event.get("rationale") or ""))
+    attached_at = _relative_age(str(event.get("timestamp") or ""))
+    truncated = (
+        ' <span class="meta">(excerpt truncated)</span>'
+        if event.get("excerpt_truncated")
+        else ""
+    )
+    return (
+        f'<div class="card attachment-entry" id="att-{gid}-{aid}">'
+        f'<h4><a href="/portal#fragments/artifact/{aid}">artifact {aid}</a> '
+        f'<span class="meta">attached {_esc(attached_at)}</span></h4>'
+        f'<blockquote class="model-content">{excerpt}{truncated}</blockquote>'
+        f'<div class="meta">{rationale}</div>'
+        f'<button class="btn btn-secondary" type="button" '
+        f"onclick=\"this.closest('.attachment-entry')"
+        f".querySelector('.feedback-block').classList.toggle('open')\">"
+        f'Detach&hellip;</button>'
+        f'<div class="feedback-block">'
+        f'<textarea id="{reason_id}" name="reason" class="revision-text" '
+        f'rows="2" placeholder="Why this artifact does not belong to this '
+        f'goal."></textarea>'
+        f'<div class="feedback-row">'
+        f'<button class="btn btn-reject" '
+        f'hx-post="/portal/actions/dock/goals/{gid}/attachments/{aid}/detach" '
+        f'hx-include="#{reason_id}" '
+        f'hx-target="#goal-detail" hx-swap="outerHTML">Detach</button>'
+        f'<button class="btn btn-secondary" type="button" '
+        f"onclick=\"this.closest('.feedback-block').classList.remove('open')\">"
+        f'Cancel</button>'
+        f'</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def render_goal_detail(goal) -> str:
+    """The goal detail fragment body. Shared by the GET handler and the
+    detach POST's success re-render (the render_goal_card dual-consumer
+    precedent) so the swapped-in fragment is byte-identical."""
+    from grove.dock.attachment_store import attachments_for_goal
+
+    keywords = "".join(
+        f'<span class="tag">{_esc(k)}</span>' for k in goal.keywords
+    )
+    parts = [
+        '<div id="goal-detail">',
+        '<p class="meta"><a href="/portal#fragments/dock/goals">'
+        "&larr; all goals</a></p>",
+        f'<div class="card" {_ctx_attrs("dock", goal.id)}>'
+        f'<h3>{_esc(goal.name)} '
+        f'<span class="badge">{_esc(goal.vector)}</span> '
+        f'<span class="badge">{_esc(goal.status)}</span></h3>'
+        f'<div class="meta">{_esc(goal.definition_of_done)}</div>'
+        f"<div>{keywords}</div>"
+        f"</div>",
+        "<h4>Attached artifacts</h4>",
+    ]
+    events = attachments_for_goal(goal.id)
+    if not events:
+        parts.append(
+            '<p class="placeholder">Nothing attached yet — approved '
+            "goal-attachment proposals will land here.</p>"
+        )
+    for event in events:
+        parts.append(_attachment_entry_html(goal.id, event))
+    parts.append("</div>")
+    return "".join(parts)
+
+
+async def handle_goal_detail(request: web.Request) -> web.Response:
+    """GET /portal/fragments/goal/{goal_id} — the in-shell goal detail view.
+
+    R-9 read side: an unknown/dangling goal_id (pruned auto-* staging goal,
+    stale link) renders a plain not-found body — never a raise, never a
+    blank panel. A malformed dock.yaml surfaces as the same readable error
+    fragment the listing shows."""
+    goal_id = request.match_info["goal_id"]
+    try:
+        dock = load_dock()
+    except ValueError as exc:
+        logger.warning("[portal] dock manifest unreadable: %r", exc)
+        return _html_fragment(
+            f'<div id="goal-detail"><div class="error-card">'
+            f"<h3>Dock manifest unreadable</h3>"
+            f"<p>{_esc(str(exc))}</p></div></div>"
+        )
+    goal = (
+        next((g for g in dock.goals if g.id == goal_id), None)
+        if dock is not None
+        else None
+    )
+    if goal is None:
+        return _html_fragment(
+            '<div id="goal-detail"><div class="error-card">'
+            "<h3>Not found</h3><p>No such goal.</p></div></div>",
+            status=404,
+        )
+    return _html_fragment(render_goal_detail(goal))
 
 
 def _short_id(proposal_id: str) -> str:
@@ -3599,6 +3722,10 @@ def register_fragment_routes(app: web.Application) -> None:
     # Phase 3 — memory, dock, proposals, skills
     app.router.add_get("/portal/fragments/memory/records", handle_memory_records)
     app.router.add_get("/portal/fragments/dock/goals", handle_dock_goals)
+    # goal-spine-v1 P4 — the in-shell goal detail (attached artifacts +
+    # detach controls); the shell's generic hash router maps
+    # #fragments/goal/<id> onto this path with no JS change.
+    app.router.add_get("/portal/fragments/goal/{goal_id}", handle_goal_detail)
     app.router.add_get("/portal/fragments/proposals/pending", handle_proposals_pending)
     # fleet-artifact-legibility-v1 C2 — LEGACY ALIAS: previously-sent forge deep
     # links land here; the generic package renderer serves it (sink-resolved).

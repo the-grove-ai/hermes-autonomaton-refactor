@@ -42,6 +42,7 @@ from grove.api.fragments import (
     render_disposition_transient,
     render_forge_publish_card,
     render_goal_card,
+    render_goal_detail,
     render_tier_card,
 )
 from grove.api.portal import _memory_proposals_path
@@ -840,6 +841,108 @@ async def handle_dock_goal_update(request: web.Request) -> web.Response:
             status=500,
         )
     return _html_fragment(render_goal_card(goal))
+
+
+# ---------------------------------------------------------------------------
+# Attachment detach (goal-spine-v1 P4) — the per-entry undo the J5 card copy
+# promises. One POST calling the P2 sanctioned writer; no confirmation
+# subsystem (A9).
+# ---------------------------------------------------------------------------
+
+
+async def _detach_reason(request: web.Request):
+    """Parse ``reason`` from the request body (the _suggest_revision_text
+    idiom: form-urlencoded or JSON, RAW text preserved, presence-check only).
+    Returns the raw text when it has non-whitespace content, else None — the
+    caller Andons on None (never a silent 400)."""
+    if request.content_type == "application/x-www-form-urlencoded":
+        data = await request.post()
+        raw = data.get("reason")
+        if raw is not None and str(raw).strip():
+            return str(raw)
+    if request.content_type == "application/json":
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — malformed JSON is absent input
+            return None
+        raw = body.get("reason") if isinstance(body, dict) else None
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    return None
+
+
+async def handle_attachment_detach(request: web.Request) -> web.Response:
+    """POST /portal/actions/dock/goals/{goal_id}/attachments/{artifact_id}/detach
+
+    Detach one (artifact, goal) pair via the sanctioned writer
+    (attachment_store.detach_attachment) with the operator's reason. On
+    success the goal detail fragment re-renders WITHOUT the pair (the
+    handle_dock_goal_update fresh-render precedent). Failure classes:
+    empty reason → 400 (client-input, file_kaizen=False, the dock
+    invalid-status precedent), writer refusal → 400, pair not attached →
+    404 — each through the loud-disposition path."""
+    from grove.dock.attachment_store import (
+        AttachmentWriteError,
+        detach_attachment,
+    )
+
+    goal_id = request.match_info["goal_id"]
+    artifact_id = request.match_info["artifact_id"]
+
+    reason = await _detach_reason(request)
+    if reason is None:
+        return await _loud_action_failure(
+            '<div class="card"><p class="error">Detach reason is empty — '
+            "say why this artifact does not belong to this goal.</p></div>",
+            failure_class="detach_reason_empty",
+            action="attachment_detach",
+            message="Detach reason is empty.",
+            status=400,
+            file_kaizen=False,  # pure client input, no structural fix
+        )
+
+    try:
+        event = detach_attachment(artifact_id, goal_id, reason=reason)
+    except AttachmentWriteError as exc:
+        return await _loud_action_failure(
+            f'<div class="card"><p class="error">Detach refused: '
+            f"{_esc(str(exc))}</p></div>",
+            failure_class="detach_refused",
+            action="attachment_detach",
+            message=f"Detach refused: {exc}",
+            status=400,
+        )
+
+    if event is None:
+        return await _loud_action_failure(
+            f'<div class="card"><p class="error">Artifact '
+            f"<code>{_esc(artifact_id)}</code> is not attached to "
+            f"<code>{_esc(goal_id)}</code>.</p></div>",
+            failure_class="attachment_not_found",
+            action="attachment_detach",
+            message=(
+                f"({artifact_id}, {goal_id}) is not attached — nothing to "
+                f"detach."
+            ),
+            status=404,
+        )
+
+    # Success — re-render the goal detail so the swapped fragment matches a
+    # fresh GET exactly. A goal that is no longer resolvable (pruned auto-*
+    # staging goal — the detach writer is deliberately Dock-blind) gets an
+    # honest confirmation body, not a 500: the detach SUCCEEDED.
+    dock = load_dock()
+    goal = (
+        next((g for g in dock.goals if g.id == goal_id), None)
+        if dock is not None
+        else None
+    )
+    if goal is None:
+        return _html_fragment(
+            '<div id="goal-detail"><p class="placeholder">Detached. The '
+            "goal is no longer in the Dock.</p></div>"
+        )
+    return _html_fragment(render_goal_detail(goal))
 
 
 # ---------------------------------------------------------------------------
@@ -1893,6 +1996,13 @@ def register_action_routes(app: web.Application) -> None:
     )
     app.router.add_patch(
         "/portal/actions/dock/goals/{goal_id}", handle_dock_goal_update
+    )
+    # goal-spine-v1 P4 — per-pair detach (the J5 card copy's promise). Auth
+    # inherited by the /portal prefix (portal_auth_middleware).
+    app.router.add_post(
+        "/portal/actions/dock/goals/{goal_id}/attachments/{artifact_id}"
+        "/detach",
+        handle_attachment_detach,
     )
     # portal-model-swap-v1 — tier model swap + revert
     app.router.add_post("/portal/actions/routing/swap", handle_tier_model_swap)
