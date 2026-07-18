@@ -77,7 +77,7 @@ class PrefillCeilingExceeded(RuntimeError):
 # D5 — the only names a tier's ``context`` allow-list may contain. Everything
 # else in the prompt is always-on baseline and is never budget-listed.
 GATEABLE_CONTEXT_BLOCKS: frozenset = frozenset(
-    {"claude_contract", "skills_index", "cellar_context"}
+    {"claude_contract", "skills_index", "cellar_context", "skill_payload"}
 )
 
 # K6 (dynamic-context-assembly-v1, A-D3 ruling) — the default per-tier
@@ -115,6 +115,13 @@ class TierBudget:
     context: Tuple[str, ...]
     prefill_ceiling_tokens: Optional[int] = None
     cellar_context_ceiling: int = _DEFAULT_CELLAR_CONTEXT_CEILING
+    # skill-adoption-v1 C2 — per-tier token ceiling for the ``skill_payload``
+    # block. Unlike cellar_context_ceiling (which defaults to 1500), this defaults
+    # to ``None``: a tier that does not declare ``skill_payload_ceiling`` has the
+    # block DISABLED at that tier (the provider emits nothing when the threaded
+    # ceiling is None). Present ⇒ a positive int; the composed payload is dropped
+    # ENTIRELY (all-or-nothing, F5) when its token estimate exceeds this.
+    skill_payload_ceiling: Optional[int] = None
 
 
 def tier_admits_context_block(
@@ -338,8 +345,29 @@ def _parse_tier_budget(
             )
         cellar_context_ceiling = cellar_ceiling_raw
 
+    # ── skill_payload_ceiling: per-tier skill-payload budget (C2) ─────────
+    # Absent ⇒ None ⇒ the block is DISABLED at this tier (no default admission,
+    # unlike cellar). Present ⇒ a positive int; ``bool`` rejected (isinstance(
+    # True, int) is True). Fail-loud on malformed (D7).
+    skill_payload_raw = spec.get("skill_payload_ceiling")
+    skill_payload_ceiling: Optional[int] = None
+    if skill_payload_raw is not None:
+        if (
+            isinstance(skill_payload_raw, bool)
+            or not isinstance(skill_payload_raw, int)
+            or skill_payload_raw <= 0
+        ):
+            raise ValueError(
+                f"routing config at {target}: tier_budgets[{tier_name!r}]."
+                f"skill_payload_ceiling must be a positive integer when present "
+                f"(got {skill_payload_raw!r}); omit it to disable the skill_payload "
+                f"block at this tier."
+            )
+        skill_payload_ceiling = skill_payload_raw
+
     return TierBudget(
         context=tuple(context),
         prefill_ceiling_tokens=prefill_ceiling_tokens,
         cellar_context_ceiling=cellar_context_ceiling,
+        skill_payload_ceiling=skill_payload_ceiling,
     )

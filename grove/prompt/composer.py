@@ -112,6 +112,10 @@ _PROVIDER_GATEABLE_BLOCK: Dict[str, str] = {
     "context_files": "claude_contract",
     "skills_index": "skills_index",
     "cellar_knowledge": "cellar_context",
+    # skill-adoption-v1 C2 — the primary-skill payload block. Registration name
+    # and gateable block name coincide; gated OFF at any tier whose tier_budgets
+    # ``context`` list omits ``skill_payload`` (T1 by design).
+    "skill_payload": "skill_payload",
 }
 
 
@@ -836,6 +840,89 @@ def _skill_nudge_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     return SectionResult(label="skill_nudge", text=render_skill_nudge_line(slugs))
 
 
+def _skill_payload_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
+    """skill-adoption-v1 C2 — inject the CURRENT turn's primary skill's payload.
+
+    Gateable block ``skill_payload`` (tier-gated OFF at any tier whose budget
+    omits it — T1 by design; the centralized composer gate drops the provider
+    before it runs). Resolves the turn's classified intent → the primary skill's
+    slug; on a match, gates the payload through the layered body_hash + promotion-
+    pin integrity model. EVERY arm fail-closes to emit-nothing (nudge-only
+    behavior stands). Template-lock: only the slug + the hash-verified,
+    frontmatter-stripped body reach the prompt (F3)."""
+    intent_class = ctx.get("intent_class")
+    if not intent_class:
+        return None
+    from grove.capability import EXECUTABLE_STATES
+    from grove.capability_registry import (
+        approved_payload_hash_for,
+        definition_payload_status,
+        file_skill_payload_integrity_violation,
+        primary_skill_for_intent,
+        skill_record_for_name,
+        verify_payload_hash,
+    )
+
+    slug = primary_skill_for_intent(intent_class)
+    if not slug:
+        return None
+    record = skill_record_for_name(slug)
+    if record is None:
+        return None
+    # (i) enabled + payload present.
+    if record.lifecycle.state not in EXECUTABLE_STATES:
+        return None
+    payload = record.context.payload
+    if not payload or not payload.strip():
+        return None
+    # (ii-a) body_hash present — else NOT eligible, skip QUIETLY (absence is
+    # config state, not a violation; the loader's primacy-dark warn already
+    # surfaces it once per load).
+    status = definition_payload_status(record)
+    if status is None:
+        return None
+    # (ii-b) context.payload integrity against the committed body_hash anchor.
+    if status is False:
+        file_skill_payload_integrity_violation(slug, record.id, reason="body_hash")
+        return None
+    # (ii-c) promotion-pin layer: if a promoted-skill pin exists it must ALSO
+    # match the active SKILL.md; pin absent ⇒ this layer is inert.
+    if approved_payload_hash_for(record.id) is not None:
+        if not verify_payload_hash(record):
+            file_skill_payload_integrity_violation(
+                slug, record.id, reason="promotion_pin"
+            )
+            return None
+    # (iii) per-tier token ceiling. None ⇒ the tier does not admit skill_payload
+    # (no key) ⇒ emit nothing. Oversize ⇒ drop the ENTIRE payload (all-or-nothing,
+    # F5) and record the drop in the compose sink.
+    ceiling = ctx.get("skill_payload_ceiling")
+    if ceiling is None:
+        return None
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.prompt_builder import render_skill_payload_block
+    from grove.skills import parse_frontmatter
+
+    try:
+        _fm, body = parse_frontmatter(payload)
+    except ValueError:
+        body = payload  # no/invalid frontmatter — inject the raw verified payload
+    est_tokens = estimate_tokens_rough(body)
+    if est_tokens > ceiling:
+        _sink = ctx.get("_composer_drops")
+        if _sink is not None:
+            _sink["skill_payload"] = {"dropped_blocks": 1, "dropped_tokens": est_tokens}
+        logger.warning(
+            "[composer] skill_payload for %r dropped ENTIRELY: %d tokens > tier "
+            "ceiling %d (all-or-nothing, F5)",
+            slug, est_tokens, ceiling,
+        )
+        return None
+    return SectionResult(
+        label="skill_payload", text=render_skill_payload_block(slug, body)
+    )
+
+
 def _alibaba_model_override_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     if ctx.get("provider") != "alibaba":
         return None
@@ -1088,6 +1175,19 @@ def build_default_composer(
         "skill_nudge",
         _skill_nudge_provider,
         order=18,
+        tier="volatile",
+    )
+
+    # skill-adoption-v1 C2 — the primary-skill payload block at volatile:19,
+    # adjacent to the nudge (18). GATEABLE (``skill_payload``): the centralized
+    # tier gate drops it at any tier whose budget omits the block (T1). The
+    # provider fail-closes to None on every integrity/ceiling arm, so the v0.1
+    # byte-for-byte regression stays intact whenever no verified primary payload
+    # rides this turn.
+    composer.register_section(
+        "skill_payload",
+        _skill_payload_provider,
+        order=19,
         tier="volatile",
     )
     return composer

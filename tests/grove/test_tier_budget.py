@@ -160,8 +160,9 @@ def test_context_required(tmp_path):
 
 def test_gateable_blocks_constant_is_the_d5_set():
     # K6 (A-pin ruling) — cellar_context joins the D5 set (SPEC post-condition 1).
+    # skill-adoption-v1 C2 — skill_payload joins as the fourth gateable block.
     assert GATEABLE_CONTEXT_BLOCKS == frozenset(
-        {"claude_contract", "skills_index", "cellar_context"}
+        {"claude_contract", "skills_index", "cellar_context", "skill_payload"}
     )
 
 

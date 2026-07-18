@@ -653,6 +653,12 @@ class Dispatcher:
         # the sentinel guarantees the first application always recomposes.
         self._tier_budgets_cache: Optional[Dict[str, Any]] = None
         self._last_applied_tier_context_blocks: Any = _TIER_CTX_UNSET
+        # skill-adoption-v1 C3 — the primary skill slug the currently-injected
+        # prompt was composed with (None when no primary rode that compose). Set
+        # in compose_system_prompt on every recompose; READ in
+        # _maybe_recompose_for_tier to force a recompose when this turn's primary
+        # differs. Starts None: no primary has been composed yet.
+        self._last_loaded_primary_slug: Optional[str] = None
         # ── Sprint 28 Phase 3 — intent record store + per-turn state ──
         # The IntentStore is optional so legacy / test Dispatchers (which
         # construct ``Dispatcher()`` with no kwargs) skip the write path
@@ -4108,6 +4114,14 @@ class Dispatcher:
         classification = getattr(self, "_current_turn_classification", None)
         pattern_hash = getattr(classification, "pattern_hash", None) if classification else None
         intent_class = getattr(classification, "intent_class", None) if classification else None
+        # skill-adoption-v1 C3 — record the primary slug THIS prompt is composed
+        # with. compose_system_prompt is the single chokepoint every recompose
+        # path routes through (tier change, compression, session_register,
+        # escalation, forced-primary), so setting the tracker here makes ANY
+        # natural recompose reset it to the CURRENT turn's primary (None when no
+        # primary → payload absent) — boundary eviction. Same helper the
+        # recompose DECISION uses, so tracker and decision never diverge.
+        self._last_loaded_primary_slug = self._current_turn_primary_slug()
         result = composer.compose(
             valid_tool_names=getattr(agent, "valid_tool_names", set()) or set(),
             # Sprint 53 — composer providers that need toolset
@@ -4149,6 +4163,13 @@ class Dispatcher:
             # to its constructor default (1500).
             cellar_context_ceiling=getattr(
                 getattr(agent, "_tier_budget", None), "cellar_context_ceiling", None
+            ),
+            # skill-adoption-v1 C2 — the routed tier's skill_payload ceiling, read
+            # off the resolved TierBudget (parity with cellar). None on a
+            # construction-time / non-routed compose OR a tier that omits the key
+            # → the skill_payload provider emits nothing (block disabled).
+            skill_payload_ceiling=getattr(
+                getattr(agent, "_tier_budget", None), "skill_payload_ceiling", None
             ),
         )
         # Sprint 73 Phase 5 — retain the structured composition RESULT as data
@@ -4322,10 +4343,36 @@ class Dispatcher:
             )
             return
         current = getattr(agent, "_tier_context_blocks", None)
-        if current == self._last_applied_tier_context_blocks:
+        blocks_changed = current != self._last_applied_tier_context_blocks
+        # skill-adoption-v1 C3 — a change in THIS turn's primary skill (vs the slug
+        # the injected prompt was last composed with) forces a recompose so the
+        # payload loads or displaces. A None primary NEVER forces — the prior
+        # payload persists in the cached prompt; boundary eviction happens on the
+        # next NATURAL recompose, which resets the tracker via compose_system_prompt.
+        turn_primary = self._current_turn_primary_slug()
+        primary_changed = (
+            turn_primary is not None and turn_primary != self._last_loaded_primary_slug
+        )
+        if not blocks_changed and not primary_changed:
             return
         self._last_applied_tier_context_blocks = current
+        # recompose_system_prompt → compose_system_prompt resets
+        # _last_loaded_primary_slug to this turn's primary (boundary eviction).
         self.recompose_system_prompt()
+
+    def _current_turn_primary_slug(self) -> Optional[str]:
+        """This turn's primary skill slug, or None (no classification / no
+        primary). Reads the SAME ``_current_turn_classification`` that
+        compose_system_prompt reads, so the recompose DECISION and the COMPOSE
+        agree on the intent — the STEP 2c current-turn-intent seam."""
+        classification = getattr(self, "_current_turn_classification", None)
+        intent_class = (
+            getattr(classification, "intent_class", None) if classification else None
+        )
+        if not intent_class:
+            return None
+        from grove.capability_registry import primary_skill_for_intent
+        return primary_skill_for_intent(intent_class)
 
     def execute_memory_write(self, intent: "MemoryWriteIntent") -> "MemoryWriteResult":
         """Handle a ``MemoryWriteIntent`` — synchronous return.
