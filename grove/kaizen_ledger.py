@@ -136,6 +136,15 @@ class KaizenLedger:
         "skill_promotion_queued",
         "skill_promotion_denied",
         "skill_promoted",
+        # skill-adoption-v1 C1 — load-side primacy resolution Andon. Fired by the
+        # capability_registry primacy-map builder when a primacy claim cannot be
+        # honored: reason="subset_violation" (a primary_intents entry is not a
+        # subset of trigger.intents — that intent is dropped from the claim), or
+        # reason="collision" (two+ ENABLED records claim primacy for one intent
+        # class — ALL are demoted, no tie-break). Never a boot failure: the map
+        # degrades, the gateway loads. Payload carries the intent_class + the
+        # offending record_id(s)/slug(s).
+        "skill_primacy_collision",
         # GRV-010 C1b — a governance-config change written through the
         # propose_governance_change Stage-04 door (rationale + diff hashes +
         # disposition). The paired andon_disposition entry carries the precise

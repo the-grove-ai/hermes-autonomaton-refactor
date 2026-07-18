@@ -17,6 +17,7 @@ per-turn disclosure hook that reads the registry lands in E2 commit 3.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -27,6 +28,7 @@ from typing import Any, Dict, FrozenSet, List, NamedTuple, Optional
 import yaml
 
 from grove.capability import (
+    EXECUTABLE_STATES,
     LEGAL_TRANSITIONS,
     Capability,
     LifecycleState,
@@ -141,7 +143,13 @@ _STATE_TOP_KEYS: FrozenSet[str] = frozenset(
      # enable-flag override precedent), but DELIBERATELY NOT applied by
      # _compose_state — the merged runtime Capability never carries it. Its SOLE
      # reader is publication_unattended_authorized(), a strict fail-closed read.
-     "publication"}
+     "publication",
+     # skill-adoption-v1 C4 — approval-time payload pin. sha256 of the SKILL.md
+     # bytes as written at promotion (sovereignty.promote). Written to STATE by
+     # set_approved_payload_hash (operator state, deploy-immune), NOT applied by
+     # _compose_state — its SOLE reader is verify_payload_hash(), a fail-closed
+     # check the C2 load path (Phase 2) uses to refuse a post-approval mutation.
+     "approved_payload_sha256"}
 )
 _STATE_LIFECYCLE_KEYS: FrozenSet[str] = frozenset(
     {"state", "pinned", "use_count", "last_used"}
@@ -217,6 +225,14 @@ def _read_state_file(path: Path) -> "tuple[str, Dict[str, Any]]":
         un = pub.get("unattended")
         if un is not None and not isinstance(un, bool):
             raise _StateFileInvalid("'publication.unattended' must be a boolean")
+    # skill-adoption-v1 C4 — the payload pin, shape-checked here so a malformed
+    # pin is the R-B1 signal (a torn/non-string pin never silently reads as a
+    # valid hash; verify_payload_hash then fails closed on the missing pin).
+    aph = doc.get("approved_payload_sha256")
+    if aph is not None and (not isinstance(aph, str) or not aph.strip()):
+        raise _StateFileInvalid(
+            "'approved_payload_sha256' must be a non-empty string"
+        )
     return rid, doc
 
 
@@ -618,6 +634,145 @@ def set_publication_state(
         fd.close()
 
 
+# ── skill-adoption-v1 C4 — approval-time payload pin (state overlay) ──────────
+
+
+def _sha256_hex(data: bytes) -> str:
+    """Full lowercase hex sha256 of *data* — the pin format shared by the writer
+    (:func:`sovereignty.promote`) and :func:`verify_payload_hash`."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def set_approved_payload_hash(
+    record_id: str,
+    payload_sha256: str,
+    *,
+    directory: Optional[Path] = None,
+    state_dir: Optional[Path] = None,
+) -> str:
+    """The SOLE sanctioned writer for the approval-time payload pin
+    (``approved_payload_sha256``) — skill-adoption-v1 C4.
+
+    Writes ``approved_payload_sha256: <hex>`` onto the record's
+    ``~/.grove/capabilities/state`` file, preserving every other state key
+    (``model_binding`` / ``lifecycle`` / ``lineage`` / ``added_intents`` /
+    ``force_always`` / ``publication``) already there. Same lock + atomic +
+    ``.bak`` discipline as :func:`set_publication_state`.
+
+    STATE-OVERLAY-ONLY / REPO-WRITE-INCAPABLE (parity with the publication
+    writer): the repo definition is consulted READ-ONLY (to validate *record_id*
+    exists); the ONLY path written is the state file. The pin is deploy-immune.
+
+    WRITE-STRICT (fail loud): rejects a blank *record_id* / *payload_sha256*.
+    Raises :class:`CapabilityLoadError` when no definition carries *record_id*.
+    Returns ``"applied"`` or ``"deferred"`` (lock contended — caller retries)."""
+    if not isinstance(record_id, str) or not record_id.strip():
+        raise ValueError("set_approved_payload_hash: record_id must be non-empty")
+    if not isinstance(payload_sha256, str) or not payload_sha256.strip():
+        raise ValueError(
+            "set_approved_payload_hash: payload_sha256 must be a non-empty string"
+        )
+
+    if directory is not None:
+        search_dirs = [Path(directory)]
+    else:
+        search_dirs = [default_capabilities_dir(), grove_home_capabilities_dir()]
+    path = None
+    for d in search_dirs:
+        if d.is_dir():
+            path = _record_path_for_id(record_id, d)
+            if path is not None:
+                break
+    if path is None:
+        raise CapabilityLoadError(
+            f"set_approved_payload_hash: no capability record with id "
+            f"{record_id!r} in {[str(d) for d in search_dirs]}"
+        )
+
+    state_path = _state_path_for_id(record_id, state_dir or capability_state_dir())
+
+    def _apply() -> str:
+        prior: Dict[str, Any] = {}
+        if state_path.exists():
+            try:
+                loaded = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    prior = loaded
+            except yaml.YAMLError:
+                prior = {}  # torn prior; .bak below retains the bytes
+        merged = dict(prior)
+        merged["id"] = record_id
+        merged["approved_payload_sha256"] = payload_sha256
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        prior_bytes = state_path.read_bytes() if state_path.exists() else b""
+        if prior_bytes:
+            state_path.with_suffix(state_path.suffix + ".bak").write_bytes(prior_bytes)
+        _atomic_write_yaml(
+            state_path,
+            yaml.safe_dump(merged, sort_keys=False, allow_unicode=True),
+        )
+        return "applied"
+
+    if fcntl is None:  # pragma: no cover - non-POSIX best-effort
+        return _apply()
+
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(".yaml.lock")
+    fd = open(lock_path, "a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            return "deferred"
+        try:
+            return _apply()
+        finally:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+    finally:
+        fd.close()
+
+
+def approved_payload_hash_for(
+    record_id: str, *, state_dir: Optional[Path] = None
+) -> Optional[str]:
+    """The pinned ``approved_payload_sha256`` for *record_id*, or ``None``.
+
+    Fail-closed read (parity with :func:`publication_unattended_authorized`): a
+    missing state file, a torn/invalid state file, or an absent pin all return
+    ``None`` — never a partial or guessed hash."""
+    state_path = _state_path_for_id(record_id, state_dir or capability_state_dir())
+    if not state_path.exists():
+        return None
+    try:
+        _rid, doc = _read_state_file(state_path)
+    except _StateFileInvalid:
+        return None
+    pin = doc.get("approved_payload_sha256")
+    return pin if isinstance(pin, str) and pin.strip() else None
+
+
+def verify_payload_hash(record: Capability, *, state_dir: Optional[Path] = None) -> bool:
+    """Does *record*'s ACTIVE SKILL.md still match its approval-time pin?
+
+    Reads the pin from the state overlay and the CURRENT active SKILL.md bytes,
+    and compares sha256. FAIL-CLOSED: a missing pin, a missing/unreadable
+    payload, or any mismatch returns ``False`` — an unpinned or mutated payload
+    never verifies. The C2 load path (Phase 2) gates on this. No consumer is
+    wired this phase."""
+    pin = approved_payload_hash_for(record.id, state_dir=state_dir)
+    if pin is None:
+        return False
+    from grove.skills import active_path
+
+    slug = record.id.rsplit(".", 1)[-1]
+    skill_md = active_path(slug) / "SKILL.md"
+    try:
+        payload = skill_md.read_bytes()
+    except OSError:
+        return False
+    return _sha256_hex(payload) == pin
+
+
 # ── state WRITE path (fleet-hygiene-sweep P2) ────────────────────────────
 #
 # The three runtime writers (set_model_binding / transition_record /
@@ -682,11 +837,14 @@ def _write_state_snapshot(cap: Capability, state_path: Path) -> bytes:
     # operator's added_intents / force_always written by set_admission_overlay to
     # the SAME state file (one sovereignty seam). A torn prior falls through to a
     # Capability-only snapshot — the .bak retains the operator bytes for recovery.
+    # skill-adoption-v1 C4 — approved_payload_sha256 rides the SAME carry-forward:
+    # a routine lifecycle write (use_count bump, refine) must NOT drop the pin, or
+    # the C2 load path would fail-closed on an unmutated skill.
     if prior:
         try:
             prior_doc = _yaml.safe_load(prior)
             if isinstance(prior_doc, dict):
-                for _k in ("added_intents", "force_always"):
+                for _k in ("added_intents", "force_always", "approved_payload_sha256"):
                     if _k in prior_doc:
                         snapshot[_k] = prior_doc[_k]
         except _yaml.YAMLError:
@@ -864,7 +1022,168 @@ def load_capabilities(directory: Optional[Path] = None) -> Dict[str, Capability]
     # loud); uncovered CONFIGURABLE_TOOLSETS keys are reported (non-fatal).
     _report_uncovered_toolsets(_validate_toolset_keys(records))
 
+    # skill-adoption-v1 C1 — resolve the effective primacy map RESILIENTLY. Never
+    # raises: a malformed claim (out-of-subset intent) or a collision (two ENABLED
+    # records claiming one class) degrades the map and files an Andon, but the
+    # gateway loads. The computed map is cached for primary_skill_for_intent().
+    global _PRIMACY_MAP
+    _PRIMACY_MAP, _primacy_violations = compute_primacy_map(records)
+    _file_primacy_violations(_primacy_violations)
+
     return records
+
+
+# ── skill-adoption-v1 C1 — intent primacy (canonical skill per intent class) ──
+#
+# A record MAY claim primacy for an intent class it also declares in
+# trigger.intents (the subset relation). At most one ENABLED record holds primacy
+# for a class; the loader resolves the map RESILIENTLY (subset-violating claims
+# dropped, collisions demote ALL claimants) and NEVER fails to boot over primacy
+# config. The strict reject belongs to the write path (primacy_write_violations).
+
+# The effective {intent_class -> primary skill slug} map from the most recent
+# load_capabilities call. Empty until the first load. Consumers read it via
+# primary_skill_for_intent(); no consumer is wired in this phase.
+_PRIMACY_MAP: Dict[str, str] = {}
+
+
+def compute_primacy_map(
+    records: Dict[str, Capability],
+) -> "tuple[Dict[str, str], List[Dict[str, Any]]]":
+    """Resolve the effective primacy map from *records*. PURE — no side effects.
+
+    Returns ``(primacy, violations)`` where ``primacy`` is ``{intent_class ->
+    slug}`` for every class held by exactly one ENABLED record, and ``violations``
+    is a list of Andon payload dicts (``reason`` = ``"subset_violation"`` or
+    ``"collision"``) the caller files. Resolution rules:
+
+      * Only records in EXECUTABLE_STATES may hold primacy (a quarantined /
+        retired skill never governs an intent class).
+      * A ``primary_intents`` entry NOT in the record's ``trigger.intents`` is an
+        invalid subset claim: that intent is dropped and a ``subset_violation``
+        recorded (the record keeps any valid claims).
+      * A class claimed by two-or-more ENABLED records is a collision: ALL
+        claimants are demoted (the class holds no primary this load) and a
+        ``collision`` recorded. No tie-breakers.
+
+    Deterministic: records are scanned in sorted-id order and violations emit in
+    a stable order so the Andon stream and tests are reproducible."""
+    claims: Dict[str, List[tuple]] = {}  # intent_class -> [(record_id, slug), …]
+    violations: List[Dict[str, Any]] = []
+    for cid, cap in sorted(records.items()):
+        if cap.lifecycle.state not in EXECUTABLE_STATES:
+            continue
+        primary = cap.trigger.primary_intents
+        if not primary:
+            continue
+        declared = set(cap.trigger.intents)
+        slug = cid.rsplit(".", 1)[-1]
+        for intent in primary:
+            if intent not in declared:
+                violations.append(
+                    {
+                        "reason": "subset_violation",
+                        "intent_class": intent,
+                        "record_id": cid,
+                        "slug": slug,
+                        "declared_intents": sorted(declared),
+                    }
+                )
+                continue
+            claims.setdefault(intent, []).append((cid, slug))
+    primacy: Dict[str, str] = {}
+    for intent in sorted(claims):
+        holders = claims[intent]
+        if len(holders) == 1:
+            primacy[intent] = holders[0][1]
+        else:
+            violations.append(
+                {
+                    "reason": "collision",
+                    "intent_class": intent,
+                    "record_ids": sorted(h[0] for h in holders),
+                    "slugs": sorted(h[1] for h in holders),
+                }
+            )
+    return primacy, violations
+
+
+def primary_skill_for_intent(intent_class: str) -> Optional[str]:
+    """The slug of the skill holding primacy for *intent_class*, or ``None``.
+
+    Reads the map cached by the most recent :func:`load_capabilities`. ``None``
+    means no record holds primacy for the class — either none claimed it, or a
+    collision demoted every claimant. No consumer is wired this phase."""
+    return _PRIMACY_MAP.get(intent_class)
+
+
+def primacy_write_violations(
+    records: Dict[str, Capability], candidate: Capability
+) -> List[str]:
+    """STRICT pre-persist gate for a sanctioned record writer. PURE.
+
+    Returns a list of human-readable violation strings (empty ≡ writable) for
+    *candidate* evaluated against the currently-loaded *records*:
+
+      (i)  ``primary_intents`` not a subset of ``candidate.trigger.intents``;
+      (ii) a primacy collision — *candidate* is ENABLED and claims a class an
+           OTHER enabled record already holds.
+
+    Unlike the loader (resilient demote-and-continue), this rejects: a writer
+    calls it and refuses to persist when the list is non-empty. No consumer is
+    wired this phase — parity with primary_skill_for_intent."""
+    problems: List[str] = []
+    declared = set(candidate.trigger.intents)
+    out_of_subset = [i for i in candidate.trigger.primary_intents if i not in declared]
+    if out_of_subset:
+        problems.append(
+            f"primary_intents {sorted(out_of_subset)} not a subset of "
+            f"trigger.intents {sorted(declared)}"
+        )
+    if candidate.lifecycle.state in EXECUTABLE_STATES:
+        held: Dict[str, List[str]] = {}
+        for cid, cap in records.items():
+            if cid == candidate.id or cap.lifecycle.state not in EXECUTABLE_STATES:
+                continue
+            cap_declared = set(cap.trigger.intents)
+            for intent in cap.trigger.primary_intents:
+                if intent in cap_declared:
+                    held.setdefault(intent, []).append(cid)
+        for intent in candidate.trigger.primary_intents:
+            if intent in declared and intent in held:
+                problems.append(
+                    f"primacy collision on intent {intent!r}: already claimed by "
+                    f"{sorted(held[intent])}"
+                )
+    return problems
+
+
+def _file_primacy_violations(violations: "List[Dict[str, Any]]") -> None:
+    """File one ``skill_primacy_collision`` Andon per primacy violation.
+
+    Component-filer pattern (capability_binding_mutation precedent): no CLI
+    session of its own, so events land under a ``cli-<utc-timestamp>`` sentinel.
+    Error-log floor — the load has already succeeded; a filing failure must not
+    misreport it. Empty list → no-op."""
+    if not violations:
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from grove.kaizen_ledger import KaizenLedger
+
+        session_id = "cli-" + datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        )
+        ledger = KaizenLedger(session_id=session_id)
+        for v in violations:
+            ledger.record("skill_primacy_collision", **v)
+    except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor stands
+        logger.error(
+            "[capability_registry] skill_primacy_collision filing failed "
+            "(the load itself SUCCEEDED): %r",
+            file_exc,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
