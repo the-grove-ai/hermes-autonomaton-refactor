@@ -218,3 +218,36 @@ def test_dock_goal_ref_carried(detector):
     detector.detect_and_stage("sess-dock", _GATE_OK, dock_goals)
     pending = [r for r in _proposal_records(detector) if r.get("status") == "pending"]
     assert pending[0]["proposal"]["dock_goal_ref"] == "content-pipeline"
+
+
+# 9. M2 parse-site slug gate (dock-goal-ref-integrity-v1)
+
+def test_invented_dock_goal_ref_nulled_and_logged(detector, caplog):
+    _mock_t1(detector, {"proposals": [
+        {"action": "create", "target_id": None, "dock_goal_ref": "invented-goal",
+         "proposed_record": {"entity_type": "DomainFact", "content": "X.",
+                             "confidence": 0.9, "justification": "j"}},
+    ]})
+    dock_goals = [{"slug": "content-pipeline", "name": "Content Pipeline",
+                   "status": "accelerating", "vector": "strategic"}]
+    with caplog.at_level("WARNING", logger="grove.memory.detector"):
+        staged = detector.detect_and_stage("sess-gate", _GATE_OK, dock_goals)
+    assert staged == 1  # the proposal survives; only the ref is nulled
+    pending = [r for r in _proposal_records(detector)
+               if r.get("status") == "pending"]
+    assert pending[0]["proposal"]["dock_goal_ref"] is None
+    assert any("invented-goal" in r.message for r in caplog.records)
+
+
+def test_none_string_dock_goal_ref_nulled(detector):
+    # The literal string "None" is the invented-at-birth class the census
+    # found (R3) — the gate must catch it like any other non-id slug.
+    _mock_t1(detector, {"proposals": [
+        {"action": "create", "target_id": None, "dock_goal_ref": "None",
+         "proposed_record": {"entity_type": "DomainFact", "content": "X.",
+                             "confidence": 0.9, "justification": "j"}},
+    ]})
+    detector.detect_and_stage("sess-none", _GATE_OK, [])
+    pending = [r for r in _proposal_records(detector)
+               if r.get("status") == "pending"]
+    assert pending[0]["proposal"]["dock_goal_ref"] is None

@@ -21,8 +21,11 @@ invocation models that feed the wiki:
 Every adapter returns a :class:`NormalizedDoc` carrying the raw content the
 Writer compacts plus DETERMINISTIC, adapter-owned metadata (source path,
 source_type, source mtime as the created/updated basis, and any
-``dock_goal_refs`` present in the source — else empty). The Writer never sets
-these deterministic fields.
+``dock_goal_refs`` present in the source — else empty). Source refs are
+VALIDATED at this door (dock-goal-ref-integrity-v1 M4): a ref is kept if it
+matches a dock goal id, mapped if it exactly matches a goal NAME, else
+dropped loud — no adapter can emit a ref that is not a dock goal id. The
+Writer never sets these deterministic fields.
 """
 
 from __future__ import annotations
@@ -78,6 +81,47 @@ def _as_str_list(value: Any) -> List[str]:
     raise MalformedSourceDoc(
         f"expected a list of strings for dock_goal_refs, got {type(value).__name__}"
     )
+
+
+def _validated_dock_goal_refs(
+    refs: List[str], *, source_type: str, name: str
+) -> List[str]:
+    """Adapter-door ref validation (dock-goal-ref-integrity-v1 M4).
+
+    Each incoming source ref is kept if it matches a dock goal id, mapped to
+    the goal's id on an exact goal-NAME match, else dropped with a WARNING
+    per dropped ref. Dock ids/names are loaded once per ingest pass (one
+    ``load_dock`` per parse, and only when the source carries refs — the
+    common empty case is zero I/O), never per ref. No dock installed means
+    no ref can be valid: all are dropped, loud.
+
+    The migration sweep (M5) reuses this exact keep/map/drop logic for the
+    static remediation of already-poisoned non-session pages.
+    """
+    if not refs:
+        return refs
+    from grove.dock import load_dock
+
+    dock = load_dock()
+    goals = dock.goals if dock is not None else ()
+    ids = {g.id for g in goals}
+    id_by_name = {g.name: g.id for g in goals}
+    out: List[str] = []
+    for ref in refs:
+        if ref in ids:
+            out.append(ref)
+        elif ref in id_by_name:
+            logger.debug(
+                "[wiki] %s %s: dock_goal_ref %r matched a goal NAME; "
+                "mapped to id %r", source_type, name, ref, id_by_name[ref],
+            )
+            out.append(id_by_name[ref])
+        else:
+            logger.warning(
+                "[wiki] %s %s: dropping dock_goal_ref %r — matches no dock "
+                "goal id or name", source_type, name, ref,
+            )
+    return out
 
 
 def _read_text(path: Path) -> str:
@@ -168,7 +212,10 @@ class _JsonFleetAdapter(Adapter):
             source_type=self.source_type,
             source_path=str(path),
             source_mtime=path.stat().st_mtime,
-            dock_goal_refs=_as_str_list(data.get("dock_goal_refs")),
+            dock_goal_refs=_validated_dock_goal_refs(
+                _as_str_list(data.get("dock_goal_refs")),
+                source_type=self.source_type, name=path.name,
+            ),
             raw_content=_read_text(path),
             lineage_key=self.lineage_key(path),
         )
@@ -281,7 +328,10 @@ class DrafterDraftAdapter(Adapter):
             source_type=self.source_type,
             source_path=str(path),
             source_mtime=path.stat().st_mtime,
-            dock_goal_refs=_as_str_list(meta.get("dock_goal_refs")),
+            dock_goal_refs=_validated_dock_goal_refs(
+                _as_str_list(meta.get("dock_goal_refs")),
+                source_type=self.source_type, name=path.name,
+            ),
             raw_content=text,
         )
 
@@ -348,7 +398,9 @@ class GenericPackageAdapter(Adapter):
             source_type=self.source_type,
             source_path=str(path),
             source_mtime=path.stat().st_mtime,
-            dock_goal_refs=dock_goal_refs,
+            dock_goal_refs=_validated_dock_goal_refs(
+                dock_goal_refs, source_type=self.source_type, name=path.name,
+            ),
             raw_content=body,
             lineage_key=self.lineage_key(path),
         )
@@ -404,7 +456,9 @@ class _PlainTextAdapter(Adapter):
             source_type=self.source_type,
             source_path=str(path),
             source_mtime=path.stat().st_mtime,
-            dock_goal_refs=dock_goal_refs,
+            dock_goal_refs=_validated_dock_goal_refs(
+                dock_goal_refs, source_type=self.source_type, name=path.name,
+            ),
             raw_content=body,
         )
 

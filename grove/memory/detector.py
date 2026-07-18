@@ -207,8 +207,10 @@ class ContextPersistenceDetector:
             filtered, active_summary, dock_summary, recently_rejected,
         )
 
-        # 9. Parse (markdown-fence tolerant; malformed → 0).
-        proposals = self._parse_proposals(raw)
+        # 9. Parse (markdown-fence tolerant; malformed → 0). The active-goal
+        #    dicts already in memory are threaded so the parse site can gate
+        #    model-authored dock_goal_ref slugs (dock-goal-ref-integrity-v1 M2).
+        proposals = self._parse_proposals(raw, active_dock_goals)
 
         # 10. Stage each proposal as pending.
         for proposal in proposals:
@@ -406,7 +408,11 @@ class ContextPersistenceDetector:
 
     # ── parse ────────────────────────────────────────────────────────────
 
-    def _parse_proposals(self, raw: str) -> List[Dict[str, Any]]:
+    def _parse_proposals(
+        self,
+        raw: str,
+        active_dock_goals: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
         if not isinstance(raw, str):
             logger.warning(
                 "[grove.memory.detector] T1 returned non-text; staging 0"
@@ -433,4 +439,23 @@ class ContextPersistenceDetector:
                 "truncating to %d", len(proposals), _MAX_PROPOSALS,
             )
             proposals = proposals[:_MAX_PROPOSALS]
+        # dock-goal-ref-integrity-v1 M2 — parse-site slug gate. The model is
+        # instructed to author dock_goal_ref from the active-goal vocabulary
+        # the prompt showed it; anything else (invented slugs, the literal
+        # string "None", goal names) is nulled here, loud. Zero I/O — the id
+        # set is the same in-memory list the prompt was built from.
+        active_ids = {
+            g.get("slug") for g in active_dock_goals if g.get("slug")
+        }
+        for proposal in proposals:
+            if not isinstance(proposal, dict):
+                continue
+            ref = proposal.get("dock_goal_ref")
+            if ref is not None and ref not in active_ids:
+                logger.warning(
+                    "[grove.memory.detector] rejecting model-authored "
+                    "dock_goal_ref %r — not an active dock goal id; nulled",
+                    ref,
+                )
+                proposal["dock_goal_ref"] = None
         return proposals
