@@ -248,13 +248,48 @@ def detach_attachment(
     )
 
 
+def record_suppression(
+    artifact_id: str,
+    goal_id: str,
+    *,
+    proposal_id: str,
+    ledger_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """File one per-pair suppression event (goal-spine-v1 P3, J3 ruling).
+
+    The operator rejected a goal_attachment proposal: each of its
+    (artifact_id, goal_id) entries is suppressed — "not this goal," never
+    "not any goal." The same artifact stays eligible for other goals.
+
+    Write-strict on inputs (fail loud); a ``record()`` failure RAISES here
+    too — the CALLBACK layer wraps tolerantly (the _reject_model_binding
+    precedent: a rejection must always proceed; a failed suppression means
+    the pair may re-surface and be re-rejected, never the reverse).
+    """
+    artifact_id = _require_nonempty_str(artifact_id, "artifact_id")
+    goal_id = _require_nonempty_str(goal_id, "goal_id")
+    proposal_id = _require_nonempty_str(proposal_id, "proposal_id")
+    if not _ARTIFACT_ID_RE.fullmatch(artifact_id):
+        raise AttachmentWriteError(
+            f"artifact_id {artifact_id!r} is not a 16-hex artifact id"
+        )
+    return _writer_ledger(ledger_dir).record(
+        "artifact_goal_suppressed",
+        artifact_id=artifact_id,
+        goal_id=goal_id,
+        proposal_id=proposal_id,
+    )
+
+
 # ── reader (read-time collapse — THE authority; R-9 tolerant) ───────────────
 
 
 def _scan_attachment_events(ledger_dir: Optional[Path] = None) -> List[dict]:
-    """Every attach/detach event across all session ledgers, in file/line
-    order (the _scan_artifact_events dir-glob precedent — tolerant per-line
-    parse; a malformed line or unreadable file never aborts the scan)."""
+    """Every attach/detach/suppress event across all session ledgers, in
+    file/line order (the _scan_artifact_events dir-glob precedent — tolerant
+    per-line parse; a malformed line or unreadable file never aborts the
+    scan). ONE pass serves both the attachment projection and the
+    suppression read (J3 ruling)."""
     from grove.kaizen_ledger import default_ledger_dir
 
     base = Path(ledger_dir) if ledger_dir is not None else default_ledger_dir()
@@ -275,6 +310,7 @@ def _scan_attachment_events(ledger_dir: Optional[Path] = None) -> List[dict]:
                     if event.get("event_type") in (
                         "artifact_goal_attached",
                         "artifact_goal_detached",
+                        "artifact_goal_suppressed",
                     ):
                         events.append(event)
         except OSError:
@@ -305,6 +341,11 @@ def attached_pairs(
         key=lambda e: e.get("timestamp") if isinstance(e.get("timestamp"), str) else ""
     )  # stable — scan order preserved on exact-tie timestamps
     for event in events:
+        if event.get("event_type") == "artifact_goal_suppressed":
+            # Suppression is a PROPOSING fact, not attachment state — it
+            # never collapses into this projection (a later hand-approved
+            # mint of a once-suppressed pair attaches normally).
+            continue
         aid = event.get("artifact_id")
         gid = event.get("goal_id")
         if not (isinstance(aid, str) and aid and isinstance(gid, str) and gid):
@@ -365,3 +406,25 @@ def attached_artifact_ids(
             ledger_dir=ledger_dir, live_goal_ids=live_goal_ids
         )
     }
+
+
+def suppressed_pairs(
+    ledger_dir: Optional[Path] = None,
+) -> Set[Tuple[str, str]]:
+    """Every (artifact_id, goal_id) pair with a suppression event on record
+    — the detector's pair-aware exclusion read (goal-spine-v1 P3, J3
+    ruling: "not this goal," never "not any goal").
+
+    Same tolerant idiom as the projection: a malformed event contributes
+    nothing, never an error. Suppression is permanent for the pair (no
+    unsuppress verb exists; a re-mint via a hand-approved proposal still
+    attaches — suppression only stops the DETECTOR re-proposing)."""
+    pairs: Set[Tuple[str, str]] = set()
+    for event in _scan_attachment_events(ledger_dir):
+        if event.get("event_type") != "artifact_goal_suppressed":
+            continue
+        aid = event.get("artifact_id")
+        gid = event.get("goal_id")
+        if isinstance(aid, str) and aid and isinstance(gid, str) and gid:
+            pairs.add((aid, gid))
+    return pairs

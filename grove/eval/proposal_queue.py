@@ -50,6 +50,7 @@ __all__ = [
     "PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING",
     "PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING",
     "PROPOSAL_TYPE_ADMISSION_FRICTION",
+    "PROPOSAL_TYPE_GOAL_ATTACHMENT",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -203,6 +204,23 @@ PROPOSAL_TYPE_FAULT_TRIAGE = "fault_triage"
 #    "add_intents": [<intent>]}  (force_always omits add_intents)
 # — the evidence_block (recurrence arms) rides identity-EXCLUDED fields.
 PROPOSAL_TYPE_ADMISSION_FRICTION = "admission_friction"
+# goal-spine-v1 P3 — a BATCHED goal-attachment offer: N adjudicated artifacts
+# grouped under ONE Dock goal, one row, one disposition (J5 ruling — whole-row
+# Approve/Reject; grove.dock.attachment_store.detach_attachment is the
+# per-entry undo after approval, and the card copy must say so). Flows through
+# THIS RoutingProposal queue and the flywheel CLI approve path; the apply
+# handler mints every entry through the ONE sanctioned writer
+# (attachment_store.mint_attachment) with this proposal's id; the reject
+# handler files per-(artifact_id, goal_id) artifact_goal_suppressed events
+# ("not this goal," never "not any goal" — J3 ruling).
+# Identity (J2 ruling — a SEPARATE identity dict, the DockMutationDetector
+# precedent; compute_proposal_id sorts dict keys but NOT list order, so
+# artifact_ids is pre-sorted):
+#   {"goal_id": str, "artifact_ids": [sorted str]}
+# Payload (rides the row; entries sorted by artifact_id):
+#   {"goal_id": str, "goal_name": str,
+#    "entries": [{"artifact_id", "excerpt", "rationale", "verdict"}]}
+PROPOSAL_TYPE_GOAL_ATTACHMENT = "goal_attachment"
 # Verb affordances per proposal type. The portal iterates this to render action
 # buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
 # to the iterator — the shape is deliberately open. The generic fleet type
@@ -428,6 +446,11 @@ class RoutingProposal:
         # active, worsening."); it stands on its own, Kaizen speaking.
         if self.type == PROPOSAL_TYPE_FAULT_TRIAGE:
             return core
+        # goal-spine-v1 P3 (J6 ruling) — one batched row pushes as ONE offer,
+        # in its own frame: an adjudicated observation the operator ratifies,
+        # not an opportunistic 'I could'.
+        if self.type == PROPOSAL_TYPE_GOAL_ATTACHMENT:
+            return f"I've matched work to your goals — {core}"
         return f"I noticed I could {core}"
 
 

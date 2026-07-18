@@ -1,14 +1,20 @@
-"""goal-spine-v1 P1 — the goal-attachment detector (dry-run only).
+"""goal-spine-v1 — the goal-attachment detector (P1 detection, P3 staging).
 
 Off-path: reads the Kaizen ledger's ``artifact_written`` events, prefilters
 artifact content against the Dock goals' K2 projection pages (Stage 1,
 recall-oriented), and asks the config-declared adjudicator tier whether each
 candidate artifact ADVANCES the matched goal (Stage 2, direction-explicit).
 
-P1 is inert by ruling (PM scope amendment): a MANUAL entry point
-(``python -m grove.dock.attachment``) that prints a dry-run report. It emits
-NO proposal, writes NO ledger event, and is NOT wired into the Dispatcher
-detector sweep — wiring lands in P3 alongside emission.
+P3 made the loop live: :meth:`GoalAttachmentDetector.stage_proposals` stages
+ONE batched ``goal_attachment`` proposal per goal (J5 ruling — whole-row
+disposition; ``detach_attachment`` is the per-entry undo after approval), and
+:func:`run_goal_attachment_sweep` is the production entry the Dispatcher's
+isolated sweep guard invokes. Ordering is J2 obligation (b):
+adjudicate → stage → advance the cursor, FAIL LOUD between — a staging
+failure leaves the cursor unmoved so nothing is silently lost. The manual
+entry point (``python -m grove.dock.attachment``) remains a dry-run: it
+prints the report and advances the cursor WITHOUT staging (operator tool;
+delete the cursor file to re-scan).
 
 Design rulings baked in (P1 gate):
 
@@ -135,16 +141,17 @@ def attached_artifact_ids() -> Set[str]:
     return _store_attached(live_goal_ids=live)
 
 
-def suppressed_artifact_ids() -> Set[str]:
-    """Artifact ids carrying a rejection tombstone — SKIPPED by the detector.
+def suppressed_goal_pairs() -> Set[Tuple[str, str]]:
+    """(artifact_id, goal_id) pairs the operator rejected — SKIPPED per PAIR.
 
-    STILL the empty-set seam in P2 (only the attached seam filled): the
-    suppression store does not exist yet. P3's reject callback fills this
-    from operator-rejection tombstones (the binding-telemetry
-    ``record_tombstone`` precedent), so a rejected attachment is never
-    re-proposed.
+    FILLED in P3 (J3 ruling), pair-aware by contract: rejection means "not
+    this goal," never "not any goal" — the same artifact stays eligible for
+    other goals. Reads ``artifact_goal_suppressed`` ledger events via the
+    store (one tolerant scan serves attachments AND suppressions).
     """
-    return set()
+    from grove.dock.attachment_store import suppressed_pairs
+
+    return suppressed_pairs()
 
 
 # ── projection coverage (G2 hard condition) ─────────────────────────────────
@@ -506,10 +513,13 @@ class GoalAttachmentDetector:
     # -- the dry run --------------------------------------------------------
 
     def detect(self) -> AttachmentDryRunReport:
-        """Run both stages and return the dry-run report.
+        """Run both stages and return the report. DETECTION ONLY.
 
-        Emits NO proposal and writes NO ledger event (P1 invariant, pinned
-        by tests). Advances the cursor watermark on completion.
+        Emits NO proposal and writes NO ledger event. P3 (J2 obligation b):
+        this method no longer advances the cursor — ``watermark_after``
+        rides the report as the CANDIDATE watermark, persisted only by
+        :meth:`advance_cursor` AFTER staging succeeds (adjudicate → stage →
+        advance, fail loud between).
         """
         from grove.api.artifacts import (
             _scan_artifact_events,
@@ -559,9 +569,11 @@ class GoalAttachmentDetector:
             excluded_suppressed=0,
         )
 
-        # Exclusion seams (P3 fills both; empty sets in P1 by design).
+        # Exclusion seams — attached is artifact-scoped (P1 contract, filled
+        # P2); suppression is PAIR-scoped (J3 ruling, filled P3) and applies
+        # after Stage-1 resolves the candidate's goal.
         attached = attached_artifact_ids()
-        suppressed = suppressed_artifact_ids()
+        suppressed = suppressed_goal_pairs()
 
         # R-5 join surface: turn_id -> latest IntentRecord.
         latest_by_turn = {
@@ -576,9 +588,6 @@ class GoalAttachmentDetector:
         for aid, event in by_artifact.items():
             if aid in attached:
                 report.excluded_attached += 1
-                continue
-            if aid in suppressed:
-                report.excluded_suppressed += 1
                 continue
 
             turn_id = event.get("turn_id")
@@ -631,6 +640,12 @@ class GoalAttachmentDetector:
                 report.unmatched.append(aid)
                 continue
 
+            # PAIR-scoped suppression (J3): "not this goal," never "not any
+            # goal" — checked only now that Stage 1 has named the goal.
+            if (aid, hit.dock_goal_refs[0]) in suppressed:
+                report.excluded_suppressed += 1
+                continue
+
             candidates.append(
                 AttachmentCandidate(
                     artifact_id=aid,
@@ -664,22 +679,142 @@ class GoalAttachmentDetector:
                 )
             )
 
-        # Advance the watermark over everything this run SAW (new events),
-        # adjudicated or not — monotonic cursor; delete the file to re-scan.
+        # Candidate watermark over everything this run SAW (new events),
+        # adjudicated or not. NOT persisted here — advance_cursor() saves it
+        # after staging succeeds (J2 obligation b).
         if new_events:
-            new_watermark = max(e["timestamp"] for e in new_events)
-            _save_cursor(self._home, new_watermark)
-            report.watermark_after = new_watermark
+            report.watermark_after = max(e["timestamp"] for e in new_events)
 
         return report
 
+    # -- staging (P3, J2/J5 rulings — the DockMutationDetector shape) -------
+
+    def stage_proposals(
+        self,
+        report: AttachmentDryRunReport,
+        *,
+        queue_path: Optional[Path] = None,
+    ) -> int:
+        """Stage ONE batched ``goal_attachment`` proposal per goal.
+
+        Only ``advances`` verdicts propose attachment — neutral/counter
+        adjudications are report-only. Entries are sorted by artifact_id and
+        the proposal id derives from a SEPARATE identity dict
+        ``{goal_id, artifact_ids}`` (J2 ruling: compute_proposal_id sorts
+        dict keys but NOT list order; the DockMutationDetector identity
+        precedent). Returns the number of proposals actually appended
+        (append dedups on id). Fail loud — the caller advances the cursor
+        only after this returns.
+        """
+        from grove.eval.proposal_queue import (
+            PROPOSAL_TYPE_GOAL_ATTACHMENT,
+            RoutingProposal,
+            _now_iso,
+            append,
+            compute_proposal_id,
+        )
+
+        by_goal: Dict[str, List[AdjudicatedCandidate]] = {}
+        for adj in report.adjudicated:
+            if adj.verdict != "advances":
+                continue
+            by_goal.setdefault(adj.candidate.goal_id, []).append(adj)
+        if not by_goal:
+            return 0
+
+        # Goal display names for the card (tolerant: id stands in when the
+        # goal is not resolvable at stage time — R-9 posture, render-side).
+        try:
+            dock = self._resolve_dock()
+            names = {g.id: g.name for g in dock.goals}
+        except Exception:
+            names = {}
+
+        staged = 0
+        for goal_id in sorted(by_goal):
+            entries = sorted(
+                (
+                    {
+                        "artifact_id": adj.candidate.artifact_id,
+                        "excerpt": adj.excerpt,
+                        "rationale": adj.rationale,
+                        "verdict": adj.verdict,
+                    }
+                    for adj in by_goal[goal_id]
+                ),
+                key=lambda e: e["artifact_id"],
+            )
+            identity = {
+                "goal_id": goal_id,
+                "artifact_ids": [e["artifact_id"] for e in entries],
+            }
+            record = RoutingProposal(
+                proposal_id=compute_proposal_id(
+                    type=PROPOSAL_TYPE_GOAL_ATTACHMENT,
+                    payload=identity,
+                    evidence=(),
+                ),
+                type=PROPOSAL_TYPE_GOAL_ATTACHMENT,
+                payload={
+                    "goal_id": goal_id,
+                    "goal_name": names.get(goal_id, goal_id),
+                    "entries": entries,
+                },
+                evidence=(),
+                eval_hash="",
+                created_at=_now_iso(),
+                proposer="goal_attachment_detector",
+            )
+            if append(record, path=queue_path):
+                staged += 1
+        return staged
+
+    def advance_cursor(self, report: AttachmentDryRunReport) -> None:
+        """Persist the report's candidate watermark. Called ONLY after
+        staging succeeded (J2 obligation b) — a staging failure leaves the
+        cursor unmoved, so the same events re-adjudicate next run instead of
+        being silently lost."""
+        if (
+            report.watermark_after
+            and report.watermark_after != report.watermark_before
+        ):
+            _save_cursor(self._home, report.watermark_after)
+
+    def run(self) -> Tuple[AttachmentDryRunReport, int]:
+        """The production sweep body: adjudicate → stage → advance, FAIL
+        LOUD between (J2 obligation b). The cursor moves only past events
+        whose adjudications have been staged, so a staged artifact is never
+        re-proposed (obligation a) and a staging failure never strands an
+        unproposed adjudication behind the watermark."""
+        report = self.detect()
+        staged = self.stage_proposals(report)
+        self.advance_cursor(report)
+        return report, staged
+
+
+def run_goal_attachment_sweep() -> Tuple[AttachmentDryRunReport, int]:
+    """Production entry for the Dispatcher's isolated sweep guard (J4 shape
+    b). Constructs the detector with production defaults and runs the full
+    adjudicate → stage → advance sequence. Raises propagate to the guard —
+    isolation and failure-filing live THERE, not here (no double-wrap)."""
+    report, staged = GoalAttachmentDetector().run()
+    logger.info(
+        "[goal-attachment] sweep: %d new event(s), %d adjudicated, "
+        "%d proposal(s) staged",
+        report.events_new, len(report.adjudicated), staged,
+    )
+    return report, staged
+
 
 def main() -> None:
-    """Manual dry-run entry point (P1). Prints the report; changes nothing
-    but the cursor watermark."""
+    """Manual DRY-RUN entry point. Prints the report and advances the
+    cursor; stages NOTHING (the operator's inspection tool — the production
+    path is run_goal_attachment_sweep). Delete the cursor file to re-scan."""
     logging.basicConfig(level=logging.INFO)
-    report = GoalAttachmentDetector().detect()
+    detector = GoalAttachmentDetector()
+    report = detector.detect()
     print(report.render())
+    detector.advance_cursor(report)
 
 
 if __name__ == "__main__":
