@@ -419,16 +419,18 @@ routing:
 tier_budgets:
 
   T3:                       # Apex Cognition — unbounded window, eager.
-    context: [claude_contract, skills_index, cellar_context]
+    context: [claude_contract, skills_index, cellar_context, skill_payload]
     cellar_context_ceiling: 2000
+    skill_payload_ceiling: 3000   # skill-adoption-v1 C2 — primary-skill payload
 
   T2:                       # Premium Cognition — the prefill-budgeted path.
-    context: [cellar_context]  # claude_contract + skills_index gated OFF
+    context: [cellar_context, skill_payload]  # claude_contract + skills_index gated OFF
     cellar_context_ceiling: 1500
+    skill_payload_ceiling: 3000   # skill-adoption-v1 C2 — primary-skill payload
 
   T1:                       # Cheap Cognition — the floor. Minimal prefill.
     context: [cellar_context]  # K6 (A-D3): minimal but non-zero cellar grounding
-    cellar_context_ceiling: 1000
+    cellar_context_ceiling: 1000   # skill_payload NOT admitted at T1 (lean floor)
 
   Telemetry:                # Classifier tier — a forced-tool classification call
     context: []             # that composes no agent prefill, so no heavy blocks

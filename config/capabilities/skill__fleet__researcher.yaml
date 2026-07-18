@@ -240,6 +240,11 @@ lifecycle:
   last_used: null
   use_count: 0
   flywheel_eligible: true
+  # skill-adoption-v1 C2 — committed definition-payload integrity anchor. sha256
+  # (":16" short form, the canonical _body_hash convention) of the FULL
+  # context.payload bytes (frontmatter included, pre-strip). The C2 gate hashes
+  # the SAME bytes; keep this value and the payload in lockstep on any edit.
+  body_hash: sha256:a4173ec1c155d6f4
 lineage:
   source_patterns: []
   parent_id: null

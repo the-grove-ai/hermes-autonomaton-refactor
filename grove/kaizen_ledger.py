@@ -145,6 +145,15 @@ class KaizenLedger:
         # degrades, the gateway loads. Payload carries the intent_class + the
         # offending record_id(s)/slug(s).
         "skill_primacy_collision",
+        # skill-adoption-v1 C2 — compose-time payload integrity failure. The
+        # skill_payload provider computed a primary skill's payload but an
+        # integrity gate failed: reason="body_hash" (sha256(context.payload) !=
+        # lifecycle.body_hash — the committed definition anchor) or
+        # reason="promotion_pin" (a promoted skill's approved_payload_sha256 pin
+        # no longer matches the active SKILL.md). Either → the payload is NOT
+        # injected (fail-closed, nudge-only stands). Payload carries slug +
+        # record_id + reason.
+        "skill_payload_integrity_violation",
         # GRV-010 C1b — a governance-config change written through the
         # propose_governance_change Stage-04 door (rationale + diff hashes +
         # disposition). The paired andon_disposition entry carries the precise

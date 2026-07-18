@@ -1029,6 +1029,9 @@ def load_capabilities(directory: Optional[Path] = None) -> Dict[str, Capability]
     global _PRIMACY_MAP
     _PRIMACY_MAP, _primacy_violations = compute_primacy_map(records)
     _file_primacy_violations(_primacy_violations)
+    # skill-adoption-v1 C2 — surface primacy claims that can never inject (no
+    # body_hash anchor) so the dark state is never silent.
+    _warn_primacy_dark(records)
 
     return records
 
@@ -1113,7 +1116,8 @@ def primary_skill_for_intent(intent_class: str) -> Optional[str]:
 
     Reads the map cached by the most recent :func:`load_capabilities`. ``None``
     means no record holds primacy for the class — either none claimed it, or a
-    collision demoted every claimant. No consumer is wired this phase."""
+    collision demoted every claimant. Consumed by the C2 skill_payload provider
+    and the C3 dispatcher recompose keying."""
     return _PRIMACY_MAP.get(intent_class)
 
 
@@ -1184,6 +1188,81 @@ def _file_primacy_violations(violations: "List[Dict[str, Any]]") -> None:
             "(the load itself SUCCEEDED): %r",
             file_exc,
         )
+
+
+# ── skill-adoption-v1 C2 — definition payload integrity (body_hash anchor) ────
+
+
+def definition_payload_status(record: Capability) -> Optional[bool]:
+    """The ``context.payload`` integrity verdict for *record* against its committed
+    ``lifecycle.body_hash`` anchor. PURE.
+
+    * ``None``  — the record carries no ``body_hash`` (NOT eligible for payload
+      injection; the caller skips QUIETLY — absence is config state, not a
+      violation).
+    * ``True``  — ``body_hash`` present and matches ``sha256(context.payload)``.
+    * ``False`` — present but mismatched (an integrity violation the caller
+      Andons).
+
+    Uses the canonical :func:`_body_hash` producer so the format matches every
+    minted record's anchor (``sha256:<16 hex>``) — the committed value and this
+    check hash the SAME bytes (the FULL ``context.payload``, pre-frontmatter-
+    strip)."""
+    body_hash = record.lifecycle.body_hash
+    if not body_hash:
+        return None
+    payload = record.context.payload or ""
+    return _body_hash(payload) == body_hash
+
+
+def file_skill_payload_integrity_violation(
+    slug: str, record_id: str, reason: str
+) -> None:
+    """File one ``skill_payload_integrity_violation`` Andon (component-filer
+    pattern; ``cli-<utc>`` sentinel session). *reason* is ``"body_hash"`` or
+    ``"promotion_pin"``. Error-log floor — a filing failure must not crash the
+    compose path (the payload is already withheld)."""
+    try:
+        from datetime import datetime, timezone
+
+        from grove.kaizen_ledger import KaizenLedger
+
+        session_id = "cli-" + datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        )
+        KaizenLedger(session_id=session_id).record(
+            "skill_payload_integrity_violation",
+            slug=slug,
+            record_id=record_id,
+            reason=reason,
+        )
+    except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor stands
+        logger.error(
+            "[capability_registry] skill_payload_integrity_violation filing "
+            "failed (the payload was withheld regardless): %r",
+            file_exc,
+        )
+
+
+def _warn_primacy_dark(records: Dict[str, Capability]) -> None:
+    """No-silent-degradation guard (skill-adoption-v1 C2): an ENABLED record that
+    claims primacy for an intent it declares but carries NO ``lifecycle.body_hash``
+    can never pass the C2 injection gate — its primacy is DARK. Warn once per load,
+    naming the slug, so a primacy claim that can never inject stays visible."""
+    for cid, cap in sorted(records.items()):
+        if cap.lifecycle.state not in EXECUTABLE_STATES:
+            continue
+        declared = set(cap.trigger.intents)
+        claims_something = any(i in declared for i in cap.trigger.primary_intents)
+        if claims_something and not cap.lifecycle.body_hash:
+            logger.warning(
+                "[capability_registry] primacy dark: %s — claims primacy "
+                "(primary_intents=%s) but carries no lifecycle.body_hash, so the "
+                "skill_payload block can never inject. Commit a body_hash to "
+                "enable payload injection.",
+                cid.rsplit(".", 1)[-1],
+                sorted(i for i in cap.trigger.primary_intents if i in declared),
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

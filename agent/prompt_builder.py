@@ -1163,6 +1163,33 @@ def render_skill_nudge_line(slugs: "list[str]") -> str:
     return _SKILL_NUDGE_TEMPLATE.format(slugs=rendered)
 
 
+# ── skill-adoption-v1 C2 — the skill_payload block (template-lock) ────────────
+#
+# The static frame around a primary skill's hash-verified payload. F3
+# template-lock: the ONLY record-derived interpolations are the slug (frame
+# lines) and the payload BODY (frontmatter-stripped, hash-verified upstream).
+# No record description, no other frontmatter prose enters the prompt.
+_SKILL_PAYLOAD_FRAME_OPEN = (
+    "The `{slug}` skill is the canonical procedure for this request. Follow it "
+    "exactly:\n\n"
+)
+_SKILL_PAYLOAD_FRAME_CLOSE = "\n\n(End of the `{slug}` skill procedure.)"
+
+
+def render_skill_payload_block(slug: str, body: str) -> str:
+    """The skill_payload block: static open frame + the raw payload body + static
+    close frame (skill-adoption-v1 C2, F3 template-lock).
+
+    ``slug`` interpolates into the two static frame lines; ``body`` is the
+    frontmatter-stripped, hash-verified payload the caller has already gated.
+    Nothing else from the record reaches the prompt."""
+    return (
+        _SKILL_PAYLOAD_FRAME_OPEN.format(slug=slug)
+        + body.strip()
+        + _SKILL_PAYLOAD_FRAME_CLOSE.format(slug=slug)
+    )
+
+
 def matched_skill_slugs_for_intent(
     intent_class: "str | None",
     available_tools: "set[str] | None",
