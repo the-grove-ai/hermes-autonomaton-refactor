@@ -189,6 +189,19 @@ class KaizenLedger:
         # pattern_key + resolution + grant_id. Diagnostic-grade until the broker
         # sprint hardens the ledger to append-only.
         "escalated_write_attempt",
+        # ledger-eventtype-hygiene-v1 — three emitters that shipped without an
+        # allowlist entry, so every emission hit the fail-loud floor (ValueError,
+        # swallowed by the caller's try/except → the ledger entry was silently
+        # dropped). Registered here to close the orphan class.
+        #
+        # write-confinement-v1 (babd703f5) — a write batch refused by the single
+        # write-confinement evaluator before dispatch. Emitted grove/dispatcher.py:4609.
+        "write_confinement_refusal",
+        # grant provenance stamp — a scope-defining execution authorized by a
+        # standing/operator grant. Emitted grove/dispatcher.py:5790.
+        "grant_execution",
+        # T0/session pattern-cache hit telemetry. Emitted grove/dispatcher.py:6288.
+        "session_cache_hit",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:

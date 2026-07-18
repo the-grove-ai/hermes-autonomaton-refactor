@@ -849,7 +849,7 @@ async def handle_tier_model_swap(request: web.Request) -> web.Response:
         )
 
     try:
-        await get_writer().swap_tier_model(tier, model_slug)
+        result = await get_writer().swap_tier_model(tier, model_slug)
     except ConfigValidationError as exc:
         return await _loud_action_failure(
             render_tier_card(
@@ -859,6 +859,20 @@ async def handle_tier_model_swap(request: web.Request) -> web.Response:
             action="tier_swap",
             message=str(exc),
             status=422,
+        )
+
+    # ledger-eventtype-hygiene-v1 Change 3 — a no-op swap (tier already bound to
+    # this model) wrote nothing and is NOT a failure. Success-class 200 with an
+    # info line on the card, not the _loud_action_failure error surface.
+    if result.status == "noop":
+        logger.info(
+            "[portal.actions] tier %s already bound to %s (no-op)", tier, model_slug
+        )
+        return _html_fragment(
+            render_tier_card(
+                tier, _live_tier_preferences().get(tier), catalog,
+                info=f"Already bound to {model_slug} — no change.",
+            )
         )
 
     logger.info("[portal.actions] tier %s swapped to %s", tier, model_slug)

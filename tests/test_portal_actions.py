@@ -445,6 +445,42 @@ async def test_tier_revert_unknown_tier_loud_but_not_filed(client, grove_home, m
     assert _paf() == []                       # SUPPRESSED
 
 
+async def test_tier_swap_same_model_is_noop_info_not_error(client, grove_home, monkeypatch):
+    # ledger-eventtype-hygiene-v1 Change 3 — swapping a tier to the model it
+    # already holds is a success-class NO-OP: HTTP 200 with an info line (not the
+    # 422 error surface), nothing written, no failure broadcast/queue entry.
+    import shutil
+    from pathlib import Path
+
+    import grove.config.routing_writer as rw
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg = grove_home / "routing.config.yaml"
+    shutil.copy(repo_root / "config" / "routing.config.yaml", cfg)
+    # rebind the cached writer singleton to THIS test's GROVE_HOME config.
+    monkeypatch.setattr(rw, "_writer", None)
+
+    bytes_before = cfg.read_bytes()
+    mtime_before = cfg.stat().st_mtime_ns
+    sent = _capture_broadcast(monkeypatch)
+
+    r = await client.post(
+        "/portal/actions/routing/swap",
+        data={"tier": "T2", "model_slug": "anthropic/claude-sonnet-4.6"},
+    )
+    assert r.status == 200                        # success-class, NOT 422
+    body = await r.text()
+    assert "no change" in body.lower()            # the info copy
+    assert 'class="meta info"' in body            # info styling
+    assert 'class="meta error"' not in body       # NOT the error surface
+    # PIN: the no-op wrote nothing — bytes + mtime unchanged, no .bak.
+    assert cfg.read_bytes() == bytes_before
+    assert cfg.stat().st_mtime_ns == mtime_before
+    assert not cfg.with_suffix(cfg.suffix + ".bak").exists()
+    assert sent == []                             # no failure broadcast
+    assert _paf() == []                           # nothing filed
+
+
 async def test_forge_no_draft_dir(client, grove_home):
     r = await client.post("/portal/actions/forge/nope/publish")
     assert r.status == 404

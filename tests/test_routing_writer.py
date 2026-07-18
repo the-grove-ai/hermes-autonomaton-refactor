@@ -98,11 +98,32 @@ async def test_invalid_slug_empty_raises(writer):
     assert cfg.read_bytes() == before
 
 
-async def test_swap_same_model_raises(writer):
+async def test_swap_same_model_is_noop(writer):
+    # ledger-eventtype-hygiene-v1 Change 3 — a swap to the model the tier already
+    # holds is a NO-OP, not a ConfigValidationError. It returns status="noop" and
+    # writes NOTHING: file bytes AND mtime unchanged, and no .bak is created.
     w, cfg = writer
     current, _ = _model(cfg, "T2")
-    with pytest.raises(ConfigValidationError):
-        await w.swap_tier_model("T2", current)
+    bytes_before = cfg.read_bytes()
+    mtime_before = cfg.stat().st_mtime_ns
+    bak = cfg.with_suffix(cfg.suffix + ".bak")
+
+    result = await w.swap_tier_model("T2", current)
+
+    assert result.status == "noop"
+    assert result.tier == "T2" and result.model == current
+    # PIN: no write occurred — the read-only pre-check caught the no-op before
+    # apply_mutation's backup/replace could touch the file.
+    assert cfg.read_bytes() == bytes_before
+    assert cfg.stat().st_mtime_ns == mtime_before
+    assert not bak.exists()
+
+
+async def test_swap_returns_swapped_result(writer):
+    w, cfg = writer
+    result = await w.swap_tier_model("T2", "deepseek/deepseek-chat")
+    assert result.status == "swapped"
+    assert result.tier == "T2" and result.model == "deepseek/deepseek-chat"
 
 
 async def test_invalid_tier_raises(writer):
