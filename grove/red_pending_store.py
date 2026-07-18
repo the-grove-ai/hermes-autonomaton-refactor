@@ -29,12 +29,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # The proposal ``type`` written (opaque) to the agent-reachable queue as the
 # 1b portal-render bridge. Namespaced so existing flywheel/portal consumers
@@ -545,4 +548,29 @@ def approve_red_proposal(
         "tool_name": entry.tool_name,
         "pattern_key": entry.pattern_key,
         "target_path": (entry.arguments or {}).get("target_file"),
+        # artifact-continuation-v1 P2 (1e ruling) — the approved action's
+        # filesystem write targets, derived by the SEAM'S OWN extraction
+        # machinery (never a parallel derivation). PATHS only — argument
+        # values (which may bear secrets) are never surfaced. Confirm-time
+        # identity emission consumes this to file artifact_written for the
+        # approved write.
+        "write_targets": _extract_write_targets_safe(
+            entry.tool_name, entry.arguments
+        ),
     }
+
+
+def _extract_write_targets_safe(tool_name: str, arguments: dict) -> list:
+    """``tools.file_tools.extract_write_targets`` behind a loud-resilient
+    guard: identity metadata must never fail an approval that already
+    executed. Non-write tools return [] by the extractor's own contract."""
+    try:
+        from tools.file_tools import extract_write_targets
+
+        return list(extract_write_targets(tool_name, arguments or {}))
+    except Exception as exc:  # noqa: BLE001 — telemetry-only
+        logger.warning(
+            "[red-pending] write-target extraction failed (identity metadata "
+            "only — the approved execution stands): %r", exc,
+        )
+        return []

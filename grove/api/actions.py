@@ -627,10 +627,51 @@ async def handle_red_proposal_confirm(request: web.Request) -> web.Response:
     result = approve_red_proposal(bare, store)
 
     if result.get("success"):
+        # artifact-continuation-v1 P2 (1e/1f ruling) — capture the queue row's
+        # identity-context payload BEFORE removing the row, then file
+        # artifact_written for the approved write via the CORE helper (the
+        # approved re-dispatch path never enters the Dispatcher, so the seam
+        # never saw it). Loud-resilient throughout: identity telemetry never
+        # fails a confirm that already executed.
+        _row_payload: dict = {}
+        try:
+            for _row in proposal_queue.read_all():
+                if _row.proposal_id == full_pid:
+                    _row_payload = dict(_row.payload or {})
+                    break
+        except Exception as _exc:  # noqa: BLE001 — carrier read is telemetry-only
+            logger.warning(
+                "[portal] pending-row payload read failed (approved-write "
+                "identity emission degrades to defaults): %r", _exc,
+            )
         try:
             proposal_queue.remove(full_pid)
         except Exception:  # noqa: BLE001
             pass
+        _artifact_links_html = ""
+        try:
+            from grove.artifact_identity import emit_approved_artifact_written
+
+            _events = emit_approved_artifact_written(
+                result.get("tool_name"),
+                result.get("write_targets") or [],
+                _row_payload,
+            )
+            # Ruling 5 — the approving operator sees where it landed:
+            # template-locked line per artifact, hash-route form, values
+            # system-derived only.
+            _artifact_links_html = "".join(
+                f'<p class="meta">Artifact: '
+                f'<a href="/portal#fragments/artifact/{_e["artifact_id"]}">'
+                f'{_e["artifact_id"]}</a></p>'
+                for _e in _events
+                if _e.get("artifact_id")
+            )
+        except Exception as _exc:  # noqa: BLE001 — never fail the confirm
+            logger.warning(
+                "[portal] approved-write identity emission failed (the "
+                "approved write itself stands): %r", _exc,
+            )
         # operator-red-correctness-v1 Move 2 — reflect the ACTUAL executed effect,
         # not a hardcoded governance-write mislabel. PATH only for a governance write;
         # never the raw stdout/arguments (Gemini Q6 — no new value exposure).
@@ -649,16 +690,18 @@ async def handle_red_proposal_confirm(request: web.Request) -> web.Response:
             _where = result.get("target_path") or "~/.grove/.env"
             return _resolved_card(
                 short_id, "governance write", "written",
-                f"Written — the change was saved to {_where}.",
+                f"Written — the change was saved to {_where}."
+                f"{_artifact_links_html}",
             )
         if _tool in ("terminal", "execute_code"):
             return _resolved_card(
                 short_id, "command", "executed",
-                "Command executed — the approved action ran.",
+                f"Command executed — the approved action ran."
+                f"{_artifact_links_html}",
             )
         return _resolved_card(
             short_id, "action", "written",
-            "Done — the approved action was applied.",
+            f"Done — the approved action was applied.{_artifact_links_html}",
         )
 
     reason = result.get("reason")
