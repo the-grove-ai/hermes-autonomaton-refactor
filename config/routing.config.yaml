@@ -139,6 +139,21 @@ routing:
       cost_per_mtok_input: 0.435
       cost_per_mtok_output: 0.87
 
+    T-GA:
+      provider: openrouter
+      model: deepseek/deepseek-v4-pro
+      description: |
+        Goal-attachment adjudicator — the goal-spine detector's judge
+        (goal-spine-v1 P1). Rules on whether an artifact ADVANCES a Dock
+        goal (not merely mentions its topic) via one forced tool call.
+        Bound separately from T-QA so rebinding the quality judge never
+        silently changes the attachment judge, and vice versa (the
+        Telemetry-tier precedent). Requires reliable forced tool_choice.
+        Price: ~$0.44 / ~$0.87 per million input / output tokens.
+      max_tokens: 4096
+      cost_per_mtok_input: 0.435
+      cost_per_mtok_output: 0.87
+
     T2:
       provider: openrouter
       # Direct Anthropic alternative (requires ANTHROPIC_API_KEY):
@@ -446,6 +461,11 @@ tier_budgets:
     context: []             # that composes no agent prefill, so no heavy blocks
                             # (exact-cover D7: provider-backed tier needs an entry)
 
+  T-GA:                     # Goal-attachment adjudicator — a forced-tool verdict
+    context: []             # call that composes no agent prefill, so no heavy
+                            # blocks (exact-cover D7: provider-backed tier needs
+                            # an entry)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # pattern_cache — T0 Pattern Compiler (Sprint 48)
@@ -480,3 +500,28 @@ pattern_cache:
     # the evidence. Zero variance — if responses differ, the pattern is not
     # safely static-cacheable and is not promoted.
     max_response_variance: 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# goal_attachment — goal-spine detector (goal-spine-v1 P1)
+# ─────────────────────────────────────────────────────────────────────────
+# The off-path goal-attachment detector: scans artifact_written ledger
+# events, prefilters against Dock goal projection pages (Stage 1), and asks
+# the adjudicator tier whether each candidate artifact ADVANCES the matched
+# goal (Stage 2). P1 is dry-run only — a manual entry point that prints a
+# report; no proposal, no ledger event. Read by
+# grove.dock.attachment.load_goal_attachment_config (the pattern_cache
+# section-loader precedent; operator copy wins over this repo default).
+goal_attachment:
+  # The adjudicator tier, resolved BY NAME through call_t1(tier=...) — the
+  # T-QA quality-gate pattern. Must name a tier declared in tier_preferences
+  # above (an unknown tier raises KeyError at call time, never a fallback).
+  adjudicator_tier: T-GA
+
+  # Stage 2 promotion cap per run — the maximum number of Stage-1 candidates
+  # sent to the adjudicator in one detector run. Bounds LLM spend.
+  stage2_candidate_cap: 5
+
+  # Stage 1 retrieval depth — top-k dock_goal projection pages consulted per
+  # artifact when scoring goal relevance.
+  prefilter_top_k: 3
