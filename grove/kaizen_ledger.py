@@ -154,6 +154,14 @@ class KaizenLedger:
         # injected (fail-closed, nudge-only stands). Payload carries slug +
         # record_id + reason.
         "skill_payload_integrity_violation",
+        # skill-adoption-v1 C5b — SYSTEM-DERIVED contract-execution provenance. The
+        # governed write path saw a write land inside the ACTIVE primary skill's
+        # declared write_zone while that skill's payload was in context — i.e. the
+        # skill executed its contract (wrote its artifact to its sink). Derived
+        # purely from the C3 active-primary tracker + the record's governance
+        # write_zone; NO model-authored tags are consulted. Payload: slug + path +
+        # turn_id.
+        "contract_execution",
         # GRV-010 C1b — a governance-config change written through the
         # propose_governance_change Stage-04 door (rationale + diff hashes +
         # disposition). The paired andon_disposition entry carries the precise

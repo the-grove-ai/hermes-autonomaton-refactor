@@ -800,6 +800,27 @@ def _staging_owner(resolved: str, fleet_governance, grove: str):
     return None
 
 
+def staging_owner_slug(target_path: str, fleet_governance) -> "str | None":
+    """The record-id-tail slug of the fleet capability whose ``write_zone.
+    staging_dir`` contains *target_path*, or ``None`` (skill-adoption-v1 C5b).
+
+    System-derived contract-execution provenance: the caller compares this to the
+    turn's ACTIVE primary slug to decide whether an allowed write is the active
+    skill executing its contract into its own sink. Returns ``None`` on an
+    unresolvable target / unanchorable GROVE_HOME / no staging owner — never
+    guesses."""
+    resolved = _canonical_write_target(target_path)
+    if resolved is None:
+        return None
+    grove = _grove_home_realpath()
+    if grove is None:
+        return None
+    owner = _staging_owner(resolved, fleet_governance, grove)
+    if owner is None:
+        return None
+    return owner[0].rsplit(".", 1)[-1]
+
+
 def is_capability_write_allowed(target_path: str, fleet_governance) -> "tuple[bool, str]":
     """WHERE gate — per-capability write-zone confinement (structural-review-gate-v1).
 

@@ -1784,6 +1784,15 @@ class Dispatcher:
                 _payload["matched_skill_slugs"] = self._matched_skill_slugs_for_turn(
                     agent
                 )
+                # skill-adoption-v1 C5a — ADDITIVE field: the LOADED primary slug
+                # (the C3 tracker = what is actually in the composed prompt), which
+                # may PERSIST through a None-intent turn. Distinct from
+                # matched_skill_slugs (a FRESH per-turn intent match): active is
+                # "payload in context", matched is "would match this turn". None
+                # when no primary payload rides the prompt.
+                _payload["active_primary_skill_slug"] = getattr(
+                    self, "_last_loaded_primary_slug", None
+                )
                 try:
                     ledger.record("tool_selection", **_payload)
                 except Exception as _exc:
@@ -4647,9 +4656,17 @@ class Dispatcher:
             write_refused_message,
             is_capability_write_allowed,
             capability_emission_precondition,
+            staging_owner_slug,
         )
         from grove.tool_classes import count_tool_classes
         from tools.file_tools import extract_write_targets
+
+        # skill-adoption-v1 C5b — the turn's ACTIVE primary skill (C3 tracker; the
+        # payload actually in context). Purely system-derived. A write that PASSES
+        # all gates AND lands in THIS skill's declared staging sink is the skill
+        # executing its contract → a contract_execution provenance event.
+        active_slug = getattr(self, "_last_loaded_primary_slug", None)
+        contract_writes: List[tuple] = []  # (slug, path), emitted iff batch proceeds
 
         # structural-review-gate-v1 — the fleet governance blocks (kind=skill
         # records with a governance key), loaded + cached for this process. The
@@ -4684,7 +4701,30 @@ class Dispatcher:
                     if not ok:
                         refusals[intent.call_id] = reason
                         break
+                    # C5b — target passed every gate; if it lands in the ACTIVE
+                    # skill's staging sink, note it for a contract_execution event.
+                    if active_slug and staging_owner_slug(
+                        target, fleet_governance
+                    ) == active_slug:
+                        contract_writes.append((active_slug, target))
         if not refusals:
+            # C5b — the batch proceeds; file contract_execution for each in-active-
+            # sink write (system-derived provenance; no model-authored tags). Ledger
+            # write is best-effort — a telemetry fault must not deny the turn.
+            if contract_writes and ledger is not None:
+                for _slug, _path in contract_writes:
+                    try:
+                        ledger.record(
+                            "contract_execution",
+                            slug=_slug,
+                            path=_path,
+                            turn_id=self._current_turn_id,
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            "[grove.dispatcher] contract_execution ledger write "
+                            "failed: %r", _exc,
+                        )
             return None
 
         if ledger is not None:

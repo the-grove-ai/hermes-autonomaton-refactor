@@ -1162,6 +1162,40 @@ def primacy_write_violations(
     return problems
 
 
+def assert_primacy_writable(
+    candidate: Capability,
+    *,
+    directory: Optional[Path] = None,
+    target: Optional[Path] = None,
+) -> None:
+    """The sanctioned-persist-path strict primacy gate (skill-adoption-v1 C5c).
+
+    Raises :class:`CapabilityLoadError` when persisting *candidate* would create an
+    out-of-subset primacy claim or a collision against the currently ENABLED
+    registry. A candidate that declares NO ``primary_intents`` short-circuits
+    before any registry load — zero cost on the normal mint path. *directory* /
+    *target* mirror the minter's dedup resolution so the check reads the SAME
+    registry the write lands in.
+
+    Wraps :func:`primacy_write_violations` (the pure checker); the writer calls
+    this immediately before it persists, so a violating record never reaches
+    disk."""
+    if not candidate.trigger.primary_intents:
+        return
+    if directory is None:
+        registry = load_capabilities()
+    elif target is not None and any(Path(target).glob("*.yaml")):
+        registry = load_capabilities(target)
+    else:
+        registry = {}
+    problems = primacy_write_violations(registry, candidate)
+    if problems:
+        raise CapabilityLoadError(
+            f"assert_primacy_writable: primacy write rejected for "
+            f"{candidate.id!r} — {'; '.join(problems)}"
+        )
+
+
 def _file_primacy_violations(violations: "List[Dict[str, Any]]") -> None:
     """File one ``skill_primacy_collision`` Andon per primacy violation.
 
@@ -2082,6 +2116,14 @@ def _mint_skill_record(
         failure=Failure(circuit_breaker=CircuitBreaker(threshold=3, window_seconds=300)),
         skill=SkillPresentation(category=cat_slug),
     )
+
+    # skill-adoption-v1 C5c — strict primacy pre-persist gate (Phase-1 condition:
+    # primacy_write_violations must not strand). Inert-by-construction for today's
+    # minters (a minted record carries Trigger(always=True) with NO primary_intents),
+    # so the guard only loads the registry + checks when a candidate ACTUALLY claims
+    # primacy — zero overhead on the normal mint path, LIVE for any future writer
+    # that persists a primary claim.
+    assert_primacy_writable(cap, directory=directory, target=target)
 
     path = target / f"skill__{filename_tag}__{cat_slug}__{name_slug}.yaml"
     _atomic_write_yaml(path, cap.to_yaml())
