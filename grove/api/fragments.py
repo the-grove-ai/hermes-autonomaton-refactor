@@ -1741,7 +1741,8 @@ def _model_options_html(catalog: list, current_slug) -> str:
     return "".join(options)
 
 
-def render_tier_card(tier: str, config, catalog: list, error: str | None = None) -> str:
+def render_tier_card(tier: str, config, catalog: list, error: str | None = None,
+                     info: str | None = None) -> str:
     """One routing-tier card — a self-contained ``<div id="tier-{tier}">`` so
     HTMX swaps it alone (N1). Shows the current model (catalog display name), a
     display-only cost, a model dropdown, a Swap button, and a Revert button shown
@@ -1773,6 +1774,10 @@ def render_tier_card(tier: str, config, catalog: list, error: str | None = None)
             f'Revert to {_esc(prev_disp)}</button>'
         )
     error_html = f'<div class="meta error">{_esc(error)}</div>' if error else ""
+    # ledger-eventtype-hygiene-v1 Change 3 — info surface for a success-class
+    # no-op (e.g. a swap to the model the tier already holds); distinct from the
+    # error surface so a no-op is not rendered as a failure.
+    info_html = f'<div class="meta info">{_esc(info)}</div>' if info else ""
 
     return (
         f'<div class="card" id="tier-{tier_e}">'
@@ -1790,6 +1795,7 @@ def render_tier_card(tier: str, config, catalog: list, error: str | None = None)
         f'{revert_btn}'
         f'</form>'
         f'{error_html}'
+        f'{info_html}'
         f'</div>'
     )
 

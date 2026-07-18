@@ -33,6 +33,7 @@ import asyncio
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -51,6 +52,21 @@ class ConfigValidationError(Exception):
     state. The portal handler catches this and renders an inline error fragment
     via ``_html_fragment``; the tier card stays put, no 500, no traceback.
     """
+
+
+@dataclass(frozen=True)
+class TierSwapResult:
+    """Outcome of :meth:`RoutingConfigWriter.swap_tier_model`.
+
+    ``status`` is ``"swapped"`` (the binding changed and was written) or
+    ``"noop"`` (the tier was ALREADY bound to the requested model — nothing was
+    written; the live file is byte- and mtime-identical). A no-op is not an
+    error: the portal surfaces it as info (ledger-eventtype-hygiene-v1 Change 3).
+    """
+
+    status: str  # "swapped" | "noop"
+    tier: str
+    model: str
 
 
 def _default_config_path() -> Path:
@@ -188,35 +204,45 @@ class RoutingConfigWriter:
 
     # ----- public async API (the portal calls these) -------------------------
 
-    async def swap_tier_model(self, tier: str, new_slug: str) -> None:
+    async def swap_tier_model(self, tier: str, new_slug: str) -> "TierSwapResult":
         """Bind ``tier`` to ``new_slug``, preserving the old model for one undo.
 
         Acquires the lock, then through the shared pipeline: copies the current
         ``model`` to ``previous_model`` and sets ``model = new_slug`` (C5 — one
-        level of undo, not a stack). Raises ``ConfigValidationError`` if the tier
-        carries no model or the mutated config fails sandbox validation; the live
-        file is untouched in either case.
+        level of undo, not a stack). Returns a :class:`TierSwapResult`. Raises
+        ``ConfigValidationError`` if the tier carries no model or the mutated
+        config fails sandbox validation; the live file is untouched in either case.
+
+        ledger-eventtype-hygiene-v1 Change 3 — a NO-OP swap (the tier is already
+        bound to ``new_slug``) is not an error. It is caught by a READ-ONLY
+        pre-check BEFORE ``apply_mutation``, so it writes NOTHING (no backup, no
+        atomic replace — the file's bytes and mtime are untouched) and returns
+        ``status="noop"``; the portal renders that as info, not an error surface.
         """
         new_slug = (new_slug or "").strip()
         if not new_slug:
             raise ConfigValidationError("swap requires a non-empty model slug")
 
-        def mutate(data: Any) -> None:
-            entry = _tier_entry(data, tier)
-            old = entry.get("model")
-            if not old:
-                raise ConfigValidationError(
-                    f"tier {tier!r} has no current model to swap from"
-                )
-            if old == new_slug:
-                raise ConfigValidationError(
-                    f"tier {tier!r} is already bound to {new_slug!r}"
-                )
-            entry["previous_model"] = old
-            entry["model"] = new_slug
-
         async with self._lock:
+            # No-op pre-check — read-only. Also validates tier/model presence
+            # (raises ConfigValidationError), so an unknown tier or a model-less
+            # tier still fails loud exactly as before, without a write.
+            current = self._current_tier_model(tier)
+            if current == new_slug:
+                return TierSwapResult(status="noop", tier=tier, model=new_slug)
+
+            def mutate(data: Any) -> None:
+                entry = _tier_entry(data, tier)
+                old = entry.get("model")
+                if not old:
+                    raise ConfigValidationError(
+                        f"tier {tier!r} has no current model to swap from"
+                    )
+                entry["previous_model"] = old
+                entry["model"] = new_slug
+
             self.apply_mutation(mutate, label=f"swap {tier} -> {new_slug}")
+            return TierSwapResult(status="swapped", tier=tier, model=new_slug)
 
     async def revert_tier_model(self, tier: str) -> None:
         """Undo the last swap: exchange ``model`` and ``previous_model`` (C5/AC-6).
@@ -299,6 +325,27 @@ class RoutingConfigWriter:
         logger.info("[routing_writer] applied: %s (%s)", label, op_path)
 
     # ----- internals ---------------------------------------------------------
+
+    def _current_tier_model(self, tier: str) -> str:
+        """The model currently bound to ``tier``, read READ-ONLY from the operator
+        file. Raises ``ConfigValidationError`` if the config is missing, the tier
+        is absent, or the tier carries no model. Backs ``swap_tier_model``'s no-op
+        pre-check so a same-model swap returns without touching the file."""
+        op_path = self._config_path
+        if not op_path.exists():
+            raise ConfigValidationError(
+                f"routing config not found at {op_path}; cannot read tier {tier!r}"
+            )
+        yaml_rt = _ruamel()
+        with open(op_path, encoding="utf-8") as fh:
+            data = yaml_rt.load(fh)
+        entry = _tier_entry(data, tier)
+        old = entry.get("model")
+        if not old:
+            raise ConfigValidationError(
+                f"tier {tier!r} has no current model to swap from"
+            )
+        return old
 
     def _sandbox_validate(self, yaml_rt: YAML, data: Any) -> None:
         """Construct a throwaway ``CognitiveRouter`` from the mutated config.
