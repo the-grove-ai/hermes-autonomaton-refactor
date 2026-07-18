@@ -260,6 +260,22 @@ class KaizenLedger:
         # operator-originated reason, NOT a proposal_id. Filed by the same
         # sanctioned writer module (detach_attachment).
         "artifact_goal_detached",
+        # goal-spine-v1 P3 (J3 ruling) — per-PAIR suppression: the operator
+        # rejected a goal_attachment proposal, so each (artifact_id, goal_id)
+        # entry files one of these. "Not this goal," never "not any goal" —
+        # the same artifact stays eligible for other goals. Filed by the
+        # reject callback via attachment_store.record_suppression; read by
+        # the same tolerant scan as the attachment projection. Carries
+        # artifact_id + goal_id + proposal_id.
+        "artifact_goal_suppressed",
+        # goal-spine-v1 P3 (J4 ruling) — GENERIC producer failure: an
+        # off-path producer (detector, scanner, sweep job) raised inside its
+        # isolation guard. Auditable, not operator-visible — surfacing is
+        # detector-sweep-resilience-v1's scope. Carries producer (name as
+        # DATA, never a code branch — A6) + error (repr). The isolated-sweep
+        # guard in grove/dispatcher.py is the reference emitter that the
+        # resilience sprint propagates to the other four detectors.
+        "producer_failure",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:

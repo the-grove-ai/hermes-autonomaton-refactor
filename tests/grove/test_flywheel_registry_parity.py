@@ -181,13 +181,16 @@ def test_registry_covers_exactly_the_registered_types() -> None:
     # the Stage 2 policy-graduation apply path). dock-as-mutation-target-v1
     # added the eighth (dock_mutation, the Memory→Dock goal-proposal apply
     # path). binding-governance-surfaces-v1 added the ninth (model_binding,
-    # the capability-record binding apply path → set_model_binding). Updated
-    # inline by the sprint that registers the type — the registry parity
-    # contract still holds, the closed set just grew by one.
+    # the capability-record binding apply path → set_model_binding).
+    # goal-spine-v1 P3 added goal_attachment (the batched artifact→goal
+    # apply path → attachment_store.mint_attachment). Updated inline by the
+    # sprint that registers the type — the registry parity contract still
+    # holds, the closed set just grew by one.
     from grove.eval.proposal_queue import (
         PROPOSAL_TYPE_ADMISSION_FRICTION,
         PROPOSAL_TYPE_CONSOLIDATION,
         PROPOSAL_TYPE_DOCK_MUTATION,
+        PROPOSAL_TYPE_GOAL_ATTACHMENT,
         PROPOSAL_TYPE_MODEL_BINDING,
         PROPOSAL_TYPE_SKILL_SYNTHESIS,
     )
@@ -196,6 +199,7 @@ def test_registry_covers_exactly_the_registered_types() -> None:
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         PROPOSAL_TYPE_CONSOLIDATION,
         PROPOSAL_TYPE_DOCK_MUTATION,
+        PROPOSAL_TYPE_GOAL_ATTACHMENT,
         PROPOSAL_TYPE_MODEL_BINDING,
         PROPOSAL_TYPE_ADMISSION_FRICTION,
         PROPOSAL_TYPE_ZONE_PROMOTION,

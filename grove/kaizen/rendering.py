@@ -420,6 +420,49 @@ def _model_binding_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     return diff
 
 
+def _summary_goal_attachment(proposal: RoutingProposal) -> str:
+    """goal-spine-v1 P3 — the batched attachment offer, one row per goal.
+
+    J5 BINDING: the copy tells the operator individual attachments can be
+    removed after approval (detach is the per-entry undo; the disposition
+    itself is whole-row)."""
+    p = proposal.payload or {}
+    entries = p.get("entries") or []
+    n = len(entries)
+    noun = "artifact" if n == 1 else "artifacts"
+    goal_name = p.get("goal_name") or p.get("goal_id") or "?"
+    return (
+        f"{n} {noun} adjudicated as advancing '{goal_name}'. Approve to "
+        f"attach all {n}; individual attachments can be removed afterward "
+        f"from the goal view."
+    )
+
+
+def _goal_attachment_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """The batch the operator reviews before approving — per-entry excerpt +
+    rationale (the adjudicator's evidence surface), keyed under the goal.
+    Read-side tolerant: a malformed entry renders its shape, never raises."""
+    p = proposal.payload or {}
+    entries = p.get("entries") or []
+    return {
+        f"goal: {p.get('goal_name') or p.get('goal_id', '?')}": {
+            "attach": [
+                {
+                    "artifact_id": e.get("artifact_id", "?"),
+                    "excerpt": e.get("excerpt", ""),
+                    "rationale": e.get("rationale", ""),
+                }
+                for e in entries
+                if isinstance(e, dict)
+            ],
+        },
+        "note": (
+            "Whole-batch approve/reject. After approval, any single "
+            "attachment can be detached from the goal view."
+        ),
+    }
+
+
 def _summary_forge_artifact_pending(proposal: RoutingProposal) -> str:
     """fleet-pipeline-v1 P2 — a fleet worker staged a draft package for operator
     review. RENDER-ONLY w.r.t. the generic SYNC approve machinery (no

@@ -35,6 +35,7 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_CONSOLIDATION,
     PROPOSAL_TYPE_DOCK_MUTATION,
     PROPOSAL_TYPE_FAULT_TRIAGE,
+    PROPOSAL_TYPE_GOAL_ATTACHMENT,
     PROPOSAL_TYPE_MODEL_BINDING,
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
     PROPOSAL_TYPE_PATTERN_DEMOTION,
@@ -74,12 +75,14 @@ from grove.kaizen.rendering import (  # noqa: F401
     _diff_zone_promotion,
     _dock_mutation_to_diff,
     _ensure_memory_renderer,
+    _goal_attachment_to_diff,
     _model_binding_to_diff,
     _routing_adjustment_to_diff,
     _summary_consolidation,
     _summary_dock_mutation,
     _summary_admission_friction,
     _summary_fault_triage,
+    _summary_goal_attachment,
     _summary_model_binding,
     _summary_forge_artifact_pending,
     _summary_pattern_demotion,
@@ -161,6 +164,14 @@ _PUSH_PRIORITY = {
     # graduation and ahead of a routing tweak. Fractional slot keeps the
     # contract-tested integers (routing_adjustment ==2) intact.
     PROPOSAL_TYPE_DOCK_MUTATION: 1.7,
+    # goal-spine-v1 P3 (J6 ruling) — a batched attachment offer is the same
+    # Dock-strategic family as dock_mutation but yields to it (a NEW goal
+    # observation outranks attaching artifacts to an existing goal), and to
+    # memory (1) and consolidation (1.5). Fractional slot keeps the
+    # contract-tested integer intact (routing_adjustment ==2,
+    # tests/grove/test_consolidation_ratchet.py::
+    # test_regression_routing_and_memory_unaffected).
+    PROPOSAL_TYPE_GOAL_ATTACHMENT: 1.8,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT: 2,
     PROPOSAL_TYPE_ZONE_PROMOTION: 3,
     PROPOSAL_TYPE_SKILL_PROMOTION: 3,
@@ -1029,6 +1040,98 @@ def _approve_model_binding(
         "record_file": str(result.path),
     }
     return result.path, applied
+
+
+def _approve_goal_attachment(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Apply a goal_attachment proposal — mint EVERY entry through the ONE
+    sanctioned writer (goal-spine-v1 P3, J5 whole-row ruling).
+
+    Delegates each (artifact_id, goal_id) to
+    :func:`grove.dock.attachment_store.mint_attachment` with THIS proposal's
+    id (approval is the only mint path). Write-strict: a malformed payload
+    or a mint refusal raises — the proposal stays queued (cli_approve
+    removes only after apply returns), and already-minted entries are safe
+    to re-approve (the writer's idempotent no-op skips them). An entry the
+    projection already holds counts as ``skipped_existing``, not an error.
+
+    Per-entry detach afterwards is the operator's undo
+    (attachment_store.detach_attachment — the J5 card copy names it).
+    """
+    from grove.dock.attachment_store import mint_attachment
+
+    payload = proposal.payload or {}
+    goal_id = payload.get("goal_id")
+    entries = payload.get("entries")
+    if not isinstance(goal_id, str) or not goal_id.strip():
+        raise ValueError(
+            f"goal_attachment proposal {proposal.proposal_id} payload "
+            f"missing a non-empty goal_id"
+        )
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(
+            f"goal_attachment proposal {proposal.proposal_id} payload "
+            f"missing a non-empty entries list"
+        )
+
+    minted: list = []
+    skipped: list = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"goal_attachment proposal {proposal.proposal_id} carries a "
+                f"non-mapping entry: {entry!r}"
+            )
+        event = mint_attachment(
+            entry.get("artifact_id"),
+            goal_id,
+            proposal_id=proposal.proposal_id,
+            rationale=entry.get("rationale"),
+            excerpt=entry.get("excerpt"),
+        )
+        if event is None:
+            skipped.append(entry.get("artifact_id"))
+        else:
+            minted.append(entry.get("artifact_id"))
+
+    applied = {
+        "goal_id": goal_id,
+        "minted": minted,
+        "skipped_existing": skipped,
+    }
+    return goal_id, applied
+
+
+def _reject_goal_attachment(proposal: RoutingProposal) -> None:
+    # goal-spine-v1 P3 (J3 ruling) — file one per-PAIR suppression event per
+    # entry: "not this goal," never "not any goal." Tolerant like every
+    # reject_callback (the operator must always be able to dismiss a queued
+    # item): a suppression-write failure logs loud and the rejection
+    # proceeds — the pair may re-surface next sweep and be re-rejected,
+    # never the reverse.
+    payload = proposal.payload or {}
+    goal_id = payload.get("goal_id")
+    for entry in payload.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            from grove.dock.attachment_store import record_suppression
+
+            record_suppression(
+                entry.get("artifact_id"),
+                goal_id,
+                proposal_id=proposal.proposal_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[flywheel] could not record attachment suppression for "
+                "(%s, %s) on %s: %r",
+                entry.get("artifact_id"), goal_id,
+                proposal.proposal_id, exc,
+            )
 
 
 def _reload_default_router() -> None:
@@ -2126,6 +2229,18 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         # until a MATERIAL change (new observed model / binding changed /
         # rubric bumped — the latter two structural via the key).
         reject_callback=_reject_model_binding,
+    ),
+    PROPOSAL_TYPE_GOAL_ATTACHMENT: ProposalHandler(
+        summary_renderer=_summary_goal_attachment,
+        diff_renderer=_goal_attachment_to_diff,
+        apply_callback=_approve_goal_attachment,
+        apply_label_prefix="Goal attachments minted: ",
+        # goal-spine-v1 P3 (J3 ruling) — rejection files one per-PAIR
+        # artifact_goal_suppressed ledger event per entry ("not this goal,"
+        # never "not any goal"); the detector's pair-aware exclusion seam
+        # reads them, so a rejected batch never re-proposes those pairs while
+        # the same artifacts stay eligible for other goals.
+        reject_callback=_reject_goal_attachment,
     ),
     PROPOSAL_TYPE_ADMISSION_FRICTION: ProposalHandler(
         summary_renderer=_summary_admission_friction,

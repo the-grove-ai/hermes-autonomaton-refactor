@@ -26,7 +26,7 @@ from grove.dock.attachment import (
     _load_cursor,
     _validate_adjudication,
     attached_artifact_ids,
-    suppressed_artifact_ids,
+    suppressed_goal_pairs,
     verify_goal_projection_coverage,
 )
 from grove.wiki.pipeline import _DOCK_GOAL_SOURCE_TYPE, _dock_source_hash
@@ -213,9 +213,14 @@ def test_dry_run_adjudicates_and_emits_nothing(env):
 
 
 def test_cursor_watermark_advances_and_skips_seen_events(env):
-    report1 = _detector(env).detect()
+    # P3 contract (J2 obligation b): detect() computes the candidate
+    # watermark but does NOT persist; advance_cursor() saves it.
+    det1 = _detector(env)
+    report1 = det1.detect()
     assert report1.watermark_before is None
     assert report1.watermark_after == env.event["timestamp"]
+    assert _load_cursor(env.home) is None  # detect alone moves nothing
+    det1.advance_cursor(report1)
     assert _load_cursor(env.home) == env.event["timestamp"]
     cursor_file = env.home / "state" / "goal_attachment.cursor.json"
     assert cursor_file.exists()  # persisted under GROVE_HOME state
@@ -240,7 +245,7 @@ def test_cursor_watermark_advances_and_skips_seen_events(env):
 
 def test_exclusion_seams_default_empty():
     assert attached_artifact_ids() == set()
-    assert suppressed_artifact_ids() == set()
+    assert suppressed_goal_pairs() == set()
 
 
 def test_attached_seam_excludes(env, monkeypatch):
@@ -253,14 +258,39 @@ def test_attached_seam_excludes(env, monkeypatch):
     assert report.adjudicated == []
 
 
-def test_suppressed_seam_excludes(env, monkeypatch):
+def test_suppressed_seam_excludes_per_pair(env, monkeypatch):
+    # Pair-scoped (J3): suppression of (aid, goal-alpha) blocks THAT pair…
     monkeypatch.setattr(
-        "grove.dock.attachment.suppressed_artifact_ids",
-        lambda: {env.event["artifact_id"]},
+        "grove.dock.attachment.suppressed_goal_pairs",
+        lambda: {(env.event["artifact_id"], "goal-alpha")},
     )
     report = _detector(env).detect()
     assert report.excluded_suppressed == 1
     assert report.adjudicated == []
+
+    # …but the SAME artifact stays eligible when Stage 1 names another goal.
+    beta = _goal(goal_id="goal-beta", name="Goal Beta")
+    pages_dir = env.wiki_root / "pages" / _DOCK_GOAL_SOURCE_TYPE
+    (pages_dir / f"goal-beta-{_dock_source_hash(beta.id)}.md").write_text(
+        "projection", encoding="utf-8"
+    )
+    detector = GoalAttachmentDetector(
+        home=env.home,
+        config={
+            "adjudicator_tier": "T-GA",
+            "stage2_candidate_cap": 5,
+            "prefilter_top_k": 3,
+        },
+        dock=_dock(env.goal, beta),
+        wiki_index=FakeWiki(env.wiki_root, goal_id="goal-beta"),
+        intent_store=FakeIntentStore([]),
+        adjudicate=FakeAdjudicator(),
+        artifact_roots=env.roots,
+    )
+    report2 = detector.detect()
+    assert report2.excluded_suppressed == 0
+    assert len(report2.adjudicated) == 1
+    assert report2.adjudicated[0].candidate.goal_id == "goal-beta"
 
 
 # ── R-5 / R-7 alignment handling ────────────────────────────────────────────

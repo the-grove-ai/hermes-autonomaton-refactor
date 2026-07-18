@@ -304,7 +304,8 @@ def test_p1_seam_returns_real_attached_ids(monkeypatch):
     assert seam() == set()
 
 
-def test_suppressed_seam_still_empty():
-    from grove.dock.attachment import suppressed_artifact_ids
+def test_suppressed_seam_empty_without_events():
+    # P3: the seam is pair-aware and store-backed; an empty ledger → empty.
+    from grove.dock.attachment import suppressed_goal_pairs
 
-    assert suppressed_artifact_ids() == set()
+    assert suppressed_goal_pairs() == set()

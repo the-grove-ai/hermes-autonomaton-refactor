@@ -951,6 +951,55 @@ class Dispatcher:
                     "%r — staged proposals (if any) are unaffected", exc,
                 )
 
+        # goal-spine-v1 P3 (J4 ruling, shape b) — the goal-attachment sweep
+        # runs under ITS OWN isolation guard, invoked BESIDE the memory-sweep
+        # guard above: a raise in either cannot abort or be masked by the
+        # other. Same dormancy gate (G1 ruling: dormancy satisfies R-6
+        # structurally); no session-DB requirement — the detector reads the
+        # ledger, not transcripts.
+        if getattr(self, "_memory_dormant_sessions", None):
+            self._run_goal_attachment_sweep()
+
+    def _run_goal_attachment_sweep(self) -> None:
+        """goal-spine-v1 P3 — the ISOLATED detector sweep guard (J4 shape b).
+
+        REFERENCE IMPLEMENTATION for detector-sweep-resilience-v1 (which
+        propagates this shape to the four detectors in
+        ``_extract_memory_from_dormant_sessions``): one detector, one guard;
+        a raise is contained here, logged WITH traceback, and filed as a
+        registered ``producer_failure`` ledger event — auditable, never
+        silently swallowed into a warning line, never able to abort a
+        sibling producer. Surfacing the event to the operator is the
+        resilience sprint's scope, not this guard's.
+        """
+        try:
+            from grove.dock.attachment import run_goal_attachment_sweep
+
+            run_goal_attachment_sweep()
+        except Exception as exc:
+            logger.exception(
+                "[grove.dispatcher] goal-attachment sweep failed at init "
+                "(contained — no other producer affected)"
+            )
+            try:
+                from datetime import datetime, timezone
+
+                from grove.kaizen_ledger import KaizenLedger
+
+                _session = "sweep-" + datetime.now(timezone.utc).strftime(
+                    "%Y%m%dT%H%M%S%fZ"
+                )
+                KaizenLedger(session_id=_session).record(
+                    "producer_failure",
+                    producer="goal_attachment_detector",
+                    error=repr(exc),
+                )
+            except Exception as file_exc:  # noqa: BLE001
+                logger.error(
+                    "[grove.dispatcher] producer_failure filing ITSELF "
+                    "failed (the sweep failure above stands): %r", file_exc,
+                )
+
     def _extract_memory_from_dormant_sessions(
         self, session_ids: List[str]
     ) -> None:
