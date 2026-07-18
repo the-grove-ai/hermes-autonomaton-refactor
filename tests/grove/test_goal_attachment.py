@@ -79,12 +79,14 @@ def _dock(*goals):
 
 
 class FakeWiki:
-    """Stage-1 stand-in: returns one dock_goal hit per query."""
+    """Stage-1 stand-in. Default: one dock_goal hit per query; pass
+    ``hits=[(goal_id, score), ...]`` for the multi-goal ranking cases
+    (FIX-2: every valid top-k hit promotes, not just the first)."""
 
-    def __init__(self, wiki_root: Path, goal_id="goal-alpha", score=0.9):
+    def __init__(self, wiki_root: Path, goal_id="goal-alpha", score=0.9,
+                 hits=None):
         self._wiki_root = wiki_root
-        self._goal_id = goal_id
-        self._score = score
+        self._hits = hits if hits is not None else [(goal_id, score)]
         self.queries: List[str] = []
 
     def query(self, text, k=5, *, source_type=None, dock_goal=None,
@@ -93,15 +95,16 @@ class FakeWiki:
         self.queries.append(text)
         return [
             SimpleNamespace(
-                source_path=f"{_DOCK_GOAL_SOURCE_TYPE}/x.md",
+                source_path=f"{_DOCK_GOAL_SOURCE_TYPE}/{gid}.md",
                 source_type=_DOCK_GOAL_SOURCE_TYPE,
-                title="Goal Alpha",
+                title=gid,
                 snippet="",
-                relevance_score=self._score,
+                relevance_score=score,
                 confidence=1.0,
-                dock_goal_refs=[self._goal_id],
+                dock_goal_refs=[gid],
                 topics=[],
             )
+            for gid, score in self._hits[:k]
         ]
 
 
@@ -343,6 +346,83 @@ def test_stage2_cap_is_config_valued_and_loud(env):
     assert len(adj.calls) == 2  # cap bound the adjudicator spend
     assert report.cap_dropped == 2  # 4 candidates, cap 2 — dropped loudly
     assert "CAP" in report.render()
+
+
+# ── FIX-2 (live-prove ANDON 2026-07-18): multi-goal promotion per artifact ──
+
+
+def _beta_projected(env):
+    beta = _goal(goal_id="goal-beta", name="Goal Beta")
+    pages_dir = env.wiki_root / "pages" / _DOCK_GOAL_SOURCE_TYPE
+    (pages_dir / f"goal-beta-{_dock_source_hash(beta.id)}.md").write_text(
+        "projection", encoding="utf-8"
+    )
+    return beta
+
+
+def _multi_detector(env, hits, *, cap=5, adjudicate=None):
+    return GoalAttachmentDetector(
+        home=env.home,
+        config={
+            "adjudicator_tier": "T-GA",
+            "stage2_candidate_cap": cap,
+            "prefilter_top_k": 3,
+        },
+        dock=_dock(env.goal, _beta_projected(env)),
+        wiki_index=FakeWiki(env.wiki_root, hits=hits),
+        intent_store=FakeIntentStore([]),
+        adjudicate=adjudicate or FakeAdjudicator(),
+        artifact_roots=env.roots,
+    )
+
+
+def test_every_topk_goal_adjudicated_per_artifact(env):
+    adj = FakeAdjudicator()
+    report = _multi_detector(
+        env, [("goal-alpha", 0.9), ("goal-beta", 0.8)], adjudicate=adj,
+    ).detect()
+    # BOTH pairs adjudicated independently — not just the first hit.
+    assert len(report.adjudicated) == 2
+    assert {a.candidate.goal_id for a in report.adjudicated} == {
+        "goal-alpha", "goal-beta",
+    }
+    assert len(adj.calls) == 2
+
+
+def test_near_flat_ranking_rank2_goal_gets_adjudicated(env):
+    # The live finding verbatim: wrong goal at rank 1 with a near-flat
+    # score; the correct goal at rank 2 must still reach Stage 2.
+    adj = FakeAdjudicator()
+    report = _multi_detector(
+        env, [("goal-beta", 1.500), ("goal-alpha", 1.451)], adjudicate=adj,
+    ).detect()
+    adjudicated_goals = {a.candidate.goal_id for a in report.adjudicated}
+    assert "goal-alpha" in adjudicated_goals  # rank 2 no longer discarded
+    assert "goal-beta" in adjudicated_goals
+
+
+def test_cap_bounds_pairs_across_artifacts(env):
+    # 2 artifacts x 2 goals = 4 pairs; cap 3 → 3 adjudications, 1 dropped
+    # loudly. The cap governs Stage-2 spend across the whole run.
+    later = env.home / "artifacts" / "later.md"
+    later.write_text("alpha spine more content", encoding="utf-8")
+    _write_ledger_events(env.home, [_artifact_event(later, minute=3)])
+    adj = FakeAdjudicator()
+    report = _multi_detector(
+        env, [("goal-alpha", 0.9), ("goal-beta", 0.8)], cap=3, adjudicate=adj,
+    ).detect()
+    assert len(adj.calls) == 3
+    assert report.cap_dropped == 1
+
+
+def test_duplicate_goal_hits_dedupe_per_artifact(env):
+    # Two pages resolving to the same goal promote ONE pair, not two.
+    adj = FakeAdjudicator()
+    report = _multi_detector(
+        env, [("goal-alpha", 0.9), ("goal-alpha", 0.7)], adjudicate=adj,
+    ).detect()
+    assert len(report.adjudicated) == 1
+    assert len(adj.calls) == 1
 
 
 # ── G2 projection coverage Andon ────────────────────────────────────────────
