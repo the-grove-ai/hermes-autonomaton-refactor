@@ -291,8 +291,10 @@ def _source_artifact_html(meta: dict) -> str:
         return _esc(src)
     # canonical_artifact_path is idempotent on the recorded abspath form —
     # this matches the ledger's stamped id byte-for-byte (never realpath).
+    # artifact-continuation-v1 C1 — hash-form: the link stays in-shell (the
+    # generic hash router loads the artifact fragment into #center-panel).
     aid = _artifact_id(_canon(src))
-    return f'<a href="/artifact/{_esc(aid)}">{_esc(src)}</a>'
+    return f'<a href="/portal#fragments/artifact/{_esc(aid)}">{_esc(src)}</a>'
 
 
 def _frontmatter_dl(meta: dict) -> str:

@@ -129,11 +129,12 @@ def test_decoration_frame_exact(monkeypatch, tmp_path):
         {"artifact_id": id2, "display_name": "notes.txt"},
     ]
     out = a._append_artifact_links("Here is your answer.")
+    # artifact-continuation-v1 C1 — links are absolute hash-form (in-shell).
     assert out == (
         "Here is your answer."
         "\n\nArtifacts written this turn:\n"
-        f"brief.md: http://ts.example:8642/artifact/{id1}\n"
-        f"notes.txt: http://ts.example:8642/artifact/{id2}"
+        f"brief.md: http://ts.example:8642/portal#fragments/artifact/{id1}\n"
+        f"notes.txt: http://ts.example:8642/portal#fragments/artifact/{id2}"
     )
 
 

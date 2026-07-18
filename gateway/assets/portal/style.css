@@ -200,6 +200,25 @@ ul.listing li {
 dl.frontmatter dt { color: var(--text-dim); font-size: 0.8rem; margin-top: 0.5rem; }
 dl.frontmatter dd { margin: 0.1rem 0 0; }
 
+/* ---- Model-content demarcation (artifact-continuation-v1 C1) ---------- */
+/* Persistent boundary for model-authored content rendered in-shell: the
+   tinted frame + label make artifact content visually unmistakable from
+   shell controls. */
+.model-content {
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--zone-yellow);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin-top: 1rem;
+}
+.model-content-label {
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.5rem;
+}
+
 /* ---- Search partitions ----------------------------------------------- */
 .search-partition h3 { margin: 1rem 0 0.5rem; }
 .search-partition ol { margin: 0; padding-left: 1.4rem; }
