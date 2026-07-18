@@ -624,39 +624,49 @@ class GoalAttachmentDetector:
 
             # Stage 1 — corpus-bound relevance against dock_goal projection
             # pages only (G2 ruling; resolve_goal rejected as the FL2 second
-            # resolver).
+            # resolver). EVERY valid hit in the top prefilter_top_k promotes
+            # to a per-(artifact, goal) candidate, adjudicated independently
+            # (live-prove finding 2026-07-18: near-flat BM25 ranking put the
+            # correct goal at rank 3 and first-hit-wins never adjudicated it
+            # — recall gap, ANDON-ruled an in-sprint fix). Stage 2's
+            # config-valued cap still bounds total adjudications per run.
             results = wiki.query(
                 content, k=top_k, source_type=_DOCK_GOAL_SOURCE_TYPE
             )
-            hit = next(
-                (
-                    r
-                    for r in results
-                    if r.dock_goal_refs and r.dock_goal_refs[0] in goals_by_id
-                ),
-                None,
-            )
-            if hit is None:
+            seen_goals: Set[str] = set()
+            hits = []
+            for r in results:
+                if not (r.dock_goal_refs and r.dock_goal_refs[0] in goals_by_id):
+                    continue
+                gid = r.dock_goal_refs[0]
+                if gid in seen_goals:
+                    continue  # one candidate per (artifact, goal) pair
+                seen_goals.add(gid)
+                hits.append(r)
+            if not hits:
                 report.unmatched.append(aid)
                 continue
 
-            # PAIR-scoped suppression (J3): "not this goal," never "not any
-            # goal" — checked only now that Stage 1 has named the goal.
-            if (aid, hit.dock_goal_refs[0]) in suppressed:
-                report.excluded_suppressed += 1
-                continue
+            for hit in hits:
+                gid = hit.dock_goal_refs[0]
+                # PAIR-scoped suppression (J3): "not this goal," never "not
+                # any goal" — a suppressed pair drops while the SAME
+                # artifact's other-goal candidates proceed.
+                if (aid, gid) in suppressed:
+                    report.excluded_suppressed += 1
+                    continue
 
-            candidates.append(
-                AttachmentCandidate(
-                    artifact_id=aid,
-                    path=str(path),
-                    goal_id=hit.dock_goal_refs[0],
-                    relevance_score=float(hit.relevance_score),
-                    turn_id=turn_id if isinstance(turn_id, str) else None,
-                    goal_alignment=alignment,
-                    content=content,
+                candidates.append(
+                    AttachmentCandidate(
+                        artifact_id=aid,
+                        path=str(path),
+                        goal_id=gid,
+                        relevance_score=float(hit.relevance_score),
+                        turn_id=turn_id if isinstance(turn_id, str) else None,
+                        goal_alignment=alignment,
+                        content=content,
+                    )
                 )
-            )
 
         # CAP — config-valued, never a literal. Dropped candidates are
         # reported loudly (no silent caps).
