@@ -217,6 +217,14 @@ class Trigger:
     always: bool = False
     # GRV-009 E5 Amendment A4t — native-disclosure mode (see TriggerDisclosure).
     disclosure: "TriggerDisclosure" = field(default_factory=lambda: TriggerDisclosure.PROACTIVE)
+    # skill-adoption-v1 C1 — primacy claim. A subset of ``intents``: the intent
+    # classes for which THIS record is the primary (canonical) skill, not merely a
+    # co-discloser. Empty for every existing record (present-key-only round-trip:
+    # serialization is byte-identical when empty). The subset relation is a
+    # STRUCTURAL claim validated field-wise here; the collection-level primacy map
+    # (one primary per class, collisions demoted) is resolved resiliently at load
+    # in capability_registry — a malformed primacy claim NEVER bricks the gateway.
+    primary_intents: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -713,6 +721,26 @@ class Capability:
                 "disclosure: fallback record may declare an empty trigger"
             )
 
+        # skill-adoption-v1 C1 — primary_intents STRUCTURAL validation only. A
+        # malformed claim (non-list, empty/non-string member, duplicate) fails
+        # loud here, parity with read_surfaces. The SUBSET relation and the
+        # collection-level one-primary-per-class invariant are DELIBERATELY not
+        # raised here: validate() runs on every load (from_dict -> __post_init__),
+        # and load must NEVER brick the gateway over primacy config. Subset +
+        # collision are resolved resiliently at load (capability_registry primacy
+        # map: out-of-subset intents dropped + Andon, collisions demote both +
+        # Andon) and are available as a STRICT pre-persist gate for a sanctioned
+        # writer via capability_registry.primacy_write_violations().
+        pi = t.primary_intents
+        if not isinstance(pi, list):
+            raise ValueError(f"trigger.primary_intents must be a list; got {type(pi)!r}")
+        if not all(isinstance(x, str) and x for x in pi):
+            raise ValueError(
+                "trigger.primary_intents entries must be non-empty strings"
+            )
+        if len(set(pi)) != len(pi):
+            raise ValueError("trigger.primary_intents must not repeat an intent class")
+
         # A4 bindings — structural per-record checks (the strict 1:1 ownership
         # invariant is a collection-level post-load pass in capability_registry).
         b = self.bindings
@@ -930,6 +958,14 @@ class Capability:
                 "dock_affinity": list(self.trigger.dock_affinity),
                 "always": self.trigger.always,
                 "disclosure": self.trigger.disclosure.value,
+                # skill-adoption-v1 C1 — emit only when non-empty so every existing
+                # record's serialized trigger shape is byte-identical (parity with
+                # the governance/model_binding/read_surfaces present-key blocks).
+                **(
+                    {"primary_intents": list(self.trigger.primary_intents)}
+                    if self.trigger.primary_intents
+                    else {}
+                ),
             },
             "bindings": {
                 "tools": list(self.bindings.tools),
@@ -1043,6 +1079,8 @@ class Capability:
                 disclosure=TriggerDisclosure(
                     t.get("disclosure", TriggerDisclosure.PROACTIVE.value)
                 ),
+                # skill-adoption-v1 C1 — absent key ≡ no primacy claim (empty list).
+                primary_intents=list(t.get("primary_intents", [])),
             )
 
         if "bindings" in d:

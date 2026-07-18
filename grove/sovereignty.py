@@ -17,7 +17,10 @@ import hashlib
 import logging
 import shutil
 import sys
+from pathlib import Path
 from typing import Any, Optional
+
+import yaml
 
 from grove.skills import (
     active_path,
@@ -39,6 +42,72 @@ logger = logging.getLogger(__name__)
 
 def _sha256_short(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+class SkillPayloadTooLarge(ValueError):
+    """skill-adoption-v1 C4/F5 — a promotion was refused because the SKILL.md
+    payload exceeds the smallest configured per-tier ``skill_payload`` ceiling.
+    Raised BEFORE any record transition or file move, so no partial state."""
+
+
+def _routing_config() -> dict:
+    """The active routing config as a dict (operator copy wins over the repo
+    default, same first-existing precedence as the pattern_cache / T1-cost
+    readers). Missing/unparseable → ``{}`` (F5 then reads no ceilings → inert)."""
+    candidates = [
+        Path.home() / ".grove" / "routing.config.yaml",
+        Path(__file__).resolve().parents[1] / "config" / "routing.config.yaml",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def smallest_skill_payload_ceiling() -> Optional[int]:
+    """The smallest per-tier ``skill_payload`` byte ceiling declared under
+    ``tier_budgets`` in routing.config.yaml, or ``None`` when none is configured.
+
+    skill-adoption-v1 C4/F5 — CONFIG-DRIVEN, no constants. The
+    ``skill_payload_ceiling`` key (parity with the existing
+    ``cellar_context_ceiling`` per-tier scalar under ``tier_budgets``) lands in
+    Phase 2; until then no tier declares one and this returns ``None`` (the F5
+    check is inert). A tier that declares the key contributes its ceiling; the
+    smallest binds (a payload that fits every enabled tier's budget). Only
+    positive ints count — a bool or non-positive value is ignored, not coerced."""
+    cfg = _routing_config()
+    tier_budgets = cfg.get("tier_budgets")
+    if not isinstance(tier_budgets, dict):
+        return None
+    ceilings = []
+    for block in tier_budgets.values():
+        if not isinstance(block, dict):
+            continue
+        c = block.get("skill_payload_ceiling")
+        if isinstance(c, int) and not isinstance(c, bool) and c > 0:
+            ceilings.append(c)
+    return min(ceilings) if ceilings else None
+
+
+def _enforce_payload_size_ceiling(content: str) -> None:
+    """Raise :class:`SkillPayloadTooLarge` if *content* exceeds the smallest
+    configured per-tier ceiling. INERT when no ceiling is configured (Phase 1):
+    the check passes and nothing is measured against a missing budget."""
+    ceiling = smallest_skill_payload_ceiling()
+    if ceiling is None:
+        return
+    size = len(content.encode("utf-8"))
+    if size > ceiling:
+        raise SkillPayloadTooLarge(
+            f"SKILL.md payload is {size} bytes, exceeding the smallest configured "
+            f"per-tier skill_payload ceiling ({ceiling} bytes). Trim the skill "
+            f"body or raise the ceiling in routing.config.yaml before promoting."
+        )
 
 
 def _record_for_proposal(skill_name: str) -> Optional[str]:
@@ -225,6 +294,11 @@ def promote(skill_name: str, replace: bool = False) -> dict[str, Any]:
     skill_md = source / "SKILL.md"
     content = skill_md.read_text(encoding="utf-8")
 
+    # skill-adoption-v1 C4/F5 — static payload-size gate. Raises BEFORE any record
+    # transition or file move, so an oversize payload leaves zero partial state.
+    # INERT until the Phase-2 skill_payload_ceiling config key exists.
+    _enforce_payload_size_ceiling(content)
+
     # GRV-009 E6b C2 (A6) — STATE-FIRST. Transition the record proposed→active
     # BEFORE any file move. A legacy pre-C2 proposal has no record: mint one
     # (proposed) from the .andon body first, so it joins the record world and
@@ -271,6 +345,19 @@ def promote(skill_name: str, replace: bool = False) -> dict[str, Any]:
             scan_verdict=verdict, operator=operator, source_path=str(source),
             dest_path=str(dest),
             reason="record APPLIED; file move failed — record is truth, stray file flagged",
+        )
+
+    # skill-adoption-v1 C4 — pin the approved payload. sha256 of the SKILL.md
+    # bytes AS WRITTEN (``promoted``) — the exact bytes now at ``dest`` that
+    # verify_payload_hash re-hashes. Written LAST (after the move), keyed by the
+    # record id, so a routine lifecycle write carries it forward and the C2 load
+    # path can refuse a post-approval mutation. A record-less legacy proposal
+    # (cap_id is None) carries no pin — the C2 fail-closed read handles that.
+    if cap_id is not None:
+        from grove.capability_registry import _sha256_hex, set_approved_payload_hash
+
+        set_approved_payload_hash(
+            cap_id, _sha256_hex(promoted.encode("utf-8"))
         )
 
     return log_sovereignty_decision(

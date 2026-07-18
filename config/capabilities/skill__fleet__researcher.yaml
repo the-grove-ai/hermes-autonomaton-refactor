@@ -6,6 +6,7 @@ trigger:
   dock_affinity: []
   always: false
   disclosure: proactive
+  primary_intents: [research]
 bindings:
   tools: []
   credentials: null
