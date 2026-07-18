@@ -95,8 +95,15 @@ async def test_md_fragment_strips_active_content(client, grove_home):
     assert resp.status == 200
     assert "<script" not in body
     assert "<iframe" not in body
-    assert "hx-post" not in body                     # htmx attrs cannot survive
-    assert "data:" not in body                       # data: URI stripped
+    # P3 — the verb panel (SHELL markup, outside the demarcation) carries
+    # hx-post by design; the sanitization claim is about MODEL content:
+    # nothing model-authored inside the container survives with hx-*.
+    mc_slice = body[
+        body.index('<div class="model-content">'):
+        body.index('<div class="verb-panel">')
+    ]
+    assert "hx-post" not in mc_slice                 # htmx attrs cannot survive
+    assert "data:" not in mc_slice                   # data: URI stripped
     assert '<span class="badge">' not in body        # pinned profile: no span
     assert '<div class="card">' not in body          # no shell-look divs
 
