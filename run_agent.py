@@ -5898,6 +5898,31 @@ class AIAgent:
             logger.debug("[binding-notice] offer append skipped: %r", exc)
             return final_response
 
+    def _append_tier_fallback_notice(self, final_response: str) -> str:
+        """skill-adoption-v1 P3 — surface a governed tier downshift ALONGSIDE the
+        answer (answer-then-surface; no silent downshift). The Dispatcher stashes
+        ``_tier_fallback_notice`` (failed_tier / fallback_tier) in
+        ``_handle_tier_unavailable`` when a T3-unavailable turn re-drove on its
+        declared fallback; this hook consumes and renders it once. Advisory-only:
+        the turn already completed on the fallback tier. Best-effort — never
+        blocks or raises into the turn."""
+        if not final_response:
+            return final_response
+        try:
+            notice = getattr(self, "_tier_fallback_notice", None)
+            if not notice:
+                return final_response
+            self._tier_fallback_notice = None  # consume — one line per downshift
+            line = (
+                f"_Note: cognitive tier {notice['failed_tier']} was unavailable; "
+                f"this turn completed on the governed fallback tier "
+                f"{notice['fallback_tier']}._"
+            )
+            return final_response.rstrip() + "\n\n" + line
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tier-fallback-notice] append skipped: %r", exc)
+            return final_response
+
     def _connector_offer_retry(self, server_name: str) -> None:
         """Operator 'Retry' disposition (Ruling 2): clear the connect-breaker
         AND evict this connector's offer ids from the shown-set, so a
@@ -17990,6 +18015,10 @@ class AIAgent:
             # notice when a fleet-only model pin was refused on this
             # interactive turn (answer-then-surface).
             final_response = self._append_binding_refusal_notice(final_response)
+            # skill-adoption-v1 P3 — legible governed tier downshift. When T3 was
+            # unavailable and the turn re-drove on T2, name it alongside the answer
+            # (answer-then-surface); never a silent downshift.
+            final_response = self._append_tier_fallback_notice(final_response)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.

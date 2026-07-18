@@ -3572,6 +3572,14 @@ class Dispatcher:
                     "governed downshift to %s via the Cognitive Router.",
                     failed_tier, tue.provider, tue.model, rebound,
                 )
+                # skill-adoption-v1 P3 — LEGIBILITY: no silent downshift. Stash an
+                # agent-resident notice (answer-then-surface, mirroring the
+                # binding-refusal notice) so run_agent._append_tier_fallback_notice
+                # names the T{failed}->T{fallback} downshift ALONGSIDE the answer.
+                agent._tier_fallback_notice = {
+                    "failed_tier": failed_tier,
+                    "fallback_tier": rebound,
+                }
                 return rebound
 
         # No valid governed fallback — fail loud.
