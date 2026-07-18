@@ -1,8 +1,10 @@
 """skill-invocation-path-integrity-v1 P6 — the seven governance pins.
 
-Covers: record zone joins classification via max() (flat + slashed shapes);
-ambiguous-slug refusal at invoke; record/disk divergence refusal; recordless
-legacy-allow + IntentRecord annotation; success-gated rebind; and the
+Covers: the invoke_skill effective zone is the resolved+enabled record's OWN
+zone (record-authoritative — flat + slashed shapes; green lowers, yellow holds,
+red raises; research-routing-coherence-v1 C1 superseded the prior max()-only
+rule); ambiguous-slug refusal at invoke; record/disk divergence refusal;
+recordless legacy-allow + IntentRecord annotation; success-gated rebind; and the
 log-only boot collision scan.
 """
 
@@ -26,7 +28,11 @@ REPO = Path(__file__).resolve().parents[2]
 
 @pytest.fixture(scope="module", autouse=True)
 def _init_router():
+    import grove.zones as _zones
     router.initialize(REPO / "config" / "routing.config.yaml")
+    # The hard-scope (F2) test drives the real _classify_one_intent → the zones
+    # singleton must be live (repo config/zones.schema.yaml).
+    _zones.initialize()
 
 
 @pytest.fixture
@@ -39,32 +45,148 @@ def _green() -> ZoneResult:
     return ZoneResult(zone="green", matched_rule="tool_zones", source="tool_zones")
 
 
-# ── (1) yellow record raises a green class zone ───────────────────────────────
+# ── (1) yellow record holds (record-authoritative) ────────────────────────────
 
 
 def test_yellow_record_classifies_yellow_under_green_class_zone():
-    # forge-jobsearch's record declares zone: yellow; an operator zone rule
-    # greening the invoke_skill intent class must not green the record.
-    out = Dispatcher._raise_zone_to_skill_record(_green(), "forge-jobsearch")
+    # forge-jobsearch's record declares zone: yellow; the record is
+    # authoritative, so an operator zone rule greening the invoke_skill intent
+    # class does NOT green the record — the yellow record HOLDS
+    # (research-routing-coherence-v1 C1; previously the max() raise).
+    out = Dispatcher._invoke_skill_effective_zone(_green(), "forge-jobsearch")
     assert out.zone == "yellow"
     assert out.source == "invoke_skill_record_zone"
     assert "skill.fleet.forge-jobsearch" in out.matched_rule
 
 
-# ── (2) slashed yellow-fleet name routes yellow ───────────────────────────────
+# ── (2) slashed name + record-authoritative lowering / hold ───────────────────
 
 
 def test_slashed_yellow_fleet_name_routes_yellow():
-    out = Dispatcher._raise_zone_to_skill_record(_green(), "fleet/forge-jobsearch")
+    out = Dispatcher._invoke_skill_effective_zone(_green(), "fleet/forge-jobsearch")
     assert out.zone == "yellow"
     assert out.source == "invoke_skill_record_zone"
-    # max() is monotonic: a green record leaves the classification alone, and
-    # a green record never LOWERS a yellow classification.
-    assert Dispatcher._raise_zone_to_skill_record(_green(), "scout").zone == "green"
+    # Record-authoritative (research-routing-coherence-v1 C1): a green record
+    # holds green on a green class...
+    assert Dispatcher._invoke_skill_effective_zone(_green(), "scout").zone == "green"
+    # ...and a green record now LOWERS a yellow classification (the C1 flip —
+    # was pinned to "yellow" under the superseded max() rule).
     yellow = ZoneResult(zone="yellow", matched_rule="x", source="tool_zones")
-    assert Dispatcher._raise_zone_to_skill_record(yellow, "scout").zone == "yellow"
-    # NONE resolution: classification stands.
-    assert Dispatcher._raise_zone_to_skill_record(_green(), "no-such-skill-xyz").zone == "green"
+    assert Dispatcher._invoke_skill_effective_zone(yellow, "scout").zone == "green"
+    # NONE resolution: classification stands (fail-closed, unchanged).
+    assert Dispatcher._invoke_skill_effective_zone(_green(), "no-such-skill-xyz").zone == "green"
+
+
+# ── (2b) record-authoritative: green lowers, red raises (C1) ──────────────────
+
+
+def test_green_record_lowers_below_verb_yellow():
+    # research-routing-coherence-v1 C1 — a green, active fleet record (scout)
+    # lowers the invoke_skill verb's yellow to green, so dispatch carries no
+    # Sovereign gate. This is the behavior the arc turns on.
+    yellow = ZoneResult(zone="yellow", matched_rule="tool_zones", source="tool_zones")
+    out = Dispatcher._invoke_skill_effective_zone(yellow, "scout")
+    assert out.zone == "green"
+    assert out.source == "invoke_skill_record_zone"
+    assert "skill.fleet.scout" in out.matched_rule
+
+
+def test_red_record_raises_from_green_class():
+    # A red, active skill record (p5js) raises a green classification to red —
+    # the raise the max() rule already had, preserved under record authority.
+    # Real record, no stub.
+    out = Dispatcher._invoke_skill_effective_zone(_green(), "p5js")
+    assert out.zone == "red"
+    assert out.source == "invoke_skill_record_zone"
+    # C1 delta — every red this helper builds is non-promotable.
+    assert out.is_promotable is False
+
+
+# ── (2c) fail-closed arms keep the classified (verb-yellow) zone ──────────────
+
+
+def test_fail_closed_arms_keep_classified_zone(monkeypatch):
+    import grove.capability_registry as reg
+    yellow = ZoneResult(zone="yellow", matched_rule="tool_zones", source="tool_zones")
+
+    # (a) NONE / unresolved slug — real registry, no match → classified holds.
+    assert (
+        Dispatcher._invoke_skill_effective_zone(yellow, "no-such-skill-xyz").zone
+        == "yellow"
+    )
+
+    # (b) AMBIGUOUS slug — status is not "resolved".
+    monkeypatch.setattr(
+        reg, "resolve_skill_record",
+        lambda name: SkillResolution("ambiguous", None, None, ("a.dup", "b.dup")),
+    )
+    assert Dispatcher._invoke_skill_effective_zone(yellow, "dup").zone == "yellow"
+
+    # (c) MISSING record — status "resolved" but record is None (defensive).
+    monkeypatch.setattr(
+        reg, "resolve_skill_record",
+        lambda name: SkillResolution("resolved", None, "skill.x", ("skill.x",)),
+    )
+    assert Dispatcher._invoke_skill_effective_zone(yellow, "x").zone == "yellow"
+
+    # (d) DISABLED / non-executable record — a GREEN-zoned but DEPRECATED record
+    # must NOT lower: outside EXECUTABLE_STATES → the classified yellow holds.
+    green_but_dead = SimpleNamespace(
+        zone="green", lifecycle=SimpleNamespace(state=LifecycleState.DEPRECATED),
+    )
+    monkeypatch.setattr(
+        reg, "resolve_skill_record",
+        lambda name: SkillResolution(
+            "resolved", green_but_dead, "skill.dead", ("skill.dead",),
+        ),
+    )
+    assert Dispatcher._invoke_skill_effective_zone(yellow, "dead").zone == "yellow"
+
+    # (e) RESOLVER RAISES — fail-closed; the classified zone stands.
+    def _boom(name):
+        raise RuntimeError("registry down")
+    monkeypatch.setattr(reg, "resolve_skill_record", _boom)
+    assert Dispatcher._invoke_skill_effective_zone(yellow, "whatever").zone == "yellow"
+
+
+def test_non_executable_red_record_still_raises(monkeypatch):
+    # C1 delta — any FOUND record may RAISE regardless of lifecycle state: a
+    # record DECLARING red classifies red even when non-executable (proposed /
+    # retired), and every red the helper builds is non-promotable. Contrast arm
+    # (d) in the fail-closed test: a non-executable GREEN record HOLDS (a
+    # non-executable record never LOWERS — only a verified-executable one may).
+    import grove.capability_registry as reg
+    red_but_proposed = SimpleNamespace(
+        zone="red", lifecycle=SimpleNamespace(state=LifecycleState.PROPOSED),
+    )
+    monkeypatch.setattr(
+        reg, "resolve_skill_record",
+        lambda name: SkillResolution(
+            "resolved", red_but_proposed, "skill.red.andon", ("skill.red.andon",),
+        ),
+    )
+    yellow = ZoneResult(zone="yellow", matched_rule="tool_zones", source="tool_zones")
+    out = Dispatcher._invoke_skill_effective_zone(yellow, "andon-red")
+    assert out.zone == "red"
+    assert out.source == "invoke_skill_record_zone_raise"
+    assert out.is_promotable is False
+
+
+# ── (2d) HARD SCOPE: only invoke_skill consults the record zone (F2 negative) ─
+
+
+def test_non_invoke_skill_verb_does_not_lower_to_green_record():
+    # patch is a yellow verb (zones.schema tool_zones); scout is a green, active
+    # skill record. The record-authoritative lowering is guarded by
+    # `tool_name == "invoke_skill"`, so a DIFFERENT verb naming a green skill is
+    # NOT lowered — the verb zone HOLDS. Driven through the REAL
+    # _classify_one_intent path (no stub), per the harness-stub lesson.
+    patch_intent = SimpleNamespace(tool_name="patch", arguments={"name": "scout"})
+    assert Dispatcher._classify_one_intent(patch_intent, None).zone == "yellow"
+    # Contrast — invoke_skill with the SAME green target DOES lower, proving the
+    # hold above is the hard scope, not an unrelated classification.
+    inv_intent = SimpleNamespace(tool_name="invoke_skill", arguments={"name": "scout"})
+    assert Dispatcher._classify_one_intent(inv_intent, None).zone == "green"
 
 
 # ── (3) ambiguous slug refuses at invoke ──────────────────────────────────────
