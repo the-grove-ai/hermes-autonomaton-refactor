@@ -498,3 +498,22 @@ def test_compose_no_cellar_section_defaults_empty(tmp_path):
     result = composer.compose(user_message="q", session_id="s1")
     assert result.cellar_sources == []
     assert result.cellar_retrieval_hits == 0
+
+
+# ── substrate-citation-v1 P3 — retrieval config signature (epoch key, A3) ─────
+
+
+def test_config_sig_value_and_stability():
+    """The sig is a compact, stable string of the retrieval regime constants.
+    Path B applies NO relevance floor (WikiIndex.query returns top-k with no
+    min-score), so the floor component is 'none'."""
+    from grove.wiki.provider import (
+        _CELLAR_TOKEN_BUDGET,
+        _QUERY_K,
+        cellar_retrieval_config_sig,
+    )
+
+    sig = cellar_retrieval_config_sig()
+    assert sig == f"floor=none;k={_QUERY_K};budget={_CELLAR_TOKEN_BUDGET}"
+    assert sig == "floor=none;k=5;budget=1500"
+    assert cellar_retrieval_config_sig() == sig  # stable across identical config

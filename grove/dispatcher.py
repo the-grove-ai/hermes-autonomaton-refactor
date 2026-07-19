@@ -1657,6 +1657,12 @@ class Dispatcher:
         # next answer. Re-populated post-composition from the ComposedPrompt.
         agent._cellar_citation_sources = None
         agent._cellar_retrieval_hits = 0
+        # substrate-citation-v1 P3 — numerator + epoch key. Reset to their
+        # "no retrieval this turn" defaults; the citation appender overwrites the
+        # numerator with the post-dedupe count, and the compose stash sets the
+        # sig when composition runs. A turn that never composes keeps sig=None.
+        agent._cellar_citations_rendered = 0
+        agent._cellar_retrieval_config_sig = None
         # artifact-continuation-v1 P2 — parent lineage stash. A continuation
         # dispatch entry sets the ONE-SHOT ``_next_turn_parent_artifact_ids``
         # slot BEFORE driving the turn; this consume initializes the per-turn
@@ -2809,6 +2815,21 @@ class Dispatcher:
                 # _apply_skill_tier_binding; annotation-only, never an andon).
                 recordless_allow=getattr(
                     self, "_current_turn_recordless_allow", False
+                ),
+                # substrate-citation-v1 P3 (A2/A3) — the compounding-curve trio,
+                # read from the per-turn agent stash. Compose set hits+sig at
+                # turn start; the citation appender set the post-dedupe numerator
+                # before this write (FinalResponse yields after all appenders).
+                # getattr-defaulted so a bare/terminal-path agent never crashes
+                # the write (write-strict/read-resilient).
+                cellar_retrieval_hits=int(
+                    getattr(agent, "_cellar_retrieval_hits", 0) or 0
+                ),
+                cellar_citations_rendered=int(
+                    getattr(agent, "_cellar_citations_rendered", 0) or 0
+                ),
+                cellar_retrieval_config_sig=getattr(
+                    agent, "_cellar_retrieval_config_sig", None
                 ),
             )
             self._intent_store.append(record)
@@ -4287,6 +4308,13 @@ class Dispatcher:
         agent._cellar_retrieval_hits = int(
             getattr(result, "cellar_retrieval_hits", 0) or 0
         )
+        # substrate-citation-v1 P3 (A3) — stamp the retrieval-regime epoch key on
+        # this composed turn, so the IntentRecord write records which config
+        # produced the hits/rendered counts. Set here (composition ran), so a
+        # terminal/error write that never composed keeps the reset None. Static
+        # per build; the provider owns its own constants.
+        from grove.wiki.provider import cellar_retrieval_config_sig
+        agent._cellar_retrieval_config_sig = cellar_retrieval_config_sig()
 
         # composer-observability-v1 (Wave 1) — emit ONE structural compose event
         # per compose() call: per-provider token map + drop provenance, NO prompt

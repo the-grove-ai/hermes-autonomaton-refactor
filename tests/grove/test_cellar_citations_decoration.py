@@ -214,3 +214,42 @@ def test_dispatcher_resets_rendered_set():
     assert reset_idx != -1, "per-turn _artifact_links_rendered reset is missing"
     assert anchor_idx != -1
     assert 0 < reset_idx - anchor_idx < 800  # same per-turn reset block
+
+
+# ── substrate-citation-v1 P3 — numerator: post-dedupe rendered count ─────────
+
+
+def test_numerator_records_rendered_count(monkeypatch):
+    _base(monkeypatch)
+    a = _agent()
+    a._cellar_citations_rendered = 0   # mimic the dispatcher per-turn reset
+    a._cellar_citation_sources = ["researcher_brief/a.md", "dock_goal/b.md"]
+    a._append_cellar_citations("Answer.")
+    assert a._cellar_citations_rendered == 2
+
+
+def test_numerator_reflects_post_dedupe_count(monkeypatch):
+    import hermes_constants
+
+    wiki_root = Path("/tmp/xyz-nonexistent-wiki")
+    monkeypatch.setattr(hermes_constants, "get_wiki_path", lambda: wiki_root)
+    _base(monkeypatch)
+    a = _agent()
+    a._cellar_citations_rendered = 0
+    modified = "researcher_brief/page.md"
+    modified_id = artifact_id(canonical_artifact_path(str(wiki_root / "pages" / modified)))
+    a._cellar_citation_sources = [modified, "dock_goal/other.md"]
+    a._artifact_links_rendered = [modified_id]
+    a._append_cellar_citations("Answer.")
+    assert a._cellar_citations_rendered == 1   # one deduped out, one rendered
+
+
+def test_numerator_zero_when_base_url_fails(monkeypatch):
+    _base(monkeypatch, "")   # falsy base URL → nothing renders
+    a = _agent()
+    a._cellar_citations_rendered = 0
+    a.session_id = "s"
+    a._user_turn_count = 1
+    a._cellar_citation_sources = ["researcher_brief/a.md"]
+    a._append_cellar_citations("Answer.")
+    assert a._cellar_citations_rendered == 0

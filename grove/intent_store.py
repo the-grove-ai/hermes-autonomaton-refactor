@@ -180,6 +180,23 @@ class IntentRecord:
     # traffic measurable from the intent feed. Never an andon.
     recordless_allow: bool = False
 
+    # substrate-citation-v1 P3 — compounding-curve telemetry (rulings A2/A3).
+    # All read-time-tolerant (Optional with a default applied at parse): a
+    # historical record missing these keys constructs cleanly via the sole
+    # deserialize point ``IntentRecord(**data)`` — the defaults fill in, so the
+    # curve simply starts at deploy (no crash, no back-fill).
+    #   cellar_retrieval_hits — DENOMINATOR: cellar pages that crossed the
+    #     retrieval floor this turn (0 = not a substrate-available turn).
+    #   cellar_citations_rendered — NUMERATOR: citation links actually appended
+    #     post-dedupe (<= hits; 0 when retrieval ran but nothing was cited).
+    #   cellar_retrieval_config_sig — epoch key: compact signature of the active
+    #     retrieval regime (floor + top-k + fill budget). Curve readers SEGMENT
+    #     on a signature change and never compare ratios across regimes. None on
+    #     turns that never composed (terminal / error writes).
+    cellar_retrieval_hits: Optional[int] = 0
+    cellar_citations_rendered: Optional[int] = 0
+    cellar_retrieval_config_sig: Optional[str] = None
+
 
 class IntentStore:
     """Append-only JSON Lines store for IntentRecords.
