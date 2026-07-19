@@ -566,9 +566,14 @@ def _summary_forge_artifact_pending(proposal: RoutingProposal) -> str:
     # staged an incomplete meta.json, the operator must see WHY publish will be
     # endpoint-blocked before tapping it, not discover it at the 400. Prefixed so
     # it leads the one-line summary the portal card renders.
+    # forge-meta-admission-hotfix-v1 HF-4 — imperative copy: the passive
+    # "publish blocked" line demonstrably under-communicated (the operator
+    # tapped promote despite it — 260712-fractional incident). Name the
+    # missing keys and the required action.
     defect = pl.get("meta_defect")
     if defect:
-        base = f"⚠ INCOMPLETE META ({defect}) — publish blocked · {base}"
+        base = (f"⚠ INCOMPLETE META ({defect}) — backfill meta before "
+                f"promote; publish will refuse · {base}")
     justification = getattr(proposal, "semantic_justification", "") or ""
     return f"{base} — {justification}" if justification and justification != base else base
 

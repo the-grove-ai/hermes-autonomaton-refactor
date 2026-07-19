@@ -1198,6 +1198,33 @@ async def handle_binding_unpin(request: web.Request) -> web.Response:
 _FORGE_PUBLISH_TIMEOUT = 90.0
 
 
+def _staged_meta_error(slug: str) -> Optional[str]:
+    """forge-meta-admission-hotfix-v1 HF-3 — STAGING-side meta validation,
+    runnable BEFORE canonicalization (meta.json stays staging-side until the
+    post-publish archive, so this reads the same bytes as
+    ``_forge_publish_core``'s own check — which stays in place as the second
+    wall). Returns the failure reason, or None when meta is publish-ready."""
+    home = Path(get_hermes_home())
+    staging_root = (home / "forge" / "pending_review").resolve()
+    slug_dir = (staging_root / slug).resolve()
+    if not slug_dir.is_relative_to(staging_root) or not slug_dir.is_dir():
+        # No staging dir at all — not a meta defect; let the canonicalize
+        # step's satisfied/missing discrimination handle it (re-tap path).
+        return None
+    meta_path = slug_dir / "meta.json"
+    if not meta_path.is_file():
+        return "meta.json not found in the slug dir"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return f"meta.json is unreadable: {exc}"
+    if not isinstance(meta, dict) or not all(
+        meta.get(k) for k in ("row_id", "company", "role")
+    ):
+        return "meta.json is missing row_id/company/role"
+    return None
+
+
 async def _forge_publish_core(slug: str, loop) -> dict:
     """Shared publish mechanics: meta.json -> Drive (contents-aware) -> Notion.
     DRIVE first (idempotent, contents-aware — never publishes a partial folder),
@@ -1582,6 +1609,24 @@ async def _promote_disposition(
             f"Promoted to the cellar — {res['folder_link']}",
         )
 
+    # forge-meta-admission-hotfix-v1 HF-3 — VALIDATE BEFORE CANONICALIZE. The
+    # 260712-fractional incident: a defect-marked draft's promote tap moved its
+    # documents canonical-side (step 1) and THEN hit the meta wall in publish,
+    # leaving a split state (docs canonical, staging a meta-only husk, proposal
+    # live). The staging-side precheck refuses first — invalid meta aborts the
+    # tap with the staging dir byte-untouched and no canonical dir created.
+    # ``_forge_publish_core``'s own validation stays as the second wall.
+    meta_err = _staged_meta_error(slug)
+    if meta_err is not None:
+        proposal_queue.clear_lease(proposal_id)
+        msg = f"Cannot publish: {meta_err}."
+        return await _loud_action_failure(
+            _forge_promote_error_card(proposal_id, short_id, ptype, msg,
+                                      retappable=True),
+            failure_class="forge_meta_invalid", action="forge_promote",
+            message=msg, status=400,
+        )
+
     # P1 (promoted-artifact-persistence-v1) — CANONICALIZATION IS LOCAL;
     # DELIVERY IS DECLARATIVE. Step 1: canonicalize the staged package into the
     # per-unit canonical subdir BEFORE delivery. A canonical-write failure
@@ -1786,7 +1831,12 @@ async def _suggest_revision_disposition(
     # unit_id == row_id; for file producers the payload carries the stable unit_id
     # directly (no Notion row_id). Prefer unit_id, fall back to row_id — forge is
     # byte-identical (unit_id resolves to row_id).
-    unit_id = (proposal.payload or {}).get("unit_id") or (proposal.payload or {}).get("row_id")
+    # forge-meta-admission-hotfix-v1 HF-2 — third fallback to slug, matching
+    # _emit_promote_accepted: a defect-marked forge payload (row_id null — the
+    # staged meta lacked it) is still fully identified by its slug, and revision
+    # guidance is exactly the verb an operator reaches for on such a draft.
+    _pl = proposal.payload or {}
+    unit_id = _pl.get("unit_id") or _pl.get("row_id") or _pl.get("slug")
     if not unit_id:
         msg = "Proposal carries no unit_id/row_id — cannot store revision guidance."
         return await _loud_action_failure(

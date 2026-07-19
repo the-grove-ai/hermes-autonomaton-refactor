@@ -387,3 +387,50 @@ def test_forced_exit_absent_from_source():
         capture_output=True, text=True,
     )
     assert out.stdout.strip() == "", f"forced_exit still present:\n{out.stdout}"
+
+
+def test_hf2_defect_payload_revision_stored_keyed_on_slug(monkeypatch):
+    """forge-meta-admission-hotfix-v1 HF-2 — a defect-marked forge payload
+    (row_id null: the staged meta lacked it) no longer 400s at the identity
+    gate: the slug fallback (matching _emit_promote_accepted) keys the
+    feedback store and the revision is STORED. The 260712-fractional taps
+    failed exactly here, twice."""
+    import asyncio
+    from grove.api import actions
+    from grove.eval import proposal_queue
+
+    payload = {"slug": "260712-fractional-x", "row_id": None,
+               "skill_id": "skill.fleet.forge-jobsearch",
+               "meta_defect": "missing:company,role,row_id"}
+    proposal = SimpleNamespace(type="forge_artifact_pending", payload=payload,
+                               proposal_id="sha256:deadbeef")
+
+    async def _text(_req):
+        return "backfill company/role/row_id and tighten the open"
+
+    async def _noop_broadcast(_msg):
+        return None
+
+    stored = []
+    monkeypatch.setattr(actions, "_suggest_revision_text", _text)
+    monkeypatch.setattr(actions, "broadcast_to_operator", _noop_broadcast)
+    monkeypatch.setattr(actions, "_worker_id_for_skill", lambda s: "forge")
+    monkeypatch.setattr(actions, "_write_archive_pending_marker", lambda slug: None)
+    monkeypatch.setattr(actions, "_archive_forge_slug", lambda p: "/archive/x")
+    monkeypatch.setattr(proposal_queue, "read", lambda pid: proposal)
+    monkeypatch.setattr(proposal_queue, "set_lease", lambda pid, holder: "nonce")
+    monkeypatch.setattr(proposal_queue, "clear_lease", lambda pid: None)
+    monkeypatch.setattr(proposal_queue, "finalize_proposal_state", lambda *a, **k: True)
+    monkeypatch.setattr(proposal_queue, "file_agentless_proposal", lambda **k: ("sha256:z", True))
+    from grove.forge import feedback_store
+    monkeypatch.setattr(
+        feedback_store, "write",
+        lambda w, u, note: (stored.append((w, u, note)) or {"count": 1}))
+    monkeypatch.setattr(feedback_store, "set_terminal_skip", lambda w, u: None)
+
+    request = SimpleNamespace(match_info={"proposal_id": "sha256:deadbeef"},
+                              query={})
+    resp = asyncio.run(actions._suggest_revision_disposition(request, producer="forge"))
+    assert resp.status == 200
+    assert stored == [("forge", "260712-fractional-x",
+                       "backfill company/role/row_id and tighten the open")]
