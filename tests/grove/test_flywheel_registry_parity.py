@@ -189,6 +189,9 @@ def test_registry_covers_exactly_the_registered_types() -> None:
     # kaizen-exploration-proposals-v1 added exploration_nudge (the twelfth row —
     # the "try a cataloged-untried model interactively?" nudge whose apply flips
     # the interactive tier selection through RoutingConfigWriter.swap_tier_model).
+    # detector-sweep-resilience-v1 P3 added producer_failure_recurrence (the
+    # thirteenth row — the producer pause card whose apply delegates to
+    # set_producer_pause; NO reject_callback, disposition-only per R-7).
     # Updated inline by the sprint that registers the type — the registry parity
     # contract still holds, the closed set just grew by one.
     from grove.eval.proposal_queue import (
@@ -198,6 +201,7 @@ def test_registry_covers_exactly_the_registered_types() -> None:
         PROPOSAL_TYPE_EXPLORATION_NUDGE,
         PROPOSAL_TYPE_GOAL_ATTACHMENT,
         PROPOSAL_TYPE_MODEL_BINDING,
+        PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
         PROPOSAL_TYPE_SKILL_SYNTHESIS,
     )
 
@@ -208,6 +212,7 @@ def test_registry_covers_exactly_the_registered_types() -> None:
         PROPOSAL_TYPE_EXPLORATION_NUDGE,
         PROPOSAL_TYPE_GOAL_ATTACHMENT,
         PROPOSAL_TYPE_MODEL_BINDING,
+        PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
         PROPOSAL_TYPE_ADMISSION_FRICTION,
         PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,

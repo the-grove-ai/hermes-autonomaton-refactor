@@ -42,6 +42,7 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_PATTERN_DEMOTION,
     PROPOSAL_TYPE_PATTERN_PROMOTION,
     PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
+    PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
     PROPOSAL_TYPE_SKILL_PROMOTION,
     PROPOSAL_TYPE_SKILL_SYNTHESIS,
@@ -79,6 +80,7 @@ from grove.kaizen.rendering import (  # noqa: F401
     _exploration_nudge_to_diff,
     _goal_attachment_to_diff,
     _model_binding_to_diff,
+    _producer_recurrence_to_diff,
     _routing_adjustment_to_diff,
     _summary_consolidation,
     _summary_dock_mutation,
@@ -89,6 +91,7 @@ from grove.kaizen.rendering import (  # noqa: F401
     _summary_model_binding,
     _summary_forge_artifact_pending,
     _summary_pattern_demotion,
+    _summary_producer_recurrence,
     _summary_pattern_promotion,
     _summary_portal_action_failure,
     _summary_routing_adjustment,
@@ -156,6 +159,10 @@ _PUSH_PRIORITY = {
     # (sort_key tiebreaks within the slot) and surfaces ahead of memory
     # insights and mechanical tweaks.
     PROPOSAL_TYPE_FAULT_TRIAGE: 0.5,
+    # detector-sweep-resilience-v1 P3 (gate ruling b) — a repeatedly-failing
+    # flywheel producer is the same incident family: it shares the 0.5 slot
+    # with portal_action_failure and fault_triage.
+    PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE: 0.5,
     "memory_context": 1,                      # == PROPOSAL_TYPE_MEMORY_CONTEXT
     # consolidation-ratchet-v1 — a permanent-policy graduation outranks a
     # transient routing tweak but yields to a fresh memory insight. A fractional
@@ -182,6 +189,11 @@ _PUSH_PRIORITY = {
     # mechanical-governance family as zone/skill promotion: it yields to
     # incidents, memory insights, policy graduations, and routing tweaks.
     PROPOSAL_TYPE_MODEL_BINDING: 3,
+    # detector-sweep-resilience-v1 P3 (R-8 fold, gate ruling b) — an
+    # exploration nudge is the same opportunistic binding family as
+    # model_binding; previously it rode the unknown-types-sort-last default,
+    # now explicit beside its family.
+    PROPOSAL_TYPE_EXPLORATION_NUDGE: 3,
     PROPOSAL_TYPE_PATTERN_PROMOTION: 4,
     PROPOSAL_TYPE_PATTERN_DEMOTION: 4,
 }
@@ -1220,6 +1232,49 @@ def _approve_exploration_nudge(
         "status": result.status,  # "swapped" | "noop"
     }
     return f"{tier} -> {slug}", applied
+
+
+def _approve_producer_pause(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Apply a producer_failure_recurrence — PAUSE the failing producer through
+    the ONE sanctioned writer of ``~/.grove/flywheel/producer_pauses.yaml``
+    (detector-sweep-resilience-v1 P3; the writer is P2's set_producer_pause).
+
+    Carries the card's proposal_id as provenance and a reason derived from
+    the detail-envelope evidence, so the pause file and the producer_paused
+    audit event both name WHY. The sweep guard's pause consult skips the
+    producer from the next Dispatcher init on; the operator re-enables by
+    flipping ``paused: false`` in the pause file. A "deferred" write (lock
+    contended) raises — the approve did NOT land; re-approve retries.
+    ``machine_path`` is unused (uniform registry signature)."""
+    from grove.eval.producer_pauses import set_producer_pause
+
+    payload = proposal.payload or {}
+    producer = payload.get("producer")
+    if not isinstance(producer, str) or not producer.strip():
+        raise ValueError(
+            f"producer_failure_recurrence proposal {proposal.proposal_id} "
+            f"payload missing a non-empty producer"
+        )
+    d = proposal.detail or {}
+    dates = d.get("distinct_dates") or []
+    reason = (
+        f"recurring failures: {d.get('failure_count', '?')} failure(s) on "
+        f"{len(dates)} distinct day(s) in {d.get('window_days', '?')}d"
+    )
+    status = set_producer_pause(
+        producer, True, proposal_id=proposal.proposal_id, reason=reason,
+    )
+    if status != "applied":
+        raise RuntimeError(
+            f"producer pause write {status!r} (lock contended) — the pause "
+            f"did NOT land; re-approve to retry"
+        )
+    applied = {"producer": producer, "paused": True, "status": status}
+    return producer, applied
 
 
 def _approve_goal_attachment(
@@ -2441,6 +2496,19 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         # .json (F-4 collision analysis): a rejected nudge suppresses only the
         # nudge, never a legitimate model_binding proposal on the same pair.
         reject_callback=_reject_exploration_nudge,
+    ),
+    # detector-sweep-resilience-v1 P3 — approve = the sanctioned pause write
+    # (set_producer_pause, proposal_id as provenance). NO reject_callback:
+    # rejection is DISPOSITION-ONLY (R-7) — the recurrence detector's windowed
+    # kaizen_disposition read suppresses re-staging for the window, then the
+    # same content-addressed card returns if the producer is still failing.
+    # Portal reject/dismiss parity is free (portal-reject-callback-parity-v1
+    # tolerates a None callback).
+    PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE: ProposalHandler(
+        summary_renderer=_summary_producer_recurrence,
+        diff_renderer=_producer_recurrence_to_diff,
+        apply_callback=_approve_producer_pause,
+        apply_label_prefix="Producer paused: ",
     ),
     PROPOSAL_TYPE_GOAL_ATTACHMENT: ProposalHandler(
         summary_renderer=_summary_goal_attachment,

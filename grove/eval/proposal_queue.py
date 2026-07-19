@@ -241,6 +241,25 @@ PROPOSAL_TYPE_GOAL_ATTACHMENT = "goal_attachment"
 #   detail:  {"display_name": str, "provider": str,
 #             "input_cost_per_mtok": float, "output_cost_per_mtok": float}
 PROPOSAL_TYPE_EXPLORATION_NUDGE = "exploration_nudge"
+# detector-sweep-resilience-v1 P3 (R-3b/R-3c) — a sweep producer keeps
+# failing: the recurrence detector found producer_failure events on >=
+# distinct_days DISTINCT UTC days inside the window, and offers the operator
+# a PAUSE (approve delegates to grove.eval.producer_pauses.set_producer_pause
+# — the sanctioned writer of ~/.grove/flywheel/producer_pauses.yaml — with
+# this card's proposal_id as provenance; reject suppresses the card for the
+# window via the standard kaizen_disposition read, after which the SAME
+# content-addressed id re-stages if the producer is still failing — the
+# no-tombstone queue + windowed disposition read, P3 gate ruling a).
+#
+# Payload is IDENTITY-BEARING and MINIMAL — {producer} ONLY — so the card is
+# stable across failure counts and re-detections. The evidence fields
+# (failure_count / distinct_dates / last_error / window_days) ride the
+# id-EXCLUDED ``detail`` envelope, NEVER the payload, so a growing failure
+# tally does not fork duplicate cards.
+#   payload: {"producer": str}
+#   detail:  {"failure_count": int, "distinct_dates": [str],
+#             "last_error": str | null, "window_days": int}
+PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE = "producer_failure_recurrence"
 # Verb affordances per proposal type. The portal iterates this to render action
 # buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
 # to the iterator — the shape is deliberately open. The generic fleet type

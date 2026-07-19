@@ -1044,6 +1044,29 @@ class Dispatcher:
         if getattr(self, "_memory_dormant_sessions", None):
             self._run_goal_attachment_sweep()
 
+        # detector-sweep-resilience-v1 P3 — the recurrence detector is the
+        # THIRD SIBLING, strictly AFTER both sweep sites above. ORDERING IS
+        # LOAD-BEARING (gate ruling c condition): the sweeps' guards file
+        # producer_failure events SYNCHRONOUSLY, so this scan sees the SAME
+        # init's failures — a failure and its recurrence card can land in one
+        # init. Reordering above the sweeps silently turns same-init detection
+        # into next-init detection (pinned by
+        # test_recurrence_sibling_runs_last). Same dormancy gate; itself
+        # pausable + guarded under its own producer name — by design.
+        if getattr(self, "_memory_dormant_sessions", None):
+            def _invoke_recurrence() -> None:
+                from grove.eval.producer_recurrence import (
+                    build_producer_recurrence_proposals,
+                )
+
+                build_producer_recurrence_proposals()
+
+            _run_guarded_producer(
+                "producer_recurrence_detector",
+                _invoke_recurrence,
+                paused=_paused_producers(),
+            )
+
     def _run_goal_attachment_sweep(self) -> None:
         """goal-spine-v1 P3 — the ISOLATED detector sweep guard (J4 shape b).
 
