@@ -446,6 +446,7 @@ def run_binding_scan(
     events_root: Optional[Path] = None,
     queue_path: Optional[Path] = None,
     tombstone_path: Optional[Path] = None,
+    attended_records_path: Optional[Path] = None,
     now: Optional[Any] = None,
 ) -> Tuple[int, int]:
     """Run the binding-telemetry producer over the fleet worker event stream;
@@ -463,10 +464,19 @@ def run_binding_scan(
     from grove.eval.proposal_queue import append as _append
 
     target = queue_path or default_queue_path()
+    # kaizen-exploration-proposals-v1 P3 — surface attended interactive evidence
+    # alongside the fleet-observed arms. Default to the live intent store; a
+    # caller (or test) may override. Informational only — the guard in
+    # build_binding_proposals keeps attended arms out of candidate ranking.
+    if attended_records_path is None:
+        from grove.intent_store import get_store
+
+        attended_records_path = get_store().path
     proposals = build_binding_proposals(
         events_root=events_root,
         tombstone_path=tombstone_path,
         queue_path=target,
+        attended_records_path=attended_records_path,
         now=now,
     )
     queued_new = deduped = 0

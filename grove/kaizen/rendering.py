@@ -372,7 +372,7 @@ def _binding_evidence_render(eb: Dict[str, Any]) -> Dict[str, Any]:
             f"redraft {_fmt_rate(a.get('redraft_rate'))}"
             + (f" [{', '.join(notes)}]" if notes else "")
         )
-    return {
+    result: Dict[str, Any] = {
         "class": str(eb.get("class", "?")),
         "window": f"{eb.get('window_days', '?')}d",
         "rubric_version": eb.get("rubric_version"),
@@ -380,6 +380,24 @@ def _binding_evidence_render(eb: Dict[str, Any]) -> Dict[str, Any]:
         "arms": arms_rows,
         "annotations": [str(x) for x in (eb.get("annotations") or [])],
     }
+    # kaizen-exploration-proposals-v1 P3 — attended interactive evidence renders
+    # as its OWN section, honestly labelled, never merged into the fleet arms.
+    # Present-key only: a fleet-only evidence_block (no attended_arms) renders
+    # byte-identically to pre-P3. Same defensive posture — a malformed row
+    # renders as its string, never raising (a diff exception would withhold the
+    # card's dispositions).
+    attended_rows = []
+    for a in eb.get("attended_arms") or []:
+        if not isinstance(a, dict):
+            attended_rows.append(str(a))
+            continue
+        attended_rows.append(
+            f"{a.get('model', '?')} [attended @ {a.get('context') or '?'}]: "
+            f"n={a.get('n', '?')}, success {_fmt_rate(a.get('success_rate'))}"
+        )
+    if attended_rows:
+        result["attended"] = attended_rows
+    return result
 
 
 def _summary_model_binding(proposal: RoutingProposal) -> str:
