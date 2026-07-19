@@ -444,6 +444,79 @@ def _synth_skill_eval_hash(skill_name: str, skill_path: str) -> str:
     return "sha256:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
+# ── detector-sweep-resilience-v1 P1 — shared producer guard (R-5) ───────────
+
+
+def _paused_producers() -> "frozenset[str]":
+    """The producer pause-set seam (gate ruling c).
+
+    P1 ships inert: no pause state exists, so this returns the empty set
+    unconditionally. P2 replaces the body with the sanctioned ~/.grove
+    operator-state reader; this function is the SINGLE seam it lands in
+    (and the monkeypatch target for pause-skip tests). The pause set
+    applies only to producers running through ``_run_guarded_producer``
+    — session compaction is NOT pausable this sprint (gate ruling a).
+    """
+    return frozenset()
+
+
+def _file_producer_failure(producer: str, exc: BaseException) -> None:
+    """File a ``producer_failure`` ledger event — producer name as DATA (A6).
+
+    The emit primitive shared by ``_run_guarded_producer``, the R-4
+    sweep-level call-site guard, and session compaction's two catch
+    sites. Payload is minimal-uniform ``{producer, error}`` at every
+    emit site (gate ruling a) — session grain stays in the log line.
+    Filing failure has its own floor: it can never mask the producer
+    failure it is reporting.
+    """
+    try:
+        from grove.kaizen_ledger import KaizenLedger
+
+        _session = "sweep-" + datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        )
+        KaizenLedger(session_id=_session).record(
+            "producer_failure",
+            producer=producer,
+            error=repr(exc),
+        )
+    except Exception as file_exc:  # noqa: BLE001
+        logger.error(
+            "[grove.dispatcher] producer_failure filing ITSELF "
+            "failed (the producer failure above stands): %r", file_exc,
+        )
+
+
+def _run_guarded_producer(
+    producer: str,
+    invoke: Callable[[], None],
+    *,
+    paused: "frozenset[str]" = frozenset(),
+) -> None:
+    """The shared producer guard (R-5) — one producer, one guard.
+
+    Consult the operator pause set (paused → INFO skip, ZERO
+    invocation), contain any raise, log WITH traceback, and file the
+    registered ``producer_failure`` event via the shared emit
+    primitive. The producer name is DATA only (A6) — never a code
+    branch. A raise here can never abort a sibling producer.
+    """
+    if producer in paused:
+        logger.info(
+            "[grove.dispatcher] producer %s paused by operator — skipped",
+            producer,
+        )
+        return
+    try:
+        invoke()
+    except Exception as exc:
+        logger.exception(
+            "[grove.dispatcher] producer %s failed at init "
+            "(contained — no other producer affected)", producer,
+        )
+        _file_producer_failure(producer, exc)
+
 
 class Dispatcher:
     """Grove Autonomaton runtime entry point per GRV-005 § II.
@@ -946,6 +1019,13 @@ class Dispatcher:
                     self._memory_dormant_sessions
                 )
             except Exception as exc:
+                # detector-sweep-resilience-v1 R-4 + gate ruling (b): a raise
+                # that reaches this guard is SWEEP-level BY DESIGN — the
+                # per-producer guards inside contain producer raises, so what
+                # escapes is prologue/structural failure. Per-producer
+                # attribution here would be a lie; file the sweep name as
+                # data, same filing floor.
+                _file_producer_failure("memory_extraction_sweep", exc)
                 logger.warning(
                     "[grove.dispatcher] memory extraction failed at init: "
                     "%r — staged proposals (if any) are unaffected", exc,
@@ -963,42 +1043,25 @@ class Dispatcher:
     def _run_goal_attachment_sweep(self) -> None:
         """goal-spine-v1 P3 — the ISOLATED detector sweep guard (J4 shape b).
 
-        REFERENCE IMPLEMENTATION for detector-sweep-resilience-v1 (which
-        propagates this shape to the four detectors in
-        ``_extract_memory_from_dormant_sessions``): one detector, one guard;
-        a raise is contained here, logged WITH traceback, and filed as a
-        registered ``producer_failure`` ledger event — auditable, never
-        silently swallowed into a warning line, never able to abort a
-        sibling producer. Surfacing the event to the operator is the
-        resilience sprint's scope, not this guard's.
+        detector-sweep-resilience-v1 P1 migrated this reference guard onto
+        the shared ``_run_guarded_producer`` idiom (R-5) — the same guard
+        that now wraps the FIVE detectors in
+        ``_extract_memory_from_dormant_sessions`` (plus session
+        compaction's emit sites): one producer, one guard; a raise is
+        contained, logged WITH traceback, and filed as a registered
+        ``producer_failure`` ledger event — auditable, never silently
+        swallowed into a warning line, never able to abort a sibling
+        producer. Surfacing the event to the operator is P3's scope, not
+        this guard's.
         """
-        try:
+        def _invoke() -> None:
             from grove.dock.attachment import run_goal_attachment_sweep
 
             run_goal_attachment_sweep()
-        except Exception as exc:
-            logger.exception(
-                "[grove.dispatcher] goal-attachment sweep failed at init "
-                "(contained — no other producer affected)"
-            )
-            try:
-                from datetime import datetime, timezone
 
-                from grove.kaizen_ledger import KaizenLedger
-
-                _session = "sweep-" + datetime.now(timezone.utc).strftime(
-                    "%Y%m%dT%H%M%S%fZ"
-                )
-                KaizenLedger(session_id=_session).record(
-                    "producer_failure",
-                    producer="goal_attachment_detector",
-                    error=repr(exc),
-                )
-            except Exception as file_exc:  # noqa: BLE001
-                logger.error(
-                    "[grove.dispatcher] producer_failure filing ITSELF "
-                    "failed (the sweep failure above stands): %r", file_exc,
-                )
+        _run_guarded_producer(
+            "goal_attachment_detector", _invoke, paused=_paused_producers()
+        )
 
     def _extract_memory_from_dormant_sessions(
         self, session_ids: List[str]
@@ -1013,83 +1076,119 @@ class Dispatcher:
         """
         from hermes_constants import get_hermes_home
         from grove.memory.detector import ContextPersistenceDetector
-        from grove.memory.freshness import FreshnessDetector
         from grove.memory.lifecycle import (
             load_active_dock_goal_dicts,
             run_memory_extraction,
         )
         from grove.memory.store import MemoryStore
 
+        # detector-sweep-resilience-v1 P1: this PROLOGUE runs outside the
+        # per-producer guards below — a raise here is a SWEEP failure by
+        # design (gate ruling b) and files at the R-4 call-site guard with
+        # the sweep name as data, because no single producer owns it.
         base = Path(get_hermes_home())
         store = MemoryStore(base_dir=base)
         detector = ContextPersistenceDetector(store=store, base_dir=base)
         dock_goals = load_active_dock_goal_dicts()
-        run_memory_extraction(
-            detector=detector,
-            store=store,
-            session_ids=session_ids,
-            transcript_loader=(
-                lambda sid: self.session.get_messages_as_conversation(sid)
-            ),
-            dock_goals=dock_goals,
+        paused = _paused_producers()
+
+        def _invoke_context_persistence() -> None:
+            run_memory_extraction(
+                detector=detector,
+                store=store,
+                session_ids=session_ids,
+                transcript_loader=(
+                    lambda sid: self.session.get_messages_as_conversation(sid)
+                ),
+                dock_goals=dock_goals,
+            )
+
+        _run_guarded_producer(
+            "context_persistence_detector",
+            _invoke_context_persistence,
+            paused=paused,
         )
 
         # Governed forgetting (context-freshness-detector-v1): runs AFTER
         # extraction so apply_decay's confidence mutation never perturbs the
         # persistence detector's active-index summary. Reuses the same store
         # (already loaded) and the active Dock goals (DI-3 suspension).
-        freshness = FreshnessDetector(base_dir=base)
-        stale_proposals = freshness.detect(store, dock_goals)
-        if stale_proposals:
-            freshness.stage_proposals(
-                stale_proposals, session_id="context-freshness-sweep"
-            )
+        def _invoke_freshness() -> None:
+            from grove.memory.freshness import FreshnessDetector
+
+            freshness = FreshnessDetector(base_dir=base)
+            stale_proposals = freshness.detect(store, dock_goals)
+            if stale_proposals:
+                freshness.stage_proposals(
+                    stale_proposals, session_id="context-freshness-sweep"
+                )
+
+        _run_guarded_producer(
+            "freshness_detector", _invoke_freshness, paused=paused,
+        )
 
         # Graduation (memory-cellar-graduation-v1): promote stable, high-
         # confidence, frequently-accessed memory into the permanent wiki cellar.
         # Runs AFTER the freshness block so it reads POST-decay confidence
         # (apply_decay mutated the shared store in place). Reuses the same store
-        # and active Dock goals. Same best-effort wiring as the detectors above;
-        # graduation does NOT change record status (dual-serve invariant).
-        from grove.memory.graduation import GraduationDetector
+        # and active Dock goals. Guarded per-producer (R-1); graduation does
+        # NOT change record status (dual-serve invariant).
+        def _invoke_graduation() -> None:
+            from grove.memory.graduation import GraduationDetector
 
-        graduation = GraduationDetector(base_dir=base)
-        graduation.stage_proposals(store, dock=dock_goals)
+            graduation = GraduationDetector(base_dir=base)
+            graduation.stage_proposals(store, dock=dock_goals)
+
+        _run_guarded_producer(
+            "graduation_detector", _invoke_graduation, paused=paused,
+        )
 
         # Policy graduation (consolidation-ratchet-v1, Stage 2): reads the
         # machine sinks, verifies long-term stability against the intent feed,
         # and stages consolidation proposals to promote stable routing into
-        # permanent operator policy. Same wiring pattern as the detectors above.
-        from grove.eval.consolidation_ratchet import ConsolidationRatchet
+        # permanent operator policy. Same guarded wiring as the detectors above.
+        def _invoke_consolidation() -> None:
+            from grove.eval.consolidation_ratchet import ConsolidationRatchet
 
-        consolidation = ConsolidationRatchet()
-        consolidation_proposals = consolidation.detect(
-            base / "routing.autonomaton.yaml",
-            base / "intent_records.jsonl",
-        )
-        if consolidation_proposals:
-            consolidation.stage_proposals(
-                consolidation_proposals,
-                session_id="consolidation-ratchet-sweep",
+            consolidation = ConsolidationRatchet()
+            consolidation_proposals = consolidation.detect(
+                base / "routing.autonomaton.yaml",
+                base / "intent_records.jsonl",
             )
+            if consolidation_proposals:
+                consolidation.stage_proposals(
+                    consolidation_proposals,
+                    session_id="consolidation-ratchet-sweep",
+                )
+
+        _run_guarded_producer(
+            "consolidation_ratchet", _invoke_consolidation, paused=paused,
+        )
 
         # Dock mutation (dock-as-mutation-target-v1): when active memory records
         # cluster around a domain no Dock goal tracks, propose a staging goal
         # through Kaizen — closing the Memory↔Dock loop's write side. Reuses the
-        # same store + active Dock goals; the T1 synthesis is timeout-bounded and
-        # returns no proposal on any failure, so it never blocks init. Runs last,
-        # inside the same best-effort wrap as the detectors above.
-        from grove.dock.detector import DockMutationDetector
+        # same store + active Dock goals; the T1 synthesis is timeout-bounded,
+        # and a synthesis failure RAISES (detector-sweep-resilience-v1 R-2) —
+        # contained + filed by this producer's guard, never blocking init.
+        def _invoke_dock_mutation() -> None:
+            from grove.dock.detector import DockMutationDetector
 
-        active_goal_slugs = {
-            g["slug"] for g in dock_goals if isinstance(g, dict) and g.get("slug")
-        }
-        dock_detector = DockMutationDetector()
-        dock_proposals = dock_detector.detect(store, active_goal_slugs)
-        if dock_proposals:
-            dock_detector.stage_proposals(
-                dock_proposals, session_id="dock-mutation-sweep"
-            )
+            active_goal_slugs = {
+                g["slug"]
+                for g in dock_goals
+                if isinstance(g, dict) and g.get("slug")
+            }
+            dock_detector = DockMutationDetector()
+            dock_proposals = dock_detector.detect(store, active_goal_slugs)
+            if dock_proposals:
+                dock_detector.stage_proposals(
+                    dock_proposals, session_id="dock-mutation-sweep"
+                )
+
+        _run_guarded_producer(
+            "dock_mutation_detector", _invoke_dock_mutation, paused=paused,
+        )
 
         # Session compaction (session-compaction-v1, K5): compact dormant
         # session transcripts into canonical wiki pages. Fires AFTER all
@@ -1128,16 +1227,21 @@ class Dispatcher:
                             sid, page.path.name,
                         )
                 except Exception as exc:
-                    # A1: per-session failure is not fatal — log loud, skip.
-                    logger.warning(
+                    # A1: per-session failure is not fatal — log loud (WITH
+                    # traceback), file producer_failure, skip. Session grain
+                    # (sid) stays in the log line, not the event payload
+                    # (gate ruling a: minimal-uniform {producer, error}).
+                    logger.exception(
                         "[grove.dispatcher] session compaction failed for %s: "
                         "%r — skipping", sid, exc,
                     )
+                    _file_producer_failure("session_compaction", exc)
         except Exception as exc:
-            logger.warning(
+            logger.exception(
                 "[grove.dispatcher] session compaction subsystem failed at "
                 "init: %r — skipping entirely", exc,
             )
+            _file_producer_failure("session_compaction", exc)
 
     @property
     def runtime_ctx(self) -> RuntimeContext:

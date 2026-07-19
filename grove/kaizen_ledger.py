@@ -271,10 +271,13 @@ class KaizenLedger:
         # goal-spine-v1 P3 (J4 ruling) — GENERIC producer failure: an
         # off-path producer (detector, scanner, sweep job) raised inside its
         # isolation guard. Auditable, not operator-visible — surfacing is
-        # detector-sweep-resilience-v1's scope. Carries producer (name as
-        # DATA, never a code branch — A6) + error (repr). The isolated-sweep
-        # guard in grove/dispatcher.py is the reference emitter that the
-        # resilience sprint propagates to the other four detectors.
+        # detector-sweep-resilience-v1 P3's scope. Carries producer (name as
+        # DATA, never a code branch — A6) + error (repr), minimal-uniform at
+        # every emit site. Emitters (P1): the shared guard in
+        # grove/dispatcher.py (_run_guarded_producer) covering the FIVE
+        # sweep detectors + the migrated goal-attachment reference, the R-4
+        # sweep-level call-site guard, and session compaction's two catch
+        # sites.
         "producer_failure",
         # kaizen-exploration-proposals-v1 — an exploration_nudge was APPLIED:
         # the operator approved "try model X interactively?" and the interactive
@@ -288,6 +291,17 @@ class KaizenLedger:
         # error-log floor (the flip is atomic; a filing failure must not misreport
         # it). Carries slug + tier + surface + proposal_id.
         "exploration_nudge_applied",
+        # model-catalog-v1 P2 (90246b3ca) — recurring coherence Andon: active
+        # tier_preferences bind a model absent from the model catalog. Filed
+        # at boot by grove/config/catalog_coherence.py::_file_coherence_andon
+        # (component-filer sentinel session, error-log floor); carries
+        # violations (list of {tier, model}) + detail. REGISTRATION ADDED by
+        # detector-sweep-resilience-v1 P1 as a cross-sprint mechanical
+        # correction: P2 shipped the emit without this entry, so record()
+        # raised ValueError into the emit's own log floor and the Andon
+        # never filed (the exact orphan-event bug the AST conformance guard
+        # exists to catch — it caught it).
+        "catalog_coherence_violation",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:
