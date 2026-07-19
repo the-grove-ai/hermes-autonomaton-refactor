@@ -40,12 +40,40 @@ routing.config.yaml says what RUNS where.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# G-6 — the catalog 'provider' is the ROUTING provider; every slug dispatches via
+# OpenRouter (incl. Google AI Studio BYOK — the slug stays google/*). The vendor
+# lives in the slug prefix, not this field. Extend deliberately if a second
+# routing provider is ever wired; a typo ('openrouter') must fail loud.
+_KNOWN_PROVIDERS = frozenset({"openrouter"})
+# G-3 — display-only cost sanity cap (USD per Mtok). No real model is remotely
+# near this; the cap catches fat-finger typos (e.g. 3_000_000). $0 is allowed
+# (free models exist) but flagged on the card.
+_MAX_COST_PER_MTOK = 1000.0
+_MAX_DISPLAY_NAME = 80
+_MAX_NOTES = 240
+# G-4 — C0 controls + DEL + C1 (includes newlines, tabs, and the ANSI ESC 0x1b).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _sanitize_text(value: Any, cap: int) -> str:
+    """Strip control/ANSI chars, collapse whitespace, length-cap (G-4).
+
+    A display string can never carry a newline, tab, terminal escape, or other
+    control byte — those would corrupt the card, the YAML, and the portal render.
+    """
+    cleaned = _CONTROL_CHARS_RE.sub(" ", str(value))
+    cleaned = " ".join(cleaned.split())  # collapse whitespace runs
+    if len(cleaned) > cap:
+        cleaned = cleaned[:cap].rstrip() + "…"
+    return cleaned
 
 _REQUIRED_STR_FIELDS = ("slug", "display_name", "provider")
 _REQUIRED_NUM_FIELDS = ("input_cost_per_mtok", "output_cost_per_mtok")
@@ -242,12 +270,69 @@ def get_models_for_tier(tier: str, catalog: list[dict]) -> list[dict]:
 
 
 def is_catalog_path(path: Any) -> bool:
-    """True if *path* targets a model catalog file (repo seed or sovereign)."""
-    return isinstance(path, str) and path.strip().endswith("model-catalog.yaml")
+    """True if *path* targets a model catalog file (repo seed or sovereign).
+
+    Basename match (``model-catalog.yaml``) so it catches both
+    ``config/model-catalog.yaml`` and ``~/.grove/model-catalog.yaml`` — as an
+    absolute path, a ``~``-path, or a bare filename — without matching an
+    unrelated ``my-model-catalog.yaml``.
+    """
+    import os
+
+    if not isinstance(path, str) or not path.strip():
+        return False
+    return os.path.basename(os.path.expanduser(path.strip()).rstrip("/")) == "model-catalog.yaml"
 
 
 def _fmt_costs(entry: dict) -> str:
-    return f"${entry.get('input_cost_per_mtok')}/${entry.get('output_cost_per_mtok')} per Mtok"
+    inp = entry.get("input_cost_per_mtok")
+    out = entry.get("output_cost_per_mtok")
+    base = f"${inp}/${out} per Mtok"
+    # G-3 — $0 is legal (free models) but must not slip past unnoticed on the card.
+    if inp == 0 or out == 0:
+        base += "  ⚑ $0 — verify this is intended"
+    return base
+
+
+def describe_catalog_entry_addition(args: dict) -> str | None:
+    """Approval-card body for an ``add_catalog_entry`` tool call (P4 / M-5).
+
+    Renders the resolved entry the tool WILL write plus its per-slug effect
+    ([NEW] / [SHADOWS repo: <fields>] / [matches repo]) and the survivors note,
+    so the operator approves the effective catalog — the same merged view as a
+    raw catalog write, built from the structured tool args. Returns ``None`` if
+    the args do not form a valid entry (the tool itself will fail loud on run).
+    """
+    try:
+        entry = mint_catalog_entry(
+            slug=args.get("slug", ""),
+            display_name=args.get("display_name", ""),
+            input_cost_per_mtok=args.get("input_cost_per_mtok"),
+            output_cost_per_mtok=args.get("output_cost_per_mtok"),
+            provider=args.get("provider") or "openrouter",
+            notes=args.get("notes"),
+        )
+    except Exception:  # noqa: BLE001 — a bad mint falls back to the generic card
+        return None
+    repo_path = _repo_catalog_path()
+    try:
+        repo = _load_catalog_file(repo_path) if repo_path.exists() else []
+    except Exception:  # noqa: BLE001
+        repo = []
+    repo_by = {m["slug"]: m for m in repo if isinstance(m, dict) and m.get("slug")}
+    slug = entry["slug"]
+    resolved = f"{slug} | {entry['display_name']} | {entry['provider']} | {_fmt_costs(entry)}"
+    if slug in repo_by:
+        old = repo_by[slug]
+        masked = sorted(k for k in set(old) | set(entry) if old.get(k) != entry.get(k))
+        marker = f"[SHADOWS repo: {', '.join(masked)}]" if masked else "[matches repo]"
+    else:
+        marker = "[NEW]"
+    survivors = len([s for s in repo_by if s != slug])
+    return (
+        f"Add model to catalog (~/.grove/model-catalog.yaml) — resolved merged "
+        f"view ({survivors} repo entries survive):\n  {resolved} {marker}"
+    )
 
 
 def describe_catalog_write(path: Any, content: Any, *, max_entries: int = 25) -> str | None:
@@ -399,3 +484,166 @@ def assert_safe_catalog_mutation(
             f"referrer(s) first (a rename is a delete+add; rename the binding too)."
         )
     return validated
+
+
+# ── deterministic minting + sovereign write (model-catalog-v1 P4) ─────────────
+#
+# The DoD write path: the SYSTEM mints the schema-valid record from operator
+# intent (never the agent free-handing YAML — a live run proved that produces a
+# malformed file that fails load). These are the ONE deterministic path that
+# writes the sovereign catalog correctly every time.
+
+_SOVEREIGN_HEADER = (
+    "# ~/.grove/model-catalog.yaml — operator sovereign model catalog.\n"
+    "#\n"
+    "# Per-slug overlay on the repo seed (config/model-catalog.yaml): an entry\n"
+    "# here masks the repo entry of the same slug; repo entries not named here\n"
+    "# survive. Adding a model here does NOT bind it to a tier — that is a\n"
+    "# separate, deliberate step on the portal Models page.\n"
+    "#\n"
+    "# System-managed: written by the add_catalog_entry tool (schema-validated,\n"
+    "# atomic). Hand-edit at your own risk — a malformed file fails loud on load.\n"
+    "# ============================================================================\n"
+)
+
+
+def mint_catalog_entry(
+    slug: str,
+    display_name: str,
+    input_cost_per_mtok: float,
+    output_cost_per_mtok: float,
+    *,
+    provider: str = "openrouter",
+    notes: str | None = None,
+) -> dict:
+    """Build ONE schema-valid catalog entry from operator intent (P4).
+
+    ``provider`` defaults to ``openrouter`` — the catalog's provider field is the
+    ROUTING provider (every slug routes via OpenRouter, incl. Google BYOK); the
+    vendor lives in the slug prefix (``moonshotai/…``), NOT this field. Raises
+    ``ValueError`` (via the metadata-only schema) on any bad field, so a bad mint
+    never reaches disk.
+    """
+    prov = (provider or "openrouter").strip()
+    if prov not in _KNOWN_PROVIDERS:  # G-6
+        raise ValueError(
+            f"provider {prov!r} is not a known routing provider "
+            f"{sorted(_KNOWN_PROVIDERS)} — the catalog provider is the ROUTING "
+            f"provider (the vendor is in the slug prefix). Fix the typo."
+        )
+    # G-3 — cost bounds (numeric, 0..cap; 0 allowed). bool is an int subclass, so
+    # reject it explicitly (True/False are not prices).
+    for label, cost in (("input_cost_per_mtok", input_cost_per_mtok),
+                        ("output_cost_per_mtok", output_cost_per_mtok)):
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            raise ValueError(f"{label} must be a number, got {cost!r}")
+        if not (0 <= cost <= _MAX_COST_PER_MTOK):
+            raise ValueError(
+                f"{label}={cost} is out of bounds — must be 0..{_MAX_COST_PER_MTOK} "
+                f"USD/Mtok (0 is allowed for free models; the cap catches typos)"
+            )
+    entry: dict = {
+        "slug": (slug or "").strip(),
+        "display_name": _sanitize_text(display_name, _MAX_DISPLAY_NAME),  # G-4
+        "provider": prov,
+        "input_cost_per_mtok": input_cost_per_mtok,
+        "output_cost_per_mtok": output_cost_per_mtok,
+    }
+    if notes is not None and str(notes).strip():
+        entry["notes"] = _sanitize_text(notes, _MAX_NOTES)  # G-4
+    _validate_catalog([entry], _sovereign_catalog_path())  # fail loud on bad field/type
+    return entry
+
+
+def _current_sovereign_models() -> list[dict]:
+    """The sovereign file's models list, or [] when it does not exist."""
+    sov = _sovereign_catalog_path()
+    return _load_catalog_file(sov) if sov.exists() else []
+
+
+def upsert_sovereign_entry(
+    entry: dict,
+    *,
+    sovereign_models: list[dict] | None = None,
+    expected_origin: str | None = "new",
+) -> list[dict]:
+    """Per-slug upsert *entry* into the sovereign models list (P4).
+
+    Returns the new sovereign list (entry replaces a same-slug entry in place, or
+    appends). Runs the referential guard against the MERGED view — the upsert is
+    an add/replace, never a removal, so it cannot orphan a referrer, but the guard
+    also re-validates the whole merged catalog's schema before we serialize.
+
+    G-2 TOCTOU: re-evaluates the entry's origin against the CURRENT repo catalog
+    at execution time and fails loud if it differs from *expected_origin* (what
+    the approval card showed). Default ``"new"``; pass ``"shadows_repo"`` to
+    intentionally override a repo entry. ``None`` skips the check. This catches
+    a repo entry appearing under a slug staged as new between card-mint and
+    approval — the operator re-stages rather than silently shadowing.
+    """
+    repo = _load_catalog_file(_repo_catalog_path()) if _repo_catalog_path().exists() else []
+    repo_slugs = {m["slug"] for m in repo}
+    current_origin = "shadows_repo" if entry["slug"] in repo_slugs else "new"
+    if expected_origin is not None and current_origin != expected_origin:
+        raise CatalogWriteError(
+            f"state drift since this was staged: {entry['slug']!r} was approved as "
+            f"'{expected_origin}', but the effective catalog now resolves it as "
+            f"'{current_origin}' (a repo entry appeared/changed underneath). "
+            f"Re-stage to confirm the current effect."
+        )
+
+    current = list(sovereign_models if sovereign_models is not None else _current_sovereign_models())
+    out: list[dict] = []
+    replaced = False
+    for m in current:
+        if m.get("slug") == entry["slug"]:
+            out.append(entry)
+            replaced = True
+        else:
+            out.append(m)
+    if not replaced:
+        out.append(entry)
+    # Validate the resulting MERGED catalog (repo ⊕ new sovereign) — schema + refs.
+    assert_safe_catalog_mutation(merge_catalogs(repo, out))
+    return out
+
+
+def serialize_sovereign_catalog(models: list[dict]) -> str:
+    """Deterministic, schema-shaped ``models: [...]`` YAML with the sovereign
+    header. Field order is fixed for legible diffs; this is the ONLY writer, so
+    the file is always the shape ``load_catalog`` expects."""
+    import yaml
+
+    ordered = []
+    for m in models:
+        e = {k: m[k] for k in ("slug", "display_name", "provider",
+                               "input_cost_per_mtok", "output_cost_per_mtok") if k in m}
+        if m.get("notes"):
+            e["notes"] = m["notes"]
+        ordered.append(e)
+    body = yaml.safe_dump({"models": ordered}, sort_keys=False, allow_unicode=True, width=100)
+    return _SOVEREIGN_HEADER + body
+
+
+def write_sovereign_catalog(models: list[dict]) -> Path:
+    """Atomically write the sovereign catalog. Returns the path written."""
+    import os
+    import tempfile
+
+    path = _sovereign_catalog_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = serialize_sovereign_catalog(models)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".model-catalog.", suffix=".tmp")
+    try:
+        # G-5 atomicity: write to a sibling tmp, flush + fsync to durable storage,
+        # then os.replace (atomic rename on POSIX) — a crash mid-write can never
+        # leave a torn/partial catalog at the target path.
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return path

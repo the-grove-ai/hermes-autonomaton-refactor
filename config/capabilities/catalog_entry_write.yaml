@@ -1,0 +1,79 @@
+# catalog_entry_write.yaml — in-conversation add-to-catalog verb record.
+# model-catalog-v1 P4: add_catalog_entry mints a schema-valid model record from
+# operator intent and writes ~/.grove/model-catalog.yaml (per-slug merge). Yellow
+# zone: the write is a governed sovereign-config mutation gated by the Sovereign
+# Prompt (the operator's approval of THAT prompt is the grant — no second
+# confirmation). always:true so the operator can add a model any time they ask.
+# family=catalog_write  zone=yellow  tiers=[1,2,3]  disclosure=proactive  trigger=always
+id: catalog_entry_write
+kind: verb
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: proactive
+bindings:
+  tools:
+  - add_catalog_entry
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 2
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'In-conversation add-to-catalog (governed, zone yellow). The system
+    mints the schema-valid entry from operator intent; do not hand-write the
+    catalog file. Tools: add_catalog_entry.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: '2026-07-19T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-07-19T00:00:00+00:00'
+    from_state: new
+    to_state: approved
+    reason: 'model-catalog-v1 P4: admit add_catalog_entry through a capability
+      record; tool registered in tools.catalog_tool but needs a record or
+      get_admitted_tools() filters it out. A live DoD run proved the agent
+      free-hands invalid YAML without a system-side mint path.'
+    evidence:
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: catalog_entry_write'
+  - 'subsystem: add-to-catalog mint (tools.catalog_tool)'
+  - 'check: tool registered + default-yellow classification + ~/.grove/model-catalog.yaml writable via write_sovereign_catalog'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

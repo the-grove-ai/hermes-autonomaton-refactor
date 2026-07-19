@@ -200,6 +200,29 @@ def _reject_governed_path(filepath: str, task_id: str = "default") -> None:
         raise PermissionError(GOVERNED_PATH_MESSAGE)
 
 
+def _reject_raw_catalog_write(path: str) -> "str | None":
+    """model-catalog-v1 gap-2 — refuse a RAW write to a model-catalog.yaml.
+
+    The catalog is schema-shaped; a hand-written file fails schema validation on
+    load and breaks the portal (a live run proved this). Direct file writes to
+    it are refused here, steering the agent to ``add_catalog_entry`` — the mint
+    tool that emits a valid entry and stages it for approval. The tool writes the
+    catalog through ``write_sovereign_catalog`` (not this door), so it is
+    unaffected. Returns an error string to refuse, or ``None`` to allow.
+    """
+    from grove.config.model_catalog import is_catalog_path
+
+    if is_catalog_path(path):
+        return (
+            "Refused: model-catalog.yaml is system-managed and must not be "
+            "written or edited directly — a hand-written catalog fails schema "
+            "validation on load and breaks the portal. Use the add_catalog_entry "
+            "tool: it mints a schema-valid entry from the model's fields (slug, "
+            "name, pricing) and stages it for the operator's approval."
+        )
+    return None
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -833,6 +856,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    catalog_err = _reject_raw_catalog_write(path)
+    if catalog_err:
+        return tool_error(catalog_err)
     if _is_internal_file_status_text(content):
         return tool_error(
             "Refusing to write internal read_file status text as file content. "
@@ -1001,6 +1027,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        catalog_err = _reject_raw_catalog_write(_p)
+        if catalog_err:
+            return tool_error(catalog_err)
     # routing-scope-wall-v1 R-W5 — execution-time scope-defining re-verification.
     # Reconstruct only the model-passed args (non-None; replace_all only when set)
     # so the canonical effect signature matches the minted one for an approved

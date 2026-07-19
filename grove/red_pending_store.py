@@ -169,6 +169,20 @@ def describe_red_action(
         shown = raw if len(raw) <= 200 else raw[:197] + "..."
         verb = "Run command" if tool_name == "terminal" else "Execute code"
         return (f"{verb}: {shown}", False)
+    if tool_name == "add_catalog_entry":
+        # model-catalog-v1 P4 — the mint tool's Yellow approval card shows the
+        # resolved merged view (per-slug SHADOWS markers) built from the tool
+        # args, so the operator approves the effective catalog, not raw fields.
+        try:
+            from grove.config.model_catalog import describe_catalog_entry_addition
+
+            desc = describe_catalog_entry_addition(dict(arguments or {}))
+        except Exception:  # noqa: BLE001 — describer must never break the card
+            desc = None
+        if desc is not None:
+            return (desc, False)
+        slug = str((arguments or {}).get("slug") or "?")
+        return (f"Add model {slug} to the catalog.", False)
     if tool_name == "write_file":
         # kaizen-queue-hygiene-v1 K-5 — write_file args ARE in the store column; the
         # generic "arguments hidden" fallback below was a RENDER gap, not a data gap.
