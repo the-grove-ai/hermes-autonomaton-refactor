@@ -32,7 +32,7 @@ class GrantToken:
     scope: str = ""           # target skill/resource name
     write_class: str = ""     # "andon_promote", "andon_reject", etc.
     timestamp: float = field(default_factory=time)
-    disposition: str = "once" # "once", "session", "standing"
+    disposition: str = "once" # "once", "session", "always"
     issued_at: str = ""       # ISO timestamp
     authorized_by: str = ""   # operator identifier
     revoked: bool = False
