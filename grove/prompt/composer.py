@@ -90,6 +90,15 @@ class ComposedPrompt:
     # existing per-compose provenance precedent).
     exception_drops: Dict[str, str] = field(default_factory=dict)  # F1
     budget_drops: Dict[str, Dict[str, int]] = field(default_factory=dict)  # F2
+    # substrate-citation-v1 Phase 1 (A1/A2) — the RENDERED cellar source_paths
+    # this turn (rendered set only; a budget-dropped page never appears here),
+    # drained from the compose-seeded ``_cellar_sources`` sink following the
+    # ``budget_drops`` INNER→OUTER precedent above. The dispatcher stashes this
+    # onto the agent; the seventh appender (Phase 2) renders them as portal
+    # citations. ``cellar_retrieval_hits`` is the FLOOR-CROSSING count (the
+    # denominator), known pre-fill, carried to the Phase-3 IntentRecord write.
+    cellar_sources: List[str] = field(default_factory=list)
+    cellar_retrieval_hits: int = 0
 
 
 # ── The composer ──────────────────────────────────────────────────────
@@ -202,6 +211,13 @@ class PromptComposer:
         # drops EVERY block (those return None, losing a return-value channel).
         # Drained into ``budget_drops`` after the loop.
         context["_composer_drops"] = {}
+        # substrate-citation-v1 Phase 1 (A1) — compose-seeded citation sinks the
+        # cellar provider writes into: ``_cellar_sources`` gathers the RENDERED
+        # source_paths (rendered set only), ``_cellar_hits`` carries the floor-
+        # crossing hit count (parallel key, A2). Drained into the outer
+        # ComposedPrompt fields after the loop, exactly like ``_composer_drops``.
+        context["_cellar_sources"] = []
+        context["_cellar_hits"] = {}
 
         per_tier: Dict[str, List[Tuple[int, str, str]]] = {
             t: [] for t in _TIER_ORDER
@@ -275,6 +291,12 @@ class PromptComposer:
             }
             for name, drop in (context.get("_composer_drops") or {}).items()
         }
+        # substrate-citation-v1 Phase 1 (A1) — drain the citation sinks into the
+        # outer ComposedPrompt fields (mirrors the budget_drops drain above).
+        cellar_sources: List[str] = list(context.get("_cellar_sources") or [])
+        cellar_retrieval_hits: int = int(
+            (context.get("_cellar_hits") or {}).get("count", 0)
+        )
         return ComposedPrompt(
             text=full_text,
             sections=sections,
@@ -282,6 +304,8 @@ class PromptComposer:
             gated_context_blocks=frozenset(gated_blocks),
             exception_drops=exception_drops,
             budget_drops=budget_drops,
+            cellar_sources=cellar_sources,
+            cellar_retrieval_hits=cellar_retrieval_hits,
         )
 
     def registered_provider_views(

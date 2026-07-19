@@ -397,3 +397,104 @@ def test_composer_cold_start_empty_cellar(tmp_path, monkeypatch):
     assert "cellar_knowledge" not in result.sections
     # JSONL provider unaffected.
     assert "turbines" in result.sections["accumulated_domain_memory"]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# substrate-citation-v1 Phase 1 — provider identity stash (rulings A1/A2).
+# The provider stops discarding identity: it appends the RENDERED source_paths
+# into the compose-seeded ``_cellar_sources`` sink, and records the FLOOR-
+# CROSSING hit count (pre-fill) into the parallel ``_cellar_hits`` sink. A
+# budget-dropped page counts as a hit but is NEVER cited (A2 split).
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def test_provider_populates_cellar_sources_sink(tmp_path, monkeypatch):
+    """Every RENDERED page's source_path lands in the _cellar_sources sink;
+    the floor-crossing count lands in _cellar_hits."""
+    monkeypatch.setattr("grove.wiki.provider.resolve_portal_base_url", lambda: None)
+    fake = _FakeIndex(results=[
+        _result(path="researcher_brief/a.md"),
+        _result(path="researcher_brief/b.md"),
+    ])
+    provider = create_cellar_provider(
+        index_factory=lambda: fake, dock_goals_loader=lambda: [],
+    )
+    ctx = {"user_message": "q", "_cellar_sources": [], "_cellar_hits": {}}
+    result = provider(ctx)
+    assert result is not None
+    assert ctx["_cellar_sources"] == ["researcher_brief/a.md", "researcher_brief/b.md"]
+    assert ctx["_cellar_hits"]["count"] == 2
+
+
+def test_provider_empty_retrieval_leaves_sinks_empty(tmp_path, monkeypatch):
+    """No retrieval hits → provider no-ops before the sink writes: empty
+    sources, no hit count recorded (not a substrate-available turn)."""
+    monkeypatch.setattr("grove.wiki.provider.resolve_portal_base_url", lambda: None)
+    fake = _FakeIndex(results=[])
+    provider = create_cellar_provider(
+        index_factory=lambda: fake, dock_goals_loader=lambda: [],
+    )
+    ctx = {"user_message": "q", "_cellar_sources": [], "_cellar_hits": {}}
+    assert provider(ctx) is None
+    assert ctx["_cellar_sources"] == []
+    assert ctx["_cellar_hits"] == {}
+
+
+def test_provider_budget_drop_counts_hit_but_omits_source(tmp_path, monkeypatch):
+    """A2 split: a page dropped by the token budget appears in the FLOOR-
+    CROSSING hit count but is NEVER added to the citation stash."""
+    monkeypatch.setattr("grove.wiki.provider.resolve_portal_base_url", lambda: None)
+    fake = _FakeIndex(results=[
+        _result(path="researcher_brief/keep.md", snippet="x" * 40),
+        _result(path="researcher_brief/drop.md", snippet="y" * 400),
+    ])
+    provider = create_cellar_provider(
+        index_factory=lambda: fake, dock_goals_loader=lambda: [], token_budget=20,
+    )
+    ctx = {"user_message": "q", "_cellar_sources": [], "_cellar_hits": {}}
+    result = provider(ctx)
+    assert result is not None
+    assert ctx["_cellar_hits"]["count"] == 2                       # both crossed the floor
+    assert ctx["_cellar_sources"] == ["researcher_brief/keep.md"]  # dropped page NOT cited
+
+
+def test_provider_sink_absent_is_noop(tmp_path, monkeypatch):
+    """Non-compose calls (no seeded sinks) render normally and never crash —
+    the sink writes are guarded, mirroring the budget_drops precedent."""
+    monkeypatch.setattr("grove.wiki.provider.resolve_portal_base_url", lambda: None)
+    fake = _FakeIndex(results=[_result(path="researcher_brief/a.md")])
+    provider = create_cellar_provider(
+        index_factory=lambda: fake, dock_goals_loader=lambda: [],
+    )
+    result = provider({"user_message": "q"})   # no _cellar_sources / _cellar_hits keys
+    assert result is not None
+    assert "### X" in result.text
+
+
+def test_compose_drains_cellar_sources_and_hits(tmp_path, monkeypatch):
+    """compose() seeds + drains the sinks into ComposedPrompt.cellar_sources
+    (RENDERED set) and ComposedPrompt.cellar_retrieval_hits (floor-crossing)."""
+    monkeypatch.setattr("grove.wiki.provider.resolve_portal_base_url", lambda: None)
+    from grove.prompt.composer import PromptComposer
+
+    fake = _FakeIndex(results=[_result(path="researcher_brief/a.md")])
+    composer = PromptComposer()
+    composer.register_section(
+        "cellar_knowledge",
+        create_cellar_provider(index_factory=lambda: fake, dock_goals_loader=lambda: []),
+        order=11, tier="context",
+    )
+    result = composer.compose(user_message="q", session_id="s1")
+    assert result.cellar_sources == ["researcher_brief/a.md"]
+    assert result.cellar_retrieval_hits == 1
+
+
+def test_compose_no_cellar_section_defaults_empty(tmp_path):
+    """A compose with no cellar section leaves the new fields at safe defaults
+    (read-resilient): empty sources, zero hits."""
+    from grove.prompt.composer import PromptComposer
+
+    composer = PromptComposer()   # no sections registered
+    result = composer.compose(user_message="q", session_id="s1")
+    assert result.cellar_sources == []
+    assert result.cellar_retrieval_hits == 0

@@ -1646,6 +1646,12 @@ class Dispatcher:
         # its siblings; this reset guarantees a turn whose response path never
         # reached the hook cannot leak its links into the next turn's answer.
         agent._artifact_links_notice = None
+        # substrate-citation-v1 Phase 1 — wipe the cellar-citation stash every
+        # turn (mirror _artifact_links_notice): a turn whose response path never
+        # reaches the seventh appender cannot leak this turn's citations into the
+        # next answer. Re-populated post-composition from the ComposedPrompt.
+        agent._cellar_citation_sources = None
+        agent._cellar_retrieval_hits = 0
         # artifact-continuation-v1 P2 — parent lineage stash. A continuation
         # dispatch entry sets the ONE-SHOT ``_next_turn_parent_artifact_ids``
         # slot BEFORE driving the turn; this consume initializes the per-turn
@@ -4262,6 +4268,20 @@ class Dispatcher:
         # SAME result whose .text becomes _composed_system_prompt, so the two
         # can never diverge.
         agent._composed_prompt = result
+
+        # substrate-citation-v1 Phase 1 (A1/A2) — stash the RENDERED cellar
+        # source_paths + the floor-crossing hit count off the ComposedPrompt
+        # (drained by compose() from the citation sinks), mirroring the
+        # _artifact_links_notice stash. The seventh appender (Phase 2) cites the
+        # sources; the IntentRecord write site (Phase 3) reads the hit count.
+        # Read-resilient: getattr defaults keep a ComposedPrompt from an older
+        # code path (no such fields) from ever breaking the turn.
+        agent._cellar_citation_sources = list(
+            getattr(result, "cellar_sources", None) or []
+        )
+        agent._cellar_retrieval_hits = int(
+            getattr(result, "cellar_retrieval_hits", 0) or 0
+        )
 
         # composer-observability-v1 (Wave 1) — emit ONE structural compose event
         # per compose() call: per-provider token map + drop provenance, NO prompt
