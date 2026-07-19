@@ -488,6 +488,55 @@ def run_binding_scan(
     return queued_new, deduped
 
 
+def run_exploration_scan(
+    *,
+    events_root: Optional[Path] = None,
+    attended_records_path: Optional[Path] = None,
+    queue_path: Optional[Path] = None,
+    tombstone_path: Optional[Path] = None,
+    now: Optional[Any] = None,
+) -> Tuple[int, int]:
+    """Run the exploration producer; queue its ``exploration_nudge`` proposals.
+    kaizen-exploration-proposals-v1 P4.
+
+    SIXTH independent signal sharing the ``flywheel scan --propose`` cadence (the
+    same coexistence pattern — no coupled enable flags). Nudges cataloged-but-
+    untried models toward an interactive trial; predicate is {catalog} ∖ {fleet ∪
+    attended arm models} ∖ {bound: routing tiers + capability pins} ∖ {tombstoned}
+    ∖ {pending exploration_nudge}. Idempotent per slug (identical payload → same
+    proposal_id → ``proposal_queue.append`` returns False). Poll-only; no timer
+    (flywheel-scan-cadence-v1 debt). Returns ``(queued_new, deduped)``.
+    """
+    from grove.eval.exploration_scan import build_exploration_proposals
+    from grove.eval.proposal_queue import append as _append
+
+    target = queue_path or default_queue_path()
+    if attended_records_path is None:
+        from grove.intent_store import get_store
+
+        attended_records_path = get_store().path
+    try:
+        proposals = build_exploration_proposals(
+            events_root=events_root,
+            attended_records_path=attended_records_path,
+            tombstone_path=tombstone_path,
+            queue_path=target,
+            now=now,
+        )
+    except FileNotFoundError:
+        # No model catalog present (vanilla install) — nothing to explore. Honest
+        # no-op, not an error (mirrors the router's no-config fallback).
+        logger.info("[flywheel] exploration scan: no model catalog — skipping")
+        return 0, 0
+    queued_new = deduped = 0
+    for proposal in proposals:
+        if _append(proposal, path=target):
+            queued_new += 1
+        else:
+            deduped += 1
+    return queued_new, deduped
+
+
 # ── scan (T0 pattern cache — Sprint 48) ──────────────────────────────
 
 
@@ -578,6 +627,23 @@ def cli_scan(
         else:
             print(
                 "Admission friction: no recurring refusal meets the threshold."
+            )
+        print()
+
+        # kaizen-exploration-proposals-v1 P4 — the SIXTH independent signal, same
+        # coexistence pattern (no coupled enable flags): nudge cataloged-but-
+        # untried models toward an interactive trial so the catalog→flywheel cold
+        # start closes.
+        ex_new, ex_dup = run_exploration_scan(queue_path=queue_path)
+        if ex_new or ex_dup:
+            print(
+                f"Exploration: queued {ex_new} exploration_nudge proposal(s)"
+                + (f", {ex_dup} already pending (deduped)" if ex_dup else "")
+                + "."
+            )
+        else:
+            print(
+                "Exploration: no cataloged-untried model to nudge."
             )
         print()
 
