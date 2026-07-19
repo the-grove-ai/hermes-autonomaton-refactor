@@ -71,9 +71,10 @@ def test_guard_pause_skips_invocation_entirely():
     assert _producer_failures() == []
 
 
-def test_paused_producers_stub_is_empty():
-    # P1 ships inert (gate ruling c): the seam returns the empty set until
-    # P2 lands the sanctioned ~/.grove reader in this exact function.
+def test_paused_producers_empty_when_no_pause_state():
+    # P2: the seam delegates to the real reader; with no pause file on disk
+    # (hermetic GROVE_HOME) the sweep behavior is identical to P1's inert
+    # stub — absent file → empty set.
     assert _paused_producers() == frozenset()
 
 
