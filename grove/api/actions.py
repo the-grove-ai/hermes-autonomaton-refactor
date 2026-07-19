@@ -371,6 +371,32 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
 
     # reject + dismiss both dequeue; dismiss records a rejection disposition
     # (routing has no distinct dismiss concept — SPEC 1c).
+    #
+    # portal-reject-callback-parity-v1 — dispatch the type's reject_callback
+    # (tombstone / suppression / pattern re-activation) that flywheel_cli.cli_reject
+    # fires but this branch historically skipped, so a portal reject/dismiss left
+    # no tombstone and the proposal re-surfaced next scan (and, for pattern_demotion,
+    # silently failed to re-activate the pattern). TOLERANT resolution mirrors
+    # cli_reject (flywheel_cli.py:2270-2273 — NOT the approve branch's strict 422):
+    # a queued item must always be dequeueable, so an unknown/handler-less type
+    # falls through to a plain removal. The callback is wrapped so a store-write
+    # fault logs loud (journald) and the dequeue still succeeds — the proposal may
+    # re-surface and be re-rejected, never the reverse. Fires for BOTH verbs (R-1):
+    # reject and dismiss share this branch and routing has no soft-dismiss.
+    # Ordering preserved: callback → remove → disposition (no unpaired-write window).
+    try:
+        reject_handler = _handler_for(proposal.type)
+    except ValueError:
+        reject_handler = None
+    if reject_handler is not None and reject_handler.reject_callback is not None:
+        try:
+            reject_handler.reject_callback(proposal)
+        except Exception as cb_exc:  # noqa: BLE001 — dequeue must still succeed
+            logger.warning(
+                "[portal.actions] reject_callback failed for %s %s: %r — "
+                "proceeding with dequeue",
+                proposal.type, proposal.proposal_id, cb_exc,
+            )
     proposal_queue.remove(proposal.proposal_id)
     _record_kaizen_disposition(
         proposal, disposition="rejected", reason=reason,
