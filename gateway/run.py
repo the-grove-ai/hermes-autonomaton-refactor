@@ -17469,6 +17469,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as _lease_exc:
         logger.error("Stuck-lease sweep failed at startup: %r", _lease_exc)
 
+    # RED-orphan reaper (kaizen-queue-hygiene-v1 K-2a). A RED disposition pops the
+    # red_pending.db payload and, in a SEPARATE non-transactional write, removes the
+    # governance_env_pending queue row; a partial failure strands a bridge row with no
+    # payload that renders as a dead EXPIRED card only a manual dismiss clears. This
+    # STARTUP-ONLY sweep disposes every such orphan through the sanctioned ledger-
+    # recording finalize writer, so the non-transactional pair is safe going forward
+    # (an orphan is transient, one restart deep). Same pre-ticker slot + resilience as
+    # the sweeps above; the reaper emits its own loud summary line (zero-reap logs too).
+    try:
+        from grove.red_pending_store import reap_orphaned_red_pending
+        reap_orphaned_red_pending()
+    except Exception as _red_reap_exc:
+        logger.error("RED-orphan reaper failed at startup: %r", _red_reap_exc)
+
     # suggest-revision-verb-v1 P4 — startup reconciliation for the revision loop, in
     # the SAME pre-ticker slot (safe: no live tap/tick yet). Timestamp/filesystem
     # only — no Notion (cold-MCP at boot). GC exempts terminal_skip; the orphan sweep

@@ -574,3 +574,81 @@ def _extract_write_targets_safe(tool_name: str, arguments: dict) -> list:
             "only — the approved execution stands): %r", exc,
         )
         return []
+
+
+def reap_orphaned_red_pending(
+    *,
+    store: Optional[RedPendingStore] = None,
+    queue_path: Optional[Path] = None,
+    ledger_dir: Optional[Path] = None,
+) -> List[str]:
+    """Startup reaper (kaizen-queue-hygiene-v1 K-2a) — dispose orphaned RED bridge rows.
+
+    A RED action commits its payload to ``red_pending.db`` FIRST, then appends a
+    ``governance_env_pending`` bridge row to the proposal queue (:func:`put` docstring).
+    Disposal is the reverse: the portal claim pops the payload (:func:`RedPendingStore.pop`)
+    and, in a SEPARATE non-transactional write, removes the queue row. A partial
+    disposition — payload popped, queue row not removed — strands a bridge row whose
+    ``store.has()`` is False; the portal then renders it as a dead EXPIRED card that
+    only a manual dismiss clears. This sweep, run once at gateway startup, disposes
+    every such orphan through the sanctioned ledger-recording writer, making the
+    non-transactional pair safe going forward: an orphan is transient, one restart deep.
+
+    ONLY ``governance_env_pending`` rows whose payload is gone are touched — a bridge
+    row WITH a live payload (a real pending RED) is never swept. Disposal routes
+    through :func:`grove.eval.proposal_queue.finalize_proposal_state` so each reap
+    writes a ``kaizen_disposition`` ledger row (provenance per reap); there is NO raw
+    store rewrite and no new writer surface. A RED bridge row has no apply handler, so
+    finalize records the disposition and dequeues WITHOUT invoking one.
+
+    Returns the reaped proposal_ids. Always emits ONE loud summary log line — a
+    zero-reap run logs too, so the sweep is never a silent pass.
+    """
+    from grove.eval.proposal_queue import (
+        finalize_proposal_state,
+        read_all,
+    )
+
+    st = store if store is not None else get_red_pending_store()
+    reaped: List[str] = []
+    for proposal in read_all(path=queue_path):
+        # governance_env_pending is the ONLY RED type that bridges to a payload store
+        # (dispatcher.py / continuation.py append it for EVERY RED action kind —
+        # governance write / privileged shell / secret / opaque — under this one
+        # bridge type). It is therefore the only type for which a missing payload means
+        # ORPHAN rather than a by-design payload-less proposal. Extend this filter if a
+        # new payload-bridged RED type is ever added.
+        if proposal.type != RED_PENDING_PROPOSAL_TYPE:
+            continue
+        # The queue row's id is PREFIXED ("governance_env_pending:<hash>"); the store
+        # keys on the bare <hash>. Strip the prefix for the has() lookup EXACTLY as the
+        # portal does (actions.py / fragments.py: split(":", 1)[1]) — the queue id stays
+        # prefixed for disposal below.
+        bare = (
+            proposal.proposal_id.split(":", 1)[1]
+            if ":" in proposal.proposal_id
+            else proposal.proposal_id
+        )
+        if st.has(bare):
+            continue  # live payload — a real pending RED, never swept
+        if finalize_proposal_state(
+            proposal.proposal_id,
+            "reaped",
+            reason=(
+                "Orphaned RED bridge row — the red_pending.db payload is absent "
+                "(store.has()==False), so this card can never approve. The payload "
+                "was disposed without the paired queue-row removal; startup reaper "
+                "clears the stranded row."
+            ),
+            path=queue_path,
+            ledger_dir=ledger_dir,
+        ):
+            reaped.append(proposal.proposal_id)
+
+    logger.info(
+        "[red-reaper] startup sweep: reaped %d orphaned %s row(s)%s",
+        len(reaped),
+        RED_PENDING_PROPOSAL_TYPE,
+        (": " + ", ".join(reaped)) if reaped else "",
+    )
+    return reaped
