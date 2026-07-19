@@ -151,8 +151,15 @@ def test_reset_block_consumes_one_shot_slot():
     )
     clear = src.find("self._next_turn_parent_artifact_ids = None", anchor)
     assert anchor != -1 and consume != -1 and clear != -1
-    assert 0 < consume - anchor < 900
-    assert 0 < clear - anchor < 1200
+    # substrate-citation-v1 P4 (cross-sprint mechanical correction) — the
+    # per-turn reset region grew by the P3-sibling cellar-citation resets
+    # (_artifact_links_rendered + _cellar_* stashes), which legitimately sit
+    # between this anchor and the parent-slot consume/clear. Bounds relaxed from
+    # 900/1200 to accommodate (current 1681/1818); the SEMANTIC guard — consume +
+    # clear remain in the same reset region, not drifted into another method —
+    # is preserved with headroom.
+    assert 0 < consume - anchor < 2500
+    assert 0 < clear - anchor < 2700
 
 
 # ── store-then-deny handler ──────────────────────────────────────────────────
