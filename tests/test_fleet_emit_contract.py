@@ -397,6 +397,58 @@ def test_forge_meta_contract_loud(tmp_path):
     assert "unexpected file(s)" in out["error"] and "meta" in out["error"]
 
 
+# ── forge-meta-admission-hotfix-v1 HF-1 — emit floor == publish contract ────
+
+
+def _configure_forge_full(tmp_path) -> Path:
+    """The LIVE forge floor: slug + the publish triad (company/role/row_id)."""
+    sink = tmp_path / "sink"
+    sink.mkdir(parents=True, exist_ok=True)
+    fleet_emit_tool.configure(
+        expected_files=["resume.md", "cover-letter.md"],
+        meta_required_keys=["slug", "company", "role", "row_id"],
+        sink=sink,
+        slug=None,
+        synth_meta=None,
+    )
+    return sink
+
+
+def test_hf1_slug_only_meta_refused_then_corrected_call_stages(tmp_path):
+    """A slug-only meta is REFUSED at the emit floor with the missing keys
+    named (the 260712-fractional live-incident shape — a stub meta staged as a
+    defect and dead-ended every portal verb). The refusal does NOT lock, so
+    the model's corrected re-call stages a complete, publish-ready package."""
+    sink = _configure_forge_full(tmp_path)
+    ok_files = dict(_FORGE_ARGS["files"])
+    out = _emit({"files": ok_files, "meta": {"slug": "260712-acme-pm"}})
+    err = out["error"]
+    assert "missing required key" in err
+    for key in ("company", "role", "row_id"):
+        assert key in err
+    assert not (sink / "260712-acme-pm").exists()  # nothing staged
+    out2 = _emit({"files": ok_files, "meta": {
+        "slug": "260712-acme-pm", "company": "Acme", "role": "PM",
+        "row_id": "pg-1",
+    }})
+    assert out2["staged"] is True and out2["locked"] is True
+    meta = json.loads(
+        (sink / "260712-acme-pm" / "meta.json").read_text(encoding="utf-8")
+    )
+    assert meta["company"] == "Acme" and meta["row_id"] == "pg-1"
+
+
+def test_hf1_live_forge_record_declares_full_floor():
+    """The repo DEFINITION pins the floor: the forge record's
+    emit.meta.required_keys carries slug + the full publish contract
+    (_FORGE_META_REQUIRED), so the tool refuses stub metas at emit time."""
+    from grove.capability_registry import load_capabilities
+
+    cap = load_capabilities()["skill.fleet.forge-jobsearch"]
+    decl = worker_entry._emit_declaration(cap)
+    assert decl["meta"]["required_keys"] == ["slug", "company", "role", "row_id"]
+
+
 def test_declarative_synthesized_identity(tmp_path):
     sink = _configure_declarative(tmp_path, "moon-bot")
     out = _emit({"files": {"draft-moon-bot.md": "# Draft\nbody\n"}})

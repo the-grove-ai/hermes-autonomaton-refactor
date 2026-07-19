@@ -217,7 +217,12 @@ governance:
         files:
           required: [resume.md, cover-letter.md]
         meta:
-          required_keys: [slug]
+          # forge-meta-admission-hotfix-v1 HF-1 — the emit floor now matches
+          # the publish contract (_FORGE_META_REQUIRED): a slug-only meta was
+          # admitted, staged as a defect, and dead-ended every portal verb
+          # (260712-fractional live incident). The tool refuses the emit with
+          # the missing keys named, so the model corrects and re-calls.
+          required_keys: [slug, company, role, row_id]
       # fleet-artifact-legibility-v1 C1 — package declaration (consumed by
       # the C2 package renderer; the card-level view falls back to .md this
       # commit). Data only.
