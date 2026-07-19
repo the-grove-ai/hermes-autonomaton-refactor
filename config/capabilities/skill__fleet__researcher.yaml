@@ -35,6 +35,7 @@ context:
   disclosure: pull
   payload: |
     ---
+    created_by: bundled
     name: researcher
     description: "Deep-research skill — accepts an article URL or body, runs a Socratic exchange to capture operator intent, then researches against LLM-Wiki, Notion, and web. Produces structured brief that bridges to Drafter. Fleet Phase 1 reference implementation."
     version: 1.0.0
@@ -244,7 +245,7 @@ lifecycle:
   # (":16" short form, the canonical _body_hash convention) of the FULL
   # context.payload bytes (frontmatter included, pre-strip). The C2 gate hashes
   # the SAME bytes; keep this value and the payload in lockstep on any edit.
-  body_hash: sha256:a4173ec1c155d6f4
+  body_hash: sha256:3cc7f70b88cfa9e5
 lineage:
   source_patterns: []
   parent_id: null

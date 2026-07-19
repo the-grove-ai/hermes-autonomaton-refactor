@@ -42,6 +42,7 @@ context:
   disclosure: pull
   payload: |
     ---
+    created_by: bundled
     name: cultivator
     description: "Community cultivation — identifies high-value prospects for the distributed-AI thesis from engagement signals and Scout output, researches their work, drafts personalized outreach, stages for operator approval. Yellow zone: outreach is external communication in the operator's name. Fleet Phase 1 reference implementation."
     version: 1.0.0

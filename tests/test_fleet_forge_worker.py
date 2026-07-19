@@ -56,10 +56,114 @@ def test_guard_fires_if_forge_reaches_an_index():
     assert ei.value.check == "index_surface_unwired"
 
 
-def test_forge_payload_still_byte_matches_repo_skill():
-    from pathlib import Path
-    repo = Path("skills/fleet/forge-jobsearch/SKILL.md").read_text(encoding="utf-8")
-    assert _forge().context.payload.strip() == repo.strip()
+# ── payload↔SKILL.md byte-parity canary (class-wide) ─────────────────────────
+# The record's context.payload is the runtime-emitted skill copy; it MUST
+# byte-match the human-editable skills/fleet/<name>/SKILL.md source. They drift
+# when one side is edited without re-syncing the other (e.g. a frontmatter
+# completion touching SKILL.md but not the payload). Discovery-driven: every
+# fleet capability record carrying a context.payload is enrolled at collection
+# time, so a seventh fleet skill auto-joins the guard — no hardcoded name list.
+def _fleet_payload_pairs():
+    import yaml
+
+    repo = Path(__file__).resolve().parent.parent
+    cap_dir = repo / "config" / "capabilities"
+    pairs = []
+    for yml in sorted(cap_dir.glob("skill__fleet__*.yaml")):
+        doc = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
+        payload = (doc.get("context") or {}).get("payload")
+        if payload is None:
+            continue
+        rec_id = doc.get("id") or ""
+        name = (
+            rec_id.split("skill.fleet.")[-1]
+            if rec_id.startswith("skill.fleet.")
+            else yml.stem[len("skill__fleet__"):].replace("_", "-")
+        )
+        pairs.append((name, yml, repo / "skills" / "fleet" / name / "SKILL.md"))
+    return pairs
+
+
+_FLEET_PAYLOAD_PAIRS = _fleet_payload_pairs()
+
+
+def test_fleet_payload_canary_is_non_empty():
+    # Guard the guard: discovery must find fleet records, else the parametrized
+    # canary below would vacuously pass with zero cases.
+    assert _FLEET_PAYLOAD_PAIRS, (
+        "no fleet capability records with context.payload discovered under "
+        "config/capabilities/skill__fleet__*.yaml — the byte-parity canary "
+        "would cover nothing"
+    )
+
+
+@pytest.mark.parametrize(
+    "name, record_path, skill_path",
+    _FLEET_PAYLOAD_PAIRS,
+    ids=[p[0] for p in _FLEET_PAYLOAD_PAIRS],
+)
+def test_fleet_payload_byte_matches_repo_skill(name, record_path, skill_path):
+    import yaml
+
+    payload = yaml.safe_load(record_path.read_text(encoding="utf-8"))["context"]["payload"]
+    skill = skill_path.read_text(encoding="utf-8")
+    assert payload.strip() == skill.strip(), (
+        "Fleet skill payload drifted from its SKILL.md source — the runtime "
+        "emits the record payload, which must byte-match the skill file:\n"
+        f"  capability record: {record_path}\n"
+        f"  skill source:      {skill_path}\n"
+        "Re-sync the record's context.payload to the SKILL.md (byte-identical)."
+    )
+
+
+# ── payload↔body_hash anchor pairing guard ───────────────────────────────────
+# The C2 skill_payload provider withholds a payload whose sha256 no longer
+# matches its committed lifecycle.body_hash anchor (an integrity violation). So
+# whenever a fleet record carries an anchor, the payload and the anchor MUST
+# move together. Discovery-driven: only records with a non-None body_hash enrol,
+# and any newly-anchored record joins automatically.
+def _fleet_anchored_pairs():
+    import yaml
+
+    repo = Path(__file__).resolve().parent.parent
+    cap_dir = repo / "config" / "capabilities"
+    pairs = []
+    for yml in sorted(cap_dir.glob("skill__fleet__*.yaml")):
+        doc = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
+        payload = (doc.get("context") or {}).get("payload")
+        anchor = (doc.get("lifecycle") or {}).get("body_hash")
+        if payload is None or anchor is None:
+            continue
+        rec_id = doc.get("id") or ""
+        name = (
+            rec_id.split("skill.fleet.")[-1]
+            if rec_id.startswith("skill.fleet.")
+            else yml.stem[len("skill__fleet__"):].replace("_", "-")
+        )
+        pairs.append((name, yml, payload, anchor))
+    return pairs
+
+
+_FLEET_ANCHORED_PAIRS = _fleet_anchored_pairs()
+
+
+@pytest.mark.parametrize(
+    "name, record_path, payload, anchor",
+    _FLEET_ANCHORED_PAIRS,
+    ids=[p[0] for p in _FLEET_ANCHORED_PAIRS],
+)
+def test_fleet_payload_anchor_pairing(name, record_path, payload, anchor):
+    from grove.capability_registry import _body_hash
+
+    computed = _body_hash(payload)
+    assert computed == anchor, (
+        "Fleet payload drifted from its lifecycle.body_hash anchor — payload "
+        "and anchor must move together (edit one, recompute the other):\n"
+        f"  capability record: {record_path}\n"
+        f"  committed anchor:  {anchor}\n"
+        f"  sha256(payload):   {computed}\n"
+        "Recompute lifecycle.body_hash via capability_registry._body_hash."
+    )
 
 
 # ── forge fleet_workers.yaml entry ───────────────────────────────────────────
