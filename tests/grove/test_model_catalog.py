@@ -24,6 +24,9 @@ from grove.config.model_catalog import (
     load_catalog,
     merge_catalogs,
     merged_catalog_provenance,
+    mint_catalog_entry,
+    upsert_sovereign_entry,
+    write_sovereign_catalog,
 )
 
 _ADD_KIMI = (
@@ -290,3 +293,208 @@ class TestCatalogWriteCard:
 
         desc, _ = describe_red_action("write_file", {"path": "/tmp/x.txt", "content": "hi"})
         assert desc.startswith("Write file /tmp/x.txt")
+
+
+# ── P4: deterministic mint + sovereign write (the DoD write path) ────────────
+
+
+class TestMintAndWrite:
+    @pytest.fixture
+    def sov(self, tmp_path, monkeypatch):
+        path = tmp_path / "model-catalog.yaml"
+        monkeypatch.setattr("grove.config.model_catalog._sovereign_catalog_path", lambda: path)
+        return path
+
+    def test_mint_builds_schema_valid_entry(self):
+        e = mint_catalog_entry("moonshotai/kimi-k3", "Kimi K3", 3.0, 15.0, notes="fast")
+        assert e == {
+            "slug": "moonshotai/kimi-k3", "display_name": "Kimi K3",
+            "provider": "openrouter", "input_cost_per_mtok": 3.0,
+            "output_cost_per_mtok": 15.0, "notes": "fast",
+        }
+
+    def test_mint_defaults_provider_to_openrouter(self):
+        # The live-run bug: the agent put provider=moonshotai. The mint fixes it.
+        assert mint_catalog_entry("moonshotai/kimi-k3", "K", 1, 2)["provider"] == "openrouter"
+
+    def test_mint_rejects_bad_cost(self):
+        with pytest.raises(ValueError, match="input_cost_per_mtok"):
+            mint_catalog_entry("a/b", "B", "free", 2)
+
+    def test_mint_rejects_credential_smuggling(self):
+        # notes is the only free field; a credential can't ride in — mint uses the
+        # metadata-only schema, so there is no field to smuggle one through.
+        e = mint_catalog_entry("a/b", "B", 1, 2, notes="see docs")
+        assert set(e) <= {"slug", "display_name", "provider",
+                          "input_cost_per_mtok", "output_cost_per_mtok", "notes"}
+
+    def test_write_roundtrips_through_load(self, sov):
+        e = mint_catalog_entry("moonshotai/kimi-k3", "Kimi K3", 3.0, 15.0)
+        write_sovereign_catalog(upsert_sovereign_entry(e))
+        cat = load_catalog()
+        slugs = {m["slug"] for m in cat}
+        assert "moonshotai/kimi-k3" in slugs            # added
+        assert "anthropic/claude-opus-4.6" in slugs     # repo survives
+        assert len(cat) == 26
+
+    def test_written_file_is_schema_shaped(self, sov):
+        # Regression pin for the live-run defect: the writer emits a `models:` LIST
+        # (not the slug-keyed map the agent free-handed), so load never fails.
+        import yaml
+        write_sovereign_catalog(upsert_sovereign_entry(mint_catalog_entry("a/b", "B", 1, 2)))
+        data = yaml.safe_load(sov.read_text())
+        assert isinstance(data["models"], list)
+        assert data["models"][0]["slug"] == "a/b"
+
+    def test_upsert_replaces_same_slug_in_place(self, sov):
+        first = mint_catalog_entry("a/b", "First", 1, 2)
+        write_sovereign_catalog(upsert_sovereign_entry(first))
+        second = mint_catalog_entry("a/b", "Second", 9, 9)
+        models = upsert_sovereign_entry(second)
+        assert [m["slug"] for m in models] == ["a/b"]          # no dup
+        assert models[0]["display_name"] == "Second"
+
+    def test_add_catalog_entry_tool_happy_path(self, sov):
+        from tools.catalog_tool import add_catalog_entry
+        msg = add_catalog_entry("moonshotai/kimi-k3", "Kimi K3", 3.0, 15.0, notes="fast")
+        assert "Added moonshotai/kimi-k3" in msg
+        assert sov.exists()
+        assert "moonshotai/kimi-k3" in {m["slug"] for m in load_catalog()}
+
+    def test_add_catalog_entry_tool_rejects_bad_input(self, sov):
+        from tools.catalog_tool import add_catalog_entry
+        msg = add_catalog_entry("a/b", "B", "not-a-number", 2)
+        assert "invalid entry" in msg.lower() or "error" in msg.lower()
+        assert not sov.exists()  # nothing written on a bad mint
+
+    def test_tool_card_shows_merged_view(self):
+        from grove.red_pending_store import describe_red_action
+        desc, opaque = describe_red_action(
+            "add_catalog_entry",
+            {"slug": "moonshotai/kimi-k3", "display_name": "Kimi K3",
+             "input_cost_per_mtok": 3.0, "output_cost_per_mtok": 15.0},
+        )
+        assert opaque is False
+        assert "[NEW]" in desc and "moonshotai/kimi-k3" in desc and "repo entries survive" in desc
+
+
+# ── gap-2: file-write doors refuse raw catalog writes (steer to the tool) ─────
+
+
+class TestRawCatalogWriteDoor:
+    def test_write_file_to_sovereign_catalog_refused(self):
+        from tools.file_tools import write_file_tool
+        r = write_file_tool("/home/hermes/.grove/model-catalog.yaml", "models: junk")
+        assert "add_catalog_entry" in r and "system-managed" in r
+
+    def test_write_file_to_repo_catalog_refused(self):
+        from tools.file_tools import write_file_tool
+        r = write_file_tool("config/model-catalog.yaml", "models: junk")
+        assert "add_catalog_entry" in r
+
+    def test_patch_catalog_refused(self):
+        from tools.file_tools import patch_tool
+        r = patch_tool(mode="replace", path="/x/model-catalog.yaml",
+                       old_string="a", new_string="b")
+        assert "add_catalog_entry" in r
+
+    def test_normal_write_not_refused_by_catalog_door(self, tmp_path):
+        from tools.file_tools import write_file_tool
+        r = write_file_tool(str(tmp_path / "notes.txt"), "hello")
+        assert "add_catalog_entry" not in r
+
+    def test_similarly_named_file_not_caught(self, tmp_path):
+        from tools.file_tools import write_file_tool
+        r = write_file_tool(str(tmp_path / "my-model-catalog.yaml"), "x")
+        assert "add_catalog_entry" not in r  # basename match, not substring
+
+    def test_tool_path_unaffected_by_door(self, tmp_path, monkeypatch):
+        # add_catalog_entry writes via write_sovereign_catalog, not the file door.
+        monkeypatch.setattr(
+            "grove.config.model_catalog._sovereign_catalog_path",
+            lambda: tmp_path / "model-catalog.yaml",
+        )
+        from tools.catalog_tool import add_catalog_entry
+        msg = add_catalog_entry("moonshotai/kimi-k3", "Kimi K3", 3.0, 15.0)
+        assert "Added moonshotai/kimi-k3" in msg
+        assert (tmp_path / "model-catalog.yaml").exists()
+
+
+# ── GATE-B fold: mint hardening (G-2 TOCTOU, G-3 bounds, G-4 sanitize, G-5, G-6) ─
+
+
+class TestMintHardening:
+    @pytest.fixture
+    def sov(self, tmp_path, monkeypatch):
+        path = tmp_path / "model-catalog.yaml"
+        monkeypatch.setattr("grove.config.model_catalog._sovereign_catalog_path", lambda: path)
+        return path
+
+    # G-6 provider enum
+    def test_provider_typo_fails_loud(self):
+        with pytest.raises(ValueError, match="not a known routing provider"):
+            mint_catalog_entry("x/y", "Y", 1, 2, provider="openrouterr")
+
+    def test_default_provider_openrouter_ok(self):
+        assert mint_catalog_entry("x/y", "Y", 1, 2)["provider"] == "openrouter"
+
+    # G-3 cost bounds
+    def test_cost_over_cap_rejected(self):
+        with pytest.raises(ValueError, match="out of bounds"):
+            mint_catalog_entry("x/y", "Y", 3_000_000, 2)
+
+    def test_negative_cost_rejected(self):
+        with pytest.raises(ValueError, match="out of bounds"):
+            mint_catalog_entry("x/y", "Y", -1, 2)
+
+    def test_zero_cost_allowed_and_flagged_on_card(self):
+        e = mint_catalog_entry("x/free", "Free", 0, 0)
+        assert e["input_cost_per_mtok"] == 0
+        from grove.config.model_catalog import _fmt_costs
+        assert "$0" in _fmt_costs(e) and "verify" in _fmt_costs(e)
+
+    # G-4 sanitize
+    def test_hostile_display_name_rendered_inert(self):
+        hostile = "Kimi\x1b[31mK3\nDROP\x00TABLE" + "A" * 200
+        e = mint_catalog_entry("x/y", hostile, 1, 2, notes="l1\nl2\x1b[0m\x07")
+        assert "\x1b" not in e["display_name"] and "\n" not in e["display_name"]
+        assert "\x00" not in e["display_name"]
+        assert len(e["display_name"]) <= 81  # 80-char cap + ellipsis
+        assert "\x1b" not in e["notes"] and "\n" not in e["notes"]
+
+    # G-2 TOCTOU
+    def test_toctou_new_becomes_shadow_is_rejected(self, sov):
+        # A repo slug stands in for "a repo entry appeared under a slug staged NEW".
+        repo_slug = _load_catalog_file(
+            __import__("grove.config.model_catalog", fromlist=["_repo_catalog_path"])._repo_catalog_path()
+        )[0]["slug"]
+        entry = mint_catalog_entry(repo_slug, "Override", 1, 2)
+        with pytest.raises(CatalogWriteError, match="state drift"):
+            upsert_sovereign_entry(entry, expected_origin="new")
+
+    def test_toctou_intentional_shadow_allowed(self, sov):
+        from grove.config.model_catalog import _repo_catalog_path
+        repo_slug = _load_catalog_file(_repo_catalog_path())[0]["slug"]
+        entry = mint_catalog_entry(repo_slug, "Override", 1, 2)
+        out = upsert_sovereign_entry(entry, expected_origin="shadows_repo")
+        assert any(m["slug"] == repo_slug for m in out)
+
+    def test_toctou_new_stays_new_ok(self, sov):
+        entry = mint_catalog_entry("brand/new-xyz", "New", 1, 2)
+        out = upsert_sovereign_entry(entry, expected_origin="new")
+        assert out[-1]["slug"] == "brand/new-xyz"
+
+    # G-5 atomicity
+    def test_write_is_tmp_fsync_replace(self, sov, monkeypatch):
+        import os
+        calls = {"fsync": 0, "replace": []}
+        real_fsync, real_replace = os.fsync, os.replace
+        monkeypatch.setattr(os, "fsync", lambda fd: (calls.__setitem__("fsync", calls["fsync"] + 1), real_fsync(fd))[1])
+        monkeypatch.setattr(os, "replace", lambda src, dst: (calls["replace"].append((src, dst)), real_replace(src, dst))[1])
+        write_sovereign_catalog([mint_catalog_entry("a/b", "B", 1, 2)])
+        assert calls["fsync"] >= 1                      # durable flush
+        assert len(calls["replace"]) == 1              # atomic swap
+        src, dst = calls["replace"][0]
+        assert src.endswith(".tmp") and str(dst) == str(sov)
+        assert not list(sov.parent.glob("*.tmp"))      # no torn tmp left
+        assert "a/b" in sov.read_text()                # content complete
