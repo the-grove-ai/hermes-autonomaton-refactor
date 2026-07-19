@@ -6,10 +6,14 @@ cost heuristics. The Cognitive Router never reads it; when the operator picks a
 slug, the routing writer validates it against ``routing.config.yaml``'s own
 constraints (a sandbox ``CognitiveRouter`` build), not against this file.
 
-Sovereign override (AC-9): if ``~/.grove/model-catalog.yaml`` exists it is loaded
-INSTEAD of the repo seed (``config/model-catalog.yaml``) — the same operator-wins
-precedence the routing config follows. This is a read path, so ``yaml.safe_load``
-(the catalog carries no comments worth preserving once parsed).
+Sovereign merge (AC-9 / M-9): the effective catalog is a PER-SLUG merge of the
+repo seed (``config/model-catalog.yaml``) and the operator override
+(``~/.grove/model-catalog.yaml``), operator-wins PER SLUG — NOT whole-file
+replace. A sovereign entry masks the repo entry sharing its slug; repo entries
+the override does not name survive (so a one-line sovereign file adds one model
+without blinding the node to the other repo entries or to repo catalog upgrades).
+Precedent: the ``~/.grove/capabilities/state/`` slug-keyed overlay. This is a
+read path, so ``yaml.safe_load`` (comments are not preserved once parsed).
 
 Schema is validated on load (N1): a file that parses but is missing a required
 field, or carries a cost as a string, fails loud HERE rather than degrading into
@@ -70,14 +74,6 @@ def _sovereign_catalog_path() -> Path:
     return Path(get_hermes_home()) / "model-catalog.yaml"
 
 
-def _catalog_path() -> Path:
-    """Resolve which catalog to load — the sovereign override wins (AC-9)."""
-    sovereign = _sovereign_catalog_path()
-    if sovereign.exists():
-        return sovereign
-    return _repo_catalog_path()
-
-
 def _validate_catalog(models: Any, source: Path) -> list[dict]:
     """Validate the parsed catalog; raise ``ValueError`` on any defect (N1).
 
@@ -129,24 +125,106 @@ def _validate_catalog(models: Any, source: Path) -> list[dict]:
     return models
 
 
-def load_catalog() -> list[dict]:
-    """Load and validate the model catalog (sovereign override > repo seed).
-
-    Returns the list of model dicts. Raises ``FileNotFoundError`` if neither
-    file exists, ``ValueError`` if the chosen file is malformed (N1).
-    """
-    path = _catalog_path()
-    if not path.exists():
-        raise FileNotFoundError(
-            f"no model catalog found (looked for {_sovereign_catalog_path()} "
-            f"then {_repo_catalog_path()})"
-        )
+def _load_catalog_file(path: Path) -> list[dict]:
+    """Parse + validate one catalog file; reject in-file duplicate slugs."""
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or "models" not in data:
         raise ValueError(f"model catalog at {path} missing top-level 'models' list")
-    catalog = _validate_catalog(data["models"], path)
-    logger.debug("[model_catalog] loaded %d models from %s", len(catalog), path)
-    return catalog
+    models = _validate_catalog(data["models"], path)
+    seen: set[str] = set()
+    for m in models:
+        if m["slug"] in seen:
+            raise ValueError(
+                f"model catalog at {path} has duplicate slug {m['slug']!r} — "
+                f"one entry per model id"
+            )
+        seen.add(m["slug"])
+    return models
+
+
+def merge_catalogs(repo: list[dict], sovereign: list[dict]) -> list[dict]:
+    """Per-slug merge, operator-wins per slug (M-9).
+
+    Repo order first. A sovereign entry REPLACES the repo entry sharing its slug
+    (in place); a new sovereign slug is appended. Repo entries the override does
+    not name SURVIVE — so a one-line sovereign file adds one model without
+    blinding the node to the other repo entries or to repo catalog upgrades.
+    (Precedent: the ``~/.grove/capabilities/state/`` slug-keyed overlay.)
+    """
+    by_slug: dict[str, dict] = {}
+    order: list[str] = []
+    for m in repo:
+        by_slug[m["slug"]] = m
+        order.append(m["slug"])
+    for m in sovereign:
+        if m["slug"] not in by_slug:
+            order.append(m["slug"])
+        by_slug[m["slug"]] = m
+    return [by_slug[s] for s in order]
+
+
+def load_catalog() -> list[dict]:
+    """Load the effective (merged) model catalog.
+
+    Per-slug merge of the repo seed (``config/model-catalog.yaml``) and the
+    sovereign override (``~/.grove/model-catalog.yaml``), operator-wins per slug
+    (M-9). Raises ``FileNotFoundError`` if NEITHER file exists, ``ValueError`` if
+    a present file is malformed (N1). This is the single effective vocabulary —
+    the portal dropdown, M-2 swap gate, referential guard, and load-time coherence
+    Andon all evaluate against this merged view.
+    """
+    repo_path, sov_path = _repo_catalog_path(), _sovereign_catalog_path()
+    repo = _load_catalog_file(repo_path) if repo_path.exists() else []
+    sovereign = _load_catalog_file(sov_path) if sov_path.exists() else []
+    if not repo and not sovereign:
+        raise FileNotFoundError(
+            f"no model catalog found (looked for {sov_path} and {repo_path})"
+        )
+    merged = merge_catalogs(repo, sovereign)
+    logger.debug(
+        "[model_catalog] merged %d repo + %d sovereign -> %d effective models",
+        len(repo), len(sovereign), len(merged),
+    )
+    return merged
+
+
+def merged_catalog_provenance() -> list[dict]:
+    """The merged catalog with per-entry provenance for the approval card (G-4).
+
+    Each returned dict is ``{**entry, "_origin": ..., "_shadowed_fields": {...}}``:
+      * ``_origin`` — ``"repo"`` (repo only), ``"override"`` (sovereign-only slug),
+        or ``"override_shadows_repo"`` (sovereign slug that masks a repo entry).
+      * ``_shadowed_fields`` — for a shadowing entry, ``field -> {"repo": old,
+        "override": new}`` for every field whose value the override changed. The
+        card renders the RESOLVED value and marks these as SHADOWS.
+    """
+    repo_path, sov_path = _repo_catalog_path(), _sovereign_catalog_path()
+    repo = _load_catalog_file(repo_path) if repo_path.exists() else []
+    sovereign = _load_catalog_file(sov_path) if sov_path.exists() else []
+    repo_by_slug = {m["slug"]: m for m in repo}
+    sov_by_slug = {m["slug"]: m for m in sovereign}
+
+    out: list[dict] = []
+    for entry in merge_catalogs(repo, sovereign):
+        slug = entry["slug"]
+        rec = dict(entry)
+        if slug in sov_by_slug and slug in repo_by_slug:
+            old = repo_by_slug[slug]
+            shadowed = {
+                k: {"repo": old.get(k), "override": entry.get(k)}
+                for k in set(old) | set(entry)
+                if old.get(k) != entry.get(k)
+            }
+            rec["_origin"] = "override_shadows_repo"
+            rec["_shadowed_fields"] = shadowed
+        elif slug in sov_by_slug:
+            rec["_origin"] = "override"
+            rec["_shadowed_fields"] = {}
+        else:
+            rec["_origin"] = "repo"
+            rec["_shadowed_fields"] = {}
+        out.append(rec)
+    return out
 
 
 def get_models_for_tier(tier: str, catalog: list[dict]) -> list[dict]:
@@ -158,6 +236,76 @@ def get_models_for_tier(tier: str, catalog: list[dict]) -> list[dict]:
     can filter here without changing callers.
     """
     return list(catalog)
+
+
+# ── approval-card rendering for a catalog write (model-catalog-v1 M-5/G-4) ────
+
+
+def is_catalog_path(path: Any) -> bool:
+    """True if *path* targets a model catalog file (repo seed or sovereign)."""
+    return isinstance(path, str) and path.strip().endswith("model-catalog.yaml")
+
+
+def _fmt_costs(entry: dict) -> str:
+    return f"${entry.get('input_cost_per_mtok')}/${entry.get('output_cost_per_mtok')} per Mtok"
+
+
+def describe_catalog_write(path: Any, content: Any, *, max_entries: int = 25) -> str | None:
+    """Approval-card body for a write to the model catalog (M-5/G-4).
+
+    Renders the FULLY-RESOLVED merged view of the PROPOSED content (treated as
+    the would-be sovereign file, merged per-slug over the repo seed), never a
+    delta alone. Each written entry shows its resolved fields and a per-slug
+    marker: ``[NEW]``, ``[SHADOWS repo: <fields>]`` (override masks repo fields),
+    or ``[matches repo]``. Repo entries the write does not name survive silently
+    (M-9) — noted in the header so the operator is not misled into thinking they
+    vanish.
+
+    Returns ``None`` when *path* is not a catalog file or *content* does not
+    parse into a ``models`` list — the caller then falls back to the generic
+    write_file render (path + bounded content), so the card never blanks out.
+    """
+    if not is_catalog_path(path):
+        return None
+    try:
+        data = yaml.safe_load(content)
+    except Exception:  # noqa: BLE001 — a malformed proposal falls back, never crashes the card
+        return None
+    proposed = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(proposed, list) or not proposed:
+        return None
+
+    repo_path = _repo_catalog_path()
+    try:
+        repo = _load_catalog_file(repo_path) if repo_path.exists() else []
+    except Exception:  # noqa: BLE001 — repo unreadable: still render the proposal, unmarked
+        repo = []
+    repo_by = {m["slug"]: m for m in repo if isinstance(m, dict) and m.get("slug")}
+
+    lines: list[str] = []
+    for m in proposed:
+        if not isinstance(m, dict) or not m.get("slug"):
+            continue
+        slug = m["slug"]
+        resolved = f"{slug} | {m.get('display_name')} | {m.get('provider')} | {_fmt_costs(m)}"
+        if slug in repo_by:
+            old = repo_by[slug]
+            masked = sorted(k for k in set(old) | set(m) if old.get(k) != m.get(k))
+            marker = f"[SHADOWS repo: {', '.join(masked)}]" if masked else "[matches repo]"
+        else:
+            marker = "[NEW]"
+        lines.append(f"  {resolved} {marker}")
+
+    survivors = len([s for s in repo_by if s not in {m.get("slug") for m in proposed}])
+    header = (
+        f"Catalog write to {path} — resolved merged view "
+        f"({len(lines)} written, {survivors} unlisted repo entr"
+        f"{'y' if survivors == 1 else 'ies'} survive):"
+    )
+    shown = lines[:max_entries]
+    if len(lines) > max_entries:
+        shown.append(f"  … (+{len(lines) - max_entries} more)")
+    return header + "\n" + "\n".join(shown)
 
 
 # ── referential integrity guard (model-catalog-v1 G-2) ───────────────────────
