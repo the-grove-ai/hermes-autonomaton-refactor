@@ -471,3 +471,79 @@ def test_race_sweep_then_finalize(tmp_path):
     # a later finalize STILL disposes cleanly (idempotent, no corruption)
     assert pq.finalize_proposal_state(pid, "applied", path=q, ledger_dir=tmp_path / "l") is True
     assert pq.read(pid, path=q) is None
+
+
+# ── forge-meta-admission-hotfix-v1 — HF-3 validate-before-canonicalize ───────
+
+
+def _stage_stub_meta(slug="260712-stub-unit"):
+    """The live-incident shape: documents staged beside a slug-only meta."""
+    slug_dir = Path(get_hermes_home()) / "forge" / "pending_review" / slug
+    slug_dir.mkdir(parents=True, exist_ok=True)
+    (slug_dir / "resume.md").write_text("R")
+    (slug_dir / "cover-letter.md").write_text("C")
+    (slug_dir / "meta.json").write_text(json.dumps({"slug": slug}))
+    return slug_dir
+
+
+async def test_hf3_invalid_meta_refused_before_canonicalize(monkeypatch):
+    """Invalid staged meta → 400 BEFORE canonicalization: staging dir
+    byte-untouched, canonical dir never created, lease cleared (re-tappable),
+    proposal live, publish core never reached. Kills the 260712 split state
+    (docs canonical + meta-only staging husk) at its source."""
+    slug = "260712-stub-unit"
+    pid, _ = pq.file_agentless(
+        type=FT, payload={"slug": slug, "row_id": None,
+                          "skill_id": "skill.fleet.forge-jobsearch",
+                          "meta_defect": "missing:company,role,row_id"},
+        evidence=(slug,))
+    slug_dir = _stage_stub_meta(slug)
+    before = {p.name: p.read_bytes() for p in slug_dir.iterdir()}
+
+    def _never(slug, loop):  # publish core must NOT be reached
+        raise AssertionError("_forge_publish_core reached despite invalid meta")
+
+    monkeypatch.setattr(actions, "_forge_publish_core", _never)
+    resp = await actions.handle_forge_promote(_Req(proposal_id=pid))
+    assert resp.status == 400
+    # staging byte-untouched; canonical never created
+    after = {p.name: p.read_bytes() for p in slug_dir.iterdir()}
+    assert after == before
+    assert not _canonical_dir(slug).exists()
+    # lease cleared -> re-tappable; proposal live (resolved by reject, not decay)
+    rec = pq.read(pid)
+    assert rec is not None and rec.lease is None
+    # the loud path filed its Andon
+    assert any(p.type == "portal_action_failure" for p in pq.read_all())
+
+
+async def test_hf3_valid_meta_still_promotes(monkeypatch):
+    """The precheck is invisible to healthy drafts: complete meta → canonicalize
+    → publish → finalize, byte-identical to the pre-HF-3 happy path."""
+    pid = _emit()
+    _stage()
+    monkeypatch.setattr(
+        actions, "_forge_publish_core",
+        lambda slug, loop: _async(
+            {"ok": True, "folder_link": "drive://x", "row_id": "pg1"}))
+    resp = await actions.handle_forge_promote(_Req(proposal_id=pid))
+    assert resp.status == 200
+    assert pq.read(pid) is None  # finalized
+    assert (_canonical_dir() / "resume.md").read_text() == "R"
+
+
+# ── forge-meta-admission-hotfix-v1 — HF-4 imperative defect copy ────────────
+
+
+def test_hf4_defect_card_copy_names_keys_and_action():
+    from types import SimpleNamespace
+
+    from grove.kaizen.rendering import _summary_forge_artifact_pending
+
+    line = _summary_forge_artifact_pending(SimpleNamespace(payload={
+        "slug": "260712-stub-unit", "fit_score": 90,
+        "meta_defect": "missing:company,role,row_id",
+    }))
+    assert "missing:company,role,row_id" in line          # names the keys
+    assert "backfill meta before promote" in line         # names the action
+    assert "publish will refuse" in line                  # names the consequence
