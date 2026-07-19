@@ -341,7 +341,9 @@ def test_always_mints_standing_grant_for_every_native_verb(tmp_path, monkeypatch
             f"'Always' on native verb {tool!r} minted NO standing grant — "
             f"the S4.2/H2 bake-miss class"
         )
-        assert minted.disposition == "standing"
+        # sovereign-disposition-hotfix-v1 — the mint persists the execution-gate
+        # token 'always', not the write-only orphan 'standing' the gate rejects.
+        assert minted.disposition == "always"
         assert minted.authorized_by == "sovereignty_prompt"
 
 

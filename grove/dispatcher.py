@@ -2050,10 +2050,12 @@ class Dispatcher:
                         # per disposition.
                         if disposition not in ("once", "session", "always"):
                             raise ValueError(
-                                f"Sovereign prompt returned unknown "
-                                f"disposition: {disposition!r}. "
-                                f"Valid: 'once' / 'session' / 'always' / "
-                                f"'deny' per GRV-005 § VI v1.1."
+                                f"Governance disposition {disposition!r} is not "
+                                f"executable. The value arrived from a replayed "
+                                f"standing grant (grant.disposition, :1967) or the "
+                                f"halt handler (:1974); the execution gate accepts "
+                                f"only 'once' / 'session' / 'always'. Red 'deny' is "
+                                f"resolved on the decline path and never reaches here."
                             )
                         # containment Phase-2 Change 3 — attempt-stamp every escalated
                         # (non-green) shell write in this approved batch BEFORE the
@@ -6213,7 +6215,7 @@ class Dispatcher:
                 source="standing",
                 scope=scope,
                 write_class=write_class,
-                disposition="standing",
+                disposition="always",
                 issued_at=datetime.now(timezone.utc).isoformat(),
                 authorized_by="sovereignty_prompt",
                 revoked=False,
