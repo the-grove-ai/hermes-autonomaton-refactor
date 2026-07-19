@@ -19,8 +19,11 @@ swallow with only a thin last-resort guard.
 
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from grove.fleet import runner
@@ -33,6 +36,53 @@ from grove.fleet.resolvers import resolve_input_state
 from grove.fleet.runner import WorkerHandle
 
 logger = logging.getLogger(__name__)
+
+# fleet-event-reconciliation-v1 RC-1 — orphaned terminal events at most this
+# old are re-classified through the live fold; older ones are named in the
+# WARNING summary (the audit trail, gate ruling c) and marked, never carded.
+_RECONCILE_WINDOW_DAYS = 7
+
+
+def _classified_marker_path(event_path: Any) -> Path:
+    """The sidecar marker beside a terminal event file (gate ruling a)."""
+    return Path(str(event_path) + ".classified")
+
+
+def _mark_classified(event_path: Any) -> None:
+    """Mark a terminal event as classified (sidecar ``<event>.json.classified``).
+
+    Written by BOTH the live-reap path and the reconciler so the two converge
+    on one legibility story. The marker is an efficiency + Andon-noise
+    mechanism, NOT the correctness wall — proposal emission is content-
+    addressed and dedups on re-classify; the marker is what prevents a
+    re-scan from re-firing ``surface_fleet_andon`` (which has no dedup).
+    A marker-write failure logs and continues: the dedup wall holds.
+    """
+    try:
+        _classified_marker_path(event_path).touch()
+    except OSError as exc:
+        logger.error(
+            "[fleet.reconcile] could not write classified marker for %s: %r",
+            event_path, exc,
+        )
+
+
+def _event_timestamp(event: Dict[str, Any], event_path: Path) -> datetime:
+    """The event's authoritative timestamp (gate ruling c): the in-band ``ts``
+    field; file mtime as fail-open fallback; ``now`` if both are unreadable —
+    over-inclusion lands in the fold behind the dedup wall, silent skip is
+    the sin."""
+    raw = event.get("ts")
+    if isinstance(raw, str):
+        try:
+            ts = datetime.fromisoformat(raw)
+            return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    try:
+        return datetime.fromtimestamp(event_path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return datetime.now(timezone.utc)
 
 
 def _review_mode_for_skill(skill_id: Optional[str]) -> Optional[str]:
@@ -84,6 +134,10 @@ class FleetManager:
         self._override_fail_reason: Optional[str] = None
         self._running: Dict[str, WorkerHandle] = {}
         self._last_dispatch: Dict[str, datetime] = {}
+        # fleet-event-reconciliation-v1 (gate ruling e) — first-tick-as-boot:
+        # the first reconciliation pass runs with source="boot", every later
+        # one with source="tick" (the RC-2 stall tripwire).
+        self._boot_reconciled = False
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -95,6 +149,11 @@ class FleetManager:
         # I1 — windowed publish digest at the TAIL of the tick (post-append: every
         # publish this tick already landed in the durable log during _reap_running).
         self._maybe_emit_publish_digest()
+        # fleet-event-reconciliation-v1 RC-1 — orphaned-terminal-event pass at
+        # the very tail: _reap_running above has already classified (and
+        # marked) every live-handle exit this tick, so anything unclassified
+        # here is a genuine orphan.
+        self._maybe_reconcile_events()
 
     def _maybe_emit_publish_digest(self) -> None:
         """I1 (unattended-publish-legibility-v1 MOVE 4) — the windowed publish
@@ -108,6 +167,117 @@ class FleetManager:
             emit_publish_digest(loop=self._loop)
         except Exception as exc:  # noqa: BLE001 — never crash the tick
             logger.error("[fleet.manager] publish digest host failed: %r", exc)
+
+    # ── orphaned-terminal-event reconciliation (fleet-event-reconciliation-v1) ──
+
+    def _maybe_reconcile_events(self) -> None:
+        """Host the RC-1 reconciliation pass; a pass bug never breaks the tick."""
+        source = "boot" if not self._boot_reconciled else "tick"
+        self._boot_reconciled = True
+        try:
+            self._reconcile_events(source)
+        except Exception as exc:  # noqa: BLE001 — never crash the tick
+            logger.error(
+                "[fleet.reconcile] %s reconciliation pass failed: %r", source, exc,
+            )
+
+    def _reconcile_events(self, source: str) -> None:
+        """RC-1 — classify orphaned terminal events through the SAME live fold.
+
+        A worker's terminal event reaches the operator only via the in-memory
+        handle chain (``_reap_one`` → ``_classify_terminal`` →
+        ``_maybe_emit_artifact_proposal``); a gateway restart severs the
+        handle and, before this sprint, permanently orphaned the event (the
+        260719/cf577af0 incident — a clean success event on disk, no card,
+        for hours). This pass scans every ``<fleet>/<wid>/events/*.json``
+        without a ``.classified`` sidecar and routes it through
+        ``_classify_terminal`` with a stub handle
+        (``SimpleNamespace(run_id=…, wall_clock_secs=None)``, ``killed=False``
+        — the killed branch is unreachable for a reconciled event because a
+        wall-clock kill is only ever decided by a LIVE ``_reap_one`` holding
+        the real handle; an event on disk means the worker reached its own
+        terminal write). Failed events Andon exactly like live reaps (gate
+        ruling d corollary): restart-orphaned failures were exactly as
+        invisible as successes.
+
+        ORDERING PIN (gate ruling e condition): first-tick reconciliation
+        must only ever see post-``sweep_orphans`` state. The boot sequence
+        guarantees it — ``gateway/run.py:17425-17434`` runs ``sweep_orphans``
+        BEFORE the cron ticker starts, so by the first ``tick()`` every
+        stranded process group is dead and no orphan is mid-write. The
+        mechanical wall pinned by test: any run_id still in
+        ``self._running`` is SKIPPED (the ticker owns it; its event may be
+        torn-mid-write or simply not yet reaped this tick — ``_reap_running``
+        at the head of the tick handles it next pass).
+
+        Window (gate ruling c): events at most ``_RECONCILE_WINDOW_DAYS`` old
+        (in-band ``ts`` authoritative; mtime fail-open into the fold) ride
+        the fold; older ones are named in the WARNING summary — that IS the
+        audit trail — and marked. No new ledger event type. Double-classify
+        is safe regardless: proposal emission is content-addressed (the
+        dedup wall); the marker exists to stop re-scans and re-Andons.
+        """
+        from grove.fleet import paths as fleet_paths
+
+        root = fleet_paths.fleet_root()
+        if not root.is_dir():
+            return
+        live_run_ids = {h.run_id for h in self._running.values()}
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            days=_RECONCILE_WINDOW_DAYS
+        )
+        reconciled: list = []
+        stale: list = []
+        for event_path in sorted(root.glob("*/events/*.json")):
+            if _classified_marker_path(event_path).exists():
+                continue
+            wid = event_path.parent.parent.name
+            run_id = event_path.stem
+            if run_id in live_run_ids:
+                continue  # ordering pin — the ticker owns this run
+            try:
+                event = json.loads(event_path.read_text(encoding="utf-8"))
+                if not isinstance(event, dict):
+                    raise ValueError("terminal event is not a mapping")
+            except Exception as exc:  # noqa: BLE001 — torn/unreadable orphan
+                logger.warning(
+                    "[fleet.reconcile] unreadable orphan event %s (%r) — "
+                    "marked classified so it cannot re-scan; inspect manually",
+                    event_path, exc,
+                )
+                _mark_classified(event_path)
+                continue
+            if _event_timestamp(event, event_path) < cutoff:
+                stale.append(f"{wid}/{run_id}")
+                _mark_classified(event_path)
+                continue
+            if source == "tick":
+                # RC-2 tripwire — an orphan appearing under a LIVE ticker is
+                # the reap-stall signature (the cf577af0 mystery), surfaced
+                # at the journald-visible floor.
+                logger.warning(
+                    "[fleet.reconcile] RC-2 tripwire: run %s/%s completed "
+                    "under a live ticker but was never reaped (event ts %s) "
+                    "— reconciling now",
+                    wid, run_id, event.get("ts"),
+                )
+            self._classify_terminal(
+                wid,
+                SimpleNamespace(run_id=run_id, wall_clock_secs=None),
+                0,
+                event,
+                False,
+            )
+            _mark_classified(event_path)
+            reconciled.append(f"{wid}/{run_id}")
+        if reconciled or stale:
+            logger.warning(
+                "[fleet.reconcile] %s reconciliation: %d orphaned event(s) "
+                "classified through the live fold: %s; %d stale (>%dd) "
+                "marked trace-only: %s",
+                source, len(reconciled), reconciled,
+                len(stale), _RECONCILE_WINDOW_DAYS, stale,
+            )
 
     # ── reap / death observability ─────────────────────────────────────────────
 
@@ -129,6 +299,9 @@ class FleetManager:
         remove_pidfile(wid)
         event = self._read_event(handle.event_path)
         self._classify_terminal(wid, handle, rc, event, killed)
+        # fleet-event-reconciliation-v1 (gate ruling a) — the live path writes
+        # the same classified marker the reconciler writes: one legibility story.
+        _mark_classified(handle.event_path)
 
     @staticmethod
     def _read_event(event_path) -> Optional[Dict[str, Any]]:
