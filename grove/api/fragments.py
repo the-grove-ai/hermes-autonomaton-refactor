@@ -728,12 +728,13 @@ def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
         ``[redacted]`` by :func:`redact_command_string`) plus the ZoneResult named
         reason, no masked-value line, a tool-neutral confirm.
 
-    The MASKED operator-facing description comes from the in-memory store singleton
+    The MASKED operator-facing description comes from the store singleton
     (``request.app["red_pending_store"]``); the secret value is NEVER rendered. If
-    the payload is gone (orphan — durable queue row survived a restart, in-memory
-    payload did not) render EXPIRED with a Dismiss affordance, NOT a live approve.
-    Otherwise render a two-step approve form carrying the ``approve``-step CSRF
-    nonce. Not batchable (single-id action row)."""
+    the payload is gone (orphan — the DURABLE red_pending.db payload was disposed
+    without the paired queue row being removed, leaving a stranded bridge row; the
+    store survives restarts, so this is NOT a restart casualty) render EXPIRED with a
+    Dismiss affordance, NOT a live approve. Otherwise render a two-step approve form
+    carrying the ``approve``-step CSRF nonce. Not batchable (single-id action row)."""
     store = request.app.get("red_pending_store")
     bare = full_pid.split(":", 1)[1] if ":" in full_pid else full_pid
     masked = store.masked_description(bare) if store is not None else None
@@ -747,9 +748,10 @@ def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
             f'<div class="card card-expired" id="proposal-{short_id}">'
             f'<h4><span class="badge {badge}">RED</span> '
             f'<span class="badge">expired</span></h4>'
-            f'<p>This pending action is no longer available — the gateway '
-            f'restarted and pending proposals are session-scoped. Re-propose to '
-            f'apply it.</p>'
+            f'<p>This pending action can no longer be approved — its stored '
+            f'payload was already disposed, but this queue row was left behind, '
+            f'so the card is a stranded orphan. Dismiss to remove it (the gateway '
+            f'also clears these on restart). Re-propose the action to apply it.</p>'
             f'<div class="proposal-actions">'
             f'<button class="btn btn-dismiss" '
             f'hx-post="/portal/actions/proposals/{pid}/dismiss" '
