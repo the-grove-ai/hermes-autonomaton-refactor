@@ -231,6 +231,21 @@ class RoutingConfigWriter:
             if current == new_slug:
                 return TierSwapResult(status="noop", tier=tier, model=new_slug)
 
+            # model-catalog-v1 M-2 — fail-closed catalog-membership check at the
+            # write seam, mirroring set_model_binding's ModelBinding gate. A tier
+            # may only be bound to a cataloged model; an off-catalog slug is dead
+            # config that would 400 at call time, so it is refused here rather
+            # than validated only for structure by the sandbox below.
+            from grove.config.model_catalog import load_catalog
+
+            catalog_slugs = {m["slug"] for m in load_catalog()}
+            if new_slug not in catalog_slugs:
+                raise ConfigValidationError(
+                    f"swap_tier_model: model {new_slug!r} is not in the model "
+                    f"catalog — a tier bound to an off-catalog slug is dead "
+                    f"config. Refusing to write. Add it to the catalog first."
+                )
+
             def mutate(data: Any) -> None:
                 entry = _tier_entry(data, tier)
                 old = entry.get("model")
