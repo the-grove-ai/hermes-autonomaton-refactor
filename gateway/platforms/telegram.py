@@ -103,6 +103,35 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".gif": "image/gif",
 }
 
+# Telegram's Bot API getFile endpoint refuses to hand back files larger than
+# ~20 MB ("File is too big").  This is the download ceiling for every media
+# type, so we pre-check against it and surface a loud, cause-specific notice
+# instead of swallowing the resulting BadRequest.
+_TELEGRAM_GETFILE_MAX_BYTES = 20 * 1024 * 1024
+
+# Operator-facing labels for each media surface, used when building failure
+# notices.  Keyed by the short type name passed at each catch/pre-check site.
+_MEDIA_TYPE_LABELS = {
+    "photo": "photo",
+    "voice": "voice message",
+    "audio": "audio file",
+    "video": "video",
+    "document": "document",
+    "video_note": "video note",
+    "animation": "animation (GIF)",
+}
+
+
+def _format_bytes(num_bytes: Optional[int]) -> str:
+    """Render a byte count as a human-readable size, or a plain fallback."""
+    if not isinstance(num_bytes, int) or num_bytes < 0:
+        return "an unverified size"
+    mb = num_bytes / (1024 * 1024)
+    if mb >= 1:
+        return f"{mb:.1f} MB"
+    kb = num_bytes / 1024
+    return f"{kb:.0f} KB"
+
 
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
@@ -4604,6 +4633,94 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
 
+    @staticmethod
+    def _classify_media_failure(exc: BaseException) -> str:
+        """Map a caching exception to a failure category by TYPE only.
+
+        Order matters: ``BadRequest`` and ``TimedOut`` are both subclasses of
+        ``NetworkError`` in python-telegram-bot, so the rejected/transient split
+        checks ``BadRequest`` first.
+        """
+        try:
+            from telegram.error import BadRequest, NetworkError, TimedOut
+        except Exception:  # pragma: no cover - telegram always importable here
+            BadRequest = NetworkError = TimedOut = ()  # type: ignore[assignment]
+        if BadRequest and isinstance(exc, BadRequest):
+            return "rejected"
+        if (NetworkError or TimedOut) and isinstance(exc, (NetworkError, TimedOut)):
+            return "transient"
+        if isinstance(exc, (OSError, ValueError)):
+            return "cache"
+        return "cache"
+
+    @classmethod
+    def _media_failure_notice(cls, media_type: str, category: str, detail: Any = None) -> str:
+        """Build a cause-specific, operator-facing media-failure notice.
+
+        ``detail`` is polymorphic: an ``int`` byte count for the ``oversize``
+        category, or the exception string for ``rejected`` (used ONLY to refine
+        the copy — never control flow).
+        """
+        label = _MEDIA_TYPE_LABELS.get(media_type, media_type)
+        cap_mb = _TELEGRAM_GETFILE_MAX_BYTES // (1024 * 1024)
+        if category == "oversize":
+            return (
+                f"[Your {label} is {_format_bytes(detail if isinstance(detail, int) else None)} — "
+                f"over Telegram's ~{cap_mb} MB Bot API download limit (getFile), so I could not "
+                f"retrieve it. Please send a smaller or compressed version.]"
+            )
+        if category == "rejected":
+            if isinstance(detail, str) and "too big" in detail.lower():
+                return (
+                    f"[Your {label} could not be downloaded: Telegram's Bot API caps file "
+                    f"downloads at ~{cap_mb} MB (getFile) and this file is over that, so I never "
+                    f"received it. Please send a smaller or compressed version.]"
+                )
+            return (
+                f"[Your {label} could not be downloaded — Telegram rejected the file. "
+                f"Please try resending it.]"
+            )
+        if category == "transient":
+            return (
+                f"[Your {label} could not be downloaded due to a temporary network problem "
+                f"reaching Telegram. Please resend it.]"
+            )
+        if category == "unsupported":
+            return (
+                f"[You sent a {label}, which I can't process yet. If it contains something you "
+                f"need me to see, please resend it as a photo, voice, audio, video, or document.]"
+            )
+        # Default / "cache": the file reached Telegram but we failed to store it.
+        return (
+            f"[Your {label} reached me but could not be saved locally, so I can't open it. "
+            f"Please resend it.]"
+        )
+
+    def _surface_media_failure(
+        self,
+        event: "MessageEvent",
+        media_type: str,
+        *,
+        exc: Optional[BaseException] = None,
+        category: Optional[str] = None,
+        detail: Any = None,
+    ) -> None:
+        """Append a loud media-failure notice to ``event.text``.
+
+        Never clobbers an existing operator caption — the notice is appended.
+        When ``exc`` is given the category is derived from its TYPE and the
+        exception string becomes ``detail`` (for copy refinement only).
+        """
+        if category is None:
+            category = self._classify_media_failure(exc) if exc is not None else "cache"
+        if detail is None and exc is not None:
+            detail = str(exc)
+        notice = self._media_failure_notice(media_type, category, detail)
+        if event.text:
+            event.text = f"{event.text}\n\n{notice}"
+        else:
+            event.text = notice
+
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
@@ -4644,6 +4761,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # Download photo to local image cache so the vision tool can access it
         # even after Telegram's ephemeral file URLs expire (~1 hour).
         if msg.photo:
+            # Oversize pre-check: getFile refuses files over ~20 MB, so name the
+            # cap and skip the download rather than let it fail silently.
+            photo_size = getattr(msg.photo[-1], "file_size", None) if msg.photo else None
+            if isinstance(photo_size, int) and photo_size > _TELEGRAM_GETFILE_MAX_BYTES:
+                self._surface_media_failure(event, "photo", category="oversize", detail=photo_size)
+                logger.warning("[Telegram] Photo over getFile cap: %s bytes", photo_size)
+                await self.handle_message(event)
+                return
             try:
                 # msg.photo is a list of PhotoSize sorted by size; take the largest
                 photo = msg.photo[-1]
@@ -4672,9 +4797,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
+                self._surface_media_failure(event, "photo", exc=e)
 
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
+            voice_size = getattr(msg.voice, "file_size", None)
+            if isinstance(voice_size, int) and voice_size > _TELEGRAM_GETFILE_MAX_BYTES:
+                self._surface_media_failure(event, "voice", category="oversize", detail=voice_size)
+                logger.warning("[Telegram] Voice over getFile cap: %s bytes", voice_size)
+                await self.handle_message(event)
+                return
             try:
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
@@ -4684,7 +4816,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
+                self._surface_media_failure(event, "voice", exc=e)
         elif msg.audio:
+            audio_size = getattr(msg.audio, "file_size", None)
+            if isinstance(audio_size, int) and audio_size > _TELEGRAM_GETFILE_MAX_BYTES:
+                self._surface_media_failure(event, "audio", category="oversize", detail=audio_size)
+                logger.warning("[Telegram] Audio over getFile cap: %s bytes", audio_size)
+                await self.handle_message(event)
+                return
             try:
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
@@ -4694,8 +4833,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
+                self._surface_media_failure(event, "audio", exc=e)
 
         elif msg.video:
+            video_size = getattr(msg.video, "file_size", None)
+            if isinstance(video_size, int) and video_size > _TELEGRAM_GETFILE_MAX_BYTES:
+                self._surface_media_failure(event, "video", category="oversize", detail=video_size)
+                logger.warning("[Telegram] Video over getFile cap: %s bytes", video_size)
+                await self.handle_message(event)
+                return
             try:
                 file_obj = await msg.video.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
@@ -4711,6 +4857,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user video at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
+                self._surface_media_failure(event, "video", exc=e)
+
+        # video_note (round video messages) and animation (GIFs) are not cached.
+        # Surface an unsupported-type notice instead of dispatching silently.
+        # Animation must be checked before document: a real animation update
+        # also populates ``document`` for backward compatibility.
+        elif msg.video_note:
+            self._surface_media_failure(event, "video_note", category="unsupported")
+            logger.info("[Telegram] Unsupported media type: video_note")
+        elif msg.animation:
+            self._surface_media_failure(event, "animation", category="unsupported")
+            logger.info("[Telegram] Unsupported media type: animation")
 
         # Download document files to cache for agent processing
         elif msg.document:
@@ -4735,12 +4893,15 @@ class TelegramAdapter(BasePlatformAdapter):
                         ext = mime_to_ext.get(doc_mime, "")
 
                 # Check file size early so image documents cannot bypass the
-                # document size limit by taking the image path.
-                MAX_DOC_BYTES = 20 * 1024 * 1024
-                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
-                    event.text = (
-                        "The document is too large or its size could not be verified. "
-                        "Maximum: 20 MB."
+                # document size limit by taking the image path.  An unverifiable
+                # size (None) is rejected as well — we cannot prove it is under
+                # the getFile cap.
+                if not doc.file_size or doc.file_size > _TELEGRAM_GETFILE_MAX_BYTES:
+                    self._surface_media_failure(
+                        event,
+                        "document",
+                        category="oversize",
+                        detail=doc.file_size if isinstance(doc.file_size, int) else None,
                     )
                     logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
                     await self.handle_message(event)
@@ -4833,6 +4994,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
+                self._surface_media_failure(event, "document", exc=e)
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
