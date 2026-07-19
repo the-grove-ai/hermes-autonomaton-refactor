@@ -2,7 +2,8 @@
 
 Covers the detector (T1-gated proposal synthesis), the machine-file writer
 (atomic, dedup, backup), the load_dock two-file merge (operator wins, cap 3),
-the dock_mutation proposal-type registration, and the A6 init-safety skip.
+the dock_mutation proposal-type registration, and the R-2 raise-on-T1-failure
+contract (detector-sweep-resilience-v1; containment is the sweep guard's job).
 """
 
 from __future__ import annotations
@@ -130,17 +131,20 @@ class TestDetector:
         slugs = {"auto-memory-substrate-architecture"}
         assert DockMutationDetector().detect(store, slugs) == []
 
-    def test_a6_t1_failure_skips(self, monkeypatch):
-        # build_anthropic_client raising (timeout/transport) → None → no proposal.
-        import agent.anthropic_adapter as aa
-
-        def _boom(*a, **k):
+    def test_r2_t1_failure_raises(self, monkeypatch):
+        # detector-sweep-resilience-v1 R-2 (moved pin, was
+        # test_a6_t1_failure_skips): a T1 synthesis failure now RAISES from
+        # detect() instead of swallowing to [] — containment + the
+        # producer_failure filing happen one layer up, at the Dispatcher's
+        # per-producer sweep guard (pinned in
+        # tests/grove/test_detector_sweep_resilience.py).
+        def _boom(self, contents):
             raise TimeoutError("simulated slow T1")
 
-        monkeypatch.setattr(aa, "build_anthropic_client", _boom)
+        monkeypatch.setattr(DockMutationDetector, "_synthesize_goal", _boom)
         store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
-        # _synthesize_goal swallows and returns None → detect returns [].
-        assert DockMutationDetector().detect(store, set()) == []
+        with pytest.raises(TimeoutError):
+            DockMutationDetector().detect(store, set())
 
 
 # ── writer (SPEC tests 6-8) ────────────────────────────────────────────────────

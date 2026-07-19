@@ -86,7 +86,9 @@ class DockMutationDetector:
            ``dock_goal_ref`` is None (unattached to any goal).
         2. Below :attr:`UNATTACHED_THRESHOLD` → ``[]``.
         3. Ask T1 for a coherent theme over the (capped) record contents.
-        4. T1 names a theme → one proposal; T1 declines / errors → ``[]``.
+        4. T1 names a theme → one proposal; T1 declines → ``[]``; a T1
+           FAILURE raises (detector-sweep-resilience-v1 R-2) — contained
+           and filed by the Dispatcher's per-producer sweep guard.
         """
         slugs = active_dock_goal_slugs or set()
         unattached = self._unattached_records(memory_store)
@@ -182,9 +184,13 @@ class DockMutationDetector:
     ) -> Optional[Dict[str, Any]]:
         """One bounded T1 (Haiku) call → ``{"name", "keywords"}`` or ``None``.
 
-        Andon A6: a ``_T1_TIMEOUT_SECONDS`` client timeout caps the call, and
-        ANY failure (timeout / transport / malformed or no-theme JSON) returns
-        ``None`` so detection is skipped this session rather than blocking init.
+        A ``_T1_TIMEOUT_SECONDS`` client timeout caps the call.
+        detector-sweep-resilience-v1 R-2: transport / timeout / config
+        failures RAISE — the Dispatcher's per-producer sweep guard contains
+        and files them as ``producer_failure`` (the former broad swallow
+        hid them as a warning line and an empty detection). ``None`` is
+        reserved for T1 answering "no coherent theme"
+        (``_parse_theme``'s defensive parse, unchanged).
         """
         numbered = "\n".join(
             f"{i + 1}. {c}" for i, c in enumerate(record_contents)
@@ -194,90 +200,84 @@ class DockMutationDetector:
             f"{numbered}\n\n"
             "Is there a coherent strategic theme? Respond with JSON only."
         )
-        try:
-            from grove.classify import _telemetry_tier_runtime, _track_cost
+        from grove.classify import _telemetry_tier_runtime, _track_cost
 
-            runtime, tier_config = _telemetry_tier_runtime()
-            api_mode = runtime.get("api_mode")
+        runtime, tier_config = _telemetry_tier_runtime()
+        api_mode = runtime.get("api_mode")
 
-            # dock-detector-provider-agnostic-v1: branch on the telemetry
-            # tier's wire protocol, mirroring call_t1 / _call_classifier /
-            # the memory detector. anthropic_messages is preserved
-            # byte-for-byte; chat_completions drives any OpenAI-compatible
-            # provider (the OpenRouter telemetry tier the classifier already
-            # runs on) — without it, messages.create hits /v1/messages and
-            # gets an HTML error.
-            if api_mode == "chat_completions":
-                # Lazy import keeps the ~800ms openai/pydantic load off the
-                # module-import path, matching the Anthropic branch's local
-                # import.
-                from openai import OpenAI
-                from grove.providers import openrouter_provider_pref
+        # dock-detector-provider-agnostic-v1: branch on the telemetry
+        # tier's wire protocol, mirroring call_t1 / _call_classifier /
+        # the memory detector. anthropic_messages is preserved
+        # byte-for-byte; chat_completions drives any OpenAI-compatible
+        # provider (the OpenRouter telemetry tier the classifier already
+        # runs on) — without it, messages.create hits /v1/messages and
+        # gets an HTML error.
+        if api_mode == "chat_completions":
+            # Lazy import keeps the ~800ms openai/pydantic load off the
+            # module-import path, matching the Anthropic branch's local
+            # import.
+            from openai import OpenAI
+            from grove.providers import openrouter_provider_pref
 
-                client = OpenAI(
-                    api_key=runtime.get("api_key") or "",
-                    base_url=runtime.get("base_url") or None,
-                    timeout=_T1_TIMEOUT_SECONDS,
-                )
-                kwargs: Dict[str, Any] = {
-                    "model": runtime["model"],
-                    "max_tokens": _T1_MAX_OUTPUT_TOKENS,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": _SYNTHESIS_SYSTEM_PROMPT,
-                        },
-                        {"role": "user", "content": user},
-                    ],
-                }
-                # openrouter-zero-retention-routing-v1: attach the operator's
-                # OpenRouter provider routing verbatim when this telemetry
-                # call is OpenRouter-bound. No-op otherwise.
-                _pp = openrouter_provider_pref(runtime)
-                if _pp:
-                    kwargs["extra_body"] = {"provider": _pp}
-                response = client.chat.completions.create(**kwargs)
-                _track_cost(
-                    getattr(response, "usage", None), tier_config=tier_config
-                )
-                text = response.choices[0].message.content or ""
-            elif api_mode == "anthropic_messages":
-                from agent.anthropic_adapter import build_anthropic_client
-
-                client = build_anthropic_client(
-                    api_key=runtime.get("api_key") or "",
-                    base_url=runtime.get("base_url") or None,
-                    timeout=_T1_TIMEOUT_SECONDS,
-                )
-                response = client.messages.create(
-                    model=runtime["model"],
-                    max_tokens=_T1_MAX_OUTPUT_TOKENS,
-                    system=_SYNTHESIS_SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": user}],
-                )
-                _track_cost(response.usage, tier_config=tier_config)
-                text = "".join(
-                    getattr(b, "text", "")
-                    for b in response.content
-                    if getattr(b, "type", None) == "text"
-                )
-            else:
-                # Any other api_mode (bedrock_converse, codex_responses, …)
-                # is not a surface this synthesis speaks. Fail loud — Andon
-                # A6 below catches it and skips the session with the
-                # diagnostic in the log rather than issuing a mis-shaped call.
-                raise RuntimeError(
-                    f"_synthesize_goal: unsupported telemetry api_mode "
-                    f"{api_mode!r} (model={runtime.get('model')!r}); bind "
-                    f"the telemetry tier to an anthropic_messages or "
-                    f"chat_completions provider"
-                )
-        except Exception as exc:  # timeout / transport / config — skip session
-            logger.warning(
-                "[dock-mutation] T1 synthesis unavailable (%r) — "
-                "skipping dock-mutation detection this session", exc,
+            client = OpenAI(
+                api_key=runtime.get("api_key") or "",
+                base_url=runtime.get("base_url") or None,
+                timeout=_T1_TIMEOUT_SECONDS,
             )
-            return None
+            kwargs: Dict[str, Any] = {
+                "model": runtime["model"],
+                "max_tokens": _T1_MAX_OUTPUT_TOKENS,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": _SYNTHESIS_SYSTEM_PROMPT,
+                    },
+                    {"role": "user", "content": user},
+                ],
+            }
+            # openrouter-zero-retention-routing-v1: attach the operator's
+            # OpenRouter provider routing verbatim when this telemetry
+            # call is OpenRouter-bound. No-op otherwise.
+            _pp = openrouter_provider_pref(runtime)
+            if _pp:
+                kwargs["extra_body"] = {"provider": _pp}
+            response = client.chat.completions.create(**kwargs)
+            _track_cost(
+                getattr(response, "usage", None), tier_config=tier_config
+            )
+            text = response.choices[0].message.content or ""
+        elif api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client
+
+            client = build_anthropic_client(
+                api_key=runtime.get("api_key") or "",
+                base_url=runtime.get("base_url") or None,
+                timeout=_T1_TIMEOUT_SECONDS,
+            )
+            response = client.messages.create(
+                model=runtime["model"],
+                max_tokens=_T1_MAX_OUTPUT_TOKENS,
+                system=_SYNTHESIS_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user}],
+            )
+            _track_cost(response.usage, tier_config=tier_config)
+            text = "".join(
+                getattr(b, "text", "")
+                for b in response.content
+                if getattr(b, "type", None) == "text"
+            )
+        else:
+            # Any other api_mode (bedrock_converse, codex_responses, …)
+            # is not a surface this synthesis speaks. Fail loud — the
+            # raise propagates to the Dispatcher's per-producer sweep
+            # guard (detector-sweep-resilience-v1 R-2), which contains it
+            # and files producer_failure with this diagnostic.
+            raise RuntimeError(
+                f"_synthesize_goal: unsupported telemetry api_mode "
+                f"{api_mode!r} (model={runtime.get('model')!r}); bind "
+                f"the telemetry tier to an anthropic_messages or "
+                f"chat_completions provider"
+            )
 
         return self._parse_theme(text)
 
