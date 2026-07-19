@@ -169,6 +169,20 @@ def describe_red_action(
         shown = raw if len(raw) <= 200 else raw[:197] + "..."
         verb = "Run command" if tool_name == "terminal" else "Execute code"
         return (f"{verb}: {shown}", False)
+    if tool_name == "write_file":
+        # kaizen-queue-hygiene-v1 K-5 — write_file args ARE in the store column; the
+        # generic "arguments hidden" fallback below was a RENDER gap, not a data gap.
+        # A write_file RED is scope/target-driven (a governed / meta-surface path), so
+        # its path + content are legible-by-design — show the target and a bounded
+        # content preview so the operator approves an effect they can actually see (an
+        # approval surface that cannot show what it approves is no approval).
+        path = str(arguments.get("path") or "?")
+        content = str(arguments.get("content") or "")
+        shown = content if len(content) <= 200 else content[:197] + "..."
+        summary = f"Write file {path}"
+        if content:
+            summary += f" ({len(content)} chars): {shown}"
+        return (summary, False)
     keys = ", ".join(sorted(str(k) for k in (arguments or {}).keys()))
     return (f"Run {tool_name}({keys}) — arguments hidden.", False)
 
@@ -474,9 +488,9 @@ def approve_red_proposal(
             "success": False,
             "reason": "not_found",
             "error": (
-                "No pending proposal with that id — it was already approved, or "
-                "the gateway restarted (pending proposals are session-scoped and "
-                "do not survive a restart)."
+                "No pending proposal with that id — it was already approved or "
+                "dismissed. The durable payload store survives restarts, so a "
+                "missing payload means it was disposed, not lost to a restart."
             ),
         }
 

@@ -227,6 +227,21 @@ def _summary_portal_action_failure(proposal: RoutingProposal) -> str:
     return base
 
 
+def _summary_governance_env_pending(proposal: RoutingProposal) -> str:
+    """kaizen-queue-hygiene-v1 K-4 — the RED-pending BRIDGE row's non-portal summary.
+
+    The portal renders these via the bespoke masked/two-step card
+    (``fragments._render_red_proposal_card``); this closes the RENDER_REGISTRY gap
+    (bug 3a1780a78eef81879545ddd32d92a8cd) for the NON-portal surfaces (conversational
+    push / CLI) that resolve ``get_renderer`` by type and would otherwise raise
+    ``ValueError`` — swallowed as a silent skip by the push's outer try. Sources the
+    body from the NON-secret ``tool`` field ONLY; the value-bearing arguments live in
+    the durable red_pending.db payload, never on this queue row, so nothing secret is
+    reachable here. The operator reviews the masked details via the portal card."""
+    tool = (proposal.payload or {}).get("tool") or "action"
+    return f"pending RED approval — {tool} awaiting your review in the portal"
+
+
 def _summary_consolidation(proposal: RoutingProposal) -> str:
     """Natural-language graduation offer — no schema, no ids."""
     p = proposal.payload
@@ -727,6 +742,15 @@ register_renderer(
 # portal_action_failure shape. Dispositions are the acknowledge/dismiss verb
 # set (PROPOSAL_VERBS), not approve/apply.
 register_renderer(PROPOSAL_TYPE_FAULT_TRIAGE, _summary_fault_triage)
+
+# kaizen-queue-hygiene-v1 K-4 — the RED-pending bridge type. RENDER-ONLY here: the
+# portal owns its bespoke masked card, but the non-portal surfaces (push/CLI) resolve
+# get_renderer by type, so a missing entry raised ValueError → silent-skip. Registered
+# straight into RENDER_REGISTRY (imported locally — red_pending_store has no module-
+# level grove imports, so no cycle). Closes bug 3a1780a78eef81879545ddd32d92a8cd.
+from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE  # noqa: E402
+
+register_renderer(RED_PENDING_PROPOSAL_TYPE, _summary_governance_env_pending)
 
 
 def _summary_admission_friction(proposal: RoutingProposal) -> str:
