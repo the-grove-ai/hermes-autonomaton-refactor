@@ -5957,6 +5957,11 @@ class AIAgent:
                 f"{link['artifact_id']}"
                 for link in links
             )
+            # substrate-citation-v1 P2 (A4/D2) — persist the artifact_ids this
+            # turn rendered so the cellar-citation appender (which runs AFTER and
+            # after this stash is consumed) can dedupe a page that was BOTH
+            # written and retrieved. Additive: the returned string is unchanged.
+            self._artifact_links_rendered = [l["artifact_id"] for l in links]
             return (
                 final_response.rstrip()
                 + "\n\nArtifacts written this turn:\n"
@@ -5965,6 +5970,79 @@ class AIAgent:
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[artifact-links] append skipped (answer unchanged): %r", exc,
+            )
+            return final_response
+
+    def _append_cellar_citations(self, final_response: str) -> str:
+        """substrate-citation-v1 P2 — surface portal citations for the cellar
+        pages retrieved into THIS turn's context ALONGSIDE the answer (answer-
+        then-surface). The Dispatcher stashes ``_cellar_citation_sources`` (the
+        RENDERED source_paths, Phase 1) post-composition; this hook consumes it
+        once and renders the template-locked frame — every value system-derived
+        from the retrieval stash, the model authors nothing. Deduped against the
+        artifacts this turn linked (A4/D2: exact artifact-id identity), so a page
+        both written and retrieved in one turn links once. Rides core final-
+        response assembly, so every surface inherits it. Write-strict/read-
+        resilient: base-URL failure or any exception appends nothing, logs loud
+        at ERROR (session + turn), and never blocks or mutates the answer body.
+        """
+        if not final_response:
+            return final_response
+        try:
+            sources = getattr(self, "_cellar_citation_sources", None)
+            if not sources:
+                return final_response
+            self._cellar_citation_sources = None  # consume — citations ride once
+            from grove.prompt.portal_links import resolve_portal_base_url
+            from grove.wiki.links import cellar_page_portal_link
+
+            base_url = resolve_portal_base_url()
+            if not base_url:
+                logger.error(
+                    "[cellar-citations] portal base URL unresolvable; citation "
+                    "decoration skipped (answer unchanged). session=%s turn=%s",
+                    getattr(self, "session_id", "?"),
+                    getattr(self, "_user_turn_count", "?"),
+                )
+                return final_response
+            # A4/D2 — drop any retrieved page whose artifact_id matches an
+            # artifact linked THIS turn (exact file identity: the page was both
+            # written and retrieved). Only resolve the wiki root + hash paths
+            # when there IS something to dedupe against (keep the common path
+            # light). Derivation is byte-identical to the write seam's:
+            # canonical_artifact_path(str(pages_dir / source_path)) → sha256[:16].
+            rendered = getattr(self, "_artifact_links_rendered", None) or []
+            if rendered:
+                from grove.artifact_identity import (
+                    artifact_id,
+                    canonical_artifact_path,
+                )
+                from hermes_constants import get_wiki_path
+
+                _rendered = set(rendered)
+                _pages_dir = get_wiki_path() / "pages"
+                sources = [
+                    sp for sp in sources
+                    if artifact_id(canonical_artifact_path(str(_pages_dir / sp)))
+                    not in _rendered
+                ]
+            if not sources:
+                return final_response
+            links = "\n".join(
+                cellar_page_portal_link(sp, base_url) for sp in sources
+            )
+            return (
+                final_response.rstrip()
+                + "\n\nCellar context this turn:\n"
+                + links
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[cellar-citations] append skipped (answer unchanged): %r "
+                "session=%s turn=%s",
+                exc,
+                getattr(self, "session_id", "?"),
+                getattr(self, "_user_turn_count", "?"),
             )
             return final_response
 
@@ -18068,6 +18146,12 @@ class AIAgent:
             # artifacts alongside the answer (answer-then-surface; values
             # system-derived from the artifact_written stash, template-locked).
             final_response = self._append_artifact_links(final_response)
+            # substrate-citation-v1 P2 — portal citations for the cellar pages
+            # retrieved into THIS turn's context alongside the answer (answer-
+            # then-surface; values system-derived from the Phase-1 retrieval
+            # stash, template-locked). Ordered AFTER artifact links so the dedupe
+            # reads what artifact-links rendered this turn (A4/D2).
+            final_response = self._append_cellar_citations(final_response)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.
