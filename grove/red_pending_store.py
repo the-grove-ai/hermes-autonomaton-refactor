@@ -178,6 +178,19 @@ def describe_red_action(
         # approval surface that cannot show what it approves is no approval).
         path = str(arguments.get("path") or "?")
         content = str(arguments.get("content") or "")
+        # model-catalog-v1 M-5/G-4 — a write to the model catalog renders the
+        # fully-resolved merged view (per-slug SHADOWS markers) instead of the
+        # raw file blob, so the operator approves the effective catalog, not a
+        # diff they must merge in their head. Falls back to the generic render
+        # if the path is not a catalog file or the content does not parse.
+        try:
+            from grove.config.model_catalog import describe_catalog_write
+
+            catalog_desc = describe_catalog_write(path, content)
+        except Exception:  # noqa: BLE001 — render helper must never break the card
+            catalog_desc = None
+        if catalog_desc is not None:
+            return (catalog_desc, False)
         shown = content if len(content) <= 200 else content[:197] + "..."
         summary = f"Write file {path}"
         if content:

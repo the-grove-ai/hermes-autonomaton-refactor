@@ -1965,9 +1965,18 @@ def render_routing_fragment(config, catalog: list) -> str:
         render_tier_card(t, (config or {}).get(t), catalog)
         for t in _swappable_tiers()
     )
+    # model-catalog-v1 M-2/G-5 — live coherence badge: names any active tier
+    # binding whose model is off-catalog. Live-read, so it clears on reconcile.
+    try:
+        from grove.config.catalog_coherence import coherence_badge_html
+
+        badge = coherence_badge_html(config, catalog)
+    except Exception:  # noqa: BLE001 — a badge failure must never blank the panel
+        badge = ""
     return (
         '<div id="routing-panel">'
         "<h2>Tier model bindings</h2>"
+        f"{badge}"
         '<p class="meta">Swap the model bound to a tier. The change is validated '
         "and hot-reloaded; the next turn uses the new model. Costs are "
         "display-only heuristics.</p>"

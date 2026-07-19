@@ -193,7 +193,11 @@ def test_catalog_sovereign_override(tmp_path, monkeypatch):
         "grove.config.model_catalog._sovereign_catalog_path", lambda: sovereign
     )
     catalog = load_catalog()
-    assert [m["slug"] for m in catalog] == ["x/only"]  # AC-9: sovereign wins
+    slugs = {m["slug"] for m in catalog}
+    # M-9: per-slug merge, NOT whole-file replace. The sovereign slug is added
+    # AND the repo entries survive (a one-line override never blinds the node).
+    assert "x/only" in slugs
+    assert "anthropic/claude-sonnet-4.6" in slugs  # repo entry survives
 
 
 def test_catalog_schema_validation_failures():

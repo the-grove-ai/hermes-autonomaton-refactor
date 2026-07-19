@@ -138,6 +138,23 @@ def init_substrate_singletons(app: web.Application) -> None:
     app["wiki_index"] = WikiIndex(wiki_root=get_wiki_path())
     app["cellar_index"] = CellarIndex(cellar_dir=get_hermes_home())
 
+    # model-catalog-v1 M-2/G-5 — load-time catalog coherence Andon. NON-FATAL:
+    # an off-catalog active tier binding files a Kaizen card + logs loud, but
+    # never blocks boot or degrades a tier (the portal badge is the recurring
+    # surface). The check runs outside the dispatch path (router never reads the
+    # catalog — G-1b), so wiring it here keeps that isolation intact.
+    try:
+        from grove.config.catalog_coherence import check_catalog_coherence_at_boot
+
+        _report = check_catalog_coherence_at_boot()
+        if not _report.get("coherent", True):
+            logger.warning(
+                "[portal] catalog coherence: %d off-catalog active binding(s) — "
+                "see the Models page badge", len(_report.get("violations", [])),
+            )
+    except Exception as exc:  # noqa: BLE001 — coherence surfacing must never break boot
+        logger.error("[portal] catalog coherence boot check failed: %r", exc)
+
     # MemoryStore.__init__ calls rebuild_index() (graceful: malformed JSONL
     # lines are logged and skipped) — _index is populated on construction.
     app["memory_store"] = MemoryStore(base_dir=get_hermes_home())
