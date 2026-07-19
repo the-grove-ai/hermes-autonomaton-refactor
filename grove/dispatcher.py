@@ -1646,6 +1646,11 @@ class Dispatcher:
         # its siblings; this reset guarantees a turn whose response path never
         # reached the hook cannot leak its links into the next turn's answer.
         agent._artifact_links_notice = None
+        # substrate-citation-v1 P2 (A4) — wipe the artifact-links RENDERED-id set
+        # every turn (alongside _artifact_links_notice): the cellar-citation
+        # appender dedupes against what artifact-links rendered THIS turn, so a
+        # stale set must never bleed a phantom dedupe into the next turn.
+        agent._artifact_links_rendered = []
         # substrate-citation-v1 Phase 1 — wipe the cellar-citation stash every
         # turn (mirror _artifact_links_notice): a turn whose response path never
         # reaches the seventh appender cannot leak this turn's citations into the
