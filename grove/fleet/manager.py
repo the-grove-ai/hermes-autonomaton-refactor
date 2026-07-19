@@ -259,6 +259,24 @@ class FleetManager:
                 )
                 return
 
+            # forge-publish-meta-hotfix-v1 P1 — the emit-time meta defect surfaces
+            # HERE, on the staged (success) event, not by discarding the run. A
+            # stub meta.json (missing company/role/row_id) fires the loud operator
+            # Andon via the existing surfacer (broadcast + andon_halt ledger leg)
+            # so the defect is met at emit time, then STILL falls through to the
+            # promote-proposal path so the draft is surfaced behind a defect marker
+            # — inform disposition, never withhold work.
+            meta_defect = event.get("meta_defect")
+            if meta_defect:
+                surface_fleet_andon(
+                    wid, run_id,
+                    f"forge draft {slug!r} staged with an INCOMPLETE meta.json "
+                    f"({meta_defect}) — publish is endpoint-blocked until the "
+                    f"missing field(s) are backfilled; the draft is staged for "
+                    f"review with a defect marker",
+                    check="forge_meta_incomplete", loop=self._loop,
+                )
+
             # forge-unattended-publish-v1 P2 — hard-AND gate at the fire-point.
             # Conjunct 1 (mode == action_surface_publish) is already satisfied
             # (checked above). Conjunct 2 is the operator's overlay-armed
@@ -267,9 +285,12 @@ class FleetManager:
             # → fire the atomic Drive door directly and RETURN; the published
             # event replaces the proposal. UN-ARMED (absent/false, the shipped
             # default) → fall through to the existing proposal path, unchanged.
+            # forge-publish-meta-hotfix-v1 P1 — a defect-marked draft NEVER takes
+            # the unattended door (it would 400 at the endpoint and strand the
+            # operator with no card); it always falls to the proposal path.
             from grove.capability_registry import publication_unattended_authorized
 
-            if publication_unattended_authorized(skill_id) is True:
+            if publication_unattended_authorized(skill_id) is True and not meta_defect:
                 self._publish_unattended(wid, run_id, skill_id, event)
                 return
 
@@ -281,6 +302,14 @@ class FleetManager:
                 "skill_id": skill_id,
                 "fit_score": fit_score,
             }
+            # forge-publish-meta-hotfix-v1 P1 — the promote card's defect marker.
+            # The forge payload is CONTENT-ADDRESSED (proposal_id hashes
+            # type|payload|evidence), so an always-present key would fork the id
+            # of every clean draft. Added ONLY when a defect exists — a clean
+            # draft's payload stays byte-identical to the pre-sprint shape and its
+            # proposal_id is unchanged.
+            if meta_defect:
+                payload["meta_defect"] = meta_defect
             justification = "Draft staged for review: " + slug + (
                 f" (fit {fit_score})" if fit_score is not None else ""
             )

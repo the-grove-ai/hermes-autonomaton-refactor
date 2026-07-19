@@ -336,7 +336,10 @@ _FORGE_ARGS = {
         "resume.md": "# Résumé — “quoted”, C:\\path\\file\n",
         "cover-letter.md": "Dear team,\nliteral \"quotes\" and\nnewlines.\n",
     },
-    "meta": {"slug": "acme-pm", "row_id": "r1", "company": "Acme"},
+    # forge-publish-meta-hotfix-v1 P1 — the canonical success fixture carries the
+    # COMPLETE publish triad (company/role/row_id) so a "success" run is a clean,
+    # publish-ready package with no meta_defect marker.
+    "meta": {"slug": "acme-pm", "row_id": "r1", "company": "Acme", "role": "PM"},
 }
 
 
@@ -596,7 +599,8 @@ def _sentinel_messages(tag, files):
 _SENTINEL_FILES = {
     "resume.md": "# Résumé sentinel body",
     "cover-letter.md": "Cover sentinel body",
-    "meta.json": '{"slug": "acme-pm", "row_id": "r1"}',
+    # forge-publish-meta-hotfix-v1 P1 — complete publish triad (clean success).
+    "meta.json": '{"slug": "acme-pm", "row_id": "r1", "company": "Acme", "role": "PM"}',
 }
 
 _SENTINEL_GOV = {
@@ -651,6 +655,65 @@ def test_tool_flagged_producer_sentinel_output_still_accepted(monkeypatch, tmp_p
     sink = tmp_path / "sink" / "acme-pm"
     for name, body in _SENTINEL_FILES.items():
         assert (sink / name).read_text(encoding="utf-8") == body
+
+
+# ── forge-publish-meta-hotfix-v1 P1: emit-time meta-completeness gate ────────
+
+
+def test_forge_meta_defects_predicate():
+    """The defect predicate mirrors the publish endpoint's all(meta.get(k)) check
+    and reports missing keys in the declared order — never raises."""
+    f = worker_entry._forge_meta_defects
+    assert f('{"slug": "s", "company": "Acme", "role": "PM", "row_id": "r1"}') == []
+    assert f('{"slug": "s"}') == ["company", "role", "row_id"]  # stub
+    assert f('{"slug": "s", "company": "Acme", "row_id": "r1"}') == ["role"]  # partial
+    assert f('{"slug": "s", "company": "", "role": "PM", "row_id": "r1"}') == ["company"]  # empty-string is not present
+    assert f("not json") == ["company", "role", "row_id"]  # unparseable -> all missing, loud
+    assert f(None) == ["company", "role", "row_id"]
+
+
+# stub = slug only (missing the whole triad); partial = one field short (role).
+_STUB_FORGE_ARGS = {"files": dict(_FORGE_ARGS["files"]), "meta": {"slug": "acme-pm"}}
+_PARTIAL_FORGE_ARGS = {
+    "files": dict(_FORGE_ARGS["files"]),
+    "meta": {"slug": "acme-pm", "company": "Acme", "row_id": "r1"},
+}
+
+
+def test_forge_full_meta_stages_clean_no_defect(monkeypatch, tmp_path):
+    """A complete triad stages a clean success — meta_defect is None."""
+    ev, _agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD, [_emit_step(_FORGE_ARGS)]
+    )
+    assert ev["status"] == "success"
+    assert ev["meta_defect"] is None
+    assert "meta_defect=" not in ev["detail"]
+
+
+def test_forge_stub_meta_stages_with_defect_and_forensics(monkeypatch, tmp_path):
+    """A stub meta (slug only) STILL stages (surface-regardless) but rides a
+    meta_defect marker naming the whole missing triad, appends it to detail, and
+    persists the raw output to the forensic sidecar."""
+    ev, _agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD, [_emit_step(_STUB_FORGE_ARGS)]
+    )
+    assert ev["status"] == "success"  # NEVER un-staged
+    assert len(ev["staged"]) == 3 and all(Path(p).is_file() for p in ev["staged"])
+    assert ev["meta_defect"] == "missing:company,role,row_id"
+    assert "meta_defect=missing:company,role,row_id" in ev["detail"]
+    assert ev["raw_text_path"] is not None  # forensics attached
+
+
+def test_forge_partial_meta_one_field_missing_is_defect(monkeypatch, tmp_path):
+    """One field short (role) is treated exactly like a stub — staged + marked."""
+    ev, _agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD, [_emit_step(_PARTIAL_FORGE_ARGS)]
+    )
+    assert ev["status"] == "success"
+    assert len(ev["staged"]) == 3
+    assert ev["meta_defect"] == "missing:role"
+    assert "meta_defect=missing:role" in ev["detail"]
+    assert ev["raw_text_path"] is not None
 
 
 # ── truncation-shape + finish-reason fold pins ──────────────────────────────

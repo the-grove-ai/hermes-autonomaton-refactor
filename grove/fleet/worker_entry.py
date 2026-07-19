@@ -41,6 +41,33 @@ WORKER_MAX_ITERATIONS = 50
 # first-pass extraction and the redraft re-extraction share one declaration.
 _SELF_AUTHORED_REQUIRED = {"resume.md", "cover-letter.md", "meta.json"}
 
+# forge-publish-meta-hotfix-v1 P1 — the forge meta COMPLETENESS contract. The
+# publish endpoint (grove/api/actions.py:1209) rejects any package whose
+# meta.json lacks these three keys; historically the worker validated only the
+# `slug` (worker_entry.py:_extract_fleet_package) and staged an incomplete meta
+# clean, so the operator only met the defect hours later at the Publish tap. This
+# is the emit-time half of that contract: the same three keys, checked the moment
+# the package stages, so a stub meta surfaces LOUD (Andon + forensics) AND still
+# stages behind a visible defect marker — inform disposition, never withhold work.
+_FORGE_META_REQUIRED = ("company", "role", "row_id")
+
+
+def _forge_meta_defects(meta_raw: Optional[str]) -> List[str]:
+    """Return the _FORGE_META_REQUIRED keys a staged forge meta.json is missing.
+
+    A field counts as present only when it parses to a truthy value (the exact
+    predicate the publish endpoint applies: ``all(meta.get(k) for k in ...)``).
+    An unparseable / non-dict meta reports ALL three missing — the loudest honest
+    signal, never a silent pass. Empty list == complete meta (no defect).
+    """
+    try:
+        meta = json.loads(meta_raw) if isinstance(meta_raw, str) else None
+    except (json.JSONDecodeError, TypeError):
+        meta = None
+    if not isinstance(meta, dict):
+        return list(_FORGE_META_REQUIRED)
+    return [k for k in _FORGE_META_REQUIRED if not meta.get(k)]
+
 
 def _now_iso() -> str:
     # Runtime process (not a resumable workflow script) — wall clock is fine.
@@ -1341,6 +1368,29 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             pkg_slug=pkg_slug,
             success_detail=success_detail,
         )
+        # ── forge-publish-meta-hotfix-v1 P1 — emit-time meta-completeness check,
+        # AFTER the staging outcome is known on every transport (tool + sentinel
+        # dual-read), scoped to the self-authored forge triad (declarative
+        # producers synthesize their own complete meta at :1305 and cannot hit
+        # this). The package is ALREADY staged — this NEVER un-stages it (surface-
+        # regardless). A stub meta persists the raw output to the same forensic
+        # sidecar a no_package failure uses, and rides a `meta_defect` token on the
+        # success event; the manager reads it to fire the loud operator Andon and
+        # stamp the promote card. Publish stays endpoint-blocked (actions.py
+        # untouched) — this only moves the DISCOVERY of the defect from the
+        # operator's Publish tap to emit time.
+        meta_defect = None
+        raw_forensics_path = None
+        if not declarative:
+            defects = _forge_meta_defects((staged_files or {}).get("meta.json"))
+            if defects:
+                meta_defect = "missing:" + ",".join(defects)
+                success_detail += f"; meta_defect={meta_defect}"
+                raw_forensics_path = _persist_raw_output(
+                    worker_id,
+                    run_id,
+                    _final_assistant_text(result.get("messages") or []),
+                )
         return _event(
             worker_id,
             run_id,
@@ -1349,6 +1399,8 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             detail=success_detail,
             staged=staged_list,
             slug=pkg_slug,
+            meta_defect=meta_defect,
+            raw_text_path=raw_forensics_path,
             **event_kw,
             **quality_kw,
             **binding_kw,
@@ -1396,6 +1448,7 @@ def _event(
     rubric_version: Optional[str] = None,
     redraft_count: Optional[int] = None,
     evaluator_model: Optional[str] = None,
+    meta_defect: Optional[str] = None,
 ) -> Dict[str, Any]:
     # fleet-pipeline-v1 P2 (A1) — additive fields the reap emitter reads OFF the
     # event (never parsed from detail/paths). None for workers that don't produce
@@ -1431,6 +1484,13 @@ def _event(
         "rubric_version": rubric_version,
         "redraft_count": redraft_count,
         "evaluator_model": evaluator_model,
+        # forge-publish-meta-hotfix-v1 P1 — the emit-time meta-completeness rider
+        # (same additive always-present precedent as the quality rider above). None
+        # on every complete package and on non-forge/failed/no_work shapes; a short
+        # "missing:company,role" token when a forge package staged with an
+        # incomplete meta.json. The manager reads it OFF the event to fire the loud
+        # Andon and stamp the promote card's defect marker.
+        "meta_defect": meta_defect,
         "ts": _now_iso(),
     }
     # fleet-review-unification-v1 C1b-2 — the stable unit_id, ADDED ONLY when set (a
