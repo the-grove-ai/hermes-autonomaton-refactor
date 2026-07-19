@@ -276,6 +276,18 @@ class KaizenLedger:
         # guard in grove/dispatcher.py is the reference emitter that the
         # resilience sprint propagates to the other four detectors.
         "producer_failure",
+        # kaizen-exploration-proposals-v1 — an exploration_nudge was APPLIED:
+        # the operator approved "try model X interactively?" and the interactive
+        # tier selection flipped slug-ward through the sanctioned
+        # RoutingConfigWriter.swap_tier_model. Distinct from the generic
+        # kaizen_disposition (which records the approve) and from the writer's own
+        # routing_config_mutation (which records the config-file move): this event
+        # carries the exploration-loop provenance so a catalog-add → interactive-
+        # trial → evidence arc is auditable end-to-end. Filed by the apply_callback
+        # (grove/flywheel_cli.py::_approve_exploration_nudge) AFTER the flip lands,
+        # error-log floor (the flip is atomic; a filing failure must not misreport
+        # it). Carries slug + tier + surface + proposal_id.
+        "exploration_nudge_applied",
     })
 
     def __init__(self, session_id: str, ledger_dir: Optional[Path] = None) -> None:

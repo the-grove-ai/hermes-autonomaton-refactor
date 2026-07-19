@@ -435,6 +435,60 @@ def _model_binding_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     return diff
 
 
+def _summary_exploration_nudge(proposal: RoutingProposal) -> str:
+    """kaizen-exploration-proposals-v1 — the 'try it interactively?' nudge.
+
+    Reads {slug, tier} from the identity payload and the card-only display
+    fields (display_name / provider / pricing) from the id-EXCLUDED ``detail``
+    envelope, degrading gracefully to the slug when detail is absent (a
+    hand-filed nudge with no detail still renders)."""
+    p = proposal.payload or {}
+    d = proposal.detail or {}
+    slug = p.get("slug", "?")
+    tier = p.get("tier", "?")
+    name = d.get("display_name") or slug
+    base = (
+        f"Model {name} ({slug}) is cataloged and untried — try it "
+        f"interactively on {tier}?"
+    )
+    cost_in = d.get("input_cost_per_mtok")
+    cost_out = d.get("output_cost_per_mtok")
+    if cost_in is not None and cost_out is not None:
+        base += f" Pricing: ${cost_in}/${cost_out} per Mtok (in/out)."
+    provider = d.get("provider")
+    if provider:
+        base += f" Provider: {provider}."
+    return base
+
+
+def _exploration_nudge_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """The one interactive-selection change the operator reviews: the tier's
+    model flips slug-ward. The current binding resolves at APPLY time (the
+    writer preserves previous_model for one-tap undo), so the render shows the
+    ``+after`` target the flip installs plus the card-only catalog metadata,
+    never a stale render-time ``-before``."""
+    p = proposal.payload or {}
+    d = proposal.detail or {}
+    diff: Dict[str, Any] = {
+        f"interactive tier: {p.get('tier', '?')}": {
+            "model": {"+after": p.get("slug")},
+        },
+    }
+    meta = {
+        k: d.get(k)
+        for k in (
+            "display_name",
+            "provider",
+            "input_cost_per_mtok",
+            "output_cost_per_mtok",
+        )
+        if d.get(k) is not None
+    }
+    if meta:
+        diff["catalog"] = meta
+    return diff
+
+
 def _summary_goal_attachment(proposal: RoutingProposal) -> str:
     """goal-spine-v1 P3 — the batched attachment offer, one row per goal.
 
