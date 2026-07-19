@@ -248,6 +248,21 @@ def _arm_row(a: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
+def _attended_arm_row(a: Dict[str, Any]) -> Dict[str, Any]:
+    """The INFORMATIONAL attended-evidence row (kaizen-exploration-proposals-v1
+    P3) — success-rate-only, ``source``-tagged, and STRUCTURALLY separate from
+    the fleet ``arms`` rows. It never enters candidate ranking; it is surfaced so
+    the operator sees interactive signal alongside the fleet-observed evidence,
+    honestly marked, never conflated."""
+    return {
+        "model": a.get("model"),
+        "context": a.get("context"),
+        "n": a.get("n"),
+        "success_rate": a.get("success_rate"),
+        "source": "attended",
+    }
+
+
 # ── producer ────────────────────────────────────────────────────────────
 
 
@@ -259,6 +274,7 @@ def build_binding_proposals(
     now: Optional[datetime] = None,
     tombstone_path: Optional[Path] = None,
     queue_path: Optional[Path] = None,
+    attended_records_path: Optional[Path] = None,
 ) -> List[RoutingProposal]:
     """Aggregate → ladder → at most ONE proposal per skill per scan.
 
@@ -286,6 +302,30 @@ def build_binding_proposals(
         for p in read_all(path=queue_path)
         if getattr(p, "type", None) == PROPOSAL_TYPE_MODEL_BINDING
     }
+
+    # kaizen-exploration-proposals-v1 P3 — the PARALLEL attended reader. OPT-IN:
+    # only read when a store path is provided (production passes it via
+    # run_binding_scan); ``None`` keeps fleet-only callers byte-identical (the
+    # ``attended_arms`` key is never added, so evidence_hash / proposal_id are
+    # unchanged). Resilient: a reader fault logs loud and degrades to no attended
+    # context rather than WITHHOLDING the fleet proposal — attended evidence is
+    # informational, never load-bearing for the model_binding decision.
+    attended_arms: List[Dict[str, Any]] = []
+    if attended_records_path is not None:
+        try:
+            from grove.eval.attended_evidence import collect_attended_arms
+
+            attended_arms = collect_attended_arms(
+                store_path=attended_records_path,
+                window_days=window_days,
+                now=now,
+            )["arms"]
+        except Exception as exc:  # noqa: BLE001 — informational leg, never withhold
+            logger.warning(
+                "[binding_scan] attended-evidence read failed (%r) — proceeding "
+                "with fleet-only evidence", exc,
+            )
+            attended_arms = []
 
     proposals: List[RoutingProposal] = []
     for skill_id, arms in sorted(by_skill.items()):
@@ -394,6 +434,18 @@ def build_binding_proposals(
             + [_arm_row(a) for a in qualified if a["model"] != baseline_model],
             "annotations": _annotations(qualified),
         }
+        # P3 — attach INFORMATIONAL attended arms for the models in play, in a
+        # STRUCTURALLY separate key (never merged into the fleet ``arms`` list,
+        # never seen by _classify or the ranked candidate set above). Present-key
+        # only: when there is no attended signal for these models the key is
+        # absent, so a fleet-only evidence_block is byte-identical to pre-P3.
+        attended_rows = [
+            _attended_arm_row(a)
+            for a in attended_arms
+            if a.get("model") in observed_models
+        ]
+        if attended_rows:
+            evidence_block["attended_arms"] = attended_rows
         evidence_hash = hashlib.sha256(
             json.dumps(evidence_block, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()[:16]
