@@ -75,10 +75,28 @@ def test_success_emits_complete_payload(captured):
     assert len(emits) == 1 and andons == []
     kw = emits[0]
     assert kw["type"] == FT
+    # forge-publish-meta-hotfix-v1 P1 — a CLEAN draft's payload is byte-identical
+    # to the pre-sprint shape (no meta_defect key); the content-addressed
+    # proposal_id is unchanged.
     assert kw["payload"] == {
         "slug": "260704-acme", "row_id": "pg1",
         "skill_id": "skill.fleet.forge-jobsearch", "fit_score": 91,
     }
+
+
+def test_defect_marked_success_andons_and_marks_card(captured):
+    """forge-publish-meta-hotfix-v1 P1 — a success event carrying a meta_defect
+    STILL mints the promote proposal (surface-regardless) but ALSO fires the loud
+    operator Andon and threads the marker into the card payload."""
+    emits, andons = captured
+    m = manager_mod.FleetManager()
+    m._classify_terminal(
+        "forge", _handle(), 0,
+        _success_event(meta_defect="missing:role"), killed=False,
+    )
+    assert len(emits) == 1  # draft is NOT withheld
+    assert emits[0]["payload"]["meta_defect"] == "missing:role"
+    assert "forge_meta_incomplete" in andons  # loud operator signal fired
 
 
 def test_no_work_emits_nothing(captured):

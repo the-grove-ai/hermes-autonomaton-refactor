@@ -475,6 +475,13 @@ def _summary_forge_artifact_pending(proposal: RoutingProposal) -> str:
     base = f"fleet draft staged for review: {slug}"
     if fit is not None:
         base += f" (fit {fit})"
+    # forge-publish-meta-hotfix-v1 P1 — the visible defect marker. When the worker
+    # staged an incomplete meta.json, the operator must see WHY publish will be
+    # endpoint-blocked before tapping it, not discover it at the 400. Prefixed so
+    # it leads the one-line summary the portal card renders.
+    defect = pl.get("meta_defect")
+    if defect:
+        base = f"⚠ INCOMPLETE META ({defect}) — publish blocked · {base}"
     justification = getattr(proposal, "semantic_justification", "") or ""
     return f"{base} — {justification}" if justification and justification != base else base
 
