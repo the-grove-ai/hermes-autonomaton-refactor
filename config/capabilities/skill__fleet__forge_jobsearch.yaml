@@ -38,6 +38,7 @@ context:
   disclosure: pull
   payload: |
     ---
+    created_by: bundled
     name: forge-jobsearch
     description: "Job application forge — reads a To Apply row from the Notion Job Opportunities DB, tailors a resume and cover letter against the row's assigned persona and career-corpus, and stages them for operator review. Yellow zone: output is the operator's application materials. Publishing to Google Docs is the operator's explicit action-surface tap, never this skill. Fleet reference implementation."
     version: 1.0.0
