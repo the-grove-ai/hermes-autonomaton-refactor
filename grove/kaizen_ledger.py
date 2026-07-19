@@ -291,6 +291,16 @@ class KaizenLedger:
         # error-log floor (the flip is atomic; a filing failure must not misreport
         # it). Carries slug + tier + surface + proposal_id.
         "exploration_nudge_applied",
+        # detector-sweep-resilience-v1 P2 (R-3a write side) — the operator
+        # pause verb's audit trail: set_producer_pause (the SOLE writer of
+        # ~/.grove/flywheel/producer_pauses.yaml) files one event per pause
+        # flip, AFTER the file mutation lands (file-backed writer — audit
+        # failure floors to logger.error, set_model_binding precedent).
+        # Carries producer (name as DATA — A6) + paused (bool) +
+        # proposal_id (the recurrence card that ruled it, null for manual)
+        # + reason. Read side: P3's recurrence detector consults these to
+        # suppress re-proposing an already-paused producer.
+        "producer_paused",
         # model-catalog-v1 P2 (90246b3ca) — recurring coherence Andon: active
         # tier_preferences bind a model absent from the model catalog. Filed
         # at boot by grove/config/catalog_coherence.py::_file_coherence_andon

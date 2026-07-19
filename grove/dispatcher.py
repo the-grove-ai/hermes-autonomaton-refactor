@@ -448,16 +448,20 @@ def _synth_skill_eval_hash(skill_name: str, skill_path: str) -> str:
 
 
 def _paused_producers() -> "frozenset[str]":
-    """The producer pause-set seam (gate ruling c).
+    """The producer pause-set seam (P1 gate ruling c; P2 lands the reader).
 
-    P1 ships inert: no pause state exists, so this returns the empty set
-    unconditionally. P2 replaces the body with the sanctioned ~/.grove
-    operator-state reader; this function is the SINGLE seam it lands in
-    (and the monkeypatch target for pause-skip tests). The pause set
-    applies only to producers running through ``_run_guarded_producer``
-    — session compaction is NOT pausable this sprint (gate ruling a).
+    Delegates to the sanctioned reader over the operator pause state at
+    ``~/.grove/flywheel/producer_pauses.yaml``
+    (:func:`grove.eval.producer_pauses.read_producer_pauses` — fresh
+    per-call, missing file → empty set, malformed → WARNING + empty).
+    Consulted ONLY from the two dormancy-gated sweep sites at Dispatcher
+    init (M2/A4: never on the per-turn path). The pause set applies only
+    to producers running through ``_run_guarded_producer`` — session
+    compaction is NOT pausable this sprint (P1 gate ruling a).
     """
-    return frozenset()
+    from grove.eval.producer_pauses import read_producer_pauses
+
+    return read_producer_pauses()
 
 
 def _file_producer_failure(producer: str, exc: BaseException) -> None:
