@@ -384,3 +384,44 @@ class TestSingletonAccessor:
         injected = IntentStore(store_path=tmp_path / "injected.jsonl")
         monkeypatch.setattr(_intent_store_mod, "_default_store", injected)
         assert get_store() is injected
+
+
+class TestSubstrateCitationFields:
+    """substrate-citation-v1 P3 — compounding-curve telemetry fields, all
+    read-time-tolerant (Optional, default at parse)."""
+
+    def test_new_fields_round_trip(self, tmp_path):
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        store.append(_record(
+            cellar_retrieval_hits=3,
+            cellar_citations_rendered=2,
+            cellar_retrieval_config_sig="floor=none;k=5;budget=1500",
+        ))
+        loaded = next(iter(store.records()))
+        assert loaded.cellar_retrieval_hits == 3
+        assert loaded.cellar_citations_rendered == 2
+        assert loaded.cellar_retrieval_config_sig == "floor=none;k=5;budget=1500"
+
+    def test_defaults_when_unset(self):
+        r = _record()
+        assert r.cellar_retrieval_hits == 0
+        assert r.cellar_citations_rendered == 0
+        assert r.cellar_retrieval_config_sig is None
+
+    def test_historical_record_missing_keys_parses_with_defaults(self, tmp_path):
+        # A legacy JSONL line written before these fields existed: the read
+        # path (IntentRecord(**data)) must default the missing keys, never crash.
+        import json
+
+        store = IntentStore(store_path=tmp_path / "legacy.jsonl")
+        legacy = {
+            "timestamp": "2026-05-01T00:00:00+00:00", "session_id": "s",
+            "turn_id": "s#0", "user_message_stem": "old", "pattern_hash": "h",
+            "intent_class": "conversation", "register_class": "casual",
+            "complexity_signal": "simple", "confidence": 0.5, "outcome": "success",
+        }
+        store.path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+        rec = next(iter(store.records()))
+        assert rec.cellar_retrieval_hits == 0
+        assert rec.cellar_citations_rendered == 0
+        assert rec.cellar_retrieval_config_sig is None

@@ -47,7 +47,7 @@ from grove.prompt.portal_links import resolve_portal_base_url
 from grove.wiki.index import WikiIndex, WikiResult
 from grove.wiki.links import cellar_page_portal_link
 
-__all__ = ["create_cellar_provider"]
+__all__ = ["create_cellar_provider", "cellar_retrieval_config_sig"]
 
 _SECTION_LABEL = "cellar_knowledge"
 _SECTION_HEADER = "## Cellar Knowledge"
@@ -58,6 +58,21 @@ _QUERY_K = 5
 # TTL-gate the per-turn WikiIndex mtime scan (seconds). monotonic, not
 # wall-clock — immune to clock adjustments.
 _REFRESH_TTL = 60.0
+
+
+def cellar_retrieval_config_sig() -> str:
+    """substrate-citation-v1 P3 (A3) — the compact, stable signature of the
+    cellar RETRIEVAL REGIME this build runs: the knobs that govern which pages
+    cross the floor (top-k) and which render (greedy-fill token budget).
+
+    Path B (this composer provider) applies NO relevance-score floor —
+    ``WikiIndex.query`` returns the top-k FTS5/BM25 matches with no min-score
+    cutoff (``_rank_results`` ranks and slices, it never thresholds) — so the
+    floor component is recorded as ``none``. Adding a floor later flips the
+    epoch. Curve readers segment on a change to this string; they never compare
+    citation ratios across two different signatures.
+    """
+    return f"floor=none;k={_QUERY_K};budget={_CELLAR_TOKEN_BUDGET}"
 
 
 def _approx_tokens(text: str) -> int:

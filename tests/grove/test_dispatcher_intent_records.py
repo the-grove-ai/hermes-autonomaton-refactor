@@ -645,3 +645,54 @@ class TestInlineLazyDispatcherBuild:
         # the same store through when the caller doesn't override.
         dispatcher = Dispatcher(intent_store=default_store)
         assert dispatcher._intent_store is default_store
+
+
+class TestSubstrateCitationTelemetry:
+    """substrate-citation-v1 P3 — the write site records the compounding-curve
+    denominator/numerator/epoch from the per-turn agent stash. Compose (hits +
+    sig) and the citation appender (rendered) both run AFTER the dispatcher's
+    per-turn reset and BEFORE FinalResponse, so the write reads real values."""
+
+    def test_write_site_records_cellar_fields_from_stash(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch, intent_class="analysis")
+        agent = _bare_agent_with_exec([])
+
+        def _gen(**kw):
+            def g():
+                # simulate compose (hits+sig) + appender (rendered) firing after
+                # the per-turn reset, before the FinalResponse yield.
+                agent._cellar_retrieval_hits = 4
+                agent._cellar_citations_rendered = 2
+                agent._cellar_retrieval_config_sig = "floor=none;k=5;budget=1500"
+                yield FinalResponse(content="done")
+                return {"final_response": "done"}
+            return g()
+
+        agent._run_turn_generator = _gen
+        Dispatcher(intent_store=tmp_store).dispatch_turn(
+            agent, user_message="draw on the cellar",
+        )
+        rec = list(tmp_store.records())[0]
+        assert rec.cellar_retrieval_hits == 4
+        assert rec.cellar_citations_rendered == 2
+        assert rec.cellar_retrieval_config_sig == "floor=none;k=5;budget=1500"
+
+    def test_write_site_defaults_when_no_retrieval(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_store: IntentStore,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch, intent_class="analysis")
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = (
+            lambda **kw: _synthetic_generator(
+                None, {"final_response": "x"}, final_text="x",
+            )
+        )
+        Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="hi")
+        rec = list(tmp_store.records())[0]
+        assert rec.cellar_retrieval_hits == 0
+        assert rec.cellar_citations_rendered == 0
+        assert rec.cellar_retrieval_config_sig is None

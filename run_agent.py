@@ -6028,6 +6028,13 @@ class AIAgent:
                 ]
             if not sources:
                 return final_response
+            # substrate-citation-v1 P3 — record the NUMERATOR (links actually
+            # appended, post-dedupe) for the compounding curve. This appender is
+            # the only place that knows it, and it runs BEFORE the IntentRecord
+            # write (FinalResponse yields after all appenders), so the write
+            # reads a real count, never a speculative one. The failure/no-op
+            # exits leave the dispatcher's per-turn reset value (0) in place.
+            self._cellar_citations_rendered = len(sources)
             links = "\n".join(
                 cellar_page_portal_link(sp, base_url) for sp in sources
             )
