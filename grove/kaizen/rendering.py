@@ -507,6 +507,60 @@ def _exploration_nudge_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     return diff
 
 
+def _summary_producer_recurrence(proposal: RoutingProposal) -> str:
+    """detector-sweep-resilience-v1 P3 — the producer pause offer.
+
+    Reads {producer} from the identity payload and the evidence
+    (failure_count / distinct_dates / last_error / window_days) from the
+    id-EXCLUDED ``detail`` envelope, degrading gracefully when detail is
+    absent. Card copy per SPEC: approve pauses until the operator
+    re-enables in ~/.grove/flywheel/producer_pauses.yaml; reject
+    suppresses this card for the window."""
+    p = proposal.payload or {}
+    d = proposal.detail or {}
+    producer = p.get("producer", "?")
+    dates = d.get("distinct_dates") or []
+    count = d.get("failure_count")
+    window = d.get("window_days", "?")
+    base = f"Producer {producer} keeps failing"
+    if dates:
+        base += f" — {len(dates)} distinct day(s)"
+        if count is not None:
+            base += f", {count} failure(s)"
+        base += f" in the last {window}d"
+    last = d.get("last_error")
+    if last:
+        base += f". Last: {str(last)[:120]}"
+    base += (
+        ". Approve pauses it until you re-enable it in "
+        "~/.grove/flywheel/producer_pauses.yaml; reject suppresses this "
+        "card for the window."
+    )
+    return base
+
+
+def _producer_recurrence_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """The one state change approve applies: the producer's pause flag flips
+    on in ~/.grove/flywheel/producer_pauses.yaml (via the sanctioned
+    set_producer_pause writer), with the failure evidence beside it."""
+    p = proposal.payload or {}
+    d = proposal.detail or {}
+    diff: Dict[str, Any] = {
+        f"producer: {p.get('producer', '?')}": {
+            "paused": {"-before": False, "+after": True},
+        },
+    }
+    evidence = {
+        k: d.get(k)
+        for k in ("failure_count", "distinct_dates", "last_error",
+                  "window_days")
+        if d.get(k) is not None
+    }
+    if evidence:
+        diff["evidence"] = evidence
+    return diff
+
+
 def _summary_goal_attachment(proposal: RoutingProposal) -> str:
     """goal-spine-v1 P3 — the batched attachment offer, one row per goal.
 

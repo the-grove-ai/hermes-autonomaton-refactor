@@ -59,6 +59,22 @@ fault_triage:
   # session appears and the count grew at all). Must be a number >= 1.0.
   reraise_growth: 1.5
 
+# detector-sweep-resilience-v1 P3 — the producer-failure recurrence detector
+# reads producer_failure ledger events (filed by the Dispatcher's shared
+# sweep guard) and stages a producer_failure_recurrence pause card when one
+# producer fails across distinct days. Approve pauses the producer via
+# ~/.grove/flywheel/producer_pauses.yaml until the operator re-enables it;
+# reject suppresses the card for the window.
+producer_resilience:
+  # Minimum DISTINCT UTC days (inside the window) on which the producer
+  # failed before the pause card stages — a same-day failure storm never
+  # trips it. Must be an integer >= 1.
+  distinct_days: 3
+
+  # Sliding window, in days. Failures older than this are ignored. Must be
+  # an integer >= 1.
+  window_days: 14
+
 # kaizen-ledger-retention-v1 — governed retention over ~/.grove/.kaizen_ledger/.
 # Run by `autonomaton flywheel maintain --retention` (systemd timer on the
 # gateway; --dry-run prints the plan and writes nothing). Pruned lines are
