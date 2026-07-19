@@ -189,6 +189,11 @@ def create_cellar_provider(
         # Greedy fill in rank order; skip a block that would overflow the
         # budget (lowest-ranked drop first).
         lines: List[str] = []
+        # substrate-citation-v1 Phase 1 (A1/A2) — the RENDERED source_paths, in
+        # rank order, gathered as blocks are KEPT. A budget-dropped block never
+        # joins this list, so a page the operator's turn never actually saw is
+        # never cited (the rendered/floor-crossing split, ruling A2).
+        _rendered_sources: List[str] = []
         used = 0
         _dropped_blocks = 0
         _dropped_tokens = 0
@@ -205,6 +210,7 @@ def create_cellar_provider(
                 continue
             used += cost
             lines.append(block)
+            _rendered_sources.append(result.source_path)
 
         # F2 sink: record drops on the compose-seeded channel BEFORE the
         # all-dropped early return, so a section that drops EVERY block still
@@ -216,6 +222,18 @@ def create_cellar_provider(
                     "dropped_blocks": _dropped_blocks,
                     "dropped_tokens": _dropped_tokens,
                 }
+
+        # substrate-citation-v1 Phase 1 (A1/A2) — write the citation sinks BEFORE
+        # the all-dropped early return, so a turn that retrieved pages but budget-
+        # dropped every block still records its floor-crossing hit count (the
+        # denominator) while citing nothing. Guarded on sink-presence, mirroring
+        # the budget_drops sink: a non-compose call (no seeded sink) is a no-op.
+        _src_sink = context.get("_cellar_sources")
+        if _src_sink is not None:
+            _src_sink.extend(_rendered_sources)
+        _hits_sink = context.get("_cellar_hits")
+        if _hits_sink is not None:
+            _hits_sink["count"] = len(results)
 
         if not lines:
             return None
