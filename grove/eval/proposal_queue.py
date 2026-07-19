@@ -51,6 +51,7 @@ __all__ = [
     "PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING",
     "PROPOSAL_TYPE_ADMISSION_FRICTION",
     "PROPOSAL_TYPE_GOAL_ATTACHMENT",
+    "PROPOSAL_TYPE_EXPLORATION_NUDGE",
     "compute_proposal_id",
     "compute_eval_hash",
     "default_queue_path",
@@ -221,6 +222,25 @@ PROPOSAL_TYPE_ADMISSION_FRICTION = "admission_friction"
 #   {"goal_id": str, "goal_name": str,
 #    "entries": [{"artifact_id", "excerpt", "rationale", "verdict"}]}
 PROPOSAL_TYPE_GOAL_ATTACHMENT = "goal_attachment"
+# kaizen-exploration-proposals-v1 — the Kaizen nudge to try a cataloged-but-
+# UNTRIED model interactively (attended, Mylo-path). NOT a binding and NOT a
+# trial directive (the operator reframe dissolved the trial-execution universe):
+# it proposes FLIPPING the interactive tier selection so the operator's own
+# attended turns start generating honest evidence arms. Approve delegates to the
+# SAME sanctioned writer the catalog one-tap dropdown uses
+# (RoutingConfigWriter.swap_tier_model) — a real, reversible config write, so the
+# "apply_callback = approved write" contract holds with ZERO novel execution.
+#
+# Payload is IDENTITY-BEARING and MINIMAL — {slug, tier} ONLY — so a model's
+# proposal id is stable across catalog repricings. The card-only display fields
+# (display_name / provider / input_cost_per_mtok / output_cost_per_mtok) ride the
+# id-EXCLUDED ``detail`` envelope (compute_proposal_id hashes type|payload|
+# evidence only, :460-480), NEVER the payload, so a repriced model does not fork
+# into a duplicate nudge.
+#   payload: {"slug": str, "tier": str}
+#   detail:  {"display_name": str, "provider": str,
+#             "input_cost_per_mtok": float, "output_cost_per_mtok": float}
+PROPOSAL_TYPE_EXPLORATION_NUDGE = "exploration_nudge"
 # Verb affordances per proposal type. The portal iterates this to render action
 # buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
 # to the iterator — the shape is deliberately open. The generic fleet type

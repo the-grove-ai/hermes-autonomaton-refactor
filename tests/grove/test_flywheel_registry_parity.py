@@ -186,10 +186,16 @@ def test_registry_covers_exactly_the_registered_types() -> None:
     # apply path → attachment_store.mint_attachment). Updated inline by the
     # sprint that registers the type — the registry parity contract still
     # holds, the closed set just grew by one.
+    # kaizen-exploration-proposals-v1 added exploration_nudge (the twelfth row —
+    # the "try a cataloged-untried model interactively?" nudge whose apply flips
+    # the interactive tier selection through RoutingConfigWriter.swap_tier_model).
+    # Updated inline by the sprint that registers the type — the registry parity
+    # contract still holds, the closed set just grew by one.
     from grove.eval.proposal_queue import (
         PROPOSAL_TYPE_ADMISSION_FRICTION,
         PROPOSAL_TYPE_CONSOLIDATION,
         PROPOSAL_TYPE_DOCK_MUTATION,
+        PROPOSAL_TYPE_EXPLORATION_NUDGE,
         PROPOSAL_TYPE_GOAL_ATTACHMENT,
         PROPOSAL_TYPE_MODEL_BINDING,
         PROPOSAL_TYPE_SKILL_SYNTHESIS,
@@ -199,6 +205,7 @@ def test_registry_covers_exactly_the_registered_types() -> None:
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         PROPOSAL_TYPE_CONSOLIDATION,
         PROPOSAL_TYPE_DOCK_MUTATION,
+        PROPOSAL_TYPE_EXPLORATION_NUDGE,
         PROPOSAL_TYPE_GOAL_ATTACHMENT,
         PROPOSAL_TYPE_MODEL_BINDING,
         PROPOSAL_TYPE_ADMISSION_FRICTION,

@@ -34,6 +34,7 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_ADMISSION_FRICTION,
     PROPOSAL_TYPE_CONSOLIDATION,
     PROPOSAL_TYPE_DOCK_MUTATION,
+    PROPOSAL_TYPE_EXPLORATION_NUDGE,
     PROPOSAL_TYPE_FAULT_TRIAGE,
     PROPOSAL_TYPE_GOAL_ATTACHMENT,
     PROPOSAL_TYPE_MODEL_BINDING,
@@ -75,12 +76,14 @@ from grove.kaizen.rendering import (  # noqa: F401
     _diff_zone_promotion,
     _dock_mutation_to_diff,
     _ensure_memory_renderer,
+    _exploration_nudge_to_diff,
     _goal_attachment_to_diff,
     _model_binding_to_diff,
     _routing_adjustment_to_diff,
     _summary_consolidation,
     _summary_dock_mutation,
     _summary_admission_friction,
+    _summary_exploration_nudge,
     _summary_fault_triage,
     _summary_goal_attachment,
     _summary_model_binding,
@@ -1042,6 +1045,107 @@ def _approve_model_binding(
     return result.path, applied
 
 
+def _run_async_from_sync(coro):
+    """Run an async coroutine from this SYNC apply_callback, safe inside or
+    outside a running event loop.
+
+    Mirrors the sanctioned in-repo async-from-sync bridge
+    (tools/browser_cdp_tool._run_async). The portal calls apply_callback
+    SYNCHRONOUSLY on its event-loop thread (grove/api/actions.py:290 — the call
+    is not awaited), so a running loop is present there and ``asyncio.run`` would
+    raise; the CLI approve path (cli_approve) has no loop. Both are covered: with
+    a running loop, the coroutine runs to completion on a one-shot worker
+    thread's own loop (safe on py3.11+ — asyncio.Lock does not pin to a loop, and
+    the portal loop holds no concurrent acquisition while blocked in this call).
+    """
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
+def _file_exploration_flip_event(slug: str, tier: str, proposal_id: str) -> None:
+    """Type-specific audit event for an applied exploration_nudge (the
+    interactive selection flipped slug-ward). Distinct from the generic
+    ``kaizen_disposition`` and from the writer's own ``routing_config_mutation``:
+    records the exploration-loop provenance (slug + tier + surface) so a
+    catalog-add → interactive-trial → evidence arc is auditable end-to-end.
+    Component-filer under a ``cli-<utc>`` sentinel session (mirrors the routing
+    writer's self-audit). Error-log floor: the flip already landed atomically, so
+    a filing failure must not misreport it — logs at ERROR and stands."""
+    try:
+        from datetime import datetime, timezone
+
+        from grove.kaizen_ledger import KaizenLedger
+
+        session_id = "cli-" + datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        )
+        KaizenLedger(session_id=session_id).record(
+            "exploration_nudge_applied",
+            slug=slug,
+            tier=tier,
+            surface="proposal_apply",
+            proposal_id=proposal_id,
+        )
+    except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor stands
+        logger.error(
+            "[flywheel] exploration_nudge_applied filing failed (flip itself "
+            "SUCCEEDED): %r",
+            file_exc,
+        )
+
+
+def _approve_exploration_nudge(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Apply an exploration_nudge — FLIP the interactive tier selection to the
+    cataloged-untried slug through the ONE sanctioned writer of
+    ``routing.config.yaml`` (kaizen-exploration-proposals-v1 R-P0-1).
+
+    Delegates to ``grove.config.routing_writer.get_writer().swap_tier_model`` —
+    the SAME writer the catalog one-tap dropdown uses (actions.py:998) — never a
+    direct config touch and never a reimplementation of the swap. The writer owns
+    backup → ruamel → sandbox-validate → atomic-replace → hot-reload, the
+    fail-closed catalog-membership gate, and the one-tap-undo ``previous_model``.
+    The write is real and reversible, so the "apply_callback = approved write"
+    contract holds with zero novel execution machinery. ``machine_path`` is
+    unused (uniform registry signature)."""
+    from grove.config.routing_writer import get_writer
+
+    payload = proposal.payload or {}
+    slug = payload.get("slug")
+    tier = payload.get("tier")
+    if not isinstance(slug, str) or not slug.strip():
+        raise ValueError(
+            f"exploration_nudge proposal {proposal.proposal_id} payload missing "
+            f"a non-empty slug"
+        )
+    if not isinstance(tier, str) or not tier.strip():
+        raise ValueError(
+            f"exploration_nudge proposal {proposal.proposal_id} payload missing "
+            f"a non-empty tier"
+        )
+    result = _run_async_from_sync(get_writer().swap_tier_model(tier, slug))
+    _file_exploration_flip_event(slug, tier, proposal.proposal_id)
+    applied = {
+        "tier": result.tier,
+        "model": result.model,
+        "status": result.status,  # "swapped" | "noop"
+    }
+    return f"{tier} -> {slug}", applied
+
+
 def _approve_goal_attachment(
     proposal: RoutingProposal,
     *,
@@ -1862,6 +1966,26 @@ def _reject_model_binding(proposal: RoutingProposal) -> None:
         )
 
 
+def _reject_exploration_nudge(proposal: RoutingProposal) -> None:
+    # kaizen-exploration-proposals-v1 — write the own-namespace suppression
+    # tombstone (keyed on slug) so the zero-arm scan will not re-nudge this
+    # cataloged model. Distinct namespace from binding_tombstones.json (F-4
+    # collision analysis): a rejected nudge suppresses only the nudge, never a
+    # legitimate model_binding proposal on the same skill/model. Tolerant like
+    # every reject_callback (the operator must always be able to dismiss a queued
+    # item): a store-write failure logs loud and the rejection proceeds — the
+    # nudge may re-surface next scan and be re-rejected, never the reverse.
+    try:
+        from grove.eval.exploration_scan import record_tombstone
+
+        record_tombstone(proposal)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[flywheel] could not record exploration tombstone for %s: %r",
+            proposal.proposal_id, exc,
+        )
+
+
 def _approve_admission_friction(
     proposal: RoutingProposal,
     *,
@@ -2229,6 +2353,18 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         # until a MATERIAL change (new observed model / binding changed /
         # rubric bumped — the latter two structural via the key).
         reject_callback=_reject_model_binding,
+    ),
+    PROPOSAL_TYPE_EXPLORATION_NUDGE: ProposalHandler(
+        summary_renderer=_summary_exploration_nudge,
+        diff_renderer=_exploration_nudge_to_diff,
+        apply_callback=_approve_exploration_nudge,
+        apply_label_prefix="Interactive selection flipped: ",
+        # kaizen-exploration-proposals-v1 — rejection writes the own-namespace
+        # (slug-keyed) exploration tombstone so the zero-arm scan will not
+        # re-nudge this cataloged model. Distinct store from binding_tombstones
+        # .json (F-4 collision analysis): a rejected nudge suppresses only the
+        # nudge, never a legitimate model_binding proposal on the same pair.
+        reject_callback=_reject_exploration_nudge,
     ),
     PROPOSAL_TYPE_GOAL_ATTACHMENT: ProposalHandler(
         summary_renderer=_summary_goal_attachment,
