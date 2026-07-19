@@ -19,6 +19,10 @@ import ruamel.yaml
 from grove.config.model_catalog import _validate_catalog, load_catalog
 from grove.config.routing_writer import ConfigValidationError, RoutingConfigWriter
 
+# model-catalog-v1 M-2 — swaps are now catalog-gated at the write seam, so tests
+# swap to on-catalog slugs. `deepseek/deepseek-v4-flash` is a stable catalog
+# entry distinct from every default tier binding.
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TEMPLATE = _REPO_ROOT / "config" / "routing.config.yaml"
 
@@ -44,27 +48,27 @@ def writer(tmp_path):
 async def test_swap_sets_model_and_previous(writer):
     w, cfg = writer
     before, _ = _model(cfg, "T2")
-    await w.swap_tier_model("T2", "deepseek/deepseek-chat")
+    await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")
     model, prev = _model(cfg, "T2")
-    assert model == "deepseek/deepseek-chat"
+    assert model == "deepseek/deepseek-v4-flash"
     assert prev == before
 
 
 async def test_revert_toggles_model_and_previous(writer):
     w, cfg = writer
     orig, _ = _model(cfg, "T2")
-    await w.swap_tier_model("T2", "deepseek/deepseek-chat")
+    await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")
     await w.revert_tier_model("T2")
     model, prev = _model(cfg, "T2")
     assert model == orig
     # one-level undo: previous now points at the model we reverted away from
-    assert prev == "deepseek/deepseek-chat"
+    assert prev == "deepseek/deepseek-v4-flash"
 
 
 async def test_swap_preserves_comments(writer):
     w, cfg = writer
     assert "# DEFAULT PROVIDER" in cfg.read_text()
-    await w.swap_tier_model("T2", "deepseek/deepseek-chat")
+    await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")
     after = cfg.read_text()
     assert "# DEFAULT PROVIDER" in after  # AC-8
     assert "THE FOUR TIERS" in after
@@ -76,13 +80,13 @@ async def test_swap_preserves_comments(writer):
 async def test_concurrent_swaps_no_corruption(writer):
     w, cfg = writer
     await asyncio.gather(
-        w.swap_tier_model("T1", "deepseek/deepseek-chat"),
+        w.swap_tier_model("T1", "deepseek/deepseek-v4-flash"),
         w.swap_tier_model("T2", "deepseek/deepseek-v3.2"),
         w.swap_tier_model("T3", "z-ai/glm-4.6"),
     )
     data = ruamel.yaml.YAML().load(cfg.read_text(encoding="utf-8"))
     tiers = data["routing"]["tier_preferences"]
-    assert tiers["T1"]["model"] == "deepseek/deepseek-chat"
+    assert tiers["T1"]["model"] == "deepseek/deepseek-v4-flash"
     assert tiers["T2"]["model"] == "deepseek/deepseek-v3.2"
     assert tiers["T3"]["model"] == "z-ai/glm-4.6"
 
@@ -121,9 +125,9 @@ async def test_swap_same_model_is_noop(writer):
 
 async def test_swap_returns_swapped_result(writer):
     w, cfg = writer
-    result = await w.swap_tier_model("T2", "deepseek/deepseek-chat")
+    result = await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")
     assert result.status == "swapped"
-    assert result.tier == "T2" and result.model == "deepseek/deepseek-chat"
+    assert result.tier == "T2" and result.model == "deepseek/deepseek-v4-flash"
 
 
 async def test_invalid_tier_raises(writer):
@@ -132,13 +136,34 @@ async def test_invalid_tier_raises(writer):
     # handler-backed T0 (no model) all fail loud.
     for bad in ("T9", "telemetry", "T0"):
         with pytest.raises(ConfigValidationError):
-            await w.swap_tier_model(bad, "deepseek/deepseek-chat")
+            await w.swap_tier_model(bad, "deepseek/deepseek-v4-flash")
 
 
 async def test_revert_without_previous_raises(writer):
     w, _ = writer
     with pytest.raises(ConfigValidationError):
         await w.revert_tier_model("T2")
+
+
+# ----- M-2: catalog-membership check at the write seam ----------------------
+
+
+async def test_swap_to_off_catalog_slug_refused(writer):
+    # model-catalog-v1 M-2 — a structurally-valid but off-catalog slug is dead
+    # config (it would 400 at call time). The write seam refuses it loud and
+    # leaves the file untouched, mirroring set_model_binding's ModelBinding gate.
+    w, cfg = writer
+    before = cfg.read_bytes()
+    with pytest.raises(ConfigValidationError, match="not in the model catalog"):
+        await w.swap_tier_model("T2", "fictional/model-9000")
+    assert cfg.read_bytes() == before  # fail-closed, no write
+
+
+async def test_swap_to_on_catalog_slug_passes(writer):
+    # The positive half: an on-catalog slug swaps cleanly through the seam.
+    w, cfg = writer
+    result = await w.swap_tier_model("T2", "z-ai/glm-4.6")  # in the repo catalog
+    assert result.status == "swapped" and result.model == "z-ai/glm-4.6"
 
 
 # ----- catalog loader -------------------------------------------------------
@@ -204,7 +229,7 @@ async def test_swap_files_routing_config_mutation_event(writer, monkeypatch):
             (self.session_id, event_type, fields)
         ),
     )
-    await w.swap_tier_model("T2", "deepseek/deepseek-chat")
+    await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")
     events = [c for c in captured if c[1] == "routing_config_mutation"]
     assert len(events) == 1
     sid, _et, fields = events[0]
@@ -226,6 +251,6 @@ async def test_ledger_filing_failure_does_not_fail_the_mutation(writer, monkeypa
 
     monkeypatch.setattr(kl.KaizenLedger, "record", _boom)
     with caplog.at_level(logging.ERROR):
-        await w.swap_tier_model("T2", "deepseek/deepseek-chat")  # must NOT raise
-    assert "deepseek/deepseek-chat" in cfg.read_text()  # mutation still landed
+        await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")  # must NOT raise
+    assert "deepseek/deepseek-v4-flash" in cfg.read_text()  # mutation still landed
     assert any("filing failed" in r.getMessage() for r in caplog.records)
