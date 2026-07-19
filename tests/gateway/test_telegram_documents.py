@@ -96,6 +96,8 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     msg.audio = None
     msg.voice = None
     msg.sticker = None
+    msg.video_note = None
+    msg.animation = None
     msg.document = document
     msg.media_group_id = media_group_id
     # Chat / user
@@ -302,7 +304,10 @@ class TestDocumentDownloadBlock:
 
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        assert "too large" in event.text
+        # Oversize notice now routes through the shared media-failure helper,
+        # naming the getFile cap and the actual size (SPEC point 3).
+        assert "download limit" in event.text
+        assert "25.0 MB" in event.text
 
     @pytest.mark.asyncio
     async def test_none_file_size_rejected(self, adapter):
@@ -313,7 +318,8 @@ class TestDocumentDownloadBlock:
 
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        assert "too large" in event.text or "could not be verified" in event.text
+        # Unverifiable size is still rejected — we cannot prove it is under cap.
+        assert "unverified size" in event.text and "download limit" in event.text
 
     @pytest.mark.asyncio
     async def test_missing_filename_uses_mime_lookup(self, adapter):
