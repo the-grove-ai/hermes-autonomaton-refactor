@@ -279,6 +279,14 @@ class KaizenLedger:
         # sweep-level call-site guard, and session compaction's two catch
         # sites.
         "producer_failure",
+        # researcher-fleet-worker-v1 P2 — a one_shot fleet request file failed
+        # resolve-time validation (bad name / invalid JSON / bad origin /
+        # missing required keys) and was dead-lettered to .rejected/. WORKER-
+        # AGNOSTIC by design (mesh primitive): the worker identity travels in
+        # the worker_id FIELD, never the event name. Emitter: the file_source
+        # resolver's screen (grove/fleet/resolvers.py::_record_request_rejected).
+        # Carries worker_id + source_dir + request (filename) + reason.
+        "fleet_request_rejected",
         # kaizen-exploration-proposals-v1 — an exploration_nudge was APPLIED:
         # the operator approved "try model X interactively?" and the interactive
         # tier selection flipped slug-ward through the sanctioned
