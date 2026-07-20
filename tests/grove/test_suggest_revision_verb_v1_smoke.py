@@ -263,7 +263,9 @@ def test_worker_prompt_byte_identical_without_directive():
 # manager — C1b-1 the revision-directive fold, LIFTED to the worker runtime seam
 # and AMENDMENT-gated on approval_handoff.mode == "action_surface_publish".
 # Exercises the REAL capability mode read (forge=action_surface_publish,
-# researcher=ingest_post) through _maybe_dispatch_one, not a monkeypatched gate.
+# scout=ingest_post) through _maybe_dispatch_one, not a monkeypatched gate.
+# (researcher-fleet-worker-v1 P1 flipped researcher to action_surface_publish;
+# scout is the surviving real ingest_post exemplar.)
 # ---------------------------------------------------------------------------
 
 
@@ -319,12 +321,12 @@ def test_manager_injects_directive_for_action_surface_publish(grove_home, monkey
 
 
 def test_manager_no_injection_for_ingest_post_mode(grove_home, monkeypatch):
-    """VERDICT B — researcher (mode=ingest_post, read FOR REAL): even WITH a feedback
+    """VERDICT B — scout (mode=ingest_post, read FOR REAL): even WITH a feedback
     file present for the unit, the amendment gate suppresses injection entirely."""
     from grove.forge import feedback_store
 
     feedback_store.write("w", "row-b", "add a citation")
-    payload = _dispatch_capturing(monkeypatch, "skill.fleet.researcher", "row-b")
+    payload = _dispatch_capturing(monkeypatch, "skill.fleet.scout", "row-b")
     assert payload is not None
     assert "revision_directive" not in payload  # amendment gate held
 
