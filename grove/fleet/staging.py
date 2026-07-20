@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -85,8 +86,23 @@ def stage_package(sink_dir: Path, slug: str, files: Dict[str, str]) -> List[Path
             "fleet_package carries no files — nothing to stage", check="empty_package"
         )
 
+    # researcher-fleet-worker-v1 P2 (F7/A-4) — CLEAN-ROOM: a slug dir is owned
+    # by exactly ONE run's package. Wipe any prior contents (a killed run's
+    # partial files) so a later package can never absorb a stray from an
+    # earlier run.
+    if slug_dir.exists():
+        shutil.rmtree(slug_dir)
+
+    # meta.json is written LAST: the staged-unit index keys on meta.json
+    # presence, so a package killed mid-loop is INVISIBLE to skip_already_staged
+    # and simply re-staged by the next run into a wiped clean room. Stable sort:
+    # non-meta files keep their emission order.
+    ordered = sorted(
+        files.items(),
+        key=lambda kv: os.path.basename(str(kv[0]).strip()) == "meta.json",
+    )
     staged: List[Path] = []
-    for fname, content in files.items():
+    for fname, content in ordered:
         base = os.path.basename(str(fname).strip())
         if not base or base in (".", "..") or os.sep in base or (os.altsep and os.altsep in base):
             raise FleetWorkerAndon(

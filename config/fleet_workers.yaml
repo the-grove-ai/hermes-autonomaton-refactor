@@ -108,6 +108,37 @@ workers:
       start: "22:00"
       end: "07:00"
 
+  # researcher-fleet-worker-v1 P2 — the researcher as an unattended worker.
+  # Driven by one_shot REQUEST files (operator/agent-queued), not an upstream
+  # sink: a request is consumed exactly once (claim → .processing/ at dispatch,
+  # reap → .done/ or .failed/, malformed → .rejected/ + fleet_request_rejected).
+  # Ships DISABLED; the operator arms it via ~/.grove/fleet_workers.override.yaml
+  # (operator state — never the repo).
+  - id: researcher
+    skill: skill.fleet.researcher         # capability-record id (canonical_dir: researcher)
+    enabled: false
+    cadence: "*/30 * * * *"               # request-driven; work-gated by the request dir
+    input_state:
+      type: file_source
+      source_dir: research-requests       # ~/.grove/research-requests/ — request files
+      pattern: "*.json"
+      slug_regex: '^(.+)\.json$'          # unit_id = request filename stem
+      lifecycle: one_shot                 # claim/dispose lane; default refresh untouched
+      required_keys: [operator_intent, topic]
+      select_one: true
+      skip_already_staged: true
+    budget:
+      per_run_tokens: 200000
+      daily_tokens: 600000
+    limits:
+      wall_clock_secs: 1800               # research loop: web + wiki + Notion sweep
+      mem_mb: 1536
+      fsize_mb: 64
+      nofile: 512
+    quiet_hours:
+      start: "22:00"
+      end: "07:00"
+
 # ── Worker entry schema (commented template — copy an entry, uncomment, fill) ─
 #
 # workers:

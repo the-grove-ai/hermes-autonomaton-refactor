@@ -73,12 +73,17 @@ def test_shipped_registry_declares_the_review_unified_producer_set():
     # fleet-review-unification-v1 C1b-2 — the committed registry declares the three
     # real fleet producers: forge (notion_query) and the file producers drafter /
     # cultivator (file_source), all enabled. It must load cleanly.
+    # researcher-fleet-worker-v1 P2 — researcher joins as a one_shot file_source
+    # worker, shipped DISABLED (the operator arms it via the override overlay).
     workers = config.load_fleet_workers(config.default_fleet_workers_path())
-    assert set(workers) == {"forge", "drafter", "cultivator"}
-    assert all(w.enabled for w in workers.values())
+    assert set(workers) == {"forge", "drafter", "cultivator", "researcher"}
+    assert all(w.enabled for w in workers.values() if w.id != "researcher")
+    assert workers["researcher"].enabled is False
     assert workers["forge"].input_state["type"] == "notion_query"
     assert workers["drafter"].input_state["type"] == "file_source"
     assert workers["cultivator"].input_state["type"] == "file_source"
+    assert workers["researcher"].input_state["type"] == "file_source"
+    assert workers["researcher"].input_state["lifecycle"] == "one_shot"
 
 
 def _write(tmp_path: Path, text: str) -> Path:

@@ -134,6 +134,11 @@ class FleetManager:
         self._override_fail_reason: Optional[str] = None
         self._running: Dict[str, WorkerHandle] = {}
         self._last_dispatch: Dict[str, datetime] = {}
+        # researcher-fleet-worker-v1 P2 — in-flight one_shot request claims,
+        # keyed by worker id; disposed (.done/.failed) at reap. IN-MEMORY: a
+        # gateway restart mid-run strands the claimed file in .processing/ —
+        # visible operator state, never silently lost.
+        self._claims: Dict[str, Dict[str, Any]] = {}
         # fleet-event-reconciliation-v1 (gate ruling e) — first-tick-as-boot:
         # the first reconciliation pass runs with source="boot", every later
         # one with source="tick" (the RC-2 stall tripwire).
@@ -302,6 +307,16 @@ class FleetManager:
         # fleet-event-reconciliation-v1 (gate ruling a) — the live path writes
         # the same classified marker the reconciler writes: one legibility story.
         _mark_classified(handle.event_path)
+        # researcher-fleet-worker-v1 P2 — one_shot request disposition: success →
+        # .done/, everything else (failed / wall-clock kill / torn event) →
+        # .failed/. Defensive inside dispose; the reap never crashes on it.
+        claim = self._claims.pop(wid, None)
+        if claim:
+            from grove.fleet.resolvers import dispose_request_claim
+
+            dispose_request_claim(
+                claim, success=bool(event and event.get("status") == "success")
+            )
 
     @staticmethod
     def _read_event(event_path) -> Optional[Dict[str, Any]]:
@@ -779,8 +794,23 @@ class FleetManager:
             _directive = _revision_directive(payload.get("unit_id"), wid)
             if _directive:
                 payload["revision_directive"] = _directive
-        handle = runner.dispatch(cfg, payload)
+        # researcher-fleet-worker-v1 P2 — one_shot request lifecycle: the resolver
+        # claimed the request into .processing/ and handed the claim UP (the worker
+        # payload stays free of host-side lifecycle state). Stash for reap-side
+        # disposition; a dispatch failure restores the claim so the next tick
+        # retries. Generic: keyed on the claim's presence, never a worker identity.
+        _claim = payload.pop("request_claim", None) if isinstance(payload, dict) else None
+        try:
+            handle = runner.dispatch(cfg, payload)
+        except Exception:
+            if _claim:
+                from grove.fleet.resolvers import restore_request_claim
+
+                restore_request_claim(_claim)
+            raise
         self._running[wid] = handle
+        if _claim:
+            self._claims[wid] = _claim
         self._last_dispatch[wid] = now
         logger.info("[fleet.manager] dispatched worker %s run %s", wid, handle.run_id)
 

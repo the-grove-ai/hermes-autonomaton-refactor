@@ -31,12 +31,18 @@ The quality of your output depends on the quality of your questions. Ask before 
 The operator will provide either:
 - A URL → fetch it with `web_extract` and read the content
 - Pasted article body → use it directly
+- A request file (fleet) → its `topic` field carries the URL or subject;
+  treat a URL topic as the first case, a subject as a research question
 
 Read the article. Identify the core claims, the author's position, and the domain.
 
-**Step 2 — Socratic exchange**
+**Step 2 — Socratic exchange (skipped when intent is pre-supplied)**
 
-Before doing any research, ask the operator 2-3 shaping questions. These are cheap turns that dramatically improve research quality. Ask them conversationally, not as a form.
+If the request already carries a structured `operator_intent` (angle /
+audience / thesis) — as every fleet request file does — adopt it as the
+captured intent verbatim and proceed directly to Phase B. Do not re-ask.
+
+Otherwise, before doing any research, ask the operator 2-3 shaping questions. These are cheap turns that dramatically improve research quality. Ask them conversationally, not as a form.
 
 Questions to choose from (pick the 2-3 most relevant):
 - "What's your angle — are you building on this, rebutting it, using it as background for something you're writing, or just researching the space?"
@@ -50,7 +56,8 @@ Capture the operator's answers as structured intent:
 - `audience`: internal | linkedin | client | publication
 - `thesis`: the operator's stated thesis (or "exploratory" if none)
 
-Do NOT proceed to Phase B until the operator has answered. This is the load-bearing step.
+Do NOT proceed to Phase B until the operator has answered (or the request
+pre-supplied `operator_intent`). This is the load-bearing step.
 
 ### Phase B — Deep Research
 
@@ -101,7 +108,25 @@ Produce a synthesis shaped by the operator's stated angle, audience, and thesis:
 
 ### Phase C — Structured Output
 
-**Step 7 — Write the brief**
+Delivery forks on your runtime frame. If the frame declares you an
+autonomous, non-interactive fleet background worker (no operator present;
+the RUNTIME stages your output), follow **Step 7-fleet** and stop — Steps
+7, 7b and 8 are attended-only. Otherwise follow Steps 7–8 unchanged.
+
+**Step 7-fleet — Emit the brief (fleet frame only)**
+
+Do NOT use write_file, terminal, mkdir, or curl — you have no write tool
+and the runtime stages your output. Emit exactly two files through the
+delimited emission protocol your runtime frame specifies:
+- `brief-YYYY-MM-DD-SLUG.json` — the full brief JSON per the schema below
+  (SLUG: the request's `slug`, or a 2-3 word kebab-case identifier derived
+  from the topic when absent)
+- `meta.json` — valid JSON: `{"slug": "<SLUG>"}`, plus `"unit_id"` copied
+  from the resolved input when present
+The runtime stages the package for operator review; promotion ingests it
+to the cellar. Your job ends at emission.
+
+**Step 7 — Write the brief (attended frame)**
 
 **CRITICAL: Output location is `~/.grove/researcher/` — nowhere else.**
 Before writing, run: `mkdir -p ~/.grove/researcher`
@@ -193,6 +218,23 @@ reads the full output on the portal.
 
 Expand to full path at write time. NEVER write to the repo working
 directory or `~/research/`. Always `mkdir -p` first.
+
+## Request contract (fleet)
+
+Unattended runs are driven by request files in `~/.grove/research-requests/`:
+
+```json
+{
+  "operator_intent": {"angle": "...", "audience": "...", "thesis": "..."},
+  "topic": "URL or subject to research",
+  "slug": "optional-kebab-slug",
+  "origin": "operator | agent"
+}
+```
+
+`operator_intent` and `topic` are required. `slug` is optional (derived
+from the topic when absent). `origin` records who queued the request. An
+empty request directory is no work — the worker idles.
 
 ## Invocation
 

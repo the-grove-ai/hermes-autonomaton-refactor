@@ -17,11 +17,15 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from grove.fleet.errors import FleetWorkerAndon
+
+logger = logging.getLogger(__name__)
 
 # Resolver registry: predicate type -> callable(input_state, worker_id) -> payload|None
 _RESOLVERS: Dict[str, Callable[[Dict[str, Any], str], Optional[Any]]] = {}
@@ -462,6 +466,170 @@ def _select_file_units(units: List[Dict[str, Any]], input_state: Dict[str, Any],
     return units
 
 
+# ── one_shot request lifecycle (researcher-fleet-worker-v1 P2) ───────────────
+# Generic REQUEST semantics for the file_source lane, keyed on the DECLARATIVE
+# ``lifecycle: one_shot`` input_state flag (absent = refresh, byte-identical to
+# the pre-P2 lane). A request file is consumed exactly once: claimed into
+# ``.processing/`` at dispatch, disposed to ``.done/`` / ``.failed/`` at reap
+# (the manager holds the claim), dead-lettered to ``.rejected/`` when malformed
+# at resolve — never fail-in-place, so a bad file can never crash-loop the tick.
+# Dot-prefixed subdirs are invisible to the resolver's non-recursive glob. This
+# block is a MESH PRIMITIVE: no worker identities, ever (pinned by test).
+
+_REQUEST_ORIGINS = frozenset({"operator", "agent"})
+_PROCESSING_DIR = ".processing"
+_DONE_DIR = ".done"
+_FAILED_DIR = ".failed"
+_REJECTED_DIR = ".rejected"
+
+
+def _record_request_rejected(
+    worker_id: str, source_dir: str, request_name: str, reason: str
+) -> None:
+    """File the worker-agnostic ``fleet_request_rejected`` ledger event.
+
+    Defensive: filing must never crash a dispatch tick; the WARNING log floor in
+    the caller stands regardless."""
+    try:
+        from grove.kaizen_ledger import KaizenLedger
+
+        KaizenLedger(session_id=f"fleet:{worker_id}:resolve").record(
+            "fleet_request_rejected",
+            source="fleet_resolver",
+            worker_id=worker_id,
+            source_dir=source_dir,
+            request=request_name,
+            reason=reason,
+        )
+    except Exception as exc:  # noqa: BLE001 — never crash the ticker
+        logger.error(
+            "[fleet.resolver] fleet_request_rejected filing failed: %r "
+            "(worker=%s request=%s)", exc, worker_id, request_name,
+        )
+
+
+def _reject_request(
+    path: Path, base: Path, worker_id: str, source_dir: str, reason: str
+) -> None:
+    """Dead-letter a malformed request: mv → ``.rejected/`` + ledger event."""
+    dest_dir = base / _REJECTED_DIR
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(path, dest_dir / path.name)
+    except OSError as exc:
+        # Cannot move — leaving it in place WOULD re-reject every tick; loud.
+        raise FleetWorkerAndon(
+            f"worker {worker_id!r}: cannot dead-letter malformed request "
+            f"{path.name!r} ({exc})",
+            worker_id=worker_id,
+            check="request_reject_failed",
+        )
+    logger.warning(
+        "[fleet.resolver] worker %s rejected request %s → %s/: %s",
+        worker_id, path.name, _REJECTED_DIR, reason,
+    )
+    _record_request_rejected(worker_id, source_dir, path.name, reason)
+
+
+def _screen_request_files(
+    files: List[Path], base: Path, input_state: Dict[str, Any], worker_id: str
+) -> List[Path]:
+    """Validate one_shot request files; dead-letter failures, return survivors.
+
+    Checks, in order: filename matches the declared ``slug_regex`` (a bad name
+    dead-letters instead of Andon-looping); parses as a JSON object; ``origin``
+    ∈ operator|agent; every declared ``required_keys`` key present."""
+    source_dir = input_state.get("source_dir")
+    slug_regex = input_state.get("slug_regex")
+    required = input_state.get("required_keys") or []
+    keep: List[Path] = []
+    for p in files:
+        m = re.match(slug_regex, p.name)
+        if not m or not m.group(1):
+            _reject_request(
+                p, base, worker_id, source_dir,
+                f"filename does not match slug_regex {slug_regex!r}",
+            )
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            _reject_request(
+                p, base, worker_id, source_dir, f"unreadable/invalid JSON ({exc})"
+            )
+            continue
+        if not isinstance(data, dict):
+            _reject_request(
+                p, base, worker_id, source_dir, "request is not a JSON object"
+            )
+            continue
+        origin = data.get("origin")
+        if origin not in _REQUEST_ORIGINS:
+            _reject_request(
+                p, base, worker_id, source_dir,
+                f"origin {origin!r} not in {sorted(_REQUEST_ORIGINS)}",
+            )
+            continue
+        missing = [k for k in required if k not in data]
+        if missing:
+            _reject_request(
+                p, base, worker_id, source_dir,
+                f"missing required keys {missing}",
+            )
+            continue
+        keep.append(p)
+    return keep
+
+
+def _claim_request(path: Path, base: Path, worker_id: str) -> Path:
+    """Atomically claim *path* into ``.processing/`` at dispatch (one_shot)."""
+    dest_dir = base / _PROCESSING_DIR
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / path.name
+    try:
+        os.replace(path, dest)
+    except OSError as exc:
+        raise FleetWorkerAndon(
+            f"worker {worker_id!r}: cannot claim request {path.name!r} ({exc})",
+            worker_id=worker_id,
+            check="request_claim_failed",
+        )
+    return dest
+
+
+def dispose_request_claim(claim: Dict[str, Any], *, success: bool) -> None:
+    """Reap-side disposition: success → ``.done/``, anything else → ``.failed/``.
+
+    Defensive — a disposition failure logs and never crashes the reap; the
+    claimed file stays visible in ``.processing/`` for operator rescue."""
+    try:
+        src = Path(claim["path"])
+        root = Path(claim["root"])
+        dest_dir = root / (_DONE_DIR if success else _FAILED_DIR)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        if src.exists():
+            os.replace(src, dest_dir / src.name)
+    except Exception as exc:  # noqa: BLE001 — never crash the reap
+        logger.error(
+            "[fleet.resolver] request-claim disposition failed: %r (claim=%r)",
+            exc, claim,
+        )
+
+
+def restore_request_claim(claim: Dict[str, Any]) -> None:
+    """Un-claim after a dispatch failure: mv back so the next tick retries."""
+    try:
+        src = Path(claim["path"])
+        root = Path(claim["root"])
+        if src.exists():
+            os.replace(src, root / src.name)
+    except Exception as exc:  # noqa: BLE001 — never crash the dispatch surfacer
+        logger.error(
+            "[fleet.resolver] request-claim restore failed: %r (claim=%r)",
+            exc, claim,
+        )
+
+
 def resolve_file_source(input_state: Dict[str, Any], worker_id: str) -> Optional[Any]:
     """Detect work from an upstream fleet sink dir (C1b-2).
 
@@ -485,6 +653,11 @@ def resolve_file_source(input_state: Dict[str, Any], worker_id: str) -> Optional
     files = sorted(p for p in base.glob(pattern) if p.is_file())
     if not files:
         return None  # empty source — idle
+    one_shot = input_state.get("lifecycle") == "one_shot"
+    if one_shot:
+        files = _screen_request_files(files, base, input_state, worker_id)
+        if not files:
+            return None  # every request dead-lettered — idle, never fail-in-place
     units = [
         {"id": _unit_id_from_source(p.name, slug_regex, worker_id),
          "source_path": str(p), "source_name": p.name}
@@ -494,13 +667,20 @@ def resolve_file_source(input_state: Dict[str, Any], worker_id: str) -> Optional
     if not units:
         return None  # all staged / terminal — no work
     sel = units[0]
-    return {
+    payload = {
         "units": units,
         "source_dir": source_dir,
         "source_path": sel["source_path"],
         "source_name": sel["source_name"],
         "unit_id": sel["id"],
     }
+    if one_shot:
+        # Atomic claim at dispatch: the selected request leaves the glob surface
+        # NOW; the manager stashes the claim and disposes it at reap.
+        claimed = _claim_request(Path(sel["source_path"]), base, worker_id)
+        payload["source_path"] = str(claimed)
+        payload["request_claim"] = {"path": str(claimed), "root": str(base)}
+    return payload
 
 
 register_resolver("file_source", resolve_file_source)
