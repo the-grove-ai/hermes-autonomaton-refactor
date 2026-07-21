@@ -76,9 +76,13 @@ class TestTerminalSignal:
         # provenance from red_sovereign).
         # red-action-store-pending-v1 Phase B added "red_denied_by_policy" — a
         # deny-listed catastrophic RED effect terminated on any surface.
+        # capability-mutation-surface-v1 P7 hotfix added "red_nonviable_target"
+        # — the viability seam's pre-store-pending refusal (live Andon
+        # 2026-07-21: the trigger fired before it was an enum member).
         assert set(TERMINAL_TRIGGERS) == {
             "red_sovereign", "deny_hard", "quarantine", "governance_error",
             "tier_unavailable", "red_workflow_cancel", "red_denied_by_policy",
+            "red_nonviable_target",
         }
 
     def test_terminal_halt_result_shape(self):

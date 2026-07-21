@@ -68,6 +68,15 @@ class HaltTrigger(str, Enum):
     # "the effect is on the deny-list", not "the operator aborted". Listed in
     # ``grove.governance_halt.TERMINAL_TRIGGERS`` so the C2a boundary adapter resolves it.
     RED_DENIED_BY_POLICY = "red_denied_by_policy"
+    # capability-mutation-surface-v1 P7 hotfix (M6) — the viability seam
+    # refused a RED target BEFORE store-pending: approving it could never
+    # apply it (repo definition surface, or a governed surface with no
+    # registered writer). Terminal, refused pre-queue; the detail carries the
+    # seam's reason (git+deploy SOP / registry miss). Listed in
+    # ``grove.governance_halt.TERMINAL_TRIGGERS`` so the C2a boundary adapter
+    # resolves it (the live 2026-07-21 miss: the seam raised this trigger
+    # before it was a member and the ValueError ate the legible refusal).
+    RED_NONVIABLE_TARGET = "red_nonviable_target"
     # De-scoped — the operator drops the privileged action and the agent re-plans
     # on a within-authority alternative. FEED-WORTHY (a genuine steering
     # decision, surfaced via ``can_descope``); distinct from the non-feed-worthy

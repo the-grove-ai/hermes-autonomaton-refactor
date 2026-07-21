@@ -64,6 +64,11 @@ TERMINAL_TRIGGERS = (
     # Distinct provenance from red_workflow_cancel: "on the deny-list", not
     # "operator aborted". Legible: the detail names how to change the policy.
     "red_denied_by_policy",
+    # capability-mutation-surface-v1 P7 hotfix (M6) — the viability seam refused
+    # a RED target BEFORE store-pending: approving it could never apply it
+    # (repo definition surface / no registered governed writer). The detail
+    # carries the seam's reason (git+deploy SOP or the registry miss).
+    "red_nonviable_target",
 )
 
 
