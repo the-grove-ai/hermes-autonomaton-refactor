@@ -59,8 +59,10 @@ _GROVE_CORE_TOOLS = [
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     # Text-to-speech
     "text_to_speech",
-    # Planning & memory
-    "todo", "memory",
+    # Planning ("memory" tool name retired: legacy-memory-tool-retirement-v1
+    # deleted the tool + forbade registration; retrieval-ambient-class-v1 P1
+    # completes the retirement by dropping the declared ghost)
+    "todo",
     # Flywheel proposal review/approval — governed self-improvement (GRV-009 B3).
     # Surface-agnostic governance peers of `memory`: every surface must be able
     # to review and act on Kaizen proposals, so they belong in core, not a
@@ -235,13 +237,20 @@ TOOLSETS = {
         "tools": ["todo"],
         "includes": []
     },
-    
+
+    # TOMBSTONE (retrieval-ambient-class-v1 P1): the "memory" toolset's lone
+    # tool was deleted by legacy-memory-tool-retirement-v1 (registration
+    # forbidden in tools/registry.py) and its capability record is gone. The
+    # empty entry survives so a stale saved config naming "memory" resolves to
+    # nothing instead of fail-louding gateway boot (UnknownToolsetError);
+    # every consumer skips empty toolsets. Remove once operator configs are
+    # migrated off the key.
     "memory": {
-        "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"],
+        "description": "RETIRED — legacy memory tool deleted; empty tombstone for stale configs",
+        "tools": [],
         "includes": []
     },
-    
+
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
@@ -382,7 +391,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
+            "todo",
             "session_search",
             "execute_code", "delegate_task",
         ],

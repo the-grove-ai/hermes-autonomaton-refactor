@@ -321,10 +321,21 @@ def test_real_records_disclosure_modes_match_golden():
         assert not caps[rid].trigger.always and caps[rid].trigger.intents, rid
     # core + intent records stay proactive. invoke_skill joined this cohort
     # (invoke-skill-classification-hotfix-v1): always:true, offered on every intent.
-    for rid in ("clarify", "memory", "read_file", "terminal", "escalate",
-                "web_search", "search_files", "execute_code", "x_search",
+    # retrieval-ambient-class-v1 P1: clarify / read_file / web_search /
+    # search_files LEFT this cohort for the ambient baseline class (below);
+    # the orphan ``memory`` record (bound tool retired b363128fe, registration
+    # forbidden by tools/registry.py) was DELETED.
+    for rid in ("terminal", "escalate", "execute_code", "x_search",
                 "invoke_skill"):
         assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
+    assert "memory" not in caps  # P1 delete — orphan record stays gone
+    # retrieval-ambient-class-v1 P1 — the ambient baseline class (unconditional
+    # admission, Green-only). Membership golden lives in
+    # tests/grove/test_baseline_class_golden.py; this census only pins the mode.
+    for rid in ("clarify", "read_file", "web_search", "search_files",
+                "web_extract", "cellar_search", "skills_read",
+                "workspace_read", "grove_browser_read"):
+        assert caps[rid].trigger.disclosure is TD.BASELINE, rid
 
 
 def test_missing_directory_fails_loud(tmp_path):

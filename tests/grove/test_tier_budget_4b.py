@@ -88,10 +88,13 @@ def test_unknown_production_and_eval_twin_both_core_only(intent, complexity):
     twin = resolve_tool_set(intent, complexity)
     assert twin == prod_admitted              # eval twin mirrors production exactly
     # always:true core admitted; intent-gated + complexity records withheld.
-    assert {"clarify", "memory", "terminal", "read_file", "skill_view",
+    # P1 (retrieval-ambient-class-v1): "memory" ghost retired (orphan record
+    # deleted); web_search + search_files ride the ambient baseline class on
+    # EVERY turn, unknown included.
+    assert {"clarify", "terminal", "read_file", "skill_view",
             "write_file", "patch", "search_files", "x_search"} <= twin
     assert "execute_code" not in twin         # intent-gated — withheld on unknown
-    assert "web_search" not in twin           # intent-gated — withheld on unknown
+    assert "web_search" in twin               # baseline — rides unknown turns
     assert "delegate_task" not in twin        # complexity — withheld on unknown
 
 
@@ -194,9 +197,9 @@ def test_no_budget_unknown_intent_core_only(monkeypatch):
     assert agent._tools_for_turn is not None          # NOT the full-registry signal
     assert agent._tools_for_api is not ALL_TOOLS      # not the maximal fallback
     got = set(_names(agent._tools_for_api))
-    assert {"clarify", "memory", "terminal", "read_file"} <= got   # core present
+    assert {"clarify", "terminal", "read_file"} <= got   # core present ("memory" ghost retired, P1)
     assert "delegate_task" not in got                 # complexity — withheld on unknown
-    assert "web_search" not in got                    # intent-gated — withheld on unknown
+    assert "web_search" in got                        # baseline — rides unknown turns (P1)
     assert agent._last_tool_selection["fallback"] is True
     assert getattr(agent, "_uncertainty_andon_pending", False) is True  # Andon armed
 

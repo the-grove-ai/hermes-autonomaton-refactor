@@ -526,12 +526,19 @@ def _registry_allowed_names(
     cx_high = complexity_signal in ("complex", "novel")
     names: Set[str] = set()
     for _cap_id, disclosure, always, intents, _eligible, native_tools in _effective_caps_index():
-        # Precedence: complexity is checked BEFORE always. Some exploratory records
+        # Precedence: baseline > complexity > always (retrieval-ambient-class-v1
+        # P1). ``baseline`` is the ambient retrieval class — admitted
+        # unconditionally: every intent class, every complexity signal, every
+        # tier, INCLUDING unknown/unclassified turns (the ambient class is the
+        # floor the Andon-on-uncertainty path stands on, not a surface it
+        # withholds). Green-zone-only by loader validation (capability.py).
+        # complexity stays checked BEFORE always: some exploratory records
         # (browser_read, delegate_task) carry disclosure=complexity AND always=True;
         # complexity must win so they ride ONLY complex/novel turns, never every
-        # turn. (Reordering these two branches leaks the exploratory surface onto
-        # simple turns — a load-bearing precedence.)
-        if disclosure == "complexity":
+        # turn. (Reordering these branches leaks surface — load-bearing precedence.)
+        if disclosure == "baseline":
+            intent_match = True
+        elif disclosure == "complexity":
             # Exploratory surface — only on a genuinely complex/novel CLASSIFIED
             # turn. Withheld on unknown: fallback-retirement-v1 Phase 3 admits the
             # core only on uncertainty, and exploratory tools are the specialized

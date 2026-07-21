@@ -66,7 +66,10 @@ CONFIGURABLE_TOOLSETS = [
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
     ("todo",            "📋 Task Planning",             "todo"),
-    ("memory",          "💾 Memory",                    "persistent memory across sessions"),
+    # "memory" toolset key RETIRED (retrieval-ambient-class-v1 P1): its lone
+    # tool was deleted by legacy-memory-tool-retirement-v1 (registration
+    # forbidden in tools/registry.py) and its governing record is gone —
+    # a configurable key with no tools and no record was a dead picker entry.
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),

@@ -10,7 +10,7 @@ trigger:
   keywords: []
   dock_affinity: []
   always: true
-  disclosure: proactive
+  disclosure: baseline
 bindings:
   tools:
   - web_extract

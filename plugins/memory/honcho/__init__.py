@@ -4,8 +4,9 @@ Provides cross-session user modeling with dialectic Q&A, semantic search,
 peer cards, and persistent conclusions via the Honcho SDK. Honcho provides AI-native cross-session user
 modeling with dialectic Q&A, semantic search, peer cards, and conclusions.
 
-The 4 tools (profile, search, context, conclude) are exposed through
-the MemoryProvider interface.
+The honcho_* tool surface is DEMOLISHED (retrieval-ambient-class-v1 P1,
+revised) — memory rides the CONTEXT path (prefetch / system_prompt_block)
+only; get_tool_schemas returns [].
 
 Config: Uses the existing Honcho config chain:
   1. $GROVE_HOME/honcho.json (profile-scoped)
@@ -24,164 +25,17 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider
-from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas (moved from tools/honcho_tools.py)
+# Tool schemas — DEMOLISHED (retrieval-ambient-class-v1 P1, revised).
+# The honcho_* tool surface (PROFILE/SEARCH/REASONING/CONTEXT/CONCLUDE
+# schemas + the dispatcher injection seam) is deleted: zero executions ever
+# on prod (VM feed grep, liveness-gated), and the unconditional-injection
+# seam minted ungoverned surface. Memory rides the CONTEXT path only.
 # ---------------------------------------------------------------------------
-
-PROFILE_SCHEMA = {
-    "name": "honcho_profile",
-    "description": (
-        "Retrieve or update a peer card from Honcho — a curated list of key facts "
-        "about that peer (name, role, preferences, communication style, patterns). "
-        "Pass `card` to update; omit `card` to read.  If the card is empty, the "
-        "result includes a `hint` field explaining why (observation disabled, "
-        "fresh peer, dialectic layer still warming up, etc.) — this is NOT an "
-        "error.  Peer cards accumulate over time from observed conversation."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "peer": {
-                "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
-            },
-            "card": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "New peer card as a list of fact strings. Omit to read the current card.",
-            },
-        },
-        "required": [],
-    },
-}
-
-SEARCH_SCHEMA = {
-    "name": "honcho_search",
-    "description": (
-        "Semantic search over Honcho's stored context about a peer. "
-        "Returns raw excerpts ranked by relevance — no LLM synthesis. "
-        "Cheaper and faster than honcho_reasoning. "
-        "Good when you want to find specific past facts and reason over them yourself."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "What to search for in Honcho's memory.",
-            },
-            "max_tokens": {
-                "type": "integer",
-                "description": "Token budget for returned context (default 800, max 2000).",
-            },
-            "peer": {
-                "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
-            },
-        },
-        "required": ["query"],
-    },
-}
-
-REASONING_SCHEMA = {
-    "name": "honcho_reasoning",
-    "description": (
-        "Ask Honcho a natural language question and get a synthesized answer. "
-        "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
-        "Can query about any peer via alias or explicit peer ID. "
-        "Pass reasoning_level to control depth: minimal (fast/cheap), low (default), "
-        "medium, high, max (deep/expensive). Omit for configured default."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "A natural language question.",
-            },
-            "reasoning_level": {
-                "type": "string",
-                "description": (
-                    "Override the default reasoning depth. "
-                    "Omit to use the configured default (typically low). "
-                    "Guide:\n"
-                    "- minimal: quick factual lookups (name, role, simple preference)\n"
-                    "- low: straightforward questions with clear answers\n"
-                    "- medium: multi-aspect questions requiring synthesis across observations\n"
-                    "- high: complex behavioral patterns, contradictions, deep analysis\n"
-                    "- max: thorough audit-level analysis, leave no stone unturned"
-                ),
-                "enum": ["minimal", "low", "medium", "high", "max"],
-            },
-            "peer": {
-                "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
-            },
-        },
-        "required": ["query"],
-    },
-}
-
-CONTEXT_SCHEMA = {
-    "name": "honcho_context",
-    "description": (
-        "Retrieve full session context from Honcho — summary, peer representation, "
-        "peer card, and recent messages. No LLM synthesis. "
-        "Cheaper than honcho_reasoning. Use this to see what Honcho knows about "
-        "the current conversation and the specified peer."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Optional focus query to filter context. Omit for full session context snapshot.",
-            },
-            "peer": {
-                "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
-            },
-        },
-        "required": [],
-    },
-}
-
-CONCLUDE_SCHEMA = {
-    "name": "honcho_conclude",
-    "description": (
-        "Write or delete a conclusion about a peer in Honcho's memory. "
-        "Conclusions are persistent facts that build a peer's profile. "
-        "You MUST pass exactly one of: `conclusion` (to create) or `delete_id` (to delete). "
-        "Passing neither is an error. "
-        "Deletion is only for PII removal — Honcho self-heals incorrect conclusions over time."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "conclusion": {
-                "type": "string",
-                "description": "A factual statement to persist. Provide this when creating a conclusion. Do not send it together with delete_id.",
-            },
-            "delete_id": {
-                "type": "string",
-                "description": "Conclusion ID to delete for PII removal. Provide this when deleting a conclusion. Do not send it together with conclusion.",
-            },
-            "peer": {
-                "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
-            },
-        },
-        "required": [],
-    },
-}
-
-
-ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
 
 
 # ---------------------------------------------------------------------------
@@ -504,45 +358,17 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._cron_skipped:
             return ""
         if not self._manager or not self._session_key:
-            # tools-only mode without session yet still returns a minimal block
-            if self._recall_mode == "tools" and self._config:
-                return (
-                    "# Honcho Memory\n"
-                    "Active (tools-only mode). Use honcho_profile, honcho_search, "
-                    "honcho_reasoning, honcho_context, and honcho_conclude tools to access user memory."
-                )
             return ""
 
-        # ----- B1: adapt text based on recall_mode -----
-        if self._recall_mode == "context":
-            header = (
-                "# Honcho Memory\n"
-                "Active (context-injection mode). Relevant user context is automatically "
-                "injected before each turn. No memory tools are available — context is "
-                "managed automatically."
-            )
-        elif self._recall_mode == "tools":
-            header = (
-                "# Honcho Memory\n"
-                "Active (tools-only mode). Use honcho_profile for a quick factual snapshot, "
-                "honcho_search for raw excerpts, honcho_context for raw peer context, "
-                "honcho_reasoning for synthesized answers (pass reasoning_level "
-                "minimal/low/medium/high/max — you pick the depth per call), "
-                "honcho_conclude to save facts about the user. "
-                "No automatic context injection — you must use tools to access memory."
-            )
-        else:  # hybrid
-            header = (
-                "# Honcho Memory\n"
-                "Active (hybrid mode). Relevant context is auto-injected AND memory tools are available. "
-                "Use honcho_profile for a quick factual snapshot, "
-                "honcho_search for raw excerpts, honcho_context for raw peer context, "
-                "honcho_reasoning for synthesized answers (pass reasoning_level "
-                "minimal/low/medium/high/max — you pick the depth per call), "
-                "honcho_conclude to save facts about the user."
-            )
-
-        return header
+        # retrieval-ambient-class-v1 P1 (revised): the honcho_* tool surface is
+        # DEMOLISHED — every recall_mode now renders the context-injection
+        # header; the prompt must never advertise tools that do not exist.
+        return (
+            "# Honcho Memory\n"
+            "Active (context-injection mode). Relevant user context is automatically "
+            "injected before each turn. No memory tools are available — context is "
+            "managed automatically."
+        )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Return base context (representation + card) plus dialectic supplement.
@@ -1060,63 +886,6 @@ class HonchoMemoryProvider(MemoryProvider):
 
         return chunks
 
-    def _empty_profile_hint(self, peer: str) -> Dict[str, Any]:
-        """Build a diagnostic hint when honcho_profile returns an empty card.
-
-        A literal "No profile facts available yet." tells the model nothing
-        about WHY.  The model then often surfaces it to the user as a cryptic
-        error.  This hint enumerates the likely causes so the model can
-        explain the situation (or retry with a different peer).
-
-        Ordered by likelihood for a typical deployment:
-          1. Observation is disabled for this peer
-          2. Card hasn't accumulated yet (fresh peer, not enough dialectic
-             cycles — dialectic cadence runs every N turns)
-          3. Self-hosted Honcho backend doesn't support peer cards
-             (honcho-ai server < 3.x)
-        """
-        cfg = self._config
-        reasons: List[str] = []
-
-        if cfg is not None:
-            if peer == "user":
-                observe_me = bool(getattr(cfg, "user_observe_me", True))
-                observe_others = bool(getattr(cfg, "user_observe_others", True))
-            else:
-                observe_me = bool(getattr(cfg, "ai_observe_me", True))
-                observe_others = bool(getattr(cfg, "ai_observe_others", True))
-            if not (observe_me or observe_others):
-                reasons.append(
-                    f"observation is disabled for peer '{peer}' "
-                    f"(user_observe_me/ai_observe_me in config)"
-                )
-
-        cadence = getattr(self, "_dialectic_cadence", 1)
-        turn = getattr(self, "_turn_count", 0)
-        if turn < max(2, cadence):
-            reasons.append(
-                f"this session has only {turn} turn(s); peer cards accumulate "
-                f"as the dialectic layer reasons over conversation history "
-                f"(cadence every {cadence} turn(s))"
-            )
-
-        if not reasons:
-            reasons.append(
-                "peer card has no facts yet — Honcho's dialectic layer builds "
-                "this over time from observed turns; self-hosted Honcho < 3.x "
-                "does not support peer cards at all"
-            )
-
-        return {
-            "result": "No profile facts available yet.",
-            "hint": (
-                "This is not an error.  "
-                + "; ".join(reasons)
-                + ".  Try honcho_reasoning for a synthesized answer, or "
-                "honcho_search to query raw conversation excerpts."
-            ),
-        }
-
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in Honcho (non-blocking).
 
@@ -1195,117 +964,13 @@ class HonchoMemoryProvider(MemoryProvider):
             logger.debug("Honcho session-end flush failed: %s", e)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Return tool schemas, respecting recall_mode.
-
-        B1: context-only mode hides all tools.
-        """
-        if self._cron_skipped:
-            return []
-        if self._recall_mode == "context":
-            return []
-        return list(ALL_TOOL_SCHEMAS)
-
-    def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        """Handle a Honcho tool call, with lazy session init for tools-only mode."""
-        if self._cron_skipped:
-            return tool_error("Honcho is not active (cron context).")
-
-        # Port #1957: ensure session is initialized for tools-only mode
-        if not self._session_initialized:
-            if not self._ensure_session():
-                return tool_error("Honcho session could not be initialized.")
-
-        if not self._manager or not self._session_key:
-            return tool_error("Honcho is not active for this session.")
-
-        try:
-            if tool_name == "honcho_profile":
-                peer = args.get("peer", "user")
-                card_update = args.get("card")
-                if card_update:
-                    result = self._manager.set_peer_card(self._session_key, card_update, peer=peer)
-                    if result is None:
-                        return tool_error("Failed to update peer card.")
-                    return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
-                card = self._manager.get_peer_card(self._session_key, peer=peer)
-                if not card:
-                    return json.dumps(self._empty_profile_hint(peer))
-                return json.dumps({"result": card})
-
-            elif tool_name == "honcho_search":
-                query = args.get("query", "")
-                if not query:
-                    return tool_error("Missing required parameter: query")
-                max_tokens = min(int(args.get("max_tokens", 800)), 2000)
-                peer = args.get("peer", "user")
-                result = self._manager.search_context(
-                    self._session_key, query, max_tokens=max_tokens, peer=peer
-                )
-                if not result:
-                    return json.dumps({"result": "No relevant context found."})
-                return json.dumps({"result": result})
-
-            elif tool_name == "honcho_reasoning":
-                query = args.get("query", "")
-                if not query:
-                    return tool_error("Missing required parameter: query")
-                peer = args.get("peer", "user")
-                reasoning_level = args.get("reasoning_level")
-                result = self._manager.dialectic_query(
-                    self._session_key, query,
-                    reasoning_level=reasoning_level,
-                    peer=peer,
-                )
-                # Update cadence tracker so auto-injection respects the gap after an explicit call
-                self._last_dialectic_turn = self._turn_count
-                return json.dumps({"result": result or "No result from Honcho."})
-
-            elif tool_name == "honcho_context":
-                peer = args.get("peer", "user")
-                ctx = self._manager.get_session_context(self._session_key, peer=peer)
-                if not ctx:
-                    return json.dumps({"result": "No context available yet."})
-                parts = []
-                if ctx.get("summary"):
-                    parts.append(f"## Summary\n{ctx['summary']}")
-                if ctx.get("representation"):
-                    parts.append(f"## Representation\n{ctx['representation']}")
-                if ctx.get("card"):
-                    parts.append(f"## Card\n{ctx['card']}")
-                if ctx.get("recent_messages"):
-                    msgs = ctx["recent_messages"]
-                    msg_str = "\n".join(
-                        f"  [{m['role']}] {m['content'][:200]}"
-                        for m in msgs[-5:]  # last 5 for brevity
-                    )
-                    parts.append(f"## Recent messages\n{msg_str}")
-                return json.dumps({"result": "\n\n".join(parts) or "No context available."})
-
-            elif tool_name == "honcho_conclude":
-                delete_id = (args.get("delete_id") or "").strip()
-                conclusion = args.get("conclusion", "").strip()
-                peer = args.get("peer", "user")
-
-                has_delete_id = bool(delete_id)
-                has_conclusion = bool(conclusion)
-                if has_delete_id == has_conclusion:
-                    return tool_error("Exactly one of conclusion or delete_id must be provided.")
-
-                if has_delete_id:
-                    ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
-                    if ok:
-                        return json.dumps({"result": f"Conclusion {delete_id} deleted."})
-                    return tool_error(f"Failed to delete conclusion {delete_id}.")
-                ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
-                if ok:
-                    return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
-                return tool_error("Failed to save conclusion.")
-
-            return tool_error(f"Unknown tool: {tool_name}")
-
-        except Exception as e:
-            logger.error("Honcho tool %s failed: %s", tool_name, e)
-            return tool_error(f"Honcho {tool_name} failed: {e}")
+        """DEMOLISHED (retrieval-ambient-class-v1 P1, revised): the
+        honcho_* tool surface is deleted (zero executions ever on prod;
+        liveness-gated). The override survives only because the ABC marks
+        it abstract — memory rides the CONTEXT path, never tools. A tool
+        call routed here anyway fail-louds via the base handle_tool_call
+        NotImplementedError."""
+        return []
 
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):

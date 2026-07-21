@@ -13,6 +13,13 @@ Fix (targeted, cost-HOLD-preserving): ADD creative_writing + memory_operation to
 web_search.trigger.intents — the operator's press-pitch and contact-lookup
 contexts — WITHOUT flipping always: true. Pure conversation and unknown turns
 still withhold the paid tool, honoring the HOLD.
+
+retrieval-ambient-class-v1 P1 SUPERSESSION: the PM-ratified ambient baseline
+class flips web_search to ``disclosure: baseline`` — unconditional admission on
+every intent (held intents and unknown included). The C-SEAM5 cost HOLD is
+deliberately RETIRED by that ratification; the withhold tests below flipped
+polarity to pin the new contract (the always:false field survives, now moot —
+baseline outranks it in G5 precedence).
 """
 from __future__ import annotations
 
@@ -88,32 +95,35 @@ def test_web_search_offered_for_widened_intents_at_every_tier(intent, tier):
 
 
 @pytest.mark.parametrize("intent", HELD_INTENTS)
-def test_web_search_still_withheld_on_held_intents(intent):
-    # Cost HOLD preserved: web_search stays always:false, so an intent that names
-    # none of its triggers (e.g. pure conversation) must NOT offer the paid tool.
+def test_web_search_now_offered_on_formerly_held_intents(intent):
+    # retrieval-ambient-class-v1 P1: the cost HOLD is retired by ratification —
+    # disclosure: baseline admits web_search on EVERY intent, held ones included.
     reset_caps_index_cache()
     allowed, _ = _registry_allowed_names(
         intent_class=intent, complexity_signal="simple", current_tier=None
     )
-    assert "web_search" not in allowed, (
-        f"web_search must stay withheld on {intent!r} (cost HOLD, always:false)"
+    assert "web_search" in allowed, (
+        f"web_search must ride {intent!r} under the ambient baseline class"
     )
 
 
-def test_web_search_still_withheld_on_unknown_intent():
-    # Andon-on-uncertainty: an unknown turn admits always:true CORE only.
-    # web_search is always:false, so it must NOT ride an unknown turn.
+def test_web_search_now_offered_on_unknown_intent():
+    # The ambient baseline class is the floor the Andon-on-uncertainty path
+    # stands on — baseline records ride unknown turns (P1 G5 precedence).
     reset_caps_index_cache()
     allowed, _ = _registry_allowed_names(
         intent_class="unknown", complexity_signal="simple", current_tier=None
     )
-    assert "web_search" not in allowed
+    assert "web_search" in allowed
 
 
-def test_web_search_record_stays_always_false_with_widened_intents():
-    # The fix is surgical: always stays False (cost HOLD), intents gain exactly
-    # the two operator research contexts.
+def test_web_search_record_baseline_with_always_false_moot():
+    # P1 flip is surgical: disclosure flipped to baseline; always stays False
+    # (now moot — baseline outranks it), C-SEAM5's widened intents survive as
+    # historical record.
+    from grove.capability import TriggerDisclosure
     rec = load_capabilities()["web_search"]
+    assert rec.trigger.disclosure is TriggerDisclosure.BASELINE
     assert rec.trigger.always is False
     assert {"creative_writing", "memory_operation"} <= set(rec.trigger.intents)
     assert "conversation" not in rec.trigger.intents
