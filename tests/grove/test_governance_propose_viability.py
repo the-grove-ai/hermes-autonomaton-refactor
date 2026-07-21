@@ -94,3 +94,74 @@ def test_store_pending_seam_consults_viability_predicate():
         "nonviable RED targets still enter red_pending as "
         "approvable-but-unappliable cards"
     )
+
+
+class TestNonviableHaltSurface:
+    """P7 HOTFIX pins (live Andon 2026-07-21: seam refusal crashed with
+    ValueError — 'red_nonviable_target' is not a valid HaltTrigger). The
+    behavioral guarantee, end-to-end through the REAL enum: seam refusal
+    completes as a legible TerminalGovernanceHalt whose copy carries the
+    seam's reason, no card is minted, and no other exception escapes."""
+
+    def _halt_for(self, tool_name, arguments):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            intents=[SimpleNamespace(tool_name=tool_name, arguments=arguments)],
+            triggering_index=0, zone="red",
+            matched_rule="scope_defining:test", pattern_key=None,
+            zone_results=[None], reason=None,
+        )
+
+    def test_repo_config_write_refusal_is_legible_and_mints_no_card(
+        self, tmp_path
+    ):
+        import pytest as _pytest
+        from grove.dispatcher import Dispatcher
+        from grove.governance_halt import TerminalGovernanceHalt
+        from grove.halt_event import halt_event_from_governance_context
+        from grove.halt_renderer import _render_c2a
+        from grove.red_pending_store import RedPendingStore
+
+        store = RedPendingStore(db_path=tmp_path / "red.db")
+        d = Dispatcher(red_pending_store=store)
+        halt = self._halt_for(
+            "write_file", {"path": _REPO_CAP_TARGET, "content": "x: 1\n"}
+        )
+        with _pytest.raises(TerminalGovernanceHalt) as ei:
+            d._store_pending_red_proposal(agent=None, gen=None, halt=halt)
+        ctx = ei.value.context
+        assert ctx.trigger == "red_nonviable_target"
+        # The construction-time surface (the live crash site) carried the
+        # SOP copy — a governed refusal message, never a traceback.
+        surface = str(ei.value)
+        assert "git" in surface.lower() and "deploy" in surface.lower()
+        assert "Traceback" not in surface and "ValueError" not in surface
+        # The C2a boundary adapter resolves the REAL enum member and the
+        # renderer reproduces the copy.
+        event = halt_event_from_governance_context(ctx)
+        rendered = _render_c2a(event)
+        assert "deploy" in rendered.lower()
+        # Refused BEFORE store-pending: no card minted.
+        assert len(store) == 0
+
+    def test_registry_miss_refusal_names_the_miss(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from grove.dispatcher import Dispatcher
+        from grove.governance_halt import TerminalGovernanceHalt
+        from grove.red_pending_store import RedPendingStore
+
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+        store = RedPendingStore(db_path=tmp_path / "red.db")
+        d = Dispatcher(red_pending_store=store)
+        halt = self._halt_for(
+            "propose_governance_change",
+            {
+                "target_file": str(tmp_path / "zones.schema.yaml"),
+                "content": "x: 1\n", "rationale": "r",
+            },
+        )
+        with _pytest.raises(TerminalGovernanceHalt) as ei:
+            d._store_pending_red_proposal(agent=None, gen=None, halt=halt)
+        assert ei.value.context.trigger == "red_nonviable_target"
+        assert "no registered writer" in str(ei.value).lower()
+        assert len(store) == 0

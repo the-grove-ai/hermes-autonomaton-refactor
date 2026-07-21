@@ -87,3 +87,46 @@ def test_loader_roundtrips_provenance_block(tmp_path):
         )
     assert rid == "browser_read"
     assert doc["provenance"] == _STAMP
+
+
+def test_admission_executor_emits_written_ledger_event(tmp_path, monkeypatch):
+    """P7 live-verify pin: the admission adapter emits the paired
+    disposition="written" governance_change event (item-5 ledger continuity
+    — every governed writer, not just env/routing/dock)."""
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    monkeypatch.setenv("GROVE_SESSION_ID", "admission_ledger_pin")
+    from grove.effect_signature import canonical_effect_signature
+    from grove.kaizen_ledger import KaizenLedger
+    from grove.red_pending_store import (
+        PendingRedProposal,
+        RedPendingStore,
+        action_proposal_id,
+        approve_red_proposal,
+        prepare_execute_arguments,
+        seal_red_claim,
+    )
+
+    target = tmp_path / "capabilities" / "state" / "browser_read.yaml"
+    body = "id: browser_read\nintents:\n- research\ntiers:\n- 2\n- 3\n"
+    args = prepare_execute_arguments("propose_governance_change", {
+        "target_file": str(target), "content": body, "rationale": "pin",
+    })
+    sealed = seal_red_claim("propose_governance_change", args)
+    assert sealed["writer_name"] == "write_admission_state"
+    sig = canonical_effect_signature("propose_governance_change", args)
+    store = RedPendingStore(db_path=tmp_path / "red.db")
+    entry = PendingRedProposal(
+        proposal_id=action_proposal_id(sig),
+        tool_name="propose_governance_change", arguments=args,
+        effect_signature=sig, description="d", rationale="r",
+        created_at="2026-07-21T00:00:00+00:00", **sealed,
+    )
+    store.put(entry)
+    res = approve_red_proposal(entry.proposal_id, store=store)
+    assert res["success"] is True, res
+    events = KaizenLedger("admission_ledger_pin").events_by_type(
+        "governance_change"
+    )
+    written = [e for e in events if e.get("disposition") == "written"]
+    assert len(written) == 1
+    assert written[0]["approval_id"] == entry.proposal_id

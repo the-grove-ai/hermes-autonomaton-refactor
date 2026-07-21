@@ -78,6 +78,18 @@ def _render_c2a(event: HaltEvent) -> str:
         # change it, so Cancel is actionable rather than a dead end. Honest only:
         # no interactive De-scope/resume promise — that bridge ships in Strike 2.
         return _render_red_cancel(event.detail.note)
+    elif trigger is HaltTrigger.RED_NONVIABLE_TARGET:
+        # capability-mutation-surface-v1 P7 hotfix (M6) — refused BEFORE
+        # store-pending: approving could never apply it. Surface the seam's
+        # reason verbatim — it names the sanctioned path (git commit + deploy
+        # for definition surfaces, or the registered-writer surface).
+        note = (event.detail.note or "").strip()
+        return (
+            f"This action{tool} was refused before queueing — approving it "
+            "could never apply it. "
+            + (f"{note} " if note else "")
+            + "Nothing was queued and nothing was written."
+        )
     else:  # red_sovereign / deny_hard
         what = (
             f"This action{tool} requires your approval and was declined. "

@@ -1037,6 +1037,16 @@ def _dispatch_admission_write(entry: "PendingRedProposal", approval_id: str) -> 
             "write_class": "capability_admission",
         },
     )
+    # P7 live-verify fix — item-5 ledger continuity applies to EVERY governed
+    # writer: the admission adapter was the one missing the "written" emit
+    # (found when the live chain showed sealed with no written).
+    _emit_governed_write_ledger(
+        target_file=str(path),
+        rationale=f"approved:{approval_id}",
+        content=json.dumps(payload, sort_keys=True),
+        prior=None,
+        disposition="written", approval_id=approval_id,
+    )
     return json.dumps({"success": True, "state_file": str(path)})
 
 
