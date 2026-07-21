@@ -1,0 +1,74 @@
+# capability-mutation-surface-v1 M1 — DECLARATIVE scope-defining membership.
+#
+# The single source of truth for WHICH surfaces the scope wall
+# (grove/utils/fs_utils.py::is_scope_defining) treats as scope-defining —
+# files and subtrees whose mutation would expand the agent's own authority.
+# The predicate keeps its dual anchoring (GROVE_HOME tree + the running
+# tree's <module_root>/config/); this file declares only the MEMBERS.
+#
+# Fail-loud contract: a missing or invalid membership file refuses to load
+# (ScopeMembershipConfigError at import) — an empty membership would un-wall
+# everything, so silent-empty is never an outcome. This file is ITSELF a
+# declared member (repo_config.files below): the membership that defines the
+# wall is inside the wall (confused-deputy closure), and on the deployed VM
+# the whole config/ tree is additionally kernel read-only.
+#
+# Editing this file IS a governance change: repo definition surface, changed
+# by git commit + deploy, never by a runtime write.
+
+version: 1
+
+# Members relative to GROVE_HOME (~/.grove) — the operator governance tree.
+grove_home:
+  files:
+    # Zone schema + routing/prompt config: the authority definitions.
+    - zones.schema.yaml
+    - routing.config.yaml
+    - prompt.config.yaml
+    # Operator secrets: never an autonomous (GREEN) workspace write.
+    - .env
+    # The Dock manifest (operator strategic command center).
+    - dock/dock.yaml
+    # workspace-governance-unification-v1 META-WALL: the workspace grant
+    # manifest is itself scope-defining — if the agent could write it, it
+    # could grant itself unlimited GREEN zones.
+    - workspaces.yaml
+    # write-confinement-v1 — the WRITE allow-list manifest, same meta-wall.
+    - write_workspaces.yaml
+    # GRV-001 Grant Token model — standing grants are operator-only.
+    - grants.yaml
+    # routing-scope-wall-v1 R-W1 — machine-authored overlays that redefine
+    # authority alongside their operator twins.
+    - routing.autonomaton.yaml
+    # The runtime zone overlay literally grants GREEN zones to patterns.
+    # (dock.autonomaton.yaml is deliberately OUT: it is the machine's GREEN
+    # goal-workspace half of the Dock.)
+    - zones.autonomaton.yaml
+    # Per-worker enable overrides — deploy-immune authority.
+    - fleet_workers.override.yaml
+  # Whole subtrees. The live skill tree is authored only through skill_manage
+  # to the .andon quarantine, never a raw write; the capability registry
+  # governs the agent's executable surface (capabilities/state/ is covered by
+  # the `capabilities` prefix — no separate entry).
+  dir_prefixes:
+    - skills
+    - capabilities
+    - routing-profiles
+
+# Members relative to the running tree's <module_root>/config/ — the
+# version-controlled DEFINITION twins the deployed clone loads
+# (write-routing-coherence-v1 fix-part-1). skills/ has no config/ twin.
+repo_config:
+  files:
+    - zones.schema.yaml
+    - routing.config.yaml
+    # Canonical nested form — the repo twin of dock/dock.yaml.
+    - dock/dock.yaml
+    - write_workspaces.yaml
+    # SELF-MEMBERSHIP (confused-deputy closure): this membership file is a
+    # scope-defining surface. The loader refuses a membership that does not
+    # declare itself.
+    - scope_surfaces.yaml
+  dir_prefixes:
+    - capabilities
+    - routing-profiles

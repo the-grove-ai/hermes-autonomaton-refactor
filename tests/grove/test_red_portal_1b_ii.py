@@ -94,10 +94,16 @@ def _stage(grove_home, *, content="HF_TOKEN=hf_x\n", description=None):
     if description is None:
         # The exact masked string the portal renders — names the key, hides value.
         description, _ = describe_red_action("propose_governance_change", args)
+    # capability-mutation-surface-v1 P4 — staged entries SEAL, mirroring the
+    # live propose path (unsealed governance claims are legacy_shape).
+    from grove.red_pending_store import seal_red_claim
+    _sealed = seal_red_claim("propose_governance_change", args)
     get_red_pending_store().put(PendingRedProposal(
         proposal_id=bare, tool_name="propose_governance_change", arguments=args,
         effect_signature=sig, description=description, rationale="r",
         created_at="2026-07-07T00:00:00+00:00",
+        target_sha256=_sealed["target_sha256"], writer_name=_sealed["writer_name"],
+        writer_payload=_sealed["writer_payload"], sealed_target=_sealed["sealed_target"],
     ))
     proposal_queue.append(proposal_queue.RoutingProposal(
         proposal_id=full_pid, type=RED_PENDING_PROPOSAL_TYPE, payload={"zone": "red"},
@@ -183,7 +189,12 @@ class TestTwoStep:
             f"/portal/actions/proposals/{full_pid}/confirm", data={"nonce": cn}
         )
         assert r2.status == 200
-        assert "Expired" in await r2.text()                 # fail-clean, no re-fire
+        # capability-mutation-surface-v1 P4 (M4) — the expired-lie is dead:
+        # a replay of a CONSUMED claim reads "Already resolved", never
+        # "Expired — re-propose" (T3c).
+        _body = await r2.text()
+        assert "Already resolved" in _body                  # fail-clean, no re-fire
+        assert "Expired — re-propose" not in _body
         assert env.read_text() == "HF_TOKEN=hf_once\n"       # exactly once
 
 

@@ -65,11 +65,15 @@ def test_restart_survival_masked_description_and_approve(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     pid, args, sig = _propose(env, "HF_TOKEN=hf_restart\n")
     s1 = get_red_pending_store()
+    from grove.red_pending_store import seal_red_claim
+    _sealed = seal_red_claim("propose_governance_change", args)
     s1.put(PendingRedProposal(
         proposal_id=pid, tool_name="propose_governance_change", arguments=args,
         effect_signature=sig,
         description="Persist credential(s) to ~/.grove/.env: HF_TOKEN — values hidden.",
         rationale="r", created_at="2026-07-08T00:00:00+00:00",
+        target_sha256=_sealed["target_sha256"], writer_name=_sealed["writer_name"],
+        writer_payload=_sealed["writer_payload"], sealed_target=_sealed["sealed_target"],
     ))
 
     _reset_singleton(monkeypatch)
@@ -87,10 +91,14 @@ def test_double_claim_exactly_once(tmp_path):
     env = tmp_path / ".env"
     pid, args, sig = _propose(env, "TOK=once\n")
     store = get_red_pending_store()
+    from grove.red_pending_store import seal_red_claim
+    _sealed = seal_red_claim("propose_governance_change", args)
     store.put(PendingRedProposal(
         proposal_id=pid, tool_name="propose_governance_change", arguments=args,
         effect_signature=sig, description="d", rationale="r",
         created_at="2026-07-08T00:00:00+00:00",
+        target_sha256=_sealed["target_sha256"], writer_name=_sealed["writer_name"],
+        writer_payload=_sealed["writer_payload"], sealed_target=_sealed["sealed_target"],
     ))
 
     r1 = approve_red_proposal(pid, store)              # first claim wins
@@ -106,10 +114,14 @@ def test_db_and_sidecars_are_owner_only(tmp_path):
     env = tmp_path / ".env"
     pid, args, sig = _propose(env, "K=v\n")
     store = get_red_pending_store()
+    from grove.red_pending_store import seal_red_claim
+    _sealed = seal_red_claim("propose_governance_change", args)
     store.put(PendingRedProposal(                      # forces WAL/SHM creation
         proposal_id=pid, tool_name="propose_governance_change", arguments=args,
         effect_signature=sig, description="d", rationale="r",
         created_at="2026-07-08T00:00:00+00:00",
+        target_sha256=_sealed["target_sha256"], writer_name=_sealed["writer_name"],
+        writer_payload=_sealed["writer_payload"], sealed_target=_sealed["sealed_target"],
     ))
     saw_db = False
     for suffix in ("", "-wal", "-shm"):

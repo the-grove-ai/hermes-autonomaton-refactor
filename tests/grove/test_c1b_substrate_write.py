@@ -115,19 +115,49 @@ class TestSkillManageGovernedRefusal:
 # ── Phase 3 — propose_governance_change door ─────────────────────────────────
 
 
-class TestGovernanceTargetClassification:
-    def test_env_is_red(self, grove_home):
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(str(grove_home / ".env")) == "red"
+class TestGovernanceTargetResolution:
+    """capability-mutation-surface-v1 P5 (M5) — classify_governance_target is
+    RETIRED. Target resolution now runs through the viability seam + the
+    governed-writer registry (grove.red_pending_store); these pins replace
+    the Pipeline-A classification pins."""
 
-    def test_yaml_config_is_yellow(self, grove_home):
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(str(grove_home / "zones.schema.yaml")) == "yellow"
-        assert classify_governance_target(str(grove_home / "routing.config.yaml")) == "yellow"
+    def _propose_args(self, target, content="TOK=x\n"):
+        return {"target_file": str(target), "content": content, "rationale": "r"}
 
-    def test_non_governance_target_is_none(self, grove_home, tmp_path):
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(str(tmp_path.parent / "scratch.yaml")) is None
+    def test_env_seals_to_env_write(self, grove_home):
+        from grove.red_pending_store import seal_red_claim
+        sealed = seal_red_claim(
+            "propose_governance_change", self._propose_args(grove_home / ".env")
+        )
+        assert sealed["writer_name"] == "env_write"
+
+    def test_routing_config_seals_to_routing_writer(self, grove_home):
+        # D3 unification — the governance door's raw routing write is dead;
+        # the claim seals against RoutingConfigWriter.apply_mutation.
+        from grove.red_pending_store import seal_red_claim
+        sealed = seal_red_claim(
+            "propose_governance_change",
+            self._propose_args(grove_home / "routing.config.yaml", "tiers: {}\n"),
+        )
+        assert sealed["writer_name"] == "routing_config_replace"
+
+    def test_zones_schema_dead_door_is_registry_miss(self, grove_home):
+        # ~/.grove/zones.schema.yaml is unread by the runtime; nothing
+        # registers a writer for it — the dead door is retired at the seam.
+        from grove.red_pending_store import is_viable_red_target
+        viable, reason = is_viable_red_target(
+            "propose_governance_change",
+            self._propose_args(grove_home / "zones.schema.yaml"),
+        )
+        assert viable is False
+        assert "no registered writer" in reason
+
+    def test_non_governance_target_passes_unsealed(self, grove_home, tmp_path):
+        from grove.red_pending_store import is_viable_red_target, seal_red_claim
+        args = self._propose_args(tmp_path.parent / "scratch.yaml")
+        viable, _ = is_viable_red_target("propose_governance_change", args)
+        assert viable is True  # non-config: lifecycle-only pass-through
+        assert seal_red_claim("propose_governance_change", args)["writer_name"] is None
 
 
 class TestGovernanceDispatcherClassification:
@@ -170,32 +200,61 @@ class TestGovernanceDispatcherClassification:
 
 
 class TestGovernanceWriteAndLedger:
-    def test_approved_write_persists_change_and_ledger(self, grove_home, monkeypatch):
+    def test_approved_env_claim_writes_and_ledgers(self, grove_home, monkeypatch):
+        # capability-mutation-surface-v1 P5 — the write lands through the
+        # approved-claim EXECUTOR (writer registry), never the handler; the
+        # governance_change ledger channel continues (disposition="written",
+        # approval_id = the claim id).
         monkeypatch.setenv("GROVE_SESSION_ID", "c1b_test_session")
-        from tools.governance_tool import propose_governance_change
+        from grove.effect_signature import canonical_effect_signature
         from grove.kaizen_ledger import KaizenLedger
+        from grove.red_pending_store import (
+            PendingRedProposal,
+            RedPendingStore,
+            action_proposal_id,
+            approve_red_proposal,
+            prepare_execute_arguments,
+            seal_red_claim,
+        )
 
-        target = grove_home / "zones.schema.yaml"
+        target = grove_home / ".env"
+        args = prepare_execute_arguments("propose_governance_change", {
+            "target_file": str(target), "content": "TOK=c1b\n",
+            "rationale": "C1b test: executor-era governed write",
+        })
+        sealed = seal_red_claim("propose_governance_change", args)
+        assert sealed["writer_name"] == "env_write"
+        sig = canonical_effect_signature("propose_governance_change", args)
+        store = RedPendingStore(db_path=grove_home / "red_pending_test.db")
+        entry = PendingRedProposal(
+            proposal_id=action_proposal_id(sig),
+            tool_name="propose_governance_change", arguments=args,
+            effect_signature=sig, description="d", rationale="r",
+            created_at="2026-07-21T00:00:00+00:00", **sealed,
+        )
+        store.put(entry)
+        res = approve_red_proposal(entry.proposal_id, store=store)
+        assert res["success"] is True, res
+        assert target.read_text() == "TOK=c1b\n"
+        events = KaizenLedger("c1b_test_session").events_by_type("governance_change")
+        assert len(events) == 1
+        e = events[0]
+        assert e["disposition"] == "written"
+        assert e["approval_id"] == entry.proposal_id
+        assert e["content_sha256"] and e["timestamp"]
+
+    def test_thin_proposer_never_writes_directly(self, grove_home):
+        # The handler is a PROPOSER: a direct call on a viable target refuses
+        # loudly and writes nothing (the executor is the only writer).
+        from tools.governance_tool import propose_governance_change
+        target = grove_home / ".env"
         raw = propose_governance_change(
-            target_file=str(target),
-            content="schema_version: 1\n",
-            rationale="C1b test: tighten the terminal default zone",
+            target_file=str(target), content="TOK=direct\n", rationale="r",
         )
         result = json.loads(raw)
-        assert result["success"] is True
-        assert result["zone"] == "yellow"
-        # The change was written through the door (not a generic file tool).
-        assert target.read_text() == "schema_version: 1\n"
-        # And a provenance ledger entry was recorded.
-        ledger = KaizenLedger("c1b_test_session")
-        events = ledger.events_by_type("governance_change")
-        assert len(events) == 1
-        entry = events[0]
-        assert entry["rationale"].startswith("C1b test")
-        assert entry["disposition"] == "approved"
-        assert entry["zone"] == "yellow"
-        assert entry["content_sha256"]
-        assert entry["timestamp"]
+        assert result["success"] is False
+        assert "thin proposer" in result["error"]
+        assert not target.exists()
 
     def test_unrecognized_target_refused(self, grove_home, tmp_path):
         from tools.governance_tool import propose_governance_change
@@ -221,114 +280,150 @@ class TestGovernanceWriteAndLedger:
 # case is a path that MUST NOT be admitted to the write door.
 
 
-class TestDockAdmission:
-    def test_dock_yaml_is_yellow(self, grove_home):
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(
-            str(grove_home / "dock" / "dock.yaml")
-        ) == "yellow"
+class TestDockResolution:
+    """capability-mutation-surface-v1 P5 — Dock targets seal against the
+    EXISTING dock writers only (update_dock_goal_status; no new writer
+    minted). Everything else through this door is a registry miss or a
+    thin-proposer refusal — the old full-file Dock write path is retired."""
 
-    def test_nested_dock_goal_md_is_yellow(self, grove_home):
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(
-            str(grove_home / "dock" / "goals" / "q3" / "interview.md")
-        ) == "yellow"
+    def _install_dock(self, grove_home, status="cruising"):
+        d = grove_home / "dock"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "dock.yaml").write_text(
+            f"version: 1\ngoals:\n- id: growth\n  status: {status}\n",
+            encoding="utf-8",
+        )
+        return d / "dock.yaml"
 
-    def test_nested_dock_goal_yaml_is_yellow(self, grove_home):
-        # .yaml is a loadable Dock suffix (manifest + goal context sources).
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(
-            str(grove_home / "dock" / "goals" / "q3" / "context.yaml")
-        ) == "yellow"
+    def test_status_only_change_seals_to_dock_writer(self, grove_home):
+        self._install_dock(grove_home, "cruising")
+        from grove.red_pending_store import seal_red_claim
+        body = "version: 1\ngoals:\n- id: growth\n  status: complete\n"
+        sealed = seal_red_claim("propose_governance_change", {
+            "target_file": str(grove_home / "dock" / "dock.yaml"),
+            "content": body, "rationale": "r",
+        })
+        assert sealed["writer_name"] == "dock_goal_status"
+        assert sealed["writer_payload"]["changes"] == [
+            {"goal_id": "growth", "status": "complete"}
+        ]
 
-    # ── OVER-ADMISSION REJECTED ──────────────────────────────────────────────
+    def test_structural_dock_edit_is_registry_miss(self, grove_home):
+        self._install_dock(grove_home, "cruising")
+        from grove.red_pending_store import is_viable_red_target
+        body = (
+            "version: 1\ngoals:\n- id: growth\n  status: cruising\n"
+            "- id: injected\n  status: cruising\n"
+        )
+        viable, reason = is_viable_red_target("propose_governance_change", {
+            "target_file": str(grove_home / "dock" / "dock.yaml"),
+            "content": body, "rationale": "r",
+        })
+        assert viable is False
+        assert "goal-status" in reason
 
-    def test_sibling_dock_evil_is_rejected(self, grove_home):
-        # is_relative_to anchors to the dock tree; a sibling whose name merely
-        # starts with "dock" is NOT contained. (str.startswith would mis-admit.)
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(
-            str(grove_home / "dock-evil" / "x.yaml")
-        ) is None
+    def test_goal_file_write_refused_and_not_created(self, grove_home):
+        from tools.governance_tool import propose_governance_change
+        target = grove_home / "dock" / "goals" / "growth.md"
+        raw = propose_governance_change(
+            target_file=str(target), content="# Growth\n", rationale="r",
+        )
+        assert json.loads(raw)["success"] is False
+        assert not target.exists()
 
-    def test_non_loadable_suffix_under_dock_is_rejected(self, grove_home):
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(
-            str(grove_home / "dock" / "notes.txt")
-        ) is None
-
-    # ── TRAVERSAL / SYMLINK REJECTED ─────────────────────────────────────────
-
-    def test_dotdot_escape_to_governance_yaml_stays_yellow_via_name(self, grove_home):
-        # ~/.grove/dock/../zones.schema.yaml collapses (realpath) to
-        # ~/.grove/zones.schema.yaml → YELLOW via the NAME check, NOT the Dock
-        # rule (the collapse removed dock containment).
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(
-            str(grove_home / "dock" / ".." / "zones.schema.yaml")
-        ) == "yellow"
-
-    def test_dotdot_escape_to_non_governance_yaml_is_rejected(self, grove_home):
-        # Proves the prior YELLOW came from the name rule, not dock containment:
-        # the same ../ escape to a non-governance yaml is NOT admitted.
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(
-            str(grove_home / "dock" / ".." / "random.yaml")
-        ) is None
+    def test_sibling_dock_evil_never_written(self, grove_home):
+        from tools.governance_tool import propose_governance_change
+        target = grove_home / "dock-evil" / "x.yaml"
+        raw = propose_governance_change(
+            target_file=str(target), content="x: 1\n", rationale="r",
+        )
+        assert json.loads(raw)["success"] is False
+        assert not target.exists()
 
     def test_dotdot_escape_to_env_is_red(self, grove_home):
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(
-            str(grove_home / "dock" / ".." / ".env")
-        ) == "red"
+        # The universal .env→RED rule survives the retirement: the ../ escape
+        # collapses (realpath) onto .env and classifies RED at the door.
+        from grove import dispatch as _gd
+        from grove.dispatcher import Dispatcher
+        from grove.intents import ToolIntent
+        intent = ToolIntent(
+            tool_name="propose_governance_change",
+            arguments={
+                "target_file": str(grove_home / "dock" / ".." / ".env"),
+                "content": "x", "rationale": "y",
+            },
+            call_id="c1",
+        )
+        zr = Dispatcher._classify_one_intent(intent, _gd)
+        assert zr.zone == "red"
 
-    def test_symlinked_dock_outside_grove_not_admitted(self, grove_home, tmp_path):
-        # A Dock whose root symlinks OUTSIDE ~/.grove resolves outside the
-        # governance tree → rejected by the inside_grove gate before the Dock
-        # rule is ever consulted.
-        from tools.governance_tool import classify_governance_target
+    def test_symlinked_dock_outside_grove_never_written(self, grove_home, tmp_path):
+        # A Dock symlinked outside ~/.grove resolves outside the governance
+        # tree; the thin proposer refuses and writes NOTHING (the old handler
+        # wrote through this door — that authority is dead).
+        from tools.governance_tool import propose_governance_change
         outside = tmp_path.parent / "dock_external_target"
         outside.mkdir(exist_ok=True)
         (grove_home / "dock").symlink_to(outside, target_is_directory=True)
-        assert classify_governance_target(
-            str(grove_home / "dock" / "dock.yaml")
-        ) is None
-
-    # ── WATERFALL ORDERING ───────────────────────────────────────────────────
-
-    def test_env_under_dock_classifies_red_not_yellow(self, grove_home):
-        # The strict .env→RED check fires first; a .env that sits under dock/
-        # keeps RED, never the Dock YELLOW.
-        from tools.governance_tool import classify_governance_target
-        assert classify_governance_target(
-            str(grove_home / "dock" / ".env")
-        ) == "red"
+        target = grove_home / "dock" / "dock.yaml"
+        raw = propose_governance_change(
+            target_file=str(target), content="version: 1\ngoals: []\n",
+            rationale="r",
+        )
+        assert json.loads(raw)["success"] is False
+        assert not (outside / "dock.yaml").exists()
 
 
 class TestDockWriteAndLedger:
-    def test_dock_write_persists_change_and_ledger(self, grove_home, monkeypatch):
+    def test_dock_status_claim_writes_and_ledgers(self, grove_home, monkeypatch):
+        # P5: the dock mutation lands through the approved-claim executor via
+        # update_dock_goal_status (the sole registered dock writer).
         monkeypatch.setenv("GROVE_SESSION_ID", "dock_write_session")
-        from tools.governance_tool import propose_governance_change
+        import yaml as _yaml
+        from grove.effect_signature import canonical_effect_signature
         from grove.kaizen_ledger import KaizenLedger
-
-        target = grove_home / "dock" / "goals" / "growth.md"
-        raw = propose_governance_change(
-            target_file=str(target),
-            content="# Growth goal\n\nShip the thing.\n",
-            rationale="Dock test: record the growth goal",
+        from grove.red_pending_store import (
+            PendingRedProposal,
+            RedPendingStore,
+            action_proposal_id,
+            approve_red_proposal,
+            prepare_execute_arguments,
+            seal_red_claim,
         )
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert result["zone"] == "yellow"
-        # Write-replace landed through the door (parent dirs created).
-        assert target.read_text() == "# Growth goal\n\nShip the thing.\n"
-        # Provenance preserved: the governance_change ledger entry was appended.
-        ledger = KaizenLedger("dock_write_session")
-        events = ledger.events_by_type("governance_change")
+
+        dock = grove_home / "dock"
+        dock.mkdir(parents=True, exist_ok=True)
+        manifest = dock / "dock.yaml"
+        manifest.write_text(
+            "version: 1\ngoals:\n- id: growth\n  status: active\n",
+            encoding="utf-8",
+        )
+        body = "version: 1\ngoals:\n- id: growth\n  status: complete\n"
+        args = prepare_execute_arguments("propose_governance_change", {
+            "target_file": str(manifest), "content": body,
+            "rationale": "Dock test: complete the growth goal",
+        })
+        sealed = seal_red_claim("propose_governance_change", args)
+        assert sealed["writer_name"] == "dock_goal_status"
+        sig = canonical_effect_signature("propose_governance_change", args)
+        store = RedPendingStore(db_path=grove_home / "red_pending_test.db")
+        entry = PendingRedProposal(
+            proposal_id=action_proposal_id(sig),
+            tool_name="propose_governance_change", arguments=args,
+            effect_signature=sig, description="d", rationale="r",
+            created_at="2026-07-21T00:00:00+00:00", **sealed,
+        )
+        store.put(entry)
+        res = approve_red_proposal(entry.proposal_id, store=store)
+        assert res["success"] is True, res
+        doc = _yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        assert doc["goals"][0]["status"] == "complete"
+        events = KaizenLedger("dock_write_session").events_by_type(
+            "governance_change"
+        )
         assert len(events) == 1
-        assert events[0]["zone"] == "yellow"
-        assert events[0]["rationale"].startswith("Dock test")
-        assert events[0]["content_sha256"]
+        assert events[0]["disposition"] == "written"
+        assert events[0]["approval_id"] == entry.proposal_id
 
 
 class TestDockBlockPreserved:

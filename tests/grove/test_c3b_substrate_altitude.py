@@ -286,16 +286,27 @@ class TestACPGovernedSurface:
 
 
 class TestSanctionedDoorsUnaffected:
-    def test_governance_door_still_writes(self, grove, monkeypatch):
+    def test_governance_door_still_resolves(self, grove, monkeypatch):
+        # capability-mutation-surface-v1 P5 — the door no longer writes
+        # directly (thin proposer); "unaffected by the chokepoint" now means
+        # the SEAL path still resolves the governed target to its registered
+        # writer, and the direct handler call refuses without writing.
         monkeypatch.setenv("GROVE_SESSION_ID", "c3b_test_session")
+        from grove.red_pending_store import seal_red_claim
         from tools.governance_tool import propose_governance_change
 
         target = grove / "routing.config.yaml"
+        sealed = seal_red_claim("propose_governance_change", {
+            "target_file": str(target),
+            "content": "zones:\n  terminal: green\n",
+            "rationale": "C3b regression: governance door bypasses the chokepoint",
+        })
+        assert sealed["writer_name"] == "routing_config_replace"
         raw = propose_governance_change(
             target_file=str(target),
             content="zones:\n  terminal: green\n",
             rationale="C3b regression: governance door bypasses the chokepoint",
         )
         result = json.loads(raw)
-        assert result["success"] is True
-        assert target.read_text() == "zones:\n  terminal: green\n"
+        assert result["success"] is False        # proposer, not writer
+        assert not target.exists()               # nothing written directly

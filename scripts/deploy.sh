@@ -78,6 +78,15 @@ if [ -f "\$HOME/.grove/routing.autonomaton.yaml" ]; then
 else
   echo "ANDON A3: routing.autonomaton.yaml absent — skipping routing sync" >&2
 fi
+
+# capability-mutation-surface-v1 P6 (M7) — post-deploy admission recon:
+# base<->overlay diff per slug + orphan ALERTs, into this transcript.
+# READ-ONLY by contract (F6): deploy NEVER deletes or flushes overlay state
+# under ~/.grove/capabilities/state/ — upgrades cannot cross the sovereignty
+# line. Non-fatal: a recon failure is loud but never blocks the deploy.
+echo "=== capability admission recon (base <-> overlay) ==="
+.venv/bin/python -m grove.capability_recon \
+  || echo "ANDON: admission recon failed (deploy proceeds; investigate)" >&2
 HERMES
 sudo systemctl restart hermes-gateway
 echo "DEPLOYED_COMMIT=\$(sudo -u hermes git -C '${REPO_DIR}' rev-parse --short HEAD)"

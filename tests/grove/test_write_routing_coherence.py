@@ -169,10 +169,16 @@ def test_propose_governance_change_repo_target_now_red():
     zr = Dispatcher._classify_one_intent(_pgc_intent(surface), None)
     assert zr.zone == "red"
     assert zr.source == "governance_change"
-    # Defense-in-depth intact: the handler still refuses any non-~/.grove target
-    # (classify_governance_target → None), so no repo-edit path is opened.
-    from tools.governance_tool import classify_governance_target
-    assert classify_governance_target(surface) is None
+    # Defense-in-depth intact (capability-mutation-surface-v1 P5 —
+    # classify_governance_target retired): the viability seam refuses any
+    # repo-definition target, so no repo-edit path is opened and nothing can
+    # even be store-pended.
+    from grove.red_pending_store import is_viable_red_target
+    _viable, _reason = is_viable_red_target(
+        "propose_governance_change",
+        {"target_file": surface, "content": "x", "rationale": "r"},
+    )
+    assert _viable is False and "deploy" in _reason.lower()
 
 
 def test_propose_governance_change_grove_target_behavior_identical(grove_home):

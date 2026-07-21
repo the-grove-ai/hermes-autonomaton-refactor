@@ -239,6 +239,20 @@ class PendingRedProposal:
     zone: str = "red"
     origin: str = "operator"  # durable-red-store-v1: the proposing surface. Move A
     # is the operator path (always "operator"); fleet-red-durable-v2 sets "fleet".
+    # ── capability-mutation-surface-v1 P4 (M3) — SEALED CLAIM fields ──
+    # target_sha256: propose-time content hash of the write target (None for
+    # non-file effects) — the approve-time CAS anchor. A drifted target
+    # withdraws the claim loudly (reason="target_drift"), never writes.
+    target_sha256: Optional[str] = None
+    # writer_name/writer_payload/sealed_target: the WRITER-REGISTRY TRANSLATION
+    # for governed-config targets ONLY — sealed at propose-time BEFORE put(),
+    # dispatched through the named sanctioned writer on approval. Non-config
+    # RED claims (terminal etc.) keep writer_name=None and re-dispatch
+    # semantics under the same lifecycle (LIFECYCLE is tool-agnostic; the
+    # TRANSLATION is config-only — P4 scope split).
+    writer_name: Optional[str] = None
+    writer_payload: Optional[dict] = None
+    sealed_target: Optional[str] = None
 
 
 def default_red_pending_path() -> Path:
@@ -250,15 +264,22 @@ def default_red_pending_path() -> Path:
     return Path(get_hermes_home()) / "red_pending.db"
 
 
-# The durable schema — durable-red-store-v1 Move A (9 columns, LOCKED). No
-# ``claim_state`` (the claim is the atomic ``DELETE … RETURNING`` — no UPDATE
-# path) and NO nonce columns (nonces live only on the portal request surface,
-# ``grove/api/red_nonce.py``). ``is_opaque``/``pattern_key`` are immutable
-# proposal-time classification metadata, serialized so the portal OPAQUE banner +
-# per-type card title resolve from SQLite now that the in-memory map is retired.
+# The durable schema — durable-red-store-v1 Move A (9 base columns) extended by
+# capability-mutation-surface-v1 P4 (M3): sealed-claim columns (target_sha256 /
+# writer_name / writer_payload / sealed_target), the transactional-claim marker
+# (claimed_at — NULL = unclaimed; the claim is now UPDATE-claim -> dispatch ->
+# DELETE-on-success-only, superseding Move A's DELETE…RETURNING-as-claim), and
+# last_error (the surfaced writer failure a retained claim carries). NO nonce
+# columns (nonces live only on the portal request surface,
+# ``grove/api/red_nonce.py``). Legacy ROWS get no migration shim (P4 item 5 —
+# R1 confirmed 0 live rows): DDL converges via ALTER ADD COLUMN, and an
+# old-shape governed-config row fails LOUD at approve (legacy_shape), never
+# silently re-dispatches.
 _COLUMNS = (
     "proposal_id", "tool_name", "arguments", "effect_signature",
     "masked_description", "origin", "created_at", "is_opaque", "pattern_key",
+    "target_sha256", "writer_name", "writer_payload", "sealed_target",
+    "claimed_at", "last_error",
 )
 
 # Owner-only (0600). The DB persists raw, possibly secret-bearing ``arguments``
@@ -312,10 +333,32 @@ class RedPendingStore:
                     origin             TEXT NOT NULL,
                     created_at         TEXT NOT NULL,
                     is_opaque          INTEGER NOT NULL DEFAULT 0,
-                    pattern_key        TEXT
+                    pattern_key        TEXT,
+                    target_sha256      TEXT,
+                    writer_name        TEXT,
+                    writer_payload     TEXT,
+                    sealed_target      TEXT,
+                    claimed_at         TEXT,
+                    last_error         TEXT
                 )
                 """
             )
+            # DDL convergence for a pre-P4 DB (NOT a row-migration shim —
+            # P4 item 5): nullable columns added in place; legacy rows read
+            # with NULL sealed fields and are refused LOUD at approve when
+            # their shape demands sealing (legacy_shape).
+            have = {
+                r["name"]
+                for r in con.execute("PRAGMA table_info(red_pending)")
+            }
+            for col in (
+                "target_sha256", "writer_name", "writer_payload",
+                "sealed_target", "claimed_at", "last_error",
+            ):
+                if col not in have:
+                    con.execute(
+                        f"ALTER TABLE red_pending ADD COLUMN {col} TEXT"
+                    )
 
     def _harden_perms(self) -> None:
         """Force owner-only (0600) on the DB and its WAL/SHM sidecars. The sidecars
@@ -332,6 +375,12 @@ class RedPendingStore:
         ``zone`` are NOT persisted (unread after store — approve keys on
         tool_name/arguments/effect_signature; render keys on the others) and rebuild
         with their defaults; ``is_opaque`` coerces INTEGER 0/1 ↔ bool."""
+        keys = row.keys()
+
+        def _col(name):
+            return row[name] if name in keys else None
+
+        wp = _col("writer_payload")
         return PendingRedProposal(
             proposal_id=row["proposal_id"],
             tool_name=row["tool_name"],
@@ -343,6 +392,10 @@ class RedPendingStore:
             is_opaque=bool(row["is_opaque"]),
             pattern_key=row["pattern_key"],
             origin=row["origin"],
+            target_sha256=_col("target_sha256"),
+            writer_name=_col("writer_name"),
+            writer_payload=json.loads(wp) if wp else None,
+            sealed_target=_col("sealed_target"),
         )
 
     def put(self, entry: PendingRedProposal) -> None:
@@ -359,8 +412,10 @@ class RedPendingStore:
             con.execute(
                 "INSERT OR REPLACE INTO red_pending "
                 "(proposal_id, tool_name, arguments, effect_signature, "
-                " masked_description, origin, created_at, is_opaque, pattern_key) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " masked_description, origin, created_at, is_opaque, "
+                " pattern_key, target_sha256, writer_name, writer_payload, "
+                " sealed_target, claimed_at, last_error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
                 (
                     entry.proposal_id,
                     entry.tool_name,
@@ -371,6 +426,14 @@ class RedPendingStore:
                     entry.created_at,
                     1 if entry.is_opaque else 0,
                     entry.pattern_key,
+                    getattr(entry, "target_sha256", None),
+                    getattr(entry, "writer_name", None),
+                    (
+                        json.dumps(entry.writer_payload, ensure_ascii=False)
+                        if getattr(entry, "writer_payload", None) is not None
+                        else None
+                    ),
+                    getattr(entry, "sealed_target", None),
                 ),
             )
         self._harden_perms()  # a first-write may have just created the WAL/SHM
@@ -383,16 +446,119 @@ class RedPendingStore:
         return self._row_to_entry(row) if row is not None else None
 
     def pop(self, proposal_id: str) -> Optional[PendingRedProposal]:
-        """Atomic claim — ``DELETE … RETURNING``. Exactly one caller receives the
-        row; a concurrent second caller receives zero rows (SQLite serializes
-        writers), which is the exactly-once approve gate that replaces the 1a dict
-        ``.pop``. Used on successful execute / abort."""
+        """Atomic consume — ``DELETE … RETURNING``. capability-mutation-
+        surface-v1 P4 (M4): no longer the approve CLAIM (that is
+        :meth:`claim`); ``pop`` fires ON SUCCESS ONLY (and on operator
+        dismiss/withdraw). Exactly one caller receives the row (SQLite
+        serializes writers)."""
         with self._connect() as con:
             row = con.execute(
                 "DELETE FROM red_pending WHERE proposal_id=? RETURNING *",
                 (proposal_id,),
             ).fetchone()
         return self._row_to_entry(row) if row is not None else None
+
+    # ── capability-mutation-surface-v1 P4 (M4) — transactional claim ────────
+    # Claim state machine (tool-agnostic; the store's lifecycle):
+    #
+    #   PENDING (row, claimed_at NULL)
+    #     --claim()-->            IN_FLIGHT (claimed_at set; exactly-once via
+    #                             UPDATE…WHERE claimed_at IS NULL RETURNING)
+    #   IN_FLIGHT
+    #     --success-->            CONSUMED   (pop: DELETE — success only)
+    #     --writer failure-->     PENDING    (release: claimed_at NULL,
+    #                             last_error surfaced; retry/withdraw offered)
+    #     --CAS drift/integrity-> WITHDRAWN  (withdraw: DELETE, reason loud)
+    #   crash while IN_FLIGHT --> release_stale_claims() at startup reap
+    #                             (single-gateway: nothing is genuinely in
+    #                             flight across a restart).
+
+    def claim(self, proposal_id: str):
+        """Atomically claim a PENDING row for execution. Returns
+        ``(entry, "claimed")``, ``(None, "absent")``, or ``(entry,
+        "in_flight")`` when a concurrent approve already holds the claim."""
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as con:
+            row = con.execute(
+                "UPDATE red_pending SET claimed_at=? "
+                "WHERE proposal_id=? AND claimed_at IS NULL RETURNING *",
+                (now, proposal_id),
+            ).fetchone()
+            if row is not None:
+                return self._row_to_entry(row), "claimed"
+            row = con.execute(
+                "SELECT * FROM red_pending WHERE proposal_id=?", (proposal_id,)
+            ).fetchone()
+        if row is None:
+            return None, "absent"
+        return self._row_to_entry(row), "in_flight"
+
+    def release(self, proposal_id: str, *, error: Optional[str] = None) -> None:
+        """Return an IN_FLIGHT claim to PENDING after a writer failure — the
+        claim SURVIVES with the error surfaced (last_error) so the portal card
+        offers retry (re-approve) or withdraw (dismiss)."""
+        with self._connect() as con:
+            con.execute(
+                "UPDATE red_pending SET claimed_at=NULL, last_error=? "
+                "WHERE proposal_id=?",
+                (error, proposal_id),
+            )
+
+    def withdraw(self, proposal_id: str) -> Optional[PendingRedProposal]:
+        """Terminal removal WITH reason semantics (CAS drift / integrity /
+        operator withdraw) — same DELETE as pop; named separately so call
+        sites read as the state transition they are."""
+        return self.pop(proposal_id)
+
+    def last_error(self, proposal_id: str) -> Optional[str]:
+        """The surfaced error of a retained (failed-and-released) claim."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT last_error FROM red_pending WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+        return row["last_error"] if row is not None else None
+
+    def release_stale_claims(self) -> int:
+        """Startup crash-recovery: clear every IN_FLIGHT marker. The gateway
+        is single-instance, so a claim surviving a restart is stale by
+        definition — the row returns to PENDING (an entry that failed
+        execution is NOT an orphan; its payload row is intact)."""
+        with self._connect() as con:
+            cur = con.execute(
+                "UPDATE red_pending SET claimed_at=NULL "
+                "WHERE claimed_at IS NOT NULL"
+            )
+            return cur.rowcount
+
+    def rendered_payload(self, proposal_id: str) -> Optional[str]:
+        """The EXACT payload the executor dispatches, for portal review —
+        capability-mutation-surface-v1 P4 (M3): render and dispatch read the
+        same durable row, so they can never diverge (T3d byte-parity).
+
+        Sealed claims render the canonical writer-payload serialization;
+        unsealed claims render the content-bearing argument the re-dispatch
+        carries (write content / governance body / shell command)."""
+        entry = self.get(proposal_id)
+        if entry is None:
+            return None
+        if entry.writer_name is not None:
+            return json.dumps(
+                entry.writer_payload or {}, sort_keys=True, ensure_ascii=False
+            )
+        args = entry.arguments or {}
+        if entry.tool_name == "propose_governance_change":
+            body = args.get("content")
+            if body is None:
+                body = args.get("diff_or_content")
+            return body if isinstance(body, str) else None
+        if "content" in args and isinstance(args.get("content"), str):
+            return args["content"]
+        if "command" in args and isinstance(args.get("command"), str):
+            return args["command"]
+        return json.dumps(args, sort_keys=True, ensure_ascii=False)
 
     def masked_description(self, proposal_id: str) -> Optional[str]:
         """The masked operator-facing description for a proposal, or None."""
@@ -480,28 +646,440 @@ def get_red_pending_store() -> RedPendingStore:
     return _STORE
 
 
+# ── capability-mutation-surface-v1 P4 (M3) — claim sealing + writer registry ──
+
+
+def _hash_target_bytes(target: str) -> str:
+    """sha256 of the target file's current bytes; an ABSENT target hashes as
+    empty bytes (the creation anchor — a file appearing between propose and
+    approve is drift)."""
+    import hashlib
+
+    p = Path(os.path.realpath(os.path.expanduser(target)))
+    try:
+        data = p.read_bytes() if p.exists() else b""
+    except OSError:
+        data = b""
+    return hashlib.sha256(data).hexdigest()
+
+
+def _first_write_target(tool_name: str, arguments: dict):
+    """(target, body) for a claim — propose carries its own target arg; the
+    write-family tools go through the shared extraction seam."""
+    args = arguments or {}
+    if tool_name == "propose_governance_change":
+        target = args.get("target_file")
+        body = args.get("content")
+        if body is None:
+            body = args.get("diff_or_content")
+        return (
+            target if isinstance(target, str) and target.strip() else None,
+            body if isinstance(body, str) else None,
+        )
+    targets = _extract_write_targets_safe(tool_name, args)
+    body = args.get("content")
+    return (
+        targets[0] if targets else None,
+        body if isinstance(body, str) else None,
+    )
+
+
+def _dock_status_changes(body: str):
+    """Map a proposed dock.yaml body to goal-status mutations, or None.
+
+    The Dock's ONLY sanctioned mutator is ``update_dock_goal_status`` (status
+    field per goal) — P5 ruling: dock targets seal against the existing dock
+    writers, no new writer is minted. A proposed body qualifies iff it is the
+    CURRENT dock.yaml with nothing but ``goals[*].status`` changed; anything
+    else (structure edits, new goals, non-status fields) is a registry miss.
+    """
+    import copy
+
+    import yaml as _yaml
+
+    from hermes_constants import get_hermes_home
+
+    dock_path = Path(get_hermes_home()) / "dock" / "dock.yaml"
+    try:
+        current = _yaml.safe_load(dock_path.read_text(encoding="utf-8"))
+        proposed = _yaml.safe_load(body)
+    except Exception:  # noqa: BLE001 — unreadable/unparseable → no mapping
+        return None
+    if not isinstance(current, dict) or not isinstance(proposed, dict):
+        return None
+
+    def _strip_status(doc):
+        c = copy.deepcopy(doc)
+        for g in c.get("goals") or []:
+            if isinstance(g, dict):
+                g.pop("status", None)
+        return c
+
+    if _strip_status(current) != _strip_status(proposed):
+        return None  # more than a status mutation — not expressible
+    cur_by_id = {
+        g.get("id"): g
+        for g in (current.get("goals") or [])
+        if isinstance(g, dict) and g.get("id")
+    }
+    from grove.dock import _VALID_STATUSES
+
+    changes = []
+    for g in proposed.get("goals") or []:
+        if not isinstance(g, dict):
+            return None
+        gid = g.get("id")
+        if gid in cur_by_id and g.get("status") != cur_by_id[gid].get("status"):
+            # An off-set status is a registry miss at SEAL time — never a
+            # queued claim that the dock writer will refuse post-approval.
+            if g.get("status") not in _VALID_STATUSES:
+                return None
+            changes.append({"goal_id": gid, "status": g["status"]})
+    return changes or None
+
+
+def _resolve_governed_writer(resolved_target: str, body):
+    """capability-mutation-surface-v1 P5 (M5) — the WRITER REGISTRY resolution.
+
+    Maps a governed-config target to its registered sanctioned writer:
+    ``(writer_name, writer_payload, "")`` or ``(None, None, miss_reason)``.
+    The registry is the SOLE write authority — a governed surface with no
+    registration (e.g. the retired ``~/.grove/zones.schema.yaml`` dead door)
+    is a registry miss, and its claims are refused at the viability seam
+    before anything is queued."""
+    from hermes_constants import get_hermes_home
+
+    gh = Path(os.path.realpath(get_hermes_home()))
+    p = Path(resolved_target)
+
+    # .env — operator-only credential store; anywhere on disk (the universal
+    # rule classify_governance_target carried, preserved here).
+    if p.name == ".env":
+        if not isinstance(body, str):
+            return None, None, ".env write carries no content body"
+        return "env_write", {"target_file": str(p), "content": body}, ""
+
+    if p == gh / "routing.config.yaml":
+        if not isinstance(body, str):
+            return None, None, "routing config write carries no content body"
+        # D3 unification — sealed against RoutingConfigWriter.apply_mutation
+        # (backup → sandbox-validate → atomic replace → hot-reload); the
+        # governance door's raw write path is dead. deploy.sh's cp remains
+        # the deliberate out-of-band writer.
+        return "routing_config_replace", {"content": body}, ""
+
+    if p == gh / "dock" / "dock.yaml":
+        if not isinstance(body, str):
+            return None, None, "dock manifest write carries no content body"
+        changes = _dock_status_changes(body)
+        if changes is None:
+            return None, None, (
+                "dock.yaml admits only goal-status mutation "
+                "(update_dock_goal_status is the sole registered dock writer); "
+                "the proposed body changes more than goals[*].status"
+            )
+        return "dock_goal_status", {"changes": changes}, ""
+
+    if p.parent == gh / "capabilities" / "state" and p.suffix == ".yaml":
+        if not isinstance(body, str):
+            return None, None, "admission state write carries no content body"
+        try:
+            import yaml as _yaml
+
+            doc = _yaml.safe_load(body)
+        except Exception:  # noqa: BLE001
+            doc = None
+        if (
+            isinstance(doc, dict)
+            and isinstance(doc.get("id"), str)
+            and set(doc) <= {"id", "intents", "tiers", "provenance"}
+            and (doc.get("intents") is not None or doc.get("tiers") is not None)
+        ):
+            return "write_admission_state", {
+                "record_id": doc["id"],
+                "intents": doc.get("intents"),
+                "tiers": doc.get("tiers"),
+            }, ""
+        return None, None, (
+            "capability state writes admit only canonical admission docs "
+            "({id, intents, tiers}) through write_admission_state"
+        )
+
+    return None, None, "no governed writer is registered for this surface"
+
+
+def is_viable_red_target(tool_name: str, arguments: dict):
+    """capability-mutation-surface-v1 P5 (M6) — the VIABILITY SEAM (ruling
+    A-1). Consulted by ``_store_pending_red_proposal`` BEFORE ``put()`` and
+    before the queue-row append, so an approvable-but-unappliable card can
+    never be minted (the 2026-07-21 browser_read churn class).
+
+    Returns ``(True, "")`` or ``(False, reason)``:
+
+    * REPO-DEFINITION targets (``<module_root>/config/**``, including
+      ``config/capabilities/**``): refused — approval could never apply them
+      (kernel read-only on the deployed VM); the reason names the git commit
+      + deploy SOP.
+    * GOVERNED-CONFIG targets with no registered writer: refused — the
+      writer registry is the sole write authority (this retires the
+      ``~/.grove/zones.schema.yaml`` dead door: nothing registers for it).
+    * Non-config RED claims (terminal etc.): pass through — lifecycle-only,
+      no translation, behavior unchanged.
+    """
+    target, body = _first_write_target(tool_name, arguments)
+    if target is None:
+        return True, ""  # target-less RED (shell etc.) — lifecycle-only
+    resolved = os.path.realpath(os.path.expanduser(target))
+
+    from grove.utils.fs_utils import _MODULE_CONFIG_ROOT, is_scope_defining
+
+    if resolved == _MODULE_CONFIG_ROOT or resolved.startswith(
+        _MODULE_CONFIG_ROOT + os.sep
+    ):
+        return False, (
+            f"Nonviable target {resolved}: a repo DEFINITION surface "
+            "(<module_root>/config/**) — a runtime write can never apply "
+            "(config/ is kernel read-only on the deployed VM), so approving "
+            "it would only mint a dead card. Definition surfaces change "
+            "through a git commit and deploy (scripts/deploy.sh) — that is "
+            "the sanctioned path."
+        )
+    if Path(resolved).name == ".env" or is_scope_defining(resolved):
+        writer, _payload, miss = _resolve_governed_writer(resolved, body)
+        if writer is None:
+            return False, (
+                f"Nonviable governed target {resolved}: no registered writer "
+                f"({miss}). The governed-writer registry is the sole write "
+                "authority — a claim with no writer could never execute."
+            )
+    return True, ""
+
+
+def seal_red_claim(tool_name: str, arguments: dict) -> Dict[str, object]:
+    """Propose-time SEALING — capability-mutation-surface-v1 M3/M5.
+
+    Returns the sealed-claim fields to stamp onto :class:`PendingRedProposal`
+    BEFORE ``put()``:
+
+    * ``target_sha256`` — for ANY claim with a resolvable write target
+      (lifecycle CAS anchor; tool-agnostic).
+    * ``writer_name``/``writer_payload``/``sealed_target`` — the writer-
+      registry translation for GOVERNED-CONFIG targets, resolved through
+      :func:`_resolve_governed_writer` (P5: per-surface registrations; the
+      transitional ``governance_write`` pass-through is retired). Non-config
+      claims keep re-dispatch semantics under the same lifecycle.
+    """
+    sealed: Dict[str, object] = {
+        "target_sha256": None,
+        "writer_name": None,
+        "writer_payload": None,
+        "sealed_target": None,
+    }
+    target, body = _first_write_target(tool_name, arguments)
+    if target is None:
+        return sealed
+    resolved = os.path.realpath(os.path.expanduser(target))
+    sealed["sealed_target"] = resolved
+    sealed["target_sha256"] = _hash_target_bytes(target)
+
+    from grove.utils.fs_utils import is_scope_defining
+
+    if Path(resolved).name == ".env" or is_scope_defining(resolved):
+        writer, payload, _miss = _resolve_governed_writer(resolved, body)
+        if writer is not None:
+            if writer == "env_write":
+                payload["rationale"] = (
+                    (arguments or {}).get("rationale") or ""
+                )
+            sealed["writer_name"] = writer
+            sealed["writer_payload"] = payload
+    return sealed
+
+
+def _emit_governed_write_ledger(
+    *, target_file: str, rationale: str, content: str,
+    prior, disposition: str, approval_id: str,
+) -> None:
+    """R2-census continuity (P5 item 5) — the ``governance_change`` ledger
+    channel survives Pipeline-A's retirement: the executor emits at write
+    time (the seal site emits its own entry at claim time)."""
+    from tools.governance_tool import _record_governance_ledger
+
+    _record_governance_ledger(
+        target_file=target_file, zone="red", rationale=rationale,
+        content=content, prior=prior,
+        disposition=disposition, approval_id=approval_id,
+    )
+
+
+def _dispatch_env_write(entry: "PendingRedProposal", approval_id: str) -> str:
+    """Sealed ``.env`` write — operator-only credentials land ONLY through an
+    approved claim; the proposer never writes."""
+    payload = entry.writer_payload or {}
+    target = payload.get("target_file")
+    body = payload.get("content")
+    if not isinstance(target, str) or not isinstance(body, str):
+        return json.dumps(
+            {"success": False, "error": "sealed env payload malformed"}
+        )
+    p = Path(target)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    prior = p.read_text(encoding="utf-8") if p.exists() else None
+    p.write_text(body, encoding="utf-8")
+    _emit_governed_write_ledger(
+        target_file=str(p),
+        rationale=str(payload.get("rationale") or f"approved:{approval_id}"),
+        content=body, prior=prior,
+        disposition="written", approval_id=approval_id,
+    )
+    return json.dumps({
+        "success": True, "target_file": str(p),
+        "message": f"Governance change written to {p.name}.",
+    })
+
+
+def _dispatch_routing_config_replace(
+    entry: "PendingRedProposal", approval_id: str
+) -> str:
+    """Sealed routing-config replacement through the ONE sanctioned routing
+    writer (D3 unification): RoutingConfigWriter.apply_mutation — backup →
+    sandbox-validate → atomic replace → hot-reload. A body the sandbox router
+    rejects raises ConfigValidationError → the claim survives for retry."""
+    from hermes_constants import get_hermes_home
+    from grove.config.routing_writer import (
+        ConfigValidationError,
+        RoutingConfigWriter,
+        _ruamel,
+    )
+
+    payload = entry.writer_payload or {}
+    body = payload.get("content")
+    if not isinstance(body, str):
+        return json.dumps(
+            {"success": False, "error": "sealed routing payload malformed"}
+        )
+    cfg_path = Path(get_hermes_home()) / "routing.config.yaml"
+    writer = RoutingConfigWriter(cfg_path)
+
+    def _mutate(data):
+        new = _ruamel().load(body)
+        if not isinstance(new, dict):
+            raise ConfigValidationError(
+                "proposed routing config body must be a mapping"
+            )
+        data.clear()
+        for k, v in new.items():
+            data[k] = v
+
+    prior = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else None
+    writer.apply_mutation(_mutate, label=f"governance approve {approval_id}")
+    _emit_governed_write_ledger(
+        target_file=str(cfg_path),
+        rationale=f"approved:{approval_id}",
+        content=body, prior=prior,
+        disposition="written", approval_id=approval_id,
+    )
+    return json.dumps({
+        "success": True, "target_file": str(cfg_path),
+        "message": "Routing config replaced through RoutingConfigWriter.",
+    })
+
+
+def _dispatch_dock_goal_status(
+    entry: "PendingRedProposal", approval_id: str
+) -> str:
+    """Sealed dock mutation through the existing sanctioned dock writer —
+    goal-status changes only (the resolution seam admits nothing else)."""
+    from hermes_constants import get_hermes_home
+    from grove.dock.writer import update_dock_goal_status
+
+    changes = (entry.writer_payload or {}).get("changes") or []
+    applied = []
+    for ch in changes:
+        gid = str(ch.get("goal_id") or "")
+        status = str(ch.get("status") or "")
+        if not update_dock_goal_status(gid, status):
+            return json.dumps({
+                "success": False,
+                "error": f"dock goal {gid!r} not found — nothing applied "
+                         f"beyond {applied!r}",
+            })
+        applied.append({"goal_id": gid, "status": status})
+    dock_path = Path(get_hermes_home()) / "dock" / "dock.yaml"
+    _emit_governed_write_ledger(
+        target_file=str(dock_path),
+        rationale=f"approved:{approval_id}",
+        content=json.dumps(applied, sort_keys=True), prior=None,
+        disposition="written", approval_id=approval_id,
+    )
+    return json.dumps({
+        "success": True, "target_file": str(dock_path), "changes": applied,
+    })
+
+
+def _dispatch_admission_write(entry: "PendingRedProposal", approval_id: str) -> str:
+    """Sealed admission write — the executor is the ONLY source of approval
+    ids: the provenance stamp write_admission_state REQUIRES is minted here,
+    carrying the approval id, never supplied by the proposing agent."""
+    from datetime import datetime, timezone
+
+    from grove.capability_registry import write_admission_state
+
+    payload = entry.writer_payload or {}
+    path = write_admission_state(
+        str(payload.get("record_id") or ""),
+        intents=payload.get("intents"),
+        tiers=payload.get("tiers"),
+        provenance={
+            "approval_id": approval_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "surface": "red_approval",
+            "write_class": "capability_admission",
+        },
+    )
+    return json.dumps({"success": True, "state_file": str(path)})
+
+
+# capability-mutation-surface-v1 P5 (M5) — the WRITER REGISTRY: per-surface
+# registrations, each dispatching a SANCTIONED writer. This registry is the
+# acceptance test (R-1): nothing outside it retains an independent
+# classify-or-write authority for governed config. The transitional P4
+# ``governance_write`` pass-through is retired. Registration is a reviewed
+# diff. (~/.grove/zones.schema.yaml deliberately has NO registration — the
+# dead door is retired; routing.autonomaton.yaml / routing-profiles are
+# machine-flywheel surfaces, likewise unregistered through this door.)
+_GOVERNED_WRITERS = {
+    "env_write": _dispatch_env_write,
+    "routing_config_replace": _dispatch_routing_config_replace,
+    "dock_goal_status": _dispatch_dock_goal_status,
+    "write_admission_state": _dispatch_admission_write,
+}
+
+
 def approve_red_proposal(
     proposal_id: str, store: Optional[RedPendingStore] = None
 ) -> Dict[str, object]:
-    """Mint-on-approve — claim-then-execute a pending RED action.
+    """Approve-and-execute a pending RED claim — capability-mutation-surface-v1
+    P4 (M4) lifecycle rewrite. Operator-only: the portal /confirm handler and
+    ``Dispatcher.approve_pending_red_proposal``. NEVER model-reachable.
 
-    red-action-store-pending-v1 Phase A — generalized from the 1a ``.env``-only
-    write to ANY stored RED ToolIntent. Operator-only: the portal /confirm handler
-    (holds the singleton store) and ``Dispatcher.approve_pending_red_proposal``
-    (delegates here). NEVER model-reachable — no tool exposes it.
+    LIFECYCLE (tool-agnostic — see the state machine at
+    :meth:`RedPendingStore.claim`): transactional claim → CAS check →
+    integrity check → dispatch → **pop ON SUCCESS ONLY**. A writer failure
+    RELEASES the claim (it survives, error surfaced — the portal card offers
+    retry via re-approve or withdraw via dismiss). A drifted target WITHDRAWS
+    the claim loudly (``reason="target_drift"``). Replay of a consumed claim
+    is ``not_found`` — honest "already resolved", never an expiry lie.
 
-    CLAIM: atomic ``pop`` — exactly one claimant; a concurrent second approve pops
-    ``None`` → ``not_found``. Integrity: the claimed args must still recompute to
-    the stored ``effect_signature`` (realpath-canonical → a symlink swap is caught).
-    Then mint that signature into an ISOLATED ApprovalGate and RE-DISPATCH the
-    action through ``registry.dispatch`` — which consumes the token (signature
-    match) and invokes the tool handler by name, the SAME seam every governed
-    execution uses. ``propose_governance_change`` is one instance; the ``.env``
-    write routes through here too (its TOCTOU anchor rode in via
-    ``prepare_execute_arguments``, so the handler's second gate still fires).
+    DISPATCH is split (P4 scope): sealed governed-config claims route through
+    the ``_GOVERNED_WRITERS`` registry (the executor mints the approval-id-
+    bearing provenance); everything else keeps mint-and-re-dispatch through
+    the tool registry under the same lifecycle.
 
-    Returns ``{"success": bool, "reason": one of
-    "written"/"not_found"/"integrity"/"unknown_tool"/"execute_error", ...}``.
+    Returns ``{"success": bool, "reason": one of "written"/"not_found"/
+    "in_flight"/"target_drift"/"integrity"/"legacy_shape"/"unknown_tool"/
+    "execute_error", ...}``; ``claim_retained`` is True when the claim
+    survives for retry.
     """
     import json as _json
 
@@ -509,23 +1087,73 @@ def approve_red_proposal(
 
     st = store if store is not None else get_red_pending_store()
 
-    entry = st.pop(proposal_id)  # CLAIM — atomic single-writer gate
-    if entry is None:
+    entry, claim_state = st.claim(proposal_id)
+    if claim_state == "absent":
         return {
             "success": False,
             "reason": "not_found",
             "error": (
-                "No pending proposal with that id — it was already approved or "
-                "dismissed. The durable payload store survives restarts, so a "
-                "missing payload means it was disposed, not lost to a restart."
+                "No pending proposal with that id — it was already resolved "
+                "(approved, withdrawn, or dismissed). The durable payload "
+                "store survives restarts, so an absent claim means it was "
+                "resolved, not lost. Nothing further was written."
+            ),
+        }
+    if claim_state == "in_flight":
+        return {
+            "success": False,
+            "reason": "in_flight",
+            "error": (
+                "This claim is already being executed by a concurrent "
+                "approval — no second execution was started."
             ),
         }
 
-    # Integrity: recompute the effect signature over the claimed args; it must
-    # still match the stored anchor (realpath-canonical → symlink-swap caught).
+    def _identity(extra: Dict[str, object]) -> Dict[str, object]:
+        # operator-red-correctness-v1 Move 2 — per-effect identity for the
+        # confirm card; paths only, never argument values.
+        base: Dict[str, object] = {
+            "proposal_id": proposal_id,
+            "tool_name": entry.tool_name,
+            "pattern_key": entry.pattern_key,
+            "target_path": (entry.arguments or {}).get("target_file"),
+            "write_targets": _extract_write_targets_safe(
+                entry.tool_name, entry.arguments
+            ),
+        }
+        base.update(extra)
+        return base
+
+    # CAS — approve-time compare-and-swap on the propose-time target hash
+    # (M3). Drift → the claim is WITHDRAWN with its reason; nothing executes.
+    if entry.target_sha256 is not None:
+        cas_target = entry.sealed_target
+        if not cas_target:
+            wts = _extract_write_targets_safe(entry.tool_name, entry.arguments)
+            cas_target = wts[0] if wts else None
+        if cas_target is not None:
+            live_hash = _hash_target_bytes(str(cas_target))
+            if live_hash != entry.target_sha256:
+                st.withdraw(proposal_id)
+                return _identity({
+                    "success": False,
+                    "reason": "target_drift",
+                    "error": (
+                        "Withdrawn — target content drift: the file changed "
+                        "after this action was proposed (CAS anchor "
+                        f"{entry.target_sha256[:12]}… no longer matches). "
+                        "Nothing was written; review the target and "
+                        "re-propose."
+                    ),
+                })
+
+    # Integrity: the claimed args must still recompute to the stored
+    # effect_signature (realpath-canonical → symlink swap caught). A mismatch
+    # withdraws — the stored effect is no longer the approved effect.
     live_sig = canonical_effect_signature(entry.tool_name, entry.arguments)
     if live_sig != entry.effect_signature:
-        return {  # entry already popped — nothing dispatched, fail-safe
+        st.withdraw(proposal_id)
+        return {
             "success": False,
             "reason": "integrity",
             "error": (
@@ -534,71 +1162,136 @@ def approve_red_proposal(
             ),
         }
 
-    # Isolated registry + gate: mint the bound signature, then RE-DISPATCH. The
-    # gate is consumed inside registry.dispatch (canonical_effect_signature match).
-    # A bare registry carries no MCP/plugin surface — a stored MCP action returns
-    # unknown_tool (Phase B: ExecutionIdentity / registry completeness).
-    from tools.registry import ToolRegistry, register_builtin_tools
-
-    registry = ToolRegistry()
-    register_builtin_tools(registry)
-    if registry.get_entry(entry.tool_name) is None:
-        return {
+    # P4 item 5 — legacy-shape refusal (no migration shim; R1 counted 0 live
+    # rows): a governance claim minted before sealing existed carries no
+    # writer_name. Refuse LOUD and withdraw; a silent raw re-dispatch of a
+    # governed-config write is exactly the defect this sprint closes.
+    if entry.tool_name == "propose_governance_change" and not entry.writer_name:
+        st.withdraw(proposal_id)
+        return _identity({
             "success": False,
-            "reason": "unknown_tool",
+            "reason": "legacy_shape",
             "error": (
-                f"tool {entry.tool_name!r} is not registered on the approval "
-                f"registry; cannot re-dispatch (Phase B: registry completeness)."
+                "Withdrawn — this governance claim predates sealed claims "
+                "(no writer translation stored) and cannot be executed "
+                "safely. Re-propose the change."
             ),
-        }
+        })
 
-    gate = ApprovalGate()
-    gate.activate()
-    registry._approval_gate = gate
-    gate.mint(entry.effect_signature)
-    # unresolved-writer-execution-path-v1 Fix 1 — the approved-effect ContextVar is
-    # now published by ``registry.dispatch`` itself (the EXACT gate-CONSUMED
-    # signature), unifying what the gate consumed with what the tool guard honors.
-    # No separate setter here; the gate mint above is claimed inside dispatch.
-    try:
-        result = registry.dispatch(entry.tool_name, entry.arguments)
-    finally:
-        gate.flush()  # single-use; the entry is already popped and cannot re-fire
+    # ── DISPATCH ──
+    if entry.writer_name is not None:
+        # Sealed governed-config claim → the writer registry. The approval id
+        # (the claim id) is minted into provenance by the adapter — the
+        # executor is the only source of approval ids.
+        adapter = _GOVERNED_WRITERS.get(entry.writer_name)
+        if adapter is None:
+            st.release(
+                proposal_id,
+                error=f"no registered governed writer {entry.writer_name!r}",
+            )
+            return _identity({
+                "success": False,
+                "reason": "execute_error",
+                "claim_retained": True,
+                "error": (
+                    f"No registered governed writer {entry.writer_name!r} — "
+                    "the claim is retained; retry after the writer registry "
+                    "is corrected, or dismiss to withdraw."
+                ),
+            })
+        try:
+            result = adapter(entry, proposal_id)
+        except Exception as exc:  # noqa: BLE001 — loud, claim survives
+            st.release(proposal_id, error=repr(exc))
+            return _identity({
+                "success": False,
+                "reason": "execute_error",
+                "claim_retained": True,
+                "error": (
+                    f"Writer {entry.writer_name!r} raised {exc!r} — the claim "
+                    "is retained; retry from the pending card, or dismiss to "
+                    "withdraw."
+                ),
+            })
+    else:
+        # Unsealed claim → mint-and-re-dispatch (unchanged seam; the gate is
+        # consumed inside registry.dispatch on signature match).
+        from tools.registry import ToolRegistry, register_builtin_tools
 
-    # registry.dispatch returns a JSON string; a handler error / GovernanceError
-    # surfaces as {"error": ...}. Treat that as a LOUD execute failure, never a
-    # silent success.
-    ok, reason = True, "written"
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        if registry.get_entry(entry.tool_name) is None:
+            st.release(
+                proposal_id,
+                error=f"tool {entry.tool_name!r} not on approval registry",
+            )
+            return _identity({
+                "success": False,
+                "reason": "unknown_tool",
+                "claim_retained": True,
+                "error": (
+                    f"tool {entry.tool_name!r} is not registered on the "
+                    "approval registry; cannot re-dispatch (Phase B: registry "
+                    "completeness). The claim is retained."
+                ),
+            })
+        gate = ApprovalGate()
+        gate.activate()
+        registry._approval_gate = gate
+        gate.mint(entry.effect_signature)
+        try:
+            result = registry.dispatch(entry.tool_name, entry.arguments)
+        except Exception as exc:  # noqa: BLE001 — loud, claim survives
+            st.release(proposal_id, error=repr(exc))
+            return _identity({
+                "success": False,
+                "reason": "execute_error",
+                "claim_retained": True,
+                "error": (
+                    f"Dispatch raised {exc!r} — the claim is retained; retry "
+                    "from the pending card, or dismiss to withdraw."
+                ),
+            })
+        finally:
+            gate.flush()  # single-use mint per attempt; a retry re-mints
+
+    # A handler error / GovernanceError surfaces as {"error": ...} or
+    # success:false in the JSON result. LOUD execute failure — the claim is
+    # RELEASED (survives with the surfaced error), never silently consumed.
+    ok = True
     try:
         parsed = _json.loads(result) if isinstance(result, str) else result
-        if isinstance(parsed, dict) and (parsed.get("error") or parsed.get("success") is False):
-            ok, reason = False, "execute_error"
-    except Exception:  # noqa: BLE001 — non-JSON handler output is treated as success
+        if isinstance(parsed, dict) and (
+            parsed.get("error") or parsed.get("success") is False
+        ):
+            ok = False
+    except Exception:  # noqa: BLE001 — non-JSON handler output treated as success
         pass
-    return {
-        "success": ok,
-        "reason": reason,
-        "proposal_id": proposal_id,
+
+    if not ok:
+        _detail = ""
+        try:
+            _p = _json.loads(result) if isinstance(result, str) else result
+            _detail = str((_p or {}).get("error") or "")[:500]
+        except Exception:  # noqa: BLE001
+            _detail = str(result)[:500]
+        st.release(proposal_id, error=_detail or "writer reported failure")
+        return _identity({
+            "success": False,
+            "reason": "execute_error",
+            "claim_retained": True,
+            "result": result,
+            "error": _detail or "writer reported failure",
+        })
+
+    # SUCCESS — pop ON SUCCESS ONLY (M4): the claim is consumed exactly once,
+    # after the write landed.
+    st.pop(proposal_id)
+    return _identity({
+        "success": True,
+        "reason": "written",
         "result": result,
-        # operator-red-correctness-v1 Move 2 — additive per-effect identity so the
-        # portal confirm card reflects the ACTUAL executed effect rather than a
-        # hardcoded governance-write mislabel. tool_name/pattern_key are non-secret
-        # classification metadata; target_path is the governance-write PATH ONLY
-        # (from target_file) — never the credential value (which stays in arguments,
-        # not surfaced here). Absent for non-governance effects (terminal → None).
-        "tool_name": entry.tool_name,
-        "pattern_key": entry.pattern_key,
-        "target_path": (entry.arguments or {}).get("target_file"),
-        # artifact-continuation-v1 P2 (1e ruling) — the approved action's
-        # filesystem write targets, derived by the SEAM'S OWN extraction
-        # machinery (never a parallel derivation). PATHS only — argument
-        # values (which may bear secrets) are never surfaced. Confirm-time
-        # identity emission consumes this to file artifact_written for the
-        # approved write.
-        "write_targets": _extract_write_targets_safe(
-            entry.tool_name, entry.arguments
-        ),
-    }
+    })
 
 
 def _extract_write_targets_safe(tool_name: str, arguments: dict) -> list:
@@ -651,6 +1344,19 @@ def reap_orphaned_red_pending(
     )
 
     st = store if store is not None else get_red_pending_store()
+    # capability-mutation-surface-v1 P4 (M4) — crash recovery FIRST: release
+    # stale IN_FLIGHT claims (a claim surviving a restart is stale by
+    # definition on a single-instance gateway). NOTE the lifecycle rule: an
+    # entry whose execution FAILED is NOT an orphan — its payload row is
+    # intact (release, not pop), so ``st.has()`` below stays True and the
+    # sweep never touches it. Only a queue row whose payload is GONE
+    # (consumed on success, withdrawn on drift, or dismissed) is orphaned.
+    stale = st.release_stale_claims()
+    if stale:
+        logger.info(
+            "[red-reaper] released %d stale in-flight claim(s) at startup",
+            stale,
+        )
     reaped: List[str] = []
     for proposal in read_all(path=queue_path):
         # governance_env_pending is the ONLY RED type that bridges to a payload store

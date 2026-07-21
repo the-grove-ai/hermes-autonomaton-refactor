@@ -53,10 +53,15 @@ def _entry(env_path, content="A=1\n", rationale="r"):
     )
     sig = canonical_effect_signature("propose_governance_change", args)
     pid = action_proposal_id(sig)
+    # capability-mutation-surface-v1 P4 — staged entries SEAL (live-path parity).
+    from grove.red_pending_store import seal_red_claim
+    _sealed = seal_red_claim("propose_governance_change", args)
     return pid, PendingRedProposal(
         proposal_id=pid, tool_name="propose_governance_change",
         arguments=args, effect_signature=sig, description="d",
         rationale=rationale, created_at="2026-07-08T00:00:00+00:00",
+        target_sha256=_sealed["target_sha256"], writer_name=_sealed["writer_name"],
+        writer_payload=_sealed["writer_payload"], sealed_target=_sealed["sealed_target"],
     )
 
 
@@ -123,8 +128,11 @@ class TestConcurrentApprove:
         failures = [r for r in results if not r.get("success")]
         assert len(successes) == 1, results            # exactly one writer
         assert len(failures) == 1
+        # capability-mutation-surface-v1 P4 (M4): the loser honestly reads
+        # in_flight (concurrent claim held) or already-resolved (consumed).
         assert (
-            "already approved" in failures[0]["error"].lower()
+            "already being executed" in failures[0]["error"].lower()
+            or "already resolved" in failures[0]["error"].lower()
             or "no pending proposal" in failures[0]["error"].lower()
         )
         assert env.read_text() == content              # written EXACTLY once
