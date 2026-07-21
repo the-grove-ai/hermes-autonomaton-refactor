@@ -136,12 +136,38 @@ class TestNonviableHaltSurface:
         surface = str(ei.value)
         assert "git" in surface.lower() and "deploy" in surface.lower()
         assert "Traceback" not in surface and "ValueError" not in surface
+        # P7 micro-arc item 2 — the capability-target SIGNPOST: redirect to
+        # the governed admission door rides the refusal for
+        # config/capabilities/*.yaml targets.
+        assert "write_admission_state" in surface
+        assert "no deploy required" in surface
         # The C2a boundary adapter resolves the REAL enum member and the
         # renderer reproduces the copy.
         event = halt_event_from_governance_context(ctx)
         rendered = _render_c2a(event)
         assert "deploy" in rendered.lower()
         # Refused BEFORE store-pending: no card minted.
+        assert len(store) == 0
+
+    def test_non_capability_repo_target_refusal_has_no_admission_signpost(
+        self, tmp_path
+    ):
+        # The redirect is capability-specific: a zones.schema.yaml (or any
+        # other repo-config) refusal keeps the plain git+deploy copy.
+        import pytest as _pytest
+        from grove.dispatcher import Dispatcher
+        from grove.governance_halt import TerminalGovernanceHalt
+        from grove.red_pending_store import RedPendingStore
+
+        store = RedPendingStore(db_path=tmp_path / "red.db")
+        d = Dispatcher(red_pending_store=store)
+        target = str(_REPO_ROOT / "config" / "zones.schema.yaml")
+        halt = self._halt_for("write_file", {"path": target, "content": "x"})
+        with _pytest.raises(TerminalGovernanceHalt) as ei:
+            d._store_pending_red_proposal(agent=None, gen=None, halt=halt)
+        surface = str(ei.value)
+        assert "deploy" in surface.lower()
+        assert "write_admission_state" not in surface
         assert len(store) == 0
 
     def test_registry_miss_refusal_names_the_miss(self, tmp_path, monkeypatch):
