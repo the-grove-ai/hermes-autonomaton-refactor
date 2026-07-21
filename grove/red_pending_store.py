@@ -159,9 +159,29 @@ def describe_red_action(
     if is_opaque:
         return ("Opaque dynamic command — effect not statically resolved.", True)
     if tool_name == "propose_governance_change":
+        target = str(arguments.get("target_file") or "")
         body = arguments.get("content") or arguments.get("diff_or_content") or ""
+        # capability-mutation-surface-v1 P7 micro-arc (live Andon 3): the
+        # masked credential template is for .env ONLY. Post-P5 this door
+        # carries EVERY governed surface, and an admission/routing/dock body
+        # is not a secret — render target + bounded payload, because an
+        # approval surface that cannot show what it approves is no approval
+        # (K-5 principle, same as the write_file branch below).
+        try:
+            _is_env = (
+                Path(os.path.realpath(os.path.expanduser(target))).name
+                == ".env"
+            )
+        except (OSError, ValueError):
+            _is_env = True  # unresolvable target → safest (masked) copy
+        if _is_env:
+            return (
+                masked_env_description(target, extract_env_keys(body)),
+                False,
+            )
+        shown = body if len(body) <= 300 else body[:297] + "..."
         return (
-            masked_env_description(arguments.get("target_file") or "", extract_env_keys(body)),
+            f"Governed config write to {target} ({len(body)} chars): {shown}",
             False,
         )
     if tool_name in ("terminal", "execute_code"):
@@ -590,13 +610,27 @@ class RedPendingStore:
         return red_action_title(entry.tool_name, entry.pattern_key, entry.is_opaque)
 
     def is_credential_write(self, proposal_id: str) -> bool:
-        """True iff the pending action is a credential (``.env`` governance) write —
-        the ONLY card kind that renders the masked-value ``.env`` template
-        (unresolved-writer-execution-path-v1 Fix 3). Every other RED (shell / generic)
-        renders the command/effect card. Resolved from the persisted ``tool_name``;
-        a missing entry is not a credential write."""
+        """True iff the pending action is a credential (``.env``) write — the
+        ONLY card kind that renders the masked-value ``.env`` template
+        (unresolved-writer-execution-path-v1 Fix 3). capability-mutation-
+        surface-v1 P7 micro-arc (live Andon 3): keyed on the TARGET, not the
+        tool — post-P5 ``propose_governance_change`` carries every governed
+        surface, and a non-.env governed body renders legibly, never masked."""
         entry = self.get(proposal_id)
-        return entry is not None and entry.tool_name == "propose_governance_change"
+        if entry is None or entry.tool_name != "propose_governance_change":
+            return False
+        target = (
+            entry.sealed_target
+            or (entry.arguments or {}).get("target_file")
+            or ""
+        )
+        try:
+            return (
+                Path(os.path.realpath(os.path.expanduser(str(target)))).name
+                == ".env"
+            )
+        except (OSError, ValueError):
+            return True  # unresolvable → safest (masked) rendering
 
     def card_reason(self, proposal_id: str) -> Optional[str]:
         """The named RED reason for the card (Fix 3), or None for a missing entry.

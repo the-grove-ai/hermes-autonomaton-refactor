@@ -218,3 +218,74 @@ def test_d_portal_rendered_payload_byte_equals_dispatched_payload(tmp_path):
         "CONTRACT: portal-rendered payload must byte-equal the "
         "executor-dispatched payload"
     )
+
+
+class TestGovernedCardLegibility:
+    """P7 micro-arc live Andon 3: the pending card rendered an admission
+    claim with the .env credential template ("values hidden") — the operator
+    could not see what they were approving. The credential mask is for .env
+    ONLY; every other governed body renders target + bounded payload."""
+
+    def test_describe_admission_claim_shows_payload_not_credential_mask(
+        self, tmp_path
+    ):
+        from grove.red_pending_store import describe_red_action
+
+        target = str(tmp_path / "capabilities" / "state" / "browser_read.yaml")
+        body = "id: browser_read\nintents:\n- research\ntiers:\n- 2\n- 3\n"
+        desc, is_opaque = describe_red_action(
+            "propose_governance_change",
+            {"target_file": target, "content": body, "rationale": "r"},
+        )
+        assert not is_opaque
+        assert target in desc and "intents" in desc and "research" in desc
+        assert "hidden" not in desc.lower()
+        assert "credential" not in desc.lower()
+
+    def test_describe_env_claim_stays_masked(self, tmp_path):
+        from grove.red_pending_store import describe_red_action
+
+        desc, _ = describe_red_action(
+            "propose_governance_change",
+            {
+                "target_file": str(tmp_path / ".env"),
+                "content": "HF_TOKEN=hf_secret_value\n", "rationale": "r",
+            },
+        )
+        assert "hf_secret_value" not in desc
+        assert "hidden" in desc.lower()
+
+    def test_is_credential_write_keys_on_target_not_tool(self, tmp_path):
+        from grove.effect_signature import canonical_effect_signature
+        from grove.red_pending_store import (
+            PendingRedProposal,
+            RedPendingStore,
+            action_proposal_id,
+            prepare_execute_arguments,
+            seal_red_claim,
+        )
+
+        store = RedPendingStore(db_path=tmp_path / "red.db")
+
+        def _stage(target, body):
+            args = prepare_execute_arguments("propose_governance_change", {
+                "target_file": str(target), "content": body, "rationale": "r",
+            })
+            sealed = seal_red_claim("propose_governance_change", args)
+            sig = canonical_effect_signature("propose_governance_change", args)
+            e = PendingRedProposal(
+                proposal_id=action_proposal_id(sig),
+                tool_name="propose_governance_change", arguments=args,
+                effect_signature=sig, description="d", rationale="r",
+                created_at="2026-07-21T00:00:00+00:00", **sealed,
+            )
+            store.put(e)
+            return e.proposal_id
+
+        env_pid = _stage(tmp_path / ".env", "TOK=x\n")
+        adm_pid = _stage(
+            tmp_path / "capabilities" / "state" / "browser_read.yaml",
+            "id: browser_read\nintents:\n- research\n",
+        )
+        assert store.is_credential_write(env_pid) is True
+        assert store.is_credential_write(adm_pid) is False
