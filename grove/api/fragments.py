@@ -3714,6 +3714,128 @@ async def handle_portal_slash_redirect(request: web.Request) -> web.Response:
     raise web.HTTPFound("/portal")
 
 
+# ── capability-mutation-surface-v1 P6 — effective admission state (F2 remedy) ─
+
+
+def render_admission_state_html(
+    definitions_dirs=None, state_dir=None
+) -> str:
+    """Read-only effective-state render for capability records carrying
+    overlay state: base value → effective value, per-field provenance source
+    (definition | overlay+approval_id | derived), the D1 marker (a preferred
+    re-anchored by the merge renders as DERIVED, never as operator-set), a
+    legacy flag on files still carrying ``added_intents``, and orphan ALERTs.
+    This is the one place admission creep is always visible.
+
+    Effective values mirror ``capability_registry._compose_state`` exactly
+    (present-key absolute replacement; preferred re-anchors to
+    ``max(eligible)`` when excluded) — a render-side copy of the merge rules,
+    kept adjacent by citation so drift is a reviewed change."""
+    from grove.capability_recon import _definition_docs
+    from grove.capability_registry import (
+        _StateFileInvalid,
+        _read_state_file,
+        capability_state_dir,
+        orphaned_state_slugs,
+    )
+
+    sd = Path(state_dir) if state_dir is not None else capability_state_dir()
+    defs = _definition_docs(definitions_dirs)
+    parts = [
+        '<div class="admission-state">',
+        "<h3>Capability admission — effective state</h3>",
+    ]
+    if not sd.is_dir():
+        parts.append("<p>No overlay state directory — definitions rule.</p></div>")
+        return "".join(parts)
+
+    orphan_pairs = orphaned_state_slugs(defs, state_dir=sd)
+    orphan_ids = {rid for (_p, rid) in orphan_pairs}
+
+    def _row(field, base, effective, source):
+        return (
+            f'<tr><td>{_esc(field)}</td><td>{_esc(base)}</td>'
+            f'<td>{_esc(effective)}</td>'
+            f'<td class="prov">{_esc(source)}</td></tr>'
+        )
+
+    rendered_any = False
+    for path in sorted(sd.glob("*.yaml")):
+        try:
+            rid, state = _read_state_file(path)
+        except _StateFileInvalid as exc:
+            parts.append(
+                f'<div class="card card-invalid"><h4>{_esc(path.name)}</h4>'
+                f"<p>Invalid state file (R-B1 — record runs on its pure "
+                f"definition): {_esc(exc)}</p></div>"
+            )
+            continue
+        if rid in orphan_ids:
+            continue
+        base = defs.get(rid) or {}
+        base_intents = ((base.get("trigger") or {}).get("intents")) or []
+        base_tiers = ((base.get("tier_rule") or {}).get("eligible")) or []
+        base_pref = (base.get("tier_rule") or {}).get("preferred")
+        prov = state.get("provenance") or {}
+        overlay_src = (
+            f"overlay · approval {prov.get('approval_id')}"
+            if prov.get("approval_id")
+            else "overlay · NO PROVENANCE (pre-canonical)"
+        )
+        rows = []
+        if "intents" in state:
+            rows.append(_row("intents", base_intents, state["intents"], overlay_src))
+        else:
+            rows.append(_row("intents", base_intents, base_intents, "definition"))
+        if "tiers" in state:
+            rows.append(_row("tiers", base_tiers, state["tiers"], overlay_src))
+            if base_pref is not None and base_pref not in state["tiers"]:
+                rows.append(_row(
+                    "preferred", base_pref, max(state["tiers"]),
+                    "derived — re-anchored by merge",
+                ))
+            elif base_pref is not None:
+                rows.append(_row("preferred", base_pref, base_pref, "definition"))
+        else:
+            rows.append(_row("tiers", base_tiers, base_tiers, "definition"))
+        legacy = (
+            '<p class="badge badge-legacy">LEGACY: added_intents present '
+            "(loader-honored; the canonical writer never emits it)</p>"
+            if "added_intents" in state else ""
+        )
+        ts = prov.get("timestamp")
+        prov_line = (
+            f'<p class="prov-meta">provenance: approval '
+            f"{_esc(prov.get('approval_id'))} · {_esc(ts)}</p>"
+            if prov else ""
+        )
+        parts.append(
+            f'<div class="card card-admission"><h4>{_esc(rid)}</h4>'
+            '<table><tr><th>field</th><th>base</th><th>effective</th>'
+            "<th>source</th></tr>" + "".join(rows) + "</table>"
+            + prov_line + legacy + "</div>"
+        )
+        rendered_any = True
+
+    for _path, rid in orphan_pairs:
+        parts.append(
+            f'<div class="card card-orphan"><h4>{_esc(rid)}</h4>'
+            f"<p>ALERT: orphaned overlay slug — no definition carries this "
+            f"id ({_esc(_path.name)}). Never auto-deleted (F6).</p></div>"
+        )
+    if not rendered_any and not orphan_pairs:
+        parts.append("<p>No records carry overlay state — definitions rule.</p>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+async def handle_admission_state(request: web.Request) -> web.Response:
+    """GET /portal/fragments/capabilities/admission — read-only."""
+    return web.Response(
+        text=render_admission_state_html(), content_type="text/html"
+    )
+
+
 def register_fragment_routes(app: web.Application) -> None:
     """Register the portal shell + ``/portal/fragments/*`` routes.
 
@@ -3756,6 +3878,10 @@ def register_fragment_routes(app: web.Application) -> None:
     )
     # Phase 5 — search
     app.router.add_get("/portal/fragments/search", handle_search)
+    # capability-mutation-surface-v1 P6 — effective admission state (read-only)
+    app.router.add_get(
+        "/portal/fragments/capabilities/admission", handle_admission_state
+    )
     # portal-model-swap-v1 — standalone model-routing page (full HTML)
     app.router.add_get("/portal/routing", handle_routing_page)
     # portal-models-nav-v1 — Models nav panel (fragment for #center-panel)

@@ -732,14 +732,70 @@ async def handle_red_proposal_confirm(request: web.Request) -> web.Response:
         )
 
     reason = result.get("reason")
-    if reason == "not_found":  # orphan / already approved (replay)
+    if reason == "not_found":  # replay of an already-resolved claim
+        # capability-mutation-surface-v1 P4 (M4) — the expired-lie is dead:
+        # under pop-on-success-only, an absent claim means RESOLVED (approved,
+        # withdrawn, or dismissed), never silently lost. Honest copy; the
+        # stale queue row is still cleaned up.
         try:
             proposal_queue.remove(full_pid)
         except Exception:  # noqa: BLE001
             pass
         return _resolved_card(
-            short_id, "governance write", "expired",
-            "Expired — re-propose. Nothing was written.",
+            short_id, "action", "resolved",
+            "Already resolved — this action was previously approved, "
+            "withdrawn, or dismissed. Nothing further was written.",
+        )
+    if reason == "in_flight":
+        return await _loud_action_failure(
+            _red_inline_fail_card(short_id, "Already executing — not re-run."),
+            failure_class="red_in_flight",
+            action="proposal_confirm",
+            message=(
+                "This claim is already being executed by a concurrent "
+                "approval — no second execution was started."
+            ),
+            status=409,
+            file_kaizen=False,
+        )
+    if reason == "target_drift":
+        # M3 CAS — the claim was WITHDRAWN loudly; clear the queue row so no
+        # dead card lingers.
+        try:
+            proposal_queue.remove(full_pid)
+        except Exception:  # noqa: BLE001
+            pass
+        return await _loud_action_failure(
+            _red_inline_fail_card(
+                short_id, "Withdrawn — the target changed since proposal."
+            ),
+            failure_class="red_target_drift",
+            action="proposal_confirm",
+            message=(
+                "Withdrawn — the target file changed after this action was "
+                "proposed (content drift). Nothing was written; review the "
+                "target and re-propose."
+            ),
+            status=409,
+            file_kaizen=False,
+        )
+    if reason == "legacy_shape":
+        try:
+            proposal_queue.remove(full_pid)
+        except Exception:  # noqa: BLE001
+            pass
+        return await _loud_action_failure(
+            _red_inline_fail_card(
+                short_id, "Withdrawn — legacy claim shape, not executable."
+            ),
+            failure_class="red_legacy_shape",
+            action="proposal_confirm",
+            message=(
+                "Withdrawn — this claim predates sealed claims and cannot be "
+                "executed safely. Re-propose the change."
+            ),
+            status=409,
+            file_kaizen=False,
         )
     if reason == "integrity":
         return await _loud_action_failure(
@@ -759,15 +815,23 @@ async def handle_red_proposal_confirm(request: web.Request) -> web.Response:
     # this "could not be authorized." unknown_tool = the tool isn't on the approval
     # registry (e.g. an MCP action — Phase B registry-completeness).
     if reason in ("execute_error", "unknown_tool"):
+        # capability-mutation-surface-v1 P4 (M4) — the claim SURVIVED the
+        # failure (released, error surfaced). The pending card remains live:
+        # re-approving it is the RETRY, dismissing it is the WITHDRAW. The
+        # queue row is deliberately NOT removed.
         _detail = str(result.get("error") or result.get("result") or "").strip()
         _extra = f" ({_detail[:200]})" if _detail else ""
         return await _loud_action_failure(
-            _red_inline_fail_card(short_id, "Approved, but the action failed to run."),
+            _red_inline_fail_card(
+                short_id,
+                "Approved, but the writer failed — claim retained for retry.",
+            ),
             failure_class="red_execute_error",
             action="proposal_confirm",
             message=(
-                "Approved, but the action failed to run — the approval was valid; "
-                f"the tool did not complete.{_extra}"
+                "Approved, but the writer failed — the approval was valid and "
+                "the claim is retained: approve the pending card again to "
+                f"retry, or dismiss it to withdraw.{_extra}"
             ),
             status=502,
             file_kaizen=False,

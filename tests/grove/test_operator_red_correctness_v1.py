@@ -155,10 +155,15 @@ class TestConfirmCard:
         )
         sig = canonical_effect_signature("propose_governance_change", args)
         bare = action_proposal_id(sig)
+        # capability-mutation-surface-v1 P4 — staged entries SEAL (live-path parity).
+        from grove.red_pending_store import seal_red_claim
+        _sealed = seal_red_claim("propose_governance_change", args)
         get_red_pending_store().put(PendingRedProposal(
             proposal_id=bare, tool_name="propose_governance_change", arguments=args,
             effect_signature=sig, description="Persist credential — values hidden.",
             rationale="r", created_at="2026-07-08T00:00:00+00:00",
+            target_sha256=_sealed["target_sha256"], writer_name=_sealed["writer_name"],
+            writer_payload=_sealed["writer_payload"], sealed_target=_sealed["sealed_target"],
         ))
         body = await _confirm(get_red_pending_store(), bare)
         assert "governance write" in body

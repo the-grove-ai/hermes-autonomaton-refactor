@@ -49,6 +49,8 @@ __all__ = [
     "publication_unattended_authorized",
     "set_admission_overlay",
     "set_model_binding",
+    "write_admission_state",
+    "orphaned_state_slugs",
     "load_capabilities",
     "transition_record",
     "TransitionResult",
@@ -149,7 +151,16 @@ _STATE_TOP_KEYS: FrozenSet[str] = frozenset(
      # set_approved_payload_hash (operator state, deploy-immune), NOT applied by
      # _compose_state — its SOLE reader is verify_payload_hash(), a fail-closed
      # check the C2 load path (Phase 2) uses to refuse a post-approval mutation.
-     "approved_payload_sha256"}
+     "approved_payload_sha256",
+     # capability-mutation-surface-v1 M2 (ruling A-3) — CANONICAL admission
+     # keys, ABSOLUTE-STATE full-list replacement applied by _compose_state:
+     # ``intents`` -> trigger.intents, ``tiers`` -> tier_rule.eligible.
+     # ``added_intents`` above stays LEGACY: loader-honored (per-turn additive
+     # read at grove.context_budget), never emitted by the sanctioned writer
+     # (write_admission_state). ``provenance`` is the mandatory approval stamp
+     # on admission-field writes — audit metadata, NOT applied by
+     # _compose_state (the merged runtime Capability never carries it).
+     "intents", "tiers", "provenance"}
 )
 _STATE_LIFECYCLE_KEYS: FrozenSet[str] = frozenset(
     {"state", "pinned", "use_count", "last_used"}
@@ -159,6 +170,13 @@ _STATE_LINEAGE_KEYS: FrozenSet[str] = frozenset({"decision_log"})
 # publication block (non-mapping, unknown sub-key, non-bool unattended) is the
 # R-B1 signal in _read_state_file, and DENY in publication_unattended_authorized.
 _STATE_PUBLICATION_KEYS: FrozenSet[str] = frozenset({"unattended"})
+# capability-mutation-surface-v1 M2 (ruling A-3) — the REQUIRED provenance
+# stamp on admission-field state writes: exactly these four keys, all
+# non-empty strings. A partial/malformed stamp is the R-B1 signal in
+# _read_state_file and a ValueError refusal in write_admission_state.
+_STATE_PROVENANCE_KEYS: FrozenSet[str] = frozenset(
+    {"approval_id", "timestamp", "surface", "write_class"}
+)
 
 
 class _StateFileInvalid(Exception):
@@ -233,6 +251,47 @@ def _read_state_file(path: Path) -> "tuple[str, Dict[str, Any]]":
         raise _StateFileInvalid(
             "'approved_payload_sha256' must be a non-empty string"
         )
+    # capability-mutation-surface-v1 M2 (ruling A-3) — CANONICAL admission
+    # keys, shape-checked here so a malformed value is the R-B1 signal.
+    # ``intents``/``tiers`` are absolute-state replacements applied by
+    # _compose_state; ``provenance`` is the mandatory approval stamp
+    # (exactly _STATE_PROVENANCE_KEYS, all non-empty strings).
+    ci = doc.get("intents")
+    if ci is not None and (
+        not isinstance(ci, list)
+        or not all(isinstance(x, str) and x.strip() for x in ci)
+    ):
+        raise _StateFileInvalid("'intents' must be a list of non-empty strings")
+    ct = doc.get("tiers")
+    if ct is not None and (
+        not isinstance(ct, list)
+        or not ct
+        or not all(
+            isinstance(x, int) and not isinstance(x, bool) and x in (0, 1, 2, 3)
+            for x in ct
+        )
+    ):
+        raise _StateFileInvalid(
+            "'tiers' must be a non-empty list of ints in {0, 1, 2, 3}"
+        )
+    prov = doc.get("provenance")
+    if prov is not None:
+        if not isinstance(prov, dict):
+            raise _StateFileInvalid("'provenance' must be a mapping")
+        bad = set(prov) - _STATE_PROVENANCE_KEYS
+        if bad:
+            raise _StateFileInvalid(f"unknown provenance key(s) {sorted(bad)}")
+        missing = _STATE_PROVENANCE_KEYS - set(prov)
+        if missing:
+            raise _StateFileInvalid(
+                f"provenance missing key(s) {sorted(missing)}"
+            )
+        for k in sorted(_STATE_PROVENANCE_KEYS):
+            v = prov.get(k)
+            if not isinstance(v, str) or not v.strip():
+                raise _StateFileInvalid(
+                    f"'provenance.{k}' must be a non-empty string"
+                )
     return rid, doc
 
 
@@ -253,6 +312,28 @@ def _compose_state(cap: Capability, state: Dict[str, Any]) -> Capability:
             d.pop("model_binding", None)
         else:
             d["model_binding"] = mb
+    # capability-mutation-surface-v1 M2 (ruling A-3) — canonical admission
+    # keys: ABSOLUTE-STATE full-list replacement, present-key semantics
+    # (key present -> wholesale replacement, no union; absent -> definition
+    # untouched). ``added_intents`` is deliberately NOT handled here (legacy
+    # additive read path at grove.context_budget); ``provenance`` is audit
+    # metadata and never lands on the merged runtime Capability. Post-merge
+    # from_dict re-validation below keeps the invariants (e.g. a replacement
+    # dropping a declared primary intent raises -> R-B1 fallback).
+    if "intents" in state:
+        d.setdefault("trigger", {})["intents"] = list(state["intents"])
+    if "tiers" in state:
+        tr = d.setdefault("tier_rule", {})
+        new_eligible = list(state["tiers"])
+        tr["eligible"] = new_eligible
+        # Invariant reconciliation (P2 gate note): the composed record must
+        # satisfy ``preferred in eligible``. When the absolute-state
+        # restriction excludes the definition's preferred tier, preferred
+        # re-anchors to the HIGHEST remaining eligible tier (the closest
+        # realization of the definition's prefer-the-most-capable intent) —
+        # never silently keeps an inadmissible preference.
+        if tr.get("preferred") not in new_eligible:
+            tr["preferred"] = max(new_eligible)
     lc = state.get("lifecycle") or {}
     for key in _STATE_LIFECYCLE_KEYS:
         if key in lc:
@@ -521,6 +602,176 @@ def set_admission_overlay(
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
     finally:
         fd.close()
+
+
+def write_admission_state(
+    record_id: str,
+    *,
+    intents: Optional[List[str]] = None,
+    tiers: Optional[List[int]] = None,
+    provenance: Optional[Dict[str, Any]] = None,
+    state_dir: Optional[Path] = None,
+) -> Path:
+    """The SOLE sanctioned writer for CANONICAL admission-field state
+    (capability-mutation-surface-v1 M2, ruling A-3; uniqueness pinned by the
+    writer-conformance guard's admission-writer signature: this function is
+    the one place that both calls ``_atomic_write_yaml`` and carries the
+    ``provenance`` stamp).
+
+    ABSOLUTE-STATE per-record replacement: ``intents`` / ``tiers`` land on the
+    record's state file wholesale (no union with prior values); ``_compose_
+    state`` applies them as full-list replacements of ``trigger.intents`` /
+    ``tier_rule.eligible``. Emits ONLY the canonical keys ``{id, intents,
+    tiers, provenance}`` on the admission surface — ``added_intents`` is
+    legacy (loader-honored, never writer-emitted) and is RETIRED from a file
+    this writer touches (the canonical replacement supersedes it). Non-
+    admission state keys already in the file (model_binding / lifecycle /
+    lineage / publication / force_always / approved_payload_sha256) are
+    preserved byte-faithfully.
+
+    WRITE-STRICT (fail loud, validate-before-touch): a missing or partial
+    ``provenance`` stamp (exactly ``_STATE_PROVENANCE_KEYS``, all non-empty
+    strings), a malformed ``intents``/``tiers`` value, an unknown *record_id*,
+    or a no-op call raises with NO file written. Same lock + ``.bak`` +
+    atomic-replace discipline as the sibling state writers.
+    """
+    # ── validation FIRST: a refusal must leave nothing behind ──
+    if not isinstance(record_id, str) or not record_id.strip():
+        raise ValueError("write_admission_state: record_id must be a non-empty string")
+    if intents is None and tiers is None:
+        raise ValueError(
+            "write_admission_state: no-op — provide intents and/or tiers"
+        )
+    if intents is not None and (
+        not isinstance(intents, list)
+        or not all(isinstance(x, str) and x.strip() for x in intents)
+    ):
+        raise ValueError(
+            "write_admission_state: intents must be a list of non-empty strings"
+        )
+    if tiers is not None and (
+        not isinstance(tiers, list)
+        or not tiers
+        or not all(
+            isinstance(x, int) and not isinstance(x, bool) and x in (0, 1, 2, 3)
+            for x in tiers
+        )
+    ):
+        raise ValueError(
+            "write_admission_state: tiers must be a non-empty list of ints in "
+            "{0, 1, 2, 3}"
+        )
+    # The mandatory approval stamp — stampless/partial admission writes are
+    # refused (ruling A-3; scope-defining writes carry their provenance).
+    if not isinstance(provenance, dict):
+        raise ValueError(
+            "write_admission_state: refused — admission-field writes require a "
+            f"provenance stamp {{{', '.join(sorted(_STATE_PROVENANCE_KEYS))}}}"
+        )
+    _bad = set(provenance) - _STATE_PROVENANCE_KEYS
+    if _bad:
+        raise ValueError(
+            f"write_admission_state: unknown provenance key(s) {sorted(_bad)}"
+        )
+    _missing = _STATE_PROVENANCE_KEYS - set(provenance)
+    if _missing:
+        raise ValueError(
+            "write_admission_state: refused — provenance stamp missing "
+            f"{sorted(_missing)} (partial stamps are not admissible)"
+        )
+    for _k in sorted(_STATE_PROVENANCE_KEYS):
+        _v = provenance.get(_k)
+        if not isinstance(_v, str) or not _v.strip():
+            raise ValueError(
+                f"write_admission_state: provenance.{_k} must be a non-empty "
+                "string"
+            )
+    # Ghost prevention through the sanctioned door: the id must name a loaded
+    # DEFINITION (repo-bundled or GROVE_HOME-minted). Orphans that arrive by
+    # other means are surfaced by orphaned_state_slugs().
+    _def_path = None
+    for _d in (default_capabilities_dir(), grove_home_capabilities_dir()):
+        if _d.is_dir():
+            _def_path = _record_path_for_id(record_id, _d)
+            if _def_path is not None:
+                break
+    if _def_path is None:
+        raise CapabilityLoadError(
+            f"write_admission_state: no capability record with id {record_id!r}"
+        )
+
+    state_path = _state_path_for_id(record_id, state_dir or capability_state_dir())
+
+    # ── locked read-modify-write (inline — the conformance signature keys on
+    # THIS function as the primitive caller; no nested closure) ──
+    lock_fd = None
+    if fcntl is not None:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(
+            state_path.with_suffix(".yaml.lock"), "a+", encoding="utf-8"
+        )
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+    try:
+        prior: Dict[str, Any] = {}
+        if state_path.exists():
+            try:
+                loaded = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    prior = loaded
+            except yaml.YAMLError:
+                prior = {}  # torn prior; .bak below retains the bytes
+        merged = dict(prior)
+        merged["id"] = record_id
+        # Canonical replacement of the ADMISSION surface: legacy added_intents
+        # is retired from this file (superseded, never writer-emitted).
+        merged.pop("added_intents", None)
+        if intents is not None:
+            merged["intents"] = list(intents)
+        if tiers is not None:
+            merged["tiers"] = list(tiers)
+        merged["provenance"] = dict(provenance)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        prior_bytes = state_path.read_bytes() if state_path.exists() else b""
+        if prior_bytes:
+            state_path.with_suffix(state_path.suffix + ".bak").write_bytes(
+                prior_bytes
+            )
+        _atomic_write_yaml(
+            state_path,
+            yaml.safe_dump(merged, sort_keys=False, allow_unicode=True),
+        )
+    finally:
+        if lock_fd is not None:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+            lock_fd.close()
+    return state_path
+
+
+def orphaned_state_slugs(
+    records: Dict[str, Capability],
+    state_dir: Optional[Path] = None,
+) -> List[tuple]:
+    """Ghost-state census (capability-mutation-surface-v1 M2): every state
+    overlay file whose ``id`` matches no loaded definition, as ``(path, id)``
+    pairs. The compose path warn-skips ghosts per-load (R-B1 — never poison
+    the merge); this is the DETECTION surface callers use to reconcile them.
+    Unparseable/non-mapping files are not orphans (they are the R-B1 invalid
+    class, already logged loud at compose time) and are skipped here."""
+    sd = Path(state_dir) if state_dir is not None else capability_state_dir()
+    if not sd.is_dir():
+        return []
+    orphans: List[tuple] = []
+    for path in sorted(sd.glob("*.yaml")):
+        try:
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        rid = doc.get("id")
+        if isinstance(rid, str) and rid.strip() and rid not in records:
+            orphans.append((path, rid))
+    return orphans
 
 
 def set_publication_state(

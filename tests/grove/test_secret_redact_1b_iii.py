@@ -65,15 +65,10 @@ class TestSink1IntentFeed:
     def _drive_propose(self, monkeypatch, tmp_path, content: str) -> str:
         """Drive a real turn yielding propose_governance_change(content); return
         the raw intent_records.jsonl text."""
-        # Route propose through the GREEN executor path (unrecognized target →
-        # generic classify) so the turn completes and writes an intent record;
-        # the redaction at capture is classification-independent.
-        monkeypatch.setattr(
-            "grove.dispatcher.classify_governance_target", lambda *a, **k: None,
-            raising=False,
-        )
-        import tools.governance_tool as gt
-        monkeypatch.setattr(gt, "classify_governance_target", lambda *a, **k: None)
+        # capability-mutation-surface-v1 P5 — classify_governance_target is
+        # retired; an unrecognized target now classifies YELLOW through the
+        # thin-proposer door and the silent handler below drives past the
+        # halt. The redaction at capture is classification-independent.
         _patch_classifier_green(monkeypatch)
         _set_current_classification(monkeypatch)
         store = IntentStore(store_path=tmp_path / "records.jsonl")

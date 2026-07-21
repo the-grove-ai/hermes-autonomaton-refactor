@@ -129,93 +129,127 @@ def is_andon_quarantine(path: object) -> bool:
 # shell path treat granted workspaces under ~/.grove as autonomous (GREEN) while
 # keeping the scope-defining surfaces sovereign (RED). See grove/shell_effects.py.
 
-# Files (relative to GROVE_HOME) whose mutation redefines the agent's authority,
-# plus the operator secrets file (.env): a shell write to .env is RED under the
-# v1 blanket today, and scope keying MUST keep it RED — secrets are never an
-# autonomous (GREEN) workspace write.
-_SCOPE_DEFINING_FILES = frozenset({
-    "zones.schema.yaml",
-    "routing.config.yaml",
-    "prompt.config.yaml",
-    ".env",
-    os.path.join("dock", "dock.yaml"),
-    # workspace-governance-unification-v1 — the META-WALL: the workspace grant
-    # manifest is itself scope-defining. If the agent could write it, it could
-    # grant itself unlimited GREEN zones, so it is never an autonomous write.
-    "workspaces.yaml",
-    # write-confinement-v1 — the WRITE allow-list manifest is the same meta-wall:
-    # if the agent could write it via the generic/shell tools it could grant
-    # itself any write workspace, so it is never an autonomous write (the
-    # operator-approved grant flow applies it through a sanctioned door instead).
-    "write_workspaces.yaml",
-    # GRV-001 Grant Token model — standing grant manifest is scope-defining.
-    # The agent cannot write its own grants; only the operator can create or
-    # revoke standing grants via authenticated grant management commands.
-    "grants.yaml",
-    # routing-scope-wall-v1 R-W1 — the machine-authored overlays that redefine
-    # authority alongside their operator .config/.schema twins. The RED wall
-    # covered routing.config.yaml but not its flywheel-written overlay; a write
-    # to either rebinds routing, so both are scope-defining.
-    "routing.autonomaton.yaml",
-    # The runtime zone overlay literally grants GREEN zones to patterns — writing
-    # it expands the agent's own authority. (dock.autonomaton.yaml is deliberately
-    # OUT: it is the machine's GREEN goal-workspace half of the Dock.)
-    "zones.autonomaton.yaml",
-    # Per-worker enable overrides — controls whether Yellow/Red fleet workers run
-    # autonomously; deploy-immune authority, never an autonomous write.
-    "fleet_workers.override.yaml",
-})
+# capability-mutation-surface-v1 M1 — scope-defining MEMBERSHIP is DECLARATIVE.
+#
+# The member sets below (_SCOPE_DEFINING_FILES / _SCOPE_DEFINING_DIR_PREFIXES
+# and their repo-config twins) load from ``config/scope_surfaces.yaml`` — the
+# per-member rationale lives there now. The predicate keeps its dual anchoring
+# (GROVE_HOME + <module_root>/config/) EXACTLY; only where membership is
+# declared changed. Load is at module import, fail-loud
+# (ScopeMembershipConfigError): an empty/missing membership would un-wall
+# everything, so silent-empty is never an outcome — same import-time refusal
+# class as _resolve_module_config_root below.
 
-# Whole subtrees (relative to GROVE_HOME) that are scope-defining. The live skill
-# tree is ~/.grove/skills/<name> (NOT skills/active): the WHOLE skills tree is
-# scope-defining for shell writes — skills are authored through skill_manage to
-# the .andon quarantine, never a raw terminal write. The capability registry
-# governs the agent's executable surface.
-_SCOPE_DEFINING_DIR_PREFIXES = (
-    "skills",
-    "capabilities",
-    # routing-scope-wall-v1 R-W1 — alternate tier presets are routing authority;
-    # the whole subtree is scope-defining. Strict path-separator matching below
-    # keeps a sibling like `routing-profiles-backups/` from being trapped.
-    # (capabilities/state/ needs no entry — the `capabilities` prefix covers it.)
-    "routing-profiles",
-)
 
-# Flattened surface set (files + dir subtrees), relative to GROVE_HOME.
-_SCOPE_DEFINING_ENTRIES = tuple(_SCOPE_DEFINING_FILES) + _SCOPE_DEFINING_DIR_PREFIXES
+class ScopeMembershipConfigError(RuntimeError):
+    """``config/scope_surfaces.yaml`` is missing, unparseable, or fails
+    validation — the scope wall cannot be assembled. Refusing to import with
+    a silently-disabled (or silently-narrowed) governance wall."""
+
+
+_SCOPE_MEMBERSHIP_FILENAME = "scope_surfaces.yaml"
+
+
+def _load_scope_membership(config_root: str) -> dict:
+    """Load + hand-validate the declarative membership (house idiom: zones /
+    dock / routing loaders — explicit checks, no schema library).
+
+    Returns ``{"grove_home_files": frozenset, "grove_home_dir_prefixes":
+    tuple, "repo_config_files": frozenset, "repo_config_dir_prefixes":
+    tuple}`` with every entry ``os.sep``-normalized. Raises
+    :class:`ScopeMembershipConfigError` on ANY fault — missing file, parse
+    error, wrong version, empty member list, absolute/traversal entry, or a
+    membership that fails the confused-deputy closure (this file must declare
+    ITSELF a repo_config member)."""
+    import yaml
+
+    path = Path(config_root) / _SCOPE_MEMBERSHIP_FILENAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ScopeMembershipConfigError(
+            f"scope membership file {path} is unreadable ({exc!r}) — the "
+            "scope wall has no members; refusing to run un-walled."
+        ) from exc
+    try:
+        doc = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ScopeMembershipConfigError(
+            f"scope membership file {path} is not valid YAML: {exc}"
+        ) from exc
+    if not isinstance(doc, dict):
+        raise ScopeMembershipConfigError(
+            f"scope membership file {path} must be a mapping; got "
+            f"{type(doc).__name__}"
+        )
+    if doc.get("version") != 1:
+        raise ScopeMembershipConfigError(
+            f"scope membership file {path}: version must be 1; got "
+            f"{doc.get('version')!r}"
+        )
+
+    def _section(name: str, key: str) -> tuple:
+        sec = doc.get(name)
+        if not isinstance(sec, dict):
+            raise ScopeMembershipConfigError(
+                f"scope membership file {path}: {name!r} must be a mapping"
+            )
+        entries = sec.get(key)
+        if not isinstance(entries, list) or not entries:
+            # Empty membership un-walls the surface class — never admissible.
+            raise ScopeMembershipConfigError(
+                f"scope membership file {path}: {name}.{key} must be a "
+                "non-empty list (an empty membership would un-wall the tree)"
+            )
+        out = []
+        for e in entries:
+            if not isinstance(e, str) or not e.strip():
+                raise ScopeMembershipConfigError(
+                    f"scope membership file {path}: {name}.{key} entry {e!r} "
+                    "must be a non-empty string"
+                )
+            norm = os.path.normpath(e.strip().replace("/", os.sep))
+            if os.path.isabs(norm) or norm.split(os.sep, 1)[0] == os.pardir:
+                raise ScopeMembershipConfigError(
+                    f"scope membership file {path}: {name}.{key} entry {e!r} "
+                    "must be a relative, non-traversing path"
+                )
+            out.append(norm)
+        return tuple(out)
+
+    gh_files = _section("grove_home", "files")
+    gh_prefixes = _section("grove_home", "dir_prefixes")
+    rc_files = _section("repo_config", "files")
+    rc_prefixes = _section("repo_config", "dir_prefixes")
+
+    # Confused-deputy closure: the membership file is itself a member — a
+    # membership that un-walls its own definition file is refused.
+    if _SCOPE_MEMBERSHIP_FILENAME not in rc_files:
+        raise ScopeMembershipConfigError(
+            f"scope membership file {path} does not declare ITSELF a "
+            f"repo_config member ({_SCOPE_MEMBERSHIP_FILENAME!r} missing from "
+            "repo_config.files) — the wall's definition must be inside the "
+            "wall."
+        )
+
+    return {
+        "grove_home_files": frozenset(gh_files),
+        "grove_home_dir_prefixes": gh_prefixes,
+        "repo_config_files": frozenset(rc_files),
+        "repo_config_dir_prefixes": rc_prefixes,
+    }
 
 
 # ── write-routing-coherence-v1 fix-part-1 — running-tree config/ meta-surfaces ─
 #
-# Every GROVE_HOME scope-defining surface above has a version-controlled TWIN
-# under the running tree's ``<repo>/config/`` — the DEFINITION files the deployed
-# clone loads. A ``file_tools`` patch or a shell ``sed`` to
-# ``<repo>/config/capabilities/*.yaml`` redefines the agent's authority exactly
-# as its ``~/.grove`` sibling does, so it must classify RED, not generic Yellow.
-# This set is the repo twin, and it is anchored to ``<module_root>/config/``
-# SPECIFICALLY (never a root-agnostic basename signature) so a granted workspace
-# that merely happens to contain a ``capabilities/`` or ``dock.yaml`` elsewhere is
-# NOT trapped (the over-match guard). ``skills/`` stays OUT: it has no ``config/``
-# twin — it is a pure GROVE_HOME runtime surface, already walled above.
-_REPO_CONFIG_SCOPE_DEFINING_FILES = frozenset({
-    "zones.schema.yaml",
-    "routing.config.yaml",
-    # Canonical nested form, matching the GROVE_HOME entry ``dock/dock.yaml`` — the
-    # repo twin is ``config/dock/dock.yaml`` (dock is a subdir), not a flat file.
-    os.path.join("dock", "dock.yaml"),
-    "write_workspaces.yaml",
-})
-_REPO_CONFIG_SCOPE_DEFINING_DIR_PREFIXES = (
-    "capabilities",
-    # config/routing-profiles/ is the version-controlled twin of the GROVE_HOME
-    # alternate tier presets — routing authority; the whole subtree is scope-
-    # defining. (No skills/ twin exists under config/.)
-    "routing-profiles",
-)
-_REPO_CONFIG_SCOPE_DEFINING_ENTRIES = (
-    tuple(_REPO_CONFIG_SCOPE_DEFINING_FILES)
-    + _REPO_CONFIG_SCOPE_DEFINING_DIR_PREFIXES
-)
+# Every GROVE_HOME scope-defining surface has a version-controlled TWIN under
+# the running tree's ``<repo>/config/`` — the DEFINITION files the deployed
+# clone loads; a write there redefines authority exactly as its ``~/.grove``
+# sibling does, so it classifies RED, not generic Yellow. Membership is
+# declarative (``config/scope_surfaces.yaml`` -> ``repo_config``); the anchor
+# stays ``<module_root>/config/`` SPECIFICALLY (never a root-agnostic basename
+# signature) so a granted workspace that merely contains a ``capabilities/``
+# or ``dock.yaml`` elsewhere is NOT trapped (the over-match guard).
 
 
 def _resolve_module_config_root() -> str:
@@ -250,6 +284,25 @@ def _resolve_module_config_root() -> str:
 
 # Module-load constant — resolved once, fail-loud (see above). Never None.
 _MODULE_CONFIG_ROOT = _resolve_module_config_root()
+
+# Membership binds ONCE at import from the declarative file, fail-loud
+# (capability-mutation-surface-v1 M1). The names below are the same constants
+# the predicates (and the zone-rekey pin tests) always consumed — only the
+# declaration moved. is_scope_defining runs per write classification; these
+# stay plain module constants so the hot path never re-reads YAML.
+_SCOPE_MEMBERSHIP = _load_scope_membership(_MODULE_CONFIG_ROOT)
+_SCOPE_DEFINING_FILES = _SCOPE_MEMBERSHIP["grove_home_files"]
+_SCOPE_DEFINING_DIR_PREFIXES = _SCOPE_MEMBERSHIP["grove_home_dir_prefixes"]
+# Flattened surface set (files + dir subtrees), relative to GROVE_HOME.
+_SCOPE_DEFINING_ENTRIES = tuple(_SCOPE_DEFINING_FILES) + _SCOPE_DEFINING_DIR_PREFIXES
+_REPO_CONFIG_SCOPE_DEFINING_FILES = _SCOPE_MEMBERSHIP["repo_config_files"]
+_REPO_CONFIG_SCOPE_DEFINING_DIR_PREFIXES = _SCOPE_MEMBERSHIP[
+    "repo_config_dir_prefixes"
+]
+_REPO_CONFIG_SCOPE_DEFINING_ENTRIES = (
+    tuple(_REPO_CONFIG_SCOPE_DEFINING_FILES)
+    + _REPO_CONFIG_SCOPE_DEFINING_DIR_PREFIXES
+)
 
 
 def _is_repo_config_scope_defining(resolved: str) -> bool:

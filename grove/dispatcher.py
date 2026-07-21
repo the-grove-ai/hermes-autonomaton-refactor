@@ -5148,34 +5148,38 @@ class Dispatcher:
                 return _grove_dispatch.classify_command(
                     command, tool_id=tool_name,
                 )
-        # GRV-010 C1b — the governance-write door is classified by TARGET FILE:
-        # .env → RED (operator-only, §V); recognized YAML governance configs and
-        # routing profiles → YELLOW (store-and-resume). This is the realization
-        # of GovernanceChangeIntent — a target-classified ToolIntent traversing
-        # the existing Stage-04 path (no base-loop refactor).
+        # GRV-010 C1b — the governance-write door is classified by TARGET FILE.
+        # capability-mutation-surface-v1 P5 (M5) — Pipeline-A's classifier
+        # (classify_governance_target) is RETIRED: the zone now comes from the
+        # declarative scope wall (config/scope_surfaces.yaml membership via
+        # is_scope_defining) + the universal .env→RED rule. Scope-defining or
+        # .env → RED (store-pend; the claim is SEALED against the writer
+        # registry before queueing). Everything else → YELLOW, where the thin
+        # proposer refuses at execution (proposer, not writer) — loud, no write.
         if tool_name == "propose_governance_change" and isinstance(args, dict):
             from grove.zones import ZoneResult
-            from tools.governance_tool import classify_governance_target
             from grove.utils.fs_utils import is_scope_defining, is_andon_quarantine
             _gov_target = args.get("target_file")
             # routing-scope-wall-v1 R-W3 — a scope-defining target is RED through
-            # this door too (coherent with Seam β + the shell path), superseding
-            # the prior .env-only red. Composed predicate carves out the .andon
-            # authoring quarantine, same as the other sites.
-            #
-            # write-routing-coherence-v1 fix-part-1 — carve-out is the intent-exact
-            # is_andon_quarantine, NOT is_governed_path (retargeted off the stale
-            # ~/.grove-anchored conjunct — the LAST such composition). Behavior-
-            # identical for this door's valid targets (governance_tool confines it
-            # to ~/.grove, where is_governed_path ≡ not-andon); the change only
-            # removes the rot class that demoted running-tree config/ surfaces.
+            # this door too (coherent with Seam β + the shell path). Composed
+            # predicate carves out the .andon authoring quarantine, same as the
+            # other sites (write-routing-coherence-v1 fix-part-1).
             if is_scope_defining(_gov_target) and not is_andon_quarantine(_gov_target):
                 return ZoneResult(
                     zone="red",
                     matched_rule=f"scope_defining:{_gov_target}",
                     source="governance_change",
                 )
-            if classify_governance_target(_gov_target) == "red":
+            # .env is sovereign REGARDLESS of location (operator-only secrets) —
+            # the universal rule classify_governance_target carried, preserved
+            # inline (the scope wall only covers the GROVE_HOME .env member).
+            try:
+                _gt_name = os.path.basename(
+                    os.path.realpath(os.path.expanduser(str(_gov_target or "")))
+                )
+            except (OSError, ValueError):
+                _gt_name = ""
+            if _gt_name == ".env":
                 return ZoneResult(
                     zone="red",
                     matched_rule="governance_write:.env",
@@ -5752,6 +5756,31 @@ class Dispatcher:
                     )
                 )
 
+        # capability-mutation-surface-v1 P5 (M6, ruling A-1) — the VIABILITY
+        # SEAM: consulted BEFORE put() and before the queue-row append, so an
+        # approvable-but-unappliable card is never minted. A repo-definition
+        # target (kernel read-only on prod) or a governed surface with no
+        # registered writer refuses LOUD and terminal here — the agent sees
+        # the reason (git+deploy SOP / registry miss), the operator never
+        # sees a dead card.
+        from grove.red_pending_store import is_viable_red_target
+        _viable, _nonviable_reason = is_viable_red_target(_tool, _args)
+        if not _viable:
+            from grove.governance_halt import (
+                GovernanceHaltContext,
+                TerminalGovernanceHalt,
+            )
+            raise TerminalGovernanceHalt(
+                GovernanceHaltContext(
+                    trigger="red_nonviable_target",
+                    tool_name=_tool,
+                    zone=halt.zone,
+                    matched_rule=(getattr(halt, "matched_rule", None) or None),
+                    reason="nonviable RED target — refused before store-pending",
+                    detail=_nonviable_reason,
+                )
+            )
+
         # Generic pending-RED action: the frozen (tool, args) ToolIntent re-dispatched
         # on approval. prepare_execute_arguments folds propose's TOCTOU anchor in so
         # the .env write stays byte-identical; the signature binds the exact effect;
@@ -5763,6 +5792,13 @@ class Dispatcher:
             _tool, _exec_args, getattr(halt, "pattern_key", None)
         )
         created_at = datetime.now(timezone.utc).isoformat()
+        # capability-mutation-surface-v1 P4 (M3) — SEAL BEFORE put(): the CAS
+        # anchor (target_sha256) for any write effect, plus the writer-registry
+        # translation for governed-config targets. What the operator reviews
+        # (rendered_payload) and what the executor dispatches read the same
+        # sealed row — byte-parity by construction.
+        from grove.red_pending_store import seal_red_claim
+        _sealed = seal_red_claim(_tool, _exec_args)
         entry = PendingRedProposal(
             proposal_id=pid,
             tool_name=_tool,
@@ -5773,8 +5809,30 @@ class Dispatcher:
             created_at=created_at,
             is_opaque=is_opaque,
             pattern_key=getattr(halt, "pattern_key", None),
+            target_sha256=_sealed["target_sha256"],
+            writer_name=_sealed["writer_name"],
+            writer_payload=_sealed["writer_payload"],
+            sealed_target=_sealed["sealed_target"],
         )
         self._red_pending_store.put(entry)
+
+        # P5 item 5 — R2-census continuity: a SEALED governed claim emits a
+        # governance_change ledger entry at claim-seal time (the executor
+        # emits the paired "written" entry on success). Non-fatal by the
+        # ledger helper's own contract.
+        if entry.writer_name is not None:
+            from tools.governance_tool import _record_governance_ledger
+            _record_governance_ledger(
+                target_file=str(_sealed["sealed_target"] or ""),
+                zone="red",
+                rationale=_rationale or "",
+                content=str(
+                    (entry.writer_payload or {}).get("content") or ""
+                ),
+                prior=None,
+                disposition="sealed",
+                approval_id=pid,
+            )
 
         # Opaque metadata to the agent-reachable queue (NO key name / diff / path).
         try:

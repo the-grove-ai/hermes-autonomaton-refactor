@@ -53,11 +53,16 @@ _SCAN_DIRS = ("grove", "tools")
 _PRIMITIVE_CALLER_PINS: dict[tuple[str, str], frozenset[tuple[str, str]]] = {
     # def at grove/capability_registry.py:1343; callers :501/:612/:710 (the
     # three state-overlay writers' shared ``_apply`` closures), :853
-    # (_write_state_snapshot for set_model_binding), :2129 (_mint_skill_record)
+    # (_write_state_snapshot for set_model_binding), :2129 (_mint_skill_record).
+    # capability-mutation-surface-v1 M2 (reviewed amendment, ruling A-3) —
+    # write_admission_state: the sole sanctioned canonical admission-field
+    # writer (uniqueness additionally pinned by the admission-writer
+    # signature tests below).
     ("grove/capability_registry.py", "_atomic_write_yaml"): frozenset({
         ("grove/capability_registry.py", "_apply"),
         ("grove/capability_registry.py", "_write_state_snapshot"),
         ("grove/capability_registry.py", "_mint_skill_record"),
+        ("grove/capability_registry.py", "write_admission_state"),
     }),
     # def at grove/eval/producer_pauses.py:57; sole caller :142
     # (set_producer_pause's _apply)
@@ -120,11 +125,13 @@ _MULTI_DEF_NAMES = {"_atomic_write_yaml", "_rewrite"}
 # the sovereign catalog basename is ``model-catalog.yaml``
 # (grove/config/model_catalog.py:98).
 _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
-    # writer: GrantStore._rewrite (grove/grants.py:182)
+    # writer: GrantStore._rewrite (grove/grants.py:182).
+    # capability-mutation-surface-v1 M1 (reviewed amendment): fs_utils no
+    # longer carries this basename — scope-defining membership literals moved
+    # to config/scope_surfaces.yaml (declarative membership).
     "grants.yaml": frozenset({
         "grove/grants.py",
         "grove/fleet/paths.py",
-        "grove/utils/fs_utils.py",
     }),
     # writer: proposal_queue append/_write_records (grove/eval/proposal_queue.py)
     "proposals.jsonl": frozenset({
@@ -175,8 +182,13 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/sovereignty.py",
         "grove/t1_call.py",
         "grove/tier_budget.py",
-        "grove/utils/fs_utils.py",
-        "tools/governance_tool.py",
+        # capability-mutation-surface-v1 M1 (reviewed amendment): fs_utils
+        # literal moved to config/scope_surfaces.yaml.
+        # P5 (reviewed amendment): governance_tool dropped OUT (Pipeline-A's
+        # allowlist + raw write retired); red_pending_store carries the
+        # basename now (the writer-registry resolution + the
+        # routing_config_replace adapter over RoutingConfigWriter).
+        "grove/red_pending_store.py",
     }),
     # writer: append_machine_goal (grove/dock/__init__.py:380-384)
     "dock.autonomaton.yaml": frozenset({
@@ -185,7 +197,11 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/flywheel_cli.py",
         "grove/kaizen/rendering.py",
     }),
-    # writer: update_dock_goal_status (grove/dock/writer.py:91-94)
+    # writer: update_dock_goal_status (grove/dock/writer.py:91-94).
+    # capability-mutation-surface-v1 P5 (reviewed amendment): governance_tool
+    # dropped OUT (dock-door allowlist retired); red_pending_store carries the
+    # basename now (dock_goal_status resolution + adapter over the sole
+    # sanctioned dock writer).
     "dock.yaml": frozenset({
         "grove/dock/writer.py",
         "grove/api/actions.py",
@@ -199,14 +215,15 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/utils/fs_utils.py",
         "grove/wiki/pipeline.py",
         "grove/wiki/watcher.py",
-        "tools/governance_tool.py",
+        "grove/red_pending_store.py",
     }),
     # writer: save_zone_rule (grove/zone_rules.py:410 — writes the operator
-    # overlay; docstrings there still say "zones.schema.yaml", naming rot)
+    # overlay; docstrings there still say "zones.schema.yaml", naming rot).
+    # capability-mutation-surface-v1 M1 (reviewed amendment): fs_utils
+    # literal moved to config/scope_surfaces.yaml.
     "zones.autonomaton.yaml": frozenset({
         "grove/zone_rules.py",
         "grove/red_policy.py",
-        "grove/utils/fs_utils.py",
         "grove/zones.py",
     }),
     # writer: write_sovereign_catalog (grove/config/model_catalog.py:628)
@@ -221,6 +238,14 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/dispatcher.py",
         "grove/flywheel_cli.py",
         "grove/kaizen/rendering.py",
+    }),
+    # capability-mutation-surface-v1 P4 item 4 — ZERO-writer pin for the
+    # declarative scope membership: NO code writes it (git+deploy only). The
+    # sole sanctioned toucher is its loader (fs_utils reads it; the filename
+    # constant + docstrings live there). Any second module mentioning the
+    # basename is drift.
+    "scope_surfaces.yaml": frozenset({
+        "grove/utils/fs_utils.py",
     }),
 }
 
@@ -443,4 +468,95 @@ def test_attachment_event_types_recorded_only_by_attachment_store():
     assert _ATTACHMENT_EVENT_TYPES <= seen, (
         f"scan lost sight of attachment emitters: "
         f"{sorted(_ATTACHMENT_EVENT_TYPES - seen)}"
+    )
+
+
+# ── capability-mutation-surface-v1 T1 — admission-field writer uniqueness ──
+#
+# CONTRACT (banked failing; Gate P0 rulings A-3/A-1): capability state overlay
+# ADMISSION-FIELD writes (canonical keys ``intents`` / ``tiers``, always
+# provenance-stamped) have exactly ONE sanctioned writer:
+#
+#     grove/capability_registry.py :: write_admission_state
+#
+# The detector below keys on the writer's structural signature — a function
+# that BOTH calls the ``_atomic_write_yaml`` primitive AND carries the
+# ``"provenance"`` string constant (the stamp key no other state writer emits;
+# ruling A-3 makes the stamp mandatory on admission-field writes, so the
+# signature is exact, not heuristic). A second function matching the signature
+# is an unsanctioned admission-field writer and must fail the pin.
+
+_ADMISSION_WRITER_MODULE = "grove/capability_registry.py"
+_ADMISSION_WRITER_PIN = frozenset({"write_admission_state"})
+
+
+def _admission_field_writer_functions(source: str) -> set[str]:
+    """Names of functions that call ``_atomic_write_yaml`` and contain the
+    ``"provenance"`` constant — the admission-field-writer structural
+    signature. Pure helper so the guard logic is itself testable against a
+    hypothetical second caller (T1b)."""
+    tree = ast.parse(source)
+    hits: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls_primitive = False
+        has_provenance_const = False
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                f = sub.func
+                name = (
+                    f.id if isinstance(f, ast.Name)
+                    else f.attr if isinstance(f, ast.Attribute)
+                    else None
+                )
+                if name == "_atomic_write_yaml":
+                    calls_primitive = True
+            elif (
+                isinstance(sub, ast.Constant)
+                and sub.value == "provenance"
+            ):
+                has_provenance_const = True
+        if calls_primitive and has_provenance_const:
+            hits.add(node.name)
+    return hits
+
+
+def test_admission_field_writer_pinned_unique():
+    """T1a (RED until P2): exactly one sanctioned admission-field writer.
+
+    Fails while the canonical writer does not exist (empty hit set), and fails
+    again if any second function ever matches the writer signature."""
+    source = (_REPO_ROOT / _ADMISSION_WRITER_MODULE).read_text(encoding="utf-8")
+    writers = _admission_field_writer_functions(source)
+    assert writers == set(_ADMISSION_WRITER_PIN), (
+        "admission-field writer population does not match the pin "
+        f"(expected exactly {sorted(_ADMISSION_WRITER_PIN)}, found "
+        f"{sorted(writers) or 'NONE — canonical writer not implemented'}). "
+        "The capability state overlay admission surface admits ONE sanctioned "
+        "writer; amend the pin only in a reviewed diff."
+    )
+
+
+def test_admission_field_writer_guard_flags_second_caller():
+    """T1b (guard self-test, expected green): a hypothetical second caller
+    matching the writer signature is detected and fails the uniqueness pin."""
+    synthetic = (
+        "def write_admission_state(record_id, intents=None, tiers=None,\n"
+        "                          provenance=None, state_dir=None):\n"
+        "    doc = {'id': record_id, 'provenance': provenance}\n"
+        "    _atomic_write_yaml(state_dir, doc)\n"
+        "\n"
+        "def rogue_admission_writer(record_id):\n"
+        "    doc = {'id': record_id, 'provenance': {}}\n"
+        "    _atomic_write_yaml(record_id, doc)\n"
+    )
+    writers = _admission_field_writer_functions(synthetic)
+    assert writers == {"write_admission_state", "rogue_admission_writer"}, (
+        "detector failed to see both the canonical and the rogue writer"
+    )
+    # The uniqueness pin must FAIL on this population — a second caller can
+    # never pass silently.
+    assert writers != set(_ADMISSION_WRITER_PIN), (
+        "uniqueness pin accepted a two-writer population — guard is blind"
     )

@@ -157,6 +157,11 @@ class TestGenericExecute:
             {"target_file": str(env_path), "content": content, "rationale": "r"},
         )
         sig = canonical_effect_signature("propose_governance_change", args)
+        # capability-mutation-surface-v1 P4 — staged entries SEAL, mirroring
+        # the live propose path (an unsealed governance claim is legacy_shape
+        # and refuses loud by design).
+        from grove.red_pending_store import seal_red_claim
+        sealed = seal_red_claim("propose_governance_change", args)
         return PendingRedProposal(
             proposal_id=action_proposal_id(sig),
             tool_name="propose_governance_change",
@@ -165,6 +170,10 @@ class TestGenericExecute:
             description="d",
             rationale="r",
             created_at="2026-07-08T00:00:00+00:00",
+            target_sha256=sealed["target_sha256"],
+            writer_name=sealed["writer_name"],
+            writer_payload=sealed["writer_payload"],
+            sealed_target=sealed["sealed_target"],
         )
 
     def test_stored_intent_redispatches_once(self, tmp_path):
@@ -215,10 +224,14 @@ class TestConcurrency:
             {"target_file": str(env), "content": "TOK=once\n", "rationale": "r"},
         )
         sig = canonical_effect_signature("propose_governance_change", args)
+        from grove.red_pending_store import seal_red_claim
+        sealed = seal_red_claim("propose_governance_change", args)
         entry = PendingRedProposal(
             proposal_id=action_proposal_id(sig), tool_name="propose_governance_change",
             arguments=args, effect_signature=sig, description="d", rationale="r",
             created_at="2026-07-08T00:00:00+00:00",
+            target_sha256=sealed["target_sha256"], writer_name=sealed["writer_name"],
+            writer_payload=sealed["writer_payload"], sealed_target=sealed["sealed_target"],
         )
         store.put(entry)
         results: list = []
@@ -234,6 +247,12 @@ class TestConcurrency:
         for t in ts:
             t.join()
         wins = [r for r in results if r["success"]]
-        misses = [r for r in results if not r["success"] and r["reason"] == "not_found"]
+        # capability-mutation-surface-v1 P4 (M4): the loser now honestly reads
+        # "in_flight" (concurrent claim held) or "not_found" (already
+        # consumed) — either way, exactly one execution.
+        misses = [
+            r for r in results
+            if not r["success"] and r["reason"] in ("not_found", "in_flight")
+        ]
         assert len(wins) == 1 and len(misses) == 1        # exactly one winner
         assert env.read_text() == "TOK=once\n"            # written exactly once
