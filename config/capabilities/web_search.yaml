@@ -14,7 +14,7 @@ trigger:
   keywords: []
   dock_affinity: []
   always: false
-  disclosure: proactive
+  disclosure: baseline
 bindings:
   tools:
   - web_search

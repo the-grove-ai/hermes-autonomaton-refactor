@@ -1001,12 +1001,12 @@ class Dispatcher:
                 _agent_sid = getattr(self.agent, "session_id", None)
                 if _agent_sid:
                     self.session_id = _agent_sid
-            # Sprint 40 — inject memory-provider tool schemas into the
-            # Agent's tool list. Previously the Agent's __init__ did
-            # this against ``self._memory_manager``; with manager
-            # ownership relocated to the Dispatcher, injection must
-            # happen here after the Agent's tools list is built.
-            self._inject_memory_tool_schemas()
+            # retrieval-ambient-class-v1 P1 (revised) — the Sprint 40
+            # memory-provider tool-schema injection seam is DEMOLISHED:
+            # zero provider-tool executions ever on prod (liveness-gated)
+            # and the seam minted surface the capability registry never
+            # admitted. Memory rides the CONTEXT path (provider prefetch /
+            # system_prompt_block), never tools.
 
         # memory-substrate-v1 — extract tacit operator knowledge from the
         # sessions captured dormant above and stage memory_context proposals.
@@ -4278,41 +4278,6 @@ class Dispatcher:
                         exc,
                     )
                     self.memory_manager = None
-
-    def _inject_memory_tool_schemas(self) -> None:
-        """Inject memory-provider tool schemas into ``self.agent.tools``.
-
-        Sprint 40 — relocated from ``AIAgent.__init__`` where the Agent
-        used to do this against ``self._memory_manager``. With manager
-        ownership on the Dispatcher, injection happens after Agent
-        construction so the Agent's tools list (built from its
-        toolsets) gets the memory-provider tools appended without
-        duplicating names already registered via the plugin path.
-        """
-        if self.memory_manager is None:
-            return
-        agent_tools = getattr(self.agent, "tools", None)
-        if agent_tools is None:
-            return
-        existing_names = {
-            t.get("function", {}).get("name")
-            for t in agent_tools
-            if isinstance(t, dict)
-        }
-        valid_names = getattr(self.agent, "valid_tool_names", None)
-        try:
-            schemas = self.memory_manager.get_all_tool_schemas()
-        except Exception:
-            return
-        for schema in schemas:
-            name = schema.get("name", "")
-            if name and name in existing_names:
-                continue
-            agent_tools.append({"type": "function", "function": schema})
-            if name:
-                existing_names.add(name)
-                if isinstance(valid_names, set):
-                    valid_names.add(name)
 
     # ── Sprint 36 — prompt composition (GRV-007) ────────────────────────
 

@@ -193,7 +193,9 @@ class TestMaybeApplyToolFilter:
         assert agent._tools_for_turn is not None          # NOT the full-registry signal
         got = {t["function"]["name"] for t in agent._tools_for_api}
         assert {"clarify", "write_file"} <= got           # always:true core admitted
-        assert "web_search" not in got                    # intent-gated — withheld
+        # P1 (retrieval-ambient-class-v1): web_search rides the ambient
+        # baseline class on unknown turns too (baseline outranks intent gating).
+        assert "web_search" in got
         assert agent._last_tool_selection["fallback"] is True
         assert getattr(agent, "_uncertainty_andon_pending", False) is True
 
@@ -484,7 +486,7 @@ class TestRegistryAdmissionWidening:
         # not disturb the pre-existing core read surface.
         assert "read_file" in allowed
 
-        # web_search held at always: false (operator cost-gating decision,
-        # the HOLD disposition). conversation names none of its intents, so
-        # it must NOT be admitted — confirms the flip was surgical.
-        assert "web_search" not in allowed
+        # retrieval-ambient-class-v1 P1: web_search rides the ambient
+        # baseline class — admitted on every intent (the C-SEAM5 cost HOLD
+        # was retired by PM ratification).
+        assert "web_search" in allowed

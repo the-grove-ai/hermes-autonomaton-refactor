@@ -23,13 +23,15 @@ class TestToolsDisableBuiltin:
         assert "memory" in saved["platform_toolsets"]["cli"]
 
     def test_disable_multiple_toolsets(self):
-        config = {"platform_toolsets": {"cli": ["web", "memory", "terminal"]}}
+        # "memory" toolset key retired (retrieval-ambient-class-v1 P1) — use
+        # "todo" as the second real toolset in the multi-disable exercise.
+        config = {"platform_toolsets": {"cli": ["web", "todo", "terminal"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \
              patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(Namespace(tools_action="disable", names=["web", "memory"], platform="cli"))
+            tools_disable_enable_command(Namespace(tools_action="disable", names=["web", "todo"], platform="cli"))
         saved = mock_save.call_args[0][0]
         assert "web" not in saved["platform_toolsets"]["cli"]
-        assert "memory" not in saved["platform_toolsets"]["cli"]
+        assert "todo" not in saved["platform_toolsets"]["cli"]
         assert "terminal" in saved["platform_toolsets"]["cli"]
 
     def test_disable_already_absent_is_idempotent(self):
@@ -161,12 +163,13 @@ class TestToolsMixedTargets:
 class TestToolsList:
 
     def test_list_shows_enabled_toolsets(self, capsys):
-        config = {"platform_toolsets": {"cli": ["web", "memory"]}}
+        # "memory" toolset key retired (retrieval-ambient-class-v1 P1).
+        config = {"platform_toolsets": {"cli": ["web", "todo"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config):
             tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
         out = capsys.readouterr().out
         assert "web" in out
-        assert "memory" in out
+        assert "todo" in out
 
     def test_list_shows_mcp_excluded_tools(self, capsys):
         config = {

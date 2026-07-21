@@ -129,6 +129,14 @@ class TriggerDisclosure(str, Enum):
     mode the resolver (C-RESOLVE) honors; it never re-narrows in code what a
     record declares open.
 
+    * ``baseline`` — the ambient retrieval class (retrieval-ambient-class-v1
+      P1): admitted and disclosed UNCONDITIONALLY — every intent class, every
+      complexity signal, every tier, including unknown/unclassified turns.
+      Precedence: baseline > complexity > always. Green-zone only (enforced
+      in :meth:`Capability.validate`); a baseline record's trigger fields are
+      moot (unconditional needs no trigger). The baseline+complexity
+      combination is unrepresentable by construction — ``disclosure`` is a
+      single enum field.
     * ``proactive`` — offered whenever tier-eligible on any intent/complexity
       (core control tools via ``always``; intent records via ``intents``).
     * ``complexity`` — offered only on complex/novel turns (the exploratory
@@ -137,6 +145,7 @@ class TriggerDisclosure(str, Enum):
       maximal unknown-intent fallback (the never-grouped integration families).
     """
 
+    BASELINE = "baseline"
     PROACTIVE = "proactive"
     COMPLEXITY = "complexity"
     FALLBACK = "fallback"
@@ -707,7 +716,20 @@ class Capability:
         # ONLY fallback records may be empty, and a fallback record must carry NO
         # proactive trigger at all (else its declared mode contradicts itself).
         t = self.trigger
-        if t.disclosure == TriggerDisclosure.FALLBACK:
+        if t.disclosure == TriggerDisclosure.BASELINE:
+            # retrieval-ambient-class-v1 P1 — the ambient baseline class is
+            # Green-zone ONLY: unconditional disclosure of a mutating surface
+            # would be an ungated write path, so a non-green baseline record
+            # refuses to load. Trigger fields are moot (unconditional needs no
+            # trigger), so an empty trigger is legitimate here — the strict-
+            # trigger discipline below is proactive/complexity-scoped.
+            if self.zone is not Zone.GREEN:
+                raise ValueError(
+                    "disclosure: baseline requires zone: green — the ambient "
+                    f"baseline class is read-only by contract (got zone="
+                    f"{self.zone.value!r})"
+                )
+        elif t.disclosure == TriggerDisclosure.FALLBACK:
             if t.always or t.intents or t.keywords:
                 raise ValueError(
                     "disclosure: fallback is a fallback-only capability and must "

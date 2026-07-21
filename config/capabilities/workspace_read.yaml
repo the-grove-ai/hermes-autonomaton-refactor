@@ -14,6 +14,7 @@ trigger:
   keywords: [gmail, calendar, drive, sheets, docs, contacts]
   dock_affinity: []   # empty at migration — affinity is operator-curated later
   always: true        # tool-admission-widening-v1: Green-zone read, always admitted (key was absent → intent-gated-only)
+  disclosure: baseline  # retrieval-ambient-class-v1 P1 — ambient retrieval class (all 10 verbs ride)
 bindings:
   # A4 (GRV-009 E5 C-BACKFILL) — strict 1:1 tool ownership. The 10 GREEN read
   # verbs register under toolset="google-workspace" (tools/google_workspace_tool.py).

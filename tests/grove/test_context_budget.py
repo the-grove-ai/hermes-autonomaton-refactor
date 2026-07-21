@@ -148,20 +148,20 @@ class TestResolveToolSet:
         # fallback-retirement-v1: unknown yields the always:true CORE (never None),
         # surfaced loudly as an Andon (WARNING) — not the retired maximal fallback.
         assert result is not None
-        assert {"clarify", "read_file", "memory"} <= result
+        assert {"clarify", "read_file"} <= result  # "memory" ghost retired (P1: orphan record deleted)
         assert "unknown intent" in caplog.text
         assert "CORE" in caplog.text
 
     def test_none_intent_returns_core(self):
         result = resolve_tool_set(None, "simple")
         assert result is not None
-        assert {"clarify", "read_file", "memory"} <= result
+        assert {"clarify", "read_file"} <= result  # "memory" ghost retired (P1: orphan record deleted)
 
     def test_core_always_loaded(self):
         result = resolve_tool_set(
             "conversation", "simple",
         )
-        assert {"clarify", "read_file", "memory"}.issubset(result)
+        assert {"clarify", "read_file"}.issubset(result)  # "memory" ghost retired (P1)
 
     def test_mcp_tools_not_in_budget_set(self):
         # Sprint 69 — resolve_tool_set no longer enumerates MCP tools.
@@ -288,7 +288,7 @@ class TestCoLocationGuard:
         result = resolve_tool_set("unknown", "simple")
         assert result is not None
         assert isinstance(result, set)
-        assert {"clarify", "read_file", "memory"} <= result  # core present
+        assert {"clarify", "read_file"} <= result  # "memory" ghost retired (P1: orphan record deleted)  # core present
 
     def test_message_points_at_fix_path(self) -> None:
         """The Andon message still names the fix location for the operator."""

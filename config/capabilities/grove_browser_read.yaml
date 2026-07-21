@@ -23,6 +23,7 @@ trigger:
   keywords: []
   dock_affinity: []
   always: true
+  disclosure: baseline  # retrieval-ambient-class-v1 P1 — ambient retrieval class (MCP read surface)
 bindings:
   # Strict 1:1 tool ownership: this record owns all five grove-browser read
   # tools by their gateway-registered mcp_grove_browser_* names. toolset_key is
