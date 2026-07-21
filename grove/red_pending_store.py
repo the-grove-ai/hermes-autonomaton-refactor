@@ -836,7 +836,7 @@ def is_viable_red_target(tool_name: str, arguments: dict):
     if resolved == _MODULE_CONFIG_ROOT or resolved.startswith(
         _MODULE_CONFIG_ROOT + os.sep
     ):
-        return False, (
+        reason = (
             f"Nonviable target {resolved}: a repo DEFINITION surface "
             "(<module_root>/config/**) — a runtime write can never apply "
             "(config/ is kernel read-only on the deployed VM), so approving "
@@ -844,6 +844,22 @@ def is_viable_red_target(tool_name: str, arguments: dict):
             "through a git commit and deploy (scripts/deploy.sh) — that is "
             "the sanctioned path."
         )
+        # capability-mutation-surface-v1 P7 micro-arc item 2 — SIGNPOST: a
+        # capability-definition target usually means the caller wants an
+        # ADMISSION change, which IS operator-mutable at runtime. Redirect
+        # to the governed door instead of dead-ending at git+deploy.
+        rel = os.path.relpath(resolved, _MODULE_CONFIG_ROOT)
+        if (
+            rel.startswith("capabilities" + os.sep)
+            and rel.endswith((".yaml", ".yml"))
+        ):
+            reason += (
+                " NOTE: capability admission (intents/tiers) is "
+                "operator-mutable via a governed admission-state proposal "
+                "(write_admission_state) — no deploy required; definitions "
+                "stay git+deploy."
+            )
+        return False, reason
     if Path(resolved).name == ".env" or is_scope_defining(resolved):
         writer, _payload, miss = _resolve_governed_writer(resolved, body)
         if writer is None:
