@@ -52,6 +52,7 @@ __all__ = [
     "Capability",
     "IllegalTransitionError",
     "LEGAL_TRANSITIONS",
+    "NULL_CAPABILITY_STATES",
     "VALID_PLATFORMS",
 ]
 
@@ -106,6 +107,13 @@ class LifecycleState(str, Enum):
     DEPRECATED = "deprecated"
     REJECTED = "rejected"  # GRV-009 A1/A6 — terminal; only from proposed
     MANAGED = "managed"  # GRV-009 A5 — installed skills; terminal, curator-exempt
+    # retrieval-ambient-class-v1 P4 (GATE-B ruling B, narrowed) — the
+    # DEFINITION-SIDE emergency kill. No LEGAL_TRANSITIONS edges in or out:
+    # a record enters/leaves suspension ONLY by editing its definition YAML
+    # (git + deploy) — no runtime writer, no flywheel path, no overlay key
+    # (Amendment 3: the admission overlay stays {id, intents, tiers,
+    # provenance}). A suspended record yields NULL effective capability.
+    SUSPENDED = "suspended"
 
 
 class Provenance(str, Enum):
@@ -208,6 +216,19 @@ EXECUTABLE_STATES: frozenset[LifecycleState] = frozenset({
     LifecycleState.ACTIVE,
     LifecycleState.MANAGED,
     LifecycleState.REFINED,
+})
+
+# retrieval-ambient-class-v1 P4 (GATE-B ruling B, narrowed) — NULL-CAPABILITY
+# lifecycle states: a record here yields no effective capability AT ALL — its
+# tools are not admitted and not disclosed, regardless of overlay grants or
+# disclosure class (lifecycle outranks baseline). Deliberately NARROW per the
+# ruling: deprecated (the graceful terminal exit) + suspended (the
+# definition-side emergency kill). proposed/rejected are skill-window states
+# governed by EXECUTABLE_STATES on the skill path; widening the admission wall
+# to them is a separate adjudication.
+NULL_CAPABILITY_STATES: frozenset[LifecycleState] = frozenset({
+    LifecycleState.DEPRECATED,
+    LifecycleState.SUSPENDED,
 })
 
 

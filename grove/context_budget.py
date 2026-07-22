@@ -410,10 +410,17 @@ def _caps_index() -> List[tuple]:
     """
     global _caps_index_cache
     if _caps_index_cache is None:
+        from grove.capability import NULL_CAPABILITY_STATES
         from grove.capability_registry import load_capabilities
 
         index: List[tuple] = []
         for c in load_capabilities().values():
+            # retrieval-ambient-class-v1 P4 (ruling B, narrowed) — lifecycle
+            # wall: a deprecated/suspended record yields NULL effective
+            # capability. Its tools are NOT admitted regardless of overlay
+            # grants or disclosure class (lifecycle outranks baseline).
+            if c.lifecycle.state in NULL_CAPABILITY_STATES:
+                continue
             native = tuple(t for t in c.bindings.tools if not _is_mcp(t))
             if not native:
                 continue

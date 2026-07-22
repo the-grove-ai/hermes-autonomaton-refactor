@@ -146,10 +146,16 @@ def disclosure_split_sets():
     global _split_cache
     if _split_cache is None:
         from grove.capability_registry import load_capabilities
+        from grove.capability import NULL_CAPABILITY_STATES
         from grove.capability import TriggerDisclosure as TD
 
         baseline, core, intent_map = set(), set(), {}
         for c in load_capabilities().values():
+            # P4 (ruling B): lifecycle outranks the disclosure class — a
+            # deprecated/suspended baseline record is neither admitted nor
+            # disclosed.
+            if c.lifecycle.state in NULL_CAPABILITY_STATES:
+                continue
             nt = [t for t in c.bindings.tools if not _is_mcp(t)]
             if not nt:
                 continue
