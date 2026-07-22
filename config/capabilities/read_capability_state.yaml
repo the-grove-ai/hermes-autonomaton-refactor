@@ -1,0 +1,80 @@
+# retrieval-ambient-class-v1 P3 — effective-state read verb (Exhibit 5 remedy).
+# family=governance  zone=green  tiers=[1, 2, 3]  disclosure=baseline
+# Reads the SHARED composed path (capability_registry.effective_admission_state
+# -> _compose_state) — no parallel derivation. Baseline by necessity: an
+# invisibility-diagnostic tool that could itself be invisible recreates the
+# problem it exists to answer.
+id: read_capability_state
+kind: verb
+trigger:
+  intents: []
+  keywords: []
+  dock_affinity: []
+  always: true
+  disclosure: baseline
+bindings:
+  tools:
+  - read_capability_state
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible:
+  - 1
+  - 2
+  - 3
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: green
+telemetry:
+  feed: intent_feed
+  track:
+  - invocation
+  - result
+  - cost
+  - latency
+  - confidence
+  - human_feedback
+context:
+  disclosure: eager
+  payload: 'Effective capability-state read (zone green) — reports effective
+    intents/tiers/disclosure/zone with per-field source (definition | overlay ·
+    approval | derived) through the shared composed path. Operator transparency
+    and debugging ONLY: not a pre-authorization check; the dispatcher is the
+    sole execution authority. Tools: read_capability_state.
+
+    '
+  dock_composition: none
+lifecycle:
+  state: approved
+  provenance: operator_authored
+  created_at: '2026-07-21T00:00:00+00:00'
+  last_used: null
+  use_count: 0
+  flywheel_eligible: true
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+  - actor: operator
+    timestamp: '2026-07-21T00:00:00+00:00'
+    from_state: new
+    to_state: approved
+    reason: 'retrieval-ambient-class-v1 P3: effective-state read joins the ambient
+      baseline class — the shared _compose_state derivation feeds both this tool
+      and the portal admission fragment (one derivation, two consumers)'
+    evidence:
+    - grove/capability_registry.py#effective_admission_state
+    - config/zones.schema.yaml#tool_zones
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+  - 'capability: read_capability_state'
+  - 'subsystem: capability registry composed path (effective_admission_state)'
+  - 'check: tool registered + zone mapped + definitions/state dirs readable'
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

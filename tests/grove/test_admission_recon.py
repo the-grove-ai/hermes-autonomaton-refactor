@@ -23,13 +23,44 @@ _APPROVAL_ID = "1193ec46e4a5deadbeef"
 
 
 def _mk_defs(tmp_path: Path) -> Path:
+    # retrieval-ambient-class-v1 P3 — the fragment now renders through the
+    # SHARED composed path (effective_admission_state -> Capability.from_dict
+    # -> _compose_state), so the fixture must be a FULL valid record: the one
+    # derivation validates like the load path, by design.
     d = tmp_path / "defs"
     d.mkdir()
     (d / "browser_read.yaml").write_text(
         yaml.safe_dump({
             "id": "browser_read",
-            "trigger": {"intents": ["research_request", "code_analysis"]},
-            "tier_rule": {"eligible": [3], "preferred": 3},
+            "kind": "verb",
+            "trigger": {
+                "intents": ["research_request", "code_analysis"],
+                "keywords": [], "dock_affinity": [],
+                "always": False, "disclosure": "proactive",
+            },
+            "bindings": {"tools": ["browser_probe"], "credentials": None,
+                         "toolset_key": None},
+            "tier_rule": {
+                "eligible": [3], "preferred": 3, "promotion_criteria": {},
+                "validation": {"strategy": "shadow_compare",
+                               "confidence_threshold": 0.95,
+                               "shadow_window": 20},
+            },
+            "zone": "green",
+            "telemetry": {"feed": "intent_feed", "track": ["invocation"]},
+            "context": {"disclosure": "eager", "payload": "probe",
+                        "dock_composition": "none"},
+            "lifecycle": {"state": "approved",
+                          "provenance": "operator_authored",
+                          "created_at": "2026-07-21T00:00:00+00:00",
+                          "last_used": None, "use_count": 0,
+                          "flywheel_eligible": True},
+            "lineage": {"source_patterns": [], "parent_id": None,
+                        "decision_log": []},
+            "failure": {"fallback": "halt_and_surface",
+                        "diagnostic_context": [],
+                        "circuit_breaker": {"threshold": 3,
+                                            "window_seconds": 300}},
         }, sort_keys=False),
         encoding="utf-8",
     )

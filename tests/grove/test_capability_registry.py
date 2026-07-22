@@ -334,7 +334,8 @@ def test_real_records_disclosure_modes_match_golden():
     # tests/grove/test_baseline_class_golden.py; this census only pins the mode.
     for rid in ("clarify", "read_file", "web_search", "search_files",
                 "web_extract", "cellar_search", "skills_read",
-                "workspace_read", "grove_browser_read"):
+                "workspace_read", "grove_browser_read",
+                "read_capability_state"):
         assert caps[rid].trigger.disclosure is TD.BASELINE, rid
 
 

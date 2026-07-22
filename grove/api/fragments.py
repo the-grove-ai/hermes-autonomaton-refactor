@@ -3727,30 +3727,23 @@ def render_admission_state_html(
     legacy flag on files still carrying ``added_intents``, and orphan ALERTs.
     This is the one place admission creep is always visible.
 
-    Effective values mirror ``capability_registry._compose_state`` exactly
-    (present-key absolute replacement; preferred re-anchors to
-    ``max(eligible)`` when excluded) — a render-side copy of the merge rules,
-    kept adjacent by citation so drift is a reviewed change."""
-    from grove.capability_recon import _definition_docs
-    from grove.capability_registry import (
-        _StateFileInvalid,
-        _read_state_file,
-        capability_state_dir,
-        orphaned_state_slugs,
-    )
+    retrieval-ambient-class-v1 P3 — the render-side copy of the merge rules is
+    RETIRED: effective values and per-field source tags come from the SHARED
+    derivation ``capability_registry.effective_admission_state`` (which binds
+    ``_compose_state``, the sole merge authority) — the same call the
+    ``read_capability_state`` tool makes. One derivation, two consumers."""
+    from grove.capability_registry import effective_admission_state
 
-    sd = Path(state_dir) if state_dir is not None else capability_state_dir()
-    defs = _definition_docs(definitions_dirs)
+    composed = effective_admission_state(
+        definitions_dirs=definitions_dirs, state_dir=state_dir
+    )
     parts = [
         '<div class="admission-state">',
         "<h3>Capability admission — effective state</h3>",
     ]
-    if not sd.is_dir():
+    if composed["state_dir_missing"]:
         parts.append("<p>No overlay state directory — definitions rule.</p></div>")
         return "".join(parts)
-
-    orphan_pairs = orphaned_state_slugs(defs, state_dir=sd)
-    orphan_ids = {rid for (_p, rid) in orphan_pairs}
 
     def _row(field, base, effective, source):
         return (
@@ -3759,54 +3752,30 @@ def render_admission_state_html(
             f'<td class="prov">{_esc(source)}</td></tr>'
         )
 
-    rendered_any = False
-    for path in sorted(sd.glob("*.yaml")):
-        try:
-            rid, state = _read_state_file(path)
-        except _StateFileInvalid as exc:
-            parts.append(
-                f'<div class="card card-invalid"><h4>{_esc(path.name)}</h4>'
-                f"<p>Invalid state file (R-B1 — record runs on its pure "
-                f"definition): {_esc(exc)}</p></div>"
-            )
-            continue
-        if rid in orphan_ids:
-            continue
-        base = defs.get(rid) or {}
-        base_intents = ((base.get("trigger") or {}).get("intents")) or []
-        base_tiers = ((base.get("tier_rule") or {}).get("eligible")) or []
-        base_pref = (base.get("tier_rule") or {}).get("preferred")
-        prov = state.get("provenance") or {}
-        overlay_src = (
-            f"overlay · approval {prov.get('approval_id')}"
-            if prov.get("approval_id")
-            else "overlay · NO PROVENANCE (pre-canonical)"
+    for inv in composed["invalid"]:
+        parts.append(
+            f'<div class="card card-invalid"><h4>{_esc(inv["file"])}</h4>'
+            f"<p>Invalid state file (R-B1 — record runs on its pure "
+            f"definition): {_esc(inv['error'])}</p></div>"
         )
-        rows = []
-        if "intents" in state:
-            rows.append(_row("intents", base_intents, state["intents"], overlay_src))
-        else:
-            rows.append(_row("intents", base_intents, base_intents, "definition"))
-        if "tiers" in state:
-            rows.append(_row("tiers", base_tiers, state["tiers"], overlay_src))
-            if base_pref is not None and base_pref not in state["tiers"]:
-                rows.append(_row(
-                    "preferred", base_pref, max(state["tiers"]),
-                    "derived — re-anchored by merge",
-                ))
-            elif base_pref is not None:
-                rows.append(_row("preferred", base_pref, base_pref, "definition"))
-        else:
-            rows.append(_row("tiers", base_tiers, base_tiers, "definition"))
+
+    rendered_any = False
+    for rid, rec in sorted(composed["records"].items()):
+        if not rec["has_state"]:
+            continue  # the fragment shows overlay-carrying records only
+        rows = [
+            _row(f["field"], f["base"], f["effective"], f["source"])
+            for f in rec["fields"]
+        ]
         legacy = (
             '<p class="badge badge-legacy">LEGACY: added_intents present '
             "(loader-honored; the canonical writer never emits it)</p>"
-            if "added_intents" in state else ""
+            if rec["legacy_added_intents"] else ""
         )
-        ts = prov.get("timestamp")
+        prov = rec["provenance"]
         prov_line = (
             f'<p class="prov-meta">provenance: approval '
-            f"{_esc(prov.get('approval_id'))} · {_esc(ts)}</p>"
+            f"{_esc(prov.get('approval_id'))} · {_esc(prov.get('timestamp'))}</p>"
             if prov else ""
         )
         parts.append(
@@ -3817,13 +3786,13 @@ def render_admission_state_html(
         )
         rendered_any = True
 
-    for _path, rid in orphan_pairs:
+    for orphan in composed["orphans"]:
         parts.append(
-            f'<div class="card card-orphan"><h4>{_esc(rid)}</h4>'
+            f'<div class="card card-orphan"><h4>{_esc(orphan["id"])}</h4>'
             f"<p>ALERT: orphaned overlay slug — no definition carries this "
-            f"id ({_esc(_path.name)}). Never auto-deleted (F6).</p></div>"
+            f"id ({_esc(orphan['file'])}). Never auto-deleted (F6).</p></div>"
         )
-    if not rendered_any and not orphan_pairs:
+    if not rendered_any and not composed["orphans"]:
         parts.append("<p>No records carry overlay state — definitions rule.</p>")
     parts.append("</div>")
     return "".join(parts)
