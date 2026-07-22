@@ -48,9 +48,10 @@ def apply_failure_policy(wid: str, run_id: str, event: Optional[Dict[str, Any]])
     """fleet-receipt-custody-v1 P3b — act on a terminal failure receipt's policy
     class at classification time (not one cadence later).
 
-    ``pause_producer`` → trip the breaker (auto-pause, N=1). ``retry`` /
-    ``dead_letter`` / ``ignore`` act on nothing here — the count lives in the
-    derivation (P4), which this must NOT call. Never raises into the reap.
+    ``pause_producer`` → trip the breaker (auto-pause, N=1). An UNMAPPED class →
+    raise the classify-me card. ``retry`` / ``dead_letter`` / ``ignore`` act on
+    nothing here — the count lives in the derivation (P4), which this must NOT
+    call. Never raises into the reap.
     """
     if not event or event.get("status") != "failed":
         return
@@ -63,6 +64,8 @@ def apply_failure_policy(wid: str, run_id: str, event: Optional[Dict[str, Any]])
         policy = load_failure_policy()
         if policy.disposition(check) == "pause_producer":
             _trip_producer_breaker(wid, run_id, check)
+        elif check not in policy.failure_policy:
+            _raise_unmapped_class_card(check, wid, run_id)
     except Exception as exc:  # noqa: BLE001 — a policy action must not crash reap
         logger.error("[fleet.manager] failure-policy action failed for %s/%s: %r",
                      wid, run_id, exc)
@@ -111,6 +114,32 @@ def _raise_auto_paused_card(wid: str, run_id: str, check: str) -> None:
         proposer="fleet_manager",
         semantic_justification=f"producer {wid} auto-paused on a {check} failure",
         detail={"check": check, "run_id": run_id},
+    ))
+
+
+def _raise_unmapped_class_card(check: str, wid: str, run_id: str) -> None:
+    from grove.eval.proposal_queue import (
+        PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS,
+        RoutingProposal,
+        append,
+        compute_proposal_id,
+    )
+
+    payload = {"check": check}
+    evidence = (check,)  # deduped by class — exactly ONE card per class
+    pid = compute_proposal_id(
+        type=PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS, payload=payload, evidence=evidence
+    )
+    append(RoutingProposal(
+        proposal_id=pid,
+        type=PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS,
+        payload=payload,
+        evidence=evidence,
+        eval_hash="",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        proposer="fleet_manager",
+        semantic_justification=f"unmapped fleet failure class {check!r} — defaulting to retry",
+        detail={"first_run_id": run_id, "first_worker": wid},
     ))
 
 

@@ -18,6 +18,7 @@ from grove import flywheel_cli
 from grove.eval.producer_pauses import read_producer_pauses, set_producer_pause
 from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED,
+    PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS,
     RoutingProposal,
     read_all,
 )
@@ -128,6 +129,31 @@ def test_approve_unpauses_and_no_auto_unpause_exists():
     assert enclosing <= {"_approve_producer_auto_paused"}, (
         f"a producer-unpause exists outside the operator approve handler: {enclosing}"
     )
+
+
+# ── the unmapped card: one per class, dismiss-only ──────────────────────────
+
+
+def test_unmapped_check_raises_exactly_one_card_across_receipts():
+    apply_failure_policy("forge", "r1", _fail("a_totally_new_class"))
+    apply_failure_policy("drafter", "r2", _fail("a_totally_new_class"))  # same class
+    cards = [p for p in read_all() if p.type == PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS]
+    assert len(cards) == 1  # deduped by class, not per receipt
+    assert cards[0].payload["check"] == "a_totally_new_class"
+    assert read_producer_pauses() == frozenset()  # unmapped never pauses
+
+
+def test_unmapped_card_states_approve_does_not_write_the_mapping():
+    proposal = RoutingProposal(
+        proposal_id="pid", type=PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS,
+        payload={"check": "new_x"}, evidence=("new_x",), eval_hash="", created_at="t",
+    )
+    summary = flywheel_cli._summary_unmapped_failure_class(proposal)
+    assert "config/fleet_failure_policy.yaml" in summary
+    assert "does not write" in summary.lower() or "dismiss" in summary.lower()
+    # approve returns dismiss-only — no config mutation
+    _key, applied = flywheel_cli._approve_unmapped_failure_class(proposal)
+    assert applied["dismissed"] is True
 
 
 # ── does not bind the derivation (P4) ───────────────────────────────────────
