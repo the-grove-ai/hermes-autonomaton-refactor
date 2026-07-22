@@ -310,27 +310,52 @@ def test_governed_denial_receipt_carries_dispatched_identity(monkeypatch, tmp_pa
 # NEW failure branch added without identity fails this pin.
 
 
-def test_terminal_receipt_identity_invariant_enumerates_all_branches():
+def _event_call_segments(module):
+    """Every ``_event(...)`` call site in *module*'s source, as source text."""
     import ast
     import inspect
-    import re
 
-    src = inspect.getsource(worker_entry)
+    src = inspect.getsource(module)
     tree = ast.parse(src)
-    calls = [
+    return [
         ast.get_source_segment(src, node)
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "_event"
     ]
-    # Guard the guard: today's six sites (no_work, governed_denial x2,
+
+
+def test_terminal_receipt_identity_invariant_enumerates_all_branches():
+    import re
+
+    from grove.fleet import runner
+
+    # fleet-receipt-custody-v1 P2 C1 — the receipt-writing surface is now TWO
+    # modules: worker_entry (in-worker terminal events) and runner (the
+    # pre-live genesis-abort receipts). The invariant scans BOTH, or the new
+    # runner branches would sit unguarded (an A5 hole).
+    we_calls = _event_call_segments(worker_entry)
+    runner_calls = _event_call_segments(runner)
+
+    # Guard the guard: worker_entry's six sites (no_work, governed_denial x2,
     # no_package/emit_truncation, success, main catch-all). Fewer means the
     # scan went vacuous; recount before touching this floor.
-    assert len(calls) >= 6, (
-        f"identity-invariant scan found only {len(calls)} _event call sites — "
-        "the enumeration is vacuous; did _event get renamed?"
+    assert len(we_calls) >= 6, (
+        f"identity-invariant scan found only {len(we_calls)} worker_entry "
+        "_event call sites — the enumeration is vacuous; did _event get renamed?"
     )
+    # The runner contributes the genesis-abort receipt builder (_close_genesis,
+    # shared by both the inbox_unwritable and spawn_failed branches). A new
+    # pre-live abort branch that writes its own receipt enrolls here too.
+    assert len(runner_calls) >= 1, (
+        f"expected >= 1 runner _event call site (the genesis-abort receipt in "
+        f"_close_genesis), found {len(runner_calls)} — did it stop routing "
+        "through _event? The identity invariant only covers receipts built "
+        "via _event."
+    )
+
+    calls = we_calls + runner_calls
     exceptions = [seg for seg in calls if "empty payload" in seg]
     assert len(exceptions) == 1, (
         "exactly ONE source-level named exception is allowed (the no_work "

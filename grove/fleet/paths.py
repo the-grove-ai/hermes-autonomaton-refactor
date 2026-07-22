@@ -85,6 +85,19 @@ def event_path(worker_id: str, run_id: str) -> Path:
     return events_dir(worker_id) / f"{run_id}.json"
 
 
+def dispatch_dir(worker_id: str) -> Path:
+    """The genesis dispatch-record directory — a sibling of ``events/``."""
+    return worker_dir(worker_id) / "dispatch"
+
+
+def dispatch_path(worker_id: str, run_id: str) -> Path:
+    """The genesis dispatch record for a single run (fleet-receipt-custody-v1
+    P2 C1) — keyed IDENTICALLY to ``event_path`` (one record per run_id) so the
+    Working state derives as set subtraction (dispatch ids minus receipt ids),
+    with no timestamp participating."""
+    return dispatch_dir(worker_id) / f"{run_id}.json"
+
+
 def pid_path(worker_id: str) -> Path:
     """PID/PGID file for the running worker (Phase 2 orphan-reap contract)."""
     return worker_dir(worker_id) / "worker.pid"
