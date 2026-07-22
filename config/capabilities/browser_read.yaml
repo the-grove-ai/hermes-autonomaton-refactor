@@ -1,5 +1,9 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=browser  zone=green  tiers=[3]  disclosure=complexity  trigger=complexity
+# family=browser  zone=green  tiers=[3]  disclosure=baseline
+# retrieval-ambient-class-v1 P6.1 — complexity → baseline (reverses the P0
+# ruling-b suppression; Exhibit 4 root): the native browser read surface joins
+# the ambient class. Definition tiers=[3] no longer gates anything (G14
+# deleted, P2); the VM overlay (approval 6e191599) sets effective [1,2,3].
 id: browser_read
 kind: verb
 trigger:
@@ -7,7 +11,7 @@ trigger:
   keywords: []
   dock_affinity: []
   always: true
-  disclosure: complexity
+  disclosure: baseline
 bindings:
   tools:
   - browser_back

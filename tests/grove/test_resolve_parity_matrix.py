@@ -40,18 +40,18 @@ def _names(res):
 
 
 def test_complexity_record_absent_on_simple_t3_present_on_complex():
-    # web-surface-admission-fix (Option B) — the tier is bound via current_tier
-    # (tier_rule.eligible is the sole gate); browser_navigate is a complexity
-    # record eligible=[3], so it rides only a complex turn AT T3.
+    # P6.1: browser_read joined the ambient baseline class, so the complexity
+    # exemplar is now delegate_task (disclosure=complexity) — it rides only a
+    # complex turn; browser_navigate rides EVERY turn (baseline).
     simple = _names(resolve_tools_for_tier(TOOLS, "conversation", "simple", mcp_allow=None))
     complex_ = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", mcp_allow=None))
-    assert "browser_navigate" not in simple, "complexity record leaked onto a low-complexity T3 turn"
-    assert "browser_navigate" in complex_, "complexity record missing on a complex T3 turn"
-    # neuter-tier-eligible-gate: on a COMPLEX turn the complexity record now also
-    # rides at T1 — tier no longer strips. Complexity-disclosure gating (above)
-    # is unchanged; only the tier ceiling is retired.
+    assert "delegate_task" not in simple, "complexity record leaked onto a low-complexity turn"
+    assert "delegate_task" in complex_, "complexity record missing on a complex turn"
+    assert "browser_navigate" in simple    # P6.1 — baseline rides every turn
+    # neuter-tier-eligible-gate: tier no longer strips; complexity-disclosure
+    # gating (above) is unchanged.
     t1c = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", mcp_allow=None))
-    assert "browser_navigate" in t1c   # tier ceiling retired → present at T1 on a complex turn
+    assert "delegate_task" in t1c
 
 
 # fallback-retirement-v1 retired disclosure:fallback. The former "fallback record

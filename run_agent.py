@@ -3541,15 +3541,8 @@ class AIAgent:
             self._uncertainty_andon_pending = True
         if _tier_now in ("T2", "T3"):
             self._tools_for_turn = self._apply_disclosure(res, intent_class=intent_class)
-            self._stash_disclosure_verdicts(
-                res, self._tools_for_turn, intent_class, complexity,
-                mode="disclosure-t2t3",
-            )
         else:
             tools = list(res.tools)
-            self._stash_disclosure_verdicts(
-                res, tools, intent_class, complexity, mode="eager-t1",
-            )
             if _tier_now == "T1":
                 # Sprint 75 Phase 2 — T1 core economics: param-scope terminal to
                 # command + workdir (the async/background params are T2/T3). It
@@ -3610,6 +3603,21 @@ class AIAgent:
                 | _carried_names
             ),
         }
+
+        # retrieval-ambient-class-v1 P6.1 — the disclosure-verdict stash runs
+        # AFTER the selection-dict literal above (the P6 Andon: two in-branch
+        # stash calls wrote the key, then the fresh dict here CLOBBERED it —
+        # every prod record shipped disclosure_verdicts=None). ONE post-
+        # assignment call site eliminates the ordering-hazard class outright:
+        # nothing below this point rebuilds the dict, and the delivered
+        # surface (self._tools_for_turn) is final in both tier branches.
+        self._stash_disclosure_verdicts(
+            res,
+            self._tools_for_turn if isinstance(self._tools_for_turn, list)
+            else list(res.tools),
+            intent_class, complexity,
+            mode="disclosure-t2t3" if _tier_now in ("T2", "T3") else "eager-t1",
+        )
 
         # GRV-009 spike C1 — ride the construction-surface provenance on the
         # FIRST tool_selection event of the session (lazy; existing sink). It
