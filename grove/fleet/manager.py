@@ -31,6 +31,7 @@ from grove.fleet.cadence import cadence_due, in_quiet_hours
 from grove.fleet.config import WorkerConfig, load_fleet_workers
 from grove.fleet.errors import FleetWorkerAndon, OperatorActionRequired
 from grove.fleet.observability import surface_fleet_andon
+from grove.fleet.staging import write_synthetic_receipt
 from grove.fleet.reap import enforce_wall_clock, remove_pidfile
 from grove.fleet.resolvers import resolve_input_state
 from grove.fleet.runner import WorkerHandle
@@ -340,6 +341,15 @@ class FleetManager:
                 check="wall_clock_exceeded",
                 loop=self._loop,
             )
+            # C2b — a SIGKILLed worker wrote no receipt; mint the countable one.
+            # The Andon is the operator surface; the receipt is the record. Both.
+            write_synthetic_receipt(
+                wid,
+                run_id,
+                check="wall_clock_exceeded",
+                detail=f"exceeded wall-clock ({handle.wall_clock_secs}s) and was killed",
+                loop=self._loop,
+            )
             return
         if rc == 0:
             if event is None:
@@ -350,6 +360,13 @@ class FleetManager:
                     "worker exited 0 but wrote NO terminal-state event — "
                     "catastrophic (died before its terminal write)",
                     check="catastrophic_no_event",
+                    loop=self._loop,
+                )
+                write_synthetic_receipt(
+                    wid,
+                    run_id,
+                    check="catastrophic_no_event",
+                    detail="exited 0 but wrote no terminal-state event",
                     loop=self._loop,
                 )
                 return
@@ -378,6 +395,12 @@ class FleetManager:
         check = (event or {}).get("check") or "nonzero_exit"
         surface_fleet_andon(
             wid, run_id, f"worker exited {rc}: {detail}", check=check, loop=self._loop
+        )
+        # C2b — mint a countable receipt ONLY when the worker left none (crashed
+        # before its terminal write). A worker that wrote its own failure event
+        # already carries P1.2C identity; write_synthetic_receipt no-clobbers it.
+        write_synthetic_receipt(
+            wid, run_id, check=check, detail=f"exited {rc}: {detail}", loop=self._loop
         )
 
     def _maybe_emit_artifact_proposal(self, wid: str, run_id: str, event: dict) -> None:

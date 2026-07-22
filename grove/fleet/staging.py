@@ -13,13 +13,16 @@ declared sink — a skill can name a file but can never escape its sink.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from grove.fleet.errors import FleetWorkerAndon
+
+logger = logging.getLogger(__name__)
 
 # A package slug is a model-influenced path component; constrain it to a safe
 # filesystem slug so it cannot introduce separators or traversal.
@@ -130,3 +133,77 @@ def write_terminal_event(dest: Path, event: Dict[str, Any]) -> Path:
         Path(dest), json.dumps(event, ensure_ascii=False, indent=2).encode("utf-8")
     )
     return Path(dest)
+
+
+def _resolve_dispatched_unit_id(worker_id: str, run_id: str) -> Optional[str]:
+    """The host-minted unit identity for a run, for a synthetic receipt.
+
+    Primary: the C1 genesis dispatch record. Fallback: the inbox — needed ONLY
+    for a pre-C1 orphan on the first boot after deploy (a pidfile whose run
+    predates the dispatch record). Distinguishable cleanly: ``read_dispatch_record``
+    returns None when the record is absent. None when neither is readable — the
+    receipt is still written, keyed by run, identity null.
+    """
+    from grove.fleet.runner import read_dispatch_record
+
+    rec = read_dispatch_record(worker_id, run_id)
+    if rec is not None:
+        return rec.unit_id
+    from grove.fleet.worker_entry import _dispatched_unit_id, _read_inbox_payload
+
+    try:
+        payload = _read_inbox_payload(worker_id, run_id)
+    except Exception:  # noqa: BLE001 — no inbox either -> identity simply null
+        return None
+    return _dispatched_unit_id(payload)
+
+
+def write_synthetic_receipt(
+    worker_id: str,
+    run_id: str,
+    *,
+    check: str,
+    detail: str,
+    loop: Optional[Any] = None,
+) -> Optional[Path]:
+    """The ONE synthetic-receipt writer, shared by the runner, the manager poll,
+    and the boot sweep (fleet-receipt-custody-v1 C2b).
+
+    Writes a terminal ``failed`` receipt carrying the dispatched ``unit_id``,
+    keyed by ``run_id`` at the same event path a worker would use — so a
+    kill/crash that left no receipt becomes unit-attributable and countable.
+
+    NO-CLOBBER: the receipt shares the event path with a worker-written one, so
+    if a receipt already exists this is a no-op (returns None). A worker that
+    wrote its own richer record (with P1.2C identity) wins; the atomic
+    ``write_terminal_event`` guarantees any existing file is whole, never torn.
+
+    The check STRING is the fact (what happened). Whether a class counts against
+    the retry cap is config the operator rules in YAML, NEVER baked into the
+    record — a receipt names the fact, not the policy.
+    """
+    from grove.fleet.paths import event_path
+
+    dest = event_path(worker_id, run_id)
+    if dest.exists():
+        logger.info(
+            "[fleet.staging] receipt already exists for %s/%s — skipping synthetic %s",
+            worker_id,
+            run_id,
+            check,
+        )
+        return None
+
+    unit_id = _resolve_dispatched_unit_id(worker_id, run_id)
+    from grove.fleet.worker_entry import _event
+
+    event = _event(
+        worker_id,
+        run_id,
+        worker_id,  # skill_id: the worker id is the honest identifier in scope
+        "failed",
+        detail=detail,
+        check=check,
+        unit_id=unit_id,
+    )
+    return write_terminal_event(dest, event)
