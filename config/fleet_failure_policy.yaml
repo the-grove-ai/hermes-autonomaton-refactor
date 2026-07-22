@@ -1,0 +1,47 @@
+# fleet-receipt-custody-v1 P3a — the fleet failure policy surface.
+#
+# One decision per failure class: what the fleet does when a unit's receipt
+# carries that check. The derivation (grove/fleet/unit_state.py) reads THIS to
+# classify unforgiven failure receipts; it binds nothing (P4 binds the reader,
+# P3b fires the breaker and raises proposals). Policy is config, never code.
+#
+# THE STANDING RULE: under uncertainty, `retry`. Misfiling a stochastic failure
+# as structural is far worse than the reverse — `dead_letter` and
+# `pause_producer` cause unbounded damage from a transient condition, while
+# `retry` is bounded by the cap by definition. Every class added here faces the
+# same question, and the answer is the same.
+
+retry_cap:
+  default: 3
+  per_producer: {}          # available, unset
+
+default: retry              # unmapped classes count toward the cap
+
+failure_policy:
+  # ignore — does not count, no action taken
+  reaped_at_restart: ignore
+  no_work: ignore
+
+  # retry — counts toward the cap; dead-letters when exhausted
+  no_package: retry
+  emit_truncation: retry
+  empty_files: retry
+  path_escape: retry
+  evaluator_call_failed: retry
+  inbox_unwritable: retry
+  spawn_failed: retry
+  uncaught: retry
+  catastrophic_no_event: retry
+  nonzero_exit: retry
+  wall_clock_exceeded: retry
+  governed_denial: retry
+
+  # dead_letter — immediate, no retry
+  approval_deferred: dead_letter
+  staged_meta_unreadable: dead_letter
+
+  # pause_producer — the factory is broken; units are not binned
+  declarative_config_missing: pause_producer
+  emit_spec_missing: pause_producer
+  dead_pinned_slug: pause_producer
+  worker_not_registered: pause_producer
