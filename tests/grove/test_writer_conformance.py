@@ -265,6 +265,9 @@ _KAIZEN_LEDGER_TOUCHER_PIN = frozenset({
     "grove/ledger_retention.py",       # sanctioned retention reaper
     "grove/api/telemetry_readers.py",  # reader
     "grove/flywheel_cli.py",           # reader
+    # fleet-receipt-custody-v1 P4b-0 — the disposition projection moved here from
+    # grove/api/portal.py (fleet plane, imported forward by resolver + emission).
+    "grove/fleet/dispositions.py",     # reader (ledger terminal-disposition projection)
 })
 
 # D. Attachment event types: the attachment store owns no file — attachments

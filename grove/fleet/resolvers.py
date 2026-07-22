@@ -309,8 +309,8 @@ def _build_unit_state_context(worker_id: str) -> Dict[str, Any]:
     does not exist yet (P5), so ``forgiven`` is empty. ``terminal_skip`` is read
     per-unit at derive time via the existing feedback-store reader.
     """
-    from grove.api.portal import _ledger_terminal_dispositions
     from grove.fleet import paths
+    from grove.fleet.dispositions import _ledger_terminal_dispositions
     from grove.fleet.unit_state import load_failure_policy
 
     ddir, edir = paths.dispatch_dir(worker_id), paths.events_dir(worker_id)
