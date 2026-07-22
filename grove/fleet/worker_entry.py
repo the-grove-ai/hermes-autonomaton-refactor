@@ -1193,7 +1193,11 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         except TerminalGovernanceHalt as tgh:
             # A grant-less worker hit an ungranted Yellow/Red action; the deny
             # handler fired. This is a completed-with-denial run: failed state,
-            # diagnostics preserved.
+            # diagnostics preserved. P1.2 — the receipt carries the dispatched
+            # identity: a governed denial recurs deterministically (the worker
+            # is blocked), so an identity-less receipt is the purest
+            # uncountable poison pill.
+            _unit = _dispatched_unit_id(payload)
             return _event(
                 worker_id,
                 run_id,
@@ -1201,6 +1205,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 "failed",
                 detail=f"governed denial: {tgh}",
                 check="governed_denial",
+                **({"unit_id": _unit} if declarative else {"row_id": _unit}),
                 **binding_kw,
             )
 
@@ -1248,6 +1253,9 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                         next_prompt, conversation_history=history, task_id=run_id
                     )
                 except TerminalGovernanceHalt as tgh:
+                    # P1.2 — same dispatched-identity rider as the first-run
+                    # governed_denial site above.
+                    _unit = _dispatched_unit_id(payload)
                     return _event(
                         worker_id,
                         run_id,
@@ -1255,6 +1263,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                         "failed",
                         detail=f"governed denial: {tgh}",
                         check="governed_denial",
+                        **({"unit_id": _unit} if declarative else {"row_id": _unit}),
                         **binding_kw,
                     )
 
