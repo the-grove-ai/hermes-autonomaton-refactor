@@ -28,21 +28,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# capability-mutation-surface-v1 P5 (M5) — Pipeline-A's independent authority
-# is RETIRED. The three authorities this module carried are gone:
-#   * GOVERNANCE_YAML_NAMES (the hardcoded target allowlist) — superseded by
-#     the governed-writer registry (grove.red_pending_store._GOVERNED_WRITERS)
-#     resolved per-surface at seal time;
-#   * classify_governance_target — Stage-04 zones now come from the
-#     declarative scope wall (config/scope_surfaces.yaml via
-#     grove.utils.fs_utils.is_scope_defining) + the universal .env→RED rule
-#     in Dispatcher._classify_one_intent;
-#   * the raw write path — the handler NEVER writes; governed writes execute
-#     only through the approved-claim executor's writer registry.
-# propose_governance_change survives as a THIN PROPOSER: argument validation
-# + viability refusal (the writer registry is the acceptance test).
-
-
 def _err(msg: str) -> str:
     return json.dumps({"success": False, "error": msg}, ensure_ascii=False)
 

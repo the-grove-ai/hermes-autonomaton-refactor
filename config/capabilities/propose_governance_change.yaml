@@ -9,9 +9,14 @@ trigger:
   # authorization is enforced per-call by zone (RED) + sovereign approval gate,
   # not by disclosure. trigger.always: true ensures the tool is offered
   # unconditionally so the RED gate fires on every governance-write attempt.
-  # Note: zone enforcement is runtime-classified by classify_governance_target(target_file)
-  # in tools/governance_tool.py — .env → RED, YAML configs → YELLOW. The zone: red field
-  # above documents the maximum zone this tool can reach; it is not read for gating.
+  # Note (comment drift fixed, retrieval-ambient-class-v1 P2 — Exhibit 5):
+  # classify_governance_target is RETIRED (capability-mutation-surface-v1 P5).
+  # Zone enforcement now comes from the declarative scope wall
+  # (config/scope_surfaces.yaml via grove.utils.fs_utils.is_scope_defining)
+  # plus the universal .env→RED rule in Dispatcher._classify_one_intent; the
+  # governed-writer registry (grove.red_pending_store._GOVERNED_WRITERS) is
+  # the sole write authority at seal time. The zone: red field below documents
+  # the maximum zone this tool can reach; it is not read for gating.
   intents: []
   keywords: []
   dock_affinity: []

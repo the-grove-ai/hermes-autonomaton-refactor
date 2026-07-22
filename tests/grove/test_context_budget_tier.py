@@ -36,17 +36,19 @@ TAXONOMY = {"version": 1, "core": [], "domain_chunks": {}, "exploratory": []}
 # native_tools). Mirrors the real record shape — core always-on at every tier;
 # the web verb eligible at all tiers (the victim); x_search eligible at T3 only
 # (the relocation trap); a code verb at T2/T3; an exploratory cap at T3 only.
+# P2 (retrieval-ambient-class-v1): the ``eligible`` column is DELETED from the
+# projection (the inert tier gate and its plumbing are demolished) — 5-tuples.
 SYNTH_CAPS = [
-    ("core", "proactive", True, frozenset(), frozenset({1, 2, 3}),
+    ("core", "proactive", True, frozenset(),
         ("clarify", "memory", "terminal", "read_file", "skill_view")),
     ("web", "proactive", False,
         frozenset({"analysis", "research", "retrieval", "factual_lookup"}),
-        frozenset({1, 2, 3}), ("web_search", "session_search")),
-    ("xsearch", "proactive", False, frozenset({"research"}), frozenset({3}),
+        ("web_search", "session_search")),
+    ("xsearch", "proactive", False, frozenset({"research"}),
         ("x_search",)),
     ("code", "proactive", False, frozenset({"code_generation"}),
-        frozenset({2, 3}), ("write_file", "patch", "execute_code", "search_files")),
-    ("explore", "complexity", False, frozenset(), frozenset({3}),
+        ("write_file", "patch", "execute_code", "search_files")),
+    ("explore", "complexity", False, frozenset(),
         ("delegate_task", "browser_navigate")),
 ]
 
@@ -79,7 +81,8 @@ ALL_TOOLS = _mk(
 
 
 def _stripped_ids(res):
-    return {cid for (cid, _elig) in res.stripped_capabilities}
+    # stripped_capabilities DELETED (P2): nothing is ever tier-stripped.
+    return set()
 
 
 # ── backward-compat: no-tier == legacy, byte-for-byte ──────────────────────
@@ -110,15 +113,15 @@ def test_resolve_tool_set_is_registry_driven():
 
 
 def test_mcp_allow_none_is_legacy_byte_for_byte(synth_caps):
-    legacy = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", current_tier=3)
-    flip_off = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", mcp_allow=None, current_tier=3)
+    legacy = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate")
+    flip_off = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", mcp_allow=None)
     assert _names(list(legacy.tools)) == _names(list(flip_off.tools))
     assert "mcp_notion_API_post_page" in _names(list(legacy.tools))
     assert "mcp_other_do_thing" in _names(list(legacy.tools))
 
 
 def test_mcp_allow_discloses_only_matched_servers(synth_caps):
-    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", mcp_allow={"notion"}, current_tier=3)
+    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", mcp_allow={"notion"})
     n = _names(list(res.tools))
     assert "mcp_notion_API_post_page" in n     # notion matched -> disclosed
     assert "mcp_notion_API_post_search" in n
@@ -126,7 +129,7 @@ def test_mcp_allow_discloses_only_matched_servers(synth_caps):
 
 
 def test_mcp_allow_empty_withholds_all_mcp(synth_caps):
-    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", mcp_allow=set(), current_tier=3)
+    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", mcp_allow=set())
     assert not any(x.startswith("mcp_") for x in _names(list(res.tools)))
     assert "terminal" in _names(list(res.tools))   # core rides every turn (native)
 
@@ -146,10 +149,12 @@ def test_mcp_allow_via_filter_tools_by_name():
 
 
 def test_t3_admits_all_eligible_nothing_stripped(synth_caps):
-    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", current_tier=3)
+    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate")
     got = _names(res.tools)
     assert {"web_search", "session_search", "x_search"} <= set(got)  # all eligible@3
-    assert res.stripped_capabilities == frozenset()
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
     assert res.excluded_mcp == frozenset()
     assert res.fallback is False
 
@@ -157,7 +162,7 @@ def test_t3_admits_all_eligible_nothing_stripped(synth_caps):
 def test_victim_offered_at_eligible_tier_on_triggering_intent(synth_caps):
     # web_search (eligible [1,2,3]) is OFFERED at T2 on a research turn — the
     # orphan the dual-gate produced is closed.
-    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", current_tier=2)
+    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate")
     assert "web_search" in res.allowed_names
     assert "session_search" in res.allowed_names
 
@@ -166,36 +171,44 @@ def test_x_search_offered_at_t2_not_stripped(synth_caps):
     # neuter-tier-eligible-gate: x_search (record documents eligible [3]) is now
     # OFFERED at T2 on a research turn — tier no longer strips. The record's
     # eligible is documentation, not enforcement; nothing is tier-stripped.
-    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", current_tier=2)
+    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate")
     assert "x_search" in res.allowed_names
     assert "x_search" in _names(res.tools)
-    assert res.stripped_capabilities == frozenset()
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
 
 
 def test_complexity_cap_admitted_regardless_of_tier(synth_caps):
     # neuter-tier-eligible-gate: the exploratory cap (record documents eligible
     # [3]) selected on a complex turn is now ADMITTED at T2 — tier no longer
     # strips. Disclosure-mode gating (complexity) is unchanged; tier gating gone.
-    res = resolve_tools_for_tier(ALL_TOOLS, "code_generation", "complex", current_tier=2)
+    res = resolve_tools_for_tier(ALL_TOOLS, "code_generation", "complex")
     assert "delegate_task" in res.allowed_names
-    assert res.stripped_capabilities == frozenset()
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
 
 
 def test_t1_admits_code_cap_and_core(synth_caps):
     # neuter-tier-eligible-gate: the code verb (record documents eligible [2,3])
     # is now ADMITTED at T1 alongside core — tier no longer strips.
-    res = resolve_tools_for_tier(ALL_TOOLS, "code_generation", "moderate", current_tier=1)
+    res = resolve_tools_for_tier(ALL_TOOLS, "code_generation", "moderate")
     got = _names(res.tools)
     assert "write_file" in got
     assert "clarify" in got
-    assert res.stripped_capabilities == frozenset()
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
 
 
 def test_none_tier_admits_all_intent_matched(synth_caps):
     # Cloud / no tier routed: the eligibility gate is bypassed (mirrors the seam).
-    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate", current_tier=None)
+    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate")
     assert {"web_search", "session_search", "x_search"} <= set(res.allowed_names)
-    assert res.stripped_capabilities == frozenset()
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
 
 
 def test_empty_eligible_still_offered_gate_neutered(synth_caps, monkeypatch):
@@ -203,14 +216,16 @@ def test_empty_eligible_still_offered_gate_neutered(synth_caps, monkeypatch):
     # longer special — the tier gate is retired, so an intent-matched cap is
     # offered regardless of its (now documentary) eligible set. Nothing stripped.
     caps = SYNTH_CAPS + [
-        ("orphan", "proactive", False, frozenset({"research"}), frozenset(),
+        ("orphan", "proactive", False, frozenset({"research"}),
             ("orphan_tool",)),
     ]
     monkeypatch.setattr(cb, "_caps_index", lambda: caps)
     res = resolve_tools_for_tier(ALL_TOOLS + _mk("orphan_tool"), "research",
-                                 "moderate", current_tier=3)
+                                 "moderate")
     assert "orphan_tool" in res.allowed_names
-    assert res.stripped_capabilities == frozenset()
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
 
 
 # ── crash-proof unparseable MCP: admitted + recorded + logged ──────────────
@@ -219,7 +234,7 @@ def test_empty_eligible_still_offered_gate_neutered(synth_caps, monkeypatch):
 def test_unparseable_mcp_admitted_recorded_and_logged(synth_caps, caplog):
     tools = ALL_TOOLS + _mk("mcp_")  # 'mcp_' with no server segment
     with caplog.at_level(logging.WARNING, logger="grove.context_budget"):
-        res = resolve_tools_for_tier(tools, "code_generation", "moderate", current_tier=2)
+        res = resolve_tools_for_tier(tools, "code_generation", "moderate")
     assert "mcp_" in res.unparseable_mcp                    # surfaced in provenance
     assert "mcp_" in _names(res.tools)                      # admitted, not silently dropped
     assert any("unparseable" in r.message.lower() for r in caplog.records)
@@ -244,10 +259,9 @@ def test_unknown_intent_admits_core_only_on_t2(synth_caps):
     # admits ONLY the always:true core — never the retired maximal "load
     # everything" fallback. Intent-gated (code/xsearch) and complexity (explore)
     # records are withheld; the classification failure surfaces asynchronously.
-    res = resolve_tools_for_tier(ALL_TOOLS, None, None,
-                                 current_tier=2)
+    res = resolve_tools_for_tier(ALL_TOOLS, None, None)
     assert res.fallback is True
-    assert res.stripped_capabilities == frozenset()         # unknown strips nothing
+    assert not hasattr(res, "stripped_capabilities")        # P2: field deleted
     got = set(res.allowed_names)
     assert {"clarify", "memory", "terminal", "read_file", "skill_view"} <= got  # core
     assert "write_file" not in got                          # code — intent-gated, withheld
@@ -255,8 +269,7 @@ def test_unknown_intent_admits_core_only_on_t2(synth_caps):
 
 
 def test_unknown_intent_admits_core_only_on_t3(synth_caps):
-    res = resolve_tools_for_tier(ALL_TOOLS, "unknown", "simple",
-                                 current_tier=3)
+    res = resolve_tools_for_tier(ALL_TOOLS, "unknown", "simple")
     assert res.fallback is True
     got = _names(res.tools)
     assert "read_file" in got                               # always:true core present
@@ -268,7 +281,7 @@ def test_unknown_intent_admits_core_only_on_t3(synth_caps):
 
 
 def test_tool_resolution_is_frozen(synth_caps):
-    res = resolve_tools_for_tier(ALL_TOOLS, "analysis", "moderate", current_tier=2)
+    res = resolve_tools_for_tier(ALL_TOOLS, "analysis", "moderate")
     assert isinstance(res, ToolResolution)
     with pytest.raises(Exception):
         res.fallback = True  # type: ignore[misc]

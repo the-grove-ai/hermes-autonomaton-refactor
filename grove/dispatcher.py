@@ -2596,14 +2596,9 @@ class Dispatcher:
         _esc_source = request.get("source")
         if _esc_source:
             event_payload["source"] = _esc_source
-        if request.get("stripped_capabilities") is not None:
-            event_payload["stripped_capabilities"] = request.get(
-                "stripped_capabilities"
-            )
-        if request.get("capability_tier_demands") is not None:
-            event_payload["capability_tier_demands"] = request.get(
-                "capability_tier_demands"
-            )
+        # stripped_capabilities / capability_tier_demands payload copies DELETED
+        # (retrieval-ambient-class-v1 P2): their only producer was the dead D8
+        # strip-escalation net — no live escalation source sets them.
         if request.get("target_tier") is not None:
             event_payload["target_tier"] = request.get("target_tier")
         if request.get("intent_class") is not None:

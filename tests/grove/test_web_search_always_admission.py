@@ -65,8 +65,7 @@ def test_web_search_offered_for_research_at_every_tier(tier):
     # research is a pre-existing web_search intent, offered at every tier —
     # proving tier does not gate (eligible=[1,2,3], gate inert).
     res = resolve_tools_for_tier(
-        _all_native_tools(), "research", "moderate", current_tier=tier
-    )
+        _all_native_tools(), "research", "moderate")
     assert "web_search" in res.allowed_names, (
         f"web_search must be offered for research at T{tier}"
     )
@@ -87,8 +86,7 @@ def test_web_search_offered_for_widened_intents_at_every_tier(intent, tier):
     # are the operator's press-pitch (creative_writing) and contact-lookup
     # (memory_operation) research contexts — unblock them at every tier.
     res = resolve_tools_for_tier(
-        _all_native_tools(), intent, "moderate", current_tier=tier
-    )
+        _all_native_tools(), intent, "moderate")
     assert "web_search" in res.allowed_names, (
         f"web_search must be offered for {intent!r} at T{tier}"
     )
@@ -99,9 +97,8 @@ def test_web_search_now_offered_on_formerly_held_intents(intent):
     # retrieval-ambient-class-v1 P1: the cost HOLD is retired by ratification —
     # disclosure: baseline admits web_search on EVERY intent, held ones included.
     reset_caps_index_cache()
-    allowed, _ = _registry_allowed_names(
-        intent_class=intent, complexity_signal="simple", current_tier=None
-    )
+    allowed = _registry_allowed_names(
+        intent_class=intent, complexity_signal="simple")
     assert "web_search" in allowed, (
         f"web_search must ride {intent!r} under the ambient baseline class"
     )
@@ -111,9 +108,8 @@ def test_web_search_now_offered_on_unknown_intent():
     # The ambient baseline class is the floor the Andon-on-uncertainty path
     # stands on — baseline records ride unknown turns (P1 G5 precedence).
     reset_caps_index_cache()
-    allowed, _ = _registry_allowed_names(
-        intent_class="unknown", complexity_signal="simple", current_tier=None
-    )
+    allowed = _registry_allowed_names(
+        intent_class="unknown", complexity_signal="simple")
     assert "web_search" in allowed
 
 

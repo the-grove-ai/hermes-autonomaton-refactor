@@ -15,7 +15,7 @@ _HA_TOOLS = ("ha_list_entities", "ha_list_services")
 
 def _offered(intent):
     reset_caps_index_cache()
-    names, _ = _registry_allowed_names(intent, "moderate", current_tier=None)
+    names = _registry_allowed_names(intent, "moderate")
     return names
 
 

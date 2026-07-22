@@ -92,6 +92,17 @@ class DisclosableUnit:
     payload: str
     tiers: Tuple[str, ...]
     trigger: UnitTrigger
+    # retrieval-ambient-class-v1 P2 (one disclose-on-match rule) — the unit's
+    # disclosure class, derived from its governing capability record:
+    #   "eager"      — baseline / proactive-always: unconditionally eager, a
+    #                  trigger is moot (baseline never needs triggers).
+    #   "complexity" — the complexity signal IS the disclose signal.
+    #   "triggered"  — must declare intents/keywords/dock_goal (fail loud).
+    #                  YAML-parsed units (mcp/goal/contract) default here, so
+    #                  the untriggered-MCP policy is byte-identical.
+    #   "recordless" — a registered tool with no governing record; carries no
+    #                  signal, loud-warned at the build site (pull-only debt).
+    disclosure_mode: str = "triggered"
 
     def __post_init__(self) -> None:
         if self.kind not in VALID_KINDS:
@@ -116,27 +127,37 @@ class DisclosableUnit:
                 f"that no tier can disclose is dead weight — list >= 1 tier"
             )
         self._validate_payload()
-        self._validate_mcp_trigger()
+        self._validate_trigger()
 
-    def _validate_mcp_trigger(self) -> None:
-        """Untriggered-MCP policy (Phase 2, D-GATE-B item 2): an ``mcp`` unit
-        MUST declare at least one trigger signal (intents OR keywords OR
-        dock_goal). Under disclose-on-match an mcp unit with no trigger could
-        never match — it would silently vanish from every turn, the exact
-        allow-by-default-to-nothing failure the flip must not introduce.
-        Declarative discipline: adding a connector = a manifest entry WITH its
-        trigger. Tool units are exempt — native selection (tool_groups.yaml)
-        owns them, so they carry no trigger by design.
+    def _validate_trigger(self) -> None:
+        """ONE disclose-on-match rule (retrieval-ambient-class-v1 P2, unifying
+        the Phase-2 D-GATE-B untriggered-MCP policy across kinds): every unit
+        in ``disclosure_mode: triggered`` MUST declare at least one trigger
+        signal (intents OR keywords OR dock_goal) — native and MCP alike. Under
+        disclose-on-match an untriggered unit could never match: a silent
+        vanish, the exact allow-by-default-to-nothing failure the flip must
+        not introduce.
+
+        Exemptions, by disclosure class (not by kind — the native-kind
+        exemption is retired):
+        * ``eager`` (baseline / proactive-always) — unconditionally disclosed;
+          a trigger is moot. Baseline never needs triggers.
+        * ``complexity`` — disclosed by the complexity signal, not a trigger
+          match (e.g. browser_read: intents=[], always moot under complexity).
+        * ``recordless`` — no governing record to derive from; loud-warned at
+          the build site, reachable via pull only. Record coverage is the fix.
         """
-        if self.kind != "mcp":
+        if self.disclosure_mode in ("eager", "complexity", "recordless"):
             return
         t = self.trigger
         if not (t.intents or t.keywords or t.dock_goal):
             raise ValueError(
-                f"DisclosableUnit {self.id!r} is an mcp unit with no trigger "
-                f"(no intents, no keywords, no dock_goal). Under disclose-on-"
-                f"match it could never disclose — a silent vanish. Every "
-                f"disclosable MCP must declare a trigger."
+                f"DisclosableUnit {self.id!r} ({self.kind}) is a triggered "
+                f"unit with no trigger (no intents, no keywords, no "
+                f"dock_goal). Under disclose-on-match it could never disclose "
+                f"— a silent vanish. Every triggered unit must declare a "
+                f"trigger; eager (baseline/proactive-always) and complexity "
+                f"units are the only trigger-exempt classes."
             )
 
     def _validate_payload(self) -> None:
@@ -240,6 +261,15 @@ def _parse_unit(spec, idx: int, target: Path) -> DisclosableUnit:
         dock_goal=dock_goal,
     )
 
+    # retrieval-ambient-class-v1 P2 — optional declarative disclosure class.
+    # Defaults to "triggered" (the strict class), so every YAML mcp/goal unit
+    # keeps the untriggered-fails-loud behavior byte-identically.
+    mode = spec.get("disclosure_mode", "triggered")
+    if mode not in ("triggered", "eager", "complexity", "recordless"):
+        raise ValueError(
+            f"manifest at {target}: unit {unit_id!r} disclosure_mode {mode!r} "
+            f"is not one of triggered/eager/complexity/recordless"
+        )
     return DisclosableUnit(
         id=unit_id,
         kind=str(spec["kind"]),
@@ -247,6 +277,7 @@ def _parse_unit(spec, idx: int, target: Path) -> DisclosableUnit:
         payload=str(spec["payload"]),
         tiers=_str_tuple(spec["tiers"], unit_id, "tiers", target),
         trigger=trigger,
+        disclosure_mode=mode,
     )
 
 

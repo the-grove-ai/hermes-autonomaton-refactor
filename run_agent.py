@@ -1497,9 +1497,11 @@ class AIAgent:
         # ``tool_selection`` Kaizen Ledger event.
         self._tools_for_turn: Optional[List[Dict[str, Any]]] = None
         self._last_tool_selection: Optional[Dict[str, Any]] = None
-        # Sprint 73 Phase 4b — the tier-aware ToolResolution stashed by
-        # _maybe_apply_tool_filter; the generator reads its stripped_capabilities
-        # to fire the D8 escalation. None until the first per-turn filter runs.
+        # Sprint 73 Phase 4b — the per-turn ToolResolution stashed by
+        # _maybe_apply_tool_filter (provenance/telemetry). The D8 escalation
+        # reader is DELETED (retrieval-ambient-class-v1 P2 — the inert tier
+        # gate never stripped, so the net never fired). None until the first
+        # per-turn filter runs.
         self._tool_resolution: Optional[Any] = None
 
         self.model = model
@@ -3026,14 +3028,10 @@ class AIAgent:
                 self._mcp_match_reasons.setdefault(server, reason)
         return matched
 
-    @staticmethod
-    def _current_tier_int():
-        """The current cognitive tier as an int (1/2/3), or None when no tier
-        was routed (cloud / vanilla path — the ceiling then does not apply,
-        mirroring an empty exclude_mcp)."""
-        from grove.providers import current_tier
-        t = current_tier()
-        return {"T1": 1, "T2": 2, "T3": 3}.get(t) if t else None
+    # _current_tier_int DELETED (retrieval-ambient-class-v1 P2): its two
+    # consumers — the inert tier-eligibility gate's plumbing and the dead D8
+    # escalation net — are demolished; tier identity for telemetry reads
+    # grove.providers.current_tier directly.
 
     @staticmethod
     def _mcp_server_of_record(record):
@@ -3166,11 +3164,16 @@ class AIAgent:
         if getattr(self, "_disclosure_log", None) is None:
             self._disclosure_log = []
 
-        # Record-derived split: ``core`` = proactive-always (always eager);
-        # ``matched`` = proactive-intent records whose trigger.intents include this
-        # turn's intent (eager, JIT). Complexity/fallback records are never eager —
-        # they ride the pull-index. Empty matched when intent_class is None.
-        core, _intent_map = disclosure_split_sets()
+        # Record-derived split (retrieval-ambient-class-v1 P2, closes the G11
+        # seam): ``baseline`` = the ambient retrieval class — eager
+        # UNCONDITIONALLY at every tier, checked FIRST (before matched-MCP,
+        # before core) and NEVER demoted to the pull-index. ``core`` =
+        # proactive-always (always eager); ``matched`` = proactive-intent
+        # records whose trigger.intents include this turn's intent (eager,
+        # JIT). Complexity/fallback records are never eager — they ride the
+        # pull-index. Empty matched when intent_class is None. T1 stays
+        # full-eager upstream (G12 stands per GATE-B ruling E).
+        baseline, core, _intent_map = disclosure_split_sets()
         matched = (
             {t for t, ins in _intent_map.items() if intent_class in ins}
             if intent_class is not None else set()
@@ -3181,7 +3184,10 @@ class AIAgent:
         eager_ids: set = set()
         for t in res.tools:
             nm = _name_of(t)
-            if _is_mcp(nm):
+            if nm in baseline:
+                eager.append(t)                       # ambient baseline — eager, every tier
+                eager_ids.add(nm)
+            elif _is_mcp(nm):
                 eager.append(t)                       # matched MCP — Phase 2
                 server = _mcp_server_of(nm)
                 if server:
@@ -3272,15 +3278,14 @@ class AIAgent:
 
     def _maybe_apply_tool_filter(self, user_message: str = "") -> None:
         """Compute the per-turn filtered tool list and stash the selection +
-        provenance for the Dispatcher's ledger and the D8 escalation.
+        provenance for the Dispatcher's ledger.
 
         Sprint 73 Phase 4b — consolidated onto the single resolution surface
         ``grove.context_budget.resolve_tools_for_tier`` (the legacy twin is
-        retired). The SOLE tier gate is each capability's ``tier_rule.eligible``
-        evaluated against ``current_tier`` (web-surface-admission-fix, Option B —
-        ``allow_groups`` retired). ``current_tier`` is bound from
-        ``self._current_tier_int()``. ``None`` (cloud / no tier routed) bypasses
-        the gate.
+        retired). The tier-eligibility gate, its ``current_tier`` plumbing and
+        the D8 escalation net are DELETED (retrieval-ambient-class-v1 P2) —
+        admission is intent/disclosure-driven; tier governance is the
+        Cognitive Router's job.
 
         Fires inside ``_run_turn_generator`` after classification, so
         ``grove.providers.current_classification()`` is set.
@@ -3385,16 +3390,14 @@ class AIAgent:
 
         def _resolve():
             # GRV-009 E5 C-RETIRE — native selection is registry-driven (reads no
-            # tool_groups.yaml taxonomy). web-surface-admission-fix (Option B) —
-            # tier_rule.eligible is bound to ``current_tier`` (``_current_tier_int()``);
-            # None (cloud / no tier routed) bypasses the gate. ``allow_groups`` and
-            # the per-tier tool budget are retired — the resolver takes neither.
+            # tool_groups.yaml taxonomy). The tier-eligibility gate and its
+            # current_tier plumbing are DELETED (retrieval-ambient-class-v1 P2);
+            # ``allow_groups`` and the per-tier tool budget are likewise retired.
             return resolve_tools_for_tier(
                 self.tools,
                 intent_class,
                 complexity,
                 mcp_allow=self._compute_mcp_allow(intent_class, goal_alignment),
-                current_tier=self._current_tier_int(),
             )
 
         if budgeted:
@@ -3489,11 +3492,9 @@ class AIAgent:
             "full_count": len(self.tools),
             # Sprint 73 Phase 4b — provenance (D10): why this payload.
             "tier": _tier_now,
-            # web-surface-admission-fix (Option B) — the capability NAMES the tier
-            # stripped (tier_rule.eligible miss), not group names.
-            "stripped_capabilities": sorted(
-                cid for (cid, _elig) in res.stripped_capabilities
-            ),
+            # stripped_capabilities telemetry DELETED (retrieval-ambient-class-v1
+            # P2): the inert tier gate never stripped, so the field was a
+            # constant [] — dead provenance.
             "excluded_mcp": sorted(res.excluded_mcp),
             "unparseable_mcp": list(res.unparseable_mcp),
             # GRV-009 spike C1 — the selected tool NAMES, not just the count.
@@ -3596,18 +3597,19 @@ class AIAgent:
         )
         return resolved + additions, carried
 
-    # ── GRV-009 E2 C3 — Workspace Capability hook (additive) ─────────────────
-    # A Workspace-shaped turn (one of the four Workspace intent classes) resolves
-    # THROUGH the committed Capability records: the records stamp the turn and
-    # carry the guidance the retired SKILL.md used to provide. Zone enforcement
+    # ── GRV-009 E2 C3 — Capability hook (additive) ───────────────────────────
+    # retrieval-ambient-class-v1 P2 (G2 retirement): the _WORKSPACE_CAPABILITY_
+    # INTENTS carrier frozenset is DELETED — the hook runs on EVERY intent
+    # class, unknown included. Record selection stays intent-driven
+    # (``intent_class in c.trigger.intents``), so an unknown/None turn simply
+    # selects no records. The hook attaches guidance text + provenance/zone
+    # bookkeeping ONLY — it never grants capability and never changes surface
+    # membership (admission is _registry_allowed_names' job). Zone enforcement
     # is unchanged — green passes, yellow keeps routing through the existing
-    # tool_zones approval gate (the records mirror it). Both entrypoints inherit
-    # this: gateway and CLI/direct both drive _run_turn_generator ->
+    # tool_zones approval gate (the records mirror it). Both entrypoints
+    # inherit this: gateway and CLI/direct both drive _run_turn_generator ->
     # _maybe_apply_tool_filter (the gateway at grove/dispatcher.py via
     # ``agent._run_turn_generator``).
-    _WORKSPACE_CAPABILITY_INTENTS = frozenset(
-        {"memory_operation", "scheduling", "messaging", "retrieval"}
-    )
 
     @staticmethod
     def _compose_capability_guidance(records) -> str:
@@ -3617,8 +3619,9 @@ class AIAgent:
             for r in records
         ]
         return (
-            "Google Workspace is delivered through Capability records (GRV-009). "
-            "Follow the per-record guidance below:\n\n" + "\n\n".join(blocks)
+            "These capabilities are delivered through Capability records "
+            "(GRV-009). Follow the per-record guidance below:\n\n"
+            + "\n\n".join(blocks)
         )
 
     def _workspace_verb_names(self):
@@ -3635,16 +3638,18 @@ class AIAgent:
             return frozenset()
 
     def _apply_capability_hook(self, intent_class) -> None:
-        """Resolve a Workspace-shaped turn through the Capability records.
-
-        No-op on every non-Workspace turn. On a Workspace turn it (1) stamps the
-        governing record ids on ``_capability_records_applied`` (provenance) and
-        (2) attaches the records' partitioned payload as eager guidance onto the
-        per-turn tool surface — a single deterministic Workspace-verb carrier,
-        whose dict is COPIED so the shared registry object is never mutated.
-        Never raises into the turn: records are dry-run validated at commit, so a
-        load failure here is the unreachable-config branch and degrades to prior
-        behavior (loudly logged).
+        """Resolve the turn through the Capability records — EVERY intent class
+        (retrieval-ambient-class-v1 P2: the four-intent carrier gate is
+        retired). It (1) stamps the governing record ids on
+        ``_capability_records_applied`` (provenance) and (2) attaches the
+        records' partitioned payload as eager guidance onto the per-turn tool
+        surface — a single deterministic carrier verb, whose dict is COPIED so
+        the shared registry object is never mutated. Record selection is
+        intent-driven, so an unknown/None turn selects no records and the hook
+        degrades to bookkeeping-only. Never raises into the turn: records are
+        dry-run validated at commit, so a load failure here is the
+        unreachable-config branch and degrades to prior behavior (loudly
+        logged).
         """
         self._capability_records_applied = []
         self._capability_guidance = None
@@ -3659,13 +3664,13 @@ class AIAgent:
         # fired turn is the admission-gate signature (the verbs never reached
         # the surface — the spike's root cause). Behavior below is byte-identical
         # to the pre-C1 hook; only the bookkeeping vars + the stamp are new.
-        fired = intent_class in self._WORKSPACE_CAPABILITY_INTENTS
+        # P2 (G2 retirement): the hook fires on EVERY turn — ``fired`` is the
+        # constant True stamp (kept for telemetry-shape continuity); record
+        # selection below is the only narrowing (intent-driven).
+        fired = True
         carrier_verbs_present: List[str] = []
         payload_attached = False
         try:
-            if not fired:
-                return  # additive no-op outside the four Workspace intent classes
-
             try:
                 from grove.capability_registry import load_capabilities
                 records = sorted(
@@ -14111,91 +14116,11 @@ class AIAgent:
         # on unknown intent or any failure — never crashes the turn.
         self._maybe_apply_tool_filter(user_message)
 
-        # Sprint 73 Phase 4b (D8) — strip-driven escalation, re-sourced onto
-        # tier_rule.eligible (web-surface-admission-fix, Option B; allow_groups
-        # retired). The tier may make a capability the intent SELECTED ineligible
-        # (current_tier ∉ tier_rule.eligible). Never strip silently: escalate ONCE
-        # to the MINIMUM tier covering the WHOLE stripped set, BEFORE the first
-        # LLM call. Grant → the Dispatcher hot-swaps to the covering tier and THIS
-        # generator is replaced (re-running the builder, so builder ≡ seam at the
-        # new tier); deny → logged, the turn proceeds with the capped set. No
-        # single covering tier (null intersection — a cap eligible only below the
-        # current tier, or two caps with disjoint eligible sets) → FAIL LOUD, the
-        # request naming each cap + its incompatible tier demands; never silently
-        # pick a tier and strand a cap. The event carries the capability NAMES
-        # (not groups) for observability.
-        _tres = self._tool_resolution
-        if _tres is not None and _tres.stripped_capabilities:
-            from grove.intents import EscalationRequest
-            from grove.context_budget import min_covering_tier
-            _sel = self._last_tool_selection or {}
-            _esc_intent_class = _sel.get("intent_class")
-            _esc_tier = _sel.get("tier")
-            _cur_tier_int = self._current_tier_int()
-            _stripped_names = sorted(
-                cid for (cid, _elig) in _tres.stripped_capabilities
-            )
-            _demands = {
-                cid: list(elig)
-                for (cid, elig) in sorted(_tres.stripped_capabilities)
-            }
-            _target = min_covering_tier(
-                _tres.stripped_capabilities, _cur_tier_int
-            )
-            if _target is None:
-                # Null intersection — no single tier serves the whole stripped
-                # set. Surface the unsatisfiable conflict naming each cap + its
-                # eligible tiers (a RECORD bug to reconcile); never strand a cap.
-                yield EscalationRequest(
-                    reason=(
-                        f"tier {_esc_tier or '?'} cannot serve capabilities "
-                        f"{_stripped_names}: no single tier covers their combined "
-                        f"tier_rule.eligible demands {_demands} — unsatisfiable "
-                        f"tier conflict (reconcile the eligible sets)"
-                    ),
-                    request={
-                        "reasoning_depth": "deep",
-                        "source": "tool_budget_strip_conflict",
-                        "stripped_capabilities": _stripped_names,
-                        "capability_tier_demands": _demands,
-                        "intent_class": _esc_intent_class,
-                        "current_tier": _esc_tier,
-                    },
-                )
-            else:
-                # LOOP INVARIANT (Gemini) — must hold BEFORE the LLM is invoked:
-                # at the target tier the stripped set re-evaluates to EMPTY (every
-                # stripped cap is eligible there). min_covering_tier draws the
-                # target from the intersection of the eligible sets, so this holds
-                # by construction; a hard guard (not a -O-strippable assert) makes
-                # a violated invariant fail loud rather than escalate to a tier
-                # that still strips.
-                if not all(
-                    _target in set(elig)
-                    for (_cid, elig) in _tres.stripped_capabilities
-                ):
-                    raise RuntimeError(
-                        "[run_agent] D8 min-covering-tier invariant violated: "
-                        f"target tier {_target} does not cover all stripped "
-                        f"capabilities {_demands}"
-                    )
-                yield EscalationRequest(
-                    reason=(
-                        f"tier {_esc_tier or '?'} strips capabilit"
-                        f"{'y' if len(_stripped_names) == 1 else 'ies'} "
-                        f"{_stripped_names} that intent {_esc_intent_class!r} "
-                        f"selected; escalating to T{_target} (the minimum tier "
-                        f"covering them)"
-                    ),
-                    request={
-                        "reasoning_depth": "deep",
-                        "source": "tool_budget_strip",
-                        "stripped_capabilities": _stripped_names,
-                        "target_tier": _target,
-                        "intent_class": _esc_intent_class,
-                        "current_tier": _esc_tier,
-                    },
-                )
+        # retrieval-ambient-class-v1 P2 — the D8 strip-driven escalation net is
+        # DELETED: the tier-eligibility gate went inert in fallback-retirement-v1
+        # Phase 2 (nothing is ever tier-stripped), so this net could never fire.
+        # Tier governance is the Cognitive Router's job; the zone system governs
+        # mutation safety.
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
@@ -14540,7 +14465,7 @@ class AIAgent:
                     _prov = {
                         k: _sel.get(k)
                         for k in ("selected_count", "full_count", "fallback",
-                                  "stripped_capabilities", "excluded_mcp")
+                                  "excluded_mcp")
                     }
                     logger.info(
                         "[prefill-components] tier=%s total~%s system~%s "

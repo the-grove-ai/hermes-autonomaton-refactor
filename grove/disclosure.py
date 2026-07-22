@@ -37,39 +37,83 @@ __all__ = [
 
 def build_disclosure_units(registry):
     """GRV-009 E5b C1 — the disclosure-index units, registry + declarative ONLY
-    (no tool_groups.yaml). Derived tool units carry id/kind/oneline/payload; the
-    eager/pull SPLIT now comes from capability records
-    (:func:`disclosure_split_sets`), NOT per-unit tiers/trigger, so those are
-    empty here. The declarative half (goal/contract/mcp) is unchanged. The id
-    set, kinds, onelines and order are identical to the legacy ``build_manifest``,
-    so the pull-index string is byte-for-byte the same — just without the
-    tool_groups read."""
+    (no tool_groups.yaml). The declarative half (goal/contract/mcp) is
+    unchanged. The id set, kinds, onelines and order are identical to the
+    legacy ``build_manifest``, so the pull-index string is byte-for-byte the
+    same — just without the tool_groups read.
+
+    retrieval-ambient-class-v1 P2 (G9 fix — native trigger parity): derived
+    native units carry a ``UnitTrigger`` built from their governing capability
+    record (intents + keywords) plus the record's ``disclosure_mode`` — the
+    SAME shape MCP units get, retiring the empty-trigger hardcode that made
+    natives structurally unable to disclose-on-match. A registered tool with
+    NO governing record derives a ``recordless`` unit (empty trigger) and is
+    reported in ONE loud warning — parity with the unrecorded-MCP-server
+    warning in run_agent._compute_mcp_allow."""
+    import logging as _logging
+
+    from grove.capability import TriggerDisclosure as TD
+    from grove.capability_registry import load_capabilities
     from grove.manifest import (
         DisclosableUnit, UnitTrigger, load_manifest, _oneline_from_description,
     )
+
+    _logger = _logging.getLogger(__name__)
+
+    # tool name → (disclosure_mode, intents, keywords) from its governing record.
+    record_map = {}
+    for c in load_capabilities().values():
+        if c.trigger.disclosure == TD.BASELINE:
+            mode = "eager"          # unconditional — never needs a trigger
+        elif c.trigger.disclosure == TD.PROACTIVE and c.trigger.always:
+            mode = "eager"          # proactive core — always eager, no match needed
+        elif c.trigger.disclosure == TD.COMPLEXITY:
+            mode = "complexity"     # the complexity signal IS its disclose signal
+        else:
+            mode = "triggered"      # must carry intents/keywords (fail loud)
+        for t in c.bindings.tools:
+            if _is_mcp(t):
+                continue
+            record_map[t] = (
+                mode, tuple(c.trigger.intents), tuple(c.trigger.keywords),
+            )
 
     names = sorted(registry.get_all_tool_names())
     defs = registry.get_definitions(set(names), quiet=True)
     by_name = {
         (d.get("function") or {}).get("name") or d.get("name"): d for d in defs
     }
-    derived = []
+    derived, recordless = [], []
     for name in names:
         d = by_name.get(name)
         if d is None:
             continue
         fn = d.get("function") or {}
         desc = fn.get("description") or d.get("description") or ""
+        mode, intents, keywords = record_map.get(name) or ("recordless", (), ())
+        if mode == "recordless":
+            recordless.append(name)
         derived.append(DisclosableUnit(
             id=name, kind="tool", oneline=_oneline_from_description(desc),
             payload=f"tool_schema:{name}",
             # tiers is unused by the disclosure split (build_pull_tool_defs /
             # resolve_pull read only id/kind/oneline) — a neutral non-empty
             # placeholder satisfies DisclosableUnit's >=1-tier invariant. The
-            # eligible-tier truth lives in the resolver (tier_rule.eligible).
+            # eligible-tier truth lives in the record (tier_rule.eligible).
             tiers=("T1", "T2", "T3"),
-            trigger=UnitTrigger(intents=(), keywords=(), dock_goal=None),
+            trigger=UnitTrigger(
+                intents=intents, keywords=keywords, dock_goal=None,
+            ),
+            disclosure_mode=mode,
         ))
+    if recordless:
+        _logger.warning(
+            "[grove.disclosure] %d registered tool(s) have NO governing "
+            "capability record: %s — their units carry no disclose signal "
+            "(pull-index reachable only). Record coverage is the fix; a "
+            "recordless tool cannot disclose-on-match.",
+            len(recordless), sorted(recordless),
+        )
     declarative = load_manifest()
     merged, seen = [], {}
     for u in (*derived, *declarative):
@@ -88,31 +132,35 @@ _split_cache = None
 
 
 def disclosure_split_sets():
-    """GRV-009 E5b C1 — the always-eager (core) set and the per-intent matched
-    map, derived from capability records (the trigger-driven legacy mechanism):
+    """The eager split, derived from capability records:
 
+    * baseline            → ``baseline`` (retrieval-ambient-class-v1 P2: the
+      ambient class — eager UNCONDITIONALLY at every tier, never pull-demoted).
     * proactive + always  → ``core`` (always eager; == taxonomy.core, verified).
     * proactive + intents → matched on those intents (eager on a matching turn).
     * complexity / fallback → never eager (omitted; they ride the pull-index).
 
-    Returns ``(core_frozenset, {tool: set(intents)})``. Cached (the resolver runs
-    per turn); reset between tests via :func:`reset_disclosure_split_cache`."""
+    Returns ``(baseline_frozenset, core_frozenset, {tool: set(intents)})``.
+    Cached (the resolver runs per turn); reset between tests via
+    :func:`reset_disclosure_split_cache`."""
     global _split_cache
     if _split_cache is None:
         from grove.capability_registry import load_capabilities
         from grove.capability import TriggerDisclosure as TD
 
-        core, intent_map = set(), {}
+        baseline, core, intent_map = set(), set(), {}
         for c in load_capabilities().values():
             nt = [t for t in c.bindings.tools if not _is_mcp(t)]
             if not nt:
                 continue
-            if c.trigger.disclosure == TD.PROACTIVE and c.trigger.always:
+            if c.trigger.disclosure == TD.BASELINE:
+                baseline.update(nt)
+            elif c.trigger.disclosure == TD.PROACTIVE and c.trigger.always:
                 core.update(nt)
             elif c.trigger.disclosure == TD.PROACTIVE:
                 for t in nt:
                     intent_map.setdefault(t, set()).update(c.trigger.intents)
-        _split_cache = (frozenset(core), intent_map)
+        _split_cache = (frozenset(baseline), frozenset(core), intent_map)
     return _split_cache
 
 

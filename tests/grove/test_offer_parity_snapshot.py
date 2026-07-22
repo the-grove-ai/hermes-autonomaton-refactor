@@ -34,7 +34,7 @@ def _live_surface():
             ic = None if intent == "__unknown__" else intent
             for cx in COMPLEXITY_SIGNALS:
                 res = resolve_tools_for_tier(tools, ic, cx,
-                                             current_tier=tier_int, mcp_allow=None)
+                                             mcp_allow=None)
                 out[f"{tier}|{intent}|{cx}"] = sorted(t["function"]["name"] for t in res.tools)
     return out
 

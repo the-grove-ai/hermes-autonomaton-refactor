@@ -210,5 +210,5 @@ class TestEscalateInCoreChunk:
         # records' proactive-always set (disclosure_split_sets). Assert escalate is
         # in it, so the registry-driven resolver/disclosure surfaces it every turn.
         from grove.disclosure import disclosure_split_sets
-        core, _intent_map = disclosure_split_sets()
+        _baseline, core, _intent_map = disclosure_split_sets()
         assert "escalate" in core

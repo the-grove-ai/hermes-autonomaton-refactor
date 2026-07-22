@@ -164,9 +164,8 @@ def test_baseline_green_with_empty_trigger_loads():
 def test_baseline_admitted_on_simple_turn_every_intent():
     reset_caps_index_cache()
     for intent in ("conversation", "translation", "system_admin", "retrieval"):
-        allowed, _ = _registry_allowed_names(
-            intent_class=intent, complexity_signal="simple", current_tier=None
-        )
+        allowed = _registry_allowed_names(
+            intent_class=intent, complexity_signal="simple")
         assert "web_search" in allowed, intent   # was cost-HOLD withheld pre-P1
         assert "read_file" in allowed, intent
         assert "cellar_search" in allowed, intent
@@ -175,9 +174,8 @@ def test_baseline_admitted_on_simple_turn_every_intent():
 def test_baseline_admitted_on_unknown_turn():
     # The ambient class is the floor the Andon-on-uncertainty path stands on.
     reset_caps_index_cache()
-    allowed, _ = _registry_allowed_names(
-        intent_class="unknown", complexity_signal="simple", current_tier=None
-    )
+    allowed = _registry_allowed_names(
+        intent_class="unknown", complexity_signal="simple")
     for tool in ("web_search", "cellar_search", "gmail_search"):
         assert tool in allowed, tool
 
@@ -186,13 +184,11 @@ def test_non_baseline_complexity_behavior_unchanged():
     # browser_read (native record) stays disclosure: complexity — withheld on
     # a simple turn, admitted on a complex one. P1 must not leak it.
     reset_caps_index_cache()
-    simple, _ = _registry_allowed_names(
-        intent_class="retrieval", complexity_signal="simple", current_tier=None
-    )
+    simple = _registry_allowed_names(
+        intent_class="retrieval", complexity_signal="simple")
     assert "browser_navigate" not in simple
-    complex_, _ = _registry_allowed_names(
-        intent_class="retrieval", complexity_signal="complex", current_tier=None
-    )
+    complex_ = _registry_allowed_names(
+        intent_class="retrieval", complexity_signal="complex")
     assert "browser_navigate" in complex_
 
 

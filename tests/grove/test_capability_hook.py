@@ -70,7 +70,7 @@ def test_hook_resolves_through_records_on_workspace_intent():
     assert "Never execute" in agent._capability_guidance or "approval" in agent._capability_guidance
     # Attached to a Workspace-verb carrier in the live surface.
     g = agent._tools_for_turn[1]["function"]["description"]
-    assert g.startswith("Google Workspace is delivered through Capability records")
+    assert g.startswith("These capabilities are delivered through Capability records")  # P2: header generalized (hook fires on every intent class)
     assert "Search Gmail" in g  # original description preserved after the guidance
 
 
@@ -169,7 +169,9 @@ def test_hook_stamps_outcome_non_workspace_intent():
     agent._apply_capability_hook("conversation")
 
     sel = agent._last_tool_selection
-    assert sel["capability_hook_fired"] is False
+    # P2 (G2 retirement): the hook fires on EVERY intent class — the stamp is
+    # constant True; record selection (intent-driven) is the only narrowing.
+    assert sel["capability_hook_fired"] is True
     assert sel["capability_records_applied"] == []
     assert sel["capability_payload_attached"] is False
     assert sel["capability_carrier_verbs_present"] == []
