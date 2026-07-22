@@ -91,8 +91,9 @@ _PRIMITIVE_CALLER_PINS: dict[tuple[str, str], frozenset[tuple[str, str]]] = {
         ("grove/api/actions.py", "_apply_memory"),
     }),
     # def at grove/fleet/staging.py:28; in-module callers :54/:102/:113 plus
-    # the two pinned cross-module direct importers
-    # (grove/forge/feedback_store.py:41, grove/fleet/reap.py:25).
+    # the pinned cross-module direct importers (grove/forge/feedback_store.py:41,
+    # grove/fleet/reap.py:25, grove/fleet/runner.py:30 — the last mints the C1
+    # genesis dispatch record atomically).
     ("grove/fleet/staging.py", "_atomic_write_bytes"): frozenset({
         ("grove/fleet/staging.py", "stage_draft"),
         ("grove/fleet/staging.py", "stage_package"),
@@ -100,6 +101,7 @@ _PRIMITIVE_CALLER_PINS: dict[tuple[str, str], frozenset[tuple[str, str]]] = {
         ("grove/forge/feedback_store.py", "write"),
         ("grove/forge/feedback_store.py", "set_terminal_skip"),
         ("grove/fleet/reap.py", "write_pidfile"),
+        ("grove/fleet/runner.py", "write_dispatch_record"),
     }),
     # MemoryStore.append_event, def at grove/memory/store.py:111. The
     # event-sourced store is multi-emitter BY DESIGN (like KaizenLedger);
