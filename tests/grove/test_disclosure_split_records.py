@@ -34,6 +34,9 @@ from grove.disclosure import (
 )
 from grove.tier_budget import load_tier_budgets
 
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
+
 _REPO = Path(__file__).resolve().parents[2]
 _GOLDEN = Path(__file__).parent / "fixtures" / "disclosure_split_golden.json"
 

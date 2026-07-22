@@ -40,6 +40,10 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import pytest
+
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCAN_DIRS = ("grove", "tools")

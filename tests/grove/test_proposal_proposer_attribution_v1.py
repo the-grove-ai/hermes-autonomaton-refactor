@@ -19,6 +19,9 @@ from grove.eval.proposal_queue import (
     read_all,
 )
 
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
+
 _REPO = pathlib.Path(__file__).resolve().parents[2]
 
 

@@ -36,6 +36,10 @@ from grove.skill_index import (
     extract_index_description,
     parse_skill_frontmatter,
 )
+import pytest
+
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
 
 _FIX = Path(__file__).parent / "fixtures"
 _GOLDEN = _FIX / "skill_index_golden.txt"

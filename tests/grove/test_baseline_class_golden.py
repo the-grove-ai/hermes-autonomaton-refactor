@@ -18,6 +18,9 @@ from grove.context_budget import (
     reset_caps_index_cache,
 )
 
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
+
 # ── The ratified slate (PM adjudication, retrieval-ambient-class-v1) ────────
 # Record-id golden: the DERIVED baseline set must equal this literal exactly.
 BASELINE_RECORD_GOLDEN = frozenset({

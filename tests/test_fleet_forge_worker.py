@@ -87,6 +87,7 @@ def _fleet_payload_pairs():
 _FLEET_PAYLOAD_PAIRS = _fleet_payload_pairs()
 
 
+@pytest.mark.guard
 def test_fleet_payload_canary_is_non_empty():
     # Guard the guard: discovery must find fleet records, else the parametrized
     # canary below would vacuously pass with zero cases.
@@ -97,6 +98,7 @@ def test_fleet_payload_canary_is_non_empty():
     )
 
 
+@pytest.mark.guard
 @pytest.mark.parametrize(
     "name, record_path, skill_path",
     _FLEET_PAYLOAD_PAIRS,
@@ -147,6 +149,7 @@ def _fleet_anchored_pairs():
 _FLEET_ANCHORED_PAIRS = _fleet_anchored_pairs()
 
 
+@pytest.mark.guard
 @pytest.mark.parametrize(
     "name, record_path, payload, anchor",
     _FLEET_ANCHORED_PAIRS,

@@ -357,6 +357,7 @@ def _discover_event_receipt_sites():
     return modules, segments
 
 
+@pytest.mark.guard
 def test_terminal_receipt_identity_invariant_enumerates_all_branches():
     import re
 
@@ -531,6 +532,7 @@ def _model_facing_prose():
     return docs
 
 
+@pytest.mark.guard
 def test_no_prose_instructs_direct_writes_into_fleet_staging_sinks():
     import re
 

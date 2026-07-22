@@ -29,6 +29,10 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from grove.classify import GOAL_ALIGNMENT_VALUES
+import pytest
+
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCAN_DIRS = ("grove",)

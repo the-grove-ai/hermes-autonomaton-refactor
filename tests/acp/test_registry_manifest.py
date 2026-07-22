@@ -7,6 +7,7 @@ import re
 import tomllib
 from pathlib import Path
 import xml.etree.ElementTree as ET
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "acp_registry" / "agent.json"
@@ -74,6 +75,7 @@ def test_icon_svg_is_16x16_current_color():
     assert root.attrib["height"] == "16"
 
 
+@pytest.mark.guard
 def test_icon_svg_has_no_hardcoded_colors_or_gradients():
     text = ICON.read_text(encoding="utf-8")
 

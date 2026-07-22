@@ -18,6 +18,10 @@ extend the allowlist only with that evidence.
 
 import re
 from pathlib import Path
+import pytest
+
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
