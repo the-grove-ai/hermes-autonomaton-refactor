@@ -90,8 +90,11 @@ def test_pidfile_round_trip():
 # ── startup orphan-reap ──────────────────────────────────────────────────────
 
 
-def test_sweep_kills_live_orphan_and_removes_pidfile(sleeper):
-    p = sleeper()
+def test_sweep_kills_live_orphan_and_removes_pidfile(runid_sleeper):
+    # A faithful orphan: the live process's argv carries the run_id, exactly as
+    # a real worker spawned by _spawn does (--run-id <hex>), so the identity
+    # gate confirms it is ours and it is reaped.
+    p = runid_sleeper("r")
     reap.write_pidfile("orphan", "r", pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t")
     reaped = reap.sweep_orphans()
     assert [r["worker_id"] for r in reaped] == ["orphan"]
@@ -109,12 +112,13 @@ def test_sweep_removes_stale_dead_pidfile_without_killing():
     assert reap.read_pidfile("dead") is None  # stale file still removed
 
 
-def test_sweep_skips_malformed_pidfile_and_continues(sleeper):
-    # A malformed pidfile must not abort the sweep of a good one.
+def test_sweep_skips_malformed_pidfile_and_continues(runid_sleeper):
+    # A malformed pidfile must not abort the sweep of a good one. The good
+    # worker carries its run_id in argv so it passes the identity gate.
     bad = paths.pid_path("badworker")
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text("{not json", encoding="utf-8")
-    p = sleeper()
+    p = runid_sleeper("r")
     reap.write_pidfile("goodworker", "r", pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t")
     reaped = reap.sweep_orphans()
     assert "goodworker" in [r["worker_id"] for r in reaped]
@@ -194,3 +198,110 @@ def test_dispatch_writes_pidfile_and_deadline(monkeypatch, sleeper):
     assert handle.deadline_monotonic > time.monotonic()
     # inbox brokered
     assert json.loads(paths.inbox_path("bound", "rr").read_text())["payload"] == {"row": 1}
+
+
+# ── C2a: identity gate — never signal a process we cannot prove is ours ──────
+#
+# The live process's argv carries --run-id <hex> (runner._spawn). The sweep
+# verifies that the run_id from the pidfile is an ELEMENT of the target's
+# cmdline before signalling. A recycled pid holding our stored integers fails
+# the check and is left alone. group_alive stays the liveness probe; identity
+# is a second, stronger gate.
+
+_RUN_ID = "a1b2c3d4e5f6a1b2"
+
+
+@pytest.fixture
+def runid_sleeper():
+    """A sleeper whose argv carries --run-id <hex>, a faithful stand-in for a
+    real worker (its cmdline passes the identity gate). Own group via setsid."""
+    procs = []
+
+    def _make(run_id: str, seconds: int = 30) -> subprocess.Popen:
+        p = subprocess.Popen(
+            [sys.executable, "-c", f"import time; time.sleep({seconds})",
+             "--run-id", run_id],
+            preexec_fn=build_preexec(),
+        )
+        procs.append(p)
+        return p
+
+    yield _make
+    for p in procs:
+        safe_kill_group(p.pid, p.pid, signal.SIGKILL)
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def captured_andons(monkeypatch):
+    calls = []
+
+    def _spy(worker_id, run_id, message, *, check=None, loop=None, **kw):
+        calls.append(
+            {"worker_id": worker_id, "run_id": run_id, "message": message,
+             "check": check}
+        )
+        return {"surfaced": True}
+
+    monkeypatch.setattr("grove.fleet.observability.surface_fleet_andon", _spy)
+    return calls
+
+
+def test_sweep_does_not_kill_or_unlink_unverifiable_identity(sleeper, captured_andons):
+    # A recycled pid: the live process (a plain sleeper) does NOT carry our
+    # stored run_id in its argv. It must NOT be killed, and its pidfile survives.
+    p = sleeper()  # argv has no run_id
+    reap.write_pidfile(
+        "recycled", _RUN_ID, pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t"
+    )
+    reaped = reap.sweep_orphans()
+
+    assert group_alive(p.pid, p.pid)  # NOT killed — a wrong kill is unrecoverable
+    assert reap.read_pidfile("recycled") is not None  # pidfile left for inspection
+    assert "recycled" not in [r["worker_id"] for r in reaped]
+
+    # The Andon must be ACTIONABLE: pid, expected run_id, and the observed cmdline.
+    andon = [a for a in captured_andons if a["check"] == "orphan_identity_unverified"]
+    assert len(andon) == 1
+    msg = andon[0]["message"]
+    assert str(p.pid) in msg
+    assert _RUN_ID in msg
+    assert "time.sleep" in msg  # the actual cmdline is named
+
+
+def test_sweep_kills_and_unlinks_when_identity_confirmed(runid_sleeper):
+    p = runid_sleeper(_RUN_ID)
+    reap.write_pidfile(
+        "ours", _RUN_ID, pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t"
+    )
+    reaped = reap.sweep_orphans()
+    assert "ours" in [r["worker_id"] for r in reaped]
+    _reap_dead(p)
+    assert reap.read_pidfile("ours") is None  # confirmed dead -> unlinked
+
+
+def test_sweep_keeps_pidfile_and_andons_when_kill_unconfirmed(
+    runid_sleeper, captured_andons, monkeypatch
+):
+    # Identity confirms (argv carries the run_id) but the SIGKILL does not take
+    # effect (uninterruptible sleep) — simulated by neutering safe_kill_group so
+    # the group stays alive. The pidfile must be KEPT (next boot retries) and an
+    # Andon surfaced; it must NOT be counted as reaped.
+    p = runid_sleeper(_RUN_ID)
+    reap.write_pidfile(
+        "stubborn", _RUN_ID, pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t"
+    )
+    monkeypatch.setattr(reap, "safe_kill_group", lambda *a, **k: None)
+
+    reaped = reap.sweep_orphans()
+
+    assert group_alive(p.pid, p.pid)  # still alive (kill was a no-op)
+    assert reap.read_pidfile("stubborn") is not None  # pidfile retained
+    assert "stubborn" not in [r["worker_id"] for r in reaped]
+    andon = [a for a in captured_andons if a["check"] == "orphan_kill_unconfirmed"]
+    assert len(andon) == 1
+    assert str(p.pid) in andon[0]["message"]
+    assert _RUN_ID in andon[0]["message"]
