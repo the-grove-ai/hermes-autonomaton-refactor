@@ -78,7 +78,7 @@ def test_browser_read_overlay_reports_effective_state(tmp_path):
     # browser_read definition prefers T3, which survives the widened [1,2,3]
     # eligible set — preferred stays definition-sourced (no re-anchor).
     assert by_field["preferred"]["source"] == "definition"
-    assert rec["disclosure"] == "complexity"    # overlay can't change class
+    assert rec["disclosure"] == "baseline"      # P6.1 flip; overlay can't change class
     assert rec["zone"] == "green"
 
 

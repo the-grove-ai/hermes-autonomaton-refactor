@@ -129,7 +129,9 @@ def test_derived_native_units_carry_record_triggers():
         "code_generation", "debugging", "system_admin",
     }, "trigger derives from the governing record — the empty-trigger hardcode is dead"
     assert by_id["web_search"].disclosure_mode == "eager"        # baseline
-    assert by_id["browser_navigate"].disclosure_mode == "complexity"
+    # P6.1: browser_read flipped to baseline — navigate is eager now; the
+    # complexity exemplar is delegate_task.
+    assert by_id["browser_navigate"].disclosure_mode == "eager"
 
 
 def test_one_disclose_on_match_rule_native_and_mcp_alike():

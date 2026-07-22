@@ -100,13 +100,13 @@ def test_resolve_tool_set_is_registry_driven():
     assert {"write_file", "patch", "search_files", "execute_code", "skill_manage"} <= got
     assert {"clarify", "terminal", "read_file"} <= got            # core (always)
     assert "spotify_search" not in got                            # intent-gated — not conversation
-    assert "browser_navigate" not in got                          # complexity — not on a moderate turn
+    assert "delegate_task" not in got                             # complexity — not on a moderate turn (P6.1: browser is baseline now)
     # fallback-retirement-v1: unknown yields the always:true CORE (never None).
     unk = resolve_tool_set("unknown", "simple")
     assert unk is not None
     assert {"clarify", "terminal", "read_file"} <= unk            # core rides unknown
     assert "execute_code" not in unk                             # intent-gated withheld
-    assert "browser_navigate" not in unk                         # complexity withheld
+    assert "delegate_task" not in unk                            # complexity withheld (P6.1: browser is baseline)
 
 
 # ── MCP disclose-on-match (mcp_allow) — the _partition_tools flip ──────────

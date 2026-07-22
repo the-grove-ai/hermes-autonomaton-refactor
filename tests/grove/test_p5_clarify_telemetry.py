@@ -212,3 +212,64 @@ def test_gateway_deferral_counts_as_clarify_use():
     disp = SimpleNamespace(_current_turn_tools_yielded=())
     assert _mark(disp, "s9", deferral=True) is True
     assert _mark(disp, "s9", deferral=True) is False
+
+
+# ── P6.1 — INTEGRATION: verdicts survive the real filter flow ───────────────
+# The P6 Andon: the P5 stub tests passed while prod wrote disclosure_verdicts
+# =None — two in-branch stash calls were CLOBBERED by the selection-dict
+# literal downstream. These tests drive the REAL _maybe_apply_tool_filter and
+# must fail if the clobber is ever reintroduced.
+
+
+def _integration_agent(monkeypatch, intent, cx, tier):
+    import run_agent
+    from grove import providers as pmod
+    from grove.classify import ClassificationResult
+    from tools.registry import ToolRegistry, register_builtin_tools
+
+    reg = ToolRegistry()
+    register_builtin_tools(reg)
+    all_defs = reg.get_definitions(set(reg.get_all_tool_names()), quiet=True)
+
+    monkeypatch.setattr(pmod, "_last_classification", ClassificationResult(
+        intent_class=intent, pattern_hash="h", confidence=0.9,
+        register_class="technical", complexity_signal=cx,
+        goal_alignment="direct",
+    ))
+    monkeypatch.setattr(pmod, "_last_routed_tier", tier)
+
+    agent = object.__new__(run_agent.AIAgent)
+    agent.tools = all_defs
+    agent._tools_for_turn = None
+    agent._last_tool_selection = None
+    agent._tool_resolution = None
+    agent._dispatcher_singleton = None       # disclosure falls back to eager
+    return agent
+
+
+@pytest.mark.parametrize("tier,mode", [("T1", "eager-t1"), ("T2", "disclosure-t2t3")])
+def test_verdicts_survive_real_filter_flow(monkeypatch, tier, mode):
+    agent = _integration_agent(monkeypatch, "retrieval", "simple", tier)
+    agent._maybe_apply_tool_filter()
+    sel = agent._last_tool_selection
+    assert sel is not None and "disclosure_verdicts" in sel, (
+        "CLOBBER REINTRODUCED: the stash must survive the selection-dict "
+        "assignment in _maybe_apply_tool_filter"
+    )
+    v = sel["disclosure_verdicts"]
+    assert v["mode"] == mode
+    b = v["eager"]["baseline"]
+    assert b["n"] > 0 and len(b["sha12"]) == 12
+    # end-to-end: the record the Dispatcher would write carries the block.
+    import json as _json
+    assert len(_json.dumps(v, separators=(",", ":"))) < 1024   # real-path ceiling
+
+
+def test_verdicts_ride_record_from_real_flow(monkeypatch, tmp_path):
+    agent = _integration_agent(monkeypatch, "conversation", "simple", "T1")
+    agent._maybe_apply_tool_filter()
+    v = agent._last_tool_selection["disclosure_verdicts"]
+    store = IntentStore(tmp_path / "feed.jsonl")
+    persisted = store.append(_record(disclosure_verdicts=v))
+    assert persisted["disclosure_verdicts"]["eager"]["baseline"]["n"] == \
+        v["eager"]["baseline"]["n"]

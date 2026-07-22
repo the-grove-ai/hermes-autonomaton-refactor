@@ -21,6 +21,7 @@ from grove.context_budget import (
 # ── The ratified slate (PM adjudication, retrieval-ambient-class-v1) ────────
 # Record-id golden: the DERIVED baseline set must equal this literal exactly.
 BASELINE_RECORD_GOLDEN = frozenset({
+    "browser_read",            # P6.1 — native browser read joins (Exhibit 4)
     "cellar_search",
     "clarify",
     "grove_browser_read",
@@ -57,6 +58,14 @@ BASELINE_TOOL_GOLDEN = frozenset({
     "contacts_list",
     "sheets_get",
     "docs_get",
+    # native browser read surface (7 tools, P6.1 — Exhibit 4 root closed)
+    "browser_back",
+    "browser_console",
+    "browser_get_images",
+    "browser_navigate",
+    "browser_scroll",
+    "browser_snapshot",
+    "browser_vision",
     # grove-browser MCP read surface (5 tools)
     "mcp_grove_browser_browser_search",
     "mcp_grove_browser_browser_read_page",
@@ -183,15 +192,17 @@ def test_baseline_admitted_on_unknown_turn():
 
 
 def test_non_baseline_complexity_behavior_unchanged():
-    # browser_read (native record) stays disclosure: complexity — withheld on
-    # a simple turn, admitted on a complex one. P1 must not leak it.
+    # P6.1: browser_read joined baseline (Exhibit 4), so the complexity
+    # exemplar is now delegate_task — withheld on a simple turn, admitted on
+    # a complex one.
     reset_caps_index_cache()
     simple = _registry_allowed_names(
         intent_class="retrieval", complexity_signal="simple")
-    assert "browser_navigate" not in simple
+    assert "delegate_task" not in simple
+    assert "browser_navigate" in simple      # P6.1 — baseline now
     complex_ = _registry_allowed_names(
         intent_class="retrieval", complexity_signal="complex")
-    assert "browser_navigate" in complex_
+    assert "delegate_task" in complex_
 
 
 # ── Honcho demolition (P1 revised) — injection path gone, no schema leaks ───

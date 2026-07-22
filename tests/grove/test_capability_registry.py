@@ -294,7 +294,8 @@ def test_real_records_disclosure_modes_match_golden():
     from grove.capability import TriggerDisclosure as TD
     caps = load_capabilities()
     # exploratory cohort -> complexity (present on complex-known T3, absent simple).
-    for rid in ("browser_read", "browser_write", "delegate_task", "mixture_of_agents",
+    # P6.1: browser_read left this cohort for the ambient baseline class.
+    for rid in ("browser_write", "delegate_task", "mixture_of_agents",
                 "vision_analyze", "video_analyze", "feishu_doc_read", "ha_get_state",
                 "ha_call_service"):
         assert caps[rid].trigger.disclosure is TD.COMPLEXITY, rid
@@ -335,7 +336,7 @@ def test_real_records_disclosure_modes_match_golden():
     for rid in ("clarify", "read_file", "web_search", "search_files",
                 "web_extract", "cellar_search", "skills_read",
                 "workspace_read", "grove_browser_read",
-                "read_capability_state"):
+                "read_capability_state", "browser_read"):
         assert caps[rid].trigger.disclosure is TD.BASELINE, rid
 
 
