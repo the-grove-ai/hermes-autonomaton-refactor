@@ -44,6 +44,76 @@ logger = logging.getLogger(__name__)
 _RECONCILE_WINDOW_DAYS = 7
 
 
+def apply_failure_policy(wid: str, run_id: str, event: Optional[Dict[str, Any]]) -> None:
+    """fleet-receipt-custody-v1 P3b — act on a terminal failure receipt's policy
+    class at classification time (not one cadence later).
+
+    ``pause_producer`` → trip the breaker (auto-pause, N=1). ``retry`` /
+    ``dead_letter`` / ``ignore`` act on nothing here — the count lives in the
+    derivation (P4), which this must NOT call. Never raises into the reap.
+    """
+    if not event or event.get("status") != "failed":
+        return
+    check = event.get("check")
+    if not check:
+        return
+    try:
+        from grove.fleet.unit_state import load_failure_policy
+
+        policy = load_failure_policy()
+        if policy.disposition(check) == "pause_producer":
+            _trip_producer_breaker(wid, run_id, check)
+    except Exception as exc:  # noqa: BLE001 — a policy action must not crash reap
+        logger.error("[fleet.manager] failure-policy action failed for %s/%s: %r",
+                     wid, run_id, exc)
+
+
+def _trip_producer_breaker(wid: str, run_id: str, check: str) -> None:
+    """Auto-pause the producer through the ONE sanctioned writer, first
+    occurrence. Idempotent: an already-paused producer is not re-paused and
+    raises no duplicate card (N=1). A false pause destroys nothing; a breaker
+    that waits for approval is not a breaker."""
+    from grove.eval.producer_pauses import read_producer_pauses, set_producer_pause
+
+    if wid in read_producer_pauses():
+        return
+    status = set_producer_pause(
+        wid, True, proposal_id=None, reason=f"auto-pause: {check} (run {run_id})",
+    )
+    if status != "applied":
+        logger.warning("[fleet.manager] auto-pause of %s deferred (%s) — retries next receipt",
+                       wid, status)
+        return
+    logger.warning("[fleet.manager] auto-paused producer %s on %s (run %s)", wid, check, run_id)
+    _raise_auto_paused_card(wid, run_id, check)
+
+
+def _raise_auto_paused_card(wid: str, run_id: str, check: str) -> None:
+    from grove.eval.proposal_queue import (
+        PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED,
+        RoutingProposal,
+        append,
+        compute_proposal_id,
+    )
+
+    payload = {"producer": wid}
+    evidence = (wid,)  # deduped by producer — one card per paused producer
+    pid = compute_proposal_id(
+        type=PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED, payload=payload, evidence=evidence
+    )
+    append(RoutingProposal(
+        proposal_id=pid,
+        type=PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED,
+        payload=payload,
+        evidence=evidence,
+        eval_hash="",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        proposer="fleet_manager",
+        semantic_justification=f"producer {wid} auto-paused on a {check} failure",
+        detail={"check": check, "run_id": run_id},
+    ))
+
+
 def _classified_marker_path(event_path: Any) -> Path:
     """The sidecar marker beside a terminal event file (gate ruling a)."""
     return Path(str(event_path) + ".classified")
@@ -332,6 +402,10 @@ class FleetManager:
 
     def _classify_terminal(self, wid, handle, rc, event, killed) -> None:
         run_id = handle.run_id
+        # P3b — act on the failure class at the moment of failure: pause_producer
+        # trips the breaker, an unmapped class raises the classify-me card. No-op
+        # for success / retry / dead_letter / ignore. Binds no derivation (P4).
+        apply_failure_policy(wid, run_id, event)
         if killed:
             surface_fleet_andon(
                 wid,
@@ -760,8 +834,14 @@ class FleetManager:
             )
             return
 
+        # P3b — the breaker's teeth: skip a producer the breaker paused. Read
+        # FRESH (stateless, no cache) so a manual unpause lands on the next tick;
+        # */30 over a small set makes the re-read free.
+        from grove.eval.producer_pauses import read_producer_pauses
+
+        paused = read_producer_pauses()
         for wid, cfg in workers.items():
-            if not cfg.enabled or wid in self._running:
+            if not cfg.enabled or wid in self._running or wid in paused:
                 continue
             try:
                 self._maybe_dispatch_one(wid, cfg, now)

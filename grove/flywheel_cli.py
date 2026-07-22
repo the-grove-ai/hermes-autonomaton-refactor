@@ -42,6 +42,7 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_PATTERN_DEMOTION,
     PROPOSAL_TYPE_PATTERN_PROMOTION,
     PROPOSAL_TYPE_PORTAL_ACTION_FAILURE,
+    PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED,
     PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
     PROPOSAL_TYPE_SKILL_PROMOTION,
@@ -163,6 +164,9 @@ _PUSH_PRIORITY = {
     # flywheel producer is the same incident family: it shares the 0.5 slot
     # with portal_action_failure and fault_triage.
     PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE: 0.5,
+    # fleet-receipt-custody-v1 P3b — an auto-paused producer is a live capacity
+    # loss (an incident): it shares the 0.5 incident slot with the recurrence card.
+    PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED: 0.5,
     "memory_context": 1,                      # == PROPOSAL_TYPE_MEMORY_CONTEXT
     # consolidation-ratchet-v1 — a permanent-policy graduation outranks a
     # transient routing tweak but yields to a fresh memory insight. A fractional
@@ -1275,6 +1279,55 @@ def _approve_producer_pause(
         )
     applied = {"producer": producer, "paused": True, "status": status}
     return producer, applied
+
+
+def _summary_producer_auto_paused(proposal: RoutingProposal) -> str:
+    p = proposal.payload or {}
+    d = proposal.detail or {}
+    return (
+        f"Producer {p.get('producer')!r} was auto-paused on a "
+        f"{d.get('check')!r} failure (run {d.get('run_id')}). Approve to unpause."
+    )
+
+
+def _producer_auto_paused_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    p = proposal.payload or {}
+    d = proposal.detail or {}
+    return {
+        "producer": p.get("producer"),
+        "check": d.get("check"),
+        "run_id": d.get("run_id"),
+        "action": "unpause",
+    }
+
+
+def _approve_producer_auto_paused(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Apply a producer_auto_paused card — UNPAUSE the producer through the ONE
+    sanctioned writer (fleet-receipt-custody-v1 P3b). This is the SOLE unpause
+    path: unpause is operator-only and never automatic. Reject leaves the
+    producer paused (dismiss the notice, the pause stands).
+    ``machine_path`` unused (uniform registry signature)."""
+    from grove.eval.producer_pauses import set_producer_pause
+
+    producer = (proposal.payload or {}).get("producer")
+    if not isinstance(producer, str) or not producer.strip():
+        raise ValueError(
+            f"producer_auto_paused proposal {proposal.proposal_id} payload "
+            f"missing a non-empty producer"
+        )
+    status = set_producer_pause(
+        producer, False, proposal_id=proposal.proposal_id, reason="operator unpause",
+    )
+    if status != "applied":
+        raise RuntimeError(
+            f"producer unpause write {status!r} (lock contended) — the unpause "
+            f"did NOT land; re-approve to retry"
+        )
+    return producer, {"producer": producer, "paused": False, "status": status}
 
 
 def _approve_goal_attachment(
@@ -2509,6 +2562,15 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         diff_renderer=_producer_recurrence_to_diff,
         apply_callback=_approve_producer_pause,
         apply_label_prefix="Producer paused: ",
+    ),
+    # fleet-receipt-custody-v1 P3b — approve = the sole UNPAUSE (operator-only,
+    # never automatic). NO reject_callback: rejecting the notice leaves the
+    # producer paused (dismiss-only), like every other reject.
+    PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED: ProposalHandler(
+        summary_renderer=_summary_producer_auto_paused,
+        diff_renderer=_producer_auto_paused_to_diff,
+        apply_callback=_approve_producer_auto_paused,
+        apply_label_prefix="Producer unpaused: ",
     ),
     PROPOSAL_TYPE_GOAL_ATTACHMENT: ProposalHandler(
         summary_renderer=_summary_goal_attachment,
