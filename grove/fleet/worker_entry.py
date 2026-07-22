@@ -562,6 +562,14 @@ def _dispatched_unit_id(payload: Any) -> Optional[str]:
     return payload.get("unit_id") if isinstance(payload, dict) else None
 
 
+def _is_declarative_payload(payload: Any) -> bool:
+    """Pure payload-shape predicate (C1b-2): a file producer's resolver payload
+    carries ``units``, never ``rows``. Shared by ``run_worker`` and ``main()``'s
+    catch-all so the receipt's identity FIELD convention (unit_id vs row_id)
+    never needs the capability record in scope (P1.2 Commit C)."""
+    return isinstance(payload, dict) and "units" in payload and "rows" not in payload
+
+
 def _bind_identity(files: Dict[str, str], bound_row_id: Optional[str]) -> Dict[str, str]:
     """fleet-receipt-custody-v1 P1.1 — runtime-bound identity on a SELF-AUTHORED
     package: overwrite meta.json's ``row_id`` with the dispatched unit identity
@@ -1076,9 +1084,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         # path. (P1: resolved BEFORE Dispatcher construction now — the tool
         # transport must arm the emit tool and widen the allow-list before the
         # agent's tool surface is built and cached.)
-        declarative = (
-            isinstance(payload, dict) and "units" in payload and "rows" not in payload
-        )
+        declarative = _is_declarative_payload(payload)
         content_files = (
             _declarative_content_files(cap, payload, worker_id) if declarative else None
         )
@@ -1757,6 +1763,7 @@ def main(argv: Optional[list] = None) -> int:
     from grove.fleet import paths
     from grove.fleet.staging import write_terminal_event
 
+    payload: Any = None
     try:
         payload = _read_inbox_payload(worker_id, run_id)
         event = run_worker(worker_id, run_id, payload)
@@ -1764,6 +1771,15 @@ def main(argv: Optional[list] = None) -> int:
         # Includes FleetWorkerAndon and any unexpected error. TerminalGovernanceHalt
         # subclasses BaseException, but run_worker already catches it; anything
         # reaching here is an unhandled structural failure -> failed + diagnostics.
+        # P1.2 Commit C — the invariant: every terminal receipt carries the
+        # identity of the unit it was dispatched for. Any FleetWorkerAndon
+        # raised INSIDE run_worker (emit_spec_missing, path_escape,
+        # evaluator_call_failed, dead_pinned_slug, uncaught, ...) has the
+        # payload in scope here. The two NAMED exceptions fail BEFORE a
+        # payload exists (inbox_missing, worker_not_registered — payload is
+        # None at the raise) and carry a null identity value, never a missing
+        # mechanism.
+        _unit = _dispatched_unit_id(payload)
         event = _event(
             worker_id,
             run_id,
@@ -1771,6 +1787,7 @@ def main(argv: Optional[list] = None) -> int:
             status="failed",
             detail=f"{type(exc).__name__}: {exc}",
             check=_uncaught_check(exc),
+            **({"unit_id": _unit} if _is_declarative_payload(payload) else {"row_id": _unit}),
         )
         event["traceback"] = traceback.format_exc()
 

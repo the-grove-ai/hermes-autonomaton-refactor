@@ -695,7 +695,13 @@ _SENTINEL_GOV = {
 def test_sentinel_transport_stages_identically_to_baseline(monkeypatch, tmp_path):
     """flag=sentinel → the pre-P1 pipeline byte-for-byte: sentinel prompt
     contract offered, 2-tool allow-list, package staged from the delimited
-    parse with bodies byte-equal to the parsed fixture."""
+    parse with bodies byte-equal to the parsed fixture.
+
+    P1.2 NOTE: the _ROWS_PAYLOAD_LEGACY shape (no unit_id key) no longer
+    occurs in production — both registered resolvers mint unit_id
+    unconditionally (resolvers.py:173 notion_query, :675 file_source). This
+    pin now covers _bind_identity's defensive no-op branch only (no bound
+    identity → staged bytes untouched)."""
     run_id = "rid42"
     msgs = _sentinel_messages(run_id[:8], _SENTINEL_FILES)
     ev, agent, cap = _drive_worker(
@@ -722,7 +728,12 @@ def test_sentinel_transport_stages_identically_to_baseline(monkeypatch, tmp_path
 def test_tool_flagged_producer_sentinel_output_still_accepted(monkeypatch, tmp_path):
     """F6 acceptance: a tool-flagged producer that emits sentinel blocks anyway
     (never calling emit_package) is still staged this migration phase — after
-    the bounded re-prompt also yields sentinels."""
+    the bounded re-prompt also yields sentinels.
+
+    P1.2 NOTE: the _ROWS_PAYLOAD_LEGACY shape (no unit_id key) no longer
+    occurs in production — both registered resolvers mint unit_id
+    unconditionally (resolvers.py:173, :675). This pin now covers
+    _bind_identity's defensive no-op branch only."""
     run_id = "rid77"
     msgs = {"messages": _sentinel_messages(run_id[:8], _SENTINEL_FILES), "completed": True}
     ev, agent, _ = _drive_worker(
