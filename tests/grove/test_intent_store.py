@@ -188,9 +188,11 @@ class TestOutcomeEnforcement:
         # The closed set is part of the Phase 4 provisional-write
         # contract; lock it down so an accidental edit elsewhere
         # surfaces in test failure rather than a runtime ValueError.
+        # + awaiting_operator (retrieval-ambient-class-v1 P5 — the Sprint 67
+        # deferral outcome the store rejected until now; the GATE-A defect).
         assert VALID_OUTCOMES == frozenset({
             "pending", "success", "drop", "error", "correction",
-            "governance_terminated",
+            "governance_terminated", "awaiting_operator",
         })
 
     @pytest.mark.parametrize("outcome", sorted(VALID_OUTCOMES))

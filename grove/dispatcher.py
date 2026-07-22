@@ -1868,7 +1868,7 @@ class Dispatcher:
             gen = agent._run_turn_generator(user_message=user_message, **kwargs)
             try:
                 return self._drive_generator(agent, gen, ledger)
-            except OperatorInputRequired:
+            except OperatorInputRequired as _oir:
                 # Sprint 67 — NOT an error terminal. A store-and-resume surface
                 # (web /v1/chat/completions) deliberately yielded control to
                 # await operator input. Record a deferral outcome — never
@@ -1876,7 +1876,17 @@ class Dispatcher:
                 # persists the PendingOperatorRequest and surfaces the prompt.
                 # This guard sits ABOVE the BaseException catch precisely so
                 # the deferral is not mislabeled as a failure in the ledger.
-                self._write_intent_record(agent, outcome="awaiting_operator")
+                # retrieval-ambient-class-v1 P5: ``awaiting_operator`` is now a
+                # VALID_OUTCOMES member (the write crashed silently since
+                # Sprint 67 — the GATE-A live defect); the pending KIND rides
+                # through so a clarify deferral marks the clarify telemetry.
+                self._write_intent_record(
+                    agent, outcome="awaiting_operator",
+                    clarify_deferral=(
+                        getattr(getattr(_oir, "pending", None), "kind", None)
+                        == "clarify"
+                    ),
+                )
                 raise
             except TerminalGovernanceHalt as _tgh:
                 # GRV-010 C2a — a STRUCTURAL governed denial terminated the turn
@@ -2810,6 +2820,7 @@ class Dispatcher:
         response_content: Optional[str] = None,
         intent_class_override: Optional[str] = None,
         tier_override: Optional[str] = None,
+        clarify_deferral: bool = False,
     ) -> None:
         """Write an IntentRecord for the current turn if the store is wired.
 
@@ -2957,6 +2968,16 @@ class Dispatcher:
                 cellar_retrieval_config_sig=getattr(
                     agent, "_cellar_retrieval_config_sig", None
                 ),
+                # retrieval-ambient-class-v1 P5 — per-turn disclosure verdicts
+                # (compact; stashed by run_agent._stash_disclosure_verdicts).
+                disclosure_verdicts=(
+                    (getattr(agent, "_last_tool_selection", {}) or {}).get(
+                        "disclosure_verdicts"
+                    )
+                ),
+                first_clarification=self._mark_first_clarification(
+                    session_id, clarify_deferral=clarify_deferral,
+                ),
             )
             self._intent_store.append(record)
             self._current_turn_outcome_written = True
@@ -2966,6 +2987,34 @@ class Dispatcher:
                 "(outcome=%r, turn_id=%r): %r",
                 outcome, self._current_turn_id, exc,
             )
+
+    def _mark_first_clarification(
+        self, session_id: str, *, clarify_deferral: bool = False
+    ) -> bool:
+        """retrieval-ambient-class-v1 P5 — True iff THIS turn used clarify and
+        no earlier turn in the same session did.
+
+        A turn "used clarify" when the clarify tool was yielded (CLI inline
+        path) or the deferral carried PendingOperatorRequest.kind=="clarify"
+        (gateway store-and-resume path — the tool defers before its yield is
+        recorded). Thread identity is SESSION-SCOPED — the gateway path has no
+        sub-session thread id — and the seen-set lives in Dispatcher process
+        memory, so a gateway restart re-arms the flag (the narrowest honest
+        version; a durable scan would make the write O(feed)).
+        """
+        used_clarify = clarify_deferral or (
+            "clarify" in (self._current_turn_tools_yielded or ())
+        )
+        if not used_clarify:
+            return False
+        seen = getattr(self, "_sessions_clarified", None)
+        if seen is None:
+            seen = set()
+            self._sessions_clarified = seen
+        if session_id in seen:
+            return False
+        seen.add(session_id)
+        return True
 
     # ── Phase 6 helpers (Kaizen Ledger + Tier Override) ─────────────────
 

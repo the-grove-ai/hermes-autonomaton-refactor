@@ -43,6 +43,7 @@ __all__ = [
     "load_taxonomy",
     "resolve_tool_set",
     "resolve_tools_for_tier",
+    "hidden_verdict_reasons",
     "filter_tools_by_name",
     "reset_taxonomy_cache",
     "reset_caps_index_cache",
@@ -617,6 +618,74 @@ def resolve_tools_for_tier(
 # retrieval-ambient-class-v1 P2: its sole feeder (stripped_capabilities from
 # the inert tier gate) was structurally always empty, so the helper could
 # never fire.
+
+
+def hidden_verdict_reasons(
+    hidden_names: "Set[str]",
+    intent_class: Optional[str],
+    complexity_signal: Optional[str],
+) -> "Dict[str, List[str]]":
+    """retrieval-ambient-class-v1 P5 — attribute each HIDDEN (not-admitted)
+    tool to the DECIDING gate from the post-P2 census, grouped by reason
+    (compact telemetry inversion: {reason: [names]}).
+
+    Reasons: ``lifecycle-null`` (P4 wall — deprecated/suspended record),
+    ``complexity-gate`` (G5 — complexity record on a non-complex turn),
+    ``trigger-miss`` (proactive-intent record, unmatched intent — incl. the
+    unknown-turn withholding), ``mcp-allow-miss`` (G7 — server not in the
+    matched set), ``recordless`` (no governing record). The co-location gate
+    (G15) never appears: it raises an Andon rather than hiding a tool, so it
+    cannot produce a verdict.
+
+    Reads ``load_capabilities`` directly (NOT the walled projection): the
+    lifecycle-nulled records this must name are exactly the ones the
+    admission index skips. STANDING CONSTRAINT (P5 ruling 3): this unwalled
+    read path is TELEMETRY-ONLY and must never inform control — an
+    observational read that ever gates admission or disclosure becomes a
+    second authority over the walled projection.
+    """
+    from typing import Dict as _Dict, List as _List
+
+    out: "_Dict[str, _List[str]]" = {}
+    if not hidden_names:
+        return out
+    mcp_hidden = sorted(n for n in hidden_names if _is_mcp(n))
+    if mcp_hidden:
+        out["mcp-allow-miss"] = mcp_hidden
+    native_hidden = {n for n in hidden_names if not _is_mcp(n)}
+    if not native_hidden:
+        return out
+    try:
+        from grove.capability import NULL_CAPABILITY_STATES
+        from grove.capability_registry import load_capabilities
+
+        by_tool = {}
+        for c in load_capabilities().values():
+            for t in c.bindings.tools:
+                if not _is_mcp(t):
+                    by_tool.setdefault(t, c)
+    except Exception as exc:  # noqa: BLE001 — telemetry never breaks the turn
+        logger.warning(
+            "[grove.context_budget] hidden-verdict attribution failed (%r); "
+            "reporting unattributed.", exc,
+        )
+        out["unattributed"] = sorted(native_hidden)
+        return out
+    unknown = intent_class is None or intent_class == "unknown"
+    cx_high = complexity_signal in ("complex", "novel")
+    for name in sorted(native_hidden):
+        cap = by_tool.get(name)
+        if cap is None:
+            out.setdefault("recordless", []).append(name)
+        elif cap.lifecycle.state in NULL_CAPABILITY_STATES:
+            out.setdefault("lifecycle-null", []).append(name)
+        elif cap.trigger.disclosure.value == "complexity" and not (
+            (not unknown) and cx_high
+        ):
+            out.setdefault("complexity-gate", []).append(name)
+        else:
+            out.setdefault("trigger-miss", []).append(name)
+    return out
 
 
 def reset_taxonomy_cache() -> None:
