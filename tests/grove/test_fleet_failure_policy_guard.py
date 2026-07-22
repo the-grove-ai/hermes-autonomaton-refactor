@@ -33,22 +33,12 @@ _FLEET = pathlib.Path(__file__).resolve().parents[2] / "grove" / "fleet"
 # stops finding these, its surface broke and every downstream assertion is moot.
 _ANCHORS = frozenset({"wall_clock_exceeded", "catastrophic_no_event", "reaped_at_restart"})
 
-# A-P3-1: receipt check classes emitted but NOT in the policy map, carried by
-# `default: retry` pending an operator ruling. RATCHET (shrink-only): a class
+# A-P3-1 ratchet (shrink-only): receipt check classes emitted but NOT in the
+# policy map, carried by `default: retry` pending an operator ruling. A class
 # ruled into the map MUST be removed here; a NEW unmapped receipt class must not
-# appear without a ruling. Every entry is a FleetWorkerAndon raised in
-# worker_entry that reaches a receipt via the main() catch-all.
-_KNOWN_UNMAPPED = frozenset({
-    "bad_skill_id",
-    "inbox_missing",
-    "model_binding_malformed_slug",
-    "no_archive_location",
-    "no_declared_sink",
-    "no_grove_home",
-    "no_routing_config",
-    "record_not_found",
-    "record_not_skill",
-})
+# appear without a ruling. EMPTIED — all nine have been ruled into the map, so
+# the guard now covers the full receipt surface with no exemptions.
+_KNOWN_UNMAPPED = frozenset()
 
 
 def _check_literal(call):
