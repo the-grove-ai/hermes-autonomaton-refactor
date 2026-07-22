@@ -800,9 +800,15 @@ def _fleet_mtime_iso(mtime: float) -> str:
 # canonical) with no live revision is auto-closed rejected_out_of_band.
 # ---------------------------------------------------------------------------
 
-_ARTIFACT_PROPOSAL_TYPES = (
-    proposal_queue.PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
-    proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
+# fleet-receipt-custody-v1 P4b-0 — the ledger disposition projection moved to the
+# fleet plane (grove.fleet.dispositions) so the resolver and emission import it
+# FORWARD; the portal (API plane) imports it forward too. Behavior is unchanged —
+# the auto-close still identifies units from the same applied_result keys.
+from grove.fleet.dispositions import (  # noqa: E402
+    _ARTIFACT_PROPOSAL_TYPES,
+    _iter_ledger_terminal_events,
+    _ledger_slug_to_uid,
+    _ledger_terminal_dispositions,
 )
 
 
@@ -854,67 +860,6 @@ def _feedback_units(worker: Optional[str]) -> Dict[str, Dict[str, Any]]:
             "latest_note": (hist[-1].get("revision_note") if hist else None),
             "mtime": fp.stat().st_mtime,
         }
-    return out
-
-
-def _iter_ledger_terminal_events():
-    """Yield ``(uid, slug, disposition)`` for every terminal artifact
-    disposition in the kaizen ledger, in file/line order (callers apply
-    later-events-win). The shared parse body for
-    :func:`_ledger_terminal_dispositions` and :func:`_ledger_slug_to_uid`.
-    ``slug`` is the ``applied_result`` slug when carried (C2/P1 enrich both
-    promote and reject with unit_id + slug), else None."""
-    from grove.kaizen_ledger import default_ledger_dir
-    ledger_dir = default_ledger_dir()
-    if not ledger_dir.is_dir():
-        return
-    for lf in sorted(ledger_dir.glob("*.jsonl")):
-        try:
-            lines = lf.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if ev.get("event_type") != "kaizen_disposition":
-                continue
-            if ev.get("proposal_type") not in _ARTIFACT_PROPOSAL_TYPES:
-                continue
-            disp = ev.get("disposition")
-            if disp not in ("applied", "rejected"):
-                continue  # suggest_revision is not a terminal
-            ar = ev.get("applied_result") or {}
-            slug = ar.get("slug")
-            uid = ar.get("unit_id") or slug
-            if not uid and ar.get("archive_path"):
-                base = Path(str(ar["archive_path"])).name  # <slug>-<utc-ts>
-                uid = base.rsplit("-", 1)[0] if "-" in base else base
-            if uid:
-                yield uid, slug, disp
-
-
-def _ledger_terminal_dispositions() -> Dict[str, str]:
-    """``{unit_id -> 'applied'|'rejected'}`` from the kaizen_disposition ledger, for
-    artifact proposals — the remote-publish sink's terminal source of truth. Keyed on
-    the unit identity the disposition's ``applied_result`` carries (C2 enriches
-    promote/reject with unit_id + slug); a reject's ``archive_path`` slug is the
-    fallback key. Later events win (the last disposition is authoritative)."""
-    out: Dict[str, str] = {}
-    for uid, _slug, disp in _iter_ledger_terminal_events():
-        out[uid] = disp
-    return out
-
-
-def _ledger_slug_to_uid() -> Dict[str, str]:
-    """``{slug -> unit_id}`` from the same terminal events (P2, additive) — the
-    join key for the P1 canonical subdirs, whose dir NAME is the slug while the
-    unit list keys on unit_id. Later events win."""
-    out: Dict[str, str] = {}
-    for uid, slug, _disp in _iter_ledger_terminal_events():
-        if slug:
-            out[slug] = uid
     return out
 
 
