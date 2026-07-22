@@ -18,6 +18,10 @@ import tokenize
 from pathlib import Path
 
 import yaml
+import pytest
+
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
 
 _REPO = Path(__file__).resolve().parents[2]
 _GROVE = _REPO / "grove"

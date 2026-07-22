@@ -302,6 +302,7 @@ def test_fleet_floor_ceiling_includes_emit_package():
     assert '"emit_package"' in src.split("_FLEET_FLOOR = ")[1].split("\n")[0]
 
 
+@pytest.mark.guard
 def test_fleet_floor_tools_classify_green_through_real_zone_path():
     """P1.1 bake-Andon pin: every tool on the fleet L2 floor must resolve
     GREEN through the REAL zone classification path (repo zones.schema.yaml →

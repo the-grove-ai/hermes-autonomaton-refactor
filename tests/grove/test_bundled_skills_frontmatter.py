@@ -13,6 +13,9 @@ import pytest
 
 from grove.skills import parse_frontmatter
 
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _BUNDLED_SKILLS = sorted(
     p

@@ -174,6 +174,7 @@ def test_units_are_frozen(tmp_path):
 
 # ── 3. payload pointers do not carry inlined schema text ─────────────────
 
+@pytest.mark.guard
 def test_payload_is_a_pointer_not_inlined_schema(tmp_path):
     units = load_manifest(_write(tmp_path, VALID_MANIFEST))
     for u in units:

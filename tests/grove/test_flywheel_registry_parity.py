@@ -24,6 +24,9 @@ from grove.eval.proposal_queue import (
     compute_proposal_id,
 )
 
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
+
 
 def _proposal(ptype: str, payload: dict, evidence=("t_a", "t_b")) -> RoutingProposal:
     return RoutingProposal(

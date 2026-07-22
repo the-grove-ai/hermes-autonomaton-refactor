@@ -16,6 +16,9 @@ import pytest
 from grove.classify import INTENT_CLASSES
 from grove.context_budget import resolve_tools_for_tier
 
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
+
 # web-surface-admission-fix (Option B): the tier is bound via ``current_tier``
 # (tier_rule.eligible is the sole gate); no per-tier ToolBudget is threaded.
 

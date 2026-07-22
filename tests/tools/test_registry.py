@@ -622,6 +622,7 @@ class TestThreadSafety:
         assert toolsets["gated"]["available"] is True
 
 
+@pytest.mark.guard
 class TestLegacyMemoryInvariantGuard:
     """legacy-memory-tool-retirement-v1 — the builtin surface must never carry a
     `memory`/`remember` tool again; register_builtin_tools fails loud if it does."""

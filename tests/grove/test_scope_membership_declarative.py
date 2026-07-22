@@ -20,6 +20,9 @@ import yaml
 
 import grove.utils.fs_utils as fu
 
+# guard-set-self-declaring: this whole module is a defect-class guard suite.
+pytestmark = pytest.mark.guard
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ── The golden: P2-era literals, verbatim ──

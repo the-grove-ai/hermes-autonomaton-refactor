@@ -232,6 +232,7 @@ class TestStdioReconfigureErrorHandling:
         hb.apply_windows_utf8_bootstrap()
 
 
+@pytest.mark.guard
 class TestEntryPointsImportBootstrap:
     """Every Hermes entry point must import hermes_bootstrap as its
     first non-docstring import.  We check this by scanning source files
