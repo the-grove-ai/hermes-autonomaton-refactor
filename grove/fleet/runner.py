@@ -203,7 +203,6 @@ class KanbanRunner:
             pid=proc.pid,
             pgid=proc.pid,  # setsid makes the child a group leader: pgid == pid
             wall_clock_secs=wall_clock_secs,
-            started_at=datetime.now(timezone.utc).isoformat(),
         )
         return WorkerHandle(
             worker_id=wid,

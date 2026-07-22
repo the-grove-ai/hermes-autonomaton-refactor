@@ -310,67 +310,90 @@ def test_governed_denial_receipt_carries_dispatched_identity(monkeypatch, tmp_pa
 # NEW failure branch added without identity fails this pin.
 
 
-def _event_call_segments(module):
-    """Every ``_event(...)`` call site in *module*'s source, as source text."""
-    import ast
-    import inspect
+def _discover_event_receipt_sites():
+    """Discover every ``_event(...)`` receipt-builder call site across the
+    ``grove`` package (fleet-receipt-custody-v1 P2 C2b).
 
-    src = inspect.getsource(module)
-    tree = ast.parse(src)
-    return [
-        ast.get_source_segment(src, node)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_event"
-    ]
+    Matches BOTH call shapes — bare-name ``_event(...)`` and attribute
+    ``<mod>._event(...)`` — so the identity invariant cannot be bypassed by
+    import style. Discovery replaces the hand-maintained module list, which had
+    grown twice (+runner in C1, +staging in C2b) and is itself a drift magnet: a
+    receipt writer added ANYWHERE under ``grove/`` enrols here at collection
+    time, no list edit required.
+
+    RESIDUAL FENCE (stated, not hidden): the scan is scoped to the ``grove``
+    package (~200ms, package-wide). A receipt writer added in ANOTHER top-level
+    package would escape it. Widen the root if the receipt surface ever leaves
+    ``grove``.
+
+    Returns ``(modules: set[str], segments: list[str])``.
+    """
+    import ast
+    import pathlib
+
+    import grove
+
+    root = pathlib.Path(grove.__file__).parent
+    modules: set = set()
+    segments: list = []
+    for py in sorted(root.rglob("*.py")):
+        try:
+            src = py.read_text(encoding="utf-8")
+            tree = ast.parse(src)
+        except (OSError, SyntaxError):
+            continue
+        rel = str(py.relative_to(root.parent))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            if (isinstance(f, ast.Name) and f.id == "_event") or (
+                isinstance(f, ast.Attribute) and f.attr == "_event"
+            ):
+                modules.add(rel)
+                seg = ast.get_source_segment(src, node)
+                if seg:
+                    segments.append(seg)
+    return modules, segments
 
 
 def test_terminal_receipt_identity_invariant_enumerates_all_branches():
     import re
 
-    from grove.fleet import runner
+    modules, segments = _discover_event_receipt_sites()
 
-    # fleet-receipt-custody-v1 P2 C1 — the receipt-writing surface is now TWO
-    # modules: worker_entry (in-worker terminal events) and runner (the
-    # pre-live genesis-abort receipts). The invariant scans BOTH, or the new
-    # runner branches would sit unguarded (an A5 hole).
-    we_calls = _event_call_segments(worker_entry)
-    runner_calls = _event_call_segments(runner)
-
-    # Guard the guard: worker_entry's six sites (no_work, governed_denial x2,
-    # no_package/emit_truncation, success, main catch-all). Fewer means the
-    # scan went vacuous; recount before touching this floor.
-    assert len(we_calls) >= 6, (
-        f"identity-invariant scan found only {len(we_calls)} worker_entry "
-        "_event call sites — the enumeration is vacuous; did _event get renamed?"
-    )
-    # The runner contributes the genesis-abort receipt builder (_close_genesis,
-    # shared by both the inbox_unwritable and spawn_failed branches). A new
-    # pre-live abort branch that writes its own receipt enrolls here too.
-    assert len(runner_calls) >= 1, (
-        f"expected >= 1 runner _event call site (the genesis-abort receipt in "
-        f"_close_genesis), found {len(runner_calls)} — did it stop routing "
-        "through _event? The identity invariant only covers receipts built "
-        "via _event."
+    # Vacuity — BOTH legs. A broken scan must not pass by discovering nothing,
+    # nor by silently dropping a module. The set is non-empty AND contains every
+    # known receipt writer: worker_entry (in-worker events), runner (C1 genesis
+    # aborts), staging (C2b synthetic kill/crash receipts).
+    assert segments, "discovery found ZERO _event call sites — the scan is vacuous"
+    known = {
+        "grove/fleet/worker_entry.py",
+        "grove/fleet/runner.py",
+        "grove/fleet/staging.py",
+    }
+    missing = known - modules
+    assert not missing, (
+        f"discovery missed known receipt writer(s) {sorted(missing)} — the scan "
+        "is broken or a writer moved; the invariant would be silently narrowed"
     )
 
-    calls = we_calls + runner_calls
-    exceptions = [seg for seg in calls if "empty payload" in seg]
+    # Exactly ONE source-level named exception (the no_work empty-payload gate).
+    exceptions = [seg for seg in segments if "empty payload" in seg]
     assert len(exceptions) == 1, (
         "exactly ONE source-level named exception is allowed (the no_work "
         f"empty-payload gate); found {len(exceptions)}: {exceptions!r}"
     )
     unstamped = [
         seg
-        for seg in calls
+        for seg in segments
         if seg not in exceptions
         and not re.search(r"\b(unit_id|row_id|event_kw)\b", seg)
     ]
     assert not unstamped, (
         "terminal-receipt identity invariant violated — _event call site(s) "
         "without a dispatched-identity field (unit_id/row_id/event_kw) and "
-        "not in the named-exception set. Thread _dispatched_unit_id(payload) "
+        "not in the named-exception set. Thread the dispatched identity "
         f"like the sibling branches:\n" + "\n---\n".join(unstamped)
     )
 

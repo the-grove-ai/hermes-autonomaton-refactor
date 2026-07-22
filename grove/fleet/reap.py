@@ -25,7 +25,7 @@ import psutil
 
 from grove.fleet import paths
 from grove.fleet.limits import group_alive, safe_kill_group
-from grove.fleet.staging import _atomic_write_bytes
+from grove.fleet.staging import _atomic_write_bytes, write_synthetic_receipt
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,6 @@ def write_pidfile(
     pid: int,
     pgid: int,
     wall_clock_secs: Optional[int],
-    started_at: str,
 ) -> None:
     """Persist the running worker's PID/PGID so a later gateway can reap it."""
     rec = {
@@ -122,7 +121,6 @@ def write_pidfile(
         "pid": pid,
         "pgid": pgid,
         "wall_clock_secs": wall_clock_secs,
-        "started_at": started_at,
     }
     _atomic_write_bytes(
         paths.pid_path(worker_id), json.dumps(rec).encode("utf-8")
@@ -248,6 +246,17 @@ def sweep_orphans(loop: Optional[Any] = None) -> List[Dict[str, Any]]:
         if _confirm_group_dead(pid, pgid):
             _unlink_quietly(pidfile)
             reaped.append(rec)
+            # C2b — the boot sweep owns a death across a gateway restart: mint a
+            # unit-attributable receipt so the reaped run is countable. Only the
+            # CONFIRMED-dead path writes one — the identity-unverified and
+            # kill-unconfirmed paths above claim no death and write nothing.
+            write_synthetic_receipt(
+                worker_id,
+                run_id,
+                check="reaped_at_restart",
+                detail=f"worker group (pid {pid}) was reaped at gateway restart",
+                loop=loop,
+            )
         else:
             # Still alive after the bound: keep the pidfile so the next boot
             # retries — losing the handle would be worse than a repeat attempt.

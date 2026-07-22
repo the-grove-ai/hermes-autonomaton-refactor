@@ -80,7 +80,7 @@ def test_safe_kill_group_never_targets_caller_group():
 
 
 def test_pidfile_round_trip():
-    reap.write_pidfile("w1", "r1", pid=4242, pgid=4242, wall_clock_secs=900, started_at="t")
+    reap.write_pidfile("w1", "r1", pid=4242, pgid=4242, wall_clock_secs=900)
     rec = reap.read_pidfile("w1")
     assert rec["pid"] == 4242 and rec["pgid"] == 4242 and rec["worker_id"] == "w1"
     reap.remove_pidfile("w1")
@@ -95,7 +95,7 @@ def test_sweep_kills_live_orphan_and_removes_pidfile(runid_sleeper):
     # a real worker spawned by _spawn does (--run-id <hex>), so the identity
     # gate confirms it is ours and it is reaped.
     p = runid_sleeper("r")
-    reap.write_pidfile("orphan", "r", pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t")
+    reap.write_pidfile("orphan", "r", pid=p.pid, pgid=p.pid, wall_clock_secs=900)
     reaped = reap.sweep_orphans()
     assert [r["worker_id"] for r in reaped] == ["orphan"]
     _reap_dead(p)
@@ -106,7 +106,7 @@ def test_sweep_removes_stale_dead_pidfile_without_killing():
     # A pid that is (almost certainly) dead: a freshly-exited child.
     p = subprocess.Popen([sys.executable, "-c", "pass"])
     p.wait()
-    reap.write_pidfile("dead", "r", pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t")
+    reap.write_pidfile("dead", "r", pid=p.pid, pgid=p.pid, wall_clock_secs=900)
     reaped = reap.sweep_orphans()
     assert reaped == []  # nothing alive to reap
     assert reap.read_pidfile("dead") is None  # stale file still removed
@@ -119,7 +119,7 @@ def test_sweep_skips_malformed_pidfile_and_continues(runid_sleeper):
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text("{not json", encoding="utf-8")
     p = runid_sleeper("r")
-    reap.write_pidfile("goodworker", "r", pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t")
+    reap.write_pidfile("goodworker", "r", pid=p.pid, pgid=p.pid, wall_clock_secs=900)
     reaped = reap.sweep_orphans()
     assert "goodworker" in [r["worker_id"] for r in reaped]
     _reap_dead(p)
@@ -255,13 +255,15 @@ def test_sweep_does_not_kill_or_unlink_unverifiable_identity(sleeper, captured_a
     # stored run_id in its argv. It must NOT be killed, and its pidfile survives.
     p = sleeper()  # argv has no run_id
     reap.write_pidfile(
-        "recycled", _RUN_ID, pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t"
+        "recycled", _RUN_ID, pid=p.pid, pgid=p.pid, wall_clock_secs=900
     )
     reaped = reap.sweep_orphans()
 
     assert group_alive(p.pid, p.pid)  # NOT killed — a wrong kill is unrecoverable
     assert reap.read_pidfile("recycled") is not None  # pidfile left for inspection
     assert "recycled" not in [r["worker_id"] for r in reaped]
+    # C2b: we did not cause this death — write NO receipt.
+    assert not paths.event_path("recycled", _RUN_ID).exists()
 
     # The Andon must be ACTIONABLE: pid, expected run_id, and the observed cmdline.
     andon = [a for a in captured_andons if a["check"] == "orphan_identity_unverified"]
@@ -275,7 +277,7 @@ def test_sweep_does_not_kill_or_unlink_unverifiable_identity(sleeper, captured_a
 def test_sweep_kills_and_unlinks_when_identity_confirmed(runid_sleeper):
     p = runid_sleeper(_RUN_ID)
     reap.write_pidfile(
-        "ours", _RUN_ID, pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t"
+        "ours", _RUN_ID, pid=p.pid, pgid=p.pid, wall_clock_secs=900
     )
     reaped = reap.sweep_orphans()
     assert "ours" in [r["worker_id"] for r in reaped]
@@ -292,7 +294,7 @@ def test_sweep_keeps_pidfile_and_andons_when_kill_unconfirmed(
     # Andon surfaced; it must NOT be counted as reaped.
     p = runid_sleeper(_RUN_ID)
     reap.write_pidfile(
-        "stubborn", _RUN_ID, pid=p.pid, pgid=p.pid, wall_clock_secs=900, started_at="t"
+        "stubborn", _RUN_ID, pid=p.pid, pgid=p.pid, wall_clock_secs=900
     )
     monkeypatch.setattr(reap, "safe_kill_group", lambda *a, **k: None)
 
@@ -301,7 +303,41 @@ def test_sweep_keeps_pidfile_and_andons_when_kill_unconfirmed(
     assert group_alive(p.pid, p.pid)  # still alive (kill was a no-op)
     assert reap.read_pidfile("stubborn") is not None  # pidfile retained
     assert "stubborn" not in [r["worker_id"] for r in reaped]
+    # C2b: kill not confirmed — claim no death, write NO receipt.
+    assert not paths.event_path("stubborn", _RUN_ID).exists()
     andon = [a for a in captured_andons if a["check"] == "orphan_kill_unconfirmed"]
     assert len(andon) == 1
     assert str(p.pid) in andon[0]["message"]
     assert _RUN_ID in andon[0]["message"]
+
+
+# ── C2b ruling (a): started_at is a written-but-unread field — removed ───────
+
+
+def test_pidfile_does_not_carry_started_at():
+    """started_at was written by write_pidfile and read by nothing (C2b R1).
+    A field nothing consults is a drift magnet: it is gone, and this pin fails
+    if it returns — in the signature or in the persisted record."""
+    import inspect
+
+    assert "started_at" not in inspect.signature(reap.write_pidfile).parameters
+    reap.write_pidfile("nostamp", "r", pid=4242, pgid=4242, wall_clock_secs=900)
+    rec = reap.read_pidfile("nostamp")
+    assert "started_at" not in rec
+
+
+def test_sweep_confirmed_dead_writes_reaped_at_restart_receipt(runid_sleeper):
+    # A live orphan we can prove is ours, killed at boot -> a unit-attributable
+    # receipt so it is countable (reaped_at_restart does NOT count against the
+    # retry cap; that is YAML policy P3 rules, not baked into the record).
+    from grove.fleet import runner
+    p = runid_sleeper("reaprun1")
+    runner.write_dispatch_record("reapee", "reaprun1", "unit-reap")
+    reap.write_pidfile("reapee", "reaprun1", pid=p.pid, pgid=p.pid, wall_clock_secs=900)
+    reaped = reap.sweep_orphans()
+    assert "reapee" in [r["worker_id"] for r in reaped]
+    _reap_dead(p)
+    ev = json.loads(paths.event_path("reapee", "reaprun1").read_text(encoding="utf-8"))
+    assert ev["status"] == "failed"
+    assert ev["check"] == "reaped_at_restart"
+    assert ev["unit_id"] == "unit-reap"
