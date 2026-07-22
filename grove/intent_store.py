@@ -37,7 +37,7 @@ import threading
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,16 @@ def finalize_record(
 # layer working as designed, and the Flywheel must SEE these structural stops
 # to learn from them. Without this entry the write is rejected and the stop is
 # invisible to the loop (the C2d-2 telemetry gap this closes).
+# retrieval-ambient-class-v1 P5 — ``awaiting_operator`` is the DEFERRAL
+# outcome a store-and-resume surface writes when the turn yields control to
+# the operator (OperatorInputRequired at dispatcher.dispatch_turn): a clarify
+# question OR a governance approval, per PendingOperatorRequest.kind. It was
+# written since Sprint 67 but absent here, so every gateway clarify/approval
+# deferral crashed the intent WRITE (ValueError inside the best-effort catch
+# — a silent record drop, the GATE-A live defect). ONE state suffices: the
+# asked-a-clarification fact is carried by ``tools_yielded`` ("clarify") +
+# ``first_clarification``; the pending KIND lives on the persisted
+# PendingOperatorRequest. Two outcomes would split one terminal fact.
 VALID_OUTCOMES: frozenset[str] = frozenset({
     "pending",
     "success",
@@ -101,6 +111,7 @@ VALID_OUTCOMES: frozenset[str] = frozenset({
     "error",
     "correction",
     "governance_terminated",
+    "awaiting_operator",
 })
 
 
@@ -196,6 +207,26 @@ class IntentRecord:
     cellar_retrieval_hits: Optional[int] = 0
     cellar_citations_rendered: Optional[int] = 0
     cellar_retrieval_config_sig: Optional[str] = None
+
+    # retrieval-ambient-class-v1 P5 — per-turn disclosure verdicts, COMPACT:
+    # {"eager": {"baseline": {"n", "sha12"}, "core": {"n", "sha12"},
+    #            "matched": [names], "mcp": [servers]},
+    #  "pull":   {reason: [names]},     # admitted, demoted to the index
+    #  "hidden": {reason: [names]},     # not admitted; reason = deciding gate
+    #  "mode": "eager-t1" | "disclosure-t2t3"}
+    # Baseline/core ride by count + set-hash (never enumerated per turn —
+    # volume discipline); only the INTERESTING decisions (pull/hidden) list
+    # names, grouped by the deciding gate from the post-P2 census
+    # (complexity-gate | trigger-miss | lifecycle-null | mcp-allow-miss |
+    # recordless). The co-location gate (G15) never yields a verdict — it
+    # Andons the turn instead of hiding a tool.
+    disclosure_verdicts: Optional[Dict[str, Any]] = None
+    # retrieval-ambient-class-v1 P5 — True iff this turn used clarify and no
+    # earlier turn in the SAME SESSION had (session-scoped thread identity —
+    # the gateway path has no sub-session thread; tracked in Dispatcher
+    # process memory, so a gateway restart re-arms the flag: the narrowest
+    # honest version).
+    first_clarification: bool = False
 
 
 class IntentStore:

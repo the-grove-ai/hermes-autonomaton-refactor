@@ -3215,6 +3215,92 @@ class AIAgent:
         pull_defs = build_pull_tool_defs(units, eager_ids)
         return eager + pull_defs
 
+    def _stash_disclosure_verdicts(
+        self, res, delivered, intent_class, complexity_signal, *, mode
+    ) -> None:
+        """retrieval-ambient-class-v1 P5 — compact per-turn disclosure
+        verdicts onto ``_last_tool_selection`` (the Dispatcher copies them
+        onto the IntentRecord). Observation only — never touches the surface.
+
+        Volume discipline: baseline/core (the ~24+35 always-eager verbs) ride
+        by count + set-hash, never enumerated; only the INTERESTING decisions
+        (pull, hidden) list names, grouped by the deciding census gate.
+        Best-effort: any failure logs and stashes nothing (telemetry must
+        never break the turn).
+        """
+        try:
+            import hashlib as _hashlib
+
+            from grove.context_budget import (
+                _is_mcp, _mcp_server_of, _name_of, hidden_verdict_reasons,
+            )
+            from grove.disclosure import PULL_TOOL_NAMES, disclosure_split_sets
+
+            full = {n for n in (_name_of(t) for t in (self.tools or [])) if n}
+            admitted = {n for n in (_name_of(t) for t in res.tools) if n}
+            delivered_names = {
+                n for n in (_name_of(t) for t in (delivered or [])) if n
+            } - set(PULL_TOOL_NAMES)
+            hidden = full - admitted
+            baseline, core, _im = disclosure_split_sets()
+
+            def _ref(names):
+                ns = sorted(names)
+                return {
+                    "n": len(ns),
+                    "sha12": _hashlib.sha256(
+                        "\n".join(ns).encode("utf-8")
+                    ).hexdigest()[:12],
+                }
+
+            eager_matched = sorted(
+                n for n in (admitted & delivered_names)
+                if not _is_mcp(n) and n not in baseline and n not in core
+            )
+            eager_mcp = sorted({
+                s for s in (
+                    _mcp_server_of(n) for n in delivered_names if _is_mcp(n)
+                ) if s
+            })
+            pulled = admitted - delivered_names
+            pull_groups: dict = {}
+            if pulled:
+                # Attribution: a complexity-class record rides the pull index
+                # by design; anything else demoted is an eager-split miss.
+                from grove.capability import TriggerDisclosure as _TD
+                from grove.capability_registry import load_capabilities as _lc
+
+                cx_tools = set()
+                try:
+                    for c in _lc().values():
+                        if c.trigger.disclosure == _TD.COMPLEXITY:
+                            cx_tools.update(c.bindings.tools)
+                except Exception:  # noqa: BLE001
+                    pass
+                for n in sorted(pulled):
+                    key = (
+                        "complexity-class" if n in cx_tools else "eager-miss"
+                    )
+                    pull_groups.setdefault(key, []).append(n)
+            self._last_tool_selection = self._last_tool_selection or {}
+            self._last_tool_selection["disclosure_verdicts"] = {
+                "eager": {
+                    "baseline": _ref(admitted & baseline & delivered_names),
+                    "core": _ref(admitted & core & delivered_names),
+                    "matched": eager_matched,
+                    "mcp": eager_mcp,
+                },
+                "pull": pull_groups,
+                "hidden": hidden_verdict_reasons(
+                    hidden, intent_class, complexity_signal
+                ),
+                "mode": mode,
+            }
+        except Exception as exc:  # noqa: BLE001 — observation never breaks the turn
+            logger.warning(
+                "[run_agent] disclosure-verdict stash failed: %r", exc,
+            )
+
     def _intercept_pull_intents(self, intents, messages):
         """Sprint 74 Phase 3 — handle the agent-pull tools at the agent loop,
         before the executor (the executor's frozen context has no path back to
@@ -3455,8 +3541,15 @@ class AIAgent:
             self._uncertainty_andon_pending = True
         if _tier_now in ("T2", "T3"):
             self._tools_for_turn = self._apply_disclosure(res, intent_class=intent_class)
+            self._stash_disclosure_verdicts(
+                res, self._tools_for_turn, intent_class, complexity,
+                mode="disclosure-t2t3",
+            )
         else:
             tools = list(res.tools)
+            self._stash_disclosure_verdicts(
+                res, tools, intent_class, complexity, mode="eager-t1",
+            )
             if _tier_now == "T1":
                 # Sprint 75 Phase 2 — T1 core economics: param-scope terminal to
                 # command + workdir (the async/background params are T2/T3). It
