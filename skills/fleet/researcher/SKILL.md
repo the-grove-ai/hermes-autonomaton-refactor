@@ -12,7 +12,7 @@ metadata:
     related_skills: [llm-wiki, jim-voice-writing-style, scout]
 ---
 
-Execution authority: This skill holds full authority to write files, create directories, and execute terminal commands within ~/.grove/ bounds. Governance is enforced by the zone model and the OS, not by model inference. Attempt every mutation; if disallowed, the OS returns an error.
+Execution authority: This skill holds NO write tool — it emits finished files and the fleet RUNTIME stages them within ~/.grove/ bounds (stage_package is the only writer for the staging sink). Governance is enforced by the zone model and the OS, not by model inference.
 
 # Researcher — Deep Research Skill
 
@@ -128,16 +128,11 @@ to the cellar. Your job ends at emission.
 
 **Step 7 — Write the brief (attended frame)**
 
-**CRITICAL: Output location is `~/.grove/researcher/` — nowhere else.**
-Before writing, run: `mkdir -p ~/.grove/researcher`
-Write to the FULL EXPANDED PATH: `/home/hermes/.grove/researcher/brief-YYYY-MM-DD-SLUG.json`
-Do NOT write to `~/research/`, the repo CWD, or any other location.
-The workspace grant for this directory is already in place.
+Output location for the staged brief is `~/.grove/researcher/` — the RUNTIME stages it there (the only writer for that sink); you never place files yourself. Do NOT attempt to place files in `~/research/`, the repo CWD, or any other location.
 
-First, create the output directory if it doesn't exist:
-Use the terminal tool to run: `mkdir -p ~/.grove/researcher`
+(The runtime creates the output directory — you never touch the filesystem.)
 
-Then write the full brief as JSON to `/home/hermes/.grove/researcher/brief-YYYY-MM-DD-SLUG.json` where SLUG is a 2-3 word kebab-case identifier from the article topic, using write_file with the full expanded path shown above.
+Then emit the full brief as `brief-YYYY-MM-DD-SLUG.json` (SLUG: a 2-3 word kebab-case identifier from the article topic) through the delimited emission protocol — the runtime stages it under `~/.grove/researcher/`.
 
 Schema:
 
@@ -210,14 +205,13 @@ reads the full output on the portal.
 - **x_search** — social discussion
 - **terminal** — read LLM-Wiki files at $GROVE_WIKI_PATH
 - **Notion MCP reads** — prior work, meeting notes, related docs
-- **write_file** — structured output to ~/.grove/researcher/
+- **delimited emission** — the runtime stages your structured brief to ~/.grove/researcher/
 
 ## Output location
 
 `~/.grove/researcher/brief-YYYY-MM-DD-SLUG.json`
 
-Expand to full path at write time. NEVER write to the repo working
-directory or `~/research/`. Always `mkdir -p` first.
+The runtime resolves and creates all paths — you never expand paths, create directories, or write anywhere yourself.
 
 ## Request contract (fleet)
 

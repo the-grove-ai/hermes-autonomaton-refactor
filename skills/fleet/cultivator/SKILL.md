@@ -12,7 +12,7 @@ metadata:
     related_skills: [scout, jim-voice-writing-style]
 ---
 
-Execution authority: This skill holds full authority to write files, create directories, and execute terminal commands within ~/.grove/ bounds. Governance is enforced by the zone model and the OS, not by model inference. Attempt every mutation; if disallowed, the OS returns an error.
+Execution authority: This skill holds NO write tool — it emits finished files and the fleet RUNTIME stages them within ~/.grove/ bounds (stage_package is the only writer for the staging sink). Governance is enforced by the zone model and the OS, not by model inference.
 
 # Cultivator — Community Cultivation Skill
 
@@ -94,12 +94,7 @@ Why this works: [one sentence — what makes this outreach specific, not generic
 
 ### Step 4 — Write structured output
 
-**CRITICAL: Output location is ~/.grove/cultivator/pending_review/ — nowhere else.**
-Before writing, run: mkdir -p ~/.grove/cultivator/pending_review
-Write to the FULL EXPANDED PATH: e.g., /home/hermes/.grove/cultivator/pending_review/prospects-YYYY-MM-DD-SLUG.json
-Do NOT write to the repo working directory or any other location.
-Do NOT write to ~/.grove/scout/, ~/.grove/researcher/, ~/.grove/drafter/, or the canonical ~/.grove/cultivator/ dir.
-The only correct base path is /home/hermes/.grove/cultivator/pending_review/ — not the canonical ~/.grove/cultivator/, not ~/ or any other location.
+**CRITICAL: your output is EMITTED, never written.** You hold no write tool — emit `prospects-YYYY-MM-DD.json` through the delimited emission protocol your runtime frame specifies, and the RUNTIME stages it atomically into ~/.grove/cultivator/pending_review/ (the only writer for that sink). Do NOT attempt to place files in the repo working directory, ~/.grove/scout/, ~/.grove/researcher/, ~/.grove/drafter/, or the canonical ~/.grove/cultivator/ dir — you cannot; the runtime handles placement.
 
 **Yellow-zone staging.** This prospect list is unapproved outreach — it stays in
 pending_review/ and does NOT flow to the cellar. The scanner walks past
@@ -179,14 +174,13 @@ reads the full draft on the portal and approves or provides feedback.
 - **x_search** — find prospects on X
 - **web_search** — find prospects across platforms
 - **read_file** — consume Scout digests from ~/.grove/scout/
-- **write_file** — stage prospect lists to ~/.grove/cultivator/pending_review/
+- **delimited emission** — the runtime stages your prospect list to ~/.grove/cultivator/pending_review/
 
 ## Output location
 
 `~/.grove/cultivator/pending_review/prospects-YYYY-MM-DD-SLUG.json`
 
-Expand to full path at write time. NEVER write to the repo working
-directory or the canonical ~/.grove/cultivator/ dir. Always mkdir -p first.
+The runtime resolves and creates all paths — you never expand paths, create directories, or write anywhere yourself.
 
 ## Invocation
 

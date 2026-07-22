@@ -465,15 +465,16 @@ def test_no_prose_instructs_direct_writes_into_fleet_staging_sinks():
     # is sealed by this commit. The rest is banked debt for the follow-up
     # sweep; a NEW skill can never hide here, and an allowlisted document that
     # stops offending MUST be removed (the ratchet only tightens).
+    # P2 A2 swept cultivator/drafter/researcher. The two SCOUTS remain by
+    # RULING-PENDING exception: they are NOT fleet workers (absent from
+    # config/fleet_workers.yaml), they run on the interactive surface where
+    # write_file IS offered, and their direct-write prose is LOAD-BEARING —
+    # scout's ~/.grove/scout/ digests are cultivator's fleet input
+    # (fleet_workers.yaml input_state.source_dir: scout). Sealing them needs
+    # a sanctioned writer or fleet migration first, not a prose deletion.
     allowed = {
-        "config/capabilities/skill__fleet__cultivator.yaml",
-        "config/capabilities/skill__fleet__drafter.yaml",
-        "config/capabilities/skill__fleet__researcher.yaml",
         "config/capabilities/skill__fleet__scout.yaml",
         "config/capabilities/skill__fleet__scout_jobsearch.yaml",
-        "skills/fleet/cultivator/SKILL.md",
-        "skills/fleet/drafter/SKILL.md",
-        "skills/fleet/researcher/SKILL.md",
         "skills/fleet/scout/SKILL.md",
         "skills/fleet/scout-jobsearch/SKILL.md",
     }
