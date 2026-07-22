@@ -272,7 +272,9 @@ async def test_meta_enumerations(client):
     }
     # Sourced from the live enums/constants — parity, not hardcoded lists.
     assert set(enums["lifecycle_states"]) == {s.value for s in LifecycleState}
-    assert len(enums["lifecycle_states"]) == 7
+    # 8 with SUSPENDED (retrieval-ambient-class-v1 P4 — the definition-side
+    # emergency kill joined the enum).
+    assert len(enums["lifecycle_states"]) == 8
     assert set(enums["zone_classes"]) == {z.value for z in Zone}
     assert set(enums["capability_kinds"]) == {k.value for k in CapabilityKind}
     assert set(enums["memory_entity_types"]) == set(DECAY_RATES.keys())

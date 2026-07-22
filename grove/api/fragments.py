@@ -796,6 +796,44 @@ def _render_red_proposal_card(request, full_pid: str, short_id: str) -> str:
         )
         confirm = "Approve this RED action? You will confirm once more."
 
+    # retrieval-ambient-class-v1 P4 (ruling D + the c29a658b8 legibility
+    # precedent) — a revocation:true admission claim renders its removed
+    # grants EXPLICITLY and distinctly: the operator must never have to
+    # visually diff payloads to see a revocation. Bounded render (the
+    # existing bounded-payload pattern): grant lists slice at 20 with an
+    # explicit +N marker — never silent truncation.
+    revocation = (
+        store.revocation_manifest(bare) if store is not None else None
+    )
+    if revocation is not None:
+        def _bounded(items):
+            items = [str(i) for i in (items or [])]
+            head = ", ".join(_esc(i) for i in items[:20])
+            more = f" (+{len(items) - 20} more)" if len(items) > 20 else ""
+            return head + more
+
+        rows = []
+        if revocation.get("intents_removed"):
+            rows.append(
+                f"<li>intents removed: {_bounded(revocation['intents_removed'])}</li>"
+            )
+        if revocation.get("tiers_removed"):
+            rows.append(
+                f"<li>tiers removed: {_bounded(revocation['tiers_removed'])}</li>"
+            )
+        srcs = revocation.get("present_state_source") or {}
+        src_line = (
+            "<li>present-state source: "
+            + _bounded(sorted(f"{k}: {v}" for k, v in srcs.items()))
+            + "</li>"
+            if srcs else ""
+        )
+        value_line = (
+            '<div class="meta meta-revocation">⚠ REVOCATION — this approval '
+            "REMOVES grants the record holds today:<ul>"
+            + "".join(rows) + src_line + "</ul></div>"
+        ) + value_line
+
     # Two-step approve: this POST /approve returns a Confirm card (no mint); the
     # Confirm card's POST /confirm performs the action. hx-vals carries the nonce.
     return (

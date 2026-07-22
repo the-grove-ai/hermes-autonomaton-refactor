@@ -2967,11 +2967,15 @@ class AIAgent:
         """
         self._mcp_match_reasons = {}
         try:
-            from grove.capability import CapabilityKind
+            from grove.capability import CapabilityKind, NULL_CAPABILITY_STATES
             from grove.capability_registry import load_capabilities
+            # retrieval-ambient-class-v1 P4 (ruling B) — the lifecycle wall
+            # applies to MCP records too: a deprecated/suspended record's
+            # server never enters the mcp_allow set, regardless of trigger.
             records = [
                 c for c in load_capabilities().values()
                 if c.kind == CapabilityKind.MCP
+                and c.lifecycle.state not in NULL_CAPABILITY_STATES
             ]
         except Exception as exc:
             logger.warning(

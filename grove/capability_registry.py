@@ -504,10 +504,26 @@ def effective_admission_state(
                 "field": "tiers", "base": base_tiers,
                 "effective": base_tiers, "source": "definition",
             })
+        # retrieval-ambient-class-v1 P4 (ruling B) — a deprecated/suspended
+        # record yields NULL effective capability; the read reports it with
+        # the lifecycle reason so the operator sees WHY nothing admits.
+        from grove.capability import NULL_CAPABILITY_STATES as _NULL
+
+        admissible = cap.lifecycle.state not in _NULL
         out["records"][rid] = {
             "zone": cap.zone.value,
             "disclosure": cap.trigger.disclosure.value,
             "kind": cap.kind.value,
+            "lifecycle_state": cap.lifecycle.state.value,
+            "admissible": admissible,
+            "null_capability_reason": (
+                None if admissible else (
+                    f"lifecycle.state={cap.lifecycle.state.value!r} — null "
+                    f"effective capability (P4 ruling B): tools not admitted "
+                    f"and not disclosed regardless of overlay grants or "
+                    f"disclosure class; lifecycle outranks baseline"
+                )
+            ),
             "has_state": state is not None,
             "fields": fields,
             "provenance": dict(prov) if prov else None,

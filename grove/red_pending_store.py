@@ -640,6 +640,21 @@ class RedPendingStore:
             return None
         return red_action_reason(entry.tool_name, entry.pattern_key, entry.is_opaque)
 
+    def revocation_manifest(self, proposal_id: str) -> Optional[dict]:
+        """retrieval-ambient-class-v1 P4 — the sealed removed-grants manifest
+        for a ``revocation: true`` admission claim, or None. Resolved from the
+        persisted ``writer_payload`` (the seal-time shrink diff, GATE-B ruling
+        D); the portal card renders it EXPLICITLY so the operator never has to
+        visually diff payloads to see a revocation."""
+        entry = self.get(proposal_id)
+        if entry is None:
+            return None
+        payload = entry.writer_payload or {}
+        if not payload.get("revocation"):
+            return None
+        manifest = payload.get("removed_grants")
+        return dict(manifest) if isinstance(manifest, dict) else {}
+
     def has(self, proposal_id: str) -> bool:
         """True iff a durable payload row exists for *proposal_id*.
 
@@ -829,17 +844,91 @@ def _resolve_governed_writer(resolved_target: str, body):
             and set(doc) <= {"id", "intents", "tiers", "provenance"}
             and (doc.get("intents") is not None or doc.get("tiers") is not None)
         ):
-            return "write_admission_state", {
+            payload = {
                 "record_id": doc["id"],
                 "intents": doc.get("intents"),
                 "tiers": doc.get("tiers"),
-            }, ""
+            }
+            # retrieval-ambient-class-v1 P4 (GATE-B ruling D) — SEAL-TIME
+            # SHRINK DIFF: compare the proposed absolute-state doc against the
+            # CURRENT effective state through the P3 SHARED derivation
+            # (effective_admission_state -> _compose_state; no new derivation
+            # path). A proposal that removes any present intent/tier seals
+            # with ``revocation: true`` + a removed-grants manifest — NOT a
+            # refusal (deliberate narrowing is legitimate); the guard makes
+            # SILENT shrink structurally impossible. Additive/identical
+            # proposals seal unchanged. Pre-canonical overlay values (source
+            # ``overlay · NO PROVENANCE``) count as present-state; the
+            # manifest carries the per-field source so the card can say so.
+            payload.update(_admission_shrink_diff(doc))
+            return "write_admission_state", payload, ""
         return None, None, (
             "capability state writes admit only canonical admission docs "
             "({id, intents, tiers}) through write_admission_state"
         )
 
     return None, None, "no governed writer is registered for this surface"
+
+
+def _admission_shrink_diff(doc: dict) -> dict:
+    """retrieval-ambient-class-v1 P4 — the seal-time shrink verdict for one
+    canonical admission doc against CURRENT effective state.
+
+    Reads the P3 shared derivation (``effective_admission_state``) — the same
+    composed path the ``read_capability_state`` tool and the portal fragment
+    bind; this function derives NOTHING itself. Returns ``{}`` for an
+    additive/identical proposal, or::
+
+        {"revocation": True,
+         "removed_grants": {
+             "intents_removed": [...], "tiers_removed": [...],
+             "present_state_source": {"intents": <tag>, "tiers": <tag>},
+         }}
+
+    ``present_state_source`` carries the per-field source tag (definition |
+    overlay · approval <id> | overlay · NO PROVENANCE (pre-canonical)) so the
+    approval card names WHERE the removed grant came from — a pre-canonical
+    overlay's values are present-state for diff purposes, annotated as such.
+    An unknown record id or a derivation failure returns ``{}`` — the
+    viability seam and the writer's own validation own those refusals; the
+    shrink guard never blocks a seal.
+    """
+    try:
+        from grove.capability_registry import effective_admission_state
+
+        rec = effective_admission_state()["records"].get(doc["id"])
+    except Exception as exc:  # noqa: BLE001 — guard must never block the seal
+        logger.warning(
+            "[red_pending_store] shrink-diff derivation failed for %r (%r) — "
+            "sealing without a shrink verdict.", doc.get("id"), exc,
+        )
+        return {}
+    if rec is None:
+        return {}
+    by_field = {f["field"]: f for f in rec["fields"]}
+    removed_intents: list = []
+    removed_tiers: list = []
+    sources: dict = {}
+    if doc.get("intents") is not None and "intents" in by_field:
+        current = list(by_field["intents"]["effective"])
+        removed_intents = [i for i in current if i not in list(doc["intents"])]
+        if removed_intents:
+            sources["intents"] = by_field["intents"]["source"]
+    if doc.get("tiers") is not None and "tiers" in by_field:
+        current_t = list(by_field["tiers"]["effective"])
+        removed_tiers = [t for t in current_t if t not in list(doc["tiers"])]
+        if removed_tiers:
+            sources["tiers"] = by_field["tiers"]["source"]
+    if not removed_intents and not removed_tiers:
+        return {}
+    return {
+        "revocation": True,
+        "removed_grants": {
+            "intents_removed": removed_intents,
+            "tiers_removed": removed_tiers,
+            "present_state_source": sources,
+        },
+    }
 
 
 def is_viable_red_target(tool_name: str, arguments: dict):
