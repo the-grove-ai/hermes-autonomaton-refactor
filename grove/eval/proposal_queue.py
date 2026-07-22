@@ -268,6 +268,12 @@ PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE = "producer_failure_recurrence"
 #   payload: {"producer": str}
 #   detail:  {"check": str, "run_id": str}
 PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED = "producer_auto_paused"
+# fleet-receipt-custody-v1 P3b — a receipt carried a failure class absent from
+# config/fleet_failure_policy.yaml. It defaulted to retry; this card asks the
+# operator to classify it. Deduped by class, so a class seen N times raises ONE
+# card. Approve DISMISSES the alert — the mapping is applied by editing the YAML.
+#   payload: {"check": str}
+PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS = "unmapped_failure_class"
 # Verb affordances per proposal type. The portal iterates this to render action
 # buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
 # to the iterator — the shape is deliberately open. The generic fleet type

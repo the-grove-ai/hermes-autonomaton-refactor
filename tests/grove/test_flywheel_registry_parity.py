@@ -195,9 +195,10 @@ def test_registry_covers_exactly_the_registered_types() -> None:
     # detector-sweep-resilience-v1 P3 added producer_failure_recurrence (the
     # thirteenth row — the producer pause card whose apply delegates to
     # set_producer_pause; NO reject_callback, disposition-only per R-7).
-    # fleet-receipt-custody-v1 P3b added producer_auto_paused (approve = the sole
-    # operator unpause). Updated inline by the sprint that registers the type —
-    # the registry parity contract still holds, the closed set just grew by one.
+    # fleet-receipt-custody-v1 P3b added two: producer_auto_paused (approve = the
+    # sole operator unpause) and unmapped_failure_class (approve dismisses; the
+    # mapping is a YAML edit). Updated inline by the sprint that registers the
+    # type — the registry parity contract still holds, the closed set just grew.
     from grove.eval.proposal_queue import (
         PROPOSAL_TYPE_ADMISSION_FRICTION,
         PROPOSAL_TYPE_CONSOLIDATION,
@@ -208,6 +209,7 @@ def test_registry_covers_exactly_the_registered_types() -> None:
         PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED,
         PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
         PROPOSAL_TYPE_SKILL_SYNTHESIS,
+        PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS,
     )
 
     assert set(flywheel_cli.PROPOSAL_HANDLERS) == {
@@ -219,6 +221,7 @@ def test_registry_covers_exactly_the_registered_types() -> None:
         PROPOSAL_TYPE_MODEL_BINDING,
         PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
         PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED,
+        PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS,
         PROPOSAL_TYPE_ADMISSION_FRICTION,
         PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,

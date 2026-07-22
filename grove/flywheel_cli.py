@@ -45,6 +45,7 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED,
     PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
+    PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS,
     PROPOSAL_TYPE_SKILL_PROMOTION,
     PROPOSAL_TYPE_SKILL_SYNTHESIS,
     PROPOSAL_TYPE_ZONE_PROMOTION,
@@ -165,8 +166,10 @@ _PUSH_PRIORITY = {
     # with portal_action_failure and fault_triage.
     PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE: 0.5,
     # fleet-receipt-custody-v1 P3b — an auto-paused producer is a live capacity
-    # loss (an incident): it shares the 0.5 incident slot with the recurrence card.
+    # loss (an incident), and an unmapped failure class is an unclassified
+    # incident: both share the 0.5 incident slot with the recurrence card.
     PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED: 0.5,
+    PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS: 0.5,
     "memory_context": 1,                      # == PROPOSAL_TYPE_MEMORY_CONTEXT
     # consolidation-ratchet-v1 — a permanent-policy graduation outranks a
     # transient routing tweak but yields to a fresh memory insight. A fractional
@@ -1328,6 +1331,40 @@ def _approve_producer_auto_paused(
             f"did NOT land; re-approve to retry"
         )
     return producer, {"producer": producer, "paused": False, "status": status}
+
+
+def _summary_unmapped_failure_class(proposal: RoutingProposal) -> str:
+    check = (proposal.payload or {}).get("check")
+    return (
+        f"New fleet failure class {check!r} observed, unmapped — defaulting to "
+        f"retry-capped. Approve DISMISSES this alert; to classify it, edit "
+        f"config/fleet_failure_policy.yaml (approve does NOT write the mapping)."
+    )
+
+
+def _unmapped_failure_class_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    return {
+        "check": (proposal.payload or {}).get("check"),
+        "current_disposition": "retry (default)",
+        "apply_by": "editing config/fleet_failure_policy.yaml",
+    }
+
+
+def _approve_unmapped_failure_class(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Apply an unmapped_failure_class card — DISMISS ONLY. Approve does NOT
+    write config; the operator applies the mapping by editing
+    config/fleet_failure_policy.yaml (P3b: no auto-writer, the class stays on
+    default: retry until the YAML says otherwise). ``machine_path`` unused."""
+    check = (proposal.payload or {}).get("check")
+    return check, {
+        "check": check,
+        "dismissed": True,
+        "note": "classify in config/fleet_failure_policy.yaml — approve did not write it",
+    }
 
 
 def _approve_goal_attachment(
@@ -2571,6 +2608,14 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         diff_renderer=_producer_auto_paused_to_diff,
         apply_callback=_approve_producer_auto_paused,
         apply_label_prefix="Producer unpaused: ",
+    ),
+    # fleet-receipt-custody-v1 P3b — approve DISMISSES the alert; the mapping is
+    # applied by editing config/fleet_failure_policy.yaml, never by this handler.
+    PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS: ProposalHandler(
+        summary_renderer=_summary_unmapped_failure_class,
+        diff_renderer=_unmapped_failure_class_to_diff,
+        apply_callback=_approve_unmapped_failure_class,
+        apply_label_prefix="Failure class acknowledged: ",
     ),
     PROPOSAL_TYPE_GOAL_ATTACHMENT: ProposalHandler(
         summary_renderer=_summary_goal_attachment,
