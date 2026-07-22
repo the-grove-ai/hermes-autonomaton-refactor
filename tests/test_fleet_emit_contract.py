@@ -42,7 +42,9 @@ def _emit_tool_hygiene():
 _FORGE_EMIT = {
     "transport": "tool",
     "files": {"required": ["resume.md", "cover-letter.md"]},
-    "meta": {"required_keys": ["slug"]},
+    # fleet-receipt-custody-v1 P1.1 — the model-facing floor mirrors the live
+    # record: descriptive triad only; row_id is runtime-bound, never asked.
+    "meta": {"required_keys": ["slug", "company", "role"]},
 }
 
 _FORGE_GOV = {
@@ -71,7 +73,7 @@ def _configure_forge(tmp_path) -> Path:
     sink.mkdir(parents=True, exist_ok=True)
     fleet_emit_tool.configure(
         expected_files=["resume.md", "cover-letter.md"],
-        meta_required_keys=["slug"],
+        meta_required_keys=["slug", "company", "role"],
         sink=sink,
         slug=None,
         synth_meta=None,
@@ -226,7 +228,7 @@ def test_parity_forge_registered_equals_declared(tmp_path):
     )
     assert (expected, meta_keys, slug, synth) == (
         ["resume.md", "cover-letter.md"],
-        ["slug"],
+        ["slug", "company", "role"],  # P1.1 — descriptive floor; row_id never asked
         None,
         None,
     )
@@ -236,7 +238,8 @@ def test_parity_forge_registered_equals_declared(tmp_path):
     # Declaration facts surface in the schema itself:
     assert fn["parameters"]["properties"]["files"]["required"] == expected
     assert fn["parameters"]["properties"]["files"]["additionalProperties"] is False
-    assert fn["parameters"]["properties"]["meta"]["required"] == ["slug"]
+    assert fn["parameters"]["properties"]["meta"]["required"] == ["slug", "company", "role"]
+    assert "row_id" not in fn["parameters"]["properties"]["meta"]["properties"]
     assert "meta" in fn["parameters"]["required"]
 
 
@@ -351,9 +354,13 @@ def test_lock_on_emit_stages_bytes_then_refuses_second(tmp_path):
     for name, body in _FORGE_ARGS["files"].items():
         assert (sink / "acme-pm" / name).read_text(encoding="utf-8") == body
     meta_disk = json.loads((sink / "acme-pm" / "meta.json").read_text(encoding="utf-8"))
-    assert meta_disk == _FORGE_ARGS["meta"]
+    # P1.1 (A6 RULED): row_id is no longer on the model-facing floor — a
+    # habit-emitted one is STRIPPED and recorded; no bind here (direct
+    # configure without a dispatched identity), so it is simply absent.
+    assert meta_disk == {k: v for k, v in _FORGE_ARGS["meta"].items() if k != "row_id"}
     emitted = fleet_emit_tool.emitted()
     assert emitted["slug"] == "acme-pm" and len(emitted["staged"]) == 3
+    assert emitted["stripped_meta_keys"] == ["row_id"]  # the strip is RECORDED
 
     second = _emit(_FORGE_ARGS)
     assert "already emitted" in second["error"]
@@ -390,7 +397,10 @@ def test_forge_meta_contract_loud(tmp_path):
     ok_files = dict(_FORGE_ARGS["files"])
     assert "meta" in _emit({"files": ok_files})["error"]
     assert "slug" in _emit({"files": ok_files, "meta": {"role": "x"}})["error"]
-    assert "safe slug" in _emit({"files": ok_files, "meta": {"slug": "../up"}})["error"]
+    assert "safe slug" in _emit(
+        {"files": ok_files,
+         "meta": {"slug": "../up", "company": "x", "role": "y"}}
+    )["error"]
     # identity travels as the meta ARG, not a meta.json file:
     with_meta_file = {**ok_files, "meta.json": "{}"}
     out = _emit({"files": with_meta_file, "meta": {"slug": "s1"}})
@@ -401,15 +411,17 @@ def test_forge_meta_contract_loud(tmp_path):
 
 
 def _configure_forge_full(tmp_path) -> Path:
-    """The LIVE forge floor: slug + the publish triad (company/role/row_id)."""
+    """The LIVE forge floor (P1.1): slug + the descriptive pair; row_id is the
+    HOST's — bound at emit from the dispatched unit identity."""
     sink = tmp_path / "sink"
     sink.mkdir(parents=True, exist_ok=True)
     fleet_emit_tool.configure(
         expected_files=["resume.md", "cover-letter.md"],
-        meta_required_keys=["slug", "company", "role", "row_id"],
+        meta_required_keys=["slug", "company", "role"],
         sink=sink,
         slug=None,
         synth_meta=None,
+        bound_row_id="pg-1",
     )
     return sink
 
@@ -424,18 +436,22 @@ def test_hf1_slug_only_meta_refused_then_corrected_call_stages(tmp_path):
     out = _emit({"files": ok_files, "meta": {"slug": "260712-acme-pm"}})
     err = out["error"]
     assert "missing required key" in err
-    for key in ("company", "role", "row_id"):
+    for key in ("company", "role"):
         assert key in err
+    assert "row_id" not in err  # P1.1 — never asked of the model
     assert not (sink / "260712-acme-pm").exists()  # nothing staged
+    # Corrected call carries a habit-emitted row_id: STRIPPED + recorded, and
+    # the staged identity is the HOST's bound value regardless.
     out2 = _emit({"files": ok_files, "meta": {
         "slug": "260712-acme-pm", "company": "Acme", "role": "PM",
-        "row_id": "pg-1",
+        "row_id": "model-habit-value",
     }})
     assert out2["staged"] is True and out2["locked"] is True
     meta = json.loads(
         (sink / "260712-acme-pm" / "meta.json").read_text(encoding="utf-8")
     )
     assert meta["company"] == "Acme" and meta["row_id"] == "pg-1"
+    assert fleet_emit_tool.emitted()["stripped_meta_keys"] == ["row_id"]
 
 
 def test_hf1_live_forge_record_declares_full_floor():
@@ -446,7 +462,11 @@ def test_hf1_live_forge_record_declares_full_floor():
 
     cap = load_capabilities()["skill.fleet.forge-jobsearch"]
     decl = worker_entry._emit_declaration(cap)
-    assert decl["meta"]["required_keys"] == ["slug", "company", "role", "row_id"]
+    # fleet-receipt-custody-v1 P1.1 — the model-facing floor is the descriptive
+    # triad ONLY: row_id is minted by the runtime and bound at emit, so the
+    # model is never asked to name the row it worked on.
+    assert decl["meta"]["required_keys"] == ["slug", "company", "role"]
+    assert "row_id" not in decl["meta"]["required_keys"]
 
 
 def test_declarative_synthesized_identity(tmp_path):
@@ -549,7 +569,12 @@ def _drive_worker(monkeypatch, tmp_path, cap_gov, payload, script, run_id="rid1"
     return ev, agent, _Dispatcher.captured
 
 
-_ROWS_PAYLOAD = {"rows": [{"id": "r1", "Fit Score": 0.91}]}
+# The REAL dispatch shape: the resolver mints unit_id (resolvers.py:173) and
+# the runtime binds it as meta.row_id at emit (fleet-receipt-custody-v1 P1.1).
+_ROWS_PAYLOAD = {"rows": [{"id": "r1", "Fit Score": 0.91}], "unit_id": "r1"}
+# Legacy pre-unit_id payload — pins the bind's NO-OP path (sentinel byte-parity
+# baselines must stay byte-identical when no host identity was dispatched).
+_ROWS_PAYLOAD_LEGACY = {"rows": [{"id": "r1", "Fit Score": 0.91}]}
 
 
 def _emit_step(args):
@@ -570,7 +595,8 @@ def test_tool_transport_success_event_from_locked_emit(monkeypatch, tmp_path):
     assert ev["status"] == "success"
     assert ev["slug"] == "acme-pm"
     assert "transport=tool" in ev["detail"]
-    assert ev["row_id"] == "r1" and ev["fit_score"] == 0.91  # identity from meta arg
+    assert ev["row_id"] == "r1" and ev["fit_score"] == 0.91  # identity runtime-bound (P1.1)
+    assert ev["stripped_meta_keys"] == ["row_id"]  # A6 telemetry rider
     assert len(ev["staged"]) == 3
     for p in ev["staged"]:
         assert Path(p).is_file()
@@ -676,7 +702,7 @@ def test_sentinel_transport_stages_identically_to_baseline(monkeypatch, tmp_path
         monkeypatch,
         tmp_path,
         _SENTINEL_GOV,
-        _ROWS_PAYLOAD,
+        _ROWS_PAYLOAD_LEGACY,  # no dispatched identity → bind no-op → bytes hold
         [{"messages": msgs, "completed": True}],
         run_id=run_id,
     )
@@ -700,7 +726,8 @@ def test_tool_flagged_producer_sentinel_output_still_accepted(monkeypatch, tmp_p
     run_id = "rid77"
     msgs = {"messages": _sentinel_messages(run_id[:8], _SENTINEL_FILES), "completed": True}
     ev, agent, _ = _drive_worker(
-        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD, [msgs, msgs], run_id=run_id
+        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD_LEGACY,  # bind no-op pin
+        [msgs, msgs], run_id=run_id,
     )
     assert ev["status"] == "success" and ev["slug"] == "acme-pm"
     assert len(agent.calls) == 2  # ladder re-prompted once, then dual-read accepted
@@ -724,12 +751,24 @@ def test_forge_meta_defects_predicate():
     assert f(None) == ["company", "role", "row_id"]
 
 
-# stub = slug only (missing the whole triad); partial = one field short (role).
+# stub = slug only (missing the descriptive pair); partial = one field short
+# (role). P1.1 — the defect-belt scenarios keep their own THIN floors: under
+# the live floor the tool refuses these at emit (HF-1); the belt covers thin
+# records and the staged-meta completeness stamp behind it. row_id is runtime-
+# bound on every path now, so it is never among the stamped defects here.
 _STUB_FORGE_ARGS = {"files": dict(_FORGE_ARGS["files"]), "meta": {"slug": "acme-pm"}}
 _PARTIAL_FORGE_ARGS = {
     "files": dict(_FORGE_ARGS["files"]),
-    "meta": {"slug": "acme-pm", "company": "Acme", "row_id": "r1"},
+    "meta": {"slug": "acme-pm", "company": "Acme"},
 }
+
+
+def _thin_floor_gov(*keys):
+    gov = json.loads(json.dumps(_FORGE_GOV))  # deep copy
+    gov["emission_preconditions"]["terminal_artifact"]["emit"]["meta"][
+        "required_keys"
+    ] = list(keys)
+    return gov
 
 
 def test_forge_full_meta_stages_clean_no_defect(monkeypatch, tmp_path):
@@ -747,19 +786,23 @@ def test_forge_stub_meta_stages_with_defect_and_forensics(monkeypatch, tmp_path)
     meta_defect marker naming the whole missing triad, appends it to detail, and
     persists the raw output to the forensic sidecar."""
     ev, _agent, _ = _drive_worker(
-        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD, [_emit_step(_STUB_FORGE_ARGS)]
+        monkeypatch, tmp_path, _thin_floor_gov("slug"), _ROWS_PAYLOAD,
+        [_emit_step(_STUB_FORGE_ARGS)],
     )
     assert ev["status"] == "success"  # NEVER un-staged
     assert len(ev["staged"]) == 3 and all(Path(p).is_file() for p in ev["staged"])
-    assert ev["meta_defect"] == "missing:company,role,row_id"
-    assert "meta_defect=missing:company,role,row_id" in ev["detail"]
+    # P1.1: row_id is runtime-bound (dispatched unit r1), so the stub's defect
+    # set is the descriptive pair only — identity can no longer be a defect.
+    assert ev["meta_defect"] == "missing:company,role"
+    assert "meta_defect=missing:company,role" in ev["detail"]
     assert ev["raw_text_path"] is not None  # forensics attached
 
 
 def test_forge_partial_meta_one_field_missing_is_defect(monkeypatch, tmp_path):
     """One field short (role) is treated exactly like a stub — staged + marked."""
     ev, _agent, _ = _drive_worker(
-        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD, [_emit_step(_PARTIAL_FORGE_ARGS)]
+        monkeypatch, tmp_path, _thin_floor_gov("slug", "company"), _ROWS_PAYLOAD,
+        [_emit_step(_PARTIAL_FORGE_ARGS)],
     )
     assert ev["status"] == "success"
     assert len(ev["staged"]) == 3

@@ -45,7 +45,7 @@ class _EmitState:
 
     __slots__ = (
         "configured", "schema", "expected_files", "meta_required_keys",
-        "sink", "slug", "synth_meta", "emitted",
+        "sink", "slug", "synth_meta", "bound_row_id", "emitted",
     )
 
     def __init__(self) -> None:
@@ -56,6 +56,7 @@ class _EmitState:
         self.sink: Optional[Path] = None
         self.slug: Optional[str] = None
         self.synth_meta: Optional[str] = None
+        self.bound_row_id: Optional[str] = None
         self.emitted: Optional[Dict[str, Any]] = None
 
 
@@ -138,12 +139,17 @@ def configure(
     sink: Path,
     slug: Optional[str],
     synth_meta: Optional[str],
+    bound_row_id: Optional[str] = None,
 ) -> None:
     """Arm the tool for this worker run with the record-derived spec.
 
     ``slug``/``synth_meta`` set for a declarative producer (runtime identity);
-    both ``None`` for a self-authored producer (identity arrives in the meta
-    arg). Called by ``worker_entry`` BEFORE Dispatcher construction so the
+    both ``None`` for a self-authored producer (descriptive metadata arrives
+    in the meta arg). ``bound_row_id`` (fleet-receipt-custody-v1 P1.1) is the
+    HOST-dispatched unit identity for a self-authored producer — a narrow
+    identity-only slot, NOT a document override: the runtime writes it into
+    the staged meta.json at emit, overriding anything the model authored.
+    Called by ``worker_entry`` BEFORE Dispatcher construction so the
     registered surface and check_fn see the configured state.
     """
     _STATE.configured = True
@@ -155,6 +161,7 @@ def configure(
     _STATE.sink = Path(sink)
     _STATE.slug = slug
     _STATE.synth_meta = synth_meta
+    _STATE.bound_row_id = bound_row_id
     _STATE.emitted = None
 
 
@@ -248,6 +255,19 @@ def _handle_emit_package(args: dict, **kwargs) -> str:
                 f"meta.slug {slug!r} is not a safe slug "
                 f"(^[a-z0-9][a-z0-9._-]*$) — choose a lowercase filesystem slug"
             )
+        # fleet-receipt-custody-v1 P1.1 (A6 RULED) — extra meta keys (beyond
+        # the record-declared floor) are STRIPPED and RECORDED on the terminal
+        # receipt (stripped_meta_keys): telemetry only, no Andon, no operator
+        # surface. The file-level no-extras check above stays LOUD — this
+        # softening is scoped to meta-key validation exclusively. Identity is
+        # then runtime-bound: the DISPATCHED row id overwrites anything the
+        # model authored (the model is no longer asked for row_id; a
+        # habit-emitted one lands in the stripped list, never in custody).
+        allowed = set(_STATE.meta_required_keys)
+        stripped_meta_keys = sorted(k for k in meta if k not in allowed)
+        meta = {k: v for k, v in meta.items() if k in allowed}
+        if _STATE.bound_row_id:
+            meta["row_id"] = _STATE.bound_row_id
         staged_files = dict(files)
         staged_files["meta.json"] = json.dumps(meta, ensure_ascii=False, indent=2)
     else:
@@ -255,6 +275,7 @@ def _handle_emit_package(args: dict, **kwargs) -> str:
         # the resolver payload at configure time) — the skill authors content only.
         slug = _STATE.slug or ""
         staged_files = dict(files)
+        stripped_meta_keys = None  # no model-facing meta arg on this branch
         if _STATE.synth_meta is not None:
             staged_files["meta.json"] = _STATE.synth_meta
 
@@ -268,6 +289,9 @@ def _handle_emit_package(args: dict, **kwargs) -> str:
         "slug": slug,
         "files": staged_files,
         "staged": [str(p) for p in staged],
+        # P1.1 A6 telemetry rider — the names stripped from the meta arg (self-
+        # authored branch), None where no model-facing meta exists (declarative).
+        "stripped_meta_keys": stripped_meta_keys,
     }
     return json.dumps(
         {
