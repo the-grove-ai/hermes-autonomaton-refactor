@@ -35,13 +35,32 @@ failure_policy:
   nonzero_exit: retry
   wall_clock_exceeded: retry
   governed_denial: retry
+  # transient host-wiring gap — the runner re-brokers a fresh inbox each
+  # dispatch, so it does not recur identically. Retry, not structural.
+  inbox_missing: retry
 
   # dead_letter — immediate, no retry
   approval_deferred: dead_letter
   staged_meta_unreadable: dead_letter
 
-  # pause_producer — the factory is broken; units are not binned
+  # pause_producer — the factory is broken; units are not binned. Each below
+  # recurs identically on re-run: the capability record or the host environment
+  # is defective, not the unit, so retrying burns compute for a guaranteed
+  # failure and would eventually dead-letter an innocent unit.
   declarative_config_missing: pause_producer
   emit_spec_missing: pause_producer
   dead_pinned_slug: pause_producer
   worker_not_registered: pause_producer
+  # defective capability record
+  record_not_found: pause_producer
+  record_not_skill: pause_producer
+  bad_skill_id: pause_producer
+  no_declared_sink: pause_producer
+  model_binding_malformed_slug: pause_producer
+  no_archive_location: pause_producer
+  # host-scoped, not producer-scoped: every producer hits these and each pauses
+  # separately. pause_producer is the least-wrong of the four — it stops the
+  # burn and destroys nothing — but the model cannot say "the host is broken."
+  # Banked as fleet-host-scoped-fault.
+  no_grove_home: pause_producer
+  no_routing_config: pause_producer
