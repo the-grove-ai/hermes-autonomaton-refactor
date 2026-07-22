@@ -288,6 +288,101 @@ def test_governed_denial_receipt_carries_dispatched_identity(monkeypatch, tmp_pa
     assert ev2["row_id"] == _DISPATCHED
 
 
+# ── P1.2 Commit C: the terminal-receipt identity INVARIANT ──────────────────
+#
+# Every terminal receipt carries the identity of the unit it was dispatched
+# for, unless it falls in a NAMED structural exception:
+#   1. no_work at the empty-payload gate (worker_entry run_worker) — payload
+#      is None; no unit exists. SOURCE-level exception: the only _event call
+#      allowed to omit identity tokens entirely.
+#   2. inbox_missing / worker_not_registered — fail before a payload exists
+#      (inbox_missing strictly; worker_not_registered when the inbox also
+#      failed). VALUE-level exception: the identity KEY is stamped by the
+#      main() catch-all mechanism, the value is null.
+# Auto-enrolling, same pattern as the byte-parity canary: the AST scan
+# enumerates every _event call site in worker_entry at collection time, so a
+# NEW failure branch added without identity fails this pin.
+
+
+def test_terminal_receipt_identity_invariant_enumerates_all_branches():
+    import ast
+    import inspect
+    import re
+
+    src = inspect.getsource(worker_entry)
+    tree = ast.parse(src)
+    calls = [
+        ast.get_source_segment(src, node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_event"
+    ]
+    # Guard the guard: today's six sites (no_work, governed_denial x2,
+    # no_package/emit_truncation, success, main catch-all). Fewer means the
+    # scan went vacuous; recount before touching this floor.
+    assert len(calls) >= 6, (
+        f"identity-invariant scan found only {len(calls)} _event call sites — "
+        "the enumeration is vacuous; did _event get renamed?"
+    )
+    exceptions = [seg for seg in calls if "empty payload" in seg]
+    assert len(exceptions) == 1, (
+        "exactly ONE source-level named exception is allowed (the no_work "
+        f"empty-payload gate); found {len(exceptions)}: {exceptions!r}"
+    )
+    unstamped = [
+        seg
+        for seg in calls
+        if seg not in exceptions
+        and not re.search(r"\b(unit_id|row_id|event_kw)\b", seg)
+    ]
+    assert not unstamped, (
+        "terminal-receipt identity invariant violated — _event call site(s) "
+        "without a dispatched-identity field (unit_id/row_id/event_kw) and "
+        "not in the named-exception set. Thread _dispatched_unit_id(payload) "
+        f"like the sibling branches:\n" + "\n---\n".join(unstamped)
+    )
+
+
+def test_main_catchall_receipt_carries_dispatched_identity(monkeypatch, tmp_path):
+    """Behavioral leg: a FleetWorkerAndon raised INSIDE run_worker reaches
+    main()'s catch-all with the payload in scope — the receipt carries the
+    dispatched identity. The inbox_missing named exception stamps the key
+    with a null value (no payload ever existed)."""
+    from grove.fleet import paths as _paths
+    from grove.fleet.errors import FleetWorkerAndon
+
+    monkeypatch.setattr(_paths, "get_hermes_home", lambda: str(tmp_path))
+    _paths.events_dir("forge").mkdir(parents=True, exist_ok=True)
+
+    # Case A — structural Andon after the payload exists (e.g. path_escape).
+    monkeypatch.setattr(
+        worker_entry, "_read_inbox_payload", lambda w, r: dict(_FORGE_PAYLOAD)
+    )
+
+    def _boom(w, r, p):
+        raise FleetWorkerAndon("staged path escaped", worker_id=w, check="path_escape")
+
+    monkeypatch.setattr(worker_entry, "run_worker", _boom)
+    rc = worker_entry.main(["--worker-id", "forge", "--run-id", "cc1"])
+    assert rc == 1
+    ev = json.loads(_paths.event_path("forge", "cc1").read_text(encoding="utf-8"))
+    assert ev["status"] == "failed" and ev["check"] == "path_escape"
+    assert ev["row_id"] == _DISPATCHED
+
+    # Case B — NAMED exception: inbox_missing fails BEFORE a payload exists.
+    # The mechanism still stamps the identity key; the value is null.
+    def _no_inbox(w, r):
+        raise FleetWorkerAndon("no inbox payload", worker_id=w, check="inbox_missing")
+
+    monkeypatch.setattr(worker_entry, "_read_inbox_payload", _no_inbox)
+    rc2 = worker_entry.main(["--worker-id", "forge", "--run-id", "cc2"])
+    assert rc2 == 1
+    ev2 = json.loads(_paths.event_path("forge", "cc2").read_text(encoding="utf-8"))
+    assert ev2["status"] == "failed" and ev2["check"] == "inbox_missing"
+    assert ev2["row_id"] is None  # key present, value null — the named shape
+
+
 # ── T4: declarative producers — byte-identical regression fence ─────────────
 
 _DRAFTER_TOOL_GOV = {
