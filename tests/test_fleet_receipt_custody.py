@@ -253,6 +253,41 @@ def test_t3_no_package_failure_receipt_carries_dispatched_identity(
     assert ev["row_id"] == _DISPATCHED
 
 
+# ── P1.2 Commit A: governed_denial receipts carry dispatched identity ───────
+
+
+def test_governed_denial_receipt_carries_dispatched_identity(monkeypatch, tmp_path):
+    """A governed denial recurs deterministically — the worker is blocked, so
+    every retry produces the identical failure. Both denial sites (first run
+    and the emit-ladder re-prompt) must stamp the dispatched identity or the
+    purest poison pill stays uncountable."""
+    from grove.governance_halt import GovernanceHaltContext, TerminalGovernanceHalt
+
+    def _deny():
+        raise TerminalGovernanceHalt(
+            GovernanceHaltContext(trigger="deny_hard", tool_name="write_file")
+        )
+
+    # Site 1 — denial on the FIRST run_conversation.
+    ev, _agent = _drive_worker(
+        monkeypatch, tmp_path, _FORGE_TOOL_GOV, _FORGE_PAYLOAD, [_deny]
+    )
+    assert ev["status"] == "failed" and ev["check"] == "governed_denial"
+    assert ev["row_id"] == _DISPATCHED
+
+    # Site 2 — denial during the emit-ladder re-prompt (no emit on turn one).
+    prose = {
+        "messages": [{"role": "assistant", "content": "prose only"}],
+        "completed": True,
+    }
+    ev2, _agent2 = _drive_worker(
+        monkeypatch, tmp_path, _FORGE_TOOL_GOV, _FORGE_PAYLOAD, [prose, _deny],
+        run_id="rid2",
+    )
+    assert ev2["status"] == "failed" and ev2["check"] == "governed_denial"
+    assert ev2["row_id"] == _DISPATCHED
+
+
 # ── T4: declarative producers — byte-identical regression fence ─────────────
 
 _DRAFTER_TOOL_GOV = {
