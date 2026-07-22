@@ -383,6 +383,113 @@ def test_main_catchall_receipt_carries_dispatched_identity(monkeypatch, tmp_path
     assert ev2["row_id"] is None  # key present, value null — the named shape
 
 
+# ── P2 Commit A: one writer per sink — seal the interactive door ────────────
+#
+# stage_package is the ONLY path that writes into a fleet staging sink. No
+# skill prose (record context.payload or repo SKILL.md) may instruct a model
+# to write into one directly — that door bypasses the slug/basename jail, the
+# clean-room wipe, the meta-last atomic ordering, AND the P1.1 identity bind,
+# and its model-authored row_id feeds the dispatch skip list unchecked.
+# Auto-enrolling, same shape as the AST identity-invariant pin: sinks are
+# DISCOVERED from the fleet records' declared write_zone.staging_dir and the
+# document set is every payload-bearing record + every repo SKILL.md, so a
+# new skill (or a new sink) enrols at collection time.
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DIRECT_WRITE_TOKENS = __import__("re").compile(r"\b(write_file|mkdir)\b")
+
+
+def _fleet_staging_sinks():
+    import yaml
+
+    sinks = set()
+    for yml in sorted((_REPO_ROOT / "config" / "capabilities").glob("skill__fleet__*.yaml")):
+        doc = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
+        staging = (((doc.get("governance") or {}).get("write_zone")) or {}).get(
+            "staging_dir"
+        )
+        if staging:
+            sinks.add(staging)
+    return sinks
+
+
+def _model_facing_prose():
+    import yaml
+
+    docs = []
+    for yml in sorted((_REPO_ROOT / "config" / "capabilities").glob("*.yaml")):
+        try:
+            doc = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue  # malformed record is another pin's business
+        payload = (doc.get("context") or {}).get("payload")
+        if isinstance(payload, str) and payload.strip():
+            docs.append((str(yml.relative_to(_REPO_ROOT)), payload))
+    for md in sorted((_REPO_ROOT / "skills").rglob("SKILL.md")):
+        docs.append((str(md.relative_to(_REPO_ROOT)), md.read_text(encoding="utf-8")))
+    return docs
+
+
+def test_no_prose_instructs_direct_writes_into_fleet_staging_sinks():
+    import re
+
+    sinks = _fleet_staging_sinks()
+    # Vacuity guards — the scan must never silently match zero.
+    assert len(sinks) >= 4, f"vacuity: only {len(sinks)} staging sinks discovered"
+    assert "forge/pending_review" in sinks, (
+        "vacuity: the known forge sink was not discovered — did the "
+        "write_zone.staging_dir schema move?"
+    )
+    docs = _model_facing_prose()
+    assert len(docs) >= 20, f"vacuity: only {len(docs)} prose documents scanned"
+
+    # A sink reference counts only as a PATH: path-shaped sinks (containing
+    # '/') match verbatim; bare sink names must appear anchored under .grove/
+    # so prose using the plain word ('researcher', 'scout') never false-flags.
+    sink_pats = [
+        re.compile(re.escape(s)) if "/" in s
+        else re.compile(r"\.grove/" + re.escape(s) + r"(/|\b)")
+        for s in sorted(sinks)
+    ]
+
+    offenders = []
+    for name, body in docs:
+        for para in re.split(r"\n\s*\n", body):
+            if not _DIRECT_WRITE_TOKENS.search(para):
+                continue
+            if any(p.search(para) for p in sink_pats):
+                offenders.append((name, para.strip()[:200]))
+
+    # RATCHET ALLOWLIST — known legacy direct-write prose, named per document
+    # (P2 Commit A census). Forge is deliberately ABSENT: its interactive door
+    # is sealed by this commit. The rest is banked debt for the follow-up
+    # sweep; a NEW skill can never hide here, and an allowlisted document that
+    # stops offending MUST be removed (the ratchet only tightens).
+    allowed = {
+        "config/capabilities/skill__fleet__cultivator.yaml",
+        "config/capabilities/skill__fleet__drafter.yaml",
+        "config/capabilities/skill__fleet__researcher.yaml",
+        "config/capabilities/skill__fleet__scout.yaml",
+        "config/capabilities/skill__fleet__scout_jobsearch.yaml",
+        "skills/fleet/cultivator/SKILL.md",
+        "skills/fleet/drafter/SKILL.md",
+        "skills/fleet/researcher/SKILL.md",
+        "skills/fleet/scout/SKILL.md",
+        "skills/fleet/scout-jobsearch/SKILL.md",
+    }
+    live = [(n, p) for n, p in offenders if n not in allowed]
+    assert not live, (
+        "prose instructs a direct write into a fleet staging sink — "
+        "stage_package is the ONLY writer for these sinks (P2 Commit A):\n"
+        + "\n---\n".join(f"{n}: {p}" for n, p in live)
+    )
+    stale_allow = allowed - {n for n, _ in offenders}
+    assert not stale_allow, (
+        "ratchet: allowlisted document(s) no longer offend — remove them so "
+        f"the debt list only ever shrinks: {sorted(stale_allow)}"
+    )
+
+
 # ── T4: declarative producers — byte-identical regression fence ─────────────
 
 _DRAFTER_TOOL_GOV = {
