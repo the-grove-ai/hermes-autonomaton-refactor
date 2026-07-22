@@ -207,9 +207,9 @@ def test_extract_declarative_content_takes_content_only(tmp_path):
 
 
 def test_stage_declarative_package_and_staged_unit_ids(grove_home):
-    """Runtime stages content + synthesized meta under unit_id; _staged_unit_ids reads
-    the unit_id back off the synthesized meta (drives skip-already-staged)."""
-    from grove.fleet import resolvers
+    """Runtime stages content + a synthesized meta keyed on unit_id. (P4a — the
+    ``_staged_unit_ids`` glob is retired; eligibility no longer reads meta.json.
+    The staged meta still carries the unit_id, asserted here directly.)"""
     from grove.fleet.staging import stage_package
     from grove.fleet import worker_entry
 
@@ -222,7 +222,8 @@ def test_stage_declarative_package_and_staged_unit_ids(grove_home):
             "drafter", "moon-bot"),
     }
     stage_package(sink, "moon-bot", files)
-    assert resolvers._staged_unit_ids("drafter") == {"moon-bot"}
+    staged_meta = json.loads((sink / "moon-bot" / "meta.json").read_text(encoding="utf-8"))
+    assert staged_meta["unit_id"] == "moon-bot"
 
 
 def test_manager_emits_fleet_artifact_pending_for_drafter(monkeypatch):
@@ -304,22 +305,21 @@ def test_suggest_revision_seam_generic_unit_and_reselect(grove_home):
 
 
 def test_grandfather_prestaged_unit_gets_no_redispatch(grove_home):
-    """A pre-existing staged unit is skipped by skip_already_staged → no new dispatch,
-    hence no new proposal (proposals emit only on run-reap SUCCESS, never a scan)."""
-    from grove.fleet import resolvers
-    from grove.fleet.staging import stage_package
-    from grove.fleet import worker_entry
+    """A drafted-and-pending unit — a success receipt with no disposition → Needs
+    you — is excluded from re-selection, so no new dispatch and no new proposal
+    (P4a — the exclusion is a DERIVED state, not disk presence)."""
+    from grove.fleet import paths, resolvers
 
     _write_brief(grove_home, "brief-2026-07-09-moon-bot.json")
-    sink = grove_home / "drafter" / "pending_review"
-    sink.mkdir(parents=True)
-    stage_package(sink, "moon-bot", {
-        "draft-moon-bot.md": "---\ntitle: X\n---\nb",
-        "meta.json": worker_entry._synthesize_meta(
-            {"source_path": "s", "source_name": "brief-2026-07-09-moon-bot.json"},
-            "drafter", "moon-bot"),
-    })
-    assert resolvers.resolve_file_source(_DRAFTER_INPUT, "drafter") is None  # already staged
+    # moon-bot was already drafted: a success receipt, no disposition -> Needs you.
+    run_id = "moon-bot-run"
+    dp = paths.dispatch_path("drafter", run_id)
+    dp.parent.mkdir(parents=True, exist_ok=True)
+    dp.write_text(json.dumps({"run_id": run_id, "unit_id": "moon-bot", "worker_id": "drafter"}))
+    ep = paths.event_path("drafter", run_id)
+    ep.parent.mkdir(parents=True, exist_ok=True)
+    ep.write_text(json.dumps({"run_id": run_id, "status": "success", "check": None}))
+    assert resolvers.resolve_file_source(_DRAFTER_INPUT, "drafter") is None  # Needs you
 
 
 def test_cultivator_empty_source_dir_noops_clean(grove_home):

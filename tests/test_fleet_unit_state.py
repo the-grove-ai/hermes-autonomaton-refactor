@@ -78,6 +78,7 @@ def _derive(**over):
     kw = dict(
         unit_runs=[], dispatched=set(), received=set(), forgiven=set(),
         events={}, disposed=False, producer="forge", policy=_POL,
+        terminal_skip=False,
     )
     kw.update(over)
     return derive_unit_state(**kw)
@@ -221,3 +222,45 @@ def test_derivation_reads_no_timestamp_structurally():
     # And the disposition input is MEMBERSHIP (a bool), never a timestamped ledger.
     sig = inspect.signature(derive_unit_state)
     assert sig.parameters["disposed"].annotation in (bool, "bool")
+
+
+# ── P4a: terminal_skip is the second Dead-lettered cause ─────────────────────
+
+
+def test_terminal_skip_is_dead_lettered_even_with_no_failures():
+    assert _derive(unit_runs=[], terminal_skip=True) == DEAD_LETTERED
+    assert _derive(
+        unit_runs=["r1"], dispatched={"r1"}, received={"r1"},
+        events={"r1": _fail("no_package")}, terminal_skip=True,
+    ) == DEAD_LETTERED
+
+
+def test_done_and_working_win_over_terminal_skip():
+    # a disposed unit is Done even if terminal_skip (precedence 2 before 4)
+    assert _derive(
+        unit_runs=["r1"], dispatched={"r1"}, received={"r1"},
+        events={"r1": _fail("no_package")}, disposed=True, terminal_skip=True,
+    ) == DONE
+    # a run in flight is Working even if terminal_skip
+    assert _derive(
+        unit_runs=["r1"], dispatched={"r1"}, received=set(), terminal_skip=True,
+    ) == WORKING
+
+
+def test_dead_letter_cause_distinguishes_the_two():
+    from grove.fleet.unit_state import dead_letter_cause
+
+    runs = ["r1", "r2", "r3"]
+    # retry cap cause
+    rc = dict(unit_runs=runs, dispatched=set(runs), received=set(runs),
+              forgiven=set(), events={r: _fail("no_package") for r in runs},
+              disposed=False, producer="forge", policy=_POL, terminal_skip=False)
+    assert dead_letter_cause(**rc) == "retry_cap_exhausted"
+    # terminal_skip cause (even overriding a retry-cap-eligible set)
+    ts = dict(rc, terminal_skip=True)
+    assert dead_letter_cause(**ts) == "terminal_skip"
+    # not dead-lettered -> None
+    none_case = dict(unit_runs=[], dispatched=set(), received=set(), forgiven=set(),
+                     events={}, disposed=False, producer="forge", policy=_POL,
+                     terminal_skip=False)
+    assert dead_letter_cause(**none_case) is None
