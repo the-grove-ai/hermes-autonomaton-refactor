@@ -554,6 +554,30 @@ def _parse_delimited_blocks(messages, tag: str, sink: Any):
     return files, None
 
 
+def _dispatched_unit_id(payload: Any) -> Optional[str]:
+    """The HOST-minted unit identity for this run (fleet-receipt-custody-v1
+    P1.1): the resolver's ``unit_id`` (resolvers.py — ``rows[0]["id"]`` for a
+    notion producer), or None on a payload that predates the unit_id seam.
+    The single source every binding/receipt site reads — never the model."""
+    return payload.get("unit_id") if isinstance(payload, dict) else None
+
+
+def _bind_identity(files: Dict[str, str], bound_row_id: Optional[str]) -> Dict[str, str]:
+    """fleet-receipt-custody-v1 P1.1 — runtime-bound identity on a SELF-AUTHORED
+    package: overwrite meta.json's ``row_id`` with the dispatched unit identity
+    before staging. Descriptive fields (slug, company, role) stay model-authored
+    — this is the narrow identity slot, not a merge engine. No-op without a
+    bound id (legacy payloads without ``unit_id``) so the sentinel byte-parity
+    baseline is untouched. The extractor already validated meta.json parses."""
+    if not bound_row_id:
+        return files
+    out = dict(files)
+    meta = json.loads(out["meta.json"])
+    meta["row_id"] = bound_row_id
+    out["meta.json"] = json.dumps(meta, ensure_ascii=False, indent=2)
+    return out
+
+
 def _extract_fleet_package(messages, tag: str, sink: Any, required_files):
     """Self-authored package (forge): parse the emit, require *required_files*, and
     recover the slug from the skill's OWN ``meta.json`` body. ALL files, meta
@@ -882,6 +906,8 @@ def _redraft_cycle(
             sink=sink,
             slug=unit_slug,
             synth_meta=synth,
+            # P1.1 — the redraft emit re-binds the SAME dispatched identity.
+            bound_row_id=None if declarative else _dispatched_unit_id(payload),
         )
         invalidate_check_fn_cache()
 
@@ -952,10 +978,14 @@ def _redraft_cycle(
             )
             if extracted2 is not None:
                 new_slug = extracted2["slug"]
+                # P1.1 — the redraft re-stage binds the SAME dispatched identity.
+                bound2 = _bind_identity(
+                    extracted2["files"], _dispatched_unit_id(payload)
+                )
                 new_staged = [
-                    str(p) for p in stage_package(sink, new_slug, extracted2["files"])
+                    str(p) for p in stage_package(sink, new_slug, bound2)
                 ]
-                new_files = dict(extracted2["files"])
+                new_files = dict(bound2)
 
     if new_staged is None or new_files is None:
         logger.warning(
@@ -1079,6 +1109,9 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 sink=sink,
                 slug=unit_slug,
                 synth_meta=synth,
+                # P1.1 — the host-identity slot: the dispatched unit id binds
+                # meta.row_id at emit for a self-authored producer (forge).
+                bound_row_id=None if declarative else _dispatched_unit_id(payload),
             )
             allowlist = ["read_file", "skill_view", "emit_package"]
         else:
@@ -1316,6 +1349,12 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                         "delimited emit did not parse to a valid fleet_package "
                         f"(reason: {reason}); final assistant message was: {preview!r}"
                     )
+                # P1.1 — every receipt is attributable: the failure receipt
+                # carries the HOST-dispatched unit identity (the model's meta
+                # never existed here, and was never the source anyway). Field
+                # follows the producer's identity convention: unit_id for a
+                # declarative file producer, row_id for forge.
+                _unit = _dispatched_unit_id(payload)
                 return _event(
                     worker_id,
                     run_id,
@@ -1324,6 +1363,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                     detail=fail_detail,
                     check=fail_check,
                     raw_text_path=_persist_raw_output(worker_id, run_id, final_text),
+                    **({"unit_id": _unit} if declarative else {"row_id": _unit}),
                     **binding_kw,
                 )
             if declarative:
@@ -1337,10 +1377,17 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 event_kw = {"unit_id": unit_id}
                 success_detail = f"completed={result.get('completed')}; unit={unit_id}"
             else:
-                staged = stage_package(sink, extracted["slug"], extracted["files"])
+                # P1.1 — sentinel-path identity binding (this site previously
+                # had NO injection point for self-authored packages): the
+                # dispatched unit id overwrites meta.row_id before staging.
+                bound_files = _bind_identity(
+                    extracted["files"], _dispatched_unit_id(payload)
+                )
+                extracted = {**extracted, "files": bound_files}
+                staged = stage_package(sink, extracted["slug"], bound_files)
                 row_id, fit_score = _row_identity(extracted, payload)
                 staged_list = [str(p) for p in staged]
-                staged_files = dict(extracted["files"])
+                staged_files = dict(bound_files)
                 pkg_slug = extracted["slug"]
                 event_kw = {"row_id": row_id, "fit_score": fit_score}
                 success_detail = (
@@ -1368,6 +1415,16 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             pkg_slug=pkg_slug,
             success_detail=success_detail,
         )
+        # P1.1 A6 telemetry — the stripped-meta-keys rider rides the LATEST
+        # locked emit (a redraft's re-emit supersedes the first). None on the
+        # sentinel transport and the F6 sentinel-fallback (no meta arg exists).
+        stripped_meta: Optional[list] = None
+        if transport == "tool":
+            from tools import fleet_emit_tool as _fet
+
+            _em = _fet.emitted()
+            if _em is not None:
+                stripped_meta = _em.get("stripped_meta_keys")
         # ── forge-publish-meta-hotfix-v1 P1 — emit-time meta-completeness check,
         # AFTER the staging outcome is known on every transport (tool + sentinel
         # dual-read), scoped to the self-authored forge triad (declarative
@@ -1401,6 +1458,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             slug=pkg_slug,
             meta_defect=meta_defect,
             raw_text_path=raw_forensics_path,
+            stripped_meta_keys=stripped_meta,
             **event_kw,
             **quality_kw,
             **binding_kw,
@@ -1449,6 +1507,7 @@ def _event(
     redraft_count: Optional[int] = None,
     evaluator_model: Optional[str] = None,
     meta_defect: Optional[str] = None,
+    stripped_meta_keys: Optional[list] = None,
 ) -> Dict[str, Any]:
     # fleet-pipeline-v1 P2 (A1) — additive fields the reap emitter reads OFF the
     # event (never parsed from detail/paths). None for workers that don't produce
@@ -1491,6 +1550,11 @@ def _event(
         # incomplete meta.json. The manager reads it OFF the event to fire the loud
         # Andon and stamp the promote card's defect marker.
         "meta_defect": meta_defect,
+        # fleet-receipt-custody-v1 P1.1 (A6 RULED) — meta keys the emit handler
+        # stripped from the model's meta arg (telemetry only; no Andon). Same
+        # additive always-present precedent: None on sentinel/declarative/
+        # failed/no_work shapes; [] on a clean tool emit with no extras.
+        "stripped_meta_keys": stripped_meta_keys,
         "ts": _now_iso(),
     }
     # fleet-review-unification-v1 C1b-2 — the stable unit_id, ADDED ONLY when set (a

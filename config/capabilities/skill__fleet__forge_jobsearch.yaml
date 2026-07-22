@@ -222,7 +222,13 @@ governance:
           # admitted, staged as a defect, and dead-ended every portal verb
           # (260712-fractional live incident). The tool refuses the emit with
           # the missing keys named, so the model corrects and re-calls.
-          required_keys: [slug, company, role, row_id]
+          # fleet-receipt-custody-v1 P1.1 — row_id REMOVED from the model-facing
+          # floor: identity is minted by the runtime (the resolver's unit_id)
+          # and bound at emit; the model is never asked to name what it worked
+          # on. The staged meta.json SHAPE is unchanged — the runtime writes
+          # row_id. A model-emitted row_id is an extra meta key: stripped and
+          # recorded on the receipt (stripped_meta_keys), telemetry only.
+          required_keys: [slug, company, role]
       # fleet-artifact-legibility-v1 C1 — package declaration (consumed by
       # the C2 package renderer; the card-level view falls back to .md this
       # commit). Data only.
