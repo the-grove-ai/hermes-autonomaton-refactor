@@ -260,6 +260,14 @@ PROPOSAL_TYPE_EXPLORATION_NUDGE = "exploration_nudge"
 #   detail:  {"failure_count": int, "distinct_dates": [str],
 #             "last_error": str | null, "window_days": int}
 PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE = "producer_failure_recurrence"
+# fleet-receipt-custody-v1 P3b — the breaker's AUTO-pause notification. The fleet
+# manager pauses a producer the moment a receipt whose check maps to
+# pause_producer lands (N=1); this card tells the operator it happened and
+# carries the sole UNPAUSE action (approve = unpause). Deduped by producer, so
+# one card per paused producer regardless of receipt count.
+#   payload: {"producer": str}
+#   detail:  {"check": str, "run_id": str}
+PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED = "producer_auto_paused"
 # Verb affordances per proposal type. The portal iterates this to render action
 # buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
 # to the iterator — the shape is deliberately open. The generic fleet type
