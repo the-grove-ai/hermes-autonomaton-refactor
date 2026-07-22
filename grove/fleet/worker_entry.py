@@ -1041,6 +1041,21 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
     paths.validate_worker_id(worker_id)
     session_key = f"fleet:{worker_id}:{run_id}"
 
+    # P2 Commit B — record Yellow deferrals so they stop masquerading as
+    # emission failures. The sovereign handler returns "deny" and the turn
+    # CONTINUES ("Paused is not failed"), so pre-B a gated run fell off the
+    # emit ladder as no_package. This run-scoped closure records each denied
+    # action's tool name; the handler contract, the Dispatcher, and the store
+    # machinery are untouched — it observes, then delegates.
+    deferred_actions: List[str] = []
+
+    def _recording_deny_handler(halt):
+        try:
+            deferred_actions.append(halt.intents[halt.triggering_index].tool_name)
+        except Exception:  # noqa: BLE001 — never let telemetry break the deny
+            deferred_actions.append("<unresolved>")
+        return non_interactive_deny_handler(halt)
+
     # (a) session vars — cleared in the finally.
     tokens = set_session_vars(
         platform="fleet",
@@ -1163,7 +1178,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
         dispatcher = Dispatcher(
             runtime_ctx=RuntimeContext(env=dict(os.environ), config=worker_config),
             session_db=session_db,
-            sovereign_prompt_handler=non_interactive_deny_handler,
+            sovereign_prompt_handler=_recording_deny_handler,
             platform="fleet",
             agent_kwargs=dict(
                 model=model,
@@ -1364,6 +1379,22 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                         "delimited emit did not parse to a valid fleet_package "
                         f"(reason: {reason}); final assistant message was: {preview!r}"
                     )
+                # P2 Commit B — a run that hit a Yellow gate mid-run and then
+                # never emitted is a DEFERRAL, not an emission failure: the
+                # denial Observation told the model to keep working, but the
+                # gated action was the work. Distinct class (emit_truncation
+                # precedent — the reap keys on status, not exact check) so
+                # P3's counter can separate the deterministic poison pill
+                # from an emission flake. Truncation evidence outranks: an
+                # emit_truncation stays emit_truncation (the rider still
+                # names the deferred tools).
+                if fail_check == "no_package" and deferred_actions:
+                    fail_check = "approval_deferred"
+                    fail_detail = (
+                        "a Yellow-gated action was denied mid-run (headless "
+                        f"store-and-deny): deferred={deferred_actions}; "
+                        + fail_detail
+                    )
                 # P1.1 — every receipt is attributable: the failure receipt
                 # carries the HOST-dispatched unit identity (the model's meta
                 # never existed here, and was never the source anyway). Field
@@ -1378,6 +1409,7 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                     detail=fail_detail,
                     check=fail_check,
                     raw_text_path=_persist_raw_output(worker_id, run_id, final_text),
+                    deferred_actions=(list(deferred_actions) or None),
                     **({"unit_id": _unit} if declarative else {"row_id": _unit}),
                     **binding_kw,
                 )
@@ -1474,6 +1506,9 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             meta_defect=meta_defect,
             raw_text_path=raw_forensics_path,
             stripped_meta_keys=stripped_meta,
+            # P2 Commit B — a run can defer AND still emit; the success
+            # receipt names the gated tool(s) so the pattern is countable.
+            deferred_actions=(list(deferred_actions) or None),
             **event_kw,
             **quality_kw,
             **binding_kw,
@@ -1523,6 +1558,7 @@ def _event(
     evaluator_model: Optional[str] = None,
     meta_defect: Optional[str] = None,
     stripped_meta_keys: Optional[list] = None,
+    deferred_actions: Optional[list] = None,
 ) -> Dict[str, Any]:
     # fleet-pipeline-v1 P2 (A1) — additive fields the reap emitter reads OFF the
     # event (never parsed from detail/paths). None for workers that don't produce
@@ -1570,6 +1606,10 @@ def _event(
         # additive always-present precedent: None on sentinel/declarative/
         # failed/no_work shapes; [] on a clean tool emit with no extras.
         "stripped_meta_keys": stripped_meta_keys,
+        # P2 Commit B — tool names the sovereign handler denied mid-run (a
+        # Yellow deferral in a headless run). Always-present-null precedent;
+        # a deferral with no emit terminates check=approval_deferred.
+        "deferred_actions": deferred_actions,
         "ts": _now_iso(),
     }
     # fleet-review-unification-v1 C1b-2 — the stable unit_id, ADDED ONLY when set (a

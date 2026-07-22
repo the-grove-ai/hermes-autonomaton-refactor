@@ -61,7 +61,11 @@ class _ScriptedAgent:
 def _drive_worker(
     monkeypatch, tmp_path, cap_gov, payload, script,
     worker_id="forge", cap_id="skill.fleet.forge-jobsearch", run_id="rid1",
+    captured_out=None,
 ):
+    """``captured_out``: optional dict FILLED IN PLACE with the Dispatcher's
+    construction kwargs (which lands BEFORE the first agent turn) — lets a
+    script step reach run-scoped seams like sovereign_prompt_handler."""
     from grove.fleet import paths as _paths
 
     class _Cap:
@@ -74,9 +78,11 @@ def _drive_worker(
         model_binding = None
 
     agent = _ScriptedAgent(script)
+    captured = captured_out if captured_out is not None else {}
 
     class _Dispatcher:
         def __init__(self, *a, **k):
+            captured.update(k)
             self.agent = agent
 
     class _RuntimeContext:
@@ -106,7 +112,7 @@ def _drive_worker(
     monkeypatch.setattr("grove.dispatcher.Dispatcher", _Dispatcher)
     monkeypatch.setattr("grove.dispatcher.RuntimeContext", _RuntimeContext)
     ev = worker_entry.run_worker(worker_id, run_id, payload)
-    return ev, agent
+    return ev, agent, captured
 
 
 def _emit_step(args):
@@ -182,7 +188,7 @@ _WRONG_META_ARGS = {
 def test_t1_tool_wrong_model_row_id_staged_meta_carries_dispatched(
     monkeypatch, tmp_path
 ):
-    ev, _agent = _drive_worker(
+    ev, _agent, _ = _drive_worker(
         monkeypatch, tmp_path, _FORGE_TOOL_GOV, _FORGE_PAYLOAD,
         [_emit_step(_WRONG_META_ARGS)],
     )
@@ -217,7 +223,7 @@ def test_t2_sentinel_wrong_model_row_id_staged_meta_carries_dispatched(
         ),
     }
     msgs = _sentinel_messages(run_id[:8], files)
-    ev, _agent = _drive_worker(
+    ev, _agent, _ = _drive_worker(
         monkeypatch, tmp_path, _FORGE_SENTINEL_GOV, _FORGE_PAYLOAD,
         [{"messages": msgs, "completed": True}], run_id=run_id,
     )
@@ -243,7 +249,7 @@ def test_t3_no_package_failure_receipt_carries_dispatched_identity(
         "messages": [{"role": "assistant", "content": "prose only"}],
         "completed": True,
     }
-    ev, _agent = _drive_worker(
+    ev, _agent, _ = _drive_worker(
         monkeypatch, tmp_path, _FORGE_TOOL_GOV, _FORGE_PAYLOAD,
         [prose, prose, prose],
     )
@@ -269,7 +275,7 @@ def test_governed_denial_receipt_carries_dispatched_identity(monkeypatch, tmp_pa
         )
 
     # Site 1 — denial on the FIRST run_conversation.
-    ev, _agent = _drive_worker(
+    ev, _agent, _ = _drive_worker(
         monkeypatch, tmp_path, _FORGE_TOOL_GOV, _FORGE_PAYLOAD, [_deny]
     )
     assert ev["status"] == "failed" and ev["check"] == "governed_denial"
@@ -280,7 +286,7 @@ def test_governed_denial_receipt_carries_dispatched_identity(monkeypatch, tmp_pa
         "messages": [{"role": "assistant", "content": "prose only"}],
         "completed": True,
     }
-    ev2, _agent2 = _drive_worker(
+    ev2, _agent2, _ = _drive_worker(
         monkeypatch, tmp_path, _FORGE_TOOL_GOV, _FORGE_PAYLOAD, [prose, _deny],
         run_id="rid2",
     )
@@ -381,6 +387,53 @@ def test_main_catchall_receipt_carries_dispatched_identity(monkeypatch, tmp_path
     ev2 = json.loads(_paths.event_path("forge", "cc2").read_text(encoding="utf-8"))
     assert ev2["status"] == "failed" and ev2["check"] == "inbox_missing"
     assert ev2["row_id"] is None  # key present, value null — the named shape
+
+
+# ── P2 Commit B: a Yellow deferral is its own check class ───────────────────
+
+
+def test_yellow_deferral_receipt_is_approval_deferred_with_identity(
+    monkeypatch, tmp_path
+):
+    """A headless run that hits a Yellow gate mid-run gets a denial
+    Observation and keeps going ('Paused is not failed') — pre-B it fell off
+    the emit ladder as no_package, masquerading as an emission failure. The
+    receipt now carries its own check class, the gated tool name(s) in the
+    deferred_actions rider, AND the dispatched identity (the P1.2C invariant
+    holds on this branch — it rides the same identity-stamped call site)."""
+    from types import SimpleNamespace
+
+    holder = {}  # filled by the harness at Dispatcher construction
+
+    def _gated_then_prose():
+        # Simulate the Dispatcher invoking the installed sovereign handler on
+        # a Yellow AndonHalt mid-turn (the run-scoped closure under test),
+        # then the model ending its turn with prose, never emitting.
+        halt = SimpleNamespace(
+            intents=[SimpleNamespace(tool_name="write_file", arguments={})],
+            triggering_index=0,
+            zone="yellow",
+        )
+        assert holder["sovereign_prompt_handler"](halt) == "deny"  # contract untouched
+        return {
+            "messages": [{"role": "assistant",
+                          "content": "That action needs your approval."}],
+            "completed": True,
+        }
+
+    prose = {
+        "messages": [{"role": "assistant", "content": "still waiting"}],
+        "completed": True,
+    }
+    ev, _agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _FORGE_TOOL_GOV, _FORGE_PAYLOAD,
+        [_gated_then_prose, prose],  # deferral, then ladder exhaustion
+        captured_out=holder,
+    )
+    assert ev["status"] == "failed"
+    assert ev["check"] == "approval_deferred"  # its OWN class, not no_package
+    assert ev["deferred_actions"] == ["write_file"]  # the gated tool, named
+    assert ev["row_id"] == _DISPATCHED  # identity invariant holds on this branch
 
 
 # ── P2 Commit A: one writer per sink — seal the interactive door ────────────
@@ -524,7 +577,7 @@ _DRAFTER_PAYLOAD = {
 def test_t4_declarative_tool_synth_meta_byte_identical(monkeypatch, tmp_path):
     """Tool declarative: staged meta.json is EXACTLY the runtime-synthesized
     envelope — the fix must not perturb the existing override."""
-    ev, _agent = _drive_worker(
+    ev, _agent, _ = _drive_worker(
         monkeypatch, tmp_path, _DRAFTER_TOOL_GOV, _DRAFTER_PAYLOAD,
         [_emit_step({"files": {"draft-u1.md": "draft body\n"}})],
         worker_id="drafter", cap_id="skill.fleet.drafter",
@@ -547,7 +600,7 @@ def test_t4_declarative_sentinel_stray_meta_still_discarded(monkeypatch, tmp_pat
         "meta.json": '{"slug": "hijack", "row_id": "hijack"}',
     }
     msgs = _sentinel_messages(run_id[:8], files)
-    ev, _agent = _drive_worker(
+    ev, _agent, _ = _drive_worker(
         monkeypatch, tmp_path, _DRAFTER_SENTINEL_GOV, _DRAFTER_PAYLOAD,
         [{"messages": msgs, "completed": True}],
         worker_id="drafter", cap_id="skill.fleet.drafter", run_id=run_id,
