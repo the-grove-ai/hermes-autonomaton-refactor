@@ -18,13 +18,93 @@ import json
 import logging
 import signal
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import psutil
 
 from grove.fleet import paths
 from grove.fleet.limits import group_alive, safe_kill_group
 from grove.fleet.staging import _atomic_write_bytes
 
 logger = logging.getLogger(__name__)
+
+
+def _process_cmdline(pid: int) -> Optional[List[str]]:
+    """The live process's argv as a list, or None if it cannot be read.
+
+    A dead process, an access-denied read, a zombie, or an empty argv all
+    collapse to None — an unreadable command line is UNVERIFIABLE, never a
+    match. Identity is proven only by a positive run_id membership on a
+    readable argv (fleet-receipt-custody-v1 C2a). psutil is cross-platform, so
+    tests exercise this exact path, not a Linux-only ``/proc`` variant.
+    """
+    try:
+        cl = psutil.Process(pid).cmdline()
+    except (
+        psutil.NoSuchProcess,
+        psutil.AccessDenied,
+        psutil.ZombieProcess,
+        psutil.Error,
+        OSError,
+    ):
+        return None
+    return cl or None
+
+
+def _group_effectively_dead(pid: int, pgid: int) -> bool:
+    """True when the group holds no running process.
+
+    ``group_alive`` (signal 0) reports a SIGKILLed-but-unreaped ZOMBIE leader as
+    alive — a zombie still occupies the process table until its parent reaps it
+    (in production a re-parented orphan is reaped by init). A zombie runs no code
+    and holds nothing, so it is a successful kill, not a survivor.
+    """
+    if not group_alive(pid, pgid):
+        return True
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True  # gone between the two probes
+    except (psutil.AccessDenied, psutil.Error, OSError):
+        return False  # cannot tell -> not confirmed dead
+
+
+def _confirm_group_dead(
+    pid: int, pgid: int, attempts: int = 5, pause: float = 0.05
+) -> bool:
+    """Bounded confirmation that the group is dead after a SIGKILL.
+
+    A few short attempts — SIGKILL does not take effect immediately on a process
+    in uninterruptible sleep. Deliberately NOT a deadline loop: nothing derives
+    state from the timing, so this is not lease logic.
+    """
+    for _ in range(attempts):
+        if _group_effectively_dead(pid, pgid):
+            return True
+        time.sleep(pause)
+    return _group_effectively_dead(pid, pgid)
+
+
+def _unlink_quietly(pidfile: Path) -> None:
+    try:
+        pidfile.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _surface_reap_andon(
+    worker_id: str, run_id: str, message: str, *, check: str, loop: Optional[Any]
+) -> None:
+    """Route a reap-side Andon, best-effort — visibility must never crash the
+    sweep or block startup. Lazily imported at call time so a monkeypatched
+    ``surface_fleet_andon`` is honored."""
+    try:
+        from grove.fleet.observability import surface_fleet_andon
+
+        surface_fleet_andon(worker_id, run_id, message, check=check, loop=loop)
+    except Exception as exc:  # noqa: BLE001 — visibility is best-effort
+        logger.error("[fleet.reap] could not surface %s andon: %r", check, exc)
 
 
 def write_pidfile(
@@ -67,9 +147,21 @@ def remove_pidfile(worker_id: str) -> None:
 def sweep_orphans(loop: Optional[Any] = None) -> List[Dict[str, Any]]:
     """Startup reap. Must run BEFORE the cron ticker thread starts.
 
-    For every ``$GROVE_HOME/fleet/<id>/worker.pid``: a live group is an orphan
-    (no ticker owns it after a gateway restart) -> SIGKILL the group and remove
-    the pidfile; a dead one is stale -> just remove. Returns the reaped records.
+    For every ``$GROVE_HOME/fleet/<id>/worker.pid`` the sweep gates in order —
+    liveness, then identity, then a confirmed kill (C2a):
+
+      - dead group (stale pidfile)            -> remove the pidfile, nothing to kill
+      - alive but NOT verifiably ours         -> do NOT signal, KEEP the pidfile,
+                                                 surface an actionable Andon
+      - alive and ours, confirmed dead by kill -> SIGKILL the group, remove the
+                                                  pidfile (counts as reaped)
+      - alive and ours, kill not confirmed     -> KEEP the pidfile, surface an
+                                                  Andon so the next boot retries
+
+    Identity: the worker's argv carries ``--run-id <hex>`` (runner._spawn), so a
+    live process is proven ours only when that run_id is an element of its
+    cmdline. A recycled pid holding our stored integers fails the check and is
+    left untouched — a wrong kill is unrecoverable, a missed one is retried.
 
     Per-pidfile defensive: a malformed/unreadable pidfile is a possible UNREAPED
     orphan, so it is routed to the observed-event bus (operator visibility, with
@@ -101,26 +193,73 @@ def sweep_orphans(loop: Optional[Any] = None) -> List[Dict[str, Any]]:
             except Exception as surf_exc:  # noqa: BLE001 — visibility is best-effort
                 logger.error("[fleet.reap] could not surface malformed pidfile: %r", surf_exc)
             continue  # leave the malformed file in place for inspection
-        if group_alive(pid, pgid):
-            logger.warning(
-                "[fleet.reap] orphaned worker %s (pid=%s pgid=%s) survived a "
-                "gateway restart — SIGKILL group",
-                rec.get("worker_id"),
-                pid,
-                pgid,
-            )
-            safe_kill_group(pid, pgid, signal.SIGKILL)
-            reaped.append(rec)
-        else:
+        run_id = rec.get("run_id")
+        worker_id = rec.get("worker_id") or pidfile.parent.name
+
+        # ── Liveness FIRST: is anything still holding these integers? ──
+        if not group_alive(pid, pgid):
             logger.debug(
                 "[fleet.reap] stale pidfile for %s (pid=%s already dead) — removing",
-                rec.get("worker_id"),
+                worker_id,
                 pid,
             )
-        try:
-            pidfile.unlink()
-        except FileNotFoundError:
-            pass
+            _unlink_quietly(pidfile)
+            continue
+
+        # ── IDENTITY gate, before any signal: never kill a process we cannot
+        # prove is ours. The worker's argv carries --run-id <hex> (runner._spawn),
+        # so the stored run_id must be an ELEMENT of the live process's cmdline.
+        # A recycled pid would have to be running a process carrying the same
+        # uuid4 — far stronger than a start-time comparison. group_alive answered
+        # "is anything running"; this answers "is it ours".
+        observed = _process_cmdline(pid)
+        if run_id is None or observed is None or run_id not in observed:
+            # Identity CANNOT be verified -> do NOT kill, do NOT unlink. A wrong
+            # kill destroys an unrelated process and cannot be undone; a missed
+            # kill leaves an orphan the next boot retries. The asymmetry decides.
+            # The Andon must be ACTIONABLE (pid, expected run_id, observed
+            # cmdline) — this path repeats every boot until a human clears it.
+            _surface_reap_andon(
+                worker_id,
+                run_id or "unknown",
+                f"pidfile {pidfile} names pid {pid} for run_id {run_id!r}, but the "
+                f"live process is not verifiably ours (cmdline={observed!r}). "
+                f"Leaving the pidfile in place and NOT signalling — clear it by "
+                f"hand once you confirm the process is unrelated.",
+                check="orphan_identity_unverified",
+                loop=loop,
+            )
+            continue
+
+        # ── Confirmed ours + alive -> SIGKILL the group. ──
+        logger.warning(
+            "[fleet.reap] orphaned worker %s (pid=%s pgid=%s run=%s) survived a "
+            "gateway restart — SIGKILL group",
+            worker_id,
+            pid,
+            pgid,
+            run_id,
+        )
+        safe_kill_group(pid, pgid, signal.SIGKILL)
+
+        # ── CONFIRM the kill before unlinking (SIGKILL is not instant on a
+        # process in uninterruptible sleep). Confirmed-dead is the ONLY path
+        # that unlinks — and that counts as reaped. ──
+        if _confirm_group_dead(pid, pgid):
+            _unlink_quietly(pidfile)
+            reaped.append(rec)
+        else:
+            # Still alive after the bound: keep the pidfile so the next boot
+            # retries — losing the handle would be worse than a repeat attempt.
+            _surface_reap_andon(
+                worker_id,
+                run_id,
+                f"SIGKILLed the group for pid {pid} run_id {run_id!r} but it did "
+                f"not confirm dead within the recheck bound. Keeping the pidfile "
+                f"so the next boot retries the reap.",
+                check="orphan_kill_unconfirmed",
+                loop=loop,
+            )
     return reaped
 
 
