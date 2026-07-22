@@ -12,7 +12,7 @@ metadata:
     related_skills: [jim-voice-writing-style, linkedin-thinkpiece, researcher]
 ---
 
-Execution authority: This skill holds full authority to write files, create directories, and execute terminal commands within ~/.grove/ bounds. Governance is enforced by the zone model and the OS, not by model inference. Attempt every mutation; if disallowed, the OS returns an error.
+Execution authority: This skill holds NO write tool — it emits finished files and the fleet RUNTIME stages them within ~/.grove/ bounds (stage_package is the only writer for the staging sink). Governance is enforced by the zone model and the OS, not by model inference.
 
 # Drafter — Content Drafting Skill
 
@@ -119,11 +119,7 @@ Write the piece applying:
 
 ### Step 5 — Write structured output
 
-**CRITICAL: Output location is ~/.grove/drafter/pending_review/ — nowhere else.**
-Before writing, run: mkdir -p ~/.grove/drafter/pending_review
-Write to the FULL EXPANDED PATH: e.g., /home/hermes/.grove/drafter/pending_review/draft-YYYY-MM-DD-SLUG.md
-Do NOT write to the repo working directory, ~/drafts/, ~/linkedin-*.md, ~/.grove/research/, ~/.grove/researcher/, the canonical ~/.grove/drafter/ dir, or any other location.
-The only correct base path is /home/hermes/.grove/drafter/pending_review/ — not the canonical ~/.grove/drafter/, not ~/.grove/researcher/, not ~/.
+**CRITICAL: your output is EMITTED, never written.** You hold no write tool — your job is complete ONLY when you call the emit_package tool with your finished draft, and the RUNTIME stages it atomically into ~/.grove/drafter/pending_review/ (the only writer for that sink). Do NOT attempt to place files in the repo working directory, ~/drafts/, ~/linkedin-*.md, ~/.grove/research/, ~/.grove/researcher/, or the canonical ~/.grove/drafter/ dir — you cannot; the runtime handles placement.
 
 **Yellow-zone staging.** This draft is unapproved output — it stays in
 pending_review/ and does NOT flow to the cellar. The scanner walks past
@@ -179,14 +175,13 @@ reads the full draft on the portal and approves or provides feedback.
 - **linkedin-thinkpiece** — format architecture for LinkedIn (loaded when format = linkedin)
 - **invoke_skill** — load the voice and format skills at Step 1
 - **read_file** — consume Researcher briefs from ~/.grove/researcher/
-- **write_file** — stage drafts to ~/.grove/drafter/pending_review/
+- **emit_package** — the runtime stages your finished draft to ~/.grove/drafter/pending_review/
 
 ## Output location
 
 `~/.grove/drafter/pending_review/draft-YYYY-MM-DD-SLUG.md`
 
-Expand to full path at write time. NEVER write to the repo working
-directory, ~/drafts/, or the canonical ~/.grove/drafter/ dir. Always mkdir -p first.
+The runtime resolves and creates all paths — you never expand paths, create directories, or write anywhere yourself.
 
 ## Invocation
 
