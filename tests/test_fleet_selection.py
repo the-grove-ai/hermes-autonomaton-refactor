@@ -8,28 +8,24 @@ meaning. GROVE_HOME is per-test isolated (autouse conftest).
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-import pytest
-
-from grove.fleet import resolvers
-from grove.fleet.errors import FleetWorkerAndon
-from hermes_constants import get_hermes_home
+from grove.fleet import paths, resolvers
 
 _ORDER_BY = [{"field": "Fit Score", "direction": "desc"}, {"field": "id", "direction": "asc"}]
 _IST = {"select_one": True, "skip_already_staged": True, "order_by": _ORDER_BY}
 
 
-def _forge_sink() -> Path:
-    # matches the forge record's governance.write_zone.staging_dir
-    return Path(get_hermes_home()) / "forge" / "pending_review"
-
-
-def _stage(slug: str, row_id: str):
-    d = _forge_sink() / slug
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "meta.json").write_text(json.dumps({"row_id": row_id, "slug": slug}))
-    (d / "resume.md").write_text("R")
+def _stage(_slug: str, row_id: str):
+    """fleet-receipt-custody-v1 P4a — "already staged" is no longer a directory on
+    disk; it is a derived state. A drafted-and-pending unit has a success receipt
+    with no disposition → Needs you → excluded from re-selection. Simulate that."""
+    run_id = f"{row_id}-run"
+    dp = paths.dispatch_path("forge", run_id)
+    dp.parent.mkdir(parents=True, exist_ok=True)
+    dp.write_text(json.dumps({"run_id": run_id, "unit_id": row_id, "worker_id": "forge"}))
+    ep = paths.event_path("forge", run_id)
+    ep.parent.mkdir(parents=True, exist_ok=True)
+    ep.write_text(json.dumps({"run_id": run_id, "status": "success", "check": None}))
 
 
 # ── ranking determinism (ties + nulls) ──────────────────────────────────────
@@ -81,32 +77,11 @@ def test_select_one_off_yields_all_ranked():
     assert [r["id"] for r in out] == ["a", "b"]  # ranked, not truncated
 
 
-# ── non-recursive glob + malformed-meta Andon ────────────────────────────────
-
-
-def test_glob_is_one_level_ignores_tmp_and_nested():
-    _stage("260704-real", "pg1")
-    # a .tmp sibling (mid-atomic-write) must be ignored by the */meta.json glob
-    (_forge_sink() / "260704-real" / "meta.json.tmp").write_text("{partial")
-    # a nested meta.json two levels deep must NOT be matched (non-recursive)
-    nested = _forge_sink() / "260704-real" / "sub"
-    nested.mkdir()
-    (nested / "meta.json").write_text(json.dumps({"row_id": "pgNESTED"}))
-    staged = resolvers._staged_row_ids("forge")
-    assert staged == {"pg1"}  # only the one-level final meta.json
-
-
-def test_malformed_meta_fails_loud_not_treated_unstaged():
-    d = _forge_sink() / "260704-bad"
-    d.mkdir(parents=True)
-    (d / "meta.json").write_text("{ this is not json")
-    with pytest.raises(FleetWorkerAndon) as ei:
-        resolvers._staged_row_ids("forge")
-    assert ei.value.check == "staged_meta_unreadable"
-
-
-def test_no_sink_means_nothing_staged():
-    assert resolvers._staged_row_ids("forge") == set()  # sink absent -> empty
+# (fleet-receipt-custody-v1 P4a — the non-recursive-glob + malformed-meta Andon
+# tests retired with the disk glob: eligibility no longer reads meta.json. The
+# malformed-staged-meta path and its staged_meta_unreadable Andon are gone with
+# _staged_row_ids/_staged_unit_ids. The derivation exclusion is covered by
+# tests/test_fleet_eligibility.py.)
 
 
 # ── full resolve path (generic, mocked MCP) ──────────────────────────────────

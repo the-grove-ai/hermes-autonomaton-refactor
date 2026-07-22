@@ -398,6 +398,13 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
                 proposal.type, proposal.proposal_id, cb_exc,
             )
     proposal_queue.remove(proposal.proposal_id)
+    # NOTE (fleet-receipt-custody-v1 P4a): this is the GENERIC routing reject — it
+    # carries no unit identity in applied_result, and that is fine BECAUSE artifact
+    # cards do NOT reach here. Forge/fleet artifact rejects go through
+    # ``proposal_queue.finalize_proposal_state`` (the single disposition path for
+    # both verbs), which enriches applied_result with unit_id + slug — the join the
+    # derivation's ``disposed`` reads. Do not "fix" this site by adding a unit id;
+    # reading it as a gap cost a false Andon (A-P4-3, withdrawn).
     _record_kaizen_disposition(
         proposal, disposition="rejected", reason=reason,
     )

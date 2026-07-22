@@ -83,6 +83,7 @@ def derive_unit_state(
     disposed: bool,
     producer: str,
     policy: FailurePolicy,
+    terminal_skip: bool = False,
 ) -> str:
     """Derive one unit's state from durable records. Precedence IS the spec.
 
@@ -91,7 +92,9 @@ def derive_unit_state(
     ``events/`` / ``reset/`` (filenames — no parsing). ``events`` maps a
     received run_id to its receipt dict. ``disposed`` is ledger MEMBERSHIP — a
     terminal disposition (applied/rejected) exists for this unit — a bool, never
-    a timestamp.
+    a timestamp. ``terminal_skip`` is the feedback-store won't-converge flag
+    (the revision N-breaker) — the SECOND Dead-lettered cause, assembled by the
+    caller (never read from inside this pure function).
     """
     runs = set(unit_runs)
 
@@ -111,10 +114,13 @@ def derive_unit_state(
     if any(events[r].get("status") == "success" for r in terminal):
         return NEEDS_YOU
 
-    # 4. Dead-lettered — count unforgiven failure receipts, classified by policy.
-    #    dead_letter is immediate; retry accrues to the cap; ignore and
-    #    pause_producer do not count (pause leaves the unit Waiting, the breaker
-    #    is P3b).
+    # 4. Dead-lettered — two causes, same state. (a) the operator's won't-
+    #    converge ruling (terminal_skip, the revision N-breaker); (b) unforgiven
+    #    retry failures reaching the cap. dead_letter is immediate; ignore and
+    #    pause_producer do not count (pause leaves the unit Waiting; the breaker
+    #    is P3b). The CAUSE is distinguishable via ``dead_letter_cause``.
+    if terminal_skip:
+        return DEAD_LETTERED
     cap = policy.cap_for(producer)
     retry_count = 0
     for r in terminal:
@@ -133,3 +139,24 @@ def derive_unit_state(
 
     # 5. Waiting — everything else.
     return WAITING
+
+
+# The two Dead-lettered causes, distinguishable on the record for the render.
+DEAD_LETTER_CAUSE_TERMINAL_SKIP = "terminal_skip"
+DEAD_LETTER_CAUSE_RETRY_CAP = "retry_cap_exhausted"
+
+
+def dead_letter_cause(**kwargs: Any) -> Optional[str]:
+    """The cause of a unit's Dead-lettered state, or None if it is not
+    Dead-lettered. Reuses :func:`derive_unit_state` for the precedence (a
+    disposed unit is Done, a live run is Working — neither is Dead-lettered even
+    with ``terminal_skip`` set), then names the cause: the operator's
+    won't-converge ruling wins the label over a coincident retry-cap exhaustion.
+    """
+    if derive_unit_state(**kwargs) != DEAD_LETTERED:
+        return None
+    return (
+        DEAD_LETTER_CAUSE_TERMINAL_SKIP
+        if kwargs.get("terminal_skip")
+        else DEAD_LETTER_CAUSE_RETRY_CAP
+    )

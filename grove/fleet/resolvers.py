@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from grove.fleet.errors import FleetWorkerAndon
+from grove.fleet.unit_state import DEAD_LETTERED, NEEDS_YOU, WORKING
 
 logger = logging.getLogger(__name__)
 
@@ -200,60 +201,11 @@ def _extract_rows(result: Any) -> List[Dict[str, Any]]:
 
 # ── single-unit selection (fleet-pipeline-v1 P4, generic) ────────────────────
 #
-# All three steps are DRIVEN BY CONFIG and blind to meaning: the resolver does not
-# know "Fit Score" is a fitness or "id" is a Notion page — it globs the worker's
-# DECLARED staging_dir for staged row ids, filters, sorts by the declared order_by,
-# and yields one. No skill name appears here.
-
-
-def _worker_staging_dir(worker_id: str) -> Optional[Path]:
-    """Resolve the worker's DECLARED staging sink (governance.write_zone.staging_dir
-    on its capability record) to an absolute path — the same resolution the worker
-    stages into. None when the worker / record / sink cannot be resolved."""
-    from grove.capability_registry import load_capabilities
-    from grove.fleet.config import load_fleet_workers
-    from grove.utils.fs_utils import _grove_home_realpath, _grove_subdir_realpath
-
-    cfg = load_fleet_workers().get(worker_id)
-    if cfg is None:
-        return None
-    cap = load_capabilities().get(cfg.skill)
-    if cap is None:
-        return None
-    gov = cap.governance if isinstance(cap.governance, dict) else {}
-    staging = ((gov.get("write_zone") or {}).get("staging_dir"))
-    grove = _grove_home_realpath()
-    if not staging or grove is None:
-        return None
-    return Path(_grove_subdir_realpath(staging, grove))
-
-
-def _staged_row_ids(worker_id: str) -> set:
-    """The set of row_ids that already have a staged draft. Non-recursive glob of
-    ``staging_dir/*/meta.json`` (the watcher.py:151 shape — one level; the atomic
-    tmp->rename stage means the glob matches only a FINAL meta.json, never a
-    ``.tmp``). A bare read is safe (rename is atomic); an unreadable/malformed
-    meta.json fails LOUD — we must NOT silently treat its row as un-staged, which
-    would re-draft a row that IS staged."""
-    sink = _worker_staging_dir(worker_id)
-    if sink is None or not sink.is_dir():
-        return set()  # no sink yet -> nothing staged
-    staged: set = set()
-    for meta_path in sorted(sink.glob("*/meta.json")):
-        try:
-            data = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
-            raise FleetWorkerAndon(
-                f"worker {worker_id!r}: staged meta.json unreadable/malformed at "
-                f"{meta_path} ({exc}) — cannot tell if its row is staged; refusing "
-                f"to risk re-drafting a staged row",
-                worker_id=worker_id,
-                check="staged_meta_unreadable",
-            )
-        rid = data.get("row_id") if isinstance(data, dict) else None
-        if rid:
-            staged.add(rid)
-    return staged
+# All steps are DRIVEN BY CONFIG and blind to meaning: the resolver does not know
+# "Fit Score" is a fitness or "id" is a Notion page — it asks the derivation what
+# STATE each unit is in (fleet-receipt-custody-v1 P4a — disk presence is never a
+# state signal), filters the excluded states, sorts by the declared order_by, and
+# yields one. No skill name appears here.
 
 
 def _order_by_key(order_by: List[Dict[str, Any]]):
@@ -347,26 +299,106 @@ def _revision_directive(row_id: Optional[str], worker_id: str) -> Optional[str]:
     return directive
 
 
+def _build_unit_state_context(worker_id: str) -> Dict[str, Any]:
+    """Assemble the shared ``derive_unit_state`` inputs ONCE per selection.
+
+    One scandir of ``dispatch/`` + ``events/`` (run_id filenames), one read of
+    each receipt, one unit_id→runs grouping over the dispatch records, and the
+    committed ``_ledger_terminal_dispositions`` projection for ``disposed`` — the
+    single disposition authority, never a second parse of the ledger. ``reset/``
+    does not exist yet (P5), so ``forgiven`` is empty. ``terminal_skip`` is read
+    per-unit at derive time via the existing feedback-store reader.
+    """
+    from grove.api.portal import _ledger_terminal_dispositions
+    from grove.fleet import paths
+    from grove.fleet.unit_state import load_failure_policy
+
+    ddir, edir = paths.dispatch_dir(worker_id), paths.events_dir(worker_id)
+    dispatched = {p.stem for p in ddir.glob("*.json")} if ddir.is_dir() else set()
+    received = {p.stem for p in edir.glob("*.json")} if edir.is_dir() else set()
+    events: Dict[str, Dict[str, Any]] = {}
+    for rid in received:
+        try:
+            events[rid] = json.loads(
+                paths.event_path(worker_id, rid).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            continue  # a torn/missing receipt is not a state signal
+    unit_runs: Dict[Any, List[str]] = {}
+    for rid in dispatched:
+        try:
+            rec = json.loads(
+                paths.dispatch_path(worker_id, rid).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            continue
+        unit_runs.setdefault(rec.get("unit_id"), []).append(rid)
+    return {
+        "dispatched": dispatched,
+        "received": received,
+        "events": events,
+        "unit_runs": unit_runs,
+        "disposed": set(_ledger_terminal_dispositions()),
+        "forgiven": frozenset(),
+        "policy": load_failure_policy(),
+        "worker_id": worker_id,
+    }
+
+
+def _derived_unit_state(unit_id: Optional[str], ctx: Dict[str, Any]) -> str:
+    """The unit's state, from the assembled context + its per-unit terminal_skip."""
+    from grove.fleet.unit_state import derive_unit_state
+
+    return derive_unit_state(
+        unit_runs=ctx["unit_runs"].get(unit_id, ()),
+        dispatched=ctx["dispatched"],
+        received=ctx["received"],
+        forgiven=ctx["forgiven"],
+        events=ctx["events"],
+        disposed=unit_id in ctx["disposed"],
+        producer=ctx["worker_id"],
+        policy=ctx["policy"],
+        terminal_skip=_is_terminal_skip(unit_id, ctx["worker_id"]),
+    )
+
+
+def _eligibility_excluded(unit_id: Optional[str], ctx: Dict[str, Any], skip: bool) -> bool:
+    """Is this unit excluded from re-selection? (fleet-receipt-custody-v1 P4a.)
+
+    Dead-lettered is a VERDICT — a won't-converge (terminal_skip) or retry-cap
+    poison-pill unit is never dispatched, UNCONDITIONALLY. Working (in-flight) and
+    Needs you (pending operator disposition) are the states ``skip_already_staged``
+    governs, so they exclude only when the flag is set. Done and Waiting are
+    always eligible (an applied unit is out of the tracker filter; a rejected one
+    is re-draftable). The revision-cap guarantee never rides on a staging flag.
+    """
+    state = _derived_unit_state(unit_id, ctx)
+    if state == DEAD_LETTERED:
+        return True
+    if skip and state in (WORKING, NEEDS_YOU):
+        return True
+    return False
+
+
 def _select_units(rows: List[Dict[str, Any]], input_state: Dict[str, Any], worker_id: str):
-    """Apply the declared skip-already-staged filter, order_by ranking, the
+    """Apply the derivation-based eligibility filter, order_by ranking, the
     revision-priority tier, and select_one — read from input_state (P0 config),
     applied blind. suggest-revision-verb-v1 P3: rows carrying non-terminal operator
     revision guidance sort BEFORE the fresh-fit order_by tier, so a re-draft-with-
     guidance is serviced ahead of a never-drafted row (stable within each tier)."""
-    if input_state.get("skip_already_staged"):
-        staged = _staged_row_ids(worker_id)  # may raise a loud Andon
-        rows = [r for r in rows if r.get("id") not in staged]
+    # P4a — eligibility is a projection over durable records, not disk presence.
+    # Dead-lettered (either cause) is excluded UNCONDITIONALLY; Working / Needs you
+    # exclude only under skip_already_staged. No disk glob, no fallback. The ctx
+    # build is unconditional (~2ms) — the terminal-skip verdict must not depend on
+    # the flag.
+    ctx = _build_unit_state_context(worker_id)
+    skip = bool(input_state.get("skip_already_staged"))
+    rows = [r for r in rows if not _eligibility_excluded(r.get("id"), ctx, skip)]
     if not rows:
         return []
     order_by = input_state.get("order_by") or []
     if order_by:
         rows = sorted(rows, key=_order_by_key(order_by))
-    # suggest-revision-verb-v1 P4 — N-breaker terminal EXCLUSION: a won't-converge
-    # (terminal_skip) row is removed from re-selection ENTIRELY, not merely
-    # de-prioritized (the placebo-livelock fix). Composes with the P3 `not
-    # terminal_skip` priority gate: a terminal_skip row is neither prioritized nor
-    # selected.
-    rows = [r for r in rows if not _is_terminal_skip(r.get("id"), worker_id)]
     # Revision-priority tier — stable partition, revision-pending first (order_by
     # preserved within each tier). Empty pending -> rows unchanged (byte-identical).
     pending, rest = [], []
@@ -419,44 +451,19 @@ def _unit_id_from_source(filename: str, slug_regex: str, worker_id: str) -> str:
     return m.group(1)
 
 
-def _staged_unit_ids(worker_id: str) -> set:
-    """The set of unit_ids that already have a staged package. Non-recursive glob of
-    ``staging_dir/*/meta.json`` — the SAME shape as ``_staged_row_ids`` but keyed on
-    the synthesized ``meta['unit_id']`` (file producers carry no Notion row_id). An
-    unreadable/malformed staged meta fails LOUD (must NOT re-draft a staged unit)."""
-    sink = _worker_staging_dir(worker_id)
-    if sink is None or not sink.is_dir():
-        return set()
-    staged: set = set()
-    for meta_path in sorted(sink.glob("*/meta.json")):
-        try:
-            data = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
-            raise FleetWorkerAndon(
-                f"worker {worker_id!r}: staged meta.json unreadable/malformed at "
-                f"{meta_path} ({exc}) — cannot tell if its unit is staged; refusing "
-                f"to risk re-drafting a staged unit",
-                worker_id=worker_id,
-                check="staged_meta_unreadable",
-            )
-        uid = (data.get("unit_id") or data.get("slug")) if isinstance(data, dict) else None
-        if uid:
-            staged.add(uid)
-    return staged
-
-
 def _select_file_units(units: List[Dict[str, Any]], input_state: Dict[str, Any], worker_id: str):
-    """File-unit selection — the ``_select_units`` contract for file sources: drop
-    already-staged units (re-open on archive is automatic — the glob no longer sees
-    an archived unit), EXCLUDE terminal_skip (N-breaker), float revision-pending units
-    ahead of fresh ones (stable within each tier), select_one. Deterministic input
-    order is the caller's filename sort (no order_by for file sources)."""
-    if input_state.get("skip_already_staged"):
-        staged = _staged_unit_ids(worker_id)  # may raise a loud Andon
-        units = [u for u in units if u.get("id") not in staged]
+    """File-unit selection — the ``_select_units`` contract for file sources:
+    exclude by derived state (Working, Needs you, Dead-lettered — terminal_skip
+    among the causes), float revision-pending units ahead of fresh ones (stable
+    within each tier), select_one. Deterministic input order is the caller's
+    filename sort (no order_by for file sources)."""
+    # P4a — same eligibility projection as _select_units: Dead-lettered excludes
+    # unconditionally, Working / Needs you only under skip_already_staged.
+    ctx = _build_unit_state_context(worker_id)
+    skip = bool(input_state.get("skip_already_staged"))
+    units = [u for u in units if not _eligibility_excluded(u.get("id"), ctx, skip)]
     if not units:
         return []
-    units = [u for u in units if not _is_terminal_skip(u.get("id"), worker_id)]
     pending, rest = [], []
     for u in units:
         (pending if _has_revision_priority(u.get("id"), worker_id) else rest).append(u)
