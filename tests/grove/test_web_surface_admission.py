@@ -25,7 +25,6 @@ import pytest
 from grove.capability_registry import load_capabilities
 from grove.context_budget import (
     _is_mcp,
-    min_covering_tier,
     resolve_tools_for_tier,
 )
 
@@ -66,11 +65,10 @@ def test_builder_strips_nothing_on_tier_at_any_tier(tier, intent):
     # (the surviving PRIMARY offered-surface seam). Assert the builder offers a
     # non-empty surface and never tier-strips.
     res = resolve_tools_for_tier(
-        _all_native_tools(), intent, "moderate", current_tier=tier
-    )
-    assert res.stripped_capabilities == frozenset(), (
-        f"builder tier-stripped at T{tier} for {intent!r}; the tier gate is retired"
-    )
+        _all_native_tools(), intent, "moderate")
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
     assert res.allowed_names, f"builder offered nothing for {intent!r} at T{tier}"
 
 
@@ -108,8 +106,7 @@ def test_victim_table_offered_at_eligible_tiers():
             # an intent the record actually triggers on (precomputed above)
             res = resolve_tools_for_tier(
                 tools, triggering.get(name, "research"), "moderate",
-                current_tier=tier,
-            )
+                )
             assert name in res.allowed_names, (
                 f"{name} should be OFFERED at its eligible T{tier}"
             )
@@ -130,11 +127,10 @@ def test_research_at_t2_strips_nothing_after_widen():
     # so a research turn at T2 strips NOTHING → stripped_capabilities is empty →
     # the D8 strip-escalation never raises (dissolved at the root, not handled).
     res = resolve_tools_for_tier(
-        _all_native_tools(), "research", "moderate", current_tier=2
-    )
-    assert res.stripped_capabilities == frozenset(), (
-        "research @ T2 must strip nothing after the widen (no D8 escalation)"
-    )
+        _all_native_tools(), "research", "moderate")
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
     assert "x_search" in res.allowed_names      # now served at T2
     assert "web_search" in res.allowed_names
     assert "session_search" in res.allowed_names
@@ -144,9 +140,10 @@ def test_research_at_t1_strips_nothing_after_widen():
     # The widen also covers T1: every research-family native verb is eligible at
     # T1, so a T1 research turn strips nothing either.
     res = resolve_tools_for_tier(
-        _all_native_tools(), "research", "moderate", current_tier=1
-    )
-    assert res.stripped_capabilities == frozenset()
+        _all_native_tools(), "research", "moderate")
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
     assert "x_search" in res.allowed_names
     assert "search_files" in res.allowed_names
 
@@ -155,49 +152,14 @@ def test_none_tier_admits_all_intent_matched_like_the_seam():
     # No tier routed (cloud): the eligibility gate is bypassed — the seam admits
     # the no-tier path too (tier is None ⇒ admit).
     res = resolve_tools_for_tier(
-        _all_native_tools(), "research", "moderate", current_tier=None
-    )
+        _all_native_tools(), "research", "moderate")
     assert "x_search" in res.allowed_names      # eligible-[3] tool admitted (no gate)
-    assert res.stripped_capabilities == frozenset()
+    # stripped_capabilities attribute DELETED (P2) — nothing is ever
+    # tier-stripped by construction; the assertion is structural now.
+    assert not hasattr(res, "stripped_capabilities")
 
 
-# ── invariant 2: D8 re-sourced onto stripped_capabilities ──────────────────
+# min_covering_tier tests DELETED (retrieval-ambient-class-v1 P2): the D8
+# helper and its always-empty feeder are demolished.
 
 
-def test_min_covering_tier_single_jump():
-    # one cap eligible only at T3, stripped at T2 -> jump to T3 (the minimum).
-    stripped = frozenset({("x_search", (3,))})
-    assert min_covering_tier(stripped, 2) == 3
-
-
-def test_min_covering_tier_picks_minimum_over_set():
-    # two caps; the minimum tier covering BOTH (intersection ≥ current).
-    stripped = frozenset({("a", (2, 3)), ("b", (3,))})
-    assert min_covering_tier(stripped, 1) == 3      # only 3 covers both
-    stripped2 = frozenset({("a", (1, 2, 3)), ("b", (2, 3))})
-    assert min_covering_tier(stripped2, 1) == 2     # 2 is the min covering both
-
-
-def test_min_covering_tier_null_intersection_is_none():
-    # disjoint eligible sets — no single tier covers both -> fail-loud signal.
-    stripped = frozenset({("a", (2,)), ("b", (3,))})
-    assert min_covering_tier(stripped, 1) is None
-
-
-def test_min_covering_tier_eligible_only_below_current_is_none():
-    # a cap eligible only BELOW the current tier can never be covered going up.
-    stripped = frozenset({("legacy_only", (1,))})
-    assert min_covering_tier(stripped, 2) is None
-
-
-def test_min_covering_tier_nothing_stripped_returns_current():
-    assert min_covering_tier(frozenset(), 2) == 2
-
-
-def test_loop_invariant_target_covers_whole_stripped_set():
-    # The invariant the generator asserts before invoking the LLM: at the target
-    # tier EVERY stripped cap is eligible (target drawn from the intersection).
-    stripped = frozenset({("a", (2, 3)), ("b", (3,)), ("c", (1, 2, 3))})
-    target = min_covering_tier(stripped, 1)
-    assert target is not None
-    assert all(target in set(elig) for (_cid, elig) in stripped)

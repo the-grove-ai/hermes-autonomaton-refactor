@@ -101,7 +101,7 @@ def _write_overlay(state_dir, body: str):
 
 
 def _offered(intent):
-    names, _ = _registry_allowed_names(intent, "moderate", current_tier=None)
+    names = _registry_allowed_names(intent, "moderate")
     return names
 
 

@@ -35,7 +35,8 @@ def _names(tools):
 
 
 def _stripped_ids(res):
-    return {cid for (cid, _elig) in res.stripped_capabilities}
+    # stripped_capabilities DELETED (P2): nothing is ever tier-stripped.
+    return set()
 
 
 ALL_TOOLS = _mk(
@@ -65,10 +66,9 @@ def test_no_tier_reproduces_tier_unaware(intent, complexity):
         ALL_TOOLS, resolve_tool_set(intent, complexity)
     )
     res = resolve_tools_for_tier(
-        ALL_TOOLS, intent, complexity, current_tier=None
-    )
+        ALL_TOOLS, intent, complexity)
     assert _names(res.tools) == _names(legacy)
-    assert res.stripped_capabilities == frozenset()   # no tier -> nothing stripped
+    assert not hasattr(res, "stripped_capabilities")  # P2: field deleted
     assert res.excluded_mcp == frozenset()
 
 
@@ -79,7 +79,7 @@ def test_unknown_production_and_eval_twin_both_core_only(intent, complexity):
     # (resolve_tools_for_tier) AND the tier-unaware eval twin (resolve_tool_set) —
     # the maximal "load everything" fallback is eradicated everywhere. The two
     # surfaces are IDENTICAL (no drift); the twin NEVER returns None.
-    res = resolve_tools_for_tier(ALL_TOOLS, intent, complexity, current_tier=None)
+    res = resolve_tools_for_tier(ALL_TOOLS, intent, complexity)
     assert res.fallback is True
     # Compare against the production ADMISSION set (registry-derived, independent of
     # the ALL_TOOLS surface), not the delivered/filtered res.tools — ALL_TOOLS here
@@ -183,7 +183,7 @@ def test_no_budget_native_matches_legacy_mcp_disclose_on_match(monkeypatch):
     assert "mcp_notion_API_post_page" in got            # notion always-on -> disclosed
     assert "mcp_other_do_thing" not in got              # no record -> withheld
     assert agent._last_tool_selection["fallback"] is False
-    assert agent._last_tool_selection["stripped_capabilities"] == []  # no tier strip
+    assert "stripped_capabilities" not in agent._last_tool_selection  # P2: telemetry key deleted
     assert agent._tool_resolution is not None
 
 
@@ -240,7 +240,7 @@ def test_budgeted_serves_intent_and_excludes_mcp(monkeypatch):
     assert "mcp_other_do_thing" not in got              # no record -> withheld
     sel = agent._last_tool_selection
     assert sel["excluded_mcp"] == []
-    assert sel["stripped_capabilities"] == []         # code caps all eligible@T2
+    assert "stripped_capabilities" not in agent._last_tool_selection  # P2: telemetry key deleted
     assert sel["tier"] == "T2"
 
 
@@ -252,8 +252,8 @@ def test_research_at_t2_strips_nothing_no_d8(monkeypatch):
     _setup(monkeypatch, "research", "simple")
     agent = _bare_agent(ALL_TOOLS, tier_budget=T2)
     agent._maybe_apply_tool_filter()
-    assert agent._tool_resolution.stripped_capabilities == frozenset()
-    assert agent._last_tool_selection["stripped_capabilities"] == []
+    assert not hasattr(agent._tool_resolution, "stripped_capabilities")  # P2
+    assert "stripped_capabilities" not in agent._last_tool_selection  # P2: telemetry key deleted
     assert "web_search" in agent._tool_resolution.allowed_names
     assert "session_search" in agent._tool_resolution.allowed_names
     assert "x_search" in agent._tool_resolution.allowed_names

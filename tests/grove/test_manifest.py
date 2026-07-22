@@ -38,6 +38,9 @@ VALID_MANIFEST = {
             "payload": "tool_schema:terminal",
             "tiers": ["T1", "T2", "T3"],
             "trigger": {"intents": [], "keywords": [], "dock_goal": None},
+            # P2 (one disclose-on-match rule): a trigger-less tool unit must
+            # declare its eager class (proactive-always core exemplar).
+            "disclosure_mode": "eager",
         },
         {
             "id": "notion",
@@ -216,8 +219,10 @@ def test_mcp_unit_without_trigger_fails_at_dataclass():
 
 
 def test_tool_unit_with_empty_trigger_is_fine():
-    """Tool units carry NO trigger by design — native selection owns them.
-    The untriggered guard must not fire for kind=='tool'."""
+    """retrieval-ambient-class-v1 P2 (one disclose-on-match rule): the
+    kind-based native exemption is RETIRED. An EAGER-class tool unit
+    (baseline / proactive-always) legitimately carries no trigger; a
+    triggered-class tool unit with no trigger fails loud, same as MCP."""
     u = DisclosableUnit(
         id="terminal",
         kind="tool",
@@ -225,7 +230,18 @@ def test_tool_unit_with_empty_trigger_is_fine():
         payload="tool_schema:terminal",
         tiers=("T1",),
         trigger=UnitTrigger(intents=(), keywords=(), dock_goal=None),
+        disclosure_mode="eager",
     )
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="triggered unit with no trigger"):
+        DisclosableUnit(
+            id="terminal2",
+            kind="tool",
+            oneline="Run a shell command.",
+            payload="tool_schema:terminal2",
+            tiers=("T1",),
+            trigger=UnitTrigger(intents=(), keywords=(), dock_goal=None),
+        )
     assert u.trigger.keywords == ()
 
 

@@ -37,6 +37,14 @@ def _unit(uid, kind, **trig):
             keywords=tuple(trig.get("keywords", ())),
             dock_goal=trig.get("dock_goal"),
         ),
+        # P2 (one disclose-on-match rule): a trigger-less synthetic unit maps
+        # to the eager class (mirrors proactive-always core natives); units
+        # WITH a trigger stay in the strict "triggered" default.
+        disclosure_mode=(
+            "triggered"
+            if (trig.get("intents") or trig.get("keywords") or trig.get("dock_goal"))
+            else "eager"
+        ),
     )
 
 

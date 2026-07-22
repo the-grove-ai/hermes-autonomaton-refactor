@@ -43,14 +43,14 @@ def test_complexity_record_absent_on_simple_t3_present_on_complex():
     # web-surface-admission-fix (Option B) — the tier is bound via current_tier
     # (tier_rule.eligible is the sole gate); browser_navigate is a complexity
     # record eligible=[3], so it rides only a complex turn AT T3.
-    simple = _names(resolve_tools_for_tier(TOOLS, "conversation", "simple", current_tier=3, mcp_allow=None))
-    complex_ = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", current_tier=3, mcp_allow=None))
+    simple = _names(resolve_tools_for_tier(TOOLS, "conversation", "simple", mcp_allow=None))
+    complex_ = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", mcp_allow=None))
     assert "browser_navigate" not in simple, "complexity record leaked onto a low-complexity T3 turn"
     assert "browser_navigate" in complex_, "complexity record missing on a complex T3 turn"
     # neuter-tier-eligible-gate: on a COMPLEX turn the complexity record now also
     # rides at T1 — tier no longer strips. Complexity-disclosure gating (above)
     # is unchanged; only the tier ceiling is retired.
-    t1c = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", current_tier=1, mcp_allow=None))
+    t1c = _names(resolve_tools_for_tier(TOOLS, "conversation", "complex", mcp_allow=None))
     assert "browser_navigate" in t1c   # tier ceiling retired → present at T1 on a complex turn
 
 
@@ -67,7 +67,7 @@ def test_migrated_class_a_present_on_every_intent(core_tool):
     # core native verbs offered on EVERY recognized intent at every tier.
     for tier_int in (1, 2, 3):
         for intent in INTENT_CLASSES:
-            got = _names(resolve_tools_for_tier(TOOLS, intent, "moderate", current_tier=tier_int, mcp_allow=None))
+            got = _names(resolve_tools_for_tier(TOOLS, intent, "moderate", mcp_allow=None))
             assert core_tool in got, f"{core_tool} missing on classified cell T{tier_int}|{intent}"
 
 
@@ -75,9 +75,9 @@ def test_migrated_intent_gated_records_ride_only_their_intent():
     # Class B2/C (spotify_write, discord, homeassistant_read, discord_admin,
     # computer_use) became proactive+intent-gated: present iff the intent matches,
     # absent on unrelated classified turns (no longer fallback-only).
-    sysadmin = _names(resolve_tools_for_tier(TOOLS, "system_admin", "moderate", current_tier=3, mcp_allow=None))
-    messaging = _names(resolve_tools_for_tier(TOOLS, "messaging", "moderate", current_tier=3, mcp_allow=None))
-    research = _names(resolve_tools_for_tier(TOOLS, "research", "moderate", current_tier=3, mcp_allow=None))
+    sysadmin = _names(resolve_tools_for_tier(TOOLS, "system_admin", "moderate", mcp_allow=None))
+    messaging = _names(resolve_tools_for_tier(TOOLS, "messaging", "moderate", mcp_allow=None))
+    research = _names(resolve_tools_for_tier(TOOLS, "research", "moderate", mcp_allow=None))
     assert "spotify_search" in sysadmin           # spotify_write intents=[system_admin]
     assert "spotify_search" not in messaging
     assert "discord" in messaging                  # discord intents=[messaging]
@@ -93,5 +93,5 @@ def test_invoke_skill_offered_on_every_recognized_intent():
     # inverse of the fallback-absent invariant above.
     for tier_int in (1, 2, 3):
         for intent in INTENT_CLASSES:
-            got = _names(resolve_tools_for_tier(TOOLS, intent, "moderate", current_tier=tier_int, mcp_allow=None))
+            got = _names(resolve_tools_for_tier(TOOLS, intent, "moderate", mcp_allow=None))
             assert "invoke_skill" in got, f"invoke_skill missing on classified cell T{tier_int}|{intent}"

@@ -54,7 +54,6 @@ def _res(tools):
     return ToolResolution(
         tools=tuple(tools),
         allowed_names=frozenset(),
-        stripped_capabilities=frozenset(),
         excluded_mcp=frozenset(),
         unparseable_mcp=(),
         fallback=False,
@@ -67,6 +66,7 @@ REGISTRY = _Registry([
     ("terminal", "Run a shell command."),
     ("clarify", "Ask the operator a question."),
     ("web_search", "Search the web."),
+    ("execute_code", "Execute a code snippet."),   # intent-gated exemplar (P2)
 ])
 
 
@@ -74,34 +74,32 @@ def _names(tools):
     return {t["function"]["name"] for t in (tools or [])}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="retrieval-ambient-class-v1 P1->P2 seam: baseline-flipped records "
-    "(clarify, workspace_read) left the PROACTIVE-keyed eager core/intent-map "
-    "in disclosure_split_sets; P2 teaches the eager-set layer the baseline "
-    "class and MUST remove this marker (strict=True enforces it).",
-)
 def test_apply_disclosure_reduces_to_core_plus_pull_tools():
     agent = _bare_agent([])
     agent._dispatcher_singleton = _DispatcherHolder(REGISTRY)
     # The tier-resolved set on a T2 turn: core + a domain tool + a matched MCP.
     res = _res([
-        _tool("terminal"), _tool("clarify"),       # core -> eager
-        _tool("web_search"),                        # non-core native -> withheld
+        _tool("terminal"), _tool("clarify"),       # core/baseline -> eager
+        _tool("web_search"),                        # BASELINE (P2) -> eager, never demoted
+        _tool("execute_code"),                      # intent-gated native -> withheld
         _tool("mcp_notion_API_post_page"),          # matched MCP -> eager
     ])
     reduced = agent._apply_disclosure(res)
     names = _names(reduced)
-    assert "terminal" in names and "clarify" in names      # core eager
+    assert "terminal" in names and "clarify" in names      # core/baseline eager
     assert "mcp_notion_API_post_page" in names             # matched MCP eager
-    assert "web_search" not in names                       # withheld to index
+    # retrieval-ambient-class-v1 P2: web_search rides the ambient baseline
+    # class — eager at every tier, NEVER pull-demoted.
+    assert "web_search" in names
+    assert "execute_code" not in names                     # intent-gated -> withheld to index
     assert {"read_tool_schema", "read_goal_context"} <= names  # pull tools present
     # The merged manifest is stashed for the loop interception.
     assert agent._disclosure_manifest is not None
-    # web_search is pullable: it appears in the read_tool_schema index, not eager.
+    # execute_code is pullable; eager units are omitted from the index.
     rts = next(t for t in reduced if t["function"]["name"] == "read_tool_schema")
-    assert "web_search" in rts["function"]["description"]
-    assert "terminal" not in rts["function"]["description"]  # eager -> omitted
+    assert "execute_code" in rts["function"]["description"]
+    assert "web_search" not in rts["function"]["description"]  # eager -> omitted
+    assert "terminal" not in rts["function"]["description"]    # eager -> omitted
 
 
 def test_apply_disclosure_no_registry_falls_back_to_eager():
@@ -117,50 +115,44 @@ def test_apply_disclosure_no_registry_falls_back_to_eager():
 # make it eager on a matched-intent turn and withheld (pull-only) otherwise.
 _WS_REGISTRY = _Registry([
     ("terminal", "Run a shell command."),       # core -> always eager
-    ("calendar_list", "List calendar events."),  # Workspace verb in scheduling chunk
-    ("web_search", "Search the web."),           # non-core, not a scheduling verb
+    ("calendar_list", "List calendar events."),  # baseline (workspace_read, P1)
+    ("execute_code", "Execute a code snippet."),  # intent-gated -> pull-only off-intent
 ])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="retrieval-ambient-class-v1 P1->P2 seam: baseline-flipped records "
-    "(clarify, workspace_read) left the PROACTIVE-keyed eager core/intent-map "
-    "in disclosure_split_sets; P2 teaches the eager-set layer the baseline "
-    "class and MUST remove this marker (strict=True enforces it).",
-)
 def test_apply_disclosure_eager_on_matched_intent():
     agent = _bare_agent([])
     agent._dispatcher_singleton = _DispatcherHolder(_WS_REGISTRY)
-    res = _res([_tool("terminal"), _tool("calendar_list"), _tool("web_search")])
+    res = _res([_tool("terminal"), _tool("calendar_list"), _tool("execute_code")])
     reduced = agent._apply_disclosure(res, intent_class="scheduling")
     names = _names(reduced)
     assert "terminal" in names                              # core eager
-    assert "calendar_list" in names                         # intent-matched -> eager (JIT)
-    assert "web_search" not in names                        # not a scheduling verb -> withheld
-    # No double-exposure: the eager verb is omitted from the pull index.
+    # calendar_list rides the BASELINE class (workspace_read, P1) — eager on
+    # every turn, scheduling included.
+    assert "calendar_list" in names
+    assert "execute_code" not in names                      # not a scheduling verb -> withheld
+    # No double-exposure: eager verbs are omitted from the pull index.
     rts = next(t for t in reduced if t["function"]["name"] == "read_tool_schema")
     assert "calendar_list" not in rts["function"]["description"]
-    assert "web_search" in rts["function"]["description"]    # still pullable
+    assert "execute_code" in rts["function"]["description"]  # still pullable
 
 
 def test_apply_disclosure_withheld_on_unmatched_intent():
     # JIT intact: a genuinely intent-gated verb stays pull-only on an unmatched
-    # turn. NOTE (tool-admission-widening-v1): calendar_list was the prior
-    # example, but workspace_read was promoted to always:true (operator
-    # decision — "operator's own data, no cost concern"), so it is now eager on
-    # EVERY turn. We assert withholding on web_search instead: held at
-    # always:false (cost-gating, operator decision) and intent-gated to
-    # research/analysis/factual_lookup/planning/retrieval — NOT conversation.
+    # turn. NOTE (retrieval-ambient-class-v1 P2): web_search was the prior
+    # example, but it joined the ambient BASELINE class (P1 ratification —
+    # eager on every turn), so we assert withholding on execute_code instead:
+    # intent-gated to code_generation/debugging/system_admin — NOT
+    # conversation.
     agent = _bare_agent([])
     agent._dispatcher_singleton = _DispatcherHolder(_WS_REGISTRY)
-    res = _res([_tool("terminal"), _tool("web_search")])
+    res = _res([_tool("terminal"), _tool("execute_code")])
     reduced = agent._apply_disclosure(res, intent_class="conversation")
     names = _names(reduced)
     assert "terminal" in names                              # core still eager
-    assert "web_search" not in names                        # withheld (intent-gated)
+    assert "execute_code" not in names                      # withheld (intent-gated)
     rts = next(t for t in reduced if t["function"]["name"] == "read_tool_schema")
-    assert "web_search" in rts["function"]["description"]   # pullable
+    assert "execute_code" in rts["function"]["description"]  # pullable
 
 
 def test_intercept_read_tool_schema_splices_pulled_def():
@@ -171,6 +163,7 @@ def test_intercept_read_tool_schema_splices_pulled_def():
             id="web_search", kind="tool", oneline="Search the web.",
             payload="tool_schema:web_search", tiers=("T2", "T3"),
             trigger=UnitTrigger((), (), None),
+            disclosure_mode="eager",
         )
     ]
     agent._tools_for_turn = [_tool("read_tool_schema")]  # reduced surface
@@ -192,7 +185,8 @@ def test_intercept_passes_non_pull_intents_through():
     agent._disclosure_manifest = [
         DisclosableUnit(id="terminal", kind="tool", oneline="x",
                         payload="tool_schema:terminal", tiers=("T2",),
-                        trigger=UnitTrigger((), (), None))
+                        trigger=UnitTrigger((), (), None),
+                        disclosure_mode="eager")
     ]
     agent._tools_for_turn = [_tool("read_tool_schema")]
     messages = []

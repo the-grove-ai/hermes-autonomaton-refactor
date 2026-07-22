@@ -59,9 +59,10 @@ def _index_string(units, eager_ids):
 
 def _record_split(units, defs_by, res_tools, intent):
     """Reproduce _apply_disclosure's eager/pull from records (native scope)."""
-    core, intent_map = disclosure_split_sets()
+    baseline, baseline, core, intent_map = disclosure_split_sets()
     matched = {t for t, ins in intent_map.items() if intent is not None and intent in ins}
-    eager = [n for n in (_name_of(t) for t in res_tools) if n in core or n in matched]
+    eager = [n for n in (_name_of(t) for t in res_tools)
+             if n in baseline or n in core or n in matched]
     return eager, _index_string(units, set(eager))
 
 

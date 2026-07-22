@@ -469,11 +469,10 @@ class TestRegistryAdmissionWidening:
         # Read the registry fresh from disk, not a stale cached projection.
         reset_caps_index_cache()
         try:
-            allowed, _stripped = _registry_allowed_names(
+            allowed = _registry_allowed_names(
                 intent_class="conversation",
                 complexity_signal="simple",
-                current_tier=None,
-            )
+                )
         finally:
             reset_caps_index_cache()
 
