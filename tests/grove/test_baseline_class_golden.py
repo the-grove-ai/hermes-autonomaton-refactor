@@ -24,6 +24,7 @@ BASELINE_RECORD_GOLDEN = frozenset({
     "cellar_search",
     "clarify",
     "grove_browser_read",
+    "read_capability_state",   # P3 — effective-state read (Exhibit 5 remedy)
     "read_file",
     "search_files",
     "skills_read",
@@ -39,6 +40,7 @@ BASELINE_TOOL_GOLDEN = frozenset({
     "web_extract",
     # cellar + files + skills index + socratic backbone
     "cellar_search",
+    "read_capability_state",   # P3 — ambient by necessity (self-invisibility guard)
     "read_file",
     "search_files",
     "skill_view",

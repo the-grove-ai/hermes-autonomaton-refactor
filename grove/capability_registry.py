@@ -386,6 +386,136 @@ def _compose_state_overlay(records: Dict[str, Capability]) -> None:
             # records[rid] retains the pre-merge pure-definition Capability.
 
 
+def effective_admission_state(
+    definitions_dirs=None, state_dir: Optional[Path] = None
+) -> Dict[str, Any]:
+    """retrieval-ambient-class-v1 P3 — the SINGLE derivation of per-record
+    effective admission state. Effective values come from :func:`_compose_state`
+    (the sole merge authority — the same function the state overlay applies at
+    load); per-field source tags are computed here ONCE. Both consumers bind
+    this function: the ``read_capability_state`` tool and the portal admission
+    fragment (``grove.api.fragments.render_admission_state_html``) — the
+    fragment's render-side copy of the merge rules is RETIRED.
+
+    Returns::
+
+        {
+          "records": {rid: {
+              "zone": str, "disclosure": str, "kind": str,
+              "has_state": bool,
+              "fields": [{"field", "base", "effective", "source"}, ...],
+              "provenance": {...} | None,
+              "legacy_added_intents": bool,
+          }},
+          "invalid": [{"file": str, "error": str}],   # R-B1 — pure definition rules
+          "orphans": [{"file": str, "id": str}],       # F6 — never auto-deleted
+          "state_dir_missing": bool,
+        }
+
+    Source tags (F2 vocabulary, unchanged): ``definition`` |
+    ``overlay · approval <id>`` | ``overlay · NO PROVENANCE (pre-canonical)`` |
+    ``derived — re-anchored by merge``.
+    """
+    from grove.capability_recon import _definition_docs
+
+    sd = Path(state_dir) if state_dir is not None else capability_state_dir()
+    defs = _definition_docs(definitions_dirs)
+
+    out: Dict[str, Any] = {
+        "records": {},
+        "invalid": [],
+        "orphans": [],
+        "state_dir_missing": not sd.is_dir(),
+    }
+
+    states: Dict[str, Dict[str, Any]] = {}
+    if sd.is_dir():
+        orphan_pairs = orphaned_state_slugs(defs, state_dir=sd)
+        orphan_ids = {rid for (_p, rid) in orphan_pairs}
+        out["orphans"] = [
+            {"file": p.name, "id": rid} for (p, rid) in orphan_pairs
+        ]
+        for path in sorted(sd.glob("*.yaml")):
+            try:
+                rid, state = _read_state_file(path)
+            except _StateFileInvalid as exc:
+                out["invalid"].append({"file": path.name, "error": str(exc)})
+                continue
+            if rid in orphan_ids:
+                continue
+            states[rid] = state
+
+    for rid, base_doc in sorted(defs.items()):
+        try:
+            cap = Capability.from_dict(base_doc)
+        except Exception as exc:  # noqa: BLE001 — a bad definition is loud elsewhere
+            out["invalid"].append({"file": rid, "error": f"definition: {exc}"})
+            continue
+        state = states.get(rid)
+        base_intents = list(cap.trigger.intents)
+        base_tiers = list(cap.tier_rule.eligible)
+        base_pref = cap.tier_rule.preferred
+        effective = cap
+        if state is not None:
+            try:
+                effective = _compose_state(cap, state)
+            except _StateFileInvalid as exc:
+                # R-B1 parity with the load path: pure definition rules.
+                out["invalid"].append({"file": rid, "error": str(exc)})
+                state = None
+                effective = cap
+        prov = (state or {}).get("provenance") or None
+        overlay_src = (
+            f"overlay · approval {prov.get('approval_id')}"
+            if prov and prov.get("approval_id")
+            else "overlay · NO PROVENANCE (pre-canonical)"
+        )
+        fields = []
+        if state is not None and "intents" in state:
+            fields.append({
+                "field": "intents", "base": base_intents,
+                "effective": list(effective.trigger.intents),
+                "source": overlay_src,
+            })
+        else:
+            fields.append({
+                "field": "intents", "base": base_intents,
+                "effective": base_intents, "source": "definition",
+            })
+        if state is not None and "tiers" in state:
+            fields.append({
+                "field": "tiers", "base": base_tiers,
+                "effective": list(effective.tier_rule.eligible),
+                "source": overlay_src,
+            })
+            if base_pref is not None and base_pref not in list(state["tiers"]):
+                fields.append({
+                    "field": "preferred", "base": base_pref,
+                    "effective": effective.tier_rule.preferred,
+                    "source": "derived — re-anchored by merge",
+                })
+            elif base_pref is not None:
+                fields.append({
+                    "field": "preferred", "base": base_pref,
+                    "effective": base_pref, "source": "definition",
+                })
+        else:
+            fields.append({
+                "field": "tiers", "base": base_tiers,
+                "effective": base_tiers, "source": "definition",
+            })
+        out["records"][rid] = {
+            "zone": cap.zone.value,
+            "disclosure": cap.trigger.disclosure.value,
+            "kind": cap.kind.value,
+            "has_state": state is not None,
+            "fields": fields,
+            "provenance": dict(prov) if prov else None,
+            "legacy_added_intents": bool(state and "added_intents" in state),
+        }
+    return out
+
+
 # ── operator-mutable-admission-v1 P1 — additive admission overlay (per-turn) ──
 
 
