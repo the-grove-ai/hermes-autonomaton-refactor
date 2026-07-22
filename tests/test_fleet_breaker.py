@@ -184,3 +184,26 @@ def test_dispatch_loop_skips_a_paused_producer(monkeypatch):
     )
     manager_mod.FleetManager._maybe_dispatch(self, now=SimpleNamespace())
     assert dispatched == []  # paused producer never dispatched
+
+
+# ── flapping: re-pause after an operator unpause must NOT go silent ──────────
+
+
+def test_re_pause_after_unpause_raises_a_fresh_card():
+    """A producer paused, unpaused by the operator, then paused again must
+    raise a SECOND card — not dedupe against the disposed first one. append
+    dedups queue-only and cli_approve dequeues, so the re-pause re-queues; a
+    flapping producer stops loudly, which is the failure this phase closes."""
+    apply_failure_policy("forge", "r1", _fail("no_declared_sink"))
+    c1 = [p for p in read_all() if p.type == PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED]
+    assert len(c1) == 1
+
+    # Operator approves: unpause + dequeue + kaizen_disposition (all real).
+    flywheel_cli.cli_approve(c1[0].proposal_id)
+    assert "forge" not in read_producer_pauses()
+
+    # It flaps: the underlying fault recurs and pauses it again.
+    apply_failure_policy("forge", "r2", _fail("no_declared_sink"))
+    c2 = [p for p in read_all() if p.type == PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED]
+    assert len(c2) == 1  # re-queued despite the same pid + a prior disposition
+    assert read_producer_pauses() == frozenset({"forge"})
