@@ -597,6 +597,77 @@ def _line_has_slug_predicate(src: str, ln: int) -> bool:
         "TOOL_USE_ENFORCEMENT_MODELS" in text)
 
 
+# ── assertion 3 — binding capability fields are unreadable by composition ─
+# GATE-B F-2 (accepted): a declared binding field describes the model's physics
+# and is consumed by the adapter/runtime — NEVER by prompt composition. If a
+# field could only ever be spent on prompt text, it is psychology, not physics,
+# and does not belong on the binding at all. This makes that STRUCTURAL: the
+# guard fails if any composition module reads a binding capability field.
+BINDING_CAPABILITY_FIELDS = frozenset({
+    "context_window", "reasoning_support", "native_tool_schema", "api_mode",
+    "system_message_role", "prompt_cache_style",
+})
+
+
+def _binding_field_reads(source: str) -> List[Tuple[int, str]]:
+    """Reads of a binding capability field: X.get("field"), X["field"], .field."""
+    hits: List[Tuple[int, str]] = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return hits
+    for n in ast.walk(tree):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "get" and n.args):
+            k = _is_str_const(n.args[0])
+            if k in BINDING_CAPABILITY_FIELDS:
+                hits.append((n.lineno, k))
+        elif isinstance(n, ast.Subscript):
+            k = _is_str_const(n.slice)
+            if k in BINDING_CAPABILITY_FIELDS:
+                hits.append((n.lineno, k))
+        elif isinstance(n, ast.Attribute) and n.attr in BINDING_CAPABILITY_FIELDS:
+            hits.append((n.lineno, n.attr))
+    return hits
+
+
+@pytest.mark.guard
+def test_assertion3_positive_control_catches_composition_binding_read():
+    """A synthetic composition provider reading context_window MUST be caught,
+    or assertion 3 is broken (SPEC P4a deliverable 4)."""
+    snippet = (
+        "def _bad_provider(ctx):\n"
+        "    if ctx.get('context_window', 0) > 100000:\n"
+        "        return SectionResult(label='x', text='y')\n"
+        "    schema = ctx['native_tool_schema']\n"
+    )
+    hits = {f for _, f in _binding_field_reads(snippet)}
+    assert "context_window" in hits and "native_tool_schema" in hits, (
+        f"assertion 3 failed to catch synthetic binding-field reads; got {hits}"
+    )
+
+
+@pytest.mark.guard
+def test_composition_cannot_read_binding_capability_fields():
+    """ASSERTION 3. No composition module may read a binding capability field.
+    Green today (the fields do not exist yet); a canary that fails the instant
+    a physics fact is spent on prompt text."""
+    violations: List[str] = []
+    for p in _iter_py_files():
+        rel = str(p.relative_to(REPO_ROOT))
+        if not _is_composition(rel):
+            continue
+        try:
+            for ln, f in _binding_field_reads(p.read_text(encoding="utf-8")):
+                violations.append(f"{rel}:{ln} reads binding capability field {f!r}")
+        except (UnicodeDecodeError, OSError):
+            continue
+    assert not violations, (
+        "composition reads a binding capability field (physics belongs on the "
+        "binding, read by the adapter — never composition):\n  " + "\n  ".join(violations)
+    )
+
+
 @pytest.mark.guard
 def test_exemptions_are_reasoned_live_and_under_cap():
     """Every exemption carries a written reason, is still a real detection
