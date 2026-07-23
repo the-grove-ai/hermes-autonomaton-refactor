@@ -918,9 +918,72 @@ def _unit_from_meta(meta_path: Path, dirname: str) -> str:
     return dirname
 
 
+# fleet-receipt-custody-v1 P4c — the tracker's PUBLISHED states. A forge row the
+# operator has published reads ``Drafted`` (the /publish Status flip) or ``Applied``
+# (submitted); either — or a present ``Application Package`` — means the artifact is
+# delivered, so a lingering staged dir is NOT pending work.
+_PUBLISHED_TRACKER_STATES = frozenset({"Drafted", "Applied"})
+_TRACKER_QUERY_TIMEOUT_SECS = 10.0
+
+
+def _tracker_published_uids(worker, staged_uids) -> set:
+    """The staged units the TRACKER reports PUBLISHED (Status ∈ a published-state OR an
+    ``Application Package`` present), as a subset of ``staged_uids`` (P4c render rule).
+
+    ONE batched Notion query keyed on the row_ids — a forge staged uid IS its Notion
+    row_id (``_unit_from_meta``). The data_source is the worker's declared
+    ``input_state.data_source`` (``fleet_workers.yaml``), reached via the ``worker`` the
+    caller already resolved. GRACEFUL BY CONSTRUCTION: no worker, no units, no
+    data_source, a cold/failed Notion read, or any parse fault returns an EMPTY set —
+    the render degrades to its ledger/filesystem result and NEVER blocks or 500s. This
+    is the sole Notion dependency of an otherwise-local render path; it must not be
+    load-bearing for the view to succeed."""
+    if not (worker and staged_uids):
+        return set()
+    try:
+        from grove.fleet import resolvers
+        from grove.fleet.config import load_fleet_workers
+
+        cfg = load_fleet_workers().get(worker)
+        data_source = (getattr(cfg, "input_state", None) or {}).get("data_source") if cfg else None
+        if not data_source:
+            return set()
+        ids = sorted(staged_uids)
+        ds_url = resolvers._collection_url(data_source)
+        placeholders = ",".join(["?"] * len(ids))
+        query = f'SELECT * FROM "{ds_url}" WHERE "id" IN ({placeholders})'
+        result = resolvers._mcp_call(
+            "notion", "notion-query-data-sources",
+            {"data": {"mode": "sql", "data_source_urls": [ds_url],
+                      "query": query, "params": ids}},
+            _TRACKER_QUERY_TIMEOUT_SECS,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return set()  # cold/unreachable server — degrade, never block
+        # Match the returned row id (dashed, or the url tail) back to the passed uid,
+        # dash/case-insensitively (meta.json row_id vs Notion id formatting).
+        norm = {str(u).replace("-", "").lower(): u for u in staged_uids}
+        published: set = set()
+        for r in resolvers._extract_rows(result):
+            rid = r.get("id") or r.get("url")
+            if not rid:
+                continue
+            key = str(rid).rsplit("/", 1)[-1].replace("-", "").lower()
+            uid = norm.get(key)
+            if uid is None:
+                continue
+            status = r.get("Status")
+            pkg = r.get("Application Package")
+            if status in _PUBLISHED_TRACKER_STATES or (pkg and str(pkg).strip()):
+                published.add(uid)
+        return published
+    except Exception:  # noqa: BLE001 — the rule enriches; any fault degrades to today
+        return set()
+
+
 def _resolve_unit_state(uid, producer, staged, canon, feedback, open_props,
                         ledger, remote_sink, unattended_published,
-                        autoclose) -> Optional[dict]:
+                        autoclose, tracker_published=frozenset()) -> Optional[dict]:
     """Resolve ONE unit to its four-state governance_state + payload, applying
     topological supremacy (filesystem-first) and the sink-authority rule, and
     queuing any out-of-band proposal auto-close. Returns the artifact payload dict
@@ -1004,6 +1067,19 @@ def _resolve_unit_state(uid, producer, staged, canon, feedback, open_props,
                 {"unit_id": uid, "reconciled": "ledger_terminal"},
             ))
         return row("promoted" if disp == "applied" else "rejected", mt, filename=fn)
+
+    # (2.5) fleet-receipt-custody-v1 P4c — the TRACKER wins over a lingering dir when
+    #     the ledger cannot join. A /publish-tap-published unit left a folder_link-only
+    #     ledger entry (no unit_id → absent from ``ledger``) and a lingering staged dir;
+    #     without this, rule 3 would mislabel it needs_review/legacy. STRICT FALLBACK:
+    #     reached only when uid ∉ ledger (rule 2 returns first, so a real terminal always
+    #     outranks). The tracker signal — never the lingering dir (both cohorts carry
+    #     one) — is the discriminator. NO autoclose here: rendering trusts the tracker,
+    #     it never WRITES the ledger (a /publish gap is not ours to launder).
+    if remote_sink and uid in tracker_published:
+        mt = staged[uid][0] if uid in staged else (fb["mtime"] if fb else 0.0)
+        fn = staged[uid][1] if uid in staged else None
+        return row("promoted", mt, filename=fn)
 
     # (3) Staged draft present.
     if uid in staged:
@@ -1138,6 +1214,18 @@ def _list_fleet_units(cap: Any) -> list:
                        or slug_to_uid.get(_m_unit) or _m_unit)
             purged.add(_m_unit)
 
+    # fleet-receipt-custody-v1 P4c — the tracker-published set for the strict-fallback
+    # render rule. Remote sink only (file producers have no tracker); computed ONCE
+    # (one batched Notion read over the staged uids). The helper is graceful, and this
+    # wrapper is defense-in-depth: a fault can never break the render — the rule simply
+    # does not fire and the view degrades to its ledger/filesystem result.
+    tracker_published: set = set()
+    if remote_sink and staged:
+        try:
+            tracker_published = _tracker_published_uids(worker, set(staged))
+        except Exception:  # noqa: BLE001 — never let the enrichment break the view
+            tracker_published = set()
+
     autoclose: list = []
     uids = set(staged) | set(canon) | set(feedback) | set(open_props) | set(ledger)
     uids -= {u for u in purged if not (u in staged and u in open_props)}
@@ -1152,7 +1240,7 @@ def _list_fleet_units(cap: Any) -> list:
     for uid in uids:
         rec = _resolve_unit_state(uid, producer, staged, canon, feedback,
                                   open_props, ledger, remote_sink,
-                                  unattended_published, autoclose)
+                                  unattended_published, autoclose, tracker_published)
         if rec is not None:
             rows.append(rec)
 
