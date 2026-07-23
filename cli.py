@@ -4848,6 +4848,10 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                # binding-opacity-v1 P4b — router-resolved model physics ride in
+                # the runtime dict (None on the session-fallback runtime -> safe
+                # default facts at construction).
+                model_facts=runtime.get("model_facts"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
@@ -11602,7 +11606,14 @@ class HermesCLI:
             elif turn_route["model"] != self._active_agent_model:
                 # Same client, different model — swap the tier in place. No
                 # client rebuild, no system-prompt rebuild (D1/D4).
-                self.agent.apply_tier(turn_route["model"], turn_route["max_tokens"])
+                # binding-opacity-v1 P4b — the router-resolved physics ride
+                # along in the route's runtime dict; hand them to the agent so
+                # the swapped model's facts replace the prior model's.
+                self.agent.apply_tier(
+                    turn_route["model"],
+                    turn_route["max_tokens"],
+                    model_facts=turn_route["runtime"].get("model_facts"),
+                )
                 self._active_agent_model = turn_route["model"]
             # else: nothing changed — reuse the agent as-is.
 

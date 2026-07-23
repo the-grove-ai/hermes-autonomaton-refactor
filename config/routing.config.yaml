@@ -96,11 +96,29 @@ routing:
   #   native_tool_schema absent -> caller falls back to provider/base-url detect
   #   reasoning_support absent   -> false        system_message_role absent -> "system"
   #   prompt_cache_style absent  -> "none"
+  #   max_output_tokens absent   -> 0 = no model ceiling; the per-tier max_tokens
+  #                                 deployment budget stands unmodified
   #
-  # native_tool_schema derives from the tier's PROVIDER, not the model slug:
-  # provider: openrouter -> chat_completions; a tier bound provider: anthropic
-  # directly -> anthropic_messages. context_window / reasoning_support /
-  # prompt_cache_style are operator-declared (R-3: declared, never inferred from
+  # max_output_tokens is the MODEL's hard output ceiling (physics), distinct from
+  # the per-tier max_tokens deployment budget above — same split as context_window
+  # (model) vs max_tokens (tier).
+  #
+  # native_tool_schema names the model's tool-call message dialect:
+  #   chat_completions  — plain OpenAI-wire (default)
+  #   anthropic_messages — native Anthropic tool blocks
+  #   openai_responses   — model requires the OpenAI Responses API transport
+  #                        (GPT-5.x 400s on /v1/chat/completions). Absent ->
+  #                        provider/base-url auto-detect; an undeclared GPT-5
+  #                        binding gets a legible 400, never a silent misroute
+  #   deepseek / mimo    — thinking-mode dialects that REQUIRE reasoning_content
+  #                        echoed back on every assistant tool-call turn
+  # prompt_cache_style names the cache-control wire the model honours:
+  #   none       — no prompt caching (default)
+  #   anthropic  — honours Anthropic-style cache_control markers (Claude AND
+  #                Qwen families; the native-vs-envelope LAYOUT is decided by
+  #                api_mode/endpoint, not this field)
+  # context_window / reasoning_support / prompt_cache_style / native_tool_schema
+  # / max_output_tokens are operator-declared (R-3: declared, never inferred from
   # the name). The reference roster and its model_facts land together in P4c;
   # live values are the operator's sovereign write on the VM. One worked entry
   # below shows the shape only.
@@ -111,6 +129,7 @@ routing:
       native_tool_schema: chat_completions
       system_message_role: system
       prompt_cache_style: none
+      max_output_tokens: 32768
 
   # Price figures below are May 2026 list prices. The "per average
   # interaction" estimates are rough — real cost scales with how much

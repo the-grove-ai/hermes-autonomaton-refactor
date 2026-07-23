@@ -34,9 +34,15 @@ from types import SimpleNamespace
 import pytest
 
 from run_agent import AIAgent
+from grove.router import ModelFacts
 
 
-def _make_agent(provider: str = "", model: str = "", base_url: str = "") -> AIAgent:
+def _make_agent(
+    provider: str = "",
+    model: str = "",
+    base_url: str = "",
+    native_tool_schema: str | None = None,
+) -> AIAgent:
     agent = object.__new__(AIAgent)
     agent.provider = provider
     agent.model = model
@@ -45,6 +51,11 @@ def _make_agent(provider: str = "", model: str = "", base_url: str = "") -> AIAg
     agent.reasoning_callback = None
     agent.stream_delta_callback = None
     agent._stream_callback = None
+    # binding-opacity-v1 P4b — the object.__new__ seam bypasses __init__.
+    # The reasoning-echo tool dialect is a declared fact
+    # (native_tool_schema == "deepseek"/"mimo"); provider== and host matches
+    # remain the provenance-clean floor. Default None = undeclared.
+    agent._model_facts = ModelFacts(native_tool_schema=native_tool_schema)
     return agent
 
 
@@ -78,9 +89,13 @@ class TestNeedsDeepSeekToolReasoning:
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
         assert agent._needs_deepseek_tool_reasoning() is True
 
-    def test_model_substring(self) -> None:
-        # Custom provider pointing at DeepSeek with provider='custom'
-        agent = _make_agent(provider="custom", model="deepseek-v4-pro")
+    def test_declared_native_tool_schema(self) -> None:
+        # binding-opacity-v1 P4b — a custom provider pointing at DeepSeek
+        # declares the reasoning-echo dialect via native_tool_schema; the echo
+        # requirement rides the DECLARED fact, not the "deepseek" model name.
+        agent = _make_agent(
+            provider="custom", model="anything", native_tool_schema="deepseek"
+        )
         assert agent._needs_deepseek_tool_reasoning() is True
 
     def test_base_url_host(self) -> None:

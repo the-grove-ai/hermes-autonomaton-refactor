@@ -37,6 +37,9 @@ class _StubTierConfig:
     provider: str
     model: str
     max_tokens: int | None
+    # binding-opacity-v1 P4b — _bind_agent_to_tier threads the tier's declared
+    # model physics with the model. A sentinel proves it reaches the setter.
+    model_facts: object = None
 
 
 @dataclass
@@ -60,13 +63,17 @@ class TestBindAgentToTier:
             tier_config=_StubTierConfig(
                 tier="T2", provider="anthropic",
                 model="claude-sonnet-4-6", max_tokens=8192,
+                model_facts="FACTS-SENTINEL",
             ),
             reason="default",
             confidence=0.9,
             pattern_cache_hit=False,
         )
         Dispatcher._bind_agent_to_tier(agent, decision, lambda cfg: {})
-        agent.apply_tier.assert_called_once_with("claude-sonnet-4-6", 8192)
+        # facts travel with the model into apply_tier (binding-opacity-v1 P4b)
+        agent.apply_tier.assert_called_once_with(
+            "claude-sonnet-4-6", 8192, model_facts="FACTS-SENTINEL",
+        )
         agent.switch_model.assert_not_called()
 
     def test_cross_provider_uses_switch_model(self):
@@ -90,6 +97,9 @@ class TestBindAgentToTier:
                 "api_key": "sk-test",
                 "base_url": "https://api.openai.com/v1",
                 "api_mode": "chat_completions",
+                # binding-opacity-v1 P4b — the runtime dict carries the resolved
+                # physics; the cross-provider path threads it into switch_model.
+                "model_facts": "FACTS-SENTINEL",
             }
         Dispatcher._bind_agent_to_tier(agent, decision, fake_resolver)
         agent.switch_model.assert_called_once_with(
@@ -98,6 +108,7 @@ class TestBindAgentToTier:
             api_key="sk-test",
             base_url="https://api.openai.com/v1",
             api_mode="chat_completions",
+            model_facts="FACTS-SENTINEL",
         )
         assert agent.max_tokens == 16384
         agent.apply_tier.assert_not_called()
@@ -113,13 +124,16 @@ class TestBindAgentToTier:
             tier_config=_StubTierConfig(
                 tier="T2", provider="anthropic",
                 model="some-model", max_tokens=None,
+                model_facts="FACTS-SENTINEL",
             ),
             reason="default",
             confidence=0.9,
             pattern_cache_hit=False,
         )
         Dispatcher._bind_agent_to_tier(agent, decision, lambda cfg: {})
-        agent.apply_tier.assert_called_once_with("some-model", None)
+        agent.apply_tier.assert_called_once_with(
+            "some-model", None, model_facts="FACTS-SENTINEL",
+        )
         agent.switch_model.assert_not_called()
 
 

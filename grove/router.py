@@ -107,7 +107,14 @@ class ModelFacts:
       * ``reasoning_support`` False -> no reasoning params sent
       * ``system_message_role``     -> ``"system"`` (universal default)
       * ``prompt_cache_style``      -> ``"none"``
+      * ``max_output_tokens`` absent (0) -> no model ceiling; the per-tier
+        ``max_tokens`` deployment budget stands unmodified
     ``declared`` is False when no ``model_facts`` entry named the slug.
+
+    ``max_output_tokens`` is the MODEL's hard output ceiling — a physics fact,
+    distinct from the per-tier ``max_tokens`` deployment budget. Same split as
+    ``context_window`` (model) vs ``max_tokens`` (tier). Sentinel 0 = undeclared
+    = no override.
     """
 
     context_window: int = _CONTEXT_WINDOW_FLOOR
@@ -115,6 +122,7 @@ class ModelFacts:
     native_tool_schema: Optional[str] = None
     system_message_role: str = "system"
     prompt_cache_style: str = "none"
+    max_output_tokens: int = 0
     declared: bool = False
 
 
@@ -141,6 +149,7 @@ def _resolve_facts(facts_map: dict, slug: Optional[str]) -> "tuple[ModelFacts, O
             native_tool_schema=entry.get("native_tool_schema"),
             system_message_role=str(entry.get("system_message_role") or "system"),
             prompt_cache_style=str(entry.get("prompt_cache_style") or "none"),
+            max_output_tokens=int(entry.get("max_output_tokens") or 0),
             declared=True,
         ),
         missing,

@@ -1187,6 +1187,8 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                # binding-opacity-v1 P4b — router-resolved model physics.
+                model_facts=runtime.get("model_facts"),
                 max_iterations=WORKER_MAX_ITERATIONS,
                 quiet_mode=True,
                 verbose_logging=False,
