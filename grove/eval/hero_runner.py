@@ -280,7 +280,6 @@ def _compose_preamble_slot(
         pass_session_id=False,
         system_message=None,
         session_register=None,
-        tool_use_enforcement=None,
         memory_store=None,
         memory_manager=None,
         terminal_cwd=None,

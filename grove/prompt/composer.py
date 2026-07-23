@@ -712,85 +712,6 @@ def _nous_subscription_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     return SectionResult(label="nous_subscription", text=text)
 
 
-def _tool_use_enforcement_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
-    from agent.prompt_builder import (
-        TOOL_USE_ENFORCEMENT_GUIDANCE,
-        TOOL_USE_ENFORCEMENT_MODELS,
-    )
-    valid = ctx.get("valid_tool_names") or set()
-    if not valid:
-        return None
-    enforce = ctx.get("tool_use_enforcement")
-    model_lower = (ctx.get("model") or "").lower()
-    inject = False
-    if enforce is True or (
-        isinstance(enforce, str) and enforce.lower() in {"true", "always", "yes", "on"}
-    ):
-        inject = True
-    elif enforce is False or (
-        isinstance(enforce, str) and enforce.lower() in {"false", "never", "no", "off"}
-    ):
-        inject = False
-    elif isinstance(enforce, list):
-        inject = any(
-            p.lower() in model_lower for p in enforce if isinstance(p, str)
-        )
-    else:
-        inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
-    if not inject:
-        return None
-    return SectionResult(
-        label="tool_use_enforcement", text=TOOL_USE_ENFORCEMENT_GUIDANCE,
-    )
-
-
-def _model_operational_guidance_provider(
-    ctx: Dict[str, Any],
-) -> Optional[SectionResult]:
-    """Google or OpenAI model-family operational guidance, gated on
-    model-name substring AND tool_use_enforcement having injected.
-    Mirrors the pre-Sprint-36 nested gate.
-    """
-    from agent.prompt_builder import (
-        TOOL_USE_ENFORCEMENT_MODELS,
-        GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-        OPENAI_MODEL_EXECUTION_GUIDANCE,
-    )
-    valid = ctx.get("valid_tool_names") or set()
-    if not valid:
-        return None
-    enforce = ctx.get("tool_use_enforcement")
-    model_lower = (ctx.get("model") or "").lower()
-    inject = False
-    if enforce is True or (
-        isinstance(enforce, str) and enforce.lower() in {"true", "always", "yes", "on"}
-    ):
-        inject = True
-    elif enforce is False or (
-        isinstance(enforce, str) and enforce.lower() in {"false", "never", "no", "off"}
-    ):
-        inject = False
-    elif isinstance(enforce, list):
-        inject = any(
-            p.lower() in model_lower for p in enforce if isinstance(p, str)
-        )
-    else:
-        inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
-    if not inject:
-        return None
-    if "gemini" in model_lower or "gemma" in model_lower:
-        return SectionResult(
-            label="model_operational_guidance",
-            text=GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-        )
-    if "gpt" in model_lower or "codex" in model_lower:
-        return SectionResult(
-            label="model_operational_guidance",
-            text=OPENAI_MODEL_EXECUTION_GUIDANCE,
-        )
-    return None
-
-
 def _skills_index_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     valid = ctx.get("valid_tool_names") or set()
     has_skills_tools = any(
@@ -947,20 +868,6 @@ def _skill_payload_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     )
 
 
-def _alibaba_model_override_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
-    if ctx.get("provider") != "alibaba":
-        return None
-    model = ctx.get("model") or ""
-    model_short = model.split("/")[-1] if "/" in model else model
-    text = (
-        f"You are powered by the model named {model_short}. "
-        f"The exact model ID is {model}. "
-        f"When asked what model you are, always answer based on this information, "
-        f"not on any model name returned by the API."
-    )
-    return SectionResult(label="alibaba_model_override", text=text)
-
-
 def _environment_hints_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     from agent.prompt_builder import build_environment_hints
     text = build_environment_hints()
@@ -1067,10 +974,7 @@ _DEFAULT_SECTIONS: Tuple[Tuple[str, SectionProvider, int, str], ...] = (
     ("tool_guidance",                  _tool_guidance_provider,                  30, "stable"),
     ("computer_use_guidance",          _computer_use_guidance_provider,          31, "stable"),
     ("nous_subscription",              _nous_subscription_provider,              35, "stable"),
-    ("tool_use_enforcement",           _tool_use_enforcement_provider,           40, "stable"),
-    ("model_operational_guidance",     _model_operational_guidance_provider,     41, "stable"),
     ("skills_index",                   _skills_index_provider,                   50, "stable"),
-    ("alibaba_model_override",         _alibaba_model_override_provider,         55, "stable"),
     ("environment_hints",              _environment_hints_provider,              60, "stable"),
     ("platform_hint",                  _platform_hint_provider,                  70, "stable"),
     # context

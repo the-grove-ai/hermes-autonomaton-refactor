@@ -153,7 +153,6 @@ def _config_overrides(config: dict) -> dict[str, str]:
     interesting_paths = [
         ("agent", "max_turns"),
         ("agent", "gateway_timeout"),
-        ("agent", "tool_use_enforcement"),
         ("terminal", "backend"),
         ("terminal", "docker_image"),
         ("terminal", "persistent_shell"),

@@ -4394,7 +4394,6 @@ class Dispatcher:
             pass_session_id=bool(getattr(agent, "pass_session_id", False)),
             system_message=system_message,
             session_register=getattr(agent, "session_register", None),
-            tool_use_enforcement=getattr(agent, "_tool_use_enforcement", None),
             memory_store=memory_store,
             memory_manager=memory_manager,
             terminal_cwd=terminal_cwd,
