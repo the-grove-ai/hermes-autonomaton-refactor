@@ -69,6 +69,24 @@ PROPOSED_ALLOWLIST: Tuple[str, ...] = (
     # credential-pool selection by provider. R-H internal-vs-vendor rule: a
     # pool-prefix (CUSTOM_POOL_PREFIX) is our own namespace marker.
     "agent/credential_pool.py",
+    # P4b Step 1b additions:
+    # name-inference + retrieval + out-of-band capability probe + token counting;
+    # dispatch reads model_facts; the symbol pin (not a module ban) enforces it
+    # because token-counting and the probe legitimately import from here; THE PIN
+    # ENUMERATES AND MUST BE EXTENDED WHEN AN INFERENCE FUNCTION IS ADDED —
+    # binding-capability-sync-v1 untangles the resolver and takes the clean split.
+    # RESIDUAL, explicit (P4b Step 1b ASK-1): the Step-1c symbol pin covers
+    # grok_supports_reasoning_effort ONLY. get_model_context_length is UNPINNED
+    # this arc — it is a pure utility (config_context_length is a parameter, no
+    # route to the facts map), read by five scattered dispatch sites; threading
+    # facts through them to green a pin is out of scope. Its real inference is
+    # the DEFAULT_CONTEXT_LENGTHS name-fallback (layer 4). binding-capability-
+    # sync-v1 owns it: it deletes layer 4 and makes model_facts.context_window
+    # layer 0, at which point get_model_context_length joins the pin.
+    "agent/model_metadata.py",
+    # openrouter provider plugin — the x-grok-conv-id wire header is genuine
+    # adapter work (same class as agent/transports). S-2.
+    "plugins/model-providers/openrouter/__init__.py",
 )
 
 # ── scoped OUT of this sprint (P2 R-C) — a DIFFERENT provider namespace ───
@@ -80,6 +98,9 @@ SCOPED_OUT: Tuple[str, ...] = (
     "tools/tts_tool.py",        # capability-binding-opacity-v1
     "tools/vision_tools.py",    # capability-binding-opacity-v1
     "tools/transcription_tools.py",  # capability-binding-opacity-v1
+    # P4b S-3 — MoA's own internal reference-model ensemble, a different model
+    # namespace than the tier binding. Same shape as the TTS/vision scope-out.
+    "tools/mixture_of_agents_tool.py",  # capability-binding-opacity-v1
 )
 
 # ── what makes a value slug-tainted — PROVENANCE, never name (P4b HALT-B) ──
@@ -500,6 +521,12 @@ EXEMPTIONS: dict = {
         "derives no fact and branches on no vendor (P4b S-4). Banked to "
         "default-experience-openrouter-v1: an opaque token has no format to "
         "validate; a direct-provider slug without a slash is a false reject.",
+    ("run_agent.py", 5140):
+        "Compensates for a local-server protocol conformance defect (Ollama "
+        "misreporting finish_reason on GLM). Keyed on the model slug as a proxy "
+        "for the backend; the correct key is the endpoint, not the model. Not a "
+        "model fact — declaring it would be psychology-as-config. Re-key to the "
+        "endpoint when local-substrate work lands.",
 }
 # (scripts/sample_and_compress.py:30 exemption retired at P4b HALT-B — a bare
 #  dataset-name list is no longer a finding under the provenance rule.)
@@ -629,7 +656,7 @@ def _line_has_slug_predicate(src: str, ln: int) -> bool:
 # guard fails if any composition module reads a binding capability field.
 BINDING_CAPABILITY_FIELDS = frozenset({
     "context_window", "reasoning_support", "native_tool_schema", "api_mode",
-    "system_message_role", "prompt_cache_style",
+    "system_message_role", "prompt_cache_style", "max_output_tokens",
 })
 
 

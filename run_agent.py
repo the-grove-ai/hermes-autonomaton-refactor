@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     # TYPE_CHECKING guard avoids module-load-time circulars; the runtime
     # access pattern is duck-typed through _env_or / _config_load_or.
     from grove.dispatcher import RuntimeContext
+    from grove.router import ModelFacts
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -1369,6 +1370,12 @@ class AIAgent:
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        # binding-opacity-v1 P4b — operator-declared model physics resolved by
+        # the router onto the tier binding and threaded here. Consumers read
+        # these declared facts (prompt_cache_style, reasoning_support,
+        # native_tool_schema, max_output_tokens) instead of parsing the slug.
+        # None -> safe-default ModelFacts() (absence is safe and loud).
+        model_facts: "ModelFacts" = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,
@@ -1505,6 +1512,12 @@ class AIAgent:
         self._tool_resolution: Optional[Any] = None
 
         self.model = model
+        # binding-opacity-v1 P4b — declared physics for the bound slug. None
+        # coalesces to a safe-default ModelFacts (undeclared: caching off,
+        # reasoning off, native schema falls back to provider detect, no model
+        # output ceiling). Consumers read self._model_facts, never parse self.model.
+        from grove.router import ModelFacts as _ModelFacts
+        self._model_facts = model_facts if model_facts is not None else _ModelFacts()
         self.max_iterations = max_iterations
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
@@ -2097,7 +2110,11 @@ class AIAgent:
             # stream tool call arguments token-by-token, keeping the
             # connection alive.
             _effective_base = str(client_kwargs.get("base_url", "")).lower()
-            if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (self.model or "").lower():
+            # binding-opacity-v1 P4b — the fine-grained-tool-streaming beta is an
+            # Anthropic-wire feature; the model advertises it via its declared
+            # cache-protocol family, not its name. Undeclared -> header omitted
+            # (safe: OpenRouter Claude falls back to whole-argument streaming).
+            if base_url_host_matches(_effective_base, "openrouter.ai") and self._model_facts.prompt_cache_style == "anthropic":
                 headers = client_kwargs.get("default_headers") or {}
                 existing_beta = headers.get("x-anthropic-beta", "")
                 _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
@@ -3856,7 +3873,7 @@ class AIAgent:
             json.dumps(outcome, sort_keys=True, default=str),
         )
 
-    def apply_tier(self, model, max_tokens):
+    def apply_tier(self, model, max_tokens, model_facts=None):
         """Swap the active cognitive tier in place — model and token budget only.
 
         The lightweight counterpart to ``switch_model``: it assigns
@@ -3869,12 +3886,21 @@ class AIAgent:
         provider / base_url / api_mode change is a client change and must
         go through ``switch_model``. ``max_tokens=None`` keeps the current
         budget rather than clearing it.
+
+        binding-opacity-v1 P4b — ``model_facts`` travels WITH the model, since
+        facts describe the slug being bound. The dispatch binding
+        (``_bind_agent_to_tier``) supplies the router-resolved facts. A caller
+        that supplies none (e.g. a manual ``/model`` switch) resets to
+        safe-default facts for the NEW model — never carry the old model's
+        facts forward (absence is safe and loud, stale facts are silent-wrong).
         """
         self.model = model
+        from grove.router import ModelFacts as _ModelFacts
+        self._model_facts = model_facts if model_facts is not None else _ModelFacts()
         if max_tokens is not None:
             self.max_tokens = max_tokens
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', model_facts=None):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -3918,6 +3944,11 @@ class AIAgent:
 
         # ── Swap core runtime fields ──
         self.model = new_model
+        # binding-opacity-v1 P4b — facts travel with the model. A caller that
+        # supplies none (manual /model switch) resets to safe-default facts for
+        # the NEW model; never carry the old model's facts (stale = silent-wrong).
+        from grove.router import ModelFacts as _ModelFacts
+        self._model_facts = model_facts if model_facts is not None else _ModelFacts()
         self.provider = new_provider
         # Use new base_url when provided; only fall back to current when the
         # new provider genuinely has no endpoint (e.g. native SDK providers).
@@ -4854,11 +4885,14 @@ class AIAgent:
         eff_provider = (provider if provider is not None else self.provider) or ""
         eff_base_url = base_url if base_url is not None else (self.base_url or "")
         eff_api_mode = api_mode if api_mode is not None else (self.api_mode or "")
-        eff_model = (model if model is not None else self.model) or ""
-
-        model_lower = eff_model.lower()
         provider_lower = eff_provider.lower()
-        is_claude = "claude" in model_lower
+        # binding-opacity-v1 P4b — whether the model honours Anthropic-style
+        # cache_control markers is a declared wire fact, not a name. Both Claude
+        # and Qwen families honour them (see branches below); each declares
+        # prompt_cache_style: anthropic. Undeclared -> no caching (safe/loud).
+        # The LAYOUT (native vs envelope) still derives from api_mode/endpoint —
+        # provenance-clean provider signals, never the slug.
+        honors_anthropic_cache = self._model_facts.prompt_cache_style == "anthropic"
         is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
         # Nous Portal proxies to OpenRouter behind the scenes — identical
         # OpenAI-wire envelope cache_control semantics. Treat it as an
@@ -4872,27 +4906,22 @@ class AIAgent:
 
         if is_native_anthropic:
             return True, True
-        if (is_openrouter or is_nous_portal) and is_claude:
+        # OpenRouter / Nous Portal on an Anthropic-cache model (Claude OR Qwen —
+        # both proxy to OpenRouter and accept cache_control markers on the
+        # envelope layout). The pre-opacity code carried two separate branches
+        # keyed on "claude" and "qwen" name-substrings; they returned the same
+        # (True, False), so the declared cache fact collapses them into one.
+        if (is_openrouter or is_nous_portal) and honors_anthropic_cache:
             return True, False
-        # OpenRouter / Nous Portal Qwen (e.g. qwen3.7-max, qwen3.6-plus) takes
-        # the same envelope-layout cache_control path as Portal/OpenRouter Claude
-        # — both proxy to OpenRouter and the upstream Qwen route accepts
-        # cache_control markers. Qwen does NOT auto-cache, so without this branch
-        # the alibaba-family check below only matches provider=opencode/alibaba,
-        # and a qwen/* binding via provider=openrouter (or Portal) falls through
-        # to (False, False), serving 0% cache hits and re-billing the full prompt
-        # every turn.
-        if (is_openrouter or is_nous_portal) and "qwen" in model_lower:
-            return True, False
-        if is_anthropic_wire and is_claude:
-            # Third-party Anthropic-compatible gateway.
+        if is_anthropic_wire and honors_anthropic_cache:
+            # Third-party Anthropic-compatible gateway (native layout).
             return True, True
 
         # MiniMax on its Anthropic-compatible endpoint serves its own
         # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
         # cache_control support (0.1× read pricing, 5-minute TTL).  The
-        # blanket is_claude gate above excludes these — opt them in
-        # explicitly via provider id or host match so users on
+        # honors_anthropic_cache gate above excludes these unless declared — opt
+        # them in explicitly via provider id or host match so users on
         # provider=minimax / minimax-cn (or custom endpoints pointing at
         # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
         # same cost reduction as Claude traffic.
@@ -4910,12 +4939,13 @@ class AIAgent:
         # transport that accepts Anthropic-style cache_control markers and
         # rewards them with real cache hits.  Without this branch
         # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
-        # through the subscription on every turn.
-        model_is_qwen = "qwen" in model_lower
+        # through the subscription on every turn. The affected model declares
+        # prompt_cache_style: anthropic (honors_anthropic_cache); the provider
+        # set stays a provenance-clean allow-list, never a slug parse.
         provider_is_alibaba_family = provider_lower in {
             "opencode", "opencode-zen", "opencode-go", "alibaba",
         }
-        if provider_is_alibaba_family and model_is_qwen:
+        if provider_is_alibaba_family and honors_anthropic_cache:
             # Envelope layout (native_anthropic=False): markers on inner
             # content parts, not top-level tool messages.  Matches
             # pi-mono's "alibaba" cacheControlFormat.
@@ -4923,23 +4953,24 @@ class AIAgent:
 
         return False, False
 
-    @staticmethod
-    def _model_requires_responses_api(model: str) -> bool:
+    def _model_requires_responses_api(self) -> bool:
         """Return True for models that require the Responses API path.
 
-        GPT-5.x models are rejected on /v1/chat/completions by both
-        OpenAI and OpenRouter (error: ``unsupported_api_for_model``).
-        Detect these so the correct api_mode is set regardless of
-        which provider is serving the model.
+        binding-opacity-v1 P4b — GPT-5.x models are rejected on
+        /v1/chat/completions (``unsupported_api_for_model``); requiring the
+        Responses API transport is a WIRE PROTOCOL fact, declared via
+        ``native_tool_schema == "openai_responses"`` rather than inferred from
+        a "gpt-5" name substring. Absence (undeclared -> None) returns False:
+        the api_mode then falls to the provider/base-url auto-detect
+        (``runtime_provider._detect_api_mode_for_url``), and an adopter who
+        binds a GPT-5 model without declaring it gets a legible 400 naming the
+        Responses API rather than a silent-wrong route. No tier binds gpt-5
+        today, so nothing declares it yet — correct and expected.
         """
-        m = model.lower()
-        # Strip vendor prefix (e.g. "openai/gpt-5.4" → "gpt-5.4")
-        if "/" in m:
-            m = m.rsplit("/", 1)[-1]
-        return m.startswith("gpt-5")
+        return self._model_facts.native_tool_schema == "openai_responses"
 
-    @staticmethod
     def _provider_model_requires_responses_api(
+        self,
         model: str,
         *,
         provider: Optional[str] = None,
@@ -4955,10 +4986,10 @@ class AIAgent:
                 from hermes_cli.models import _should_use_copilot_responses_api
                 return _should_use_copilot_responses_api(model)
             except Exception:
-                # Fall back to the generic GPT-5 rule if Copilot-specific
-                # logic is unavailable for any reason.
+                # Fall back to the generic declared-fact rule if Copilot-
+                # specific logic is unavailable for any reason.
                 pass
-        return AIAgent._model_requires_responses_api(model)
+        return self._model_requires_responses_api()
 
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
@@ -11929,14 +11960,15 @@ class AIAgent:
             if _global_or:
                 _prefs = {**_global_or, **_prefs}
 
-        # Claude max-output override on aggregators
+        # Max-output override on aggregators. binding-opacity-v1 P4b — the
+        # model's hard output ceiling is a declared physics fact
+        # (max_output_tokens), no longer inferred from a "claude" substring nor
+        # re-derived by parsing the slug in the adapter. Undeclared (0) -> no
+        # override, the aggregator's own default stands (existing behavior).
         _ant_max = None
-        if (_is_or or _is_nous) and "claude" in (self.model or "").lower():
-            try:
-                from agent.anthropic_adapter import _get_anthropic_max_output
-                _ant_max = _get_anthropic_max_output(self.model)
-            except Exception:
-                pass
+        _declared_max_output = self._model_facts.max_output_tokens
+        if (_is_or or _is_nous) and _declared_max_output > 0:
+            _ant_max = _declared_max_output
 
         # Qwen session metadata
         _qwen_meta = None
@@ -12059,18 +12091,13 @@ class AIAgent:
         if "api.mistral.ai" in self._base_url_lower:
             return False
 
-        model = (self.model or "").lower()
-        reasoning_model_prefixes = (
-            "deepseek/",
-            "anthropic/",
-            "openai/",
-            "x-ai/",
-            "google/gemini-2",
-            "qwen/qwen3",
-            "tencent/hy3-preview",
-            "xiaomi/",
-        )
-        return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+        # binding-opacity-v1 P4b — reasoning capability is a declared physics
+        # fact, no longer inferred from a vendor-prefix roster on the slug. The
+        # provider/endpoint gates above (lmstudio, non-OpenRouter, mistral) are
+        # provenance-clean and stand; for OpenRouter-routed models the declared
+        # reasoning_support answers directly. Undeclared -> False (no reasoning
+        # params sent; safe and loud until the operator declares the model).
+        return self._model_facts.reasoning_support
 
     def _lmstudio_reasoning_options_cached(self) -> list[str]:
         """Probe LM Studio's published reasoning ``allowed_options`` once per
@@ -12379,10 +12406,15 @@ class AIAgent:
         message is replayed in a subsequent API request (#15250).
         """
         provider = (self.provider or "").lower()
-        model = (self.model or "").lower()
+        # binding-opacity-v1 P4b — the reasoning-echo tool-call dialect is a
+        # declared physics fact (native_tool_schema == "deepseek"), replacing the
+        # "deepseek" slug substring. The provider/host disjuncts are
+        # provenance-clean and remain (native DeepSeek endpoint floor);
+        # aggregator-routed DeepSeek (provider=openrouter) now depends on the
+        # declaration. Undeclared -> only the provider/host floor fires.
         return (
             provider == "deepseek"
-            or "deepseek" in model
+            or self._model_facts.native_tool_schema == "deepseek"
             or base_url_host_matches(self.base_url, "api.deepseek.com")
         )
 
@@ -12394,10 +12426,13 @@ class AIAgent:
         Refs: https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/passing-back-reasoning_content
         """
         provider = (self.provider or "").lower()
-        model = (self.model or "").lower()
+        # binding-opacity-v1 P4b — declared reasoning-echo dialect
+        # (native_tool_schema == "mimo") replaces the "mimo" slug substring; the
+        # provider/host disjuncts are provenance-clean and remain as the native
+        # MiMo-endpoint floor. Undeclared -> only the provider/host floor fires.
         return (
             provider == "xiaomi"
-            or "mimo" in model
+            or self._model_facts.native_tool_schema == "mimo"
             or base_url_host_matches(self.base_url, "api.xiaomimimo.com")
             or base_url_host_matches(self.base_url, "xiaomimimo.com")
         )

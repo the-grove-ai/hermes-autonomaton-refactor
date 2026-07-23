@@ -38,13 +38,17 @@ class MockAgent:
         self.provider = ""
         self.model = None
         self.max_tokens = None
+        self.model_facts = None
 
-    def apply_tier(self, model, max_tokens):
+    def apply_tier(self, model, max_tokens, model_facts=None):
+        # binding-opacity-v1 P4b — facts travel with the model.
         self.model = model
         self.max_tokens = max_tokens
+        self.model_facts = model_facts
 
     def switch_model(self, **kw):
         self.model = kw.get("new_model")
+        self.model_facts = kw.get("model_facts")
 
 
 def _dispatcher(turn_tier="T1"):

@@ -20,6 +20,7 @@ from agent.codex_responses_adapter import _chat_messages_to_responses_input, _no
 
 import run_agent
 from run_agent import AIAgent, _should_parallelize_intents
+from grove.router import ModelFacts
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from grove.sovereign_prompt_handlers import silent_allow_handler
@@ -720,18 +721,21 @@ class TestInit:
             assert agent.api_mode == "anthropic_messages"
             mock_anthropic.Anthropic.assert_called_once()
 
-    def test_prompt_caching_claude_openrouter(self):
-        """Claude model via OpenRouter should enable prompt caching."""
+    def test_prompt_caching_declared_model_openrouter(self):
+        """A model DECLARED to honour anthropic cache_control, via OpenRouter,
+        enables prompt caching. binding-opacity-v1 P4b — the caching decision
+        reads the declared prompt_cache_style, not the model name."""
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
         ):
-            a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+            a = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
                 api_mode="chat_completions",
                 api_key="test-k...7890",
                 model="anthropic/claude-sonnet-4-20250514",
                 base_url="https://openrouter.ai/api/v1",
+                model_facts=ModelFacts(prompt_cache_style="anthropic"),
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True, get_available_tools=MOCK_CAPABILITY_PROVIDER
@@ -1276,6 +1280,9 @@ class TestBuildApiKwargs:
         agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "anthropic/claude-sonnet-4-20250514"
+        # binding-opacity-v1 P4b — reasoning is injected for a model DECLARED
+        # to support it, not inferred from an openrouter name prefix.
+        agent._model_facts = ModelFacts(reasoning_support=True)
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         reasoning = kwargs["extra_body"]["reasoning"]
@@ -1286,6 +1293,7 @@ class TestBuildApiKwargs:
         agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "anthropic/claude-sonnet-4-20250514"
+        agent._model_facts = ModelFacts(reasoning_support=True)
         agent.reasoning_config = {"enabled": False}
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
@@ -1302,6 +1310,7 @@ class TestBuildApiKwargs:
         agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "qwen/qwen3.5-plus-02-15"
+        agent._model_facts = ModelFacts(reasoning_support=True)
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
@@ -3842,10 +3851,14 @@ class TestGpt5ApiModeRouting:
         assert agent.api_mode == "chat_completions"
 
     def test_non_azure_gpt5_upgrades_to_codex_responses(self, agent):
-        """On api.openai.com, gpt-5.x must still upgrade to codex_responses."""
+        """A model DECLARED to require the Responses API must upgrade to
+        codex_responses on api.openai.com. binding-opacity-v1 P4b — the
+        Responses-API requirement is native_tool_schema == "openai_responses",
+        not a "gpt-5" name substring."""
         agent.base_url = "https://api.openai.com/v1"
         agent.api_mode = "chat_completions"
         agent.model = "gpt-5.4-mini"
+        agent._model_facts = ModelFacts(native_tool_schema="openai_responses")
         if (
             agent.api_mode == "chat_completions"
             and not agent._is_azure_openai_url()
@@ -5000,25 +5013,28 @@ class TestDeadRetryCode:
 
 
 class TestSupportsReasoningExtraBody:
-    def _make_agent(self):
+    # binding-opacity-v1 P4b — excised test_xiaomi_models_are_treated_as_
+    # reasoning_capable: it iterated a "xiaomi/mimo-*" NAME roster to prove the
+    # reasoning-prefix list included Xiaomi. That roster was the inference the
+    # migration deleted. Reasoning capability is now the declared fact, tested
+    # directly below.
+    def _make_agent(self, *, reasoning_support: bool):
         agent = object.__new__(AIAgent)
         agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent._base_url_lower = agent.base_url.lower()
-        agent.model = ""
+        agent.model = "some/model"
+        agent._model_facts = ModelFacts(reasoning_support=reasoning_support)
         return agent
 
-    def test_xiaomi_models_are_treated_as_reasoning_capable(self):
-        agent = self._make_agent()
-        for model in (
-            "xiaomi/mimo-v2.5-pro",
-            "xiaomi/mimo-v2.5",
-            "xiaomi/mimo-v2-omni",
-            "xiaomi/mimo-v2-pro",
-            "xiaomi/mimo-v2-flash",
-        ):
-            agent.model = model
-            assert agent._supports_reasoning_extra_body() is True, model
+    def test_declared_reasoning_support_is_capable(self):
+        agent = self._make_agent(reasoning_support=True)
+        assert agent._supports_reasoning_extra_body() is True
+
+    def test_undeclared_reasoning_support_is_not_capable(self):
+        # The VM-on-deploy path: undeclared -> no reasoning params (safe/loud).
+        agent = self._make_agent(reasoning_support=False)
+        assert agent._supports_reasoning_extra_body() is False
 
 
 class TestMemoryContextSanitization:

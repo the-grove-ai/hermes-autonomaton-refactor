@@ -3778,10 +3778,15 @@ class Dispatcher:
         cur_provider = (getattr(agent, "provider", None) or "").strip().lower()
         dec_provider = (decision.tier_config.provider or "").strip().lower()
         same_provider = (not cur_provider) or (cur_provider == dec_provider)
+        # binding-opacity-v1 P4b — the router-resolved physics for this tier's
+        # bound slug travel with the model into the agent. Read off the tier
+        # binding (resolved at load), NOT the catalog — G-1b holds.
+        tier_facts = decision.tier_config.model_facts
         if same_provider:
             agent.apply_tier(
                 decision.tier_config.model,
                 decision.tier_config.max_tokens,
+                model_facts=tier_facts,
             )
             return
         runtime = resolve_tier_to_runtime(decision.tier_config)
@@ -3791,6 +3796,7 @@ class Dispatcher:
             api_key=runtime.get("api_key") or "",
             base_url=runtime.get("base_url") or "",
             api_mode=runtime.get("api_mode") or "",
+            model_facts=runtime.get("model_facts"),
         )
         if decision.tier_config.max_tokens is not None:
             agent.max_tokens = decision.tier_config.max_tokens

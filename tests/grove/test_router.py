@@ -771,3 +771,59 @@ def test_malformed_rule_reload_keeps_prior_config(tmp_path, caplog):
         router.reload()
     after = router.route(complexity_signal="complex", intent="planning", confidence=0.9)
     assert after.reason == "upward"  # prior config survived the rejected reload
+
+
+# ── model_facts absence path (binding-opacity-v1 P4b) ─────────────────────────
+#
+# THE load-bearing path this phase introduces: a config with NO model_facts
+# section (every VALID_CONFIG tier, and the VM on deploy before the operator's
+# sovereign write) must resolve to SAFE DEFAULTS with a one-shot loud warning —
+# never a KeyError, never silent-wrong. Consumers migrated in Step 1b read these
+# defaults (caching off, reasoning off, native-schema None, no output ceiling),
+# which is exactly why absence has to be legible rather than a crash.
+
+
+class TestModelFactsAbsence:
+    def test_undeclared_slug_returns_safe_defaults(self, tmp_path):
+        router = CognitiveRouter(_write(tmp_path))  # VALID_CONFIG: no model_facts
+        facts = router.model_facts_for("anthropic/claude-sonnet-4-6")
+        assert facts.declared is False
+        assert facts.context_window == 8192  # _CONTEXT_WINDOW_FLOOR
+        assert facts.reasoning_support is False
+        assert facts.native_tool_schema is None
+        assert facts.prompt_cache_style == "none"
+        assert facts.max_output_tokens == 0
+
+    def test_undeclared_slug_warns_once(self, tmp_path, caplog):
+        router = CognitiveRouter(_write(tmp_path))
+        # Any load-time warnings for the bound tiers are already latched; clear
+        # so we observe only this slug's first-touch warning.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="grove.router"):
+            router.model_facts_for("some/never-declared-model")
+            first = [r for r in caplog.records if "model_facts" in r.getMessage()]
+            router.model_facts_for("some/never-declared-model")  # second touch
+            total = [r for r in caplog.records if "model_facts" in r.getMessage()]
+        assert len(first) == 1, "undeclared slug must warn on first resolution"
+        assert len(total) == 1, "warning is one-shot per slug — no repeat spam"
+
+    def test_declared_slug_resolves_declared_physics(self, tmp_path):
+        declared = VALID_CONFIG.replace(
+            "  tier_preferences:",
+            "  model_facts:\n"
+            "    claude-sonnet-4-6:\n"
+            "      context_window: 200000\n"
+            "      reasoning_support: true\n"
+            "      native_tool_schema: anthropic_messages\n"
+            "      prompt_cache_style: anthropic\n"
+            "      max_output_tokens: 64000\n"
+            "  tier_preferences:",
+        )
+        router = CognitiveRouter(_write(tmp_path, declared))
+        facts = router.model_facts_for("claude-sonnet-4-6")
+        assert facts.declared is True
+        assert facts.context_window == 200000
+        assert facts.reasoning_support is True
+        assert facts.native_tool_schema == "anthropic_messages"
+        assert facts.prompt_cache_style == "anthropic"
+        assert facts.max_output_tokens == 64000

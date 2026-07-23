@@ -19,6 +19,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 from run_agent import AIAgent
+from grove.router import ModelFacts
 from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
@@ -87,6 +88,9 @@ class TestBuildApiKwargsOpenRouter:
     def test_includes_reasoning_in_extra_body(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
         agent.model = "anthropic/claude-sonnet-4-20250514"
+        # binding-opacity-v1 P4b — reasoning is injected for a model DECLARED
+        # to support it, not inferred from the openrouter name prefix.
+        agent._model_facts = ModelFacts(reasoning_support=True)
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         extra = kwargs.get("extra_body", {})
@@ -1139,6 +1143,7 @@ class TestReasoningEffortDefaults:
     def test_openrouter_default_medium(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
         agent.model = "anthropic/claude-sonnet-4-20250514"
+        agent._model_facts = ModelFacts(reasoning_support=True)
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         reasoning = kwargs["extra_body"]["reasoning"]
         assert reasoning["effort"] == "medium"
@@ -1167,6 +1172,7 @@ class TestReasoningEffortDefaults:
     def test_openrouter_reasoning_config_override(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
         agent.model = "anthropic/claude-sonnet-4-20250514"
+        agent._model_facts = ModelFacts(reasoning_support=True)
         agent.reasoning_config = {"enabled": True, "effort": "medium"}
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
