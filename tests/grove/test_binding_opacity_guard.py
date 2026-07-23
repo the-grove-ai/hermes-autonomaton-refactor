@@ -82,18 +82,24 @@ SCOPED_OUT: Tuple[str, ...] = (
     "tools/transcription_tools.py",  # capability-binding-opacity-v1
 )
 
-# ── what makes a value slug/provider tainted ─────────────────────────────
-# Source keys read off a dict/ctx/config (X["model"], X.get("provider")).
+# ── what makes a value slug-tainted — PROVENANCE, never name (P4b HALT-B) ──
+# R-2 governs the MODEL SLUG. `provider` is a DIFFERENT token: R-1 permits
+# mechanics to vary by provider (credential refresh, wire behavior) outside
+# composition, and assertion 4 owns the composition-provider half. So `provider`
+# is NOT a slug source here — a DIRECT provider read (self.provider) is not
+# tainted. A provider value DERIVED from the slug (`model.split("/")[0]`) stays
+# tainted by PROVENANCE: it flows from a model source, so it is still a slug
+# parse. Separation is by where the value came from, never by what it is named.
 SLUG_SOURCE_KEYS = {
-    "model", "provider", "model_name", "model_id", "model_slug", "slug",
+    "model", "model_name", "model_id", "model_slug", "slug",
 }
-# Attribute reads that surface the slug (self.model, cfg.model, spec.provider).
+# Attribute reads that surface the slug (self.model, cfg.model, spec.model_slug).
 SLUG_ATTR_NAMES = {
-    "model", "provider", "model_slug", "model_name", "model_id",
+    "model", "model_slug", "model_name", "model_id",
 }
 # Parameter / local names that carry the slug directly.
 SLUG_NAMES = {
-    "model", "provider", "model_lower", "model_short", "model_name",
+    "model", "model_lower", "model_short", "model_name",
     "model_id", "model_slug", "slug", "model_used", "operator_model",
     "current_model", "requested_model",
 }
@@ -255,7 +261,11 @@ def _derives_taint(node: ast.AST, tainted: Set[str], dict_exprs: Set[str]) -> bo
     if isinstance(node, ast.BinOp):  # string building: slug + "..."
         return (_derives_taint(node.left, tainted, dict_exprs)
                 or _derives_taint(node.right, tainted, dict_exprs))
-    if isinstance(node, (ast.Subscript, ast.Attribute)):
+    if isinstance(node, ast.Subscript):
+        # provenance flows through indexing: model.split("/")[0] is slug-derived.
+        return (_is_source(node, dict_exprs)
+                or _derives_taint(node.value, tainted, dict_exprs))
+    if isinstance(node, ast.Attribute):
         return _is_source(node, dict_exprs)
     return False
 
@@ -391,11 +401,23 @@ def _detect_in_scope(
             operands = [node.left] + list(node.comparators)
             for op, right in zip(node.ops, node.comparators):
                 if isinstance(op, (ast.In, ast.NotIn)):
-                    # substring: the container (RHS) is a slug-tainted string
+                    # PROVENANCE decides (P4b HALT-B). Two shapes are a slug parse:
+                    #   substring   — the container (RHS) is the slug string:
+                    #                 `"gpt" in model_lower`  (RHS slug-tainted)
+                    #   model-set   — a slug-PROVENANCE value tested against a
+                    #                 literal MODEL-NAME collection:
+                    #                 `model in {...}`, `p=model.split("/")[0]; p in {...}`
+                    # BOTH conditions are required for the model-set case, so:
+                    #   * `self.provider in {"xai",...}` — value is provider
+                    #     provenance, not slug -> permitted mechanics (R-1).
+                    #   * `slug in some_config_dict` — RHS is not a literal model
+                    #     collection -> a dict-key membership, permitted (R-2).
                     substring = _contains_taint(right, tainted, dict_exprs)
-                    # membership against a literal model-name collection
-                    coll_is_models = any(_literal_model_collection(o) for o in operands)
-                    if substring or coll_is_models:
+                    value_is_slug = _contains_taint(node.left, tainted, dict_exprs)
+                    rhs_is_model_set = any(
+                        _literal_model_collection(o) for o in node.comparators
+                    )
+                    if substring or (value_is_slug and rhs_is_model_set):
                         add(node, "A1", "parse: substring/model-set membership on slug")
                 elif isinstance(op, (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
                     # equality is permitted by R-2 EXCEPT inside composition,
@@ -437,13 +459,11 @@ def scan_module(path: str, source: str, force_composition: bool = False) -> List
     module_tainted = _collect_tainted(tree.body, set(), module_dicts)
     findings += _detect_in_scope(tree.body, module_tainted, path, source, allow, comp, module_dicts)
 
-    # literal model-name collections defined anywhere (A1 root artifact)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and _literal_model_collection(node.value):
-            findings.append(Finding(
-                path, node.lineno, node.col_offset, "A1",
-                "literal model-name collection", _src(node.value, source), allow,
-            ))
+    # NOTE (P4b HALT-B): a bare literal model-name collection DEFINITION is no
+    # longer a standalone finding. Per the provenance rule, a collection is the
+    # detector's job only when it is TESTED against a slug-provenance value
+    # (handled in the membership branch of _detect_in_scope). A menu list of
+    # model names that is never tested against a slug is data, not a slug parse.
 
     # each function scope — dict-typing is scope-local (a name that is a dict in
     # one function may be a slug string in another).
@@ -475,11 +495,14 @@ EXEMPTIONS: dict = {
     ("hermes_cli/kanban_db.py", 379):
         "kanban card slug — our own namespace (R-H internal-vs-vendor), not a "
         "vendor model binding; .split('-') parses a card id, not a model slug.",
-    ("scripts/sample_and_compress.py", 30):
-        "HuggingFace dataset identifiers (NousResearch/...), not model bindings "
-        "the Cognitive Router dispatches to; the '-glm-kimi-' tokens are dataset "
-        "names, not a bound model.",
+    ("grove/fleet/worker_entry.py", 176):
+        "fleet spawn VALIDATES the model_binding slug shape ('<org>/<model>'), "
+        "derives no fact and branches on no vendor (P4b S-4). Banked to "
+        "default-experience-openrouter-v1: an opaque token has no format to "
+        "validate; a direct-provider slug without a slash is a false reject.",
 }
+# (scripts/sample_and_compress.py:30 exemption retired at P4b HALT-B — a bare
+#  dataset-name list is no longer a finding under the provenance rule.)
 
 
 def _path_allowlisted(rel: str) -> bool:
@@ -549,8 +572,10 @@ def test_positive_control_flags_all_five_known_shapes():
     the guard is broken — not the codebase (SPEC positive control)."""
     findings = _control_findings()
 
-    # 1. substring over TOOL_USE_ENFORCEMENT_MODELS + the two inline sites:
-    #    the two `any(p in model_lower ...)` and gemini/gemma + gpt/codex.
+    # The TOOL_USE_ENFORCEMENT_MODELS shape is caught via `p in model_lower`
+    # (substring — the slug string is the container), NOT the bare collection
+    # definition (P4b HALT-B). Two `any(p in model_lower ...)` sites + the inline
+    # gemini/gemma + gpt/codex sites = the substring flags.
     membership = [f for f in findings
                   if f.kind == "parse: substring/model-set membership on slug"]
     assert len(membership) >= 4, (
@@ -558,12 +583,11 @@ def test_positive_control_flags_all_five_known_shapes():
         f"sites + inline gemini/gpt sites); got {len(membership)}: "
         f"{[(f.line, f.expr) for f in membership]}"
     )
-    # 2. the literal model-name collection itself (TOOL_USE_ENFORCEMENT_MODELS).
-    assert any(f.kind == "literal model-name collection" for f in findings), \
-        "TOOL_USE_ENFORCEMENT_MODELS literal collection not flagged"
-    # 3. provider != 'alibaba' — equality on the slug inside composition (A2).
-    assert any(f.kind == "composition branches on slug (equality)" for f in findings), \
-        "provider != 'alibaba' composition branch not flagged"
+    # The provider-branch shape (`provider != 'alibaba'`) is NO LONGER a main-
+    # guard finding — provider is not the model slug (HALT-B). It is caught by
+    # assertion 4 (test_composition_cannot_branch_on_provider); a bare literal
+    # model-name collection is no longer a standalone finding. Both moves are
+    # asserted by their own tests; this control pins the substring shape.
 
 
 @pytest.mark.guard

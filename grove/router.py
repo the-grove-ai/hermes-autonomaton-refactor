@@ -76,6 +76,11 @@ class TierConfig:
     # instead of the ungoverned silent fallback_model swap. Absent (None) =
     # legacy behavior (the old in-loop fallback chain handles failures).
     fallback_tier: Optional[str] = None
+    # binding-opacity-v1 P4b — resolved model physics for this tier's bound
+    # model, populated at load from routing.model_facts (single declaration
+    # keyed by slug; a model bound to two tiers resolves the same reference).
+    # None for handler-backed tiers (T0) that bind no model.
+    model_facts: Optional["ModelFacts"] = None
 
 
 # ── model_facts — slug-keyed physics, dispatch-readable, operator-declared ──
@@ -111,6 +116,35 @@ class ModelFacts:
     system_message_role: str = "system"
     prompt_cache_style: str = "none"
     declared: bool = False
+
+
+def _resolve_facts(facts_map: dict, slug: Optional[str]) -> "tuple[ModelFacts, Optional[str]]":
+    """Resolve a model slug to ``(ModelFacts, missing_reason)``. The slug is an
+    opaque dict KEY — never parsed (R-2). ``missing_reason`` is a short string
+    when a safe default was substituted (undeclared slug, or a declared entry
+    with no ``context_window``), else None. Shared by the loader and
+    ``model_facts_for`` so the two never drift."""
+    entry = facts_map.get(slug or "")
+    if not isinstance(entry, dict):
+        return ModelFacts(declared=False), "no model_facts entry"
+    cw_raw = entry.get("context_window")
+    missing = None
+    if cw_raw is None:
+        context_window = _CONTEXT_WINDOW_FLOOR
+        missing = "no context_window declared"
+    else:
+        context_window = int(cw_raw)
+    return (
+        ModelFacts(
+            context_window=context_window,
+            reasoning_support=bool(entry.get("reasoning_support", False)),
+            native_tool_schema=entry.get("native_tool_schema"),
+            system_message_role=str(entry.get("system_message_role") or "system"),
+            prompt_cache_style=str(entry.get("prompt_cache_style") or "none"),
+            declared=True,
+        ),
+        missing,
+    )
 
 
 @dataclass(frozen=True)
@@ -229,24 +263,10 @@ class CognitiveRouter:
         loud warning naming the slug: never a ``KeyError``, never silent-wrong.
         Mirrors the ``TierConfig`` cost one-shot-warning discipline.
         """
-        entry = self._model_facts.get(slug or "")
-        if not isinstance(entry, dict):
-            self._warn_missing_facts(slug, "no model_facts entry")
-            return ModelFacts(declared=False)
-        cw_raw = entry.get("context_window")
-        if cw_raw is None:
-            self._warn_missing_facts(slug, "no context_window declared")
-            context_window = _CONTEXT_WINDOW_FLOOR
-        else:
-            context_window = int(cw_raw)
-        return ModelFacts(
-            context_window=context_window,
-            reasoning_support=bool(entry.get("reasoning_support", False)),
-            native_tool_schema=entry.get("native_tool_schema"),
-            system_message_role=str(entry.get("system_message_role") or "system"),
-            prompt_cache_style=str(entry.get("prompt_cache_style") or "none"),
-            declared=True,
-        )
+        facts, missing = _resolve_facts(self._model_facts, slug)
+        if missing:
+            self._warn_missing_facts(slug, missing)
+        return facts
 
     def _warn_missing_facts(self, slug: Optional[str], reason: str) -> None:
         if slug in self._warned_missing_facts:
@@ -519,6 +539,18 @@ class CognitiveRouter:
                 f"routing config at {self._config_path} has no 'tier_preferences'"
             )
 
+        # binding-opacity-v1 P4a/P4b — slug-keyed operator-declared model physics,
+        # parsed BEFORE the tier loop so each TierConfig can carry a RESOLVED
+        # reference (tier -> model -> facts). Optional: absent ⇒ empty mapping
+        # (every bound model safe-defaults). The router never parses the slug; it
+        # is a dict key (R-2).
+        model_facts = routing.get("model_facts") or {}
+        if not isinstance(model_facts, dict):
+            raise ValueError(
+                f"routing config at {self._config_path}: 'model_facts' must be a "
+                f"mapping of slug -> facts (got {type(model_facts).__name__})"
+            )
+
         tiers: dict[str, TierConfig] = {}
         for name, spec in tier_prefs.items():
             spec = spec or {}
@@ -526,14 +558,25 @@ class CognitiveRouter:
                 raise ValueError(f"tier {name!r} is not a mapping")
             cost_input_raw = spec.get("cost_per_mtok_input")
             cost_output_raw = spec.get("cost_per_mtok_output")
+            _tier_model = spec.get("model")
+            _tier_facts, _facts_missing = _resolve_facts(model_facts, _tier_model)
+            if _tier_model and _facts_missing and _tier_model not in self._warned_missing_facts:
+                self._warned_missing_facts.add(_tier_model)
+                logger.warning(
+                    "[grove.router] routing.model_facts: %s for bound model %r "
+                    "(tier %s) — using safe defaults (context_window=%d floor). "
+                    "Declare it under routing.model_facts.",
+                    _facts_missing, _tier_model, name, _CONTEXT_WINDOW_FLOOR,
+                )
             tiers[name] = TierConfig(
                 tier=name,
                 handler=spec.get("handler"),
                 provider=spec.get("provider"),
-                model=spec.get("model"),
+                model=_tier_model,
                 max_tokens=spec.get("max_tokens"),
                 max_latency_ms=spec.get("max_latency_ms"),
                 description=str(spec.get("description") or "").strip(),
+                model_facts=(_tier_facts if not spec.get("handler") else None),
                 cost_per_mtok_input=(
                     float(cost_input_raw) if cost_input_raw is not None else None
                 ),
@@ -578,16 +621,6 @@ class CognitiveRouter:
             raise ValueError(
                 f"routing config at {self._config_path}: 'provider_routing' must"
                 f" be a mapping (got {type(provider_routing).__name__})"
-            )
-
-        # binding-opacity-v1 P4a — slug-keyed operator-declared model physics.
-        # Optional: absent ⇒ empty mapping (every bound model safe-defaults). The
-        # router never parses the slug; it is a dict key (R-2).
-        model_facts = routing.get("model_facts") or {}
-        if not isinstance(model_facts, dict):
-            raise ValueError(
-                f"routing config at {self._config_path}: 'model_facts' must be a "
-                f"mapping of slug -> facts (got {type(model_facts).__name__})"
             )
 
         # Declarative routing rules. Optional: a config predating this
