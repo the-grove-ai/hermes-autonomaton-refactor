@@ -237,6 +237,10 @@ def resolve_tier_to_runtime(tier_config: TierConfig) -> dict:
         "api_mode": runtime.get("api_mode"),
         "credential_pool": runtime.get("credential_pool"),
         "auth_type": runtime.get("auth_type"),
+        # binding-opacity-v1 P4b — the resolved model physics ride the same
+        # tier->runtime bridge as (provider, model). The adapter/runtime read
+        # these instead of parsing the slug; composition never sees them.
+        "model_facts": tier_config.model_facts,
     }
 
 
