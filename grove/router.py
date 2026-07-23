@@ -78,6 +78,41 @@ class TierConfig:
     fallback_tier: Optional[str] = None
 
 
+# ── model_facts — slug-keyed physics, dispatch-readable, operator-declared ──
+# binding-opacity-v1 P4a. A model's physics (context window, native tool-call
+# schema, message-role convention, reasoning support, cache style) is a fact
+# about the MODEL, true regardless of which tier binds it. Declared ONCE per
+# opaque slug in ``routing.model_facts`` and resolved tier -> model -> facts, so
+# a model bound to two tiers carries ONE declaration — no per-tier drift. The
+# slug is used only as a DICT KEY (R-2 permits equality and keys; never parsed),
+# and it lives in the SAME file the dispatch path already reads — no catalog
+# read, so the G-1b dispatch-isolation invariant is untouched.
+_CONTEXT_WINDOW_FLOOR = 8192  # conservative floor when context_window is undeclared
+
+
+@dataclass(frozen=True)
+class ModelFacts:
+    """Operator-declared physics for one model slug. Consumed by the adapter and
+    runtime, NEVER by prompt composition (assertion 3 in the opacity guard makes
+    that structural).
+
+    Absence is safe and legible, never silent-wrong:
+      * ``context_window`` absent   -> ``_CONTEXT_WINDOW_FLOOR`` + one-shot warning
+      * ``native_tool_schema`` None -> caller falls back to provider/base-url detect
+      * ``reasoning_support`` False -> no reasoning params sent
+      * ``system_message_role``     -> ``"system"`` (universal default)
+      * ``prompt_cache_style``      -> ``"none"``
+    ``declared`` is False when no ``model_facts`` entry named the slug.
+    """
+
+    context_window: int = _CONTEXT_WINDOW_FLOOR
+    reasoning_support: bool = False
+    native_tool_schema: Optional[str] = None
+    system_message_role: str = "system"
+    prompt_cache_style: str = "none"
+    declared: bool = False
+
+
 @dataclass(frozen=True)
 class RoutingDecision:
     """The outcome of a route() call.
@@ -144,6 +179,11 @@ class CognitiveRouter:
         # shaping (provider order / data_collection / fallbacks), passed through
         # verbatim at the call sites. Empty mapping ⇒ feature off.
         self._provider_routing: dict = {}
+        # binding-opacity-v1 P4a: slug-keyed operator-declared model physics,
+        # parsed from routing.model_facts. Resolved on demand via
+        # model_facts_for(slug); absence is safe-defaulted with a one-shot warn.
+        self._model_facts: dict = {}
+        self._warned_missing_facts: set = set()
         # Fault attribution (router-merge-wiring-v1): sha256 of the source
         # files at the last successful load. Empty until the first load;
         # used by reload() to attribute a kept-last-known-good outcome.
@@ -180,6 +220,44 @@ class CognitiveRouter:
         ``provider`` object). Returned verbatim — the router never interprets it;
         the call sites attach it to the matching provider's request."""
         return self._provider_routing
+
+    def model_facts_for(self, slug: Optional[str]) -> "ModelFacts":
+        """Resolve a bound model slug to its declared physics (``ModelFacts``).
+
+        The slug is an opaque dict key — never parsed (R-2). An undeclared slug,
+        or one missing ``context_window``, gets safe defaults plus a ONE-SHOT
+        loud warning naming the slug: never a ``KeyError``, never silent-wrong.
+        Mirrors the ``TierConfig`` cost one-shot-warning discipline.
+        """
+        entry = self._model_facts.get(slug or "")
+        if not isinstance(entry, dict):
+            self._warn_missing_facts(slug, "no model_facts entry")
+            return ModelFacts(declared=False)
+        cw_raw = entry.get("context_window")
+        if cw_raw is None:
+            self._warn_missing_facts(slug, "no context_window declared")
+            context_window = _CONTEXT_WINDOW_FLOOR
+        else:
+            context_window = int(cw_raw)
+        return ModelFacts(
+            context_window=context_window,
+            reasoning_support=bool(entry.get("reasoning_support", False)),
+            native_tool_schema=entry.get("native_tool_schema"),
+            system_message_role=str(entry.get("system_message_role") or "system"),
+            prompt_cache_style=str(entry.get("prompt_cache_style") or "none"),
+            declared=True,
+        )
+
+    def _warn_missing_facts(self, slug: Optional[str], reason: str) -> None:
+        if slug in self._warned_missing_facts:
+            return
+        self._warned_missing_facts.add(slug)
+        logger.warning(
+            "[grove.router] routing.model_facts: %s for bound model %r — using "
+            "safe defaults (context_window=%d floor). Declare it under "
+            "routing.model_facts in routing.config.yaml to silence this.",
+            reason, slug, _CONTEXT_WINDOW_FLOOR,
+        )
 
     def model_to_tier(self, model: str) -> Optional[str]:
         """Return the tier whose binding is ``model``, or None if no tier
@@ -502,6 +580,16 @@ class CognitiveRouter:
                 f" be a mapping (got {type(provider_routing).__name__})"
             )
 
+        # binding-opacity-v1 P4a — slug-keyed operator-declared model physics.
+        # Optional: absent ⇒ empty mapping (every bound model safe-defaults). The
+        # router never parses the slug; it is a dict key (R-2).
+        model_facts = routing.get("model_facts") or {}
+        if not isinstance(model_facts, dict):
+            raise ValueError(
+                f"routing config at {self._config_path}: 'model_facts' must be a "
+                f"mapping of slug -> facts (got {type(model_facts).__name__})"
+            )
+
         # Declarative routing rules. Optional: a config predating this
         # section yields downward/upward absent and a synthesized
         # escalation rule carrying the top-level escalation.threshold.
@@ -531,6 +619,7 @@ class CognitiveRouter:
         self._telemetry_tier = telemetry_tier
         self._escalation_policy = escalation_policy
         self._provider_routing = provider_routing
+        self._model_facts = model_facts
 
         # Fault attribution (router-merge-wiring-v1): record the source-file
         # hashes that produced this merged state and emit a loaded event,

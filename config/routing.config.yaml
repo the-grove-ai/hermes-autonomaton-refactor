@@ -75,6 +75,43 @@ routing:
   #     fallback_tier: "T1"
   # Absent (the default) keeps the tier on the legacy in-loop fallback behavior.
   #
+  # ── model_facts (binding-opacity-v1 P4a) ────────────────────────────────
+  # Operator-declared PHYSICS for a model, keyed by its opaque slug. A model
+  # fact is true regardless of which tier binds the model, so it is declared
+  # ONCE here — not per tier — and the router resolves tier -> model -> facts
+  # (CognitiveRouter.model_facts_for). A model bound to two tiers therefore
+  # carries ONE declaration; there is no per-tier drift.
+  #
+  # Consumed by the adapter and runtime. NEVER read by prompt composition (the
+  # opacity guard's assertion 3 fails the build if it is) — governance does not
+  # vary by binding; only mechanics do.
+  #
+  # model_facts is NOT a support list. An ABSENT slug is NORMAL — it safe-
+  # defaults with a one-shot warning. This declares physics for the slugs a tier
+  # binds; it does not enumerate "supported models." A whitelist here would be
+  # the vendor-conditioning anti-pattern returning as data.
+  #
+  # Absence is safe and legible, never silent-wrong:
+  #   context_window absent     -> 8192 floor + a one-shot loud warning
+  #   native_tool_schema absent -> caller falls back to provider/base-url detect
+  #   reasoning_support absent   -> false        system_message_role absent -> "system"
+  #   prompt_cache_style absent  -> "none"
+  #
+  # native_tool_schema derives from the tier's PROVIDER, not the model slug:
+  # provider: openrouter -> chat_completions; a tier bound provider: anthropic
+  # directly -> anthropic_messages. context_window / reasoning_support /
+  # prompt_cache_style are operator-declared (R-3: declared, never inferred from
+  # the name). The reference roster and its model_facts land together in P4c;
+  # live values are the operator's sovereign write on the VM. One worked entry
+  # below shows the shape only.
+  model_facts:
+    "provider/example-model-slug":     # illustrative shape only — not a bound model
+      context_window: 131072
+      reasoning_support: false
+      native_tool_schema: chat_completions
+      system_message_role: system
+      prompt_cache_style: none
+
   # Price figures below are May 2026 list prices. The "per average
   # interaction" estimates are rough — real cost scales with how much
   # context a request carries.
