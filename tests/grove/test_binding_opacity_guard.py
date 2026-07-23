@@ -631,6 +631,81 @@ def _binding_field_reads(source: str) -> List[Tuple[int, str]]:
     return hits
 
 
+# ── assertion 4 — composition may not branch on `provider` (P4b S-1) ──────
+# The deleted alibaba_model_override was provider-keyed prompt content
+# (`ctx.get("provider") != "alibaba"` selecting a composition block). R-1's
+# provider half — governance may not vary by provider, only mechanics may — is
+# pinned structurally here: composition may READ provider for display, but may
+# not BRANCH on its value (Compare / membership). Provider-mechanics OUTSIDE
+# composition stay permitted (R-1); this assertion is composition-path only.
+
+
+def _composition_provider_branches(source: str) -> List[Tuple[int, str]]:
+    """Value-branches on provider inside a module: a Compare whose operand reads
+    provider via .get('provider') / ['provider'] / .provider. A bare truthiness
+    check (`if ctx.get('provider'):`) or an f-string display read is NOT a
+    branch and is not flagged."""
+    hits: List[Tuple[int, str]] = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return hits
+
+    def _reads_provider(node: ast.AST) -> bool:
+        for n in ast.walk(node):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "get" and n.args
+                    and _is_str_const(n.args[0]) == "provider"):
+                return True
+            if isinstance(n, ast.Subscript) and _is_str_const(n.slice) == "provider":
+                return True
+            if isinstance(n, ast.Attribute) and n.attr == "provider":
+                return True
+        return False
+
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Compare):
+            if any(_reads_provider(o) for o in [n.left] + list(n.comparators)):
+                hits.append((n.lineno, "compare-on-provider"))
+    return hits
+
+
+@pytest.mark.guard
+def test_assertion4_positive_control_catches_composition_provider_branch():
+    """A synthetic composition provider branching on provider VALUE must be
+    caught (P4b S-1). Pins the deleted alibaba defect structurally."""
+    snippet = (
+        "def _bad(ctx):\n"
+        "    if ctx.get('provider') != 'alibaba':\n"
+        "        return None\n"
+        "    return SectionResult(label='x', text='y')\n"
+    )
+    hits = _composition_provider_branches(snippet)
+    assert hits, "assertion 4 failed to catch a synthetic composition provider branch"
+
+
+@pytest.mark.guard
+def test_composition_cannot_branch_on_provider():
+    """ASSERTION 4. No composition module may branch on provider VALUE. Green
+    since the alibaba_model_override deletion (P3); a canary that fails the
+    instant provider-keyed governance returns to composition."""
+    violations: List[str] = []
+    for p in _iter_py_files():
+        rel = str(p.relative_to(REPO_ROOT))
+        if not _is_composition(rel):
+            continue
+        try:
+            for ln, kind in _composition_provider_branches(p.read_text(encoding="utf-8")):
+                violations.append(f"{rel}:{ln} {kind}")
+        except (UnicodeDecodeError, OSError):
+            continue
+    assert not violations, (
+        "composition branches on provider value (R-1: governance may not vary by "
+        "provider; only mechanics may, and only outside composition):\n  "
+        + "\n  ".join(violations)
+    )
+
+
 @pytest.mark.guard
 def test_assertion3_positive_control_catches_composition_binding_read():
     """A synthetic composition provider reading context_window MUST be caught,
