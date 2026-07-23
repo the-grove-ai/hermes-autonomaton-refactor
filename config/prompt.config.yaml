@@ -59,16 +59,6 @@ prompt:
       order: 35
       enabled: true
 
-    tool_use_enforcement:
-      tier: stable
-      order: 40
-      enabled: true
-
-    model_operational_guidance:
-      tier: stable
-      order: 41
-      enabled: true
-
     skills_index:
       tier: stable
       order: 50

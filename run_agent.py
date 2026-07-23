@@ -167,7 +167,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -2357,12 +2357,9 @@ class AIAgent:
         except Exception:
             pass
 
-        # Tool-use enforcement config: "auto" (default — matches hardcoded
-        # model list), true (always), false (never), or list of substrings.
         _agent_section = _agent_cfg.get("agent", {})
         if not isinstance(_agent_section, dict):
             _agent_section = {}
-        self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -8461,7 +8458,6 @@ class AIAgent:
             "user_profile_enabled": getattr(self, "_user_profile_enabled", False),
             "pass_session_id": getattr(self, "pass_session_id", False),
             "session_register": getattr(self, "session_register", None),
-            "tool_use_enforcement": getattr(self, "_tool_use_enforcement", None),
             "memory_store": getattr(self, "memory_store", None),
             "memory_manager": getattr(self, "memory_manager", None),
             "terminal_cwd": terminal_cwd,
