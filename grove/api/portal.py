@@ -806,17 +806,11 @@ def _fleet_mtime_iso(mtime: float) -> str:
 # the auto-close still identifies units from the same applied_result keys.
 from grove.fleet.dispositions import (  # noqa: E402
     _ARTIFACT_PROPOSAL_TYPES,
+    _artifact_unit_id,
     _iter_ledger_terminal_events,
     _ledger_slug_to_uid,
     _ledger_terminal_dispositions,
 )
-
-
-def _artifact_unit_id(payload: Optional[dict]) -> Optional[str]:
-    """The stable unit identity a proposal/ledger event keys on: unit_id (file
-    producer) → row_id (forge) → slug (last resort)."""
-    pl = payload or {}
-    return pl.get("unit_id") or pl.get("row_id") or pl.get("slug")
 
 
 def _open_artifact_proposals(skill_id: str) -> Dict[str, Any]:

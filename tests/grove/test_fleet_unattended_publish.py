@@ -104,7 +104,16 @@ def spies(monkeypatch):
 
 
 def _fire(event):
-    manager_mod.FleetManager()._maybe_emit_artifact_proposal(WID, RUN, event)
+    # fleet-receipt-custody-v1 P4b-1 — the former single _maybe_emit_artifact_proposal
+    # split into the reap-instant armed unattended publish
+    # (_fire_unattended_publish_if_armed) and the per-tick card path
+    # (_emit_artifact_card). Running BOTH in sequence reproduces the old
+    # single-method behavior this suite pins: an ARMED clean draft publishes at the
+    # reap and the card path early-returns (no double-surface); an UN-armed draft
+    # no-ops the publish and takes the proposal path.
+    m = manager_mod.FleetManager()
+    m._fire_unattended_publish_if_armed(WID, RUN, event)
+    m._emit_artifact_card(WID, RUN, event)
 
 
 def test_armed_success_full_coherence(grove_home, spies):

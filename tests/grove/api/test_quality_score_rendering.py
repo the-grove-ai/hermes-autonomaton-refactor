@@ -106,7 +106,9 @@ def test_manager_threads_quality_fields_off_event(monkeypatch):
         "quality_score": 0.85, "rubric_version": "1.0",
         "redraft_count": 1, "evaluator_model": "prov/model-x",
     }
-    FleetManager()._maybe_emit_artifact_proposal("drafter", "run1", event)
+    # fleet-receipt-custody-v1 P4b-1 — the card LOGIC lives in _emit_artifact_card
+    # (emission is now driven by the per-tick state scan; the payload is unchanged).
+    FleetManager()._emit_artifact_card("drafter", "run1", event)
     pl = captured["payload"]
     assert pl["quality_score"] == 0.85
     assert pl["rubric_version"] == "1.0"

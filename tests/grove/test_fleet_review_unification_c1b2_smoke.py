@@ -104,7 +104,7 @@ def test_forge_emission_payload_byte_identical(monkeypatch):
     monkeypatch.setattr(proposal_queue, "file_agentless", _cap)
     event = {"skill": "skill.fleet.forge-jobsearch", "status": "success",
              "slug": "260709-legends", "row_id": "ROW123", "fit_score": 70}
-    FleetManager()._maybe_emit_artifact_proposal("forge", "run1", event)
+    FleetManager()._emit_artifact_card("forge", "run1", event)
     assert captured["type"] == proposal_queue.PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING
     assert captured["payload"] == {
         "slug": "260709-legends", "row_id": "ROW123",
@@ -237,7 +237,7 @@ def test_manager_emits_fleet_artifact_pending_for_drafter(monkeypatch):
                         lambda **kw: (captured.update(kw), ("sha256:y", True))[1])
     event = {"skill": "skill.fleet.drafter", "status": "success",
              "slug": "moon-bot", "unit_id": "moon-bot"}
-    FleetManager()._maybe_emit_artifact_proposal("drafter", "run1", event)
+    FleetManager()._emit_artifact_card("drafter", "run1", event)
     assert captured["type"] == proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING
     assert captured["payload"] == {
         "slug": "moon-bot", "unit_id": "moon-bot",

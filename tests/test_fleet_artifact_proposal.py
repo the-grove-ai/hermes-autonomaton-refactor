@@ -1,10 +1,17 @@
 """fleet-pipeline-v1 P2 — proposal type + verb renderer + generalized emitter.
 
-Covers: _event additive fields + _row_identity sourcing; the reap emits a
-forge_artifact_pending proposal ONLY on success (no_work + failures silent), gated
-on approval_handoff.mode, reading fields OFF the event; the generalized single
-agentless emission path; render-only status w.r.t. the generic approve machinery;
-and the verb-iterating portal buttons.
+Covers: _event additive fields + _row_identity sourcing; the artifact-card
+emitter mints a forge_artifact_pending proposal ONLY for an action_surface_publish
+success, reading fields OFF the event (no_work + failures silent), gated on
+approval_handoff.mode; the generalized single agentless emission path; render-only
+status w.r.t. the generic approve machinery; and the verb-iterating portal buttons.
+
+fleet-receipt-custody-v1 P4b-1 note: card emission is now driven by the per-tick
+state scan, so the card-contract tests call ``_emit_artifact_card`` directly (the
+card LOGIC's new home); the reap-instant path (``_classify_terminal``) no longer
+cards — it only fires the armed unattended publish. The no_work / failure /
+ingest_post SILENCE tests still drive ``_classify_terminal`` (nothing to emit
+there, unchanged).
 """
 
 from __future__ import annotations
@@ -71,7 +78,10 @@ def _success_event(skill="skill.fleet.forge-jobsearch", **over):
 def test_success_emits_complete_payload(captured):
     emits, andons = captured
     m = manager_mod.FleetManager()
-    m._classify_terminal("forge", _handle(), 0, _success_event(), killed=False)
+    # fleet-receipt-custody-v1 P4b-1 — card emission moved off the reap instant to
+    # the per-tick state scan; the card LOGIC lives in _emit_artifact_card (the
+    # payload contract below is unchanged; only the trigger moved).
+    m._emit_artifact_card("forge", "r", _success_event())
     assert len(emits) == 1 and andons == []
     kw = emits[0]
     assert kw["type"] == FT
@@ -90,10 +100,7 @@ def test_defect_marked_success_andons_and_marks_card(captured):
     operator Andon and threads the marker into the card payload."""
     emits, andons = captured
     m = manager_mod.FleetManager()
-    m._classify_terminal(
-        "forge", _handle(), 0,
-        _success_event(meta_defect="missing:role"), killed=False,
-    )
+    m._emit_artifact_card("forge", "r", _success_event(meta_defect="missing:role"))
     assert len(emits) == 1  # draft is NOT withheld
     assert emits[0]["payload"]["meta_defect"] == "missing:role"
     assert "forge_meta_incomplete" in andons  # loud operator signal fired
@@ -135,8 +142,7 @@ def test_ingest_post_worker_does_not_emit(captured):
 def test_success_without_slug_andons(captured):
     emits, andons = captured
     m = manager_mod.FleetManager()
-    m._classify_terminal("forge", _handle(), 0,
-                         _success_event(slug=None), killed=False)
+    m._emit_artifact_card("forge", "r", _success_event(slug=None))
     assert emits == [] and "event_missing_slug" in andons
 
 

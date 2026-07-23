@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, Set
 
 from grove.eval import proposal_queue
 
@@ -21,6 +21,31 @@ _ARTIFACT_PROPOSAL_TYPES = (
     proposal_queue.PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
     proposal_queue.PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
 )
+
+
+def _artifact_unit_id(payload: Optional[dict]) -> Optional[str]:
+    """The stable unit identity a proposal/ledger event keys on: unit_id (file
+    producer) → row_id (forge) → slug (last resort). The single authority the
+    portal auto-close (``grove.api.portal``) and the P4b-1 emission carded-set
+    both read — moved to the FLEET PLANE so emission imports it FORWARD (never
+    grove.api)."""
+    pl = payload or {}
+    return pl.get("unit_id") or pl.get("row_id") or pl.get("slug")
+
+
+def live_artifact_carded_unit_ids() -> Set[str]:
+    """The set of unit_ids carrying a LIVE artifact card (fleet-receipt-custody-v1
+    P4b-1 R2 — emit-once-and-skip). ONE ``read_all()``; ``read_all`` returns only
+    live proposals (terminals are popped into the ledger), so a disposed unit is
+    absent here and its re-emission is prevented by STATE (Done), not this set."""
+    out: Set[str] = set()
+    for p in proposal_queue.read_all():
+        if getattr(p, "type", None) not in _ARTIFACT_PROPOSAL_TYPES:
+            continue
+        uid = _artifact_unit_id(getattr(p, "payload", None))
+        if uid:
+            out.add(uid)
+    return out
 
 
 def _iter_ledger_terminal_events():
