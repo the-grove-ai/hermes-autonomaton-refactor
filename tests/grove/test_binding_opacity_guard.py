@@ -45,16 +45,8 @@ EXCLUDE_DIR_PARTS = {
     ".mypy_cache", ".pytest_cache", ".ruff_cache", "site-packages", "tests",
 }
 
-# ── proposed allowlist — PROPOSED, not finalized. Operator rules at P2. ───
-# The two legitimate consumers named by the SPEC (adapter that constructs the
-# API call; telemetry that records what ran), established from source:
-#   agent/transports/*            — provider adapters (build the API request)
-#   hermes_cli/runtime_provider.py— resolve_runtime_provider(): turns
-#                                   (provider, model) into a live client
-#   grove/providers.py            — router→runtime bridge (pass-through;
-#                                   included as candidate BOUNDARY, see report)
-#   grove/composer_events.py      — telemetry (compose-event record)
-#   grove/intent_store.py         — telemetry (intent record: model_used/tier)
+# ── allowlist — APPROVED at P2 (R-H). The slug's two legitimate consumers:
+# the provider adapter that constructs the API call, and telemetry.
 PROPOSED_ALLOWLIST: Tuple[str, ...] = (
     # provider adapters — construct the outbound API call / normalize the slug
     # for the wire. R-2's named "provider adapter that constructs the API call".
@@ -65,11 +57,29 @@ PROPOSED_ALLOWLIST: Tuple[str, ...] = (
     # (provider, model) -> live client resolution (credentials, base_url).
     "hermes_cli/runtime_provider.py",
     # router->runtime bridge; holds no provider logic (grove/providers.py:16),
-    # passes the pair through. Candidate BOUNDARY — see P2 questions.
+    # passes the pair through (Q4 confirmed: zero parse ops).
     "grove/providers.py",
     # telemetry — records what ran.
     "grove/composer_events.py",
     "grove/intent_store.py",
+    # P2 R-H additions:
+    # wire normalization — strips vendor prefix / repairs the slug for the
+    # native provider request (_strip_vendor_prefix, _dots_to_hyphens).
+    "hermes_cli/model_normalize.py",
+    # credential-pool selection by provider. R-H internal-vs-vendor rule: a
+    # pool-prefix (CUSTOM_POOL_PREFIX) is our own namespace marker.
+    "agent/credential_pool.py",
+)
+
+# ── scoped OUT of this sprint (P2 R-C) — a DIFFERENT provider namespace ───
+# TTS / vision / STT backends, not the model binding the Cognitive Router
+# dispatches to. R-2 governs the model binding. Banked separately as
+# capability-binding-opacity-v1 (the anti-pattern generalizes; lands before
+# open-source release). Excluded by path, NOT silently.
+SCOPED_OUT: Tuple[str, ...] = (
+    "tools/tts_tool.py",        # capability-binding-opacity-v1
+    "tools/vision_tools.py",    # capability-binding-opacity-v1
+    "tools/transcription_tools.py",  # capability-binding-opacity-v1
 )
 
 # ── what makes a value slug/provider tainted ─────────────────────────────
@@ -480,6 +490,10 @@ def _is_exempt(f: "Finding") -> bool:
     return (f.path, f.line) in EXEMPTIONS
 
 
+def _is_scoped_out(rel: str) -> bool:
+    return any(rel == s or rel.startswith(s) for s in SCOPED_OUT)
+
+
 def _iter_py_files() -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIR_PARTS]
@@ -608,7 +622,8 @@ def test_slug_not_parsed_outside_allowlist():
     the adapter+telemetry allowlist. RED at P1 by design: the failure list is
     the census. Goes green when P3 deletes the violations."""
     findings = scan_repo()
-    census = [f for f in findings if not f.in_allowlist and not _is_exempt(f)]
+    census = [f for f in findings
+              if not f.in_allowlist and not _is_exempt(f) and not _is_scoped_out(f.path)]
     if census:
         lines = ["\nBINDING-OPACITY CENSUS — %d violation(s) outside allowlist:" % len(census)]
         for f in sorted(census, key=lambda x: (x.path, x.line)):
