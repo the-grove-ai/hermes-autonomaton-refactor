@@ -251,6 +251,12 @@ class FleetManager:
         now = now or datetime.now(timezone.utc)
         self._reap_running()
         self._maybe_dispatch(now)
+        # fleet-receipt-custody-v1 P4b-1 — bind card emission to derived state.
+        # AFTER reap (this tick's fresh successes read Needs-you → carded now) and
+        # AFTER dispatch (this tick's fresh dispatches read Working → excluded), so
+        # a same-tick success cards without latency and a same-tick redispatch does
+        # not. The single artifact-card authority (replaces the reap-instant emit).
+        self._emit_state_cards()
         # I1 — windowed publish digest at the TAIL of the tick (post-append: every
         # publish this tick already landed in the durable log during _reap_running).
         self._maybe_emit_publish_digest()
@@ -289,14 +295,16 @@ class FleetManager:
     def _reconcile_events(self, source: str) -> None:
         """RC-1 — classify orphaned terminal events through the SAME live fold.
 
-        A worker's terminal event reaches the operator only via the in-memory
-        handle chain (``_reap_one`` → ``_classify_terminal`` →
-        ``_maybe_emit_artifact_proposal``); a gateway restart severs the
-        handle and, before this sprint, permanently orphaned the event (the
-        260719/cf577af0 incident — a clean success event on disk, no card,
-        for hours). This pass scans every ``<fleet>/<wid>/events/*.json``
-        without a ``.classified`` sidecar and routes it through
-        ``_classify_terminal`` with a stub handle
+        A worker's terminal event is classified only via the in-memory handle
+        chain (``_reap_one`` → ``_classify_terminal``: mark classified + surface
+        any FAILURE Andon); a gateway restart severs the handle and left the
+        event un-classified. fleet-receipt-custody-v1 P4b-1 — CARD emission is no
+        longer part of this fold (it was the per-run one-shot emit); the per-tick
+        state scan (``_emit_state_cards``) is the single card authority, so an
+        orphaned SUCCESS is surfaced by the scan (the 260719/cf577af0 incident),
+        not here. This pass scans every ``<fleet>/<wid>/events/*.json`` without a
+        ``.classified`` sidecar and routes it through ``_classify_terminal`` with
+        a stub handle
         (``SimpleNamespace(run_id=…, wall_clock_secs=None)``, ``killed=False``
         — the killed branch is unreachable for a reconciled event because a
         wall-clock kill is only ever decided by a LIVE ``_reap_one`` holding
@@ -479,9 +487,14 @@ class FleetManager:
                 return  # silent — nothing staged, nothing to promote
             if status == "success":
                 logger.info("[fleet.manager] worker %s run %s -> success", wid, run_id)
-                # fleet-pipeline-v1 P2 — the ONLY branch that emits an
-                # approve-artifact proposal. no_work + every failure emit nothing.
-                self._maybe_emit_artifact_proposal(wid, run_id, event)
+                # fleet-receipt-custody-v1 P4b-1 — card emission MOVED to the
+                # per-tick state scan (_emit_state_cards), the single artifact-card
+                # authority. The ONE thing that stays at the reap instant is the
+                # ARMED unattended Drive publish: it is a fire-once external effect,
+                # never a per-tick action, so it must not ride the state scan (which
+                # would re-fire it every tick — the unit is never disposed by a
+                # publish). no_work + every failure still surface/emit nothing.
+                self._fire_unattended_publish_if_armed(wid, run_id, event)
                 return
             # exit-0 but a non-terminal status — the worker exits nonzero on
             # failure, so this is anomalous; surface it.
@@ -506,13 +519,51 @@ class FleetManager:
             wid, run_id, check=check, detail=f"exited {rc}: {detail}", loop=self._loop
         )
 
-    def _maybe_emit_artifact_proposal(self, wid: str, run_id: str, event: dict) -> None:
-        """On a fleet worker SUCCESS, emit a forge_artifact_pending proposal so the
-        operator can promote (publish) or reject the staged draft — but ONLY when
-        the skill's approval_handoff is an action-surface publish (an ingest_post
-        worker auto-ingests and needs no operator promote). Reads slug/row_id/
-        fit_score OFF the event fields (never parsed from detail/paths). Defensive:
-        an emit failure surfaces an Andon, never crashes the tick."""
+    def _fire_unattended_publish_if_armed(self, wid: str, run_id: str, event: dict) -> None:
+        """Reap-instant: an ARMED forge worker's CLEAN staged package publishes to
+        Drive directly (fire-once, at the reap — a confirmed external effect, never
+        a per-tick action). Un-armed / non-forge / file-producer / defect-marked
+        drafts NO-OP here and are carded by the per-tick state scan
+        (:meth:`_emit_artifact_card`) instead. Gates mirror the card path
+        (action_surface_publish + slug + canonical_sink == forge); the missing-slug
+        Andon is owned SOLELY by the card path (single owner, fired at the scan).
+
+        forge-unattended-publish-v1 P2 — the unattended door is DARK by default
+        (``publication.unattended`` un-armed); this method is a no-op until the
+        operator arms a producer per node."""
+        try:
+            skill_id = event.get("skill")
+            if _review_mode_for_skill(skill_id) != "action_surface_publish":
+                return
+            if not event.get("slug"):
+                return  # the card path owns the missing-slug Andon
+            if _canonical_sink_for_skill(skill_id) != "forge":
+                return  # a file producer never has an unattended Drive door
+            if event.get("meta_defect"):
+                return  # a defect-marked draft NEVER takes the unattended door
+            from grove.capability_registry import publication_unattended_authorized
+
+            if publication_unattended_authorized(skill_id) is True:
+                self._publish_unattended(wid, run_id, skill_id, event)
+        except Exception as exc:  # noqa: BLE001 — the reap must never crash
+            surface_fleet_andon(
+                wid, run_id, f"unattended publish decision failed: {exc}",
+                check="unattended_decision_failed", loop=self._loop,
+            )
+
+    def _emit_artifact_card(self, wid: str, run_id: str, event: dict) -> None:
+        """Emit a forge/fleet artifact_pending proposal so the operator can promote
+        (publish) or reject the staged draft — but ONLY when the skill's
+        approval_handoff is an action-surface publish (an ingest_post worker
+        auto-ingests and needs no operator promote). Reads slug/row_id/fit_score OFF
+        the event fields (never parsed from detail/paths). Defensive: an emit failure
+        surfaces an Andon, never crashes the tick.
+
+        fleet-receipt-custody-v1 P4b-1 — the CARD half of the former
+        ``_maybe_emit_artifact_proposal``. Driven by the per-tick state scan
+        (:meth:`_emit_state_cards`), keyed on the unit's derived Needs-you state,
+        NOT the reaping instant. The armed unattended-publish half lifted to
+        :meth:`_fire_unattended_publish_if_armed` (fire-once at the reap)."""
         try:
             skill_id = event.get("skill")
             # fleet-review-unification-v1 C1a/C1b-1 — producer == skill_id;
@@ -591,21 +642,22 @@ class FleetManager:
                     check="forge_meta_incomplete", loop=self._loop,
                 )
 
-            # forge-unattended-publish-v1 P2 — hard-AND gate at the fire-point.
-            # Conjunct 1 (mode == action_surface_publish) is already satisfied
-            # (checked above). Conjunct 2 is the operator's overlay-armed
-            # publication.unattended, read ONLY via publication_unattended_
-            # authorized — the merged Capability never carries the field. ARMED
-            # → fire the atomic Drive door directly and RETURN; the published
-            # event replaces the proposal. UN-ARMED (absent/false, the shipped
-            # default) → fall through to the existing proposal path, unchanged.
-            # forge-publish-meta-hotfix-v1 P1 — a defect-marked draft NEVER takes
-            # the unattended door (it would 400 at the endpoint and strand the
-            # operator with no card); it always falls to the proposal path.
+            # forge-receipt-custody-v1 P4b-1 — an ARMED clean forge draft PUBLISHED
+            # at the reap instant (_fire_unattended_publish_if_armed); it must not
+            # ALSO be carded here, or the state scan would double-surface it. A
+            # defect-marked draft NEVER takes the unattended door (it would 400 at
+            # the endpoint), so it always falls through to the proposal path —
+            # hence the `and not meta_defect`, mirroring the reap-instant gate.
+            # (KNOWN COUPLING, banked fleet-unattended-publish-disposition: an
+            # unattended publish does not write a terminal disposition, so the unit
+            # lingers Needs-you and the state scan re-evaluates it every tick — this
+            # early-return keeps it CARD-free; the portal fleet view still resolves
+            # it `promoted` via staged-gone+canonical-present. The durable fix is a
+            # publish-writes-applied-disposition, REQUIRED before any producer is
+            # armed. Dark today: publication.unattended is un-armed everywhere.)
             from grove.capability_registry import publication_unattended_authorized
 
             if publication_unattended_authorized(skill_id) is True and not meta_defect:
-                self._publish_unattended(wid, run_id, skill_id, event)
                 return
 
             row_id = event.get("row_id")
@@ -643,6 +695,90 @@ class FleetManager:
                 wid, run_id, f"failed to emit artifact proposal: {exc}",
                 check="artifact_emit_failed", loop=self._loop,
             )
+
+    # ── state-bound card emission (fleet-receipt-custody-v1 P4b-1) ───────────────
+
+    def _emit_state_cards(self) -> None:
+        """The SINGLE artifact-card authority: bind emission to derived state, not
+        the reaping instant. ONCE per tick, read the proposal queue ONCE to build
+        the set of unit_ids carrying a live artifact card, then for every worker's
+        **Needs you** unit absent from that set, emit exactly one card. State (not
+        queue dedup) prevents double-carding (R2 emit-once-and-skip); the
+        content-addressed dedup is the backstop. Done / Working / Dead-lettered
+        emit nothing. No age / window / .classified gate (R3) — those are
+        boot-reconciliation cost guards state-based emission replaces, never
+        honors. Never crashes the tick.
+
+        Workers are enumerated from the fleet SUBTREE on disk, not the enabled
+        registry: a dormant success whose worker was later disabled still owes the
+        operator a card. Disk enumeration finds WHICH workers ran; the derivation
+        — never disk presence — supplies the STATE."""
+        from grove.fleet import paths, resolvers
+        from grove.fleet.dispositions import live_artifact_carded_unit_ids
+        from grove.fleet.unit_state import NEEDS_YOU
+
+        try:
+            carded = live_artifact_carded_unit_ids()  # one read_all()
+            root = paths.fleet_root()
+            if not root.is_dir():
+                return
+            for wdir in sorted(p for p in root.iterdir() if p.is_dir()):
+                wid = wdir.name
+                try:
+                    ctx = resolvers._build_unit_state_context(wid)
+                except Exception as exc:  # noqa: BLE001 — one worker cannot break the scan
+                    logger.error(
+                        "[fleet.manager] state-card scan skipped worker %s: %r", wid, exc,
+                    )
+                    continue
+                for unit_id in ctx["unit_runs"]:
+                    if unit_id in carded:
+                        continue  # R2 — already carded; skip, do NOT attempt-and-dedup
+                    if resolvers._derived_unit_state(unit_id, ctx) != NEEDS_YOU:
+                        continue  # Done / Working / Dead-lettered / Waiting → no card
+                    got = self._success_run_for_unit(wid, unit_id, ctx)
+                    if got is None:
+                        continue  # grain violation already surfaced loud
+                    run_id, event = got
+                    self._emit_artifact_card(wid, run_id, event)
+        except Exception as exc:  # noqa: BLE001 — the scan must never crash the tick
+            logger.error("[fleet.manager] state-card emission scan failed: %r", exc)
+
+    def _success_run_for_unit(self, wid: str, unit_id, ctx: dict):
+        """The unit's single success run as ``(run_id, event)``, or ``None`` on a
+        grain violation (surfaced loud).
+
+        PRECONDITION (the invariant UNIT-grain keying depends on): a completed unit
+        has at most ONE non-superseded success run. Forge redrafts IN-PROCESS on
+        one run_id (``worker_entry._redraft_cycle`` re-binds the SAME dispatched
+        identity; the redraft emit supersedes the first draft within the run), and
+        every worker is ``skip_already_staged`` so a Needs-you unit is never
+        re-selected into a second success. So a Needs-you unit resolves to exactly
+        one success event.
+
+        fleet-emission-grain-coupling (BANKED DEBT): this grain holds ONLY while
+        redraft is in-process. fleet-review-unification contemplated
+        redraft-as-new-dispatch; if drafter/cultivator ever adopt it, a unit can
+        carry two live success runs, this guard fires, and the emission grain must
+        move to RUN level (keying on run_id, with the disposed-run bridge). We fail
+        LOUD here rather than silently pick a run — the pin has teeth."""
+        events = ctx["events"]
+        successes = [
+            r for r in ctx["unit_runs"].get(unit_id, ())
+            if r in ctx["received"] and events.get(r, {}).get("status") == "success"
+        ]
+        if len(successes) != 1:
+            surface_fleet_andon(
+                wid, str(unit_id),
+                f"unit {unit_id!r} carries {len(successes)} live success runs — "
+                f"UNIT-grain card emission assumes at most one (forge in-process "
+                f"redraft). The emission grain is now wrong; it must move to "
+                f"run-level (fleet-emission-grain-coupling). No card emitted.",
+                check="emission_grain_violation", loop=self._loop,
+            )
+            return None
+        r = successes[0]
+        return r, events[r]
 
     def _publish_unattended(self, wid: str, run_id: str, skill_id: str, event: dict) -> None:
         """forge-unattended-publish-v1 P3 — fire the atomic Drive door for an

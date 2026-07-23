@@ -1,15 +1,21 @@
 """fleet-event-reconciliation-v1 — orphaned terminal events reach the fold.
 
 Pins (the E4 coverage hole, written fresh): reap-across-restart simulation
-(event on disk, no handle → reconciled through the live fold, card emitted),
-a gated-success event (redraft_count=1) traversing the fold, already-
-classified skip (no duplicate card AND no duplicate Andon — the marker's
-real job), the >7d trace-only window (ts authoritative, named in the WARNING
-summary, no card), meta_defect reconciled events still Andon, reconciled
-FAILED events Andon (gate ruling d corollary), content-addressed dedup on a
-double-classify (the correctness wall), the live-run ordering pin (a run_id
-in self._running is never touched), first-tick-as-boot source labeling +
-the RC-2 tick tripwire, and the live-reap path writing the same marker.
+(event on disk, no handle → reconciled through the live fold, marked), a
+gated-success event (redraft_count=1) traversing the fold, already-classified
+skip (no duplicate Andon — the marker's real job), the >7d trace-only window
+(ts authoritative, named in the WARNING summary, no card), reconciled FAILED
+events Andon (gate ruling d corollary), the live-run ordering pin (a run_id in
+self._running is never touched), first-tick-as-boot source labeling + the RC-2
+tick tripwire, and the live-reap path writing the same marker.
+
+fleet-receipt-custody-v1 P4b-1 — card emission is REMOVED from the reap /
+reconcile fold (it was the per-run one-shot emit); the per-tick STATE SCAN
+(``_emit_state_cards``) is now the single card authority. The reconciler's
+surviving job is MARK-classified + surface FAILURE Andons. So the tests that
+pinned "reconciled → card" and the meta_defect card-path Andon now drive the
+scan (with a genesis dispatch record), and the content-address dedup wall is
+proven at the scan.
 
 GROVE_HOME is per-test isolated (autouse conftest), so the fleet root, the
 proposal queue, and the ledger all land in a tempdir.
@@ -51,6 +57,19 @@ def _write_event(wid="forge", run_id="run-1", ts=None, **over):
     return p, ev
 
 
+def _write_dispatch(wid="forge", run_id="run-1", unit_id="pg1"):
+    """The genesis dispatch record (P2 C1) — the derivation reads unit_runs from
+    dispatch/, so the P4b-1 state scan only sees a unit that carries one. For a
+    notion_query producer unit_id == row_id (the event's row_id)."""
+    p = fleet_paths.dispatch_path(wid, run_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps({"run_id": run_id, "unit_id": unit_id, "worker_id": wid}),
+        encoding="utf-8",
+    )
+    return p
+
+
 @pytest.fixture
 def captured(monkeypatch):
     emits, andons = [], []
@@ -72,26 +91,38 @@ def _mgr():
 # ── reap-across-restart: the incident shape ─────────────────────────────────
 
 
-def test_orphaned_success_event_reconciled_to_card(captured):
+def test_orphaned_success_event_reaches_the_operator_via_the_scan(captured):
+    # fleet-receipt-custody-v1 P4b-1 — the reconciler no longer cards; it MARKS the
+    # orphaned event classified. The per-tick STATE SCAN is the single card
+    # authority and surfaces the dormant success (which carries its genesis
+    # dispatch record) regardless of the .classified marker or age.
     emits, andons = captured
+    _write_dispatch(run_id="cf577af0-sim", unit_id="pg1")
     p, _ = _write_event(run_id="cf577af0-sim")
-    _mgr()._reconcile_events("boot")
+    m = _mgr()
+    m._reconcile_events("boot")
+    assert emits == []  # reconcile marks, never cards
+    assert _classified_marker_path(p).exists()
+    m._emit_state_cards()
     assert len(emits) == 1
     assert emits[0]["payload"]["slug"] == "260718-acme-pm"
     assert emits[0]["payload"]["row_id"] == "pg1"
     assert andons == []
-    assert _classified_marker_path(p).exists()
 
 
-def test_gated_success_with_redraft_traverses_fold(captured):
-    # E4 hole: a redraft_count=1 event (the cf577af0 shape) reaches the fold.
+def test_gated_success_with_redraft_reaches_the_operator_via_the_scan(captured):
+    # E4 hole: a redraft_count=1 event (the cf577af0 shape) still reaches the
+    # operator — via the P4b-1 scan; the event's riders never block the card.
     emits, _ = captured
+    _write_dispatch(run_id="redraft-sim", unit_id="pg1")
     _write_event(
         run_id="redraft-sim", quality_score=0.82, rubric_version="1.0",
         redraft_count=1, evaluator_model="m",
     )
-    _mgr()._reconcile_events("boot")
-    assert len(emits) == 1  # forge payload; the event's riders never block it
+    m = _mgr()
+    m._reconcile_events("boot")
+    m._emit_state_cards()
+    assert len(emits) == 1
 
 
 def test_already_classified_skipped_no_card_no_andon(captured):
@@ -125,10 +156,17 @@ def test_ts_field_authoritative_over_mtime():
     )
 
 
-def test_meta_defect_reconciled_event_still_andons(captured):
+def test_meta_defect_event_andons_and_cards_at_the_scan(captured):
+    # P4b-1 — the meta_defect Andon lives with the CARD (it marks the card), so it
+    # fires at the state scan, not the reconciler. The draft is still surfaced
+    # (surface-regardless) behind the defect marker.
     emits, andons = captured
+    _write_dispatch(run_id="defect-1", unit_id="pg1")
     _write_event(run_id="defect-1", meta_defect="missing:company,role,row_id")
-    _mgr()._reconcile_events("boot")
+    m = _mgr()
+    m._reconcile_events("boot")
+    assert andons == []  # reconcile no longer fires the card-path Andon
+    m._emit_state_cards()
     assert andons == ["forge_meta_incomplete"]
     assert len(emits) == 1
     assert emits[0]["payload"]["meta_defect"] == "missing:company,role,row_id"
@@ -148,16 +186,19 @@ def test_failed_event_reconciled_andons(captured):
     assert _classified_marker_path(p).exists()
 
 
-def test_double_classify_dedups_on_content_address():
-    # The correctness wall: NO marker, real queue — classify twice, one card.
+def test_scan_dedups_across_reconcile_and_ticks():
+    # The correctness wall, P4b-1 home: reconcile MARKS (never cards); the scan is
+    # the single card authority. NO file_agentless monkeypatch, real queue — the
+    # reconcile then two scans yield ONE card (the second scan reads the live card
+    # and skips, R2 emit-once-and-skip; the content address is the backstop).
+    _write_dispatch(run_id="dedup-1", unit_id="pg1")
     _write_event(run_id="dedup-1")
     m = _mgr()
     m._reconcile_events("boot")
-    p, _ = _write_event(run_id="dedup-1")  # rewrite → marker still present? no:
-    _classified_marker_path(p).unlink()    # force a re-scan of the same event
-    m._reconcile_events("tick")
+    m._emit_state_cards()
+    m._emit_state_cards()
     live = [r for r in pq.read_all() if r.type == "forge_artifact_pending"]
-    assert len(live) == 1  # append dedup'd the second classify
+    assert len(live) == 1
 
 
 def test_live_run_ordering_pin(captured):
@@ -205,9 +246,12 @@ def test_torn_event_marked_and_skipped(captured, caplog):
     assert "unreadable orphan event" in caplog.text
 
 
-def test_live_reap_path_writes_marker(captured, monkeypatch):
-    # Gate ruling (a): both paths converge on one legibility story.
+def test_live_reap_writes_marker_and_the_scan_cards(captured, monkeypatch):
+    # Gate ruling (a): both paths converge on one legibility story (the marker).
+    # P4b-1 — the live reap MARKS classified and never cards; the state scan is the
+    # single card authority and cards the resulting Needs-you unit, once.
     emits, _ = captured
+    _write_dispatch(run_id="reap-1", unit_id="pg1")
     p, ev = _write_event(run_id="reap-1")
 
     class _Proc:
@@ -225,8 +269,10 @@ def test_live_reap_path_writes_marker(captured, monkeypatch):
     m = _mgr()
     m._running["forge"] = _H()
     m._reap_one("forge", m._running["forge"])
-    assert len(emits) == 1
+    assert emits == []  # reap marks, never cards
     assert _classified_marker_path(p).exists()
-    # A follow-up reconcile pass sees the marker and does nothing.
+    m._emit_state_cards()
+    assert len(emits) == 1
+    # A follow-up reconcile pass sees the marker and does nothing; no extra card.
     m._reconcile_events("tick")
     assert len(emits) == 1
