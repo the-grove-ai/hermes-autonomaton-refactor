@@ -114,8 +114,6 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["prompt_cache_key"] = session_id
 
         if reasoning_enabled and is_xai_responses:
-            from agent.model_metadata import grok_supports_reasoning_effort
-
             # NOTE: Hermes does NOT ask xAI to return ``reasoning.encrypted_content``
             # any more.  xAI's OAuth/SuperGrok ``/v1/responses`` surface rejects
             # replayed encrypted reasoning items on turn 2+ — see
@@ -124,12 +122,14 @@ class ResponsesApiTransport(ProviderTransport):
             # still reasons natively each turn; coherence across turns rides on
             # the visible message text alone.
             kwargs["include"] = []
-            # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
-            # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
-            # those models reason natively. Only send the effort dial when
-            # the target model is on the allowlist; otherwise send no
-            # `reasoning` key at all and let the model reason on its own.
-            if grok_supports_reasoning_effort(model):
+            # xAI rejects `reasoning.effort` on grok models that reason natively
+            # but do not accept the dial (HTTP 400). binding-opacity-v1 P4b 1c —
+            # whether the model accepts the reasoning_effort dial is the declared
+            # reasoning_support fact, not a "grok-*" name allowlist. Only send the
+            # effort dial when declared; undeclared -> no `reasoning` key (the
+            # model reasons on its own — safe/loud pre-declaration behavior).
+            _mf = params.get("model_facts")
+            if getattr(_mf, "reasoning_support", False):
                 kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
             if is_github_responses:

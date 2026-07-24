@@ -25,25 +25,6 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 
-def _model_supports_thinking(model: str | None) -> bool:
-    """DeepSeek thinking-capable model families.
-
-    Currently covers the V4 family (``deepseek-v4-pro``, ``deepseek-v4-flash``,
-    and any future ``deepseek-v4-*`` variants) and the legacy
-    ``deepseek-reasoner`` (R1).  ``deepseek-chat`` is V3 with no thinking mode.
-    """
-    m = (model or "").strip().lower()
-    if not m:
-        return False
-    if m.startswith("deepseek-v") and not m.startswith("deepseek-v3"):
-        # deepseek-v4-*, deepseek-v5-*, etc. — every V4+ generation has
-        # thinking. v3 explicitly excluded.
-        return True
-    if m == "deepseek-reasoner":
-        return True
-    return False
-
-
 class DeepSeekProfile(ProviderProfile):
     """DeepSeek — extra_body.thinking + top-level reasoning_effort."""
 
@@ -53,8 +34,14 @@ class DeepSeekProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
 
-        if not _model_supports_thinking(model):
-            # V3 / unknown — leave wire format untouched, current behavior.
+        # binding-opacity-v1 P4b 1c — thinking-capability is a declared physics
+        # fact (model_facts.reasoning_support), not a "deepseek-v4" name prefix.
+        # The V4 family / deepseek-reasoner declare reasoning_support: true; V3
+        # declares false. Undeclared -> false -> wire format untouched (safe/
+        # loud, the pre-declaration behavior on the VM before the sovereign write).
+        _mf = context.get("model_facts")
+        if not getattr(_mf, "reasoning_support", False):
+            # Not thinking-capable / undeclared — leave wire format untouched.
             return extra_body, top_level
 
         # Determine enabled/disabled.  Default is enabled to match DeepSeek's

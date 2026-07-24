@@ -123,6 +123,43 @@ class TestNeedsDeepSeekToolReasoning:
         assert agent._needs_deepseek_tool_reasoning() is False
 
 
+class TestResolutionPrecedence:
+    """binding-opacity-v1 P4b 1c — pins the DECLARED -> PROVIDER/HOST -> SAFE
+    DEFAULT resolution chain (ModelFacts docstring) on a consumer that keeps a
+    provider/host floor. Each layer is sufficient ON ITS OWN — the whole point
+    of the migration is that the declared layer is load-bearing without a
+    provider/host match, and the floor still works before facts are declared.
+    Nothing pinned the ordering before this phase (the per-call override test
+    that used to was excised in 1b)."""
+
+    def test_declared_layer_alone_is_sufficient(self) -> None:
+        # Declared native_tool_schema == "deepseek", but NO provider/host floor
+        # (provider=custom, non-deepseek host). Declared alone -> True.
+        agent = _make_agent(
+            provider="custom",
+            model="unrecognizable-slug",
+            base_url="https://example.com/v1",
+            native_tool_schema="deepseek",
+        )
+        assert agent._needs_deepseek_tool_reasoning() is True
+
+    def test_provider_host_floor_alone_is_sufficient(self) -> None:
+        # Nothing declared (native_tool_schema=None), but provider is the native
+        # endpoint. Floor alone -> True (native binding works pre-declaration).
+        agent = _make_agent(provider="deepseek", model="unrecognizable-slug")
+        assert agent._model_facts.native_tool_schema is None
+        assert agent._needs_deepseek_tool_reasoning() is True
+
+    def test_neither_falls_to_safe_default(self) -> None:
+        # No declaration, no provider/host match -> safe default (False).
+        agent = _make_agent(
+            provider="openrouter",
+            model="unrecognizable-slug",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert agent._needs_deepseek_tool_reasoning() is False
+
+
 class TestCopyReasoningContentForApi:
     """_copy_reasoning_content_for_api pads reasoning_content for DeepSeek tool-calls."""
 

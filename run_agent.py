@@ -11901,6 +11901,10 @@ class AIAgent:
                 is_codex_backend=is_codex_backend,
                 is_xai_responses=is_xai_responses,
                 github_reasoning_extra=self._github_models_reasoning_extra_body() if is_github_responses else None,
+                # binding-opacity-v1 P4b 1c — declared physics carrier; the xAI
+                # Responses (grok) reasoning_effort gate reads reasoning_support
+                # off this instead of parsing the slug via grok_supports_*.
+                model_facts=self._model_facts,
             )
 
         # ── chat_completions (default) ─────────────────────────────────────
@@ -12011,6 +12015,11 @@ class AIAgent:
                 openrouter_min_coding_score=self.openrouter_min_coding_score,
                 anthropic_max_output=_ant_max,
                 supports_reasoning=self._supports_reasoning_extra_body(),
+                # binding-opacity-v1 P4b 1c — the resolved model physics ride the
+                # existing params carrier into the transport/profile, so moonshot
+                # (native_tool_schema) and deepseek-thinking (reasoning_support)
+                # read the declared fact instead of parsing the slug.
+                model_facts=self._model_facts,
                 qwen_session_metadata=_qwen_meta,
             )
 
@@ -12058,6 +12067,7 @@ class AIAgent:
             github_reasoning_extra=self._github_models_reasoning_extra_body() if _is_gh else None,
             lmstudio_reasoning_options=self._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
             anthropic_max_output=_ant_max,
+            model_facts=self._model_facts,  # binding-opacity-v1 P4b 1c — declared physics carrier
             provider_name=self.provider,
         )
 

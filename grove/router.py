@@ -115,6 +115,29 @@ class ModelFacts:
     distinct from the per-tier ``max_tokens`` deployment budget. Same split as
     ``context_window`` (model) vs ``max_tokens`` (tier). Sentinel 0 = undeclared
     = no override.
+
+    RESOLUTION PRECEDENCE (binding-opacity-v1 P4b). A consumer resolves a
+    capability in this order, and every layer is DECLARED or RETRIEVED — never
+    inferred from the model name (R-2/R-3):
+
+      1. DECLARED — this ModelFacts field, resolved on the routing binding from
+         ``routing.model_facts`` keyed by the opaque slug (e.g.
+         ``native_tool_schema == "moonshot"`` gates Moonshot tool sanitization;
+         ``reasoning_support`` gates the DeepSeek thinking / xAI effort dial).
+      2. PROVIDER / HOST FLOOR — provenance-clean signals the runtime already
+         holds: ``self.provider == "deepseek"`` / ``"xiaomi"``, or a
+         ``base_url`` host match (``api.deepseek.com`` etc.). Retrieved from the
+         session's own connection, not parsed from the slug. Consumers that keep
+         a floor OR it with the declared layer, so a native-endpoint binding
+         still works before the operator declares facts.
+      3. SAFE DEFAULT + one-shot WARNING — neither declared nor a provider/host
+         match: the field's default above, and ``_warn_missing_facts`` names the
+         slug once. This is the VM-on-deploy state before the sovereign write.
+
+    The declared layer is sufficient on its own (it triggers with no provider/
+    host match); the floor is sufficient on its own (it triggers with nothing
+    declared). Both being sufficient is the point — declared config replaces the
+    name inference without breaking native-endpoint bindings.
     """
 
     context_window: int = _CONTEXT_WINDOW_FLOOR
