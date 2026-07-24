@@ -86,10 +86,13 @@ def _tier_cost_summary(routed, agent) -> Optional[str]:
         cost_str = "local ($0)"
     else:
         from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        _facts = getattr(agent, "_model_facts", None)
         cost = estimate_usage_cost(
             model,
             CanonicalUsage(input_tokens=in_tok, output_tokens=out_tok),
             provider=provider or None,
+            input_cost_per_mtok=getattr(_facts, "cost_per_mtok_input", None),
+            output_cost_per_mtok=getattr(_facts, "cost_per_mtok_output", None),
         )
         cost_str = cost.label or "n/a"
     return f"  ↳ {routed.tier} {name} · {total:,} tokens · {cost_str}"

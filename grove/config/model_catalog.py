@@ -216,6 +216,37 @@ def load_catalog() -> list[dict]:
     return merged
 
 
+def _slug_index() -> dict:
+    """Slug -> catalog entry, built from the merged catalog. Empty on any
+    failure (absent/malformed catalog) so display callers degrade to the raw
+    slug rather than crashing."""
+    try:
+        return {
+            m["slug"]: m
+            for m in load_catalog()
+            if isinstance(m, dict) and m.get("slug")
+        }
+    except Exception:
+        return {}
+
+
+def catalog_provider_for(slug: str) -> "str | None":
+    """The DECLARED routing provider for a bound slug (catalog field), or None
+    when the slug is not in the catalog. binding-opacity-v1 P4b Step 2 — the
+    display/telemetry layer reads this instead of splitting the slug on '/'.
+    NON-DISPATCH callers only (G-1b: the routing path never reads the catalog)."""
+    entry = _slug_index().get(slug or "")
+    return entry.get("provider") if entry else None
+
+
+def catalog_display_name_for(slug: str) -> "str | None":
+    """The DECLARED display name for a bound slug (catalog field), or None when
+    absent. Replaces ``slug.split('/')[-1]`` short-name derivation in the UI
+    layer. NON-DISPATCH callers only."""
+    entry = _slug_index().get(slug or "")
+    return entry.get("display_name") if entry else None
+
+
 def merged_catalog_provenance() -> list[dict]:
     """The merged catalog with per-entry provenance for the approval card (G-4).
 

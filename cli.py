@@ -3187,9 +3187,8 @@ class HermesCLI:
         # _try_activate_fallback() switches provider/model.
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
-        model_short = model_name.split("/")[-1] if "/" in model_name else model_name
-        if model_short.endswith(".gguf"):
-            model_short = model_short[:-5]
+        from grove.config.model_catalog import catalog_display_name_for
+        model_short = catalog_display_name_for(model_name) or model_name
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
@@ -3643,8 +3642,9 @@ class HermesCLI:
             return changed
 
         # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
-        if "/" in current_model:
-            slug = current_model.split("/", 1)[1]
+        from hermes_cli.model_normalize import _strip_vendor_prefix
+        slug = _strip_vendor_prefix(current_model)
+        if slug != current_model:
             if not self._model_is_default:
                 self._console_print(
                     f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
@@ -4574,6 +4574,7 @@ class HermesCLI:
             cost_str = "local ($0)"
         else:
             from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+            _facts = getattr(getattr(self, "agent", None), "_model_facts", None)
             cost = estimate_usage_cost(
                 model,
                 CanonicalUsage(
@@ -4581,6 +4582,8 @@ class HermesCLI:
                     output_tokens=output_tokens or 0,
                 ),
                 provider=provider or None,
+                input_cost_per_mtok=getattr(_facts, "cost_per_mtok_input", None),
+                output_cost_per_mtok=getattr(_facts, "cost_per_mtok_output", None),
             )
             cost_str = cost.label or "n/a"
         _cprint(
@@ -4708,10 +4711,13 @@ class HermesCLI:
             if s["provider"] in ("ollama", "mlx"):
                 cost_str = "local ($0)"
             else:
+                _facts = getattr(getattr(self, "agent", None), "_model_facts", None)
                 cost = estimate_usage_cost(
                     s["model"],
                     CanonicalUsage(input_tokens=s["input"], output_tokens=s["output"]),
                     provider=s["provider"] or None,
+                    input_cost_per_mtok=getattr(_facts, "cost_per_mtok_input", None),
+                    output_cost_per_mtok=getattr(_facts, "cost_per_mtok_output", None),
                 )
                 if cost.amount_usd is not None:
                     total_cost += float(cost.amount_usd)
@@ -5780,7 +5786,8 @@ class HermesCLI:
         tool_count = len(tools) if tools else 0
 
         # Format model name (shorten if needed)
-        model_short = self.model.split("/")[-1] if "/" in self.model else self.model
+        from grove.config.model_catalog import catalog_display_name_for
+        model_short = catalog_display_name_for(self.model) or self.model
         if len(model_short) > 30:
             model_short = model_short[:27] + "..."
 
@@ -9832,6 +9839,7 @@ class HermesCLI:
         compressions = compressor.compression_count
 
         msg_count = len(self.conversation_history)
+        _facts = getattr(agent, "_model_facts", None)
         cost_result = estimate_usage_cost(
             agent.model,
             CanonicalUsage(
@@ -9842,6 +9850,8 @@ class HermesCLI:
             ),
             provider=getattr(agent, "provider", None),
             base_url=getattr(agent, "base_url", None),
+            input_cost_per_mtok=getattr(_facts, "cost_per_mtok_input", None),
+            output_cost_per_mtok=getattr(_facts, "cost_per_mtok_output", None),
         )
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 

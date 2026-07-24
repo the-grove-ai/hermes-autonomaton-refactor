@@ -288,15 +288,14 @@ def _count_tool(tool_names: List[str], *needles: str) -> int:
 
 
 def model_provider(model_name: str) -> Optional[str]:
-    name = (model_name or "").strip().lower()
-    if not name or name == "none":
+    name = (model_name or "").strip()
+    if not name or name.lower() == "none":
         return None
-    if "/" in name:
-        return name.split("/", 1)[0]
-    for provider in ["openai", "anthropic", "google", "gemini", "mistral", "meta", "qwen", "deepseek", "xai", "nous", "ollama", "groq", "openrouter", "codex"]:
-        if provider in name:
-            return "google" if provider == "gemini" else provider
-    return name.split(":", 1)[0].split("-", 1)[0]
+    # The model slug is opaque: never parse it for a vendor name. Return the
+    # declared routing provider from the catalog, or None when unknown.
+    # Declared beats inferred; unknown-and-honest beats confidently-wrong.
+    from grove.config.model_catalog import catalog_provider_for
+    return catalog_provider_for(name)
 
 
 def is_local_model_name(model_name: str) -> bool:

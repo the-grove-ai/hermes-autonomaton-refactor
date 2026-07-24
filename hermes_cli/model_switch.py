@@ -355,11 +355,9 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
         mimo-v2-omni    → (-2.0, 1, 'omni')
         mimo-v2-flash   → (-2.0, 1, 'flash')
     """
-    # Strip the prefix (and optional "/" separator for aggregator slugs)
+    # Strip the prefix (and any leading "/" separator for aggregator slugs)
     rest = model_id[len(prefix):]
-    if rest.startswith("/"):
-        rest = rest[1:]
-    rest = rest.lstrip("-").strip()
+    rest = rest.lstrip("/-").strip()
 
     # Parse version and suffix from the remainder.
     # "v2.5-pro" → version [2.5], suffix "pro"

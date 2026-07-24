@@ -23,7 +23,7 @@ import logging
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -146,7 +146,28 @@ class ModelFacts:
     system_message_role: str = "system"
     prompt_cache_style: str = "none"
     max_output_tokens: int = 0
+    # binding-opacity-v1 P4b Step 2 — USD per MILLION tokens, a published
+    # economic property of the MODEL (physics), keyed by slug. Absent -> None ->
+    # cost UNKNOWN; consumers report "unknown" and NEVER fall back to a
+    # name-derived pricing table (that inference is what this deletes —
+    # unknown-and-loud beats confidently-wrong, same as context_window).
+    # Distinct from TierConfig.cost_per_mtok_* (the T-telemetry classifier's
+    # tier-level spend + the flywheel ratchet); the RATE is the same number in
+    # both places today — see the drift note banked to declarative-flag-path-v1.
+    cost_per_mtok_input: Optional[float] = None
+    cost_per_mtok_output: Optional[float] = None
     declared: bool = False
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    """Coerce a declared cost value to float, or None when absent/unparseable —
+    cost UNKNOWN, never a silent 0.0 (which would report free, confidently-wrong)."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_facts(facts_map: dict, slug: Optional[str]) -> "tuple[ModelFacts, Optional[str]]":
@@ -173,6 +194,8 @@ def _resolve_facts(facts_map: dict, slug: Optional[str]) -> "tuple[ModelFacts, O
             system_message_role=str(entry.get("system_message_role") or "system"),
             prompt_cache_style=str(entry.get("prompt_cache_style") or "none"),
             max_output_tokens=int(entry.get("max_output_tokens") or 0),
+            cost_per_mtok_input=_opt_float(entry.get("cost_per_mtok_input")),
+            cost_per_mtok_output=_opt_float(entry.get("cost_per_mtok_output")),
             declared=True,
         ),
         missing,

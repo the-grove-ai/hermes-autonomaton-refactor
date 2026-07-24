@@ -51,7 +51,9 @@ def _model_short(model: Optional[str]) -> str:
     """Drop ``vendor/`` prefix for readability (``openai/gpt-5.4`` → ``gpt-5.4``)."""
     if not model:
         return ""
-    return model.rsplit("/", 1)[-1]
+    from grove.config.model_catalog import catalog_display_name_for
+
+    return catalog_display_name_for(model) or model
 
 
 def resolve_footer_config(

@@ -15789,6 +15789,8 @@ class AIAgent:
                             provider=self.provider,
                             base_url=self.base_url,
                             api_key=getattr(self, "api_key", ""),
+                            input_cost_per_mtok=self._model_facts.cost_per_mtok_input,
+                            output_cost_per_mtok=self._model_facts.cost_per_mtok_output,
                         )
                         if cost_result.amount_usd is not None:
                             self.session_estimated_cost_usd += float(cost_result.amount_usd)
@@ -17093,6 +17095,8 @@ class AIAgent:
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
+                        input_cost_per_mtok=self._model_facts.cost_per_mtok_input,
+                        output_cost_per_mtok=self._model_facts.cost_per_mtok_output,
                     )
                 except Exception:
                     pass

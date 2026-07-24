@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
-    get_pricing_entry,
+    has_known_pricing,
     normalize_usage,
 )
 
@@ -106,34 +106,74 @@ def test_normalize_usage_openai_prefers_prompt_tokens_details_over_top_level():
     assert normalized.cache_write_tokens == 150
 
 
-def test_openrouter_models_api_pricing_is_converted_from_per_token_to_per_million(monkeypatch):
-    monkeypatch.setattr(
-        "agent.usage_pricing.fetch_model_metadata",
-        lambda: {
-            "anthropic/claude-opus-4.6": {
-                "pricing": {
-                    "prompt": "0.000005",
-                    "completion": "0.000025",
-                    "input_cache_read": "0.0000005",
-                    "input_cache_write": "0.00000625",
-                }
-            }
-        },
+# ── binding-opacity-v1: cost from DECLARED facts, never the slug ──────────────
+
+def test_estimate_usage_cost_computes_from_declared_rates():
+    """Both declared per-mtok rates present -> compute directly, source
+    'declared'. The slug is opaque; only the declared rates drive the number."""
+    result = estimate_usage_cost(
+        "any-opaque-slug",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=500_000),
+        input_cost_per_mtok=3.0,
+        output_cost_per_mtok=15.0,
     )
 
-    entry = get_pricing_entry(
-        "anthropic/claude-opus-4.6",
-        provider="openrouter",
-        base_url="https://openrouter.ai/api/v1",
+    assert result.status == "estimated"
+    assert result.source == "declared"
+    # 1M input × $3/M + 500K output × $15/M = $3.00 + $7.50 = $10.50
+    assert float(result.amount_usd) == 10.5
+
+
+def test_estimate_usage_cost_unknown_when_rates_undeclared():
+    """No declared rates -> unknown-and-loud. No fallback to a name table."""
+    result = estimate_usage_cost(
+        "anthropic/claude-sonnet-4-20250514",
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+        provider="anthropic",
     )
 
-    assert float(entry.input_cost_per_million) == 5.0
-    assert float(entry.output_cost_per_million) == 25.0
-    assert float(entry.cache_read_cost_per_million) == 0.5
-    assert float(entry.cache_write_cost_per_million) == 6.25
+    assert result.status == "unknown"
+    assert result.amount_usd is None
+    assert result.source == "none"
+
+
+def test_estimate_usage_cost_unknown_when_only_one_rate_declared():
+    """A half-declared binding is still unknown — both rates are required."""
+    result = estimate_usage_cost(
+        "any-slug",
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+        input_cost_per_mtok=3.0,
+    )
+
+    assert result.status == "unknown"
+    assert result.amount_usd is None
+
+
+def test_estimate_usage_cost_bills_cache_tokens_at_declared_input_rate():
+    """The declared binding has no separate cache tier; cache tokens are billed
+    at the declared input rate and a note records that."""
+    result = estimate_usage_cost(
+        "any-slug",
+        CanonicalUsage(
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=2000,
+            cache_write_tokens=400,
+        ),
+        input_cost_per_mtok=3.0,
+        output_cost_per_mtok=15.0,
+    )
+
+    assert result.status == "estimated"
+    # input 1000×3 + output 500×15 + cache (2000+400)×3 (input rate), all per-M
+    expected = (1000 * 3.0 + 500 * 15.0 + (2000 + 400) * 3.0) / 1_000_000
+    assert float(result.amount_usd) == round(expected, 10)
+    assert any("cache" in n for n in result.notes)
 
 
 def test_estimate_usage_cost_marks_subscription_routes_included():
+    """Subscription route is detected from the provider token, without parsing
+    the slug, and bills nothing."""
     result = estimate_usage_cost(
         "gpt-5.3-codex",
         CanonicalUsage(input_tokens=1000, output_tokens=500),
@@ -145,82 +185,12 @@ def test_estimate_usage_cost_marks_subscription_routes_included():
     assert float(result.amount_usd) == 0.0
 
 
-def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(monkeypatch):
-    monkeypatch.setattr(
-        "agent.usage_pricing.fetch_model_metadata",
-        lambda: {
-            "google/gemini-2.5-pro": {
-                "pricing": {
-                    "prompt": "0.00000125",
-                    "completion": "0.00001",
-                }
-            }
-        },
-    )
-
-    result = estimate_usage_cost(
-        "google/gemini-2.5-pro",
-        CanonicalUsage(input_tokens=1000, output_tokens=500, cache_read_tokens=100),
-        provider="openrouter",
-        base_url="https://openrouter.ai/api/v1",
-    )
-
-    assert result.status == "unknown"
-
-
-def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
-    monkeypatch.setattr(
-        "agent.usage_pricing.fetch_endpoint_model_metadata",
-        lambda base_url, api_key=None: {
-            "zai-org/GLM-5-TEE": {
-                "pricing": {
-                    "prompt": "0.0000005",
-                    "completion": "0.000002",
-                }
-            }
-        },
-    )
-
-    entry = get_pricing_entry(
-        "zai-org/GLM-5-TEE",
-        provider="custom",
-        base_url="https://llm.chutes.ai/v1",
-        api_key="test-key",
-    )
-
-    assert float(entry.input_cost_per_million) == 0.5
-    assert float(entry.output_cost_per_million) == 2.0
-
-
-def test_deepseek_v4_pro_pricing_entry_exists():
-    """Regression test: deepseek-v4-pro must have a pricing entry.
-
-    Before this fix, deepseek-v4-pro sessions showed as unknown cost
-    in hermes insights because the _OFFICIAL_DOCS_PRICING table had no
-    entry for that model.  See #24218.
-    """
-    entry = get_pricing_entry(
-        "deepseek-v4-pro",
-        provider="deepseek",
-    )
-
-    assert entry is not None
-    assert entry.input_cost_per_million is not None
-    assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 1.74
-    assert float(entry.output_cost_per_million) == 3.48
-    assert float(entry.cache_read_cost_per_million) == 0.0145
-
-
-def test_deepseek_v4_pro_estimate_usage_cost():
-    """Ensure deepseek-v4-pro sessions get a dollar estimate, not unknown."""
-    result = estimate_usage_cost(
-        "deepseek-v4-pro",
-        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
-        provider="deepseek",
-    )
-
-    assert result.status == "estimated"
-    assert result.amount_usd is not None
-    # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
-    assert float(result.amount_usd) == 3.48
+def test_has_known_pricing_follows_declared_facts():
+    """'known' is a property of the declared binding, never the slug."""
+    assert has_known_pricing("any-slug", input_cost_per_mtok=3.0, output_cost_per_mtok=15.0) is True
+    # subscription route is known even without per-token rates
+    assert has_known_pricing("gpt-5.3-codex", provider="openai-codex") is True
+    # undeclared -> unknown, regardless of how "commercial" the slug looks
+    assert has_known_pricing("anthropic/claude-sonnet-4-20250514") is False
+    assert has_known_pricing("gpt-4o", provider="openai") is False
+    assert has_known_pricing("my-custom-model") is False

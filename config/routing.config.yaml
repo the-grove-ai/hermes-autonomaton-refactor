@@ -119,11 +119,20 @@ routing:
   #   anthropic  — honours Anthropic-style cache_control markers (Claude AND
   #                Qwen families; the native-vs-envelope LAYOUT is decided by
   #                api_mode/endpoint, not this field)
+  # cost_per_mtok_input / cost_per_mtok_output — USD per MILLION tokens, the
+  #   model's published price. Drives per-turn cost telemetry. ABSENT -> cost
+  #   reports "unknown" (never a name-derived guess). DO NOT copy the numbers
+  #   from tier_preferences below without checking them against the provider's
+  #   live price: sources disagree (a portal snapshot and an OpenRouter pull can
+  #   differ by ~45% depending on whether a discount is already applied). A
+  #   declared-WRONG cost is worse than absent — absent reports unknown; wrong
+  #   feeds the Flywheel's binding proposals silently. Declare from the live
+  #   price at write time; binding-capability-sync-v1 keeps it current.
   # context_window / reasoning_support / prompt_cache_style / native_tool_schema
-  # / max_output_tokens are operator-declared (R-3: declared, never inferred from
-  # the name). The reference roster and its model_facts land together in P4c;
-  # live values are the operator's sovereign write on the VM. One worked entry
-  # below shows the shape only.
+  # / max_output_tokens / cost_per_mtok_* are operator-declared (R-3: declared,
+  # never inferred from the name). The reference roster and its model_facts land
+  # together in P4c; live values are the operator's sovereign write on the VM.
+  # One worked entry below shows the shape only.
   model_facts:
     "provider/example-model-slug":     # illustrative shape only — not a bound model
       context_window: 131072
@@ -132,6 +141,8 @@ routing:
       system_message_role: system
       prompt_cache_style: none
       max_output_tokens: 32768
+      # cost_per_mtok_input:  <declare from the live price — see note above>
+      # cost_per_mtok_output: <declare from the live price — see note above>
 
   # Price figures below are May 2026 list prices. The "per average
   # interaction" estimates are rough — real cost scales with how much

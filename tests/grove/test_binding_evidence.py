@@ -158,7 +158,16 @@ def test_self_judged_flag(events_root):
     assert a["judge_groups"][0]["self_judged"] is True
 
 
-def test_family_judged_flag(events_root):
+def test_family_judged_flag(events_root, monkeypatch):
+    # R-I (binding-opacity): family_judged reads the DECLARED catalog provider,
+    # not the slug's first path segment. Two distinct models that share a
+    # declared provider are family-judged; slugs absent from the catalog resolve
+    # to None (see test_family_judged_requires_declared_provider below).
+    declared = {"prov-a/model-1": "prov-a", "prov-a/model-9": "prov-a"}
+    monkeypatch.setattr(
+        "grove.config.model_catalog.catalog_provider_for",
+        lambda slug: declared.get(slug or ""),
+    )
     _write(events_root, "f1", _ev(
         model="prov-a/model-1", quality_score=0.9, rubric_version="1.0",
         redraft_count=0, evaluator_model="prov-a/model-9",
@@ -166,6 +175,20 @@ def test_family_judged_flag(events_root):
     a = _arm(collect_arms(events_root=events_root, now=NOW),
              "skill.fleet.alpha", "prov-a/model-1")
     assert a["family_judged"] is True and a["self_judged"] is False
+
+
+def test_family_judged_requires_declared_provider(events_root):
+    # R-I: without a catalog declaration, a same-prefix slug pair is NO LONGER
+    # inferred as family — the measurement layer stops guessing the provider
+    # from the slug. Both synthetic slugs are absent from the real catalog, so
+    # _provider_org returns None for each and family_judged stays False.
+    _write(events_root, "f2", _ev(
+        model="prov-a/model-1", quality_score=0.9, rubric_version="1.0",
+        redraft_count=0, evaluator_model="prov-a/model-9",
+    ))
+    a = _arm(collect_arms(events_root=events_root, now=NOW),
+             "skill.fleet.alpha", "prov-a/model-1")
+    assert a["family_judged"] is False and a["self_judged"] is False
 
 
 def test_cross_provider_judge_neither_flag(events_root):

@@ -60,9 +60,14 @@ def _default_events_root() -> Optional[Path]:
 
 
 def _provider_org(slug: Optional[str]) -> Optional[str]:
-    if not slug or "/" not in slug:
-        return None
-    return slug.split("/", 1)[0]
+    # R-I (binding-opacity) — read the DECLARED catalog provider, never infer
+    # it by splitting the slug. Non-catalog slugs return None (declared-or-
+    # nothing): the measurement layer stops guessing. This module is
+    # NON-DISPATCH (kaizen evidence, not reached from run_agent/dispatcher), so
+    # reading the catalog is safe under G-1b.
+    from grove.config.model_catalog import catalog_provider_for
+
+    return catalog_provider_for(slug or "")
 
 
 def _parse_ts(value: Any) -> Optional[datetime]:
