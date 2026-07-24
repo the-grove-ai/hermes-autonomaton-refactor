@@ -64,11 +64,6 @@ prompt:
       order: 50
       enabled: true
 
-    alibaba_model_override:
-      tier: stable
-      order: 55
-      enabled: true
-
     environment_hints:
       tier: stable
       order: 60
