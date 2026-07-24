@@ -6,7 +6,7 @@ trigger:
   intents: [system_admin]
   keywords: [spotify, music, playlist]
   dock_affinity: []
-  always: false
+  always: true
   disclosure: proactive
 bindings:
   tools:

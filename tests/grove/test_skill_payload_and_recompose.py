@@ -53,7 +53,14 @@ def _cap(*, cap_id="skill.fleet.myprimary", intents=None, primary=None,
 
 
 def test_render_injects_frame_and_body_slug_only(monkeypatch):
-    reg.load_capabilities()  # populate _PRIMACY_MAP: research -> researcher
+    # native-presence-declared-v1: the P2 sweep STRIPPED trigger.intents from the
+    # held researcher record, so its primary_intents=[research] no longer satisfy
+    # the subset relation and the research->researcher primacy map entry is dropped
+    # (primary_skill_for_intent('research') is now None). Drive the resolver directly
+    # at the REAL researcher record to exercise the render/body-hash mechanism.
+    rec = reg.load_capabilities()["skill.fleet.researcher"]
+    monkeypatch.setattr(reg, "primary_skill_for_intent", lambda i: "researcher")
+    monkeypatch.setattr(reg, "skill_record_for_name", lambda s: rec)
     ctx = {"intent_class": "research", "skill_payload_ceiling": 5000}
     result = _skill_payload_provider(ctx)
     assert result is not None
@@ -83,7 +90,11 @@ def test_missing_tier_ceiling_emits_nothing():
 
 
 def test_oversize_drops_entire_payload(monkeypatch):
-    reg.load_capabilities()
+    # native-presence-declared-v1: research->researcher primacy is dropped (held
+    # record's intents stripped), so drive the resolver directly at the real record.
+    rec = reg.load_capabilities()["skill.fleet.researcher"]
+    monkeypatch.setattr(reg, "primary_skill_for_intent", lambda i: "researcher")
+    monkeypatch.setattr(reg, "skill_record_for_name", lambda s: rec)
     sink: dict = {}
     ctx = {"intent_class": "research", "skill_payload_ceiling": 5,
            "_composer_drops": sink}

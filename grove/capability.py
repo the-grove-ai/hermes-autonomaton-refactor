@@ -665,6 +665,18 @@ def _validate_quality_gate(governance, record_id: str) -> None:
     governance["quality_gate_error"] = err
 
 
+@dataclass
+class Hold:
+    """native-presence-declared-v1 — a record-level hold. Answers "may producers
+    propose presence changes to this record?", distinct from ``trigger`` (which
+    answers "when is this offered?"). Read by the admission-friction producer to
+    skip proposing ``force_always`` for a held record. Lifting the hold is
+    deleting the block in a reviewed diff."""
+
+    owning_sprint: str
+    reason: str
+
+
 @dataclass(kw_only=True)
 class Capability:
     id: str  # governance-bearing — no default
@@ -704,6 +716,10 @@ class Capability:
     # unknown token fails loud. The fleet runtime enforces this list generically;
     # the record itself carries no runtime code, only the declaration.
     read_surfaces: list = field(default_factory=list)
+    # native-presence-declared-v1 — record-level hold (may producers propose a
+    # presence change to this record?). None for all but the 4 held fleet records;
+    # read by build_admission_friction_proposals to skip proposing force_always.
+    hold: "Hold | None" = None
     # NOTE: the fleet-pipeline-v1 P5 ``required_tools`` field was RETIRED in
     # fleet-corpus-only-offering-v1 P2. It had no runtime consumer once the L2
     # config-blind tool floor (Dispatcher, platform=='fleet' -> {read_file,
@@ -729,6 +745,13 @@ class Capability:
             raise ValueError(
                 "lifecycle.state must be a valid LifecycleState enum member"
             )
+        # native-presence-declared-v1 — a hold, when present, must name its owner
+        # and reason (fail loud — a hold with no owning sprint is undeliftable debt).
+        if self.hold is not None:
+            if not (isinstance(self.hold.owning_sprint, str) and self.hold.owning_sprint.strip()):
+                raise ValueError("hold.owning_sprint must be a non-empty string")
+            if not (isinstance(self.hold.reason, str) and self.hold.reason.strip()):
+                raise ValueError("hold.reason must be a non-empty string")
 
         # Trigger discipline (A4 + A4t). A unit without a strict trigger silently
         # vanishes from disclosure — EXCEPT a ``disclosure: fallback`` record,
@@ -1092,6 +1115,12 @@ class Capability:
         # round-trip.
         if self.read_surfaces:
             d["read_surfaces"] = list(self.read_surfaces)
+        # native-presence-declared-v1 — emit the hold block only when present.
+        if self.hold is not None:
+            d["hold"] = {
+                "owning_sprint": self.hold.owning_sprint,
+                "reason": self.hold.reason,
+            }
         return d
 
     @classmethod
@@ -1230,6 +1259,13 @@ class Capability:
             mb = d["model_binding"]
             kwargs["model_binding"] = ModelBinding(
                 type=mb.get("type"), tier=mb.get("tier"), model=mb.get("model")
+            )
+
+        # native-presence-declared-v1 — record-level hold (present-key only).
+        if "hold" in d and d["hold"] is not None:
+            h = d["hold"]
+            kwargs["hold"] = Hold(
+                owning_sprint=h.get("owning_sprint", ""), reason=h.get("reason", "")
             )
 
         # background-worker-runtime-v1 — read_surfaces (present-key only; absent

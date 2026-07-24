@@ -66,7 +66,10 @@ REGISTRY = _Registry([
     ("terminal", "Run a shell command."),
     ("clarify", "Ask the operator a question."),
     ("web_search", "Search the web."),
-    ("execute_code", "Execute a code snippet."),   # intent-gated exemplar (P2)
+    # native-presence-declared-v1: execute_code was swept to always:true (now eager
+    # core), so it is no longer a withheld exemplar. delegate_task is a COMPLEXITY
+    # record — never eager on a moderate turn, it rides the pull-index.
+    ("delegate_task", "Delegate a subtask to a worker."),
 ])
 
 
@@ -81,7 +84,7 @@ def test_apply_disclosure_reduces_to_core_plus_pull_tools():
     res = _res([
         _tool("terminal"), _tool("clarify"),       # core/baseline -> eager
         _tool("web_search"),                        # BASELINE (P2) -> eager, never demoted
-        _tool("execute_code"),                      # intent-gated native -> withheld
+        _tool("delegate_task"),                     # complexity native -> withheld
         _tool("mcp_notion_API_post_page"),          # matched MCP -> eager
     ])
     reduced = agent._apply_disclosure(res)
@@ -91,13 +94,13 @@ def test_apply_disclosure_reduces_to_core_plus_pull_tools():
     # retrieval-ambient-class-v1 P2: web_search rides the ambient baseline
     # class — eager at every tier, NEVER pull-demoted.
     assert "web_search" in names
-    assert "execute_code" not in names                     # intent-gated -> withheld to index
+    assert "delegate_task" not in names                    # complexity -> withheld to index
     assert {"read_tool_schema", "read_goal_context"} <= names  # pull tools present
     # The merged manifest is stashed for the loop interception.
     assert agent._disclosure_manifest is not None
-    # execute_code is pullable; eager units are omitted from the index.
+    # delegate_task is pullable; eager units are omitted from the index.
     rts = next(t for t in reduced if t["function"]["name"] == "read_tool_schema")
-    assert "execute_code" in rts["function"]["description"]
+    assert "delegate_task" in rts["function"]["description"]
     assert "web_search" not in rts["function"]["description"]  # eager -> omitted
     assert "terminal" not in rts["function"]["description"]    # eager -> omitted
 
@@ -111,48 +114,18 @@ def test_apply_disclosure_no_registry_falls_back_to_eager():
     assert agent._disclosure_manifest is None
 
 
-# gateway-disclosure-trigger-v1: a derived native verb's domain-chunk intents
-# make it eager on a matched-intent turn and withheld (pull-only) otherwise.
-_WS_REGISTRY = _Registry([
-    ("terminal", "Run a shell command."),       # core -> always eager
-    ("calendar_list", "List calendar events."),  # baseline (workspace_read, P1)
-    ("execute_code", "Execute a code snippet."),  # intent-gated -> pull-only off-intent
-])
+# native-presence-declared-v1: the _WS_REGISTRY fixture was retired with the two
+# intent-matched-disclosure tests below (its sole consumers).
 
 
-def test_apply_disclosure_eager_on_matched_intent():
-    agent = _bare_agent([])
-    agent._dispatcher_singleton = _DispatcherHolder(_WS_REGISTRY)
-    res = _res([_tool("terminal"), _tool("calendar_list"), _tool("execute_code")])
-    reduced = agent._apply_disclosure(res, intent_class="scheduling")
-    names = _names(reduced)
-    assert "terminal" in names                              # core eager
-    # calendar_list rides the BASELINE class (workspace_read, P1) — eager on
-    # every turn, scheduling included.
-    assert "calendar_list" in names
-    assert "execute_code" not in names                      # not a scheduling verb -> withheld
-    # No double-exposure: eager verbs are omitted from the pull index.
-    rts = next(t for t in reduced if t["function"]["name"] == "read_tool_schema")
-    assert "calendar_list" not in rts["function"]["description"]
-    assert "execute_code" in rts["function"]["description"]  # still pullable
-
-
-def test_apply_disclosure_withheld_on_unmatched_intent():
-    # JIT intact: a genuinely intent-gated verb stays pull-only on an unmatched
-    # turn. NOTE (retrieval-ambient-class-v1 P2): web_search was the prior
-    # example, but it joined the ambient BASELINE class (P1 ratification —
-    # eager on every turn), so we assert withholding on execute_code instead:
-    # intent-gated to code_generation/debugging/system_admin — NOT
-    # conversation.
-    agent = _bare_agent([])
-    agent._dispatcher_singleton = _DispatcherHolder(_WS_REGISTRY)
-    res = _res([_tool("terminal"), _tool("execute_code")])
-    reduced = agent._apply_disclosure(res, intent_class="conversation")
-    names = _names(reduced)
-    assert "terminal" in names                              # core still eager
-    assert "execute_code" not in names                      # withheld (intent-gated)
-    rts = next(t for t in reduced if t["function"]["name"] == "read_tool_schema")
-    assert "execute_code" in rts["function"]["description"]  # pullable
+# native-presence-declared-v1 RETIRED test_apply_disclosure_eager_on_matched_intent
+# and test_apply_disclosure_withheld_on_unmatched_intent: both pinned INTENT-MATCHED
+# native eager disclosure (a proactive+always:false verb eager on its intent, pull
+# off-intent). The P2 sweep left NO native proactive+always:false verbs — presence
+# is DECLARED (baseline / always:true eager; complexity pull), never intent-inferred
+# — so the `matched` native split is structurally empty and this behavior is gone.
+# Baseline/core eager and complexity withholding are covered by
+# test_apply_disclosure_reduces_to_core_plus_pull_tools above.
 
 
 def test_intercept_read_tool_schema_splices_pulled_def():

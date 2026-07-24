@@ -74,17 +74,12 @@ def test_migrated_class_a_present_on_every_intent(core_tool):
             assert core_tool in got, f"{core_tool} missing on classified cell T{tier_int}|{intent}"
 
 
-def test_migrated_intent_gated_records_ride_only_their_intent():
-    # Class B2/C (spotify_write, discord, homeassistant_read, discord_admin,
-    # computer_use) became proactive+intent-gated: present iff the intent matches,
-    # absent on unrelated classified turns (no longer fallback-only).
-    sysadmin = _names(resolve_tools_for_tier(TOOLS, "system_admin", "moderate", mcp_allow=None))
-    messaging = _names(resolve_tools_for_tier(TOOLS, "messaging", "moderate", mcp_allow=None))
-    research = _names(resolve_tools_for_tier(TOOLS, "research", "moderate", mcp_allow=None))
-    assert "spotify_search" in sysadmin           # spotify_write intents=[system_admin]
-    assert "spotify_search" not in messaging
-    assert "discord" in messaging                  # discord intents=[messaging]
-    assert "discord" not in research
+# native-presence-declared-v1 RETIRED test_migrated_intent_gated_records_ride_only_their_intent:
+# it asserted the Class B2/C native records (spotify_write, discord, discord_admin,
+# computer_use) were present ONLY on their matching intent and absent otherwise —
+# i.e. INTENT-MATCH admission. The P2 sweep flipped all of them to always:true with
+# intents STRIPPED, so they now ride EVERY turn; presence is declared, never
+# intent-inferred, and no native intent-gated verb survives to exercise the invariant.
 
 
 def test_invoke_skill_offered_on_every_recognized_intent():

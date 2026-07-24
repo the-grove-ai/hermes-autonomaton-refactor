@@ -8,7 +8,7 @@ trigger:
   - system_admin
   keywords: []
   dock_affinity: []
-  always: false
+  always: true
   disclosure: proactive
 bindings:
   tools:

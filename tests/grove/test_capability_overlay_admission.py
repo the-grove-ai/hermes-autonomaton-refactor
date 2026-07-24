@@ -98,20 +98,22 @@ def test_writer_absolute_state_per_record_replacement(tmp_path):
         "CONTRACT: sanctioned admission writer "
         "grove.capability_registry.write_admission_state is not implemented"
     )
+    # native-presence-declared-v1: intents= is retired (raises); tiers= is the
+    # surviving absolute-state admission write.
     writer(
-        "browser_read", intents=["research_request"],
+        "browser_read", tiers=[1, 2],
         provenance=dict(_PROVENANCE), state_dir=tmp_path,
     )
     writer(
-        "browser_read", intents=["memory_operation"],
+        "browser_read", tiers=[3],
         provenance=dict(_PROVENANCE), state_dir=tmp_path,
     )
     files = sorted(tmp_path.glob("*.yaml"))
     assert len(files) == 1, "per-record replacement: ONE state file per id"
     doc = yaml.safe_load(files[0].read_text(encoding="utf-8"))
-    assert doc["intents"] == ["memory_operation"], (
+    assert doc["tiers"] == [3], (
         "CONTRACT: second write REPLACES the list absolutely (no union with "
-        f"the first write); got {doc.get('intents')!r}"
+        f"the first write); got {doc.get('tiers')!r}"
     )
 
 
@@ -137,8 +139,10 @@ def test_writer_emits_only_canonical_keys_never_added_intents(tmp_path):
     assert writer is not None, (
         "CONTRACT: sanctioned admission writer missing (see T1 pin)"
     )
+    # native-presence-declared-v1: intents= is retired; a tiers-only write still
+    # emits only canonical keys and never the legacy added_intents.
     writer(
-        "browser_read", intents=["research_request"], tiers=[2, 3],
+        "browser_read", tiers=[2, 3],
         provenance=dict(_PROVENANCE), state_dir=tmp_path,
     )
     files = sorted(tmp_path.glob("*.yaml"))

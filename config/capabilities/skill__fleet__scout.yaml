@@ -4,7 +4,7 @@ trigger:
   intents: [research]
   keywords: [scout, digest, engagement opportunities, morning digest, social monitoring]
   dock_affinity: []
-  always: false
+  always: true
   disclosure: proactive
 bindings:
   tools: []

@@ -70,14 +70,10 @@ def _build(tmp_path, rows, caps, config_path=None, tombstone_path=None):
 
 # ── core producer ───────────────────────────────────────────────────────────
 
-def test_over_threshold_arm_yields_one_add_intent_proposal(tmp_path):
-    rows = [_refusal("recY", "intent_a") for _ in range(3)]
-    props = _build(tmp_path, rows, _caps(recY=_Rec(Zone.YELLOW)))
-    assert len(props) == 1
-    assert props[0].payload["verb"] == "add_intents"
-    assert props[0].payload["add_intents"] == ["intent_a"]
-    assert props[0].payload["record"] == "recY"
-    assert props[0].proposer == "admission_friction"
+# native-presence-declared-v1 RETIRED test_over_threshold_arm_yields_one_add_intent_proposal:
+# the per-intent add_intents proposal path is deleted (adding an intent no longer
+# offers a tool). A YELLOW over-threshold arm now yields nothing; the sole lever is
+# the GREEN-scoped force_always proposal, covered below.
 
 
 def test_under_threshold_yields_nothing(tmp_path):
@@ -109,18 +105,25 @@ def test_non_green_record_never_yields_force_always(tmp_path):
     props = _build(tmp_path, rows, _caps(recY=_Rec(Zone.YELLOW)))
     verbs = [p.payload["verb"] for p in props]
     assert "force_always" not in verbs, "a non-GREEN record must never force_always"
-    assert verbs == ["add_intents", "add_intents", "add_intents"]
+    # native-presence-declared-v1: with add_intents retired, force_always is the
+    # only producer verb and it is GREEN-scoped — a non-green record yields NO
+    # admission-friction proposals at all.
+    assert props == []
 
 
 def test_all_producer_verbs_are_additive_only(tmp_path):
+    # native-presence-declared-v1: force_always is the SOLE producer verb now
+    # (add_intents retired). A GREEN record with >=3 distinct over-threshold intents
+    # yields one force_always; a non-green record yields nothing.
     rows = []
-    for rec, zone in (("recG", Zone.GREEN), ("recY", Zone.YELLOW)):
-        for intent in ("intent_a", "intent_b"):
-            rows += [_refusal(rec, intent) for _ in range(3)]
+    for intent in ("intent_a", "intent_b", "intent_c"):
+        rows += [_refusal("recG", intent) for _ in range(3)]
+    for intent in ("intent_a", "intent_b"):
+        rows += [_refusal("recY", intent) for _ in range(3)]
     props = _build(tmp_path, rows, _caps(recG=_Rec(Zone.GREEN), recY=_Rec(Zone.YELLOW)))
     assert props, "expected proposals"
     for p in props:
-        assert p.payload["verb"] in ("add_intents", "force_always")
+        assert p.payload["verb"] == "force_always"
         # no removal/shrink verb, ever
         assert not any(k.startswith(("remove", "drop", "strip")) for k in p.payload)
 
@@ -128,12 +131,22 @@ def test_all_producer_verbs_are_additive_only(tmp_path):
 # ── threshold from config (confirmation) ─────────────────────────────────────
 
 def test_threshold_read_from_config_not_constant(tmp_path):
+    # native-presence-declared-v1: exercised through the GREEN force_always path
+    # (add_intents retired). friction_threshold still gates each arm before the
+    # >=3-distinct-intents force_always fires.
     cfg = tmp_path / "flywheel.config.yaml"
     cfg.write_text("admission_friction:\n  friction_threshold: 5\n", encoding="utf-8")
-    caps = _caps(recY=_Rec(Zone.YELLOW))
-    assert _build(tmp_path, [_refusal("recY", "intent_a")] * 4, caps, config_path=cfg) == []
-    props = _build(tmp_path, [_refusal("recY", "intent_a")] * 5, caps, config_path=cfg)
-    assert len(props) == 1
+    caps = _caps(recG=_Rec(Zone.GREEN))
+    intents = ("intent_a", "intent_b", "intent_c")
+    under = []
+    for intent in intents:
+        under += [_refusal("recG", intent) for _ in range(4)]  # 4 < 5 → no arm arms
+    assert _build(tmp_path, under, caps, config_path=cfg) == []
+    over = []
+    for intent in intents:
+        over += [_refusal("recG", intent) for _ in range(5)]  # 5 >= 5 → all arms clear
+    props = _build(tmp_path, over, caps, config_path=cfg)
+    assert len(props) == 1 and props[0].payload["verb"] == "force_always"
 
 
 def test_green_distinct_threshold_from_config(tmp_path):
@@ -151,20 +164,10 @@ def test_green_distinct_threshold_from_config(tmp_path):
 
 # ── G2: tombstone grain + location ───────────────────────────────────────────
 
-def test_tombstone_grain_is_record_intent(tmp_path):
-    tomb = tmp_path / "tomb.json"
-    # dismiss (recY, intent_x)
-    dismissed = RoutingProposal(
-        proposal_id="p1", type=PROPOSAL_TYPE_ADMISSION_FRICTION,
-        payload={"record": "recY", "verb": "add_intents", "add_intents": ["intent_x"]},
-        evidence=("recY|intent_x",), eval_hash="", created_at="t",
-    )
-    af.record_tombstone(dismissed, path=tomb)
-    rows = ([_refusal("recY", "intent_x") for _ in range(3)]
-            + [_refusal("recY", "intent_y") for _ in range(3)])
-    props = _build(tmp_path, rows, _caps(recY=_Rec(Zone.YELLOW)), tombstone_path=tomb)
-    added = sorted(p.payload["add_intents"][0] for p in props)
-    assert added == ["intent_y"], "(A,X) dismiss must not suppress (A,Y)"
+# native-presence-declared-v1 RETIRED test_tombstone_grain_is_record_intent:
+# the per-intent (record, intent) tombstone grain suppressed add_intents proposals,
+# which no longer exist. The surviving force_always proposal tombstones on a
+# record-level sentinel (__force_always__); the per-intent grain has no consumer.
 
 
 def test_tombstone_path_is_outside_repo_tree(tmp_path, monkeypatch):
@@ -216,10 +219,12 @@ def test_approval_writes_only_grove_never_repo(tmp_path, monkeypatch):
     # would now raise. The approval must still succeed → repo-write is unreachable.
     os.chmod(defn, 0o500)
     try:
+        # native-presence-declared-v1: force_always is the sole apply verb now.
         proposal = RoutingProposal(
             proposal_id="pfx", type=PROPOSAL_TYPE_ADMISSION_FRICTION,
-            payload={"record": rid, "verb": "add_intents", "add_intents": ["creative_writing"]},
-            evidence=(f"{rid}|creative_writing",), eval_hash="", created_at="t",
+            payload={"record": rid, "verb": "force_always",
+                     "evidence_block": {"verb": "force_always"}},
+            evidence=(f"{rid}|__force_always__",), eval_hash="", created_at="t",
         )
         target, applied = fc._approve_admission_friction(proposal)
     finally:
@@ -229,7 +234,7 @@ def test_approval_writes_only_grove_never_repo(tmp_path, monkeypatch):
     assert Path(target).parent == state                 # wrote ~/.grove state overlay
     assert Path(target).exists()
     overlay = Path(target).read_text()
-    assert "creative_writing" in overlay
+    assert "force_always" in overlay
     assert defn_file.read_bytes() == before, "repo definition must be byte-unchanged"
 
 
@@ -242,13 +247,18 @@ def test_registered_on_existing_kaizen_surface(tmp_path):
 
 
 def test_proposal_renders_with_recurrence_evidence(tmp_path):
-    rows = [_refusal("recY", "intent_a") for _ in range(4)]
-    props = _build(tmp_path, rows, _caps(recY=_Rec(Zone.YELLOW)))
+    # native-presence-declared-v1: the sole surviving proposal is the GREEN
+    # force_always; its render carries the recurring intents + arm evidence.
+    rows = []
+    for intent in ("intent_a", "intent_b", "intent_c"):
+        rows += [_refusal("recG", intent) for _ in range(4)]
+    props = _build(tmp_path, rows, _caps(recG=_Rec(Zone.GREEN)))
+    assert len(props) == 1 and props[0].payload["verb"] == "force_always"
     summary = RENDER_REGISTRY[PROPOSAL_TYPE_ADMISSION_FRICTION](props[0])
-    assert "recY" in summary and "intent_a" in summary and "4" in summary
+    assert "recG" in summary and "intent_a" in summary
     diff = fc._admission_friction_to_diff(props[0])
     assert diff["evidence"] and diff["evidence"][0]["count"] == 4
-    assert diff["overlay_edit"] == {"added_intents": ["intent_a"]}
+    assert diff["overlay_edit"] == {"force_always": True}
 
 
 def test_i7_module_has_no_tool_or_intent_literals():

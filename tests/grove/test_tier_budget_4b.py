@@ -91,9 +91,13 @@ def test_unknown_production_and_eval_twin_both_core_only(intent, complexity):
     # P1 (retrieval-ambient-class-v1): "memory" ghost retired (orphan record
     # deleted); web_search + search_files ride the ambient baseline class on
     # EVERY turn, unknown included.
+    # native-presence-declared-v1: execute_code was swept to always:true, so it now
+    # rides the unknown turn like the rest of the always:true core. Presence is
+    # DECLARED — the only withholding left on an unknown turn is the complexity
+    # class (delegate_task); no native proactive+always:false verbs remain.
     assert {"clarify", "terminal", "read_file", "skill_view",
-            "write_file", "patch", "search_files", "x_search"} <= twin
-    assert "execute_code" not in twin         # intent-gated — withheld on unknown
+            "write_file", "patch", "search_files", "x_search",
+            "execute_code"} <= twin
     assert "web_search" in twin               # baseline — rides unknown turns
     assert "delegate_task" not in twin        # complexity — withheld on unknown
 

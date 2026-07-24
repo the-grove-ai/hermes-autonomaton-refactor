@@ -6,7 +6,7 @@ trigger:
   intents: [code_generation, system_admin]
   keywords: [computer, screen, browser use]
   dock_affinity: []
-  always: false
+  always: true
   disclosure: proactive
 bindings:
   tools:

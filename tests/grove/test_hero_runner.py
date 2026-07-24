@@ -201,15 +201,14 @@ class TestToolsAssertion:
         assert not tool_failures
 
     def test_must_include_missing_reports_failure(self) -> None:
-        # execute_code is not offered for conversation intent — it requires
-        # code_generation or debugging context.  write_file was used here
-        # previously but is now admitted broadly (propose_governance_change
-        # trigger.always: true pulled it into the conversation surface as
-        # part of tool-admission-unification).
+        # native-presence-declared-v1: execute_code was swept to always:true, so it
+        # is now offered on every turn. delegate_task is a COMPLEXITY verb —
+        # withheld on a (moderate) conversation turn — so a must-include on it
+        # reports the failure this assertion exercises.
         report = evaluate(
             [_prompt(
                 intent_class="conversation",
-                tools_must_include=["execute_code"],
+                tools_must_include=["delegate_task"],
             )],
             classifier=lambda msg: _classification(intent_class="conversation"),
         )
@@ -243,7 +242,10 @@ class TestToolsAssertion:
                 "complexity_signal_in": ["simple"],
                 "tier_in": ["T2"],
                 "tools_must_include": ["clarify", "read_file"],
-                "tools_must_not_include": ["execute_code", "delegate_task"],
+                # native-presence-declared-v1: execute_code was swept to always:true
+                # (rides even the unknown turn). delegate_task (complexity) is the
+                # surviving must-not-include exemplar — withheld on an unknown turn.
+                "tools_must_not_include": ["delegate_task"],
                 "is_correction": False,
                 "andon_halt": False,
             },
@@ -255,7 +257,7 @@ class TestToolsAssertion:
         assert not tool_failures
         assert result.observed_tools is not None
         assert {"clarify", "read_file"} <= result.observed_tools
-        assert "execute_code" not in result.observed_tools
+        assert "delegate_task" not in result.observed_tools
 
     def test_known_intent_with_no_fallback_passes(self) -> None:
         report = evaluate(

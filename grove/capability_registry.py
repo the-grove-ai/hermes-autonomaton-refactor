@@ -139,7 +139,7 @@ _STATE_TOP_KEYS: FrozenSet[str] = frozenset(
     {"id", "model_binding", "lifecycle", "lineage",
      # operator-mutable-admission-v1 P1 — ADDITIVE admission keys. Read per-turn
      # at the builder (grove.context_budget), NOT applied by _compose_state.
-     "added_intents", "force_always",
+     "force_always",
      # forge-unattended-publish-v1 P1 — operator-mutable publication-autonomy
      # grant. Allowlisted so the operator CAN grant it via STATE overlay (the
      # enable-flag override precedent), but DELIBERATELY NOT applied by
@@ -221,11 +221,6 @@ def _read_state_file(path: Path) -> "tuple[str, Dict[str, Any]]":
     # operator-mutable-admission-v1 P1 — ADDITIVE admission keys, shape-checked
     # here so a malformed value is the R-B1 signal (caller falls back to the pure
     # definition; per-turn reader logs an Andon warning and applies no additions).
-    ai = doc.get("added_intents")
-    if ai is not None and (
-        not isinstance(ai, list) or not all(isinstance(x, str) for x in ai)
-    ):
-        raise _StateFileInvalid("'added_intents' must be a list of strings")
     fa = doc.get("force_always")
     if fa is not None and not isinstance(fa, bool):
         raise _StateFileInvalid("'force_always' must be a boolean")
@@ -537,10 +532,10 @@ def effective_admission_state(
 
 def read_admission_overlay(
     state_dir: Optional[Path] = None,
-) -> "Dict[str, tuple[FrozenSet[str], bool]]":
+) -> "Dict[str, bool]":
     """The ADDITIVE admission overlay, read FRESH on every call (no cache).
 
-    Returns ``{record_id: (frozenset(added_intents), force_always_bool)}`` for
+    Returns ``{record_id: True}`` for
     every state file that declares at least one additive admission key. The
     builder (``grove.context_budget``) calls this per resolution so an operator
     (or Kaizen) edit takes effect on the NEXT turn with no restart — the
@@ -565,11 +560,10 @@ def read_admission_overlay(
                 "additions applied.", path, exc,
             )
             continue
-        added = doc.get("added_intents") or []
         force = doc.get("force_always") is True
-        if not added and not force:
-            continue  # a pure model_binding/lifecycle state file — no admission keys
-        out[rid] = (frozenset(added), force)
+        if not force:
+            continue  # no force_always overlay — pure model_binding/lifecycle state
+        out[rid] = force
     return out
 
 
@@ -646,41 +640,32 @@ def publication_unattended_authorized(
 def set_admission_overlay(
     cap_id: str,
     *,
-    add_intents: Optional[List[str]] = None,
     force_always: Optional[bool] = None,
     directory: Optional[Path] = None,
     state_dir: Optional[Path] = None,
 ) -> str:
-    """The SOLE sanctioned writer for the additive admission overlay (P1).
+    """The SOLE sanctioned writer for the force_always admission overlay.
 
-    UNIONs *add_intents* into the record's ``added_intents`` and/or sets
-    ``force_always: true`` on the record's ``~/.grove/capabilities/state`` file,
-    preserving any Capability-state keys (model_binding / lifecycle / lineage)
-    already in that file. Same lock + atomic + ``.bak`` discipline as the other
-    state writers.
+    Sets ``force_always: true`` on the record's ``~/.grove/capabilities/state``
+    file, preserving any Capability-state keys (model_binding / lifecycle /
+    lineage) already in that file. Same lock + atomic + ``.bak`` discipline as the
+    other state writers. native-presence-declared-v1 retired the ``add_intents``
+    path — adding an intent no longer offers a tool.
 
-    WRITE-STRICT (fail loud): rejects a non-list *add_intents*, a non-str intent,
-    any *force_always* other than ``True`` (additive-only — a default is removed
-    by editing the repo definition, never by operator state), and a no-op call.
-    Raises :class:`CapabilityLoadError` when no definition carries *cap_id*.
+    WRITE-STRICT (fail loud): rejects any *force_always* other than ``True``
+    (additive-only — a default is removed by editing the repo definition, never by
+    operator state) and a no-op call. Raises :class:`CapabilityLoadError` when no
+    definition carries *cap_id*.
 
     Returns ``"applied"`` or ``"deferred"`` (lock contended — caller retries)."""
-    if add_intents is not None and (
-        not isinstance(add_intents, list)
-        or not all(isinstance(x, str) for x in add_intents)
-    ):
-        raise ValueError(
-            "set_admission_overlay: add_intents must be a list of strings"
-        )
     if force_always is not None and force_always is not True:
         raise ValueError(
             "set_admission_overlay: force_always accepts only True — a default is "
             "removed by editing the repo definition, never by operator state"
         )
-    if not add_intents and force_always is None:
+    if force_always is None:
         raise ValueError(
-            "set_admission_overlay: no-op — provide add_intents and/or "
-            "force_always=True"
+            "set_admission_overlay: no-op — provide force_always=True"
         )
 
     if directory is not None:
@@ -712,13 +697,6 @@ def set_admission_overlay(
                 prior = {}  # torn prior; .bak below retains the bytes
         merged = dict(prior)
         merged["id"] = cap_id
-        if add_intents:
-            existing = merged.get("added_intents")
-            if not isinstance(existing, list):
-                existing = []
-            merged["added_intents"] = sorted(
-                {x for x in existing if isinstance(x, str)} | set(add_intents)
-            )
         if force_always is True:
             merged["force_always"] = True
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -784,9 +762,20 @@ def write_admission_state(
     # ── validation FIRST: a refusal must leave nothing behind ──
     if not isinstance(record_id, str) or not record_id.strip():
         raise ValueError("write_admission_state: record_id must be a non-empty string")
+    # native-presence-declared-v1 — the `intents` admission write is INERT: the
+    # native resolver no longer reads trigger.intents, so replacing them changes
+    # nothing. Reject loudly rather than accept-and-no-op. Presence is changed via
+    # force_always (set_admission_overlay); tiers writes still apply.
+    if intents is not None:
+        raise ValueError(
+            "write_admission_state: `intents` admission is retired by "
+            "native-presence-declared-v1 — the native resolver no longer reads "
+            "trigger.intents, so this write would be a silent no-op. Use force_always "
+            "(set_admission_overlay) to change presence; tiers-only writes still apply."
+        )
     if intents is None and tiers is None:
         raise ValueError(
-            "write_admission_state: no-op — provide intents and/or tiers"
+            "write_admission_state: no-op — provide tiers"
         )
     if intents is not None and (
         not isinstance(intents, list)
@@ -868,9 +857,6 @@ def write_admission_state(
                 prior = {}  # torn prior; .bak below retains the bytes
         merged = dict(prior)
         merged["id"] = record_id
-        # Canonical replacement of the ADMISSION surface: legacy added_intents
-        # is retired from this file (superseded, never writer-emitted).
-        merged.pop("added_intents", None)
         if intents is not None:
             merged["intents"] = list(intents)
         if tiers is not None:

@@ -1,5 +1,11 @@
 # GRV-009 E5 C-VERBS + A4t (declarative-resolution-v1) — grouped verb record.
-# family=web  zone=green  tiers=[1, 2, 3]  disclosure=proactive  always=false (cost HOLD, paid API)  trigger=analysis/creative_writing/factual_lookup/memory_operation/planning/research/retrieval
+# family=web  zone=green  tiers=[1, 2, 3]  disclosure=baseline  always=true
+# native-presence-declared-v1: flipped to always:true; intents RETAINED (presence-
+# inert per the resolver, but live for the capability-payload guidance hook). The
+# prior "always=false (cost HOLD)" was inert — disclosure=baseline already admitted
+# web_search unconditionally, so the intent list never gated PRESENCE. There is NO
+# cost hold today; a real hold needs a declarative field something reads (a
+# cost/hold marker), not an intent list standing in for one.
 id: web_search
 kind: verb
 trigger:
@@ -13,7 +19,7 @@ trigger:
   - retrieval
   keywords: []
   dock_affinity: []
-  always: false
+  always: true
   disclosure: baseline
 bindings:
   tools:

@@ -6,7 +6,7 @@ trigger:
   intents: [messaging]
   keywords: [discord, chat, message]
   dock_affinity: []
-  always: false
+  always: true
   disclosure: proactive
 bindings:
   tools:

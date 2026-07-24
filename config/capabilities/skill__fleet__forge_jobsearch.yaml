@@ -1,7 +1,6 @@
 id: skill.fleet.forge-jobsearch
 kind: skill
 trigger:
-  intents: [creative_writing]
   keywords: [forge, tailor resume, cover letter, job application, application package, forge the application]
   dock_affinity: [career-transition]
   always: false
@@ -25,6 +24,9 @@ tier_rule:
 # (~/.grove/capabilities/state/), deploy-immune. The definition sheds node
 # state; the composed loader restores the pin from the overlay.
 zone: yellow
+hold:
+  owning_sprint: researcher-retrieval-broker-v1
+  reason: no attended emission stager
 telemetry:
   feed: intent_feed
   track:

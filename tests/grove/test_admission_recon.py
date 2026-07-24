@@ -107,14 +107,20 @@ def test_fragment_shows_overlay_provenance_and_derived_preferred(tmp_path):
     assert "research_request" in html_out and "memory_operation" in html_out
 
 
-def test_fragment_flags_legacy_added_intents(tmp_path):
+def test_added_intents_is_now_an_invalid_state_key(tmp_path):
+    # native-presence-declared-v1: added_intents is retired from the STATE
+    # allowlist. A file still carrying it is now an INVALID state file (unknown
+    # top-level key) — rendered as an invalid card (R-B1 fallback to pure
+    # definition), NOT a legacy badge. No "LEGACY: added_intents present" flag.
     from grove.api.fragments import render_admission_state_html
 
     html_out = render_admission_state_html(
         definitions_dirs=[_mk_defs(tmp_path)],
         state_dir=_mk_state(tmp_path, extra={"added_intents": ["old_intent"]}),
     )
-    assert "LEGACY: added_intents present" in html_out
+    assert "LEGACY: added_intents present" not in html_out
+    assert "card-invalid" in html_out
+    assert "added_intents" in html_out  # named in the invalidity reason
 
 
 def test_fragment_untouched_record_reads_definition_source(tmp_path):

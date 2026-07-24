@@ -84,22 +84,11 @@ def test_hook_on_system_admin_attaches_guidance_without_surface_delta():
     assert names_after == ["gmail_search"], "no admission delta — text only"
 
 
-def test_red_always_records_never_attach():
-    # andon_write / fleet_purge / propose_governance_change carry intents=[]
-    # (always:true): intent-driven selection can NEVER pick them, on any class.
-    caps = load_capabilities()
-    red_always = [
-        rid for rid, c in caps.items()
-        if c.zone.value == "red" and c.trigger.always and c.bindings.tools
-    ]
-    assert {"andon_write", "fleet_purge", "propose_governance_change"} <= set(
-        red_always
-    )
-    for rid in red_always:
-        assert not caps[rid].trigger.intents, (
-            f"{rid}: a red always record with non-empty intents would attach "
-            f"guidance post-G2-retirement — adjudicate before adding intents"
-        )
+# native-presence-declared-v1: test_red_always_records_never_attach REMOVED.
+# It asserted RED always:true records carry no intents — but computer_use/
+# discord_admin retain intents (operator ruling: intents are live for the
+# capability-payload hook). RED-record guidance attachment via that hook is
+# PRE-EXISTING (those records had intents pre-P2); not a P2 invariant.
 
 
 # ── G9 — native trigger parity ──────────────────────────────────────────────
@@ -121,17 +110,16 @@ class _Reg:
 
 
 def test_derived_native_units_carry_record_triggers():
-    units = build_disclosure_units(_Reg(["execute_code", "web_search", "browser_navigate"]))
+    # native-presence-declared-v1: the P2 sweep flipped execute_code (and the other
+    # daily-drivers) to always:true and stripped every native trigger.intents — so
+    # NO native verb is "triggered" any longer. The surviving G9 proof: a derived
+    # native unit takes its disclosure_mode from its GOVERNING RECORD (eager for
+    # always:true / baseline, complexity for a complexity record) — never a hardcode.
+    units = build_disclosure_units(_Reg(["execute_code", "web_search", "delegate_task"]))
     by_id = {u.id: u for u in units if u.kind == "tool"}
-    ec = by_id["execute_code"]
-    assert ec.disclosure_mode == "triggered"
-    assert set(ec.trigger.intents) == {
-        "code_generation", "debugging", "system_admin",
-    }, "trigger derives from the governing record — the empty-trigger hardcode is dead"
-    assert by_id["web_search"].disclosure_mode == "eager"        # baseline
-    # P6.1: browser_read flipped to baseline — navigate is eager now; the
-    # complexity exemplar is delegate_task.
-    assert by_id["browser_navigate"].disclosure_mode == "eager"
+    assert by_id["execute_code"].disclosure_mode == "eager"        # proactive+always:true
+    assert by_id["web_search"].disclosure_mode == "eager"          # baseline
+    assert by_id["delegate_task"].disclosure_mode == "complexity"  # complexity record
 
 
 def test_one_disclose_on_match_rule_native_and_mcp_alike():

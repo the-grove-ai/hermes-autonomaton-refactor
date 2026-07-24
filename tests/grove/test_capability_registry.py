@@ -63,8 +63,14 @@ def test_locked_tier_parity():
 
 def test_locked_intent_parity():
     caps = load_capabilities()
-    for c in (caps[i] for i in WORKSPACE_IDS):
-        assert c.trigger.intents == WORKSPACE_INTENTS
+    # native-presence-declared-v1: workspace verbs are always:true with their
+    # trigger.intents RETAINED — presence-inert (P2a deleted the intent read) but
+    # LIVE for the capability-payload guidance hook (run_agent.py:3798, confirmed
+    # injecting on 61 live turns). notion_write keeps its MCP-plane list.
+    for rid in ("workspace_read", "workspace_write", "workspace_destructive"):
+        assert caps[rid].trigger.always is True
+        assert caps[rid].trigger.intents, f"{rid}: intents retained for the payload hook"
+    assert caps["notion_write"].trigger.intents
 
 
 def test_records_seed_one_migration_decision_log_entry():
@@ -310,16 +316,21 @@ def test_real_records_disclosure_modes_match_golden():
     # Class A — flipped to proactive CORE (always:true, offered on every intent).
     # homeassistant_read joined via operator-mutable-admission-v1 Phase 2 (green
     # read de-gated from its wrong system_admin intent default; still carries
-    # intents:[system_admin], now moot under always:true).
+    # intents retained under always:true — presence-inert, payload-live).
     for rid in ("todo", "send_message", "kanban_read", "kanban_write",
                 "homeassistant_read"):
         assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
         assert caps[rid].trigger.always, rid
     # Class B2 / C — proactive but INTENT-GATED (always:false, non-empty intents).
-    for rid in ("discord", "spotify_write",
-                "discord_admin", "computer_use"):
+    # native-presence-declared-v1: discord / spotify_write / discord_admin /
+    # computer_use were swept to always:true with intents RETAINED (live for the payload hook) (now proactive
+    # CORE). notion_write is the SOLE surviving proactive + intent-gated record.
+    assert caps["notion_write"].trigger.disclosure is TD.PROACTIVE
+    assert (not caps["notion_write"].trigger.always
+            and caps["notion_write"].trigger.intents)
+    for rid in ("discord", "spotify_write", "discord_admin", "computer_use"):
         assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
-        assert not caps[rid].trigger.always and caps[rid].trigger.intents, rid
+        assert caps[rid].trigger.always, rid  # intents RETAINED (payload hook, run_agent.py:3798); presence-inert
     # core + intent records stay proactive. invoke_skill joined this cohort
     # (invoke-skill-classification-hotfix-v1): always:true, offered on every intent.
     # retrieval-ambient-class-v1 P1: clarify / read_file / web_search /

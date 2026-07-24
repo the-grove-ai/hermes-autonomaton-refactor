@@ -61,22 +61,13 @@ def _patch_caps(monkeypatch, records):
 # ── (1) primary match — REAL researcher record, intent_class="research" ───────
 
 
-def test_real_researcher_record_matches_research_intent():
-    slugs = matched_skill_slugs_for_intent(
-        "research", {"invoke_skill"}, set(), disabled=set()
-    )
-    assert "researcher" in slugs  # real record load, not a stub
-
-    ctx = {
-        "intent_class": "research",
-        "valid_tool_names": {"invoke_skill"},
-        "registry": None,
-    }
-    result = _skill_nudge_provider(ctx)
-    assert result is not None
-    assert "`researcher`" in result.text
-    assert BOUNDARY in result.text
-    assert "invoke_skill" in result.text
+# native-presence-declared-v1 RETIRED test_real_researcher_record_matches_research_intent:
+# the match rule (matched_skill_slugs_for_intent) keys on trigger.intents, and the
+# P2 sweep STRIPPED intents from the held skill.fleet.researcher record (it kept only
+# keywords + primary_intents + a hold block). No real kind=skill record declares
+# trigger.intents any longer, so the real-record intent nudge cannot match — a held
+# record must NOT be nudged toward. The match mechanism itself stays covered by the
+# synthetic-record tests below.
 
 
 # ── (2) no-match arms → line absent ───────────────────────────────────────────
@@ -194,15 +185,11 @@ def test_multi_match_one_line_all_slugs(monkeypatch):
 # ── (5) telemetry — matched_skill_slugs on the tool_selection event ───────────
 
 
-def test_matched_skill_slugs_for_turn_present_on_match():
-    from grove.dispatcher import Dispatcher
-
-    d = object.__new__(Dispatcher)
-    d._current_turn_classification = SimpleNamespace(intent_class="research")
-    d.registry = None
-    agent = SimpleNamespace(valid_tool_names={"invoke_skill"})
-    out = d._matched_skill_slugs_for_turn(agent)  # real researcher record
-    assert "researcher" in out
+# native-presence-declared-v1 RETIRED test_matched_skill_slugs_for_turn_present_on_match:
+# the telemetry twin of the retired real-record match test above. With every real
+# kind=skill record's trigger.intents stripped by the P2 sweep, no real record
+# matches an intent, so the Dispatcher's per-turn slug list is empty for research.
+# The empty-on-no-match telemetry value stays pinned below.
 
 
 def test_matched_skill_slugs_for_turn_empty_on_no_match():

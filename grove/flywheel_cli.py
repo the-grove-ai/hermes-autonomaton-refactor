@@ -2234,8 +2234,11 @@ def _approve_admission_friction(
             f"non-empty record"
         )
     if verb == "add_intents":
-        intents = payload.get("add_intents") or []
-        status = set_admission_overlay(record, add_intents=list(intents))
+        raise ValueError(
+            f"admission_friction proposal {proposal.proposal_id}: the add_intents "
+            "verb is RETIRED (native-presence-declared-v1) — adding an intent no "
+            "longer offers a tool. Dismiss this legacy proposal."
+        )
     elif verb == "force_always":
         status = set_admission_overlay(record, force_always=True)
     else:

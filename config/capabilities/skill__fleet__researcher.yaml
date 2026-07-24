@@ -1,7 +1,6 @@
 id: skill.fleet.researcher
 kind: skill
 trigger:
-  intents: [research, analysis]
   keywords: [research, researcher, brief, analyze, break down, deep dive]
   dock_affinity: []
   always: false
@@ -22,6 +21,9 @@ tier_rule:
     confidence_threshold: 0.95
     shadow_window: 20
 zone: green
+hold:
+  owning_sprint: researcher-retrieval-broker-v1
+  reason: no attended emission stager
 telemetry:
   feed: intent_feed
   track:

@@ -105,21 +105,11 @@ def _offered(intent):
     return names
 
 
-# ── baseline: repo record gates on its declared intent ─────────────────────
-
-def test_repo_only_gates_on_intent(env):
-    assert _TOOL in _offered("research")            # declared intent
-    assert _TOOL not in _offered("creative_writing")  # not declared
-
-
-# ── added_intents: union ───────────────────────────────────────────────────
-
-def test_added_intents_unions_with_repo(env):
-    _, state = env
-    _write_overlay(state, f"id: {_ID}\nadded_intents: [creative_writing]\n")
-    assert _TOOL in _offered("creative_writing")    # overlay-added
-    assert _TOOL in _offered("research")            # repo intent PRESERVED (union)
-    assert _TOOL not in _offered("memory_operation")  # not added → still gated
+# native-presence-declared-v1 RETIRED test_repo_only_gates_on_intent and
+# test_added_intents_unions_with_repo: intent-match admission is DELETED. A
+# proactive+always:false record (this demo) is declared absent — never offered by
+# intent match — and the added_intents union overlay is gone. Presence is now
+# changed only via force_always (covered below).
 
 
 # ── force_always: OR ───────────────────────────────────────────────────────
@@ -147,16 +137,11 @@ def test_additive_only_never_shrinks(env, body):
     assert base <= after, "overlay shrank the offered set — additive-only violated"
 
 
-# ── I2 malformed overlay: repo fallback + Andon, never empty ───────────────
-
-def test_malformed_overlay_falls_back_and_andons(env, caplog):
-    _, state = env
-    _write_overlay(state, f"id: {_ID}\nadded_intents: 'not-a-list'\n")
-    with caplog.at_level(logging.WARNING):
-        offered = _offered("research")
-    assert _TOOL in offered, "malformed overlay must fall back to repo definition"
-    assert offered, "offered set must never be empty on a malformed overlay"
-    assert any("overlay" in r.message.lower() for r in caplog.records), "Andon warning expected"
+# native-presence-declared-v1 RETIRED test_malformed_overlay_falls_back_and_andons:
+# it asserted an added_intents overlay fallback re-admits the demo tool by its repo
+# intent — but intent-match admission is deleted and added_intents is no longer an
+# allowlisted state key. Malformed-force_always fallback is still covered by
+# test_malformed_overlay_does_not_add below.
 
 
 def test_malformed_overlay_does_not_add(env):
@@ -165,14 +150,12 @@ def test_malformed_overlay_does_not_add(env):
     assert _TOOL not in _offered("creative_writing"), "malformed force_always must not admit"
 
 
-# ── per-turn: overlay edit visible next resolution, NO cache reset ─────────
-
-def test_overlay_read_is_per_turn(env):
-    _, state = env
-    assert _TOOL not in _offered("creative_writing")   # primes the cached repo projection
-    _write_overlay(state, f"id: {_ID}\nadded_intents: [creative_writing]\n")
-    # NO reset_caps_index_cache() — the overlay must be read fresh per resolution.
-    assert _TOOL in _offered("creative_writing")
+# native-presence-declared-v1 RETIRED test_overlay_read_is_per_turn,
+# test_writer_applies_and_offers, test_writer_rejects_non_list_intents,
+# test_writer_rejects_non_str_intent: all exercised the deleted added_intents
+# overlay path (set_admission_overlay no longer accepts add_intents=, and
+# added_intents is not an allowlisted state key). Per-turn freshness is still
+# covered for force_always by the additive-only + force_always tests above.
 
 
 # ── writer: write-strict validation ────────────────────────────────────────
@@ -182,29 +165,19 @@ def test_writer_rejects_force_always_false(env):
         set_admission_overlay(_ID, force_always=False)
 
 
-def test_writer_rejects_non_list_intents(env):
-    with pytest.raises(ValueError):
-        set_admission_overlay(_ID, add_intents="creative_writing")
-
-
-def test_writer_rejects_non_str_intent(env):
-    with pytest.raises(ValueError):
-        set_admission_overlay(_ID, add_intents=[123])
-
-
 def test_writer_rejects_unknown_id(env):
+    # native-presence-declared-v1: force_always is the sole overlay lever now.
     with pytest.raises(reg.CapabilityLoadError):
-        set_admission_overlay("verb.does.not.exist", add_intents=["research"])
+        set_admission_overlay("verb.does.not.exist", force_always=True)
 
 
-# ── writer + reader round-trip, and offered effect ─────────────────────────
+# ── writer + reader round-trip (force_always-only shape) ───────────────────
 
-def test_writer_applies_and_offers(env):
-    _, state = env
-    assert set_admission_overlay(_ID, add_intents=["creative_writing"]) == "applied"
-    overlay = read_admission_overlay()
-    assert "creative_writing" in overlay[_ID][0]
-    assert _TOOL in _offered("creative_writing")
+def test_writer_force_always_applies_and_reads_back(env):
+    # read_admission_overlay now returns {record_id: True} (force_always-only bool).
+    assert set_admission_overlay(_ID, force_always=True) == "applied"
+    assert read_admission_overlay()[_ID] is True
+    assert _TOOL in _offered("creative_writing")  # force_always OR → offered everywhere
 
 
 # ── cross-writer preservation ───────────────────────────────────────────────
@@ -213,19 +186,19 @@ def test_admission_write_preserves_prior_state_keys(env):
     _, state = env
     # a pre-existing Capability-state key (lifecycle) in the same file...
     _write_overlay(state, f"id: {_ID}\nlifecycle:\n  pinned: true\n  use_count: 9\n")
-    set_admission_overlay(_ID, add_intents=["creative_writing"])
+    set_admission_overlay(_ID, force_always=True)
     from grove.capability_registry import load_capabilities
     reset_caps_index_cache()
     cap = load_capabilities()[_ID]
     # ...must survive the admission write (one sovereignty seam, no clobber).
     assert cap.lifecycle.pinned is True and cap.lifecycle.use_count == 9
-    assert "creative_writing" in read_admission_overlay()[_ID][0]
+    assert read_admission_overlay()[_ID] is True
 
 
 def test_state_snapshot_write_preserves_admission_keys(env):
     _, state = env
-    set_admission_overlay(_ID, add_intents=["creative_writing"])
+    set_admission_overlay(_ID, force_always=True)
     # A Capability-state write (lifecycle) routes through _write_state_snapshot,
     # whose full-snapshot dump must NOT erase the additive admission keys.
     reg.update_lifecycle_fields(_ID, use_count=5)
-    assert "creative_writing" in read_admission_overlay()[_ID][0]
+    assert read_admission_overlay()[_ID] is True

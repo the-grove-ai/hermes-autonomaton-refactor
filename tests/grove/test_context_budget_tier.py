@@ -94,19 +94,20 @@ def test_no_tier_filter_allowed_none_returns_list_verbatim():
 
 
 def test_resolve_tool_set_is_registry_driven():
-    # GRV-009 E5 C-RESOLVE — resolve_tool_set derives the intent-only (tier-
-    # unaware) surface from the LIVE capability registry. Unchanged by Option B.
+    # native-presence-declared-v1: resolve_tool_set derives the native surface from
+    # the LIVE registry by DECLARED presence (baseline / always:true / complexity),
+    # not by intent match. The P2 sweep made execute_code/skill_manage always:true.
     got = resolve_tool_set("code_generation", "moderate")
     assert {"write_file", "patch", "search_files", "execute_code", "skill_manage"} <= got
-    assert {"clarify", "terminal", "read_file"} <= got            # core (always)
-    assert "spotify_search" not in got                            # intent-gated — not conversation
-    assert "delegate_task" not in got                             # complexity — not on a moderate turn (P6.1: browser is baseline now)
-    # fallback-retirement-v1: unknown yields the always:true CORE (never None).
+    assert {"clarify", "terminal", "read_file"} <= got            # core / baseline
+    assert "delegate_task" not in got                             # complexity — not on a moderate turn
+    # unknown yields the always:true CORE + baseline (never None); the always:true
+    # verbs ride even the unknown turn (presence is declared, not intent-inferred).
     unk = resolve_tool_set("unknown", "simple")
     assert unk is not None
     assert {"clarify", "terminal", "read_file"} <= unk            # core rides unknown
-    assert "execute_code" not in unk                             # intent-gated withheld
-    assert "delegate_task" not in unk                            # complexity withheld (P6.1: browser is baseline)
+    assert "execute_code" in unk                                 # always:true — rides unknown too
+    assert "delegate_task" not in unk                            # complexity withheld
 
 
 # ── MCP disclose-on-match (mcp_allow) — the _partition_tools flip ──────────
@@ -148,35 +149,29 @@ def test_mcp_allow_via_filter_tools_by_name():
 # ── the SOLE tier gate: tier_rule.eligible (Option B) ──────────────────────
 
 
-def test_t3_admits_all_eligible_nothing_stripped(synth_caps):
+def test_t3_admits_all_eligible_nothing_stripped(synth_caps, monkeypatch):
+    # native-presence-declared-v1: presence is DECLARED, not intent-inferred. Mirror
+    # the P2 sweep — the web verb is baseline and x_search is always:true — so both
+    # ride every classified turn, and tier never strips (structural).
+    caps = [c for c in SYNTH_CAPS if c[0] not in ("web", "xsearch")] + [
+        ("web", "baseline", True, frozenset(), ("web_search", "session_search")),
+        ("xsearch", "proactive", True, frozenset(), ("x_search",)),
+    ]
+    monkeypatch.setattr(cb, "_caps_index", lambda: caps)
     res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate")
     got = _names(res.tools)
-    assert {"web_search", "session_search", "x_search"} <= set(got)  # all eligible@3
-    # stripped_capabilities attribute DELETED (P2) — nothing is ever
-    # tier-stripped by construction; the assertion is structural now.
+    assert {"web_search", "session_search", "x_search"} <= set(got)  # declared present
     assert not hasattr(res, "stripped_capabilities")
     assert res.excluded_mcp == frozenset()
     assert res.fallback is False
 
 
-def test_victim_offered_at_eligible_tier_on_triggering_intent(synth_caps):
-    # web_search (eligible [1,2,3]) is OFFERED at T2 on a research turn — the
-    # orphan the dual-gate produced is closed.
-    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate")
-    assert "web_search" in res.allowed_names
-    assert "session_search" in res.allowed_names
-
-
-def test_x_search_offered_at_t2_not_stripped(synth_caps):
-    # neuter-tier-eligible-gate: x_search (record documents eligible [3]) is now
-    # OFFERED at T2 on a research turn — tier no longer strips. The record's
-    # eligible is documentation, not enforcement; nothing is tier-stripped.
-    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate")
-    assert "x_search" in res.allowed_names
-    assert "x_search" in _names(res.tools)
-    # stripped_capabilities attribute DELETED (P2) — nothing is ever
-    # tier-stripped by construction; the assertion is structural now.
-    assert not hasattr(res, "stripped_capabilities")
+# native-presence-declared-v1 RETIRED test_victim_offered_at_eligible_tier_on_triggering_intent
+# and test_x_search_offered_at_t2_not_stripped: both asserted INTENT-MATCH admission
+# of proactive+always:false records (web_search / x_search offered because a research
+# turn matched their intents). Intent-match admission is DELETED — presence is
+# declared, never inferred. The declared-present (always:true / baseline) path is
+# covered by test_t3_admits_all_eligible_nothing_stripped above.
 
 
 def test_complexity_cap_admitted_regardless_of_tier(synth_caps):
@@ -190,34 +185,34 @@ def test_complexity_cap_admitted_regardless_of_tier(synth_caps):
     assert not hasattr(res, "stripped_capabilities")
 
 
-def test_t1_admits_code_cap_and_core(synth_caps):
-    # neuter-tier-eligible-gate: the code verb (record documents eligible [2,3])
-    # is now ADMITTED at T1 alongside core — tier no longer strips.
+def test_t1_admits_code_cap_and_core(synth_caps, monkeypatch):
+    # native-presence-declared-v1: intent-match admission is retired; a code cap is
+    # admitted only when DECLARED present (always:true, mirroring the P2 sweep that
+    # flipped execute_code et al.). Such a cap + core ride every classified turn,
+    # and tier never strips.
+    caps = [c for c in SYNTH_CAPS if c[0] != "code"] + [
+        ("code", "proactive", True, frozenset(),
+            ("write_file", "patch", "execute_code", "search_files")),
+    ]
+    monkeypatch.setattr(cb, "_caps_index", lambda: caps)
     res = resolve_tools_for_tier(ALL_TOOLS, "code_generation", "moderate")
     got = _names(res.tools)
-    assert "write_file" in got
-    assert "clarify" in got
-    # stripped_capabilities attribute DELETED (P2) — nothing is ever
-    # tier-stripped by construction; the assertion is structural now.
+    assert "write_file" in got                                   # always:true code cap admitted
+    assert "clarify" in got                                      # always:true core
     assert not hasattr(res, "stripped_capabilities")
 
 
-def test_none_tier_admits_all_intent_matched(synth_caps):
-    # Cloud / no tier routed: the eligibility gate is bypassed (mirrors the seam).
-    res = resolve_tools_for_tier(ALL_TOOLS, "research", "moderate")
-    assert {"web_search", "session_search", "x_search"} <= set(res.allowed_names)
-    # stripped_capabilities attribute DELETED (P2) — nothing is ever
-    # tier-stripped by construction; the assertion is structural now.
-    assert not hasattr(res, "stripped_capabilities")
+# native-presence-declared-v1 RETIRED test_none_tier_admits_all_intent_matched:
+# it asserted a research turn admits the intent-matched (always:false) web/xsearch
+# records. Intent-match admission is DELETED — presence is declared, never inferred.
 
 
 def test_empty_eligible_still_offered_gate_neutered(synth_caps, monkeypatch):
-    # neuter-tier-eligible-gate: a record with empty tier_rule.eligible is no
-    # longer special — the tier gate is retired, so an intent-matched cap is
-    # offered regardless of its (now documentary) eligible set. Nothing stripped.
+    # native-presence-declared-v1 + neuter-tier-eligible-gate: the tier gate is
+    # retired, so a DECLARED-present (always:true) cap is offered regardless of its
+    # (now documentary) eligible set. Nothing stripped.
     caps = SYNTH_CAPS + [
-        ("orphan", "proactive", False, frozenset({"research"}),
-            ("orphan_tool",)),
+        ("orphan", "proactive", True, frozenset(), ("orphan_tool",)),
     ]
     monkeypatch.setattr(cb, "_caps_index", lambda: caps)
     res = resolve_tools_for_tier(ALL_TOOLS + _mk("orphan_tool"), "research",

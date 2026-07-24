@@ -114,12 +114,12 @@ def test_web_search_now_offered_on_unknown_intent():
 
 
 def test_web_search_record_baseline_with_always_false_moot():
-    # P1 flip is surgical: disclosure flipped to baseline; always stays False
-    # (now moot — baseline outranks it), C-SEAM5's widened intents survive as
-    # historical record.
+    # native-presence-declared-v1: web_search swept to disclosure:baseline +
+    # always:true. Baseline admits unconditionally, so intents never gated PRESENCE;
+    # the "always:false was an inert cost HOLD" premise is gone. Intents are RETAINED
+    # (live for the capability-payload guidance hook, presence-inert).
     from grove.capability import TriggerDisclosure
     rec = load_capabilities()["web_search"]
     assert rec.trigger.disclosure is TriggerDisclosure.BASELINE
-    assert rec.trigger.always is False
-    assert {"creative_writing", "memory_operation"} <= set(rec.trigger.intents)
-    assert "conversation" not in rec.trigger.intents
+    assert rec.trigger.always is True
+    assert rec.trigger.intents  # retained (moot for presence; live for payload hook)

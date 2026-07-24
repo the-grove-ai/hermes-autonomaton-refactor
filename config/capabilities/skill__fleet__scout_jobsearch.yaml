@@ -4,7 +4,7 @@ trigger:
   intents: [research]
   keywords: [job search, job scan, find jobs, linkedin jobs, job opportunities, career scan, job scout]
   dock_affinity: [career-transition]
-  always: false
+  always: true
   disclosure: proactive
 bindings:
   tools: []

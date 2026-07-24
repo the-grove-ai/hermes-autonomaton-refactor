@@ -8,8 +8,9 @@ operator approval. Approval writes ``~/.grove`` via the sanctioned
 dismissed arm is never re-proposed (binding-telemetry-v1 R-B2 pattern).
 
 INVARIANTS (test-pinned):
-  * ADDITIVE-ONLY — the only proposal verbs are ``add_intents`` (union the refused
-    intent) and ``force_always`` (repo OR true). Never remove, never shrink.
+  * ADDITIVE-ONLY — the sole proposal verb is ``force_always`` (repo OR true).
+    ``add_intents`` was RETIRED (native-presence-declared-v1): adding an intent no
+    longer offers a tool. Never remove, never shrink.
   * GREEN-SCOPED force_always — ``force_always`` is proposed ONLY for a GREEN
     record that accrued friction across ≥ N distinct intents. A non-GREEN record
     never yields a force_always proposal (its zone-gated safety is the
@@ -250,9 +251,10 @@ def build_admission_friction_proposals(
 ) -> List[RoutingProposal]:
     """Aggregate the refusals feed and emit additive admission-overlay proposals.
 
-    One proposal per over-threshold ``(record, intent)`` arm (verb ``add_intents``),
-    EXCEPT a GREEN record with ≥ ``green_force_always_distinct_intents`` distinct
-    over-threshold intents, which yields a SINGLE ``force_always`` proposal instead.
+    A GREEN record with ≥ ``green_force_always_distinct_intents`` distinct
+    over-threshold intents yields a SINGLE ``force_always`` proposal. Held records
+    are skipped (recorded). All other records yield nothing — the per-intent
+    ``add_intents`` path is RETIRED (native-presence-declared-v1).
     Tombstoned arms are skipped. Records absent from the registry are skipped (no
     overlay target)."""
     cfg = load_admission_friction_config(config_path)
@@ -294,6 +296,16 @@ def build_admission_friction_proposals(
         cap = caps.get(record)
         if cap is None:
             continue  # record no longer exists — no overlay target
+        # native-presence-declared-v1 — a held record's presence is deferred to its
+        # owning sprint; the flywheel must not propose force_always to un-hold it.
+        # Recorded, not silent (mirrors the guard ledger disclosing suppressions).
+        if getattr(cap, "hold", None) is not None:
+            logger.info(
+                "[admission_friction] skipped held record %s (held by %s: %s) — "
+                "presence deferred; no force_always proposal.",
+                record, cap.hold.owning_sprint, cap.hold.reason,
+            )
+            continue
         hits = sorted(by_record[record])
         distinct = [intent for intent, _a in hits]
         is_green = getattr(cap, "zone", None) is Zone.GREEN
@@ -316,21 +328,10 @@ def build_admission_friction_proposals(
             proposals.append(
                 _proposal(record, "force_always", None, eb, _FORCE_ALWAYS_ARM, now)
             )
-            continue
-
-        for intent, a in hits:
-            if _suppressed(tombstones, record, intent):
-                continue
-            eb = {
-                "verb": "add_intents",
-                "zone": getattr(getattr(cap, "zone", None), "value", None),
-                "window_days": cfg.window_days,
-                "threshold": cfg.friction_threshold,
-                "arms": [
-                    {"intent": intent, "count": a["count"], "last_seen": a["last"],
-                     "sessions": len(a["sessions"])}
-                ],
-            }
-            proposals.append(_proposal(record, "add_intents", intent, eb, intent, now))
+        # native-presence-declared-v1 — the add_intents proposal path is RETIRED.
+        # Adding an intent no longer offers a tool (the native resolver reads no
+        # intents), so a non-green record, or a green one under threshold, yields no
+        # admission-friction proposal. force_always (green-scoped) is the only lever
+        # that changes presence now.
 
     return proposals

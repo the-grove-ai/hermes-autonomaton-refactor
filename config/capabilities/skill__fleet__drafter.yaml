@@ -1,8 +1,6 @@
 id: skill.fleet.drafter
 kind: skill
 trigger:
-  intents:
-  - creative_writing
   keywords:
   - draft
   - drafter
@@ -29,6 +27,9 @@ tier_rule:
     confidence_threshold: 0.95
     shadow_window: 20
 zone: yellow
+hold:
+  owning_sprint: researcher-retrieval-broker-v1
+  reason: no attended emission stager
 telemetry:
   feed: intent_feed
   track:

@@ -454,10 +454,11 @@ def _effective_caps_index() -> List[tuple]:
     ADDITIVE-ONLY, applied here so ALL builder branches (always / intent /
     complexity) see the merged values:
 
-        effective_intents = repo trigger.intents  ∪  added_intents
         effective_always  = repo trigger.always  OR  force_always
 
-    Structurally cannot shrink the offered surface (union + OR only). An overlay
+    native-presence-declared-v1: the added_intents union is RETIRED — the resolver
+    reads no intents, so only force_always is applied. Structurally cannot shrink
+    the offered surface (OR only). An overlay
     read failure logs and falls back to the repo-only projection — never raises
     into admission, never empties the surface (I2)."""
     base = _caps_index()
@@ -479,13 +480,13 @@ def _effective_caps_index() -> List[tuple]:
         if add is None:
             merged.append(row)
             continue
-        added_intents, force_always = add
+        force_always = add
         merged.append(
             (
                 cap_id,
                 disclosure,
                 always or force_always,
-                intents | added_intents,
+                intents,
                 native_tools,
             )
         )
@@ -498,66 +499,60 @@ def _registry_allowed_names(
 ) -> Set[str]:
     """The native tool-name surface admitted this turn.
 
-    Admission is ONE predicate per capability — ``intent_match`` (does this turn
-    SELECT the record?):
-      * ``proactive`` + ``always`` — the core surface; always selected (classified
-        or not).
-      * unknown / unclassified turn — ONLY the ``always`` core above is selected
-        (fallback-retirement-v1 Phase 3, Andon-on-uncertainty). Intent-gated and
-        complexity records are withheld; the maximal "load everything" fallback is
-        retired. The classifier failure surfaces asynchronously, not by inflating
-        the surface.
-      * ``complexity`` disclosure — the exploratory surface; selected on a
-        complex/novel CLASSIFIED turn.
-      * ``proactive`` + ``intents`` — selected iff the classified turn's intent is
-        one of the record's.
+    native-presence-declared-v1 P2a — presence is DECLARED, never inferred. The
+    per-record admission predicate no longer reads ``intent_class``; ``intent_class``
+    is an unread parameter (kept in the signature; callers out of scope). Admission:
+      * ``baseline`` — the ambient class; admitted unconditionally (always-blind).
+      * ``complexity`` — the exploratory/volume-sized surface; admitted on a
+        complex/novel turn (``cx_high``), withheld otherwise. Records stay
+        pull-reachable on T2/T3 — a declared exception (owner
+        t1-disclosure-pull-parity), not a presence gate.
+      * ``proactive`` + ``always`` — the core surface; admitted every turn.
+      * ``proactive`` + ``always:false`` — declared absent; skipped. (Formerly the
+        ``intent_class in intents`` branch — DELETED here. The Andon-on-uncertainty
+        ``unknown`` branch is deleted with it.)
 
-    The tier-eligibility gate is DELETED (retrieval-ambient-class-v1 P2 —
-    inerted by fallback-retirement-v1 Phase 2, demolished here along with its
-    ``current_tier`` plumbing and the always-empty stripped-capability return):
+    Static admissibility IS per-turn offered state, by construction: nothing here
+    narrows on the turn's classification. The tier-eligibility gate is DELETED
+    (retrieval-ambient-class-v1 P2 — inerted by fallback-retirement-v1 Phase 2):
     tier governance is the Cognitive Router's job; the zone system governs
-    mutation safety. Every intent-matched capability is admitted. Returns the
-    admitted name set.
+    mutation safety. Returns the admitted name set.
     """
-    unknown = intent_class is None or intent_class == "unknown"
     cx_high = complexity_signal in ("complex", "novel")
     names: Set[str] = set()
     for _cap_id, disclosure, always, intents, native_tools in _effective_caps_index():
+        # native-presence-declared-v1 P2a — presence is DECLARED, never inferred.
+        # The ``intent_match`` branch (``intent_class in intents``) and the
+        # Andon-on-uncertainty ``unknown`` branch are DELETED: ``intent_class`` no
+        # longer conditions native presence (it is now an unread parameter, kept
+        # in the signature because callers are out of scope this sprint). Static
+        # admissibility IS per-turn offered state, by construction. ``intents`` is
+        # only the loop-unpacked field now; it no longer gates.
+        #
         # Precedence: baseline > complexity > always (retrieval-ambient-class-v1
         # P1). ``baseline`` is the ambient retrieval class — admitted
-        # unconditionally: every intent class, every complexity signal, every
-        # tier, INCLUDING unknown/unclassified turns (the ambient class is the
-        # floor the Andon-on-uncertainty path stands on, not a surface it
-        # withholds). Green-zone-only by loader validation (capability.py).
-        # complexity stays checked BEFORE always: some exploratory records
-        # (browser_read, delegate_task) carry disclosure=complexity AND always=True;
-        # complexity must win so they ride ONLY complex/novel turns, never every
-        # turn. (Reordering these branches leaks surface — load-bearing precedence.)
+        # unconditionally, always-blind by design. complexity stays checked BEFORE
+        # always: some exploratory records (browser_read, delegate_task) carry
+        # disclosure=complexity AND always=True; complexity must win so they ride
+        # ONLY complex/novel turns, never every turn (reordering leaks surface —
+        # load-bearing precedence). The complexity branch is the sanctioned
+        # volume-sizer — records stay pull-reachable on T2/T3; declared exception,
+        # owner t1-disclosure-pull-parity.
         if disclosure == "baseline":
             intent_match = True
         elif disclosure == "complexity":
-            # Exploratory surface — only on a genuinely complex/novel CLASSIFIED
-            # turn. Withheld on unknown: fallback-retirement-v1 Phase 3 admits the
-            # core only on uncertainty, and exploratory tools are the specialized
-            # surface the Andon withholds (never inflate on an unclassified turn).
-            intent_match = (not unknown) and cx_high
+            # Exploratory surface — only on a genuinely complex/novel turn. The
+            # ``(not unknown)`` conjunct is removed with the unknown branch:
+            # complexity sizes disclosure VOLUME, not presence.
+            intent_match = cx_high
         elif always:
             # Proactive CORE — the always-offered native surface, admitted on
-            # every turn, classified or not.
+            # every turn.
             intent_match = True
-        elif unknown:
-            # Andon-on-uncertainty (fallback-retirement-v1 Phase 3): an
-            # unclassified turn admits ONLY the always:true core above. Intent-gated
-            # and complexity records are NOT inflated onto an unknown turn — the
-            # turn answers with the core surface and the classification failure is
-            # surfaced asynchronously (resolve_tools_for_tier marks ``fallback``;
-            # run_agent raises the operator Andon on the NEXT turn). This replaces
-            # the retired maximal "load everything" fallback — Prime Directive:
-            # never silently inflate the tool surface on uncertainty.
-            intent_match = False
         else:
-            # Proactive + intents — selected iff the classified intent matches.
-            intent_match = intent_class in intents
+            # Proactive + always:false — declared absent, skipped. (Formerly the
+            # intent_match branch; deleted P2a — presence is not inferred.)
+            intent_match = False
         if not intent_match:
             continue
         names.update(native_tools)

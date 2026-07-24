@@ -7,7 +7,7 @@ trigger:
   - creative_writing
   keywords: []
   dock_affinity: []
-  always: false
+  always: true
   disclosure: proactive
 bindings:
   tools:

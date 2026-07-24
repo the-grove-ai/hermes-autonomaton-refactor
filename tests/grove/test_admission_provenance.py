@@ -37,8 +37,17 @@ def _writer():
 
 def test_writer_emits_full_provenance_stamp(tmp_path):
     writer = _writer()
+    # native-presence-declared-v1: canonical `intents=` admission is retired — the
+    # writer refuses it loudly (no file written). The tiers write still carries the
+    # full provenance stamp and round-trips it.
+    with pytest.raises(ValueError):
+        writer(
+            "browser_read", intents=["research_request"],
+            provenance=dict(_STAMP), state_dir=tmp_path,
+        )
+    assert not list(tmp_path.glob("*.yaml"))
     writer(
-        "browser_read", intents=["research_request"],
+        "browser_read", tiers=[2, 3],
         provenance=dict(_STAMP), state_dir=tmp_path,
     )
     files = sorted(tmp_path.glob("*.yaml"))
@@ -107,7 +116,9 @@ def test_admission_executor_emits_written_ledger_event(tmp_path, monkeypatch):
     )
 
     target = tmp_path / "capabilities" / "state" / "browser_read.yaml"
-    body = "id: browser_read\nintents:\n- research\ntiers:\n- 2\n- 3\n"
+    # native-presence-declared-v1: `intents` admission is retired; a tiers-only
+    # canonical admission doc still routes through write_admission_state.
+    body = "id: browser_read\ntiers:\n- 2\n- 3\n"
     args = prepare_execute_arguments("propose_governance_change", {
         "target_file": str(target), "content": body, "rationale": "pin",
     })

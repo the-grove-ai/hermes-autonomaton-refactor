@@ -60,6 +60,37 @@ The v2.0 read-path declaration and Approval-stage disjointness test are not impl
 
 The standard's reference table binds T1 to a local model. This implementation treats all tiers as **competence envelopes** whose bindings are operator configuration — one config line per tier, any OpenAI-compatible provider, local or hosted. The local-T1 binding the standard depicts is one available choice (MLX and Ollama paths are supported), not a structural requirement; the structural commitment — dispatch to tiers, never to models — is held everywhere, including per-skill model binding under governed rebind. Tier naming here (Pattern Cache / Cheap / Premium / Apex) differs from the standard's (Local / Cloud-Fast / Cloud-Frontier); the semantics map one-to-one.
 
+### (h) Native presence declaration
+
+Capability presence is **declared, never inferred**. The native resolver
+`_registry_allowed_names` (`grove/context_budget.py`) no longer reads
+`intent_class`, so a static read of a capability record is a complete and correct
+answer about runtime availability — static admissibility *is* per-turn offered
+state, by construction. A two-part conformance guard pins it
+(`tests/grove/test_native_presence_declared_guard.py`): a config assertion (zero
+records declare intent-gated presence; exact-match against a two-entry ledger, never
+census-zero) and an AST assertion on the resolver (no presence-path `intent_class`
+read; no set-narrowing branch).
+
+**Scope, stated honestly.** Native presence is declarative on all tiers for every
+record **except**:
+
+- **the complexity class** (browser_write, delegate_task, feishu_doc_read,
+  ha_call_service, ha_get_state, mixture_of_agents, video_analyze, vision_analyze) —
+  inference-*sized* (offered eagerly only on complex/novel turns) but
+  **pull-reachable on T2/T3** and **unreachable on T1** (T1 has no pull). A declared
+  exception owned by `t1-disclosure-pull-parity`.
+- **the MCP plane** — `mcp_allow` still withholds an MCP server whose trigger did not
+  match the turn (`_mcp_trigger_reason`). `notion_write` (kind=mcp) is the sole record
+  left in the native config census, deferred to the MCP wave.
+
+**Known debt (guard/runtime asymmetry).** The config guard reads the repo record set
+(`config/capabilities/`); it does **not** read the runtime admission overlay
+(`~/.grove/capabilities/state/`). A `force_always` overlay could offer a record the
+repo guard calls absent. The repo presence-guarantee holds because the resolver reads
+no intents; closing the runtime asymmetry (the guard reading state, or an atomic
+overlay writer) is deferred to a future overlay sprint.
+
 ## Summary
 
 | Element | Status |
@@ -71,6 +102,7 @@ The standard's reference table binds T1 to a local model. This implementation tr
 | (e) Provenance stamps | Partial — stamped where authority moves; universal stamping open |
 | (f) Confused-deputy read-closure | Open — declared; one vector class structurally mitigated |
 | (g) Tier semantics | Conformant via enhancement — tiers as envelopes, bindings as operator config |
+| (h) Native presence declaration | Implemented — resolver reads no intents; two-part guard; complexity + MCP are declared exceptions |
 
 ## Challenging this document
 
