@@ -595,6 +595,43 @@ EXEMPTIONS: dict = {
         "endpoint, which the catalog has no field for. Non-dispatch (achievements "
         "dashboard). Re-key to the endpoint when local-substrate work lands.",
 }
+
+
+# ── RESIDUAL LEDGER (P4b Step 2 commit 2) ─────────────────────────────────────
+# Real slug-parse findings that RESIST migration, each with a named owning
+# sprint. Distinct from EXEMPTIONS (heuristic trips but not a real R-2 parse):
+# a residual IS a real parse we have not yet removed. The ratchet
+# (``test_census_matches_residual_ledger``) requires the census to EXACTLY match
+# this set — a new parse fails loud, and a residual resolved without deleting its
+# entry also fails, forcing the entry out when its owning sprint lands. Two
+# conditions keep it from becoming a dumping ground (enforced below): every entry
+# names an owning sprint page, and carries file:line + one line on why it resists.
+_DECLARATIVE_FLAG_PATH = "declarative-flag-path-v1 (3a7780a78eef812686d5d87c57b1fb7d)"
+RESIDUAL_LEDGER: dict = {
+    ("hermes_cli/models.py", 2858): {
+        "owner": _DECLARATIVE_FLAG_PATH,
+        "why": "(provider x model) reasoning-effort roster: Copilot accepts a "
+               "different effort set than OpenRouter for the SAME model (rejects "
+               "xhigh for GPT-5, minimal for o-series), so it is not a MODEL fact "
+               "— there is no declared surface for (provider, model) capability "
+               "today. Third axis alongside slug-keyed model_facts and tier-keyed "
+               "deployment.",
+    },
+    ("hermes_cli/models.py", 2876): {
+        "owner": _DECLARATIVE_FLAG_PATH,
+        "why": "copilot responses-api parse: a model fact "
+               "(native_tool_schema=='openai_responses') in principle, but the "
+               "parse lives in the SHARED resolve_runtime_provider chokepoint "
+               "reached PRE-BINDING (api_mode is computed to construct the agent, "
+               "before its model_facts exist). The clean cut fans out to "
+               "models.py + auxiliary_client (>1 module).",
+    },
+    ("hermes_cli/models.py", 2880): {
+        "owner": _DECLARATIVE_FLAG_PATH,
+        "why": "copilot responses-api parse — the gpt-5-mini exception; same "
+               "shared-chokepoint pre-binding fan-out as models.py:2876.",
+    },
+}
 # (scripts/sample_and_compress.py:30 exemption retired at P4b HALT-B — a bare
 #  dataset-name list is no longer a finding under the provenance rule.)
 
@@ -923,18 +960,83 @@ def test_exemptions_are_reasoned_live_and_under_cap():
 
 
 @pytest.mark.guard
-def test_slug_not_parsed_outside_allowlist():
-    """THE GUARD. Slug must not be referenced in a behavior-shaping op outside
-    the adapter+telemetry allowlist. RED at P1 by design: the failure list is
-    the census. Goes green when P3 deletes the violations."""
-    findings = scan_repo()
-    census = [f for f in findings
-              if not f.in_allowlist and not _is_exempt(f) and not _is_scoped_out(f.path)]
-    if census:
-        lines = ["\nBINDING-OPACITY CENSUS — %d violation(s) outside allowlist:" % len(census)]
-        for f in sorted(census, key=lambda x: (x.path, x.line)):
-            lines.append(f"  {f.path}:{f.line}  [{f.assertion} {f.kind}]  {f.expr}")
-        pytest.fail("\n".join(lines))
+def test_census_matches_residual_ledger():
+    """THE GUARD (P4b Step 2 commit 2 — replaces the census-zero target).
+
+    The binding-opacity census must EXACTLY MATCH the declared RESIDUAL_LEDGER:
+      * a slug parse in the census but NOT in the ledger -> a NEW violation,
+        FAIL. This is the guard's real job.
+      * a ledger entry that no longer trips the guard -> its owning sprint
+        landed (or the line moved) -> FAIL, forcing the entry out.
+
+    Census-zero was the wrong target: three permanent residuals with named
+    owners means a zero-assertion guard is red forever, and a permanently red
+    guard is one people learn to ignore. This ratchet is green today and stays
+    green only while the census is exactly the declared residual set.
+    """
+    census = {
+        (f.path, f.line) for f in scan_repo()
+        if not f.in_allowlist and not _is_exempt(f) and not _is_scoped_out(f.path)
+    }
+    ledger = set(RESIDUAL_LEDGER)
+    new_violations = sorted(census - ledger)
+    resolved_but_listed = sorted(ledger - census)
+    lines: List[str] = []
+    if new_violations:
+        lines.append(
+            "NEW binding-opacity violation(s) — a slug parse not in the residual "
+            "ledger. Migrate it to a declared fact, or (if it truly resists) add a "
+            "ledger entry with an owning sprint page and a reason:"
+        )
+        by_key = {(f.path, f.line): f for f in scan_repo()}
+        for p, ln in new_violations:
+            f = by_key.get((p, ln))
+            lines.append(f"  {p}:{ln}  {f.expr if f else ''}")
+    if resolved_but_listed:
+        lines.append(
+            "stale residual ledger entry(ies) — the line no longer trips the "
+            "guard (its owning sprint landed, or the line moved). Remove it from "
+            "RESIDUAL_LEDGER so the ledger keeps justifying itself in the diff:"
+        )
+        for p, ln in resolved_but_listed:
+            lines.append(f"  {p}:{ln}  (owner: {RESIDUAL_LEDGER[(p, ln)]['owner']})")
+    assert not lines, "\n" + "\n".join(lines)
+
+    # DISCLOSURE (P4b Step 2 commit 2). A green guard MUST state what it
+    # suppresses, on PASS — otherwise "green" is the boilerplate defect wearing
+    # a passing test: the operator reads "green" and learns nothing about the
+    # residuals and exemptions behind it. Two suppression mechanisms coexist with
+    # different rules (exemptions capped at 10 with a written reason; residuals
+    # uncapped but each requiring an owning sprint) — legible here in one place.
+    owners = sorted({e["owner"].split(" (")[0] for e in RESIDUAL_LEDGER.values()})
+    print(
+        "\nbinding-opacity: %d unaccounted"
+        "\n  residuals:  %d  (owner: %s)"
+        "\n  exemptions: %d  (cap 10)"
+        % (len(new_violations), len(RESIDUAL_LEDGER), ", ".join(owners), len(EXEMPTIONS))
+    )
+
+
+@pytest.mark.guard
+def test_residual_ledger_entries_are_owned_and_reasoned():
+    """No dumping ground (P4b Step 2 commit 2 conditions): every residual names
+    an owning sprint page and carries file:line + one line on why it resists.
+    An entry with no owner is not a residual — it is an unresolved finding, and
+    the ratchet above must not shelter it."""
+    for key, entry in RESIDUAL_LEDGER.items():
+        assert isinstance(key, tuple) and len(key) == 2, (
+            f"residual ledger key {key!r} must be a (path, line) pair"
+        )
+        assert isinstance(entry, dict), f"residual {key} must be a dict"
+        owner = entry.get("owner")
+        assert isinstance(owner, str) and owner.strip(), (
+            f"residual {key} names no owning sprint — an unowned finding is "
+            f"unresolved, not a residual; migrate it or give it an owner."
+        )
+        why = entry.get("why")
+        assert isinstance(why, str) and why.strip(), (
+            f"residual {key} carries no reason for why it resists migration."
+        )
 
 
 # ── P4b Step 1c — grok symbol pin ─────────────────────────────────────────────
