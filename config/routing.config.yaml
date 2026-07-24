@@ -133,20 +133,60 @@ routing:
   # never inferred from the name). The reference roster and its model_facts land
   # together in P4c; live values are the operator's sovereign write on the VM.
   # One worked entry below shows the shape only.
+  # DECLARED ONCE PER SLUG — not per tier. The four slugs below back six
+  # model-bearing tiers (deepseek-v4-flash on T1 + Telemetry; glm-5.2 on T2 +
+  # T-QA), yet each carries ONE physics declaration. That single-declaration
+  # property is the whole point: a per-tier facts field would drift between two
+  # bindings of the same model. If you multi-bind a model, declare its facts
+  # here once and let every tier resolve to it.
+  #
+  # These four declare physics: context_window (all 1M), reasoning_support,
+  # native_tool_schema, system_message_role, and cost_per_mtok_* (USD per
+  # million tokens, OpenRouter prices at extraction 2026-07-23).
+  # max_output_tokens and prompt_cache_style are ABSENT ON PURPOSE — the provider
+  # publishes no max-output ceiling for these and the cache wire needs adapter
+  # semantics not yet settled; both report UNKNOWN loudly, which beats a wrong
+  # declaration. binding-capability-sync-v1 keeps cost current from the live
+  # /api/v1/models endpoint.
   model_facts:
-    "provider/example-model-slug":     # illustrative shape only — not a bound model
-      context_window: 131072
-      reasoning_support: false
+    "deepseek/deepseek-v4-flash":
+      context_window: 1048576
+      reasoning_support: true
       native_tool_schema: chat_completions
       system_message_role: system
-      prompt_cache_style: none
-      max_output_tokens: 32768
-      # cost_per_mtok_input:  <declare from the live price — see note above>
-      # cost_per_mtok_output: <declare from the live price — see note above>
+      cost_per_mtok_input: 0.09
+      cost_per_mtok_output: 0.18
+    "z-ai/glm-5.2":
+      context_window: 1048576
+      reasoning_support: true
+      native_tool_schema: chat_completions
+      system_message_role: system
+      # Promotional pricing at extraction (2026-07-23), moves;
+      # binding-capability-sync-v1 keeps it current.
+      cost_per_mtok_input: 0.77
+      cost_per_mtok_output: 2.42
+    "deepseek/deepseek-v4-pro":
+      context_window: 1048576
+      reasoning_support: true
+      native_tool_schema: chat_completions
+      system_message_role: system
+      cost_per_mtok_input: 0.435
+      cost_per_mtok_output: 0.87
+    "google/gemini-3.6-flash":
+      context_window: 1048576
+      reasoning_support: true
+      native_tool_schema: chat_completions
+      system_message_role: system
+      cost_per_mtok_input: 1.5
+      cost_per_mtok_output: 7.5
 
-  # Price figures below are May 2026 list prices. The "per average
-  # interaction" estimates are rough — real cost scales with how much
-  # context a request carries.
+  # Tier blocks declare NO cost. Cost is a MODEL fact, declared ONCE per slug in
+  # model_facts above — the per-tier copy drifted from its model on the first
+  # swap (bug 3a7780a78eef8110b1d2eea48aa450cf). Tier-cost consumers
+  # (grove/classify.py, grove/t1_call.py, grove/flywheel_cli.py) read the tier
+  # field today and report UNKNOWN loudly when it is absent (a warning + skipped
+  # accumulation; the Flywheel reports savings unavailable, never a silent $0);
+  # binding-capability-sync-v1 rewires them onto model_facts.cost_per_mtok_*.
   tier_preferences:
     T0:
       handler: pattern_cache
@@ -159,42 +199,28 @@ routing:
 
     T1:
       provider: openrouter
-      # Direct Anthropic alternative (requires ANTHROPIC_API_KEY):
-      #   provider: anthropic
-      #   model: claude-haiku-4-5-20251001
-      model: anthropic/claude-haiku-4.5
+      model: deepseek/deepseek-v4-flash
       description: |
         Cheap, fast cognition — a small model for quick, well-scoped
         work: classification, triage, short transformations. Also scores
         incoming requests to decide where they should run.
         Speed: fastest tier.
-        Price: ~$1 / ~$5 per million input / output tokens —
-        roughly $0.003 per average interaction.
       max_tokens: 4096
-      # USD per million tokens. Read by the T-telemetry spend tracker in
-      # grove/classify.py to compute cumulative cost without hardcoding
-      # a model-specific constant. Update whenever the binding changes
-      # or the provider's list price moves.
-      cost_per_mtok_input: 1.0
-      cost_per_mtok_output: 5.0
 
     Telemetry:
       provider: openrouter
-      model: google/gemini-2.5-flash
+      model: deepseek/deepseek-v4-flash
       description: |
         Telemetry classifier — scores every incoming request to decide
         which tier handles it. High-volume, structured output (forced
         tool call). Bound separately from T1 so the operator can
         optimize classification and compaction independently.
         Speed: fastest tier.
-        Price: ~$0.15 / ~$0.60 per million input / output tokens.
       max_tokens: 4096
-      cost_per_mtok_input: 0.15
-      cost_per_mtok_output: 0.60
 
     T-QA:
       provider: openrouter
-      model: deepseek/deepseek-v4-pro
+      model: z-ai/glm-5.2
       description: |
         Quality evaluator — the fleet quality gate's judge
         (drafter-quality-checks-v1). Scores a staged draft against a
@@ -203,10 +229,7 @@ routing:
         silently changes the judge, and vice versa (the Telemetry-tier
         precedent). Requires reliable forced tool_choice; the 1M
         context comfortably holds rubric + draft.
-        Price: ~$0.44 / ~$0.87 per million input / output tokens.
       max_tokens: 4096
-      cost_per_mtok_input: 0.435
-      cost_per_mtok_output: 0.87
 
     T-GA:
       provider: openrouter
@@ -218,27 +241,17 @@ routing:
         Bound separately from T-QA so rebinding the quality judge never
         silently changes the attachment judge, and vice versa (the
         Telemetry-tier precedent). Requires reliable forced tool_choice.
-        Price: ~$0.44 / ~$0.87 per million input / output tokens.
       max_tokens: 4096
-      cost_per_mtok_input: 0.435
-      cost_per_mtok_output: 0.87
 
     T2:
       provider: openrouter
-      # Direct Anthropic alternative (requires ANTHROPIC_API_KEY):
-      #   provider: anthropic
-      #   model: claude-sonnet-4-6
-      model: anthropic/claude-sonnet-4.6
+      model: z-ai/glm-5.2
       description: |
         Premium cognition — the default for most of your work: real
         reasoning, code, analysis, drafting. The balance of capability
         and cost most interactions should run on.
         Speed: fast.
-        Price: ~$3 / ~$15 per million input / output tokens —
-        roughly $0.02 per average interaction.
       max_tokens: 8192
-      cost_per_mtok_input: 3.0
-      cost_per_mtok_output: 15.0
 
     # ----- LOCAL BINDING — run T2 on-device with Ollama -------------------
     # The T2 block above runs on a cloud model. To make the daily driver
@@ -269,22 +282,14 @@ routing:
 
     T3:
       provider: openrouter
-      # Direct Anthropic alternative (requires ANTHROPIC_API_KEY):
-      #   provider: anthropic
-      #   model: claude-opus-4-6
-      model: anthropic/claude-opus-4.6   # 4.6, not 4.7 — predictable tokenization
+      model: google/gemini-3.6-flash
       description: |
         Apex cognition — the strongest model, for the hardest problems:
         multi-step planning, novel synthesis, architecture-level
         reasoning. Slower and several times costlier than T2, so it is
         used sparingly, only when the work needs it.
         Speed: slowest tier.
-        Price: ~$5 / ~$25 per million input / output tokens —
-        roughly $0.08 per average interaction, about four times the
-        cost of a T2 interaction.
       max_tokens: 16384
-      cost_per_mtok_input: 5.0
-      cost_per_mtok_output: 25.0
       # skill-adoption-v1 P3 — governed downshift (GRV-010 C2d). When T3's model
       # is unreachable (network / 5xx / 429 / exhausted credentials), the turn
       # re-routes THROUGH the Cognitive Router at T2 and re-drives, rather than
