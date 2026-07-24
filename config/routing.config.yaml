@@ -110,6 +110,8 @@ routing:
   #                        (GPT-5.x 400s on /v1/chat/completions). Absent ->
   #                        provider/base-url auto-detect; an undeclared GPT-5
   #                        binding gets a legible 400, never a silent misroute
+  #   moonshot           — Moonshot/Kimi flavored tool-call JSON Schema; the
+  #                        transport sanitizes tool params for this dialect
   #   deepseek / mimo    — thinking-mode dialects that REQUIRE reasoning_content
   #                        echoed back on every assistant tool-call turn
   # prompt_cache_style names the cache-control wire the model honours:

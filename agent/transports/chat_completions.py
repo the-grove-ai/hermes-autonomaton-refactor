@@ -13,7 +13,7 @@ import copy
 from typing import Any, Dict, List, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
-from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
+from agent.moonshot_schema import sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
@@ -247,7 +247,11 @@ class ChatCompletionsTransport(ProviderTransport):
             # Moonshot/Kimi uses a stricter flavored JSON Schema.  Rewriting
             # tool parameters here keeps aggregator routes (Nous, OpenRouter,
             # etc.) compatible, in addition to direct moonshot.ai endpoints.
-            if is_moonshot_model(model):
+            # binding-opacity-v1 P4b 1c — the Moonshot tool dialect is a declared
+            # fact (native_tool_schema == "moonshot"), not a "kimi"/"moonshot"
+            # name substring. Undeclared -> no sanitization (safe/loud).
+            _mf = params.get("model_facts")
+            if getattr(_mf, "native_tool_schema", None) == "moonshot":
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
 
@@ -433,9 +437,12 @@ class ChatCompletionsTransport(ProviderTransport):
         if timeout is not None:
             api_kwargs["timeout"] = timeout
 
-        # Tools — apply Moonshot/Kimi schema sanitization regardless of path
+        # Tools — apply Moonshot/Kimi schema sanitization regardless of path.
+        # binding-opacity-v1 P4b 1c — declared native_tool_schema == "moonshot",
+        # not a name substring. Undeclared -> no sanitization (safe/loud).
         if tools:
-            if is_moonshot_model(model):
+            _mf = params.get("model_facts")
+            if getattr(_mf, "native_tool_schema", None) == "moonshot":
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
 
@@ -464,6 +471,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 model=model,
                 ollama_num_ctx=params.get("ollama_num_ctx"),
                 session_id=params.get("session_id"),
+                # binding-opacity-v1 P4b 1c — declared physics for the bound
+                # model; the DeepSeek profile reads reasoning_support off this
+                # instead of parsing the slug for the thinking-capable family.
+                model_facts=params.get("model_facts"),
             )
         )
         api_kwargs.update(top_level_from_profile)

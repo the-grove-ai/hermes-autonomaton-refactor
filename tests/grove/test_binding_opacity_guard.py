@@ -828,6 +828,44 @@ def test_slug_not_parsed_outside_allowlist():
         pytest.fail("\n".join(lines))
 
 
+# ── P4b Step 1c — grok symbol pin ─────────────────────────────────────────────
+# grok_supports_reasoning_effort() was the last dispatch-path name-inference for
+# xAI reasoning-effort capability. Step 1c migrated the codex transport to read
+# the declared model_facts.reasoning_support and DELETED the function. This pin
+# proves the symbol stays dead: no source module may reference it (a re-added
+# import fails here immediately, before any runtime path). Same shape as the
+# module-ban assertions — a name search, not an import.
+_GROK_PINNED_SYMBOL = "grok_supports_reasoning_effort"
+
+
+@pytest.mark.guard
+def test_grok_symbol_stays_deleted():
+    """No source file references grok_supports_reasoning_effort (P4b 1c pin).
+
+    The declared fact model_facts.reasoning_support replaced it. Re-adding the
+    function or an import of it re-introduces slug-name inference on the
+    dispatch path — this pin catches it. (The pin itself, this test file, is
+    excluded — it names the symbol to ban it.)"""
+    offenders: List[str] = []
+    for path in _iter_py_files():
+        rel = str(path.relative_to(REPO_ROOT))
+        if rel == "tests/grove/test_binding_opacity_guard.py":
+            continue  # this file names the symbol in order to ban it
+        try:
+            src = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if _GROK_PINNED_SYMBOL in src:
+            for i, line in enumerate(src.splitlines(), 1):
+                if _GROK_PINNED_SYMBOL in line and not line.lstrip().startswith("#"):
+                    offenders.append(f"{rel}:{i}  {line.strip()}")
+    assert not offenders, (
+        "grok_supports_reasoning_effort was re-introduced — it is a deleted "
+        "slug-name inference; read model_facts.reasoning_support instead:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
 if __name__ == "__main__":
     all_findings = scan_repo()
     ctrl = _control_findings()

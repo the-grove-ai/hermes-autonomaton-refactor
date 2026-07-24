@@ -14,6 +14,15 @@ from __future__ import annotations
 
 import pytest
 
+from grove.router import ModelFacts
+
+# binding-opacity-v1 P4b 1c — thinking-capability is the declared fact
+# model_facts.reasoning_support, threaded into the profile via the transport's
+# params carrier. The DeepSeek V4 family / deepseek-reasoner declare
+# reasoning_support: true; V3 declares false.
+_THINKING = ModelFacts(reasoning_support=True)
+_NO_THINKING = ModelFacts(reasoning_support=False)
+
 
 @pytest.fixture
 def deepseek_profile():
@@ -39,7 +48,7 @@ class TestDeepSeekThinkingWireShape:
     def test_v4_pro_default_enables_thinking_without_effort(self, deepseek_profile):
         """No reasoning_config → thinking enabled, server picks default effort."""
         extra_body, top_level = deepseek_profile.build_api_kwargs_extras(
-            reasoning_config=None, model="deepseek-v4-pro"
+            reasoning_config=None, model="deepseek-v4-pro", model_facts=_THINKING
         )
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
@@ -47,7 +56,7 @@ class TestDeepSeekThinkingWireShape:
     def test_v4_pro_enabled_with_high_effort(self, deepseek_profile):
         extra_body, top_level = deepseek_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "high"},
-            model="deepseek-v4-pro",
+            model="deepseek-v4-pro", model_facts=_THINKING,
         )
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {"reasoning_effort": "high"}
@@ -56,7 +65,7 @@ class TestDeepSeekThinkingWireShape:
     def test_standard_efforts_pass_through(self, deepseek_profile, effort):
         _, top_level = deepseek_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},
-            model="deepseek-v4-pro",
+            model="deepseek-v4-pro", model_facts=_THINKING,
         )
         assert top_level == {"reasoning_effort": effort}
 
@@ -64,7 +73,7 @@ class TestDeepSeekThinkingWireShape:
     def test_xhigh_and_max_normalize_to_max(self, deepseek_profile, effort):
         _, top_level = deepseek_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},
-            model="deepseek-v4-pro",
+            model="deepseek-v4-pro", model_facts=_THINKING,
         )
         assert top_level == {"reasoning_effort": "max"}
 
@@ -75,7 +84,7 @@ class TestDeepSeekThinkingWireShape:
         defaults to thinking-on when ``thinking`` is absent.
         """
         extra_body, top_level = deepseek_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False}, model="deepseek-v4-pro"
+            reasoning_config={"enabled": False}, model="deepseek-v4-pro", model_facts=_THINKING
         )
         assert extra_body == {"thinking": {"type": "disabled"}}
         # No effort when disabled — DeepSeek rejects it.
@@ -85,7 +94,7 @@ class TestDeepSeekThinkingWireShape:
         """Effort silently dropped when thinking is off."""
         _, top_level = deepseek_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": False, "effort": "high"},
-            model="deepseek-v4-pro",
+            model="deepseek-v4-pro", model_facts=_THINKING,
         )
         assert top_level == {}
 
@@ -93,51 +102,49 @@ class TestDeepSeekThinkingWireShape:
         """Garbage effort → omit reasoning_effort so DeepSeek applies its default."""
         _, top_level = deepseek_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "garbage"},
-            model="deepseek-v4-pro",
+            model="deepseek-v4-pro", model_facts=_THINKING,
         )
         assert top_level == {}
 
     def test_empty_effort_omits_top_level(self, deepseek_profile):
         _, top_level = deepseek_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": ""},
-            model="deepseek-v4-pro",
+            model="deepseek-v4-pro", model_facts=_THINKING,
         )
         assert top_level == {}
 
 
 class TestDeepSeekModelGating:
-    """V4 family + ``deepseek-reasoner`` get thinking; V3 stays untouched."""
+    """Thinking is gated on the DECLARED fact, not the model name.
 
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "deepseek-v4-pro",
-            "deepseek-v4-flash",
-            "deepseek-v4-future-variant",
-            "deepseek-reasoner",
-            "DEEPSEEK-V4-PRO",  # case-insensitive
-        ],
-    )
-    def test_thinking_capable_models_emit_thinking(self, deepseek_profile, model):
+    binding-opacity-v1 P4b 1c — EXCISED the two name-roster parametrizations
+    (test_thinking_capable_models_emit_thinking iterated deepseek-v4-*/
+    -reasoner NAMES; test_non_thinking_models_emit_nothing iterated
+    deepseek-chat/v3/unknown NAMES). Both pinned _model_supports_thinking()'s
+    name-substring detection — the inference the migration deleted. The
+    surviving behavior — reasoning_support drives thinking — is pinned below.
+    """
+
+    def test_declared_reasoning_support_emits_thinking(self, deepseek_profile):
         extra_body, _ = deepseek_profile.build_api_kwargs_extras(
-            reasoning_config=None, model=model
+            reasoning_config=None, model="any-slug", model_facts=_THINKING
         )
         assert extra_body == {"thinking": {"type": "enabled"}}
 
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "deepseek-chat",         # V3 alias
-            "deepseek-v3-0324",      # explicit V3
-            "deepseek-v3.1",         # V3 minor revisions
-            "",                       # bare/unknown
-            None,                     # missing
-            "deepseek-unknown",      # unrecognized
-        ],
-    )
-    def test_non_thinking_models_emit_nothing(self, deepseek_profile, model):
+    def test_undeclared_reasoning_support_emits_nothing(self, deepseek_profile):
+        # The VM-on-deploy path: undeclared -> wire format untouched (safe/loud).
         extra_body, top_level = deepseek_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "high"}, model=model
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="any-slug",
+            model_facts=_NO_THINKING,
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_absent_model_facts_emits_nothing(self, deepseek_profile):
+        # No model_facts in context at all (e.g. a legacy caller) -> safe default.
+        extra_body, top_level = deepseek_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}, model="any-slug"
         )
         assert extra_body == {}
         assert top_level == {}
@@ -156,7 +163,7 @@ class TestDeepSeekFullKwargsIntegration:
         from agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
-            model="deepseek-v4-pro",
+            model="deepseek-v4-pro", model_facts=_THINKING,
             messages=[{"role": "user", "content": "ping"}],
             tools=None,
             provider_profile=deepseek_profile,
@@ -173,6 +180,7 @@ class TestDeepSeekFullKwargsIntegration:
 
         kwargs = ChatCompletionsTransport().build_kwargs(
             model="deepseek-chat",
+            model_facts=_NO_THINKING,
             messages=[{"role": "user", "content": "ping"}],
             tools=None,
             provider_profile=deepseek_profile,

@@ -15,43 +15,17 @@ from __future__ import annotations
 import pytest
 
 from agent.moonshot_schema import (
-    is_moonshot_model,
     sanitize_moonshot_tool_parameters,
     sanitize_moonshot_tools,
 )
 
-
-class TestMoonshotModelDetection:
-    """is_moonshot_model() must match across aggregator prefixes."""
-
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "kimi-k2.6",
-            "kimi-k2-thinking",
-            "moonshotai/Kimi-K2.6",
-            "moonshotai/kimi-k2.6",
-            "nous/moonshotai/kimi-k2.6",
-            "openrouter/moonshotai/kimi-k2-thinking",
-            "MOONSHOTAI/KIMI-K2.6",
-        ],
-    )
-    def test_positive_matches(self, model):
-        assert is_moonshot_model(model) is True
-
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "",
-            None,
-            "anthropic/claude-sonnet-4.6",
-            "openai/gpt-5.4",
-            "google/gemini-3-flash-preview",
-            "deepseek-chat",
-        ],
-    )
-    def test_negative_matches(self, model):
-        assert is_moonshot_model(model) is False
+# binding-opacity-v1 P4b 1c — EXCISED TestMoonshotModelDetection
+# (test_positive_matches / test_negative_matches). Both pinned
+# is_moonshot_model()'s "kimi"/"moonshot" NAME-substring detection across
+# aggregator prefixes — the inference the migration deleted. The Moonshot tool
+# dialect is now the declared fact model_facts.native_tool_schema == "moonshot",
+# and the transport reads it off the params carrier (covered by the
+# chat_completions transport tests). The sanitizer tests below are unchanged.
 
 
 class TestMissingTypeFilled:

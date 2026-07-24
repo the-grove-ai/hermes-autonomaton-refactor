@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
+from grove.router import ModelFacts
 
 
 @pytest.fixture
@@ -501,8 +502,12 @@ class TestChatCompletionsKimi:
         )
         assert kw["extra_body"]["thinking"] == {"type": "disabled"}
 
-    def test_moonshot_tool_schemas_are_sanitized_by_model_name(self, transport):
-        """Aggregator routes (Nous, OpenRouter) hit Moonshot by model name, not base URL."""
+    def test_moonshot_tool_schemas_are_sanitized_when_declared(self, transport):
+        """binding-opacity-v1 P4b 1c — Moonshot tool sanitization fires on the
+        DECLARED fact (native_tool_schema == "moonshot"), threaded via the
+        params carrier — not the "kimi"/"moonshot" model name. Aggregator routes
+        (Nous, OpenRouter) hit Moonshot inference where the base URL is the
+        aggregator's, so name/base-URL detection never worked cleanly anyway."""
         tools = [
             {
                 "type": "function",
@@ -520,6 +525,7 @@ class TestChatCompletionsKimi:
         ]
         kw = transport.build_kwargs(
             model="moonshotai/kimi-k2.6",
+            model_facts=ModelFacts(native_tool_schema="moonshot"),
             messages=[{"role": "user", "content": "Hi"}],
             tools=tools,
             max_tokens_param_fn=lambda n: {"max_tokens": n},

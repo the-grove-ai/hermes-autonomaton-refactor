@@ -209,23 +209,9 @@ def sanitize_moonshot_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return sanitized if any_change else tools
 
 
-def is_moonshot_model(model: str | None) -> bool:
-    """True for any Kimi / Moonshot model slug, regardless of aggregator prefix.
-
-    Matches bare names (``kimi-k2.6``, ``moonshotai/Kimi-K2.6``) and aggregator-
-    prefixed slugs (``nous/moonshotai/kimi-k2.6``, ``openrouter/moonshotai/...``).
-    Detection by model name covers Nous / OpenRouter / other aggregators that
-    route to Moonshot's inference, where the base URL is the aggregator's, not
-    ``api.moonshot.ai``.
-    """
-    if not model:
-        return False
-    bare = model.strip().lower()
-    # Last path segment (covers aggregator-prefixed slugs)
-    tail = bare.rsplit("/", 1)[-1]
-    if tail.startswith("kimi-") or tail == "kimi":
-        return True
-    # Vendor-prefixed forms commonly used on aggregators
-    if "moonshot" in bare or "/kimi" in bare or bare.startswith("kimi"):
-        return True
-    return False
+# binding-opacity-v1 P4b 1c — is_moonshot_model() DELETED. The Moonshot/Kimi
+# tool-schema dialect is now a declared physics fact
+# (model_facts.native_tool_schema == "moonshot"), resolved on the routing
+# binding and read by the chat_completions transport off the params carrier —
+# never inferred from a "kimi"/"moonshot" name substring. sanitize_moonshot_tools
+# above is unchanged; only the name-detection gate moved to declared config.
