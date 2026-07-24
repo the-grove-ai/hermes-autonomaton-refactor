@@ -20,17 +20,40 @@ from gateway.runtime_footer import (
 # _model_short + _home_relative_cwd
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def stub_catalog(monkeypatch):
+    """Stub catalog_display_name_for with a fixed slug→display_name map.
+
+    Binding opacity: the footer's short name comes from the catalog's
+    declared display_name, never from parsing the opaque slug. Tests drive
+    the mapping explicitly rather than depending on live catalog contents.
+    """
+    mapping = {
+        "openai/gpt-5.4": "gpt-5.4",
+        "openrouter/openai/gpt-5.4": "gpt-5.4",
+        "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
+    }
+    monkeypatch.setattr(
+        "grove.config.model_catalog.catalog_display_name_for",
+        lambda slug: mapping.get(slug),
+    )
+    return mapping
+
+
 @pytest.mark.parametrize(
     "model,expected",
     [
+        # Catalog hit → declared display_name.
         ("openai/gpt-5.4", "gpt-5.4"),
         ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
+        # Catalog miss → opaque slug returned verbatim (no slug parsing).
+        ("unknown/model-x", "unknown/model-x"),
         ("gpt-5.4", "gpt-5.4"),
         ("", ""),
         (None, ""),
     ],
 )
-def test_model_short_drops_vendor_prefix(model, expected):
+def test_model_short_uses_catalog_display_name(stub_catalog, model, expected):
     assert _model_short(model) == expected
 
 
@@ -56,7 +79,7 @@ def test_home_relative_cwd_empty_returns_empty():
 # format_runtime_footer
 # ---------------------------------------------------------------------------
 
-def test_format_footer_all_fields(monkeypatch, tmp_path):
+def test_format_footer_all_fields(stub_catalog, monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "projects" / "hermes"))
     (tmp_path / "projects" / "hermes").mkdir(parents=True)
@@ -115,7 +138,7 @@ def test_format_footer_empty_fields_returns_empty():
     assert out == ""
 
 
-def test_format_footer_drops_cwd_when_empty(monkeypatch):
+def test_format_footer_drops_cwd_when_empty(stub_catalog, monkeypatch):
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     out = format_runtime_footer(
         model="openai/gpt-5.4",
@@ -127,7 +150,7 @@ def test_format_footer_drops_cwd_when_empty(monkeypatch):
     assert out == "gpt-5.4 · 50%"
 
 
-def test_format_footer_custom_field_order():
+def test_format_footer_custom_field_order(stub_catalog):
     out = format_runtime_footer(
         model="openai/gpt-5.4",
         context_tokens=50, context_length=100,
@@ -137,7 +160,7 @@ def test_format_footer_custom_field_order():
     assert out == "50% · gpt-5.4"
 
 
-def test_format_footer_unknown_field_silently_ignored():
+def test_format_footer_unknown_field_silently_ignored(stub_catalog):
     out = format_runtime_footer(
         model="openai/gpt-5.4",
         context_tokens=50, context_length=100,

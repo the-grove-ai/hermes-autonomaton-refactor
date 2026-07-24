@@ -477,7 +477,52 @@ def _serialize_assistant_message(message: Any) -> dict[str, Any]:
     }
 
 
-def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, base_url: str) -> tuple[dict[str, int], dict[str, float]]:
+def _cost_details_from_declared(
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+    *,
+    input_cost_per_mtok: Optional[float],
+    output_cost_per_mtok: Optional[float],
+) -> Dict[str, float]:
+    """Per-type cost_details from the DECLARED per-mtok rates handed to us.
+
+    binding-opacity-v1: this plugin is a pure CONSUMER of the cost facts
+    threaded through the hook payload — it imports no router, parses no slug,
+    and looks up no name-keyed pricing table. Cache tokens are billed at the
+    declared input rate (the binding declares no separate cache tier), matching
+    ``agent.usage_pricing.estimate_usage_cost``.
+    """
+    cost_details: Dict[str, float] = {}
+    if input_cost_per_mtok is None or output_cost_per_mtok is None:
+        return cost_details
+    from decimal import Decimal
+
+    _ONE_M = Decimal("1000000")
+    input_rate = Decimal(str(input_cost_per_mtok))
+    output_rate = Decimal(str(output_cost_per_mtok))
+    if input_tokens:
+        cost_details["input"] = float(Decimal(input_tokens) * input_rate / _ONE_M)
+    if output_tokens:
+        cost_details["output"] = float(Decimal(output_tokens) * output_rate / _ONE_M)
+    if cache_read_tokens:
+        cost_details["cache_read_input_tokens"] = float(Decimal(cache_read_tokens) * input_rate / _ONE_M)
+    if cache_write_tokens:
+        cost_details["cache_creation_input_tokens"] = float(Decimal(cache_write_tokens) * input_rate / _ONE_M)
+    return cost_details
+
+
+def _usage_and_cost(
+    response: Any,
+    *,
+    provider: str,
+    api_mode: str,
+    model: str,
+    base_url: str,
+    input_cost_per_mtok: Optional[float] = None,
+    output_cost_per_mtok: Optional[float] = None,
+) -> tuple[dict[str, int], dict[str, float]]:
     usage_details: Dict[str, int] = {}
     cost_details: Dict[str, float] = {}
     raw_usage = getattr(response, "usage", None)
@@ -485,7 +530,7 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
         return usage_details, cost_details
 
     try:
-        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        from agent.usage_pricing import normalize_usage
 
         canonical = normalize_usage(raw_usage, provider=provider, api_mode=api_mode)
         # Langfuse usage_details keys follow a naming convention:
@@ -505,34 +550,17 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
             usage_details["cache_creation_input_tokens"] = canonical.cache_write_tokens
         if canonical.reasoning_tokens:
             usage_details["reasoning_tokens"] = canonical.reasoning_tokens
-        cost = estimate_usage_cost(
-            model,
-            canonical,
-            provider=provider,
-            base_url=base_url,
-            api_key="",
+        # Cost is DECLARED, threaded from run_agent's model_facts through the
+        # hook payload. Absent declared rates -> omit cost_details entirely
+        # (unknown-and-loud), never guess from the slug.
+        cost_details = _cost_details_from_declared(
+            canonical.input_tokens,
+            canonical.output_tokens,
+            canonical.cache_read_tokens,
+            canonical.cache_write_tokens,
+            input_cost_per_mtok=input_cost_per_mtok,
+            output_cost_per_mtok=output_cost_per_mtok,
         )
-        if cost.amount_usd is not None:
-            # Langfuse cost_details keys must match usage_details keys.
-            # Provide per-type breakdown so dashboard can show cost by type.
-            try:
-                from agent.usage_pricing import get_pricing_entry
-                from decimal import Decimal
-                _ONE_M = Decimal("1000000")
-                entry = get_pricing_entry(model, provider=provider, base_url=base_url)
-                if entry:
-                    if entry.input_cost_per_million is not None and canonical.input_tokens:
-                        cost_details["input"] = float(Decimal(canonical.input_tokens) * entry.input_cost_per_million / _ONE_M)
-                    if entry.output_cost_per_million is not None and canonical.output_tokens:
-                        cost_details["output"] = float(Decimal(canonical.output_tokens) * entry.output_cost_per_million / _ONE_M)
-                    if entry.cache_read_cost_per_million is not None and canonical.cache_read_tokens:
-                        cost_details["cache_read_input_tokens"] = float(Decimal(canonical.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_M)
-                    if entry.cache_write_cost_per_million is not None and canonical.cache_write_tokens:
-                        cost_details["cache_creation_input_tokens"] = float(Decimal(canonical.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_M)
-                else:
-                    cost_details["total"] = float(cost.amount_usd)
-            except Exception:
-                cost_details["total"] = float(cost.amount_usd)
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"usage normalization failed: {exc}")
 
@@ -804,6 +832,8 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                      api_duration: float = 0.0, finish_reason: str = "",
                      usage: Any = None, assistant_content_chars: int = 0,
                      assistant_tool_call_count: int = 0, assistant_response: Any = None,
+                     input_cost_per_mtok: Optional[float] = None,
+                     output_cost_per_mtok: Optional[float] = None,
                      **_: Any) -> None:
     client = _get_langfuse()
     if client is None:
@@ -845,6 +875,8 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
             api_mode=api_mode,
             model=model,
             base_url=base_url,
+            input_cost_per_mtok=input_cost_per_mtok,
+            output_cost_per_mtok=output_cost_per_mtok,
         )
     elif isinstance(usage, dict) and usage:
         # post_api_request passes a pre-built CanonicalUsage summary dict.
@@ -866,35 +898,17 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
             usage_details["cache_creation_input_tokens"] = _cache_write
         if _reasoning:
             usage_details["reasoning_tokens"] = _reasoning
-        cost_details = {}
-        # Estimate per-type cost from the summary if possible
-        try:
-            from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, get_pricing_entry
-            from decimal import Decimal
-            _ONE_M = Decimal("1000000")
-            _cu = CanonicalUsage(
-                input_tokens=_input,
-                output_tokens=_output,
-                cache_read_tokens=_cache_read,
-                cache_write_tokens=_cache_write,
-                reasoning_tokens=_reasoning,
-            )
-            entry = get_pricing_entry(model, provider=provider, base_url=base_url)
-            if entry:
-                if entry.input_cost_per_million is not None and _input:
-                    cost_details["input"] = float(Decimal(_input) * entry.input_cost_per_million / _ONE_M)
-                if entry.output_cost_per_million is not None and _output:
-                    cost_details["output"] = float(Decimal(_output) * entry.output_cost_per_million / _ONE_M)
-                if entry.cache_read_cost_per_million is not None and _cache_read:
-                    cost_details["cache_read_input_tokens"] = float(Decimal(_cache_read) * entry.cache_read_cost_per_million / _ONE_M)
-                if entry.cache_write_cost_per_million is not None and _cache_write:
-                    cost_details["cache_creation_input_tokens"] = float(Decimal(_cache_write) * entry.cache_write_cost_per_million / _ONE_M)
-            else:
-                _cost = estimate_usage_cost(model, _cu, provider=provider, base_url=base_url, api_key="")
-                if _cost.amount_usd is not None:
-                    cost_details["total"] = float(_cost.amount_usd)
-        except Exception:
-            pass
+        # Per-type cost from the DECLARED rates threaded through the hook
+        # payload — this plugin never parses the slug or reads a pricing table.
+        # Absent declared rates -> no cost_details (unknown-and-loud).
+        cost_details = _cost_details_from_declared(
+            _input,
+            _output,
+            _cache_read,
+            _cache_write,
+            input_cost_per_mtok=input_cost_per_mtok,
+            output_cost_per_mtok=output_cost_per_mtok,
+        )
     else:
         usage_details, cost_details = {}, {}
 

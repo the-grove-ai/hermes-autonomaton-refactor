@@ -1310,6 +1310,7 @@ def _get_usage(agent) -> dict:
     try:
         from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
 
+        _facts = getattr(agent, "_model_facts", None)
         cost = estimate_usage_cost(
             usage["model"],
             CanonicalUsage(
@@ -1320,6 +1321,8 @@ def _get_usage(agent) -> dict:
             ),
             provider=getattr(agent, "provider", None),
             base_url=getattr(agent, "base_url", None),
+            input_cost_per_mtok=getattr(_facts, "cost_per_mtok_input", None),
+            output_cost_per_mtok=getattr(_facts, "cost_per_mtok_output", None),
         )
         usage["cost_status"] = cost.status
         if cost.amount_usd is not None:

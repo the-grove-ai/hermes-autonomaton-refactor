@@ -393,6 +393,43 @@ def _literal_model_collection(node: ast.AST) -> bool:
     return hits >= max(2, (len(strs) + 1) // 2)
 
 
+def _comprehension_provenance(node: ast.AST) -> Optional[str]:
+    """Classify a comprehension used as the RHS of `in` by the PROVENANCE of
+    its source iterable (P4b Step 2 membership refinement):
+
+      "literal" — iterates a LITERAL vendor-name collection
+                  (``{m for m in ["gpt","claude"]}``). A hardcoded name set
+                  laundered through a comprehension is still a slug parse.
+      "runtime" — iterates RUNTIME data (a name/call/attribute:
+                  ``{m["slug"] for m in catalog}``). Membership against
+                  catalog/config/API data is a LOOKUP against the allowlist,
+                  which R-2 permits — the ``m["slug"]`` inside reads a record's
+                  field, not the opaque routing slug.
+      None      — not a comprehension.
+
+    The discriminator is provenance, never "built by a comprehension": a
+    literal source flags, a runtime source does not.
+    """
+    if not isinstance(node, (ast.SetComp, ast.ListComp, ast.GeneratorExp, ast.DictComp)):
+        return None
+    literal_src = False
+    runtime_src = False
+    for gen in node.generators:
+        it = gen.iter
+        if isinstance(it, (ast.List, ast.Tuple, ast.Set)):
+            if _literal_model_collection(it):
+                literal_src = True
+            # a literal NON-vendor source is neither — ignored
+        else:
+            # a Name / Call / Attribute / Subscript source is runtime data
+            runtime_src = True
+    if literal_src:
+        return "literal"
+    if runtime_src:
+        return "runtime"
+    return None
+
+
 def _detect_in_scope(
     scope_body: Iterable[ast.stmt], tainted: Set[str], path: str, source: str,
     allow: bool, is_composition: bool, dict_exprs: Set[str],
@@ -438,6 +475,23 @@ def _detect_in_scope(
                     rhs_is_model_set = any(
                         _literal_model_collection(o) for o in node.comparators
                     )
+                    # PROVENANCE refinement (P4b Step 2). A membership against a
+                    # RUNTIME-DERIVED collection — a comprehension over catalog/
+                    # config/API data, `slug in {m["slug"] for m in catalog}` —
+                    # is a LOOKUP against the catalog allowlist, permitted by
+                    # R-2. Its `m["slug"]` reads a record's field (an _is_source),
+                    # not the opaque slug, so suppress the substring taint it
+                    # triggers. A comprehension over a LITERAL vendor collection
+                    # (`{m for m in ["gpt","claude"]}`) is a laundered literal
+                    # and still flags — provenance decides, not the syntax.
+                    comp_prov = next(
+                        (p for p in (_comprehension_provenance(o) for o in node.comparators) if p),
+                        None,
+                    )
+                    if comp_prov == "runtime":
+                        substring = False
+                    if comp_prov == "literal":
+                        rhs_is_model_set = True
                     if substring or (value_is_slug and rhs_is_model_set):
                         add(node, "A1", "parse: substring/model-set membership on slug")
                 elif isinstance(op, (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
@@ -527,6 +581,19 @@ EXEMPTIONS: dict = {
         "for the backend; the correct key is the endpoint, not the model. Not a "
         "model fact — declaring it would be psychology-as-config. Re-key to the "
         "endpoint when local-substrate work lands.",
+    ("hermes_cli/models.py", 3200):
+        "Catalog-ingestion hygiene: strips a ':cloud'/'-cloud' suffix from an "
+        "EXTERNAL models.dev catalog ID during the dedup-merge, before the entry "
+        "becomes a routing binding. The id here is third-party catalog data, not "
+        "the opaque routing slug R-2 governs; non-dispatch (CLI/model-listing "
+        "only). Owned by declarative-flag-path-v1 if catalog-id normalization is "
+        "ever centralized.",
+    ("plugins/hermes-achievements/dashboard/plugin_api.py", 306):
+        "is_local_model_name — detects a LOCAL ENDPOINT via name markers "
+        "(ollama/gguf/localhost/vllm-local). Same class as the GLM exemption: "
+        "the model name is a proxy for the backend; the correct key is the "
+        "endpoint, which the catalog has no field for. Non-dispatch (achievements "
+        "dashboard). Re-key to the endpoint when local-substrate work lands.",
 }
 # (scripts/sample_and_compress.py:30 exemption retired at P4b HALT-B — a bare
 #  dataset-name list is no longer a finding under the provenance rule.)
@@ -615,6 +682,48 @@ def test_positive_control_flags_all_five_known_shapes():
     # assertion 4 (test_composition_cannot_branch_on_provider); a bare literal
     # model-name collection is no longer a standalone finding. Both moves are
     # asserted by their own tests; this control pins the substring shape.
+
+
+@pytest.mark.guard
+def test_membership_provenance_discriminator():
+    """P4b Step 2 — a slug membership against a comprehension is a slug parse
+    ONLY when the comprehension's SOURCE is a literal vendor collection.
+    Provenance decides, never 'built by a comprehension'.
+
+      * RUNTIME-derived (`slug in {m["slug"] for m in catalog}`) — a LOOKUP
+        against catalog/config/API data, permitted by R-2 -> NOT flagged.
+      * LITERAL laundered (`slug in {m for m in ["gpt","claude","gemini"]}`) —
+        a hardcoded name set hidden behind a comprehension -> STILL flagged.
+    """
+    def _membership(findings):
+        return [f for f in findings
+                if f.kind == "parse: substring/model-set membership on slug"]
+
+    runtime = scan_module(
+        "<<prov-runtime>>",
+        'def h(model_slug, catalog):\n'
+        '    return model_slug not in {m["slug"] for m in catalog}\n',
+    )
+    assert not _membership(runtime), (
+        "a membership against a RUNTIME-derived catalog comprehension is a "
+        f"lookup (R-2 permits it), must not flag: {[f.expr for f in _membership(runtime)]}"
+    )
+
+    laundered = scan_module(
+        "<<prov-literal>>",
+        'def h(model_slug):\n'
+        '    return model_slug in {m for m in ["gpt", "claude", "gemini"]}\n',
+    )
+    assert _membership(laundered), (
+        "a literal vendor collection laundered through a comprehension MUST "
+        "still flag — provenance is the test, not the comprehension syntax."
+    )
+
+    # Sanity: the TOOL_USE_ENFORCEMENT_MODELS substring shape stays flagged
+    # (unaffected by the comprehension refinement — its RHS is the slug string).
+    assert _membership(_control_findings()), (
+        "the substring control (`p in model_lower`) must remain flagged"
+    )
 
 
 @pytest.mark.guard

@@ -29,11 +29,19 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    input_cost_per_mtok: float | None = None,
+    output_cost_per_mtok: float | None = None,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
         provider="anthropic" if cli_obj.model.startswith("anthropic/") else None,
         base_url="",
+        # binding-opacity-v1: per-turn cost comes from the declared ModelFacts
+        # rates, never from parsing the slug. Undeclared -> cost is unknown.
+        _model_facts=SimpleNamespace(
+            cost_per_mtok_input=input_cost_per_mtok,
+            cost_per_mtok_output=output_cost_per_mtok,
+        ),
         session_input_tokens=input_tokens if input_tokens is not None else prompt_tokens,
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
         session_cache_read_tokens=cache_read_tokens,
@@ -75,7 +83,9 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=120)
 
-        assert "claude-sonnet-4-20250514" in text
+        # Binding opacity: the slug is never parsed. Uncatalogued models fall
+        # back to the raw slug (truncated by the status-bar width cap).
+        assert "anthropic/claude-sonnet" in text
         assert "12.4K/200K" in text
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
@@ -205,7 +215,8 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=100)
 
         assert "⚕" in text
-        assert "claude-sonnet-4-20250514" in text
+        # Binding opacity: uncatalogued slug surfaces raw (truncated), not parsed.
+        assert "anthropic/claude-sonnet" in text
 
     def test_compression_count_shown_in_wide_status_bar(self):
         cli_obj = _attach_agent(
@@ -510,6 +521,9 @@ class TestCLIUsageReport:
             context_tokens=12_450,
             context_length=200_000,
             compressions=1,
+            # Declared Sonnet rates ($3/$15 per Mtok) -> cost is computable.
+            input_cost_per_mtok=3.0,
+            output_cost_per_mtok=15.0,
         )
         cli_obj.verbose = False
 

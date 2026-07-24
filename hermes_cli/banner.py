@@ -516,9 +516,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         _bskin = None
         _hero = GROVE_CADUCEUS
     left_lines = ["", _hero, ""]
-    model_short = model.split("/")[-1] if "/" in model else model
-    if model_short.endswith(".gguf"):
-        model_short = model_short[:-5]
+    from grove.config.model_catalog import catalog_display_name_for
+    model_short = catalog_display_name_for(model) or model
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
     ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""

@@ -62,7 +62,13 @@ def populated_db(db):
     db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 2 * day,))
     db.end_session("s1", end_reason="user_exit")
     db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 's1'", (now - 2 * day + 3600,))
-    db.update_token_counts("s1", input_tokens=50000, output_tokens=15000)
+    # binding-opacity-v1: insights reports the cost RECORDED at session time
+    # (declared-cost truth), so the fixture records it — cost is never
+    # re-derived from the slug at report time.
+    db.update_token_counts(
+        "s1", input_tokens=50000, output_tokens=15000,
+        estimated_cost_usd=0.375, cost_status="estimated", cost_source="declared",
+    )
     db.append_message("s1", role="user", content="Hello, help me fix a bug")
     db.append_message("s1", role="assistant", content="Sure, let me look into that.")
     db.append_message("s1", role="assistant", content="Let me search the files.",
@@ -91,7 +97,10 @@ def populated_db(db):
     db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 's2'", (now - 5 * day,))
     db.end_session("s2", end_reason="timeout")
     db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 's2'", (now - 5 * day + 1800,))
-    db.update_token_counts("s2", input_tokens=20000, output_tokens=8000)
+    db.update_token_counts(
+        "s2", input_tokens=20000, output_tokens=8000,
+        estimated_cost_usd=0.14, cost_status="estimated", cost_source="declared",
+    )
     db.append_message("s2", role="user", content="Search the web for something")
     db.append_message("s2", role="assistant", content="Searching...",
                       tool_calls=[{"function": {"name": "web_search"}}])
@@ -106,7 +115,10 @@ def populated_db(db):
     db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 's3'", (now - 10 * day,))
     db.end_session("s3", end_reason="user_exit")
     db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 's3'", (now - 10 * day + 7200,))
-    db.update_token_counts("s3", input_tokens=100000, output_tokens=40000)
+    db.update_token_counts(
+        "s3", input_tokens=100000, output_tokens=40000,
+        estimated_cost_usd=0.6, cost_status="estimated", cost_source="declared",
+    )
     db.append_message("s3", role="user", content="Run this terminal command")
     db.append_message("s3", role="assistant", content="Running...",
                       tool_calls=[{"function": {"name": "terminal"}}])
@@ -132,7 +144,10 @@ def populated_db(db):
     db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 's4'", (now - 1 * day,))
     db.end_session("s4", end_reason="user_exit")
     db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 's4'", (now - 1 * day + 900,))
-    db.update_token_counts("s4", input_tokens=10000, output_tokens=5000)
+    db.update_token_counts(
+        "s4", input_tokens=10000, output_tokens=5000,
+        estimated_cost_usd=0.09, cost_status="estimated", cost_source="declared",
+    )
     db.append_message("s4", role="user", content="Quick question")
     db.append_message("s4", role="assistant", content="Sure, go ahead")
     db.append_message(
@@ -174,51 +189,68 @@ def populated_db(db):
 
 
 class TestHasKnownPricing:
-    def test_known_commercial_model(self):
-        assert _has_known_pricing("gpt-4o", provider="openai") is True
-        assert _has_known_pricing("anthropic/claude-sonnet-4-20250514") is True
-        assert _has_known_pricing("gpt-4.1", provider="openai") is True
+    # binding-opacity-v1: "known" is a property of the DECLARED binding — the
+    # per-mtok rates are present, or the route is subscription-included. It is
+    # never inferred from the model slug.
+    def test_declared_rates_are_known(self):
+        assert _has_known_pricing(
+            "any-opaque-slug", input_cost_per_mtok=3.0, output_cost_per_mtok=15.0
+        ) is True
 
-    def test_unknown_custom_model(self):
-        assert _has_known_pricing("FP16_Hermes_4.5") is False
+    def test_subscription_route_is_known(self):
+        assert _has_known_pricing("gpt-5.3-codex", provider="openai-codex") is True
+
+    def test_undeclared_is_unknown_regardless_of_slug(self):
+        assert _has_known_pricing("gpt-4o", provider="openai") is False
+        assert _has_known_pricing("anthropic/claude-sonnet-4-20250514") is False
         assert _has_known_pricing("my-custom-model") is False
-        assert _has_known_pricing("glm-5") is False
         assert _has_known_pricing("") is False
         assert _has_known_pricing(None) is False
 
-    def test_heuristic_matched_models_are_not_considered_known(self):
-        assert _has_known_pricing("some-opus-model") is False
-        assert _has_known_pricing("future-sonnet-v2") is False
+    def test_half_declared_is_unknown(self):
+        assert _has_known_pricing("x", input_cost_per_mtok=3.0) is False
 
 
 class TestEstimateCost:
-    def test_basic_cost(self):
+    def test_declared_cost(self):
         cost, status = _estimate_cost(
-            "anthropic/claude-sonnet-4-20250514",
+            "any-opaque-slug",
             1_000_000,
             1_000_000,
-            provider="anthropic",
+            input_cost_per_mtok=3.0,
+            output_cost_per_mtok=15.0,
         )
         assert status == "estimated"
         assert cost == pytest.approx(18.0, abs=0.01)
 
-    def test_zero_tokens(self):
-        cost, status = _estimate_cost("gpt-4o", 0, 0, provider="openai")
-        assert status == "estimated"
+    def test_undeclared_is_unknown(self):
+        cost, status = _estimate_cost("gpt-4o", 1000, 500, provider="openai")
+        assert status == "unknown"
         assert cost == 0.0
 
-    def test_cache_aware_usage(self):
+    def test_cache_aware_usage_bills_cache_at_input_rate(self):
         cost, status = _estimate_cost(
-            "anthropic/claude-sonnet-4-20250514",
+            "any-opaque-slug",
             1000,
             500,
             cache_read_tokens=2000,
             cache_write_tokens=400,
-            provider="anthropic",
+            input_cost_per_mtok=3.0,
+            output_cost_per_mtok=15.0,
         )
         assert status == "estimated"
-        expected = (1000 * 3.0 + 500 * 15.0 + 2000 * 0.30 + 400 * 3.75) / 1_000_000
+        # binding declares no separate cache tier -> cache billed at input rate
+        expected = (1000 * 3.0 + 500 * 15.0 + (2000 + 400) * 3.0) / 1_000_000
         assert cost == pytest.approx(expected, abs=0.0001)
+
+    def test_session_row_returns_recorded_cost(self):
+        # A persisted session row returns the cost RECORDED at session time
+        # (declared-cost truth), not a recomputation from the slug.
+        cost, status = _estimate_cost(
+            {"estimated_cost_usd": 1.25, "cost_status": "estimated"}
+        )
+        assert status == "estimated"
+        assert cost == 1.25
 
 
 # =========================================================================
@@ -347,7 +379,7 @@ class TestInsightsPopulated:
 
         # Should have 3 distinct models (claude-sonnet x2, gpt-4o, deepseek-chat)
         model_names = [m["model"] for m in models]
-        assert "claude-sonnet-4-20250514" in model_names
+        assert "anthropic/claude-sonnet-4-20250514" in model_names
         assert "gpt-4o" in model_names
         assert "deepseek-chat" in model_names
 
@@ -673,13 +705,18 @@ class TestEdgeCases:
         _json.dumps(report["overview"])  # would raise if sets present
 
     def test_mixed_commercial_and_custom_models(self, db):
-        """Mix of commercial and custom models: only commercial ones get costs."""
+        """Mix of models: only the session that RECORDED a declared cost gets a
+        cost. binding-opacity-v1: 'commercial' is not read off the slug — the
+        session with recorded declared cost is the one with known pricing."""
         db.create_session(session_id="s1", source="cli", model="anthropic/claude-sonnet-4-20250514")
         db.update_token_counts(
             "s1",
             input_tokens=10000,
             output_tokens=5000,
             billing_provider="anthropic",
+            estimated_cost_usd=0.105,
+            cost_status="estimated",
+            cost_source="declared",
         )
         db.create_session(session_id="s2", source="cli", model="my-local-llama")
         db.update_token_counts("s2", input_tokens=10000, output_tokens=5000)
@@ -688,14 +725,14 @@ class TestEdgeCases:
         engine = InsightsEngine(db)
         report = engine.generate(days=30)
 
-        # Cost should only come from gpt-4o, not from the custom model
+        # Cost comes only from the session that recorded declared cost.
         overview = report["overview"]
         assert overview["estimated_cost"] > 0
-        assert "claude-sonnet-4-20250514" in overview["models_with_pricing"]  # list now, not set
+        assert "anthropic/claude-sonnet-4-20250514" in overview["models_with_pricing"]  # list now, not set
         assert "my-local-llama" in overview["models_without_pricing"]
 
         # Verify individual model entries
-        claude = next(m for m in report["models"] if m["model"] == "claude-sonnet-4-20250514")
+        claude = next(m for m in report["models"] if m["model"] == "anthropic/claude-sonnet-4-20250514")
         assert claude["has_pricing"] is True
         assert claude["cost"] > 0
 

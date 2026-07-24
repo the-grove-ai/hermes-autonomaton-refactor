@@ -29,13 +29,36 @@ from agent.usage_pricing import (
     format_duration_compact,
     has_known_pricing,
 )
+from grove.config.model_catalog import catalog_display_name_for
 
 _DEFAULT_PRICING = DEFAULT_PRICING
 
 
-def _has_known_pricing(model_name: str, provider: str = None, base_url: str = None) -> bool:
-    """Check if a model has known pricing (vs unknown/custom endpoint)."""
-    return has_known_pricing(model_name, provider=provider, base_url=base_url)
+def _has_known_pricing(
+    model_name: str,
+    provider: str = None,
+    base_url: str = None,
+    *,
+    input_cost_per_mtok: float = None,
+    output_cost_per_mtok: float = None,
+) -> bool:
+    """Whether cost is known — the declared per-mtok rates are present, or the
+    route is subscription-included. binding-opacity-v1: never inferred from the
+    model slug."""
+    return has_known_pricing(
+        model_name,
+        provider=provider,
+        base_url=base_url,
+        input_cost_per_mtok=input_cost_per_mtok,
+        output_cost_per_mtok=output_cost_per_mtok,
+    )
+
+
+def _session_has_known_pricing(session: Dict[str, Any]) -> bool:
+    """A persisted session has KNOWN pricing when its RECORDED cost status is
+    declared/actual/included. Read from the stored columns run_agent wrote from
+    the declared ModelFacts — never re-derived from the slug at report time."""
+    return session.get("cost_status") in ("estimated", "actual", "included")
 
 
 def _estimate_cost(
@@ -47,32 +70,36 @@ def _estimate_cost(
     cache_write_tokens: int = 0,
     provider: str = None,
     base_url: str = None,
+    input_cost_per_mtok: float = None,
+    output_cost_per_mtok: float = None,
 ) -> tuple[float, str]:
-    """Estimate the USD cost for a session row or a model/token tuple."""
+    """Return the USD cost for a session row or a model/token tuple.
+
+    binding-opacity-v1: cost is never re-derived from the model slug here.
+    For a persisted session row we return the cost RECORDED at session time
+    (``estimated_cost_usd`` / ``cost_status``), which run_agent computed from
+    the declared ModelFacts rates. For an ad-hoc model/token tuple the caller
+    supplies the declared per-mtok rates directly.
+    """
     if isinstance(session_or_model, dict):
         session = session_or_model
-        model = session.get("model") or ""
-        usage = CanonicalUsage(
-            input_tokens=session.get("input_tokens") or 0,
-            output_tokens=session.get("output_tokens") or 0,
-            cache_read_tokens=session.get("cache_read_tokens") or 0,
-            cache_write_tokens=session.get("cache_write_tokens") or 0,
-        )
-        provider = session.get("billing_provider")
-        base_url = session.get("billing_base_url")
-    else:
-        model = session_or_model or ""
-        usage = CanonicalUsage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_write_tokens=cache_write_tokens,
-        )
+        amount = float(session.get("estimated_cost_usd") or 0.0)
+        status = session.get("cost_status") or "unknown"
+        return amount, status
+
+    usage = CanonicalUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+    )
     result = estimate_usage_cost(
-        model,
+        session_or_model or "",
         usage,
         provider=provider,
         base_url=base_url,
+        input_cost_per_mtok=input_cost_per_mtok,
+        output_cost_per_mtok=output_cost_per_mtok,
     )
     return float(result.amount_usd or 0.0), result.status
 
@@ -407,12 +434,12 @@ class InsightsEngine:
             estimated, status = _estimate_cost(s)
             total_cost += estimated
             actual_cost += s.get("actual_cost_usd") or 0.0
-            display = model.split("/")[-1] if "/" in model else (model or "unknown")
+            display = catalog_display_name_for(model) or (model or "unknown")
             if status == "included":
                 included_cost_sessions += 1
             elif status == "unknown":
                 unknown_cost_sessions += 1
-            if _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url")):
+            if _session_has_known_pricing(s):
                 models_with_pricing.add(display)
             else:
                 models_without_pricing.add(display)
@@ -469,8 +496,8 @@ class InsightsEngine:
 
         for s in sessions:
             model = s.get("model") or "unknown"
-            # Normalize: strip provider prefix for display
-            display_model = model.split("/")[-1] if "/" in model else model
+            # Normalize: resolve declared display name for the opaque slug
+            display_model = catalog_display_name_for(model) or model
             d = model_data[display_model]
             d["sessions"] += 1
             inp = s.get("input_tokens") or 0
@@ -485,7 +512,7 @@ class InsightsEngine:
             d["tool_calls"] += s.get("tool_call_count") or 0
             estimate, status = _estimate_cost(s)
             d["cost"] += estimate
-            d["has_pricing"] = _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
+            d["has_pricing"] = _session_has_known_pricing(s)
             d["cost_status"] = status
 
         result = [

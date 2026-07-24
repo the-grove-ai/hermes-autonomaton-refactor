@@ -12253,6 +12253,7 @@ class GatewayRunner:
             # Cost estimation
             try:
                 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+                _facts = getattr(agent, "_model_facts", None)
                 cost_result = estimate_usage_cost(
                     agent.model,
                     CanonicalUsage(
@@ -12263,6 +12264,8 @@ class GatewayRunner:
                     ),
                     provider=getattr(agent, "provider", None),
                     base_url=getattr(agent, "base_url", None),
+                    input_cost_per_mtok=getattr(_facts, "cost_per_mtok_input", None),
+                    output_cost_per_mtok=getattr(_facts, "cost_per_mtok_output", None),
                 )
                 if cost_result.amount_usd is not None:
                     prefix = "~" if cost_result.status == "estimated" else ""

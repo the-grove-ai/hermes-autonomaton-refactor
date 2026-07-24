@@ -653,9 +653,10 @@ def run_doctor(args):
                 "lmstudio",
                 "nous",
             }
+            from grove.config.model_catalog import catalog_provider_for
             if (
                 default_model
-                and "/" in default_model
+                and catalog_provider_for(default_model) in providers_accepting_vendor_slugs
                 and provider_for_policy
                 and provider_for_policy not in providers_accepting_vendor_slugs
             ):
