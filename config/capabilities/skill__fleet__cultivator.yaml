@@ -1,6 +1,7 @@
 id: skill.fleet.cultivator
 kind: skill
 trigger:
+  intents: [research]
   keywords:
   - cultivate
   - cultivator

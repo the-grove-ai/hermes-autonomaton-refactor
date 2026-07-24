@@ -1,6 +1,7 @@
 id: skill.fleet.drafter
 kind: skill
 trigger:
+  intents: [creative_writing]
   keywords:
   - draft
   - drafter

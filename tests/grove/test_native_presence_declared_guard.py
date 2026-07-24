@@ -37,6 +37,7 @@ from pathlib import Path
 
 import pytest
 
+from grove.capability import CapabilityKind
 from grove.capability_registry import load_capabilities
 
 # ── repo geometry ─────────────────────────────────────────────────────────
@@ -94,11 +95,35 @@ def _is_intent_gated(cap) -> bool:
     return bool(cap.trigger.intents) and cap.trigger.always is not True
 
 
+def _can_gate_presence(cap) -> bool:
+    """SCOPE for the Part-1 census (native-presence-declared-v1 AMEND-1). A record
+    can gate presence only if it binds a tool the resolver could withhold — a
+    non-empty ``bindings.tools`` — OR it is ``kind==mcp`` (the MCP-admission plane,
+    ``_mcp_trigger_reason``, gates presence off ``trigger.intents`` even when the
+    server's schema is pulled live rather than statically bound).
+
+    A record binding NO tools and NOT on the MCP plane (the four held fleet skills:
+    ``bindings.tools == []``, ``kind==skill``) cannot gate presence on ANY plane —
+    S-1/S-2 proved it never enters ``_effective_caps_index`` (native filter) nor a
+    ``disclosure`` split. Its ``trigger.intents`` drive only guidance (hook payload,
+    skill_nudge) and primacy — never the offered surface. Asserting the
+    presence-declaration invariant over such a record is over-reach, not coverage:
+    it would force ``always:true`` on a record whose ``always`` flag is inert,
+    conflating guidance surfacing with presence. notion_write stays in scope (it
+    gates the notion server into ``mcp_allow`` per turn); the held skills leave it."""
+    return bool(cap.bindings.tools) or cap.kind is CapabilityKind.MCP
+
+
 def _intent_gated_census() -> dict[str, object]:
     """The live census over the in-repo record set (explicit dir = no overlay,
-    no state — exactly what ships)."""
+    no state — exactly what ships). Scoped to presence-gaters (AMEND-1): a record
+    that cannot gate presence is out of the invariant's reach — see
+    :func:`_can_gate_presence`."""
     recs = load_capabilities(directory=CAP_DIR)
-    return {cid: c for cid, c in recs.items() if _is_intent_gated(c)}
+    return {
+        cid: c for cid, c in recs.items()
+        if _is_intent_gated(c) and _can_gate_presence(c)
+    }
 
 
 # ── PART 1 · tests ────────────────────────────────────────────────────────

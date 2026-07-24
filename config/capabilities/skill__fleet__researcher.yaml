@@ -1,6 +1,7 @@
 id: skill.fleet.researcher
 kind: skill
 trigger:
+  intents: [research, analysis]
   keywords: [research, researcher, brief, analyze, break down, deep dive]
   dock_affinity: []
   always: false

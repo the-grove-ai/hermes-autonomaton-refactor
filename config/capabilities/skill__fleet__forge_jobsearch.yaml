@@ -1,6 +1,7 @@
 id: skill.fleet.forge-jobsearch
 kind: skill
 trigger:
+  intents: [creative_writing]
   keywords: [forge, tailor resume, cover letter, job application, application package, forge the application]
   dock_affinity: [career-transition]
   always: false
