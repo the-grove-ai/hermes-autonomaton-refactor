@@ -75,6 +75,12 @@ models:
     input_cost_per_mtok: 1.5     # USD/Mtok — display-only, verified google/gemini-3.5-flash
     output_cost_per_mtok: 9    # USD/Mtok — display-only
     notes: "Google AI Studio BYOK. Frontier flash."
+  - slug: "google/gemini-3.6-flash"
+    display_name: "Gemini 3.6 Flash"
+    provider: openrouter
+    input_cost_per_mtok: 1.5     # USD/Mtok — display-only
+    output_cost_per_mtok: 7.5    # USD/Mtok — display-only
+    notes: "High-efficiency coding/agentic model, 1M context. Bound to T3 in the shipped default (promoted into the seed from the operator overlay for G-6 coherence). Released 2026-07-21."
   - slug: "google/gemini-3.1-pro-preview"
     display_name: "Gemini 3.1 Pro (preview)"
     provider: openrouter
