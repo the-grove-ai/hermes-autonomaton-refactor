@@ -11,18 +11,38 @@ v1 capabilities, exactly three (Notion + x_search DEFERRED):
   * web_extract — ``tools.web_tools.web_extract_tool``  (async, web_tools.py:842)
   * wiki        — ``grove.wiki.index.WikiIndex().query`` (index.py:116)
 
+Two topic paths:
+
+* **URL topic** (URL-shaped: scheme + host) — a SINGLE-SOURCE FETCH: one
+  ``web_extract`` of that URL, zero queries, no discovery, no expansion. It
+  never reaches the search-and-extract pipeline.
+* **Subject topic** (P1b amendment) — formulate ≤ MAX_QUERIES queries →
+  ``web_search`` each to DISCOVER candidate URLs → dedupe by URL → reserve up to
+  WIKI_RESERVED_SLOTS final slots for cellar material → cap web candidates at
+  the remaining slots → ``web_extract`` each for the ARTICLE TEXT (a snippet
+  cannot support counter-arguments or an evidence gap) → ``wiki`` query
+  alongside. Every discovered URL is a fetch target and gets the full safety
+  treatment; a search result is not more trusted than an operator-supplied URL.
+
+Concurrency + budget: the ≤3 searches (+ wiki) run concurrently as stage 1, the
+≤ MAX_SOURCES extracts run concurrently as stage 2, and formulation runs
+off-thread — so the serial worst case (≤3 searches + ≤5 extracts × 10s ≈ 80s)
+collapses to ≈ formulation + 10s + 10s, holding under BROKER_PHASE_TIMEOUT_S=45.
+The per-source timeout still bounds each individual fetch.
+
 HARD CONSTRAINT — no LLM over fetched content. ``web_extract_tool`` summarizes
 via ``agent.auxiliary_client`` only when ``use_llm_processing and
 auxiliary_available`` (web_tools.py:999); this broker drives it with
 ``use_llm_processing=False`` and never passes an auxiliary client, taking the
-raw fallback deliberately. The ONLY model call in this module is query
-formulation (:func:`_formulate_queries`), which runs in an ISOLATED context and
-never sees fetched material, credentials, or the worker prompt.
+raw fallback deliberately. The ONLY model call is query formulation
+(:func:`_formulate_queries`), isolated — it sees only ``topic`` +
+``operator_intent`` as untrusted data, never fetched material or credentials.
 
 Fail-fast / fail-loud (Digital Jidoka): budget and materials-ceiling breaches
-HARD-HALT (raise) rather than returning partial output; a rejected URL raises
-rather than silently skipping; a dropped source is logged loudly. Per-source
-fetch failures/timeouts drop that source (recorded), never the phase.
+HARD-HALT (raise) rather than returning partial output; an operator URL topic
+that fails safety raises; a search-candidate URL that fails safety is
+drop-and-logged (rejected, not silently skipped); a per-source fetch
+failure/timeout drops that source (recorded), never the phase.
 
 Dependency injection: every external effect (the three capability adapters, the
 formulation model call, the SSRF check, the clocks) is an injectable parameter
@@ -36,11 +56,10 @@ import asyncio
 import hashlib
 import json
 import logging
-import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -57,6 +76,7 @@ __all__ = [
     # bounds (named constants — the sprint's WHERE/HOW-MUCH governance)
     "MAX_QUERIES",
     "MAX_SOURCES",
+    "WIKI_RESERVED_SLOTS",
     "PER_SOURCE_FETCH_TIMEOUT_S",
     "BROKER_PHASE_TIMEOUT_S",
     "MAX_CONTENT_BYTES",
@@ -65,9 +85,19 @@ __all__ = [
     "QUERY_FORMULATION_TIER",
 ]
 
-# ── bounds, all enforced in this module ──────────────────────────────────────
+# ── bounds, all enforced in this module (P1b: unchanged, not re-tuned) ────────
 MAX_QUERIES = 3
 MAX_SOURCES = 5
+
+# Reserved final-slot floor for wiki (cellar) material WHEN the cellar returns
+# results. The accumulated substrate is this system's differentiator vs a plain
+# web search, so it is a FLOOR, not backfill — five successful web extracts must
+# not discard the operator's own cellar material. Web candidates are capped at
+# (MAX_SOURCES - wiki_taken) BEFORE the extract gather, so no expensive extract
+# is spent on a slot reserved for wiki (side benefit: fewer extracts also lower
+# stage-2 budget pressure). An empty cellar reserves nothing — web takes all.
+WIKI_RESERVED_SLOTS = 2
+
 PER_SOURCE_FETCH_TIMEOUT_S = 10.0
 BROKER_PHASE_TIMEOUT_S = 45.0
 
@@ -81,9 +111,8 @@ MAX_CONTENT_BYTES = 100_000
 # Aggregate RAW-bytes ceiling → HARD HALT (attack shape, not a long article).
 # With ≤ MAX_SOURCES sources each truncated to MAX_CONTENT_BYTES, the legitimate
 # STORED total is ≤ 500 KB. This ceiling gates the RAW fetched bytes at 2 MB —
-# ~4× the stored max and ~2.5× what an all-long-articles fetch produces — so
-# tripping it means aggregate fetched volume is pathological (resource
-# exhaustion), which HALTs rather than truncates.
+# ~4× the stored max — so tripping it means aggregate fetched volume is
+# pathological (resource exhaustion), which HALTs rather than truncates.
 MAX_TOTAL_MATERIALS_BYTES = 2_000_000
 
 ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
@@ -93,12 +122,6 @@ ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 # in config moves this with no code change (call_t1's by-name primitive).
 QUERY_FORMULATION_TIER = "T1"
 QUERY_FORMULATION_MAX_TOKENS = 512
-
-# A leading ``scheme:`` marks the topic as URL-INTENT; the scheme is then held
-# to ALLOWED_URL_SCHEMES (an out-of-allowlist scheme is rejected loudly, never
-# treated as a subject). A subject with an interior space before any colon does
-# not match, so plain research subjects fall through to the query path.
-_SCHEME_PREFIX_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):")
 
 
 # ── errors ───────────────────────────────────────────────────────────────────
@@ -111,7 +134,7 @@ class BrokerRequestError(BrokerError):
 
 
 class BrokerURLRejected(BrokerError):
-    """A URL-topic failed the scheme allowlist or the SSRF safety check."""
+    """An operator URL-topic failed the scheme allowlist or the SSRF check."""
 
 
 class BrokerQueryFormulationError(BrokerError):
@@ -131,7 +154,11 @@ class BrokerMaterialsCeilingExceeded(BrokerError):
 class RawSource:
     """One retrieved document, pre-truncation. The common shape every capability
     adapter normalizes to; :func:`run_broker` stamps provenance + bounds it into
-    the emitted material."""
+    the emitted material.
+
+    ``capability`` is how the CONTENT was obtained (``web_extract`` / ``wiki``);
+    ``discovery`` is how the URL was FOUND (``operator_url`` / ``web_search`` /
+    ``wiki``) — kept distinct so a search-then-extract source records both."""
 
     url: str
     title: str
@@ -140,6 +167,7 @@ class RawSource:
     content_type: str
     capability: str
     query: str
+    discovery: str = ""
 
 
 # A capability adapter: ``async (term) -> List[RawSource]``. ``term`` is a query
@@ -167,7 +195,9 @@ def _default_call_model(**kwargs: Any) -> Any:
 
 
 async def _adapter_web_search(query: str, *, search_fn: Callable[..., str]) -> List[RawSource]:
-    # web_search_tool is sync; off-thread so we never block the event loop.
+    # web_search_tool is sync; off-thread so we never block the event loop. In
+    # the subject pipeline only the URLs are used (as extract candidates); the
+    # snippet is retained on the RawSource for completeness.
     out = await asyncio.to_thread(search_fn, query, MAX_SOURCES)
     data = json.loads(out)
     sources: List[RawSource] = []
@@ -185,6 +215,7 @@ async def _adapter_web_search(query: str, *, search_fn: Callable[..., str]) -> L
                     content_type="text/plain",
                     capability="web_search",
                     query=query,
+                    discovery="web_search",
                 )
             )
     return sources
@@ -213,6 +244,7 @@ async def _adapter_web_extract(url: str, *, extract_fn: Callable[..., Awaitable[
                 content_type="text/markdown",
                 capability="web_extract",
                 query=url,
+                discovery="web_extract",
             )
         )
     return sources
@@ -235,6 +267,7 @@ async def _adapter_wiki(query: str, *, query_fn: Optional[Callable[..., Any]] = 
                 content_type="text/plain",
                 capability="wiki",
                 query=query,
+                discovery="wiki",
             )
         )
     return sources
@@ -314,7 +347,7 @@ def _validate_queries(raw: Any, max_queries: int) -> List[str]:
     return out
 
 
-def _formulate_queries(
+async def _formulate_queries(
     topic: str,
     operator_intent: Any,
     *,
@@ -327,7 +360,10 @@ def _formulate_queries(
         f"Operator intent: {json.dumps(operator_intent or {}, ensure_ascii=False)}\n\n"
         f"Propose at most {max_queries} search query strings for this topic."
     )
-    raw = call_model(
+    # Off-thread: a sync model call must not block the event loop (keeps the
+    # phase budget's wall-clock enforceable during formulation).
+    raw = await asyncio.to_thread(
+        call_model,
         prompt=prompt,
         system=_QUERY_SYSTEM,
         tool=_QUERY_TOOL,
@@ -337,39 +373,57 @@ def _formulate_queries(
     return _validate_queries(raw, max_queries)
 
 
-# ── URL handling ──────────────────────────────────────────────────────────────
-def _url_intent_scheme(topic: str) -> Optional[str]:
-    m = _SCHEME_PREFIX_RE.match(topic.strip())
-    return m.group(1).lower() if m else None
+# ── URL safety — shared by BOTH the operator URL topic and every search-result
+#    candidate URL (a search result is not more trusted than an operator URL) ──
+def _url_fetch_unsafe_reason(
+    url: str, scheme: str, url_is_safe: Callable[[str], bool]
+) -> Optional[str]:
+    """Return a rejection reason if *url* is not a safe fetch target, else None.
 
+    PRE-FETCH ONLY. is_safe_url resolves the host and blocks private/loopback/
+    link-local/cloud-metadata targets, failing closed on DNS error
+    (url_safety.py:251). REDIRECT-TIME SSRF IS NOT VERIFIED AS ENFORCED ANYWHERE
+    ON THIS PATH: web_tools.py performs NO post-redirect re-check (is_safe_url
+    appears only pre-dispatch at web_tools.py:114/907/1235; the file contains no
+    redirect / allow_redirects / follow_redirects handling). Whether redirects
+    are followed unchecked is BACKEND-DEPENDENT. Verified on prod (hermes-gateway
+    VM, 2026-07-25): the extract backend resolves to tavily (config.yaml
+    web.backend: tavily, extract_backend empty), whose extract is API-DELEGATED
+    — the gateway's only outbound request is httpx.post to
+    https://api.tavily.com/extract (plugins/web/tavily/provider.py:60,70); the
+    target-URL fetch and any redirects run on Tavily's infrastructure, not the
+    gateway's, so redirect-into-gateway-private is not reachable via THIS
+    backend. A LOCAL-fetch backend would follow redirects in-process, unchecked.
+    Tracked as a backend-conditional hard arming precondition; this module is
+    inert (researcher enabled:false).
 
-def _validate_fetch_url(url: str, scheme: str, url_is_safe: Callable[[str], bool]) -> None:
+    This check governs EVERY fetch target — the operator's URL topic AND each
+    search-result candidate URL — not the URL-topic path alone."""
     if scheme not in ALLOWED_URL_SCHEMES:
-        raise BrokerURLRejected(
+        return (
             f"URL scheme {scheme!r} is not in the allowlist "
             f"{sorted(ALLOWED_URL_SCHEMES)} — rejecting {url!r}"
         )
-    # PRE-FETCH ONLY. is_safe_url resolves the host and blocks private/
-    # loopback/link-local/cloud-metadata targets, failing closed on DNS error
-    # (url_safety.py:251). REDIRECT-TIME SSRF IS NOT VERIFIED AS ENFORCED
-    # ANYWHERE ON THIS PATH: web_tools.py performs NO post-redirect re-check
-    # (is_safe_url appears only pre-dispatch at web_tools.py:114/907/1235; the
-    # file contains no redirect / allow_redirects / follow_redirects handling).
-    # Whether redirects are followed unchecked is BACKEND-DEPENDENT. Verified on
-    # prod (hermes-gateway VM, 2026-07-25): the extract backend resolves to
-    # tavily (config.yaml web.backend: tavily, extract_backend empty), whose
-    # extract is API-DELEGATED — the gateway's only outbound request is
-    # httpx.post to https://api.tavily.com/extract (plugins/web/tavily/
-    # provider.py:60,70); the target-URL fetch and any redirects run on Tavily's
-    # infrastructure, not the gateway's, so redirect-into-gateway-private is not
-    # reachable via THIS backend. A LOCAL-fetch backend would follow redirects
-    # in-process, unchecked. Tracked as a backend-conditional hard arming
-    # precondition; this module is inert (researcher enabled:false).
     if not url_is_safe(url):
-        raise BrokerURLRejected(
+        return (
             f"URL {url!r} blocked as unsafe (private/loopback/link-local/"
             f"metadata target, or DNS resolution failed)"
         )
+    return None
+
+
+def _url_intent(topic: str) -> Optional[str]:
+    """Return the scheme when the topic is URL-SHAPED (BOTH a scheme AND a netloc
+    are present), else None. A subject that merely contains a colon
+    ("Rust: async runtime internals") has no netloc → subject path, not a
+    hard-halting malformed URL (the request contract allows "URL or subject").
+    A url-shaped topic with an out-of-allowlist scheme (file://host/x,
+    ftp://host/x) still routes to the URL path and is rejected loudly by
+    _url_fetch_unsafe_reason — that is not weakened."""
+    parsed = urlparse(topic.strip())
+    if parsed.scheme and parsed.netloc:
+        return parsed.scheme.lower()
+    return None
 
 
 def _require_topic(request_body: Any) -> str:
@@ -404,6 +458,19 @@ async def _guarded_fetch(adapter: Adapter, term: str, timeout: float) -> List[Ra
         return []
 
 
+def _collect_candidates(search_lists: List[List[RawSource]]) -> List[Tuple[str, str]]:
+    """Flatten search results into (url, discovering_query) candidates, deduped
+    by URL (first occurrence wins), order preserved."""
+    seen = set()
+    candidates: List[Tuple[str, str]] = []
+    for lst in search_lists:
+        for r in lst:
+            if r.url and r.url not in seen:
+                seen.add(r.url)
+                candidates.append((r.url, r.query))
+    return candidates
+
+
 async def _run_broker_inner(
     request_body: Dict[str, Any],
     *,
@@ -431,46 +498,124 @@ async def _run_broker_inner(
 
     topic = _require_topic(request_body)
     operator_intent = request_body.get("operator_intent")
+    scheme = _url_intent(topic)
 
-    scheme = _url_intent_scheme(topic)
-    raws: List[RawSource] = []
+    stamped: List[RawSource] = []
 
     if scheme is not None:
-        # URL topic → SINGLE-SOURCE FETCH. No formulation, no discovery, no
-        # expansion, no extra queries.
-        _validate_fetch_url(topic, scheme, url_is_safe)
+        # ── URL topic → SINGLE-SOURCE FETCH. No formulation, no discovery, no
+        #    expansion. It never enters the search-and-extract pipeline. ──
+        reason = _url_fetch_unsafe_reason(topic, scheme, url_is_safe)
+        if reason is not None:
+            raise BrokerURLRejected(reason)
         queries_issued: List[str] = []
         check_phase()
         raws = await _guarded_fetch(web_extract_adapter, topic, per_source_timeout)
+        stamped = [replace(r, discovery="operator_url", query=topic) for r in raws]
     else:
-        queries_issued = _formulate_queries(
-            topic,
-            operator_intent,
-            call_model=call_model,
-            tier=QUERY_FORMULATION_TIER,
-            max_queries=MAX_QUERIES,
-        )
-        for q in queries_issued:
-            check_phase()
-            raws += await _guarded_fetch(web_search_adapter, q, per_source_timeout)
-            check_phase()
-            raws += await _guarded_fetch(wiki_adapter, q, per_source_timeout)
+        # ── Subject topic → formulate → search-discover → extract; wiki alongside ──
+        # C3: bound the ONE model call. A phase with no queries has nothing to
+        # retrieve, so a formulation timeout is a HARD HALT, not a droppable
+        # source. NOTE: wait_for cancels the await but does NOT kill the
+        # underlying to_thread worker — a hung model call still leaks a thread.
+        # That residual is accepted at P1b; it becomes a P2 concern once this
+        # runs on the (single-threaded) ticker.
+        try:
+            queries_issued = await asyncio.wait_for(
+                _formulate_queries(
+                    topic,
+                    operator_intent,
+                    call_model=call_model,
+                    tier=QUERY_FORMULATION_TIER,
+                    max_queries=MAX_QUERIES,
+                ),
+                timeout=per_source_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise BrokerQueryFormulationError(
+                f"query formulation exceeded {per_source_timeout:.0f}s — halting "
+                f"(a phase with no queries has nothing to retrieve)"
+            )
+        check_phase()
 
-    # Source cap — excess discarded, count recorded (loud).
-    if len(raws) > MAX_SOURCES:
-        discarded = len(raws) - MAX_SOURCES
+        # Stage 1 (CONCURRENT): web_search each query (URL discovery) + wiki each.
+        n = len(queries_issued)
+        stage1 = await asyncio.gather(
+            *[_guarded_fetch(web_search_adapter, q, per_source_timeout) for q in queries_issued],
+            *[_guarded_fetch(wiki_adapter, q, per_source_timeout) for q in queries_issued],
+        )
+        check_phase()
+        search_lists = list(stage1[:n])
+        wiki_lists = list(stage1[n:])
+        wiki_stamped: List[RawSource] = [r for lst in wiki_lists for r in lst]
+
+        # C1: wiki (cellar) gets a reserved FLOOR when it returns results — it is
+        # the differentiator vs a plain web search, not backfill. Reserve up to
+        # WIKI_RESERVED_SLOTS, then cap web candidates at the REMAINING slots
+        # BEFORE the extract gather, so no expensive extract is spent on a slot
+        # that will go to wiki (side benefit: fewer extracts also lower stage-2
+        # budget pressure). An empty cellar reserves nothing — web takes all.
+        wiki_taken = min(len(wiki_stamped), WIKI_RESERVED_SLOTS)
+        web_slots = MAX_SOURCES - wiki_taken
+
+        # Candidate URLs from search, deduped by URL.
+        candidates = _collect_candidates(search_lists)
+
+        # SAFETY: every search-result URL is a fetch target and gets the full
+        # treatment. An unsafe candidate is rejected (drop + loud log), NOT
+        # silently skipped. Same _url_fetch_unsafe_reason as the operator URL.
+        safe: List[Tuple[str, str]] = []
+        for url, dq in candidates:
+            reason = _url_fetch_unsafe_reason(url, (urlparse(url).scheme or "").lower(), url_is_safe)
+            if reason is not None:
+                logger.warning("[fleet.retrieval_broker] search candidate rejected: %s", reason)
+                continue
+            safe.append((url, dq))
+
+        # Cap web candidates at the slots left after the wiki reservation —
+        # BEFORE extracting, so excess candidates cost no expensive extract.
+        if len(safe) > web_slots:
+            logger.warning(
+                "[fleet.retrieval_broker] candidate cap: %d safe candidates, "
+                "extracting the first %d (%d web slots after reserving %d for "
+                "wiki); %d discarded pre-extraction",
+                len(safe), web_slots, web_slots, wiki_taken, len(safe) - web_slots,
+            )
+            safe = safe[:web_slots]
+        check_phase()
+
+        # Stage 2 (CONCURRENT): web_extract each safe candidate for article text.
+        extract_lists = await asyncio.gather(
+            *[_guarded_fetch(web_extract_adapter, url, per_source_timeout) for url, _dq in safe]
+        )
+        check_phase()
+
+        # web_extract carries the CONTENT method (capability); the discovering
+        # query + web_search discovery are stamped here (both facts kept).
+        web_stamped: List[RawSource] = []
+        for (url, dq), lst in zip(safe, extract_lists):
+            for r in lst:
+                web_stamped.append(replace(r, discovery="web_search", query=dq))
+        web_stamped = web_stamped[:web_slots]  # defensive: honor the wiki floor
+
+        # web-extracted first, then the reserved wiki floor.
+        stamped = web_stamped + wiki_stamped[:wiki_taken]
+
+    # Final cap on TOTAL materials.
+    if len(stamped) > MAX_SOURCES:
+        discarded = len(stamped) - MAX_SOURCES
         logger.warning(
-            "[fleet.retrieval_broker] source cap: %d fetched, discarding %d "
+            "[fleet.retrieval_broker] source cap: %d assembled, discarding %d "
             "over MAX_SOURCES=%d",
-            len(raws),
+            len(stamped),
             discarded,
             MAX_SOURCES,
         )
-        raws = raws[:MAX_SOURCES]
+        stamped = stamped[:MAX_SOURCES]
 
     materials: List[Dict[str, Any]] = []
     total_raw = 0
-    for i, r in enumerate(raws):
+    for i, r in enumerate(stamped):
         check_phase()
         raw_bytes = r.raw_content.encode("utf-8")
         bytes_original = len(raw_bytes)
@@ -495,7 +640,8 @@ async def _run_broker_inner(
                 "source_id": f"src-{i:04d}",
                 "url": r.url,
                 "query": r.query,
-                "capability": r.capability,
+                "capability": r.capability,   # how CONTENT was obtained
+                "discovery": r.discovery,     # how the URL was FOUND
                 "fetched_at": now_iso(),
                 "http_status": r.http_status,
                 "content_type": r.content_type,
@@ -535,10 +681,12 @@ async def run_broker(
 
         {"queries_issued": [...], "phase_duration_ms": <int>, "materials": [...]}
 
-    Every dependency is injectable (defaults wire to the real capabilities);
-    tests inject fakes to run offline. HARD HALTs (budget, materials ceiling,
-    URL rejection, malformed formulation) raise; per-source failures drop the
-    source. See the module docstring for the full contract."""
+    Each material carries ``capability`` (how the content was obtained) and
+    ``discovery`` (how the URL was found) as distinct fields. Every dependency is
+    injectable (defaults wire to the real capabilities); tests inject fakes to
+    run offline. HARD HALTs (budget, materials ceiling, operator-URL rejection,
+    malformed formulation) raise; per-source failures drop the source. See the
+    module docstring for the full contract."""
     monotonic = monotonic or time.monotonic
     now_iso = now_iso or _default_now_iso
     url_is_safe = url_is_safe or _default_url_is_safe
