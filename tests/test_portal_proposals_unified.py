@@ -624,3 +624,78 @@ async def test_hostile_param_values_sanitized(client, grove_home):
     assert "<script>" not in body and "<img>" not in body
     # Sanitized values are unrecognized → no filter: the card still renders.
     assert '<span class="badge">routing_update</span>' in body
+
+
+# ---------------------------------------------------------------------------
+# disposition-gate-v1 P4 — suppressed-subject visibility
+# ---------------------------------------------------------------------------
+
+
+def _disposed_graduate(target="mem_a", *, status="dismissed",
+                       disposed_at="2026-07-10T00:00:00+00:00",
+                       session="s1", content="A stable fact"):
+    return {
+        "session_id": session, "status": status,
+        "timestamp": "2026-06-26T01:00:00Z", "disposed_at": disposed_at,
+        "proposal": {"action": "graduate", "target_id": target, "content": content},
+    }
+
+
+async def test_suppressed_view_lists_binding_and_renders_reset(client, grove_home):
+    _write_memory_proposals(grove_home, [_disposed_graduate("mem_a")])
+    r = await client.get("/portal/fragments/proposals/suppressed")
+    assert r.status == 200
+    body = await r.text()
+    assert "mem_a" in body
+    assert "dismissed" in body.lower()
+    # the one-tap reset uses the P3 verb (G3)
+    assert "/reset" in body and "Reset to pending" in body
+
+
+async def test_suppressed_view_excludes_pending_and_create(client, grove_home):
+    _write_memory_proposals(grove_home, [
+        _disposed_graduate("mem_bind"),                       # terminal → shown
+        {"session_id": "s2", "status": "pending",
+         "timestamp": "t",
+         "proposal": {"action": "graduate", "target_id": "mem_pending"}},
+        _memory_record("Created thing", status="approved"),   # create → no target_id
+    ])
+    body = await (await client.get("/portal/fragments/proposals/suppressed")).text()
+    assert "mem_bind" in body
+    assert "mem_pending" not in body     # pending is not suppressed
+    assert "Created thing" not in body   # create is out of scope (R-13)
+
+
+async def test_pending_page_has_subdued_suppressed_link_without_count(client, grove_home):
+    _write_memory_proposals(grove_home, [_disposed_graduate("mem_a")])
+    body = await (await client.get("/portal/fragments/proposals/pending")).text()
+    assert "suppressed by past decisions" in body.lower()
+    # G1 — the link carries NO count (past decisions are not triage)
+    assert "suppressed-link" in body
+
+
+async def test_suppressed_subject_does_not_inflate_pending_nav_badge(client, grove_home):
+    """G1 (structural): a suppressed subject is terminal, so the Proposals nav
+    badge — which counts pending only — never counts it as needing attention."""
+    _write_memory_proposals(grove_home, [_disposed_graduate("mem_a")])
+    body = await (await client.get("/portal/fragments/nav/proposals")).text()
+    assert "mem_a" not in body            # not surfaced in the hot nav
+    # the badge is the pending count (0 here), never the suppressed count
+
+
+async def test_suppressed_view_excludes_aged_out_under_duration(client, grove_home):
+    """A duration policy: a disposition older than the window no longer
+    suppresses, so it drops out of the view (anchored on disposed_at, R-20)."""
+    import datetime as _dt
+    (grove_home / "flywheel.config.yaml").write_text(
+        "disposition_gate:\n  graduate: 30\n", encoding="utf-8")
+    now = _dt.datetime.now(_dt.timezone.utc)
+    recent = (now - _dt.timedelta(days=10)).isoformat()
+    old = (now - _dt.timedelta(days=40)).isoformat()
+    _write_memory_proposals(grove_home, [
+        _disposed_graduate("mem_recent", disposed_at=recent),
+        _disposed_graduate("mem_old", disposed_at=old),
+    ])
+    body = await (await client.get("/portal/fragments/proposals/suppressed")).text()
+    assert "mem_recent" in body
+    assert "mem_old" not in body   # aged out of the window → not suppressing

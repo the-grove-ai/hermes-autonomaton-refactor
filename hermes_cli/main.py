@@ -5535,7 +5535,9 @@ def cmd_flywheel(args):
         from grove.memory import cli as memory_cli
         memory_action = getattr(args, "memory_action", None)
         if memory_action == "list":
-            sys.exit(memory_cli.cli_memory_list())
+            sys.exit(memory_cli.cli_memory_list(
+                disposed=getattr(args, "disposed", False),
+            ))
         elif memory_action == "show":
             sys.exit(memory_cli.cli_memory_show(args.proposal_id))
         elif memory_action == "approve":
@@ -5544,10 +5546,13 @@ def cmd_flywheel(args):
             sys.exit(memory_cli.cli_memory_reject(
                 args.proposal_id, reason=getattr(args, "reason", None),
             ))
+        elif memory_action == "reset":
+            # disposition-gate-v1 P3 — un-decide a disposed proposal.
+            sys.exit(memory_cli.cli_memory_reset(args.proposal_id))
         else:
             print(
                 "Usage: autonomaton flywheel memory "
-                "{list,show,approve,reject}",
+                "{list,show,approve,reject,reset}",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -10601,8 +10606,14 @@ def main():
     flywheel_memory_sub = flywheel_memory_p.add_subparsers(
         dest="memory_action",
     )
-    flywheel_memory_sub.add_parser(
+    flywheel_memory_list_p = flywheel_memory_sub.add_parser(
         "list", help="List pending memory proposals",
+    )
+    flywheel_memory_list_p.add_argument(
+        "--disposed",
+        action="store_true",
+        help="List disposed (approved/rejected/dismissed) proposals and their "
+             "ids instead — the input for `flywheel memory reset`",
     )
     flywheel_memory_show_p = flywheel_memory_sub.add_parser(
         "show", help="Show one memory proposal's full detail",
@@ -10624,6 +10635,18 @@ def main():
     )
     flywheel_memory_reject_p.add_argument(
         "--reason", help="Optional rejection reason",
+    )
+    # disposition-gate-v1 P3 — the reset verb. Un-decide a disposed proposal so
+    # the producer and operator treat the subject as undecided (returns to
+    # pending); it does NOT re-run the original action.
+    flywheel_memory_reset_p = flywheel_memory_sub.add_parser(
+        "reset",
+        help="Reset a disposed memory proposal back to pending (un-decide)",
+    )
+    flywheel_memory_reset_p.add_argument(
+        "proposal_id",
+        help="Short id (>=6 chars) of a disposed proposal "
+             "(from `flywheel memory list --disposed`)",
     )
 
     # kaizen-ledger-retention-v1 P3 — governed maintenance passes over the

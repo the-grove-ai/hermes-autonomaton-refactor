@@ -146,7 +146,7 @@ class GraduationDetector:
         not once per init (mirrors the FreshnessDetector).
         """
         proposals = self.detect(store, dock, now=now)
-        already = self._pending_graduation_targets()
+        already = self._suppressed_graduation_targets()
         staged = 0
         for proposal in proposals:
             if proposal["target_id"] in already:
@@ -163,17 +163,13 @@ class GraduationDetector:
 
     # ── proposals file I/O (mirrors freshness.py) ──────────────────────────
 
-    def _pending_graduation_targets(self) -> set:
-        targets: set = set()
-        for rec in self._read_records():
-            if rec.get("status") != "pending":
-                continue
-            proposal = rec.get("proposal")
-            if not isinstance(proposal, dict):
-                continue
-            if proposal.get("action") == "graduate" and proposal.get("target_id"):
-                targets.add(proposal["target_id"])
-        return targets
+    def _suppressed_graduation_targets(self) -> set:
+        # disposition-gate-v1: widened from pending-only to the shared gate,
+        # which consults TERMINAL dispositions (R-24) keyed on target_id. A
+        # graduate the operator disposed of no longer re-emits on the next
+        # sweep; an in-flight one still suppresses (liveness).
+        from grove.memory.dispositions import suppressed_target_ids
+        return suppressed_target_ids(self._read_records(), "graduate")
 
     def _read_records(self) -> List[Dict[str, Any]]:
         if not self._proposals_path.exists():

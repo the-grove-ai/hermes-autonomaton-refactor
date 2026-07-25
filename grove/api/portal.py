@@ -511,6 +511,56 @@ def pending_memory_proposal_items() -> list:
     return items
 
 
+def suppressed_memory_proposal_items() -> list:
+    """disposition-gate-v1 P4 — the "why did this stop appearing?" view.
+
+    Project the memory proposals whose TERMINAL disposition CURRENTLY suppresses
+    their subject (still binding under the per-action policy — permanent by
+    default) into review items carrying the subject, its disposition + date,
+    and the content-addressable id the P3 reset verb takes. One item per binding
+    record (post-P2 there is one disposition per subject; a pre-P2 duplicate
+    shows more than one, each independently resettable — no subject-level write
+    path is introduced, Andon G3). ``create`` has no ``target_id`` and is out of
+    scope (R-13). Most-recent disposition first.
+    """
+    from grove.memory.dispositions import (
+        DISPOSED_AT_FIELD, TERMINAL_STATUSES, disposed_target_ids,
+    )
+
+    records = list(read_memory_records(_memory_proposals_path()))
+    binding_by_action: dict = {}
+    items: list = []
+    for rec in records:
+        if rec.get("status") not in TERMINAL_STATUSES or "proposal" not in rec:
+            continue
+        proposal = rec["proposal"]
+        action = proposal.get("action")
+        target_id = proposal.get("target_id")
+        if not action or not target_id:
+            continue
+        if action not in binding_by_action:
+            binding_by_action[action] = disposed_target_ids(records, action)
+        if target_id not in binding_by_action[action]:
+            continue  # aged out under a duration policy → not suppressing now
+        session_id = rec.get("session_id", "")
+        evidence = (session_id,) if session_id else ()
+        pid = proposal_queue.compute_proposal_id(
+            type=proposal_queue.PROPOSAL_TYPE_MEMORY_CONTEXT,
+            payload=proposal, evidence=evidence,
+        )
+        items.append({
+            "proposal_id": pid,
+            "target_id": target_id,
+            "action": action,
+            "disposition": rec.get("status"),
+            "disposed_at": rec.get(DISPOSED_AT_FIELD),
+            "content_preview": _memory_proposal_content(proposal),
+            "summary": MemoryProposalHandler.summary_renderer(proposal),
+        })
+    items.sort(key=lambda it: it.get("disposed_at") or "", reverse=True)
+    return items
+
+
 async def handle_proposals_pending(request: web.Request) -> web.Response:
     """List pending Kaizen proposals (the review queue).
 

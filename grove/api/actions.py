@@ -66,6 +66,7 @@ from grove.flywheel_cli import (
 )
 from grove.memory import digest
 from grove.memory.digest import MemoryProposalHandler
+from grove.memory.dispositions import DISPOSED_AT_FIELD
 from grove.notify import broadcast_to_operator
 from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE, approve_red_proposal
 from grove.api.red_nonce import nonce_key_from_app, red_nonce, verify_red_nonce
@@ -442,6 +443,7 @@ def _apply_memory(proposal_id: str, action: str, store, reason):
         if action == "approve":
             applied = MemoryProposalHandler(store).apply(proposal)
             rec["status"] = "approved"
+            rec[DISPOSED_AT_FIELD] = digest._now_iso()  # R-20 anchor
             digest._rewrite(path, records)
             _record_kaizen_disposition(
                 digest._disposition_envelope(proposal, session_id),
@@ -450,6 +452,7 @@ def _apply_memory(proposal_id: str, action: str, store, reason):
             )
         elif action == "reject":
             rec["status"] = "rejected"
+            rec[DISPOSED_AT_FIELD] = digest._now_iso()  # R-20 anchor
             digest._rewrite(path, records)
             _record_kaizen_disposition(
                 digest._disposition_envelope(proposal, session_id),
@@ -461,6 +464,7 @@ def _apply_memory(proposal_id: str, action: str, store, reason):
             # recorded (crystallization-cadence-v1 Gap 3 — dismiss is not a
             # rejection, so the detector's rejection memory is untouched).
             rec["status"] = "dismissed"
+            rec[DISPOSED_AT_FIELD] = digest._now_iso()  # R-20 anchor
             digest._rewrite(path, records)
 
         return _resolved_card(
@@ -868,6 +872,33 @@ async def handle_proposal_dismiss(request: web.Request) -> web.Response:
 async def handle_proposal_acknowledge(request: web.Request) -> web.Response:
     # kaizen-fault-triage-v1 — verb-gated inside _apply_routing.
     return await _dispatch_proposal_action(request, "acknowledge")
+
+
+async def handle_proposal_reset(request: web.Request) -> web.Response:
+    """Un-decide a terminally-disposed MEMORY proposal — flip it back to
+    ``pending`` (disposition-gate-v1 P3, R-19). Memory-only: a routing
+    disposition is a removal, not a status flip, so there is nothing to reset.
+    Reports the WRITE RESULT, never the tap (Task 1d): a miss is a reported
+    404, not a fake success. Same /portal auth path as every disposition —
+    reset is a surface, not a bypass (Andon F4)."""
+    from grove.memory.digest import reset_memory_proposal
+
+    proposal_id = request.match_info["proposal_id"]
+    short_id = _short_id(proposal_id)
+    result = reset_memory_proposal(
+        proposal_id, proposals_path=_memory_proposals_path()
+    )
+    if result.ok:
+        return _resolved_card(
+            short_id, "memory_context", "reset to pending", result.message
+        )
+    return await _loud_action_failure(
+        _not_found_card_html(proposal_id),
+        failure_class="memory_reset_no_match",
+        action="proposal_reset",
+        message=result.message,
+        status=404,
+    )
 
 
 async def handle_dock_goal_update(request: web.Request) -> web.Response:
@@ -2133,6 +2164,13 @@ def register_action_routes(app: web.Application) -> None:
     app.router.add_post(
         "/portal/actions/proposals/{proposal_id}/acknowledge",
         _with_nav_refresh(handle_proposal_acknowledge),
+    )
+    # disposition-gate-v1 P3 — the reset verb. Un-decide a disposed memory
+    # proposal → it returns to pending (Proposals badge changes → nav refresh).
+    # Same /portal auth path as every disposition (F4: a surface, not a bypass).
+    app.router.add_post(
+        "/portal/actions/proposals/{proposal_id}/reset",
+        _with_nav_refresh(handle_proposal_reset),
     )
     # propose-approve-deadlock-v1 Phase 1b-ii — the RED .env two-step confirm
     # (mint-capable). /approve (above) issues the confirm nonce; this applies it.

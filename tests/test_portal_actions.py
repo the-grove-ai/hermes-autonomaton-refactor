@@ -599,3 +599,30 @@ async def test_portal_dismiss_honored_for_render_only(client, grove_home):
     assert r.status == 200
     assert "dismissed" in (await r.text())
     assert proposal_queue.read(pid) is None
+
+
+# ---------------------------------------------------------------------------
+# disposition-gate-v1 P3 — the reset verb (portal route)
+# ---------------------------------------------------------------------------
+
+
+async def test_memory_reset_flips_to_pending(client, grove_home):
+    rec = _memory_record("Grove is sovereign.", status="dismissed")
+    rec["disposed_at"] = "2020-01-01T00:00:00+00:00"
+    _write_memory(grove_home, [rec])
+    pid = _memory_pid(rec)
+
+    r = await client.post(f"/portal/actions/proposals/{pid}/reset")
+    assert r.status == 200
+    assert "reset to pending" in (await r.text()).lower()
+
+    stored = _read_memory(grove_home)
+    assert stored[0]["status"] == "pending"
+    assert "disposed_at" not in stored[0]  # R-28 anchor cleared
+
+
+async def test_memory_reset_unknown_reports_failure(client, grove_home):
+    _write_memory(grove_home, [])
+    r = await client.post("/portal/actions/proposals/sha256:nope/reset")
+    assert r.status == 404
+    assert "matched" in (await r.text()).lower()

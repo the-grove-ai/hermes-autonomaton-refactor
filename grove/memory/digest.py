@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -34,6 +35,7 @@ from grove.memory.events import (
     new_event_id,
     new_record_id,
 )
+from grove.memory.dispositions import DISPOSED_AT_FIELD, TERMINAL_STATUSES
 from grove.memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -329,6 +331,7 @@ def run_digest(
         if decision == "approve":
             applied = handler.apply(proposal)
             rec["status"] = "approved"
+            rec[DISPOSED_AT_FIELD] = _now_iso()  # R-20 anchor (disposition-gate-v1)
             changed = True
             counts["approved"] += 1
             _record_kaizen_disposition(
@@ -339,6 +342,7 @@ def run_digest(
             )
         elif decision == "reject":
             rec["status"] = "rejected"
+            rec[DISPOSED_AT_FIELD] = _now_iso()  # R-20 anchor (disposition-gate-v1)
             changed = True
             counts["rejected"] += 1
             _record_kaizen_disposition(
@@ -356,6 +360,7 @@ def run_digest(
             # untouched and valid insight is not blinded. No kaizen rejection
             # disposition is recorded (that channel is for genuine rejections).
             rec["status"] = "dismissed"
+            rec[DISPOSED_AT_FIELD] = _now_iso()  # R-20 anchor (disposition-gate-v1)
             changed = True
             counts["dismissed"] += 1
         else:
@@ -364,3 +369,98 @@ def run_digest(
     if changed:
         _rewrite(path, records)
     return counts
+
+
+# ── disposition-gate-v1 P3 — the reset verb (R-19) ────────────────────────
+def default_proposals_path() -> Path:
+    """``~/.grove/memory_proposals.jsonl`` — the crystallization store."""
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / "memory_proposals.jsonl"
+
+
+@dataclass
+class ResetResult:
+    """The WRITE RESULT of a reset — the caller reports this, never the tap."""
+    ok: bool
+    status_before: Optional[str] = None
+    message: str = ""
+
+
+def reset_memory_proposal(
+    proposal_id: str,
+    *,
+    proposals_path: Optional[Path] = None,
+    ledger_dir: Optional[Path] = None,
+) -> ResetResult:
+    """Un-decide: flip a terminally-disposed memory proposal back to ``pending``
+    so the producer and operator treat the subject as undecided. Nothing more —
+    the original action is NOT re-run, and WHICH proposals are permitted does
+    not change (disposition-gate-v1 P3, R-19; scope pinned by Andon F3/Task 3).
+
+    Discipline:
+      * Uses the EXISTING atomic rewriter (:func:`_rewrite`) — no second writer.
+      * Clears ``disposed_at`` (R-28): a later re-disposition anchors on its OWN
+        timestamp, never the stale one. digest/actions re-stamp on the flip.
+      * Emits a ``kaizen_disposition`` ledger event (disposition="reset") so
+        "did my reset land" is answerable without a filesystem read.
+      * Returns the WRITE RESULT. A successful rewrite is ``ok=True`` even if the
+        ledger append fails (the write is authority; the ledger is observability,
+        logged loud) — the confirmation reports the write, never the tap.
+    """
+    from grove.eval.proposal_queue import (
+        PROPOSAL_TYPE_MEMORY_CONTEXT,
+        compute_proposal_id,
+    )
+    from grove.flywheel_cli import _record_kaizen_disposition
+
+    path = Path(proposals_path) if proposals_path else default_proposals_path()
+    records = _read_records(path)
+    for rec in records:
+        if rec.get("status") not in TERMINAL_STATUSES:
+            continue
+        proposal = rec.get("proposal")
+        if not isinstance(proposal, dict):
+            continue
+        session_id = rec.get("session_id", "")
+        evidence = (session_id,) if session_id else ()
+        pid = compute_proposal_id(
+            type=PROPOSAL_TYPE_MEMORY_CONTEXT, payload=proposal, evidence=evidence,
+        )
+        if pid != proposal_id:
+            continue
+        before = rec.get("status")
+        rec["status"] = "pending"
+        rec.pop(DISPOSED_AT_FIELD, None)  # R-28 — no stale anchor into the next decision
+        _rewrite(path, records)
+        ledger_ok = True
+        try:
+            _record_kaizen_disposition(
+                _disposition_envelope(proposal, session_id),
+                disposition="reset",
+                extra={"status_before": before},
+                ledger_dir=ledger_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 — write landed; ledger is observability
+            ledger_ok = False
+            logger.warning(
+                "[grove.memory.digest] reset ledger event failed (non-fatal; "
+                "the pending flip landed): %r", exc,
+            )
+        # R-30 — the confirmation is self-disclosing on partial success, in
+        # plain phone-readable language. Both facts, no jargon: the flip landed
+        # (ok=True), and if the ledger append failed the operator is told this
+        # reset won't show in the disposition log.
+        message = f"Reset to pending (was {before})."
+        if not ledger_ok:
+            message += (
+                " The reset landed, but saving its ledger entry failed — so "
+                "this reset won't show in the disposition log."
+            )
+        return ResetResult(ok=True, status_before=before, message=message)
+    return ResetResult(
+        ok=False,
+        message=(
+            "No disposed proposal matched this id — it may already be pending, "
+            "already reset, or removed."
+        ),
+    )

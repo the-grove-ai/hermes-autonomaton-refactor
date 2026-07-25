@@ -128,3 +128,27 @@ admission_friction:
   # friction_threshold) that, once accrued, escalate the proposal from
   # per-intent add-intent to a single force_always:true offer.
   green_force_always_distinct_intents: 3
+
+# disposition-gate-v1 — a terminal disposition (approved / rejected /
+# dismissed) BINDS the three memory detectors against re-emitting the same
+# subject (keyed on target_id). The old guards checked "is a proposal for this
+# subject currently pending" only, so a disposed subject re-appeared on the
+# next sweep — the operator dismissed one memory graduation four times.
+#
+# Values, PER ACTION CLASS: "permanent" (default) or an integer number of
+# DAYS. A duration binds until that many days after the disposition timestamp
+# (never the staging time — R-20). "permanent" is the safe default and the
+# GRV-001 § VI reading: the ratchet reverses only on an explicit operator
+# reset (the reset verb, P3), never on a clock.
+#
+# Fail-loud contract (matching disposition_promotion above): an ABSENT file,
+# block, or per-action key uses "permanent" — a missing config NEVER silently
+# disables suppression. A PRESENT value must be "permanent" or an int >= 1;
+# anything else raises LOUD at read time naming the action.
+#
+# The status vocabulary (which statuses are terminal) is NOT here — it is code
+# (grove/memory/dispositions.py, R-24). This surface carries POLICY only.
+disposition_gate:
+  graduate: permanent
+  deprecate: permanent
+  supersede: permanent

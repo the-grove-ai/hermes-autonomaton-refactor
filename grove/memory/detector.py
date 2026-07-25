@@ -212,16 +212,30 @@ class ContextPersistenceDetector:
         #    model-authored dock_goal_ref slugs (dock-goal-ref-integrity-v1 M2).
         proposals = self._parse_proposals(raw, active_dock_goals)
 
-        # 10. Stage each proposal as pending.
+        # 10. Stage each proposal as pending. disposition-gate-v1 (R-23): a
+        # supersede whose target already carries a supersede — in-flight
+        # (:_pending_supersession_target_ids, the liveness check) OR a terminal
+        # disposition (the sibling gate below) — is suppressed. The two sets
+        # are kept distinct on purpose; the caller excludes their union.
+        from grove.memory.dispositions import disposed_target_ids
+        supersede_suppressed = (
+            pending_supersede_ids
+            | disposed_target_ids(self._read_records(), "supersede")
+        )
+        staged = 0
         for proposal in proposals:
+            if (proposal.get("action") == "supersede"
+                    and proposal.get("target_id") in supersede_suppressed):
+                continue
             self._append_record({
                 "session_id": session_id,
                 "status": "pending",
                 "timestamp": _now_iso(),
                 "proposal": proposal,
             })
+            staged += 1
 
-        return len(proposals)
+        return staged
 
     # ── idempotency + proposals file ─────────────────────────────────────
 
@@ -242,11 +256,14 @@ class ContextPersistenceDetector:
         return records
 
     def _already_processed(self, session_id: str) -> bool:
-        for rec in self._read_records():
-            if rec.get("session_id") == session_id and \
-                    rec.get("status") in _BLOCKING_STATUSES:
-                return True
-        return False
+        # disposition-gate-v1 (R-13 note): SESSION-keyed. A session with ANY
+        # record — an in-flight proposal OR a terminal disposition — has been
+        # processed and must not be re-mined. Widened to consult TERMINAL so a
+        # session whose proposals were all disposed is not re-extracted.
+        # Necessary, not sufficient: this does not close cross-session subject
+        # repeats — the target_id gates (freshness/graduation/supersede) do.
+        from grove.memory.dispositions import session_processed
+        return session_processed(self._read_records(), session_id)
 
     def _append_record(self, record: Dict[str, Any]) -> None:
         line = json.dumps(record, sort_keys=True, default=str) + "\n"
@@ -283,6 +300,19 @@ class ContextPersistenceDetector:
         Fix 4 — a supersede staged but not yet approved still shows its
         target as ``active`` in the index; without this the detector would
         draft a second, conflicting supersession.
+
+        R-27 — this is the LIVENESS half and is deliberately a SEPARATE
+        function from the disposition gate (``dispositions.disposed_target_ids``
+        for ``"supersede"``). They answer two different questions on the same
+        target_id: this one asks "is a supersede in FLIGHT right now?" (correctly
+        pending/processing-only — the moment the flight lands, the conflict is
+        gone); the sibling asks "did the operator DISPOSE of a supersede here?"
+        (permanent by default, R-16). Merging them would make one gate that is
+        neither: a disposition would leak into conflict-avoidance, or an
+        in-flight proposal would be treated as a binding decision. The AST guard
+        exempts THIS function by name (R-26); folding the two would either lose
+        that exemption's precision or re-arm the guard on the wrong site. Keep
+        them two.
         """
         ids = set()
         for rec in self._read_records():

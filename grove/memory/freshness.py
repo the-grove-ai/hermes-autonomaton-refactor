@@ -119,7 +119,7 @@ class FreshnessDetector:
         stale across dispatcher restarts is proposed once, not once per init.
         Returns the number actually staged.
         """
-        already = self._pending_deprecation_targets()
+        already = self._suppressed_deprecation_targets()
         staged = 0
         for proposal in proposals:
             if proposal.get("target_id") in already:
@@ -136,17 +136,13 @@ class FreshnessDetector:
 
     # ── proposals file I/O (mirrors detector.py) ─────────────────────────
 
-    def _pending_deprecation_targets(self) -> set:
-        targets: set = set()
-        for rec in self._read_records():
-            if rec.get("status") != "pending":
-                continue
-            proposal = rec.get("proposal")
-            if not isinstance(proposal, dict):
-                continue
-            if proposal.get("action") == "deprecate" and proposal.get("target_id"):
-                targets.add(proposal["target_id"])
-        return targets
+    def _suppressed_deprecation_targets(self) -> set:
+        # disposition-gate-v1: widened from pending-only to the shared gate,
+        # which consults TERMINAL dispositions (R-24) keyed on target_id. A
+        # deprecate the operator disposed of no longer re-emits on the next
+        # sweep; an in-flight one still suppresses (liveness).
+        from grove.memory.dispositions import suppressed_target_ids
+        return suppressed_target_ids(self._read_records(), "deprecate")
 
     def _read_records(self) -> List[Dict[str, Any]]:
         if not self._proposals_path.exists():

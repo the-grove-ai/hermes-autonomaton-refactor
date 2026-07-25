@@ -1174,6 +1174,35 @@ def _memory_card_html(m: dict) -> str:
     )
 
 
+def _suppressed_card_html(item: dict) -> str:
+    """One suppressed-subject card (disposition-gate-v1 P4). Shows the subject,
+    its disposition + date, and a single Reset. The card id targets ITSELF for
+    the reset's outerHTML swap — and there is NO separate always-on count badge
+    that could disagree with the list (the H2 defect this project found was a
+    hot nav badge going stale against the DOM; the suppressed count lives only
+    in this view's header, recomputed on every load, so it cannot diverge)."""
+    pid = item.get("proposal_id", "")
+    short_id = _short_id(pid)
+    disp = item.get("disposition", "")
+    date = (item.get("disposed_at") or "")[:10]
+    return (
+        f'<div class="card card-resolved" id="proposal-{short_id}">'
+        f'<h4><span class="badge">{_esc(item.get("action"))}</span> '
+        f'<span class="badge badge-yellow">{_esc(disp)}</span></h4>'
+        f'<p>{_esc(item.get("summary"))}</p>'
+        f'<div class="meta">subject <code>{_esc(item.get("target_id"))}</code>'
+        f' · {_esc(disp)}{(" " + _esc(date)) if date else ""}</div>'
+        f'<div class="proposal-actions">'
+        f'<button class="btn btn-approve" '
+        f'hx-post="/portal/actions/proposals/{_esc(pid)}/reset" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
+        f'hx-confirm="Reset this subject to pending? You and the producer can '
+        f'then reconsider it.">Reset to pending</button>'
+        f'</div>'
+        f'</div>'
+    )
+
+
 def _partition_proposals(proposals: list) -> tuple:
     """fleet-ui-reconciliation-v1 C3 — THE single-pass partition of the live
     queue: artifact-pending types (dispositioned in Fleet, mock screen D's
@@ -1417,6 +1446,46 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
             parts.append(_proposal_card_html(request, p))
         for m in memory_items:
             parts.append(_memory_card_html(m))
+    # disposition-gate-v1 P4 — a SUBDUED link to the suppressed-subjects view.
+    # Deliberately a plain link, NO count and NO hot badge: suppressed subjects
+    # are past decisions, not triage. Placing a count here would re-create the
+    # noise this sprint removes (Andon G1). The count lives inside that view.
+    parts.append(
+        '<p class="suppressed-link"><a '
+        'href="/portal#fragments/proposals/suppressed">'
+        'View subjects suppressed by past decisions →</a></p>'
+    )
+    parts.append('</div>')
+    return _html_fragment("".join(parts))
+
+
+async def handle_proposals_suppressed(request: web.Request) -> web.Response:
+    """``GET /portal/fragments/proposals/suppressed`` — the "why did this stop
+    appearing?" view (disposition-gate-v1 P4). SEPARATE from the pending triage
+    feed: these are subjects the operator ALREADY decided, shown so the decision
+    is answerable by LOOKING (not log archaeology against a churning
+    proposal_id), and reversible in one tap via the P3 reset verb (Andon G3).
+    The header count is framed as history, never "needs attention" (Andon G1)."""
+    from grove.api.portal import suppressed_memory_proposal_items
+
+    items = suppressed_memory_proposal_items()
+    parts = [
+        '<div id="suppressed-listing">',
+        f'<h3 class="suppressed-head">Suppressed by past decisions '
+        f'<span class="count">({len(items)})</span></h3>',
+        '<p class="placeholder">These subjects are held back because you '
+        'approved, rejected, or dismissed them — this is history, not a queue, '
+        'and nothing here needs attention. Reset any one to let the system '
+        'propose it again.</p>',
+    ]
+    if not items:
+        parts.append(
+            '<p class="placeholder">No suppressed subjects — no past decision '
+            'is currently holding anything back.</p>'
+        )
+    else:
+        for item in items:
+            parts.append(_suppressed_card_html(item))
     parts.append('</div>')
     return _html_fragment("".join(parts))
 
@@ -3867,6 +3936,11 @@ def register_fragment_routes(app: web.Application) -> None:
     # #fragments/goal/<id> onto this path with no JS change.
     app.router.add_get("/portal/fragments/goal/{goal_id}", handle_goal_detail)
     app.router.add_get("/portal/fragments/proposals/pending", handle_proposals_pending)
+    # disposition-gate-v1 P4 — the suppressed-subjects view (past decisions,
+    # not triage). Reached by a subdued link from the pending page.
+    app.router.add_get(
+        "/portal/fragments/proposals/suppressed", handle_proposals_suppressed
+    )
     # fleet-artifact-legibility-v1 C2 — LEGACY ALIAS: previously-sent forge deep
     # links land here; the generic package renderer serves it (sink-resolved).
     # New emitters use the generic /portal/fragments/fleet/{skill}/{unit}/ route.

@@ -89,9 +89,13 @@ _PRIMITIVE_CALLER_PINS: dict[tuple[str, str], frozenset[tuple[str, str]]] = {
     # def at grove/memory/digest.py:265; caller :365 (run_digest) plus the
     # portal memory action surface's deliberate module-qualified reuse
     # (grove/api/actions.py:438/:446/:457, ``digest._rewrite`` — the P4
-    # "portal memory reuses digest" precedent).
+    # "portal memory reuses digest" precedent). disposition-gate-v1 P3 adds the
+    # reset verb (reset_memory_proposal): the sanctioned un-decide flip reuses
+    # this SAME atomic rewriter rather than writing a second writer (SPEC R-19 /
+    # Andon F2) — a governed in-doctrine caller, pinned here.
     ("grove/memory/digest.py", "_rewrite"): frozenset({
         ("grove/memory/digest.py", "run_digest"),
+        ("grove/memory/digest.py", "reset_memory_proposal"),
         ("grove/api/actions.py", "_apply_memory"),
     }),
     # def at grove/fleet/staging.py:28; in-module callers :54/:102/:113 plus
