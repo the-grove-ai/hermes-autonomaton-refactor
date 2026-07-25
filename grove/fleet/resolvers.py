@@ -15,6 +15,7 @@ cold read never stalls the 60s tick.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -691,3 +692,165 @@ def resolve_file_source(input_state: Dict[str, Any], worker_id: str) -> Optional
 
 
 register_resolver("file_source", resolve_file_source)
+
+
+# ── researcher retrieval broker (researcher-retrieval-broker-v1 P2) ───────────
+# The gateway retrieves research material HOST-SIDE at dispatch and hands it into
+# the worker inbox; the worker synthesizes. This resolver REORDERS the one_shot
+# lifecycle vs resolve_file_source: it identifies the live request WITHOUT
+# claiming, runs the broker, and claims ONLY on broker success. So a broker
+# hard-halt leaves the request QUEUED — no strand, and (Ruling 1) no
+# dead-letter/restore/retry-count machinery: the request re-selects next cadence
+# and producer_recurrence turns repeats into an operator card. resolve_file_source
+# is NOT modified; other declarative workers are untouched.
+#
+# NOT wired to the researcher yet: registered under a distinct predicate type so
+# nothing dispatches through it until P3 flips the record's input_state.type.
+
+_broker_loop: "Optional[asyncio.AbstractEventLoop]" = None
+
+
+def set_broker_loop(loop: "Optional[asyncio.AbstractEventLoop]") -> None:
+    """Thread the gateway event loop to the broker resolver (called once by
+    FleetManager.__init__). run_broker is async and the ticker is sync, so it is
+    driven onto this loop via run_coroutine_threadsafe(...).result()."""
+    global _broker_loop
+    _broker_loop = loop
+
+
+def _production_broker_drive(request_body: Dict[str, Any], worker_id: str) -> Dict[str, Any]:
+    """Drive the async run_broker from the sync ticker thread onto the gateway
+    loop, blocking on the result — the manager.py:1085-1107 bridge, PRIMARY
+    branch only. A missing loop is a LOUD Andon: the asyncio.run fallback is
+    PROHIBITED here because its shutdown_default_executor join can stall the
+    ticker on an orphaned formulation worker (P2 finding 1d). No second bridge."""
+    loop = _broker_loop
+    if loop is None:
+        raise FleetWorkerAndon(
+            f"worker {worker_id!r}: researcher broker has no gateway loop "
+            f"(set_broker_loop was never called). Refusing the asyncio.run "
+            f"fallback — it can stall the ticker; this is a wiring fault.",
+            worker_id=worker_id,
+            check="broker_no_loop",
+        )
+    from grove.fleet.retrieval_broker import run_broker
+
+    return asyncio.run_coroutine_threadsafe(run_broker(request_body), loop).result()
+
+
+def _identify_live_request(input_state: Dict[str, Any], worker_id: str):
+    """Identify the selected one_shot request WITHOUT claiming it. Returns
+    (base, sel, units) or None for no work.
+
+    INTENTIONAL DUPLICATION (researcher-retrieval-broker-v1 P2, Ruling A): the
+    glob/screen/build/select glue below deliberately MIRRORS resolve_file_source's
+    pre-claim sequence (resolvers.py:640-683). The screen/select LOGIC itself is
+    NOT reimplemented — _screen_request_files and _select_file_units are called
+    verbatim; only the ~18 lines of orchestration are copied. WHY: resolve_file_source
+    is deliberately frozen — it serves the LIVE declarative workers, and refactoring
+    a live path to extract a shared helper does not belong in a sprint whose
+    deliverable is inert. Consolidating this glue (a single pre-claim helper both
+    resolvers call) is BANKED DEBT for a future sprint that can touch the live path
+    under its own gate."""
+    source_dir = input_state.get("source_dir")
+    pattern = input_state.get("pattern")
+    slug_regex = input_state.get("slug_regex")
+    if not (source_dir and pattern and slug_regex):
+        raise FleetWorkerAndon(
+            f"worker {worker_id!r}: file_source input_state needs 'source_dir', "
+            f"'pattern', and 'slug_regex'",
+            worker_id=worker_id,
+            check="resolver_failed",
+        )
+    base = _grove_source_dir(source_dir)
+    if not base.is_dir():
+        return None  # upstream producer has not run yet — graceful idle
+    files = sorted(p for p in base.glob(pattern) if p.is_file())
+    if not files:
+        return None
+    if input_state.get("lifecycle") == "one_shot":
+        files = _screen_request_files(files, base, input_state, worker_id)
+        if not files:
+            return None
+    units = [
+        {"id": _unit_id_from_source(p.name, slug_regex, worker_id),
+         "source_path": str(p), "source_name": p.name}
+        for p in files
+    ]
+    units = _select_file_units(units, input_state, worker_id)
+    if not units:
+        return None
+    return base, units[0], units
+
+
+def make_researcher_broker_resolver(*, drive=_production_broker_drive):
+    """Build the researcher broker resolver. ``drive(request_body, worker_id) ->
+    dict`` runs the broker and is injectable for tests; it defaults to the
+    gateway-loop bridge."""
+
+    def resolve_researcher_broker(input_state: Dict[str, Any], worker_id: str) -> Optional[Any]:
+        identified = _identify_live_request(input_state, worker_id)
+        if identified is None:
+            return None
+        base, sel, units = identified
+
+        # Read topic/operator_intent HOST-SIDE from the UNCLAIMED request file.
+        # (one_shot screening already validated it parses to an object carrying
+        # the required keys; a read failure here is a genuine fault → Andon.)
+        request_path = Path(sel["source_path"])
+        try:
+            req = json.loads(request_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise FleetWorkerAndon(
+                f"worker {worker_id!r}: cannot read request "
+                f"{sel['source_name']!r} host-side ({exc})",
+                worker_id=worker_id,
+                check="resolver_failed",
+            )
+        request_body = {
+            "topic": req.get("topic"),
+            "operator_intent": req.get("operator_intent"),
+        }
+
+        # Run the broker BEFORE claiming. ON ANY BrokerError: DO NOT claim; log
+        # the TYPED cause (so producer_recurrence and the operator get a legible
+        # reason, not a bare "resolver_failed") and let it raise. The request
+        # stays queued; manager.py:1030-1034 Andons the dispatch. No
+        # dead-letter/restore/retry machinery (Ruling 1).
+        from grove.fleet.retrieval_broker import BrokerError
+
+        try:
+            broker_result = drive(request_body, worker_id)
+        except BrokerError as exc:
+            logger.error(
+                "[fleet.retrieval_broker] researcher broker HALT for request %r "
+                "(%s): %s — request stays queued, NOT claimed",
+                sel["source_name"], type(exc).__name__, exc,
+            )
+            raise
+
+        # ON SUCCESS: claim atomically, then return the base payload + exactly two
+        # sibling keys. THE PARTITION IS THE INVARIANT: 'units' kept, 'rows' NEVER
+        # added, so _is_declarative_payload stays True (unit_id identity,
+        # _synthesize_meta, and _extract_declarative_content staging all preserved).
+        claimed = _claim_request(request_path, base, worker_id)
+        return {
+            "units": units,
+            "source_dir": input_state.get("source_dir"),
+            "source_path": str(claimed),
+            "source_name": sel["source_name"],
+            "unit_id": sel["id"],
+            "request_claim": {"path": str(claimed), "root": str(base)},
+            "request_content": {
+                "topic": req.get("topic"),
+                "operator_intent": req.get("operator_intent"),
+                "slug": req.get("slug"),
+                "origin": req.get("origin"),
+            },
+            "broker": broker_result,
+        }
+
+    return resolve_researcher_broker
+
+
+register_resolver("researcher_broker", make_researcher_broker_resolver())

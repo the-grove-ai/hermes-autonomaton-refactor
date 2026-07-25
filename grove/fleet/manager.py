@@ -221,6 +221,13 @@ class FleetManager:
         override_path: Optional[Any] = None,
     ):
         self._loop = loop
+        # researcher-retrieval-broker-v1 P2 — thread the gateway loop to the
+        # broker resolver so it drives the async run_broker via
+        # run_coroutine_threadsafe(...).result() (the manager's existing bridge,
+        # primary branch). The resolver refuses the asyncio.run fallback loudly.
+        from grove.fleet.resolvers import set_broker_loop
+
+        set_broker_loop(loop)
         self._workers_path = workers_path
         # fleet-hygiene-sweep P4 — the node-local enable-flag overlay path
         # (None → the real <GROVE_HOME>/fleet_workers.override.yaml at call
