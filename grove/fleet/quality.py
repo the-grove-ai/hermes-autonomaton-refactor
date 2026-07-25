@@ -128,6 +128,27 @@ def quality_gate_declaration(cap) -> Optional[Dict[str, Any]]:
     return gate
 
 
+def quality_gate_broken(record) -> Optional[str]:
+    """The ``quality_gate_error`` string when a record DECLARES a quality_gate
+    that failed validation (block present → error stamped), else None.
+
+    artifact-review-v1 R-8 — the discriminator the gate site HALTS on.
+    :func:`quality_gate_declaration` collapses ABSENT and BROKEN to ``None``
+    (both are "no gate to run"); this separates them so the gate site can
+    refuse to emit ungated from a broken gate while a genuinely absent gate
+    passes through. The loader stamps ``quality_gate_error`` ONLY when a block
+    was present (grove/capability.py:_validate_quality_gate), so a present
+    error implies a present-but-unresolvable block — a declared gate, not an
+    absent one. No producer identity is consulted (R-12): the discriminator
+    is the generic error stamp, not who authored the record.
+    """
+    gov = getattr(record, "governance", None)
+    if not isinstance(gov, dict):
+        return None
+    err = gov.get("quality_gate_error")
+    return err if err else None
+
+
 def evaluate_draft(
     record,
     staged_files: Dict[str, str],
@@ -164,8 +185,27 @@ def evaluate_draft(
             "the gate site must check quality_gate_declaration() first."
         )
 
+    # artifact-review-v1 P4 — the rubric lives in config/rubrics.yaml; resolve
+    # it by rubric_ref (the record no longer embeds criteria/rubric_version).
+    # An unresolvable ref raises KeyError LOUD (R-12, no fallback rubric); at
+    # the gate site the load-time resolution already stamped/halted a broken
+    # ref, so this is the defensive floor. Generic dereference — no producer.
+    from grove.fleet.rubric_registry import load_rubric_registry
+
+    rubric = load_rubric_registry().resolve(gate["rubric_ref"])
+    criteria_defs = [c.definition for c in rubric.criteria]
+    criteria_ids = [c.id for c in rubric.criteria]
+
+    # Effective threshold (R-3): a record override, else the rubric's own
+    # calibration. The verdict records WHICH source applied.
+    if "threshold" in gate:
+        threshold = float(gate["threshold"])
+        threshold_source = "record_override"
+    else:
+        threshold = float(rubric.default_threshold)
+        threshold_source = "rubric_default"
+
     evaluator_tier = gate.get("evaluator_tier", _DEFAULT_EVALUATOR_TIER)
-    threshold = float(gate["threshold"])
     declared_context: List[str] = list(gate.get("context_inputs") or [])
     ctx = task_context or {}
     context_keys_used = [k for k in declared_context if k in ctx]
@@ -177,7 +217,14 @@ def evaluate_draft(
         "complete": None,
         "accurate": None,
         "issues": [],
-        "rubric_version": gate["rubric_version"],
+        # artifact-review-v1 P4 — the rubric identity + effective threshold the
+        # verdict feed record cites. rubric_version is retained (= rubric_key)
+        # for the COEXISTING event rider until P4b removes the event fields.
+        "rubric_key": rubric.key,
+        "criteria_ids": criteria_ids,
+        "effective_threshold": threshold,
+        "threshold_source": threshold_source,
+        "rubric_version": rubric.key,
         "threshold": threshold,
         "evaluator_tier": evaluator_tier,
         "evaluator_model": None,
@@ -186,7 +233,7 @@ def evaluate_draft(
         "detail": "",
     }
 
-    prompt = _eval_prompt(list(gate["criteria"]), staged_files, ctx)
+    prompt = _eval_prompt(criteria_defs, staged_files, ctx)
 
     # R-B3 — combined-input size guard, checked BEFORE any call or tier
     # resolution. Oversize is a disposition, not an error: the worker's output

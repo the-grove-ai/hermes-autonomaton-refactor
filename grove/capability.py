@@ -587,20 +587,29 @@ def _validate_emit(governance, record_id: str) -> None:
 
 # ---------------------------------------------------------------------------
 # drafter-quality-checks-v1 P1 — governance.quality_gate validation.
+# artifact-review-v1 P2 — the rubric was extracted to config/rubrics.yaml;
+# the record now REFERENCES it by rubric_ref instead of embedding it.
 #
 # The OPTIONAL quality_gate declaration is the SOURCE OF TRUTH for a fleet
 # producer's HOW-WELL gate: the harness keys on block PRESENCE only, never on
 # producer identity (R-A11 — rubric is data; envelope is fixed). Shape:
 #   quality_gate:
-#     rubric_version: "1.0"        # required non-empty str
-#     criteria: [str, ...]         # required non-empty list of non-empty str
-#     threshold: 0.7               # required number in [0.0, 1.0]
+#     rubric_ref: "resume-package@1"  # required non-empty str; the by-name
+#                                     #  pointer into config/rubrics.yaml
+#                                     #  (criteria + default_threshold). It is
+#                                     #  RESOLVED at load time (R-11): an
+#                                     #  unresolvable ref stamps
+#                                     #  quality_gate_error (fail closed).
+#     threshold: 0.7               # OPTIONAL override (R-3) of the rubric's
+#                                  #  default_threshold; number in [0.0, 1.0]
 #     redraft_limit: 1             # required int; v1 supports exactly 1
 #     evaluator_tier: "T1"         # optional non-empty str (consumer default "T1")
 #     context_inputs: [key, ...]   # optional (SPEC amendment A1 / R-A12):
 #                                  #  dispatch-payload keys passed to the
 #                                  #  evaluator as task context; absent →
 #                                  #  criteria-only evaluation
+# criteria and rubric_version are NO LONGER record fields — their presence is
+# a loud rejection naming the registry (R-2), never a silent drop.
 # Rides the emit-block non-destructive pattern exactly: a malformed block logs
 # a LOUD warning naming the record + offending field and gains a sibling
 # ``quality_gate_error`` — consumers treat error-present as gate-absent (fail
@@ -609,7 +618,7 @@ def _validate_emit(governance, record_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 _QUALITY_GATE_KEYS: frozenset = frozenset({
-    "rubric_version", "criteria", "threshold", "redraft_limit",
+    "rubric_ref", "threshold", "redraft_limit",
     "evaluator_tier", "context_inputs",
 })
 
@@ -620,17 +629,30 @@ def _quality_gate_shape_error(qg) -> str | None:
     malformed (predictable degradation over silent tolerance)."""
     if not isinstance(qg, dict):
         return "quality_gate (must be a mapping)"
+    # artifact-review-v1 R-2 — the embedded rubric was extracted. A record
+    # still carrying criteria/rubric_version is a loud rejection that NAMES
+    # the registry (before the generic unknown-key path, for a useful msg).
+    legacy = [k for k in ("criteria", "rubric_version") if k in qg]
+    if legacy:
+        return (
+            f"{sorted(legacy)} no longer live on the record — the rubric moved "
+            f"to config/rubrics.yaml; reference it via 'rubric_ref' "
+            f"(e.g. 'resume-package@1')"
+        )
     unknown = set(qg) - _QUALITY_GATE_KEYS
     if unknown:
         return f"unknown key(s) {sorted(unknown)}"
-    rv = qg.get("rubric_version")
-    if not isinstance(rv, str) or not rv.strip():
-        return "'rubric_version' (required non-empty str)"
-    if not _str_list_ok(qg.get("criteria")):
-        return "'criteria' (required non-empty list of non-empty str)"
-    t = qg.get("threshold")
-    if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0.0 <= t <= 1.0:
-        return "'threshold' (required number in [0.0, 1.0])"
+    # artifact-review-v1 R-1 — rubric_ref is the required by-name pointer into
+    # the registry, the identity criteria + rubric_version used to carry.
+    ref = qg.get("rubric_ref")
+    if not isinstance(ref, str) or not ref.strip():
+        return "'rubric_ref' (required non-empty str)"
+    # artifact-review-v1 R-3 — threshold is now an OPTIONAL override of the
+    # rubric's default_threshold; its value-validation is retained.
+    if "threshold" in qg:
+        t = qg["threshold"]
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0.0 <= t <= 1.0:
+            return "'threshold' (number in [0.0, 1.0])"
     rl = qg.get("redraft_limit")
     if isinstance(rl, bool) or not isinstance(rl, int) or rl != 1:
         return "'redraft_limit' (required int; v1 supports exactly 1)"
@@ -641,6 +663,27 @@ def _quality_gate_shape_error(qg) -> str | None:
     if "context_inputs" in qg and not _str_list_ok(qg["context_inputs"]):
         return "'context_inputs' (non-empty list of non-empty str)"
     return None
+
+
+def _rubric_ref_resolution_error(rubric_ref: str) -> str | None:
+    """artifact-review-v1 R-11 — resolve ``rubric_ref`` against the registry
+    at capability-load time. Return an error string naming the registry when
+    the ref does not resolve (→ ``quality_gate_error`` → gate treated as
+    absent, and post-P3 a worker HALT), or ``None`` when it resolves.
+
+    Uncached load per call (R-13). Generic dereference — no producer name, no
+    producer-keyed map, no producer-specific default (R-12). The loader import
+    is function-local: capability.py stays at the bottom of the import graph."""
+    from grove.fleet.rubric_registry import load_rubric_registry
+
+    registry = load_rubric_registry()
+    if registry.get(rubric_ref) is not None:
+        return None
+    known = ", ".join(sorted(registry.rubrics)) or "(none)"
+    return (
+        f"'rubric_ref' {rubric_ref!r} does not resolve — config/rubrics.yaml "
+        f"declares: {known}"
+    )
 
 
 def _validate_quality_gate(governance, record_id: str) -> None:
@@ -654,6 +697,9 @@ def _validate_quality_gate(governance, record_id: str) -> None:
     if "quality_gate" not in governance:
         return
     err = _quality_gate_shape_error(governance["quality_gate"])
+    if err is None:
+        # Shape valid → rubric_ref is a non-empty str; resolve it (R-11).
+        err = _rubric_ref_resolution_error(governance["quality_gate"]["rubric_ref"])
     if err is None:
         governance.pop("quality_gate_error", None)
         return

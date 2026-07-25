@@ -285,11 +285,24 @@ _ATTACHMENT_EVENT_TYPES = frozenset({
 })
 _ATTACHMENT_EMITTER_PIN = frozenset({"grove/dock/attachment_store.py"})
 
+# C'. artifact-review-v1 P4 — the quality-verdict feed dirname (Family 2, the
+# Kaizen-ledger idiom). Sole writer is grove/fleet/verdict_ledger.py; the
+# dotted literal appears nowhere else. A future retention reaper / reader
+# joins this population in a reviewed diff, exactly as the Kaizen population
+# grew beyond its lone writer.
+_VERDICT_LEDGER_DIRNAME = ".verdict_ledger"
+_VERDICT_LEDGER_TOUCHER_PIN = frozenset({
+    "grove/fleet/verdict_ledger.py",  # sole writer (VerdictLedger.record)
+})
+
 
 # ── Shared single-pass scan ──────────────────────────────────────────────
 
 _TRACKED_PRIMITIVES = {name for (_, name) in _PRIMITIVE_CALLER_PINS}
-_TRACKED_BASENAMES = set(_BASENAME_TOUCHER_PINS) | {_KAIZEN_LEDGER_DIRNAME}
+_TRACKED_BASENAMES = set(_BASENAME_TOUCHER_PINS) | {
+    _KAIZEN_LEDGER_DIRNAME,
+    _VERDICT_LEDGER_DIRNAME,
+}
 
 
 def _scan():
@@ -462,6 +475,21 @@ def test_kaizen_ledger_dirname_population_is_pinned():
     )
     assert "grove/kaizen_ledger.py" in found, (
         "scan lost sight of the ledger writer itself — extractor regression"
+    )
+
+
+def test_verdict_ledger_dirname_population_is_pinned():
+    _, basename_touchers, _ = _SCAN_RESULT
+    found = basename_touchers[_VERDICT_LEDGER_DIRNAME]
+    assert found == _VERDICT_LEDGER_TOUCHER_PIN, (
+        f"{_VERDICT_LEDGER_DIRNAME!r} dirname population drifted "
+        f"(sole writer is grove/fleet/verdict_ledger.py; a reaper/reader joins "
+        f"in a reviewed diff):\n"
+        f"  new: {sorted(found - _VERDICT_LEDGER_TOUCHER_PIN)}\n"
+        f"  vanished: {sorted(_VERDICT_LEDGER_TOUCHER_PIN - found)}"
+    )
+    assert "grove/fleet/verdict_ledger.py" in found, (
+        "scan lost sight of the verdict feed writer itself — extractor regression"
     )
 
 

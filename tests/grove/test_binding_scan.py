@@ -35,7 +35,11 @@ JUDGE = "prov-q/judge-1"
 def _cap(model="prov-a/base", rubric="1.0"):
     gov = {}
     if rubric is not None:
-        gov["quality_gate"] = {"rubric_version": rubric}
+        # artifact-review-v1 P5 (RULING E) — the RECORD gate carries rubric_ref
+        # now (class@version); binding_scan reads the rubric identity off it.
+        # The `rubric` values here are opaque identities (the _ev EVENT fixture
+        # keeps rubric_version — the event store is untouched this sprint).
+        gov["quality_gate"] = {"rubric_ref": rubric}
     return SimpleNamespace(
         model_binding=SimpleNamespace(type="model", model=model),
         governance=gov,

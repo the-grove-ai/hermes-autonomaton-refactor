@@ -545,6 +545,10 @@ def _drive_worker(monkeypatch, tmp_path, cap_gov, payload, script, run_id="rid1"
             self.config = k.get("config")
 
     monkeypatch.setattr(_paths, "get_hermes_home", lambda: str(tmp_path))
+    # artifact-review-v1 P4 — VerdictLedger resolves its dir via
+    # hermes_constants.get_hermes_home (GROVE_HOME); pin it to tmp so the feed
+    # writes under the test's home, not the operator's real ~/.grove.
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     monkeypatch.setattr(worker_entry, "_load_capability_for", lambda wid: _Cap())
     monkeypatch.setattr(
         worker_entry, "_resolve_declared_sink", lambda cap, wid: tmp_path / "sink"
@@ -863,8 +867,7 @@ def test_effective_finish_reason_folds_native_truth():
 
 
 _QUALITY_GATE = {
-    "rubric_version": "1.0",
-    "criteria": ["specific claim", "grounded evidence"],
+    "rubric_ref": "test-rubric@1",
     "threshold": 0.7,
     "redraft_limit": 1,
     "evaluator_tier": "T1",
@@ -900,6 +903,13 @@ def _verdict(status, score, issues=(), model="stub/eval-model"):
         "complete": status == "pass",
         "accurate": status == "pass",
         "issues": list(issues),
+        # artifact-review-v1 P4 — the rubric identity + effective threshold the
+        # gate site reads off the verdict to write the feed record. rubric_version
+        # (= rubric_key) is retained for the coexisting event rider.
+        "rubric_key": "test-rubric@1",
+        "criteria_ids": ["c1", "c2"],
+        "effective_threshold": 0.7,
+        "threshold_source": "record_override",
         "rubric_version": "1.0",
         "threshold": 0.7,
         "evaluator_tier": "T1",
@@ -940,6 +950,18 @@ def test_gated_pass_rides_event(monkeypatch, tmp_path):
     assert ev["rubric_version"] == "1.0"
     assert ev["redraft_count"] == 0
     assert ev["evaluator_model"] == "stub/eval-model"
+    # artifact-review-v1 P4 (R-7 FEED-FIRST) — the event references the feed by
+    # run_id, and ONE verdict record (attempt 0) was appended for this run.
+    assert ev["quality_verdict_ref"] == "rid1"
+    _recs = [
+        json.loads(l)
+        for l in (tmp_path / ".verdict_ledger" / "rid1.jsonl").read_text().splitlines()
+        if l.strip()
+    ]
+    assert [r["attempt"] for r in _recs] == [0]
+    assert _recs[0]["rubric_key"] == "test-rubric@1"
+    assert _recs[0]["status"] == "pass" and _recs[0]["quality_score"] == 0.85
+    assert _recs[0]["threshold_source"] == "record_override"
     # detail is byte-identical to the ungated shape on a pass:
     assert ev["detail"] == "completed=True; unit=u1; transport=tool"
     assert len(agent.calls) == 1  # no redraft turn
@@ -981,6 +1003,16 @@ def test_gated_fail_redrafts_once_and_lock_reengages(monkeypatch, tmp_path):
     assert ev["quality_score"] == 0.9
     assert ev["redraft_count"] == 1
     assert "; redrafted draft1_archived=" in ev["detail"]
+    # artifact-review-v1 P4 (R-3a) — the redraft re-score is a SEPARATE record
+    # (attempt 1), never an amendment; both attempts are in the run's feed.
+    _recs = [
+        json.loads(l)
+        for l in (tmp_path / ".verdict_ledger" / "rid1.jsonl").read_text().splitlines()
+        if l.strip()
+    ]
+    assert [r["attempt"] for r in _recs] == [0, 1]
+    assert _recs[0]["status"] == "fail" and _recs[0]["quality_score"] == 0.4
+    assert _recs[1]["status"] == "pass" and _recs[1]["quality_score"] == 0.9
     # (c) the redraft re-prompt: fresh continuation carrying the issues
     # verbatim, authorizing exactly one further emit.
     assert len(agent.calls) == 2
@@ -1056,6 +1088,18 @@ def test_skipped_oversize_proceeds_with_null_score(monkeypatch, tmp_path):
     assert ev["redraft_count"] == 0
     assert ev["evaluator_model"] is None
     assert len(agent.calls) == 1  # skip never redrafts
+    # artifact-review-v1 P4 — a skipped evaluation is STILL a verdict record (a
+    # drift detector needs to see "too large to review"): rubric identity present,
+    # status=skipped_oversize, null score.
+    _recs = [
+        json.loads(l)
+        for l in (tmp_path / ".verdict_ledger" / "rid1.jsonl").read_text().splitlines()
+        if l.strip()
+    ]
+    assert [r["attempt"] for r in _recs] == [0]
+    assert _recs[0]["status"] == "skipped_oversize"
+    assert _recs[0]["quality_score"] is None
+    assert _recs[0]["rubric_key"] == "test-rubric@1"
 
 
 def test_evaluator_exception_is_loud_andon(monkeypatch, tmp_path):
@@ -1069,6 +1113,38 @@ def test_evaluator_exception_is_loud_andon(monkeypatch, tmp_path):
         )
     assert exc_info.value.check == "evaluator_call_failed"
     assert "provider 500" in str(exc_info.value)
+
+
+def test_broken_gate_halts_never_emits_ungated(monkeypatch, tmp_path):
+    """artifact-review-v1 P3 (R-8) — a DECLARED-but-unresolvable gate (block
+    present + quality_gate_error, e.g. an unresolvable rubric_ref) HALTS the
+    worker. It must NEVER fall through to the ungated passthrough and emit; a
+    broken gate is not an absent gate. The evaluator is never reached."""
+    from grove.fleet.errors import FleetWorkerAndon
+
+    def forbidden(*a, **k):
+        raise AssertionError("evaluator must not run for a broken gate")
+
+    monkeypatch.setattr("grove.fleet.quality.evaluate_draft", forbidden)
+    monkeypatch.setattr(
+        "grove.utils.fs_utils._grove_home_realpath", lambda: str(tmp_path)
+    )
+
+    # A record whose load-time validation stamped quality_gate_error — the
+    # capability.py:_validate_quality_gate outcome for an unresolvable ref.
+    broken_gov = {
+        **_GATED_GOV,
+        "quality_gate": {"rubric_ref": "nope@9", "redraft_limit": 1},
+        "quality_gate_error": "'rubric_ref' 'nope@9' does not resolve — "
+        "config/rubrics.yaml declares: longform-argument@1, resume-package@1",
+    }
+    with pytest.raises(FleetWorkerAndon) as exc_info:
+        _drive_worker(
+            monkeypatch, tmp_path, broken_gov, _UNIT_PAYLOAD,
+            [_emit_step(_DRAFT1_ARGS)],
+        )
+    assert exc_info.value.check == "quality_gate_unresolvable"
+    assert "nope@9" in str(exc_info.value)
 
 
 def test_context_inputs_resolved_from_dispatch_payload(monkeypatch, tmp_path):

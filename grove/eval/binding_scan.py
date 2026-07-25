@@ -402,12 +402,19 @@ def build_binding_proposals(
         ranked.sort()
         _, _, _, _, cls, cand = ranked[0]
 
+        # artifact-review-v1 P5 (RULING E) — the record no longer carries
+        # rubric_version; the rubric identity is now rubric_ref (class@version).
+        # It is globally unique where "1.0" was shared across producers, so this
+        # suppression/comparability key gets STRICTLY MORE discriminating — no
+        # registry call, the ref already contains the version. A rubric bump
+        # (@1→@2) is a clean structural re-arm, which _suppressed already relies
+        # on. The variable/tombstone slot keeps the name for continuity.
         rubric_version = None
         gov = getattr(cap, "governance", None)
         if isinstance(gov, dict):
             gate = gov.get("quality_gate")
             if isinstance(gate, dict) and not gov.get("quality_gate_error"):
-                rubric_version = gate.get("rubric_version")
+                rubric_version = gate.get("rubric_ref")
 
         if _suppressed(
             tombstones,

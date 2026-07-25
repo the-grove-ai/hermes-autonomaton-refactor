@@ -1,0 +1,71 @@
+# config/rubrics.yaml — artifact-review-v1 P1: the versioned quality-gate
+# rubric registry, keyed by artifact CLASS@version.
+#
+# A fleet capability record no longer embeds its rubric. Its
+# governance.quality_gate.rubric_ref names an entry here (e.g.
+# "resume-package@1"); the gate dereferences the criteria + calibrated
+# default_threshold from this registry. One rubric, one home — no dual
+# source of truth across records.
+#
+# Keys are class@version. A new version is a NEW key (resume-package@2),
+# never an in-place edit of an existing one — a verdict record stamped with
+# @1 must stay reproducible against @1's exact criteria.
+#
+# Phase 1 authors this registry by git commit + deploy, the same surface as
+# config/capabilities/ and config/scope_surfaces.yaml. It is a scope-defining
+# repo config surface (registered in scope_surfaces.yaml::repo_config.files).
+#
+# criteria are typed objects with stable ids. In Phase 1 the only supported
+# criterion type is "llm" (a model judgment). id is required and stable: the
+# verdict record cites the ids it evaluated, so an id is an identity, not a
+# label — renaming one breaks the trail.
+
+version: 1
+
+rubrics:
+  # ← config/capabilities/skill__fleet__forge_jobsearch.yaml (quality_gate,
+  #   rubric_version "1.0", threshold 0.9). Criteria lifted verbatim.
+  resume-package@1:
+    default_threshold: 0.9
+    # R-14 content hash over criteria + default_threshold. A published version
+    # is immutable; changing any criterion means minting a new key, not
+    # editing this one. Recompute with grove.fleet.rubric_registry.
+    content_hash: "977e977e62a9460fec04041428b71277516a2dd78e20a3791b886e6c917c6126"
+    criteria:
+      - id: c1
+        type: llm
+        definition: "Every claim, skill, and accomplishment is internally consistent across resume and cover letter, specific, and bounded — no naked metrics, no unverifiable superlatives, no invented credentials"
+      - id: c2
+        type: llm
+        definition: "The package's strongest content maps to the task context's Role, Persona, and Rationale; ordering and emphasis reflect that positioning, not generic resume convention"
+      - id: c3
+        type: llm
+        definition: "Role-relevant terms appear only where the surrounding experience genuinely supports them — no unsupported keyword assembly"
+      - id: c4
+        type: llm
+        definition: "Reads as compelling, coherent prose to a human evaluator — specific, active, quantified where the material allows"
+      - id: c5
+        type: llm
+        definition: "Cover letter makes one specific case for fit tied to the named Company and Role from the task context, not a template"
+
+  # ← config/capabilities/skill__fleet__drafter.yaml (quality_gate,
+  #   rubric_version "1.0", threshold 0.7). Criteria lifted verbatim.
+  longform-argument@1:
+    default_threshold: 0.7
+    content_hash: "27006480b90000b04525282f24f4c1c07b5b90c56ffa8fb8b8c7995dcdc6a026"
+    criteria:
+      - id: c1
+        type: llm
+        definition: "Makes one specific, falsifiable central claim — not a survey of considerations"
+      - id: c2
+        type: llm
+        definition: "Opens with the reveal or tension, not context-setting preamble"
+      - id: c3
+        type: llm
+        definition: "Every statistic, quote, or attribution is grounded in the provided source material — nothing fabricated"
+      - id: c4
+        type: llm
+        definition: "Evidence is specific (named examples, numbers, dates), not generic assertion"
+      - id: c5
+        type: llm
+        definition: "Register matches the operator's voice: direct, active, no corporate filler or hedging"

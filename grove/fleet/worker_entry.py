@@ -698,7 +698,37 @@ _UNGATED_QUALITY_KW: Dict[str, Any] = {
     "rubric_version": None,
     "redraft_count": None,
     "evaluator_model": None,
+    # artifact-review-v1 P4 — the FEED-FIRST reference (R-7): the run_id of the
+    # verdict records this run wrote, or None on an ungated worker (no verdict).
+    # Coexists with the four legacy rider fields above until P4b removes them.
+    "quality_verdict_ref": None,
 }
+
+
+def _record_verdict(run_id: str, attempt: int, cap, verdict: Dict[str, Any],
+                    pkg_slug: Optional[str]) -> None:
+    """artifact-review-v1 P4 (R-7 / R-3a) — append ONE verdict record for this
+    evaluation to the run's feed. attempt 0 is the first evaluation, 1 the
+    redraft re-score; each is a SEPARATE record, never an amendment. The
+    rubric identity + effective threshold + criteria ids come off the verdict
+    envelope the evaluator resolved from the registry."""
+    from grove.fleet.verdict_ledger import VerdictLedger
+
+    VerdictLedger(run_id).record(
+        attempt,
+        artifact_id=pkg_slug or getattr(cap, "id", "<unknown>"),
+        rubric_key=verdict["rubric_key"],
+        criteria_ids=verdict["criteria_ids"],
+        effective_threshold=verdict["effective_threshold"],
+        threshold_source=verdict["threshold_source"],
+        status=verdict["status"],
+        complete=verdict["complete"],
+        accurate=verdict["accurate"],
+        quality_score=verdict["quality_score"],
+        issues=verdict["issues"],
+        evaluator_tier=verdict["evaluator_tier"],
+        evaluator_model=verdict["evaluator_model"],
+    )
 
 
 def _quality_task_context(gate: Dict[str, Any], payload: Any) -> Optional[Dict[str, Any]]:
@@ -802,6 +832,24 @@ def _apply_quality_gate(
     (byte-identical event behavior for ungated workers).
     """
     from grove.fleet import quality as fleet_quality
+    from grove.fleet.errors import FleetWorkerAndon
+
+    # artifact-review-v1 P3 (R-8) — a DECLARED gate that failed to resolve
+    # (block present → quality_gate_error stamped, e.g. an unresolvable
+    # rubric_ref) must HALT before emission; it must never fall through to the
+    # ungated passthrough. quality_gate_declaration() collapses ABSENT and
+    # BROKEN to None, so the broken case is separated FIRST — the same
+    # FleetWorkerAndon the evaluator-failure halt uses, which the reap →
+    # ledger → triage chain consumes and which aborts the terminal event.
+    broken = fleet_quality.quality_gate_broken(cap)
+    if broken is not None:
+        raise FleetWorkerAndon(
+            f"declared quality_gate is unresolvable for record {cap.id!r}: "
+            f"{broken} — a broken gate is not an absent gate; refusing to "
+            f"emit ungated, failing loud",
+            worker_id=worker_id,
+            check="quality_gate_unresolvable",
+        )
 
     gate = fleet_quality.quality_gate_declaration(cap)
     if gate is None:
@@ -810,6 +858,12 @@ def _apply_quality_gate(
     task_context = _quality_task_context(gate, payload)
     verdict = _evaluate_or_andon(cap, worker_id, staged_files, task_context)
     redraft_count = 0
+
+    # artifact-review-v1 P4 (R-7 FEED-FIRST / R-3a) — the first evaluation is
+    # its own append-only verdict record (attempt 0), written BEFORE the
+    # redraft may reassign `verdict`. skipped_oversize writes a record too — a
+    # skipped evaluation is a fact the drift detector needs.
+    _record_verdict(run_id, 0, cap, verdict, pkg_slug)
 
     # Fail + a redraft budget (schema validates redraft_limit == 1 in v1) →
     # one governed redraft cycle. Pass and skipped_oversize proceed as-is.
@@ -833,12 +887,19 @@ def _apply_quality_gate(
             verdict=verdict,
             task_context=task_context,
         )
+        # The redraft re-score is a SEPARATE record (attempt 1), never an
+        # amendment of attempt 0 (R-3a).
+        _record_verdict(run_id, 1, cap, verdict, pkg_slug)
 
     quality_kw = {
         "quality_score": verdict["quality_score"],
         "rubric_version": verdict["rubric_version"],
         "redraft_count": redraft_count,
         "evaluator_model": verdict["evaluator_model"],
+        # artifact-review-v1 P4 — the event references the verdict feed by
+        # run_id (the records live at <run_id>.jsonl). Coexists with the four
+        # legacy rider fields above until P4b removes them.
+        "quality_verdict_ref": run_id,
     }
     return quality_kw, staged_list, pkg_slug, success_detail
 
@@ -1558,6 +1619,7 @@ def _event(
     rubric_version: Optional[str] = None,
     redraft_count: Optional[int] = None,
     evaluator_model: Optional[str] = None,
+    quality_verdict_ref: Optional[str] = None,
     meta_defect: Optional[str] = None,
     stripped_meta_keys: Optional[list] = None,
     deferred_actions: Optional[list] = None,
@@ -1596,6 +1658,11 @@ def _event(
         "rubric_version": rubric_version,
         "redraft_count": redraft_count,
         "evaluator_model": evaluator_model,
+        # artifact-review-v1 P4 (R-7) — the FEED-FIRST reference: the run_id of
+        # this run's verdict records (<run_id>.jsonl), or None when ungated.
+        # The four rider fields above coexist with the feed until P4b removes
+        # them and repoints consumers to read the feed by this reference.
+        "quality_verdict_ref": quality_verdict_ref,
         # forge-publish-meta-hotfix-v1 P1 — the emit-time meta-completeness rider
         # (same additive always-present precedent as the quality rider above). None
         # on every complete package and on non-forge/failed/no_work shapes; a short

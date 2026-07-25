@@ -69,6 +69,11 @@ repo_config:
     # scope-defining surface. The loader refuses a membership that does not
     # declare itself.
     - scope_surfaces.yaml
+    # artifact-review-v1 — the quality-gate rubric registry. A write here
+    # redefines the criteria/threshold the fleet gate enforces, so it is a
+    # scope-defining authority surface (repo-only; it deploys to the VM
+    # checkout via git reset, never to ~/.grove — no grove_home twin).
+    - rubrics.yaml
   dir_prefixes:
     - capabilities
     - routing-profiles

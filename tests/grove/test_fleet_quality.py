@@ -27,10 +27,43 @@ from grove.fleet.quality import (
     evaluate_draft,
     quality_gate_declaration,
 )
+from grove.fleet.rubric_registry import (
+    Criterion,
+    Rubric,
+    RubricRegistry,
+    compute_content_hash,
+)
+
+# artifact-review-v1 P4 — the record now points at a rubric by rubric_ref; the
+# evaluator resolves criteria/default_threshold from the registry. These pins
+# resolve against a STUB registry (TEST-ONLY key) whose criteria text matches
+# the old embedded rubric, so the prompt-frame pins are unchanged.
+_STUB_CRITERIA = [
+    Criterion(id="c1", type="llm", definition="makes one falsifiable claim"),
+    Criterion(id="c2", type="llm", definition="evidence is specific"),
+]
+_STUB_REGISTRY = RubricRegistry(
+    rubrics={
+        "test-rubric@1": Rubric(
+            key="test-rubric@1",
+            default_threshold=0.7,
+            criteria=_STUB_CRITERIA,
+            content_hash=compute_content_hash(0.7, _STUB_CRITERIA),
+        ),
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _stub_rubric_registry(monkeypatch):
+    monkeypatch.setattr(
+        "grove.fleet.rubric_registry.load_rubric_registry",
+        lambda *a, **k: _STUB_REGISTRY,
+    )
+
 
 _GATE = {
-    "rubric_version": "1.0",
-    "criteria": ["makes one falsifiable claim", "evidence is specific"],
+    "rubric_ref": "test-rubric@1",
     "threshold": 0.7,
     "redraft_limit": 1,
     "evaluator_tier": "T1",
@@ -82,6 +115,10 @@ def eval_env(monkeypatch):
 
 _ENVELOPE_KEYS = {
     "status", "quality_score", "complete", "accurate", "issues",
+    # artifact-review-v1 P4 — the rubric identity + effective threshold the
+    # verdict feed record cites (rubric_version retained = rubric_key for the
+    # coexisting event rider until P4b).
+    "rubric_key", "criteria_ids", "effective_threshold", "threshold_source",
     "rubric_version", "threshold", "evaluator_tier", "evaluator_model",
     "context_keys_used", "context_keys_missing", "detail",
 }
@@ -95,8 +132,13 @@ def test_pass_verdict(eval_env):
     assert v["status"] == "pass"
     assert v["quality_score"] == 0.85
     assert v["complete"] is True and v["accurate"] is True
-    assert v["rubric_version"] == "1.0"
+    # rubric_version retained (= rubric_key) for the coexisting event rider.
+    assert v["rubric_key"] == "test-rubric@1"
+    assert v["rubric_version"] == "test-rubric@1"
+    assert v["criteria_ids"] == ["c1", "c2"]
     assert v["threshold"] == 0.7
+    assert v["effective_threshold"] == 0.7
+    assert v["threshold_source"] == "record_override"  # _GATE carries threshold
     assert v["evaluator_tier"] == "T1"
     assert v["evaluator_model"] == "stub/model-1"
     assert set(v) == _ENVELOPE_KEYS

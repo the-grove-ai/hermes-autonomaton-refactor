@@ -58,6 +58,11 @@ failure_policy:
   no_declared_sink: pause_producer
   model_binding_malformed_slug: pause_producer
   no_archive_location: pause_producer
+  # artifact-review-v1 P3 — a declared quality_gate whose rubric_ref does not
+  # resolve against config/rubrics.yaml. The record (or the registry) is
+  # defective; it recurs identically every re-run until the config is fixed,
+  # so retrying burns compute for a guaranteed failure. pause_producer.
+  quality_gate_unresolvable: pause_producer
   # host-scoped, not producer-scoped: every producer hits these and each pauses
   # separately. pause_producer is the least-wrong of the four — it stops the
   # burn and destroys nothing — but the model cannot say "the host is broken."

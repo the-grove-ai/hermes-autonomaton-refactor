@@ -45,6 +45,11 @@ _GOLDEN_REPO_FILES = frozenset({
     "routing.config.yaml",
     os.path.join("dock", "dock.yaml"),
     "write_workspaces.yaml",
+    # artifact-review-v1 — the quality-gate rubric registry, a scope-defining
+    # repo surface (a write redefines the criteria/threshold the fleet gate
+    # enforces). Repo-only by ruling: it deploys to the VM checkout via git
+    # reset, never to ~/.grove, so it is NOT in the grove_home golden above.
+    "rubrics.yaml",
 })
 _GOLDEN_REPO_PREFIXES = ("capabilities", "routing-profiles")
 

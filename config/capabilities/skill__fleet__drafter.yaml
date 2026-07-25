@@ -281,15 +281,12 @@ governance:
   # operator-approved 2026-07-12. evaluator_tier T-QA is the dedicated judge
   # tier (routing.config.yaml) — independent of T1 rebinding and of this
   # record's own producer pin.
+  # artifact-review-v1 P5 — the rubric moved to config/rubrics.yaml
+  # (longform-argument@1). rubric_version + the embedded criteria are gone; the
+  # threshold override (0.7) was removed because it merely restated the rubric's
+  # default_threshold (R-3 — an override that restates the default is noise).
   quality_gate:
-    rubric_version: "1.0"
-    criteria:
-      - "Makes one specific, falsifiable central claim — not a survey of considerations"
-      - "Opens with the reveal or tension, not context-setting preamble"
-      - "Every statistic, quote, or attribution is grounded in the provided source material — nothing fabricated"
-      - "Evidence is specific (named examples, numbers, dates), not generic assertion"
-      - "Register matches the operator's voice: direct, active, no corporate filler or hedging"
-    threshold: 0.7
+    rubric_ref: "longform-argument@1"
     redraft_limit: 1
     evaluator_tier: "T-QA"
   emission_preconditions:
