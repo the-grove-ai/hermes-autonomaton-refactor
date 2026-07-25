@@ -17,10 +17,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
 
 import pytest
 
 from grove.fleet.retrieval_broker import (
+    _FORMULATION_MAX_WORKERS,
+    _formulate_queries,
     MAX_CONTENT_BYTES,
     MAX_SOURCES,
     MAX_TOTAL_MATERIALS_BYTES,
@@ -623,6 +626,47 @@ def test_budget_exceeded_after_fetch_raises_no_partial():
             )
         )
     assert extract.calls == ["https://a"]  # fetch ran; the halt still returned nothing
+
+
+# ── P3a: formulation executor containment ────────────────────────────────────
+def test_formulation_saturation_fails_loud_and_spares_default_pool():
+    # N hung formulations occupy the DEDICATED pool; the (N+1)th must FAIL LOUD
+    # (saturated), never queue and never consume a default-pool slot.
+    seen_threads = []
+    release = threading.Event()
+
+    def hung_model(**kwargs):
+        seen_threads.append(threading.current_thread().name)
+        release.wait(timeout=5)  # "hung" until released (5s safety net)
+        return {"queries": ["q"]}
+
+    async def _body():
+        hung = [
+            asyncio.create_task(
+                _formulate_queries("t", None, call_model=hung_model, tier="T1", max_queries=3)
+            )
+            for _ in range(_FORMULATION_MAX_WORKERS)
+        ]
+        # wait until all N have acquired a slot AND started on the executor
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if len(seen_threads) >= _FORMULATION_MAX_WORKERS:
+                break
+        assert len(seen_threads) == _FORMULATION_MAX_WORKERS
+
+        # (N+1)th: pool saturated → fail loud, no queue.
+        with pytest.raises(BrokerQueryFormulationError):
+            await _formulate_queries("t", None, call_model=hung_model, tier="T1", max_queries=3)
+
+        # containment: every started formulation ran on the DEDICATED pool...
+        assert all(n.startswith("broker-formulation") for n in seen_threads)
+        # ...and the (N+1)th never started a thread at all (no default-pool slot).
+        assert len(seen_threads) == _FORMULATION_MAX_WORKERS
+
+        release.set()
+        await asyncio.gather(*hung)
+
+    asyncio.run(_body())
 
 
 # ── request validation ────────────────────────────────────────────────────────

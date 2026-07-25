@@ -56,7 +56,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -122,6 +124,26 @@ ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 # in config moves this with no code change (call_t1's by-name primitive).
 QUERY_FORMULATION_TIER = "T1"
 QUERY_FORMULATION_MAX_TOKENS = 512
+
+# Formulation containment (P3a, Ruling B). A hung model call orphans a thread we
+# CANNOT kill; if formulation shared the loop's default executor (as
+# asyncio.to_thread does — the pool the search/wiki adapters use, max_workers=8
+# on e2-standard-4), enough hangs would starve ALL broker retrieval until a
+# restart. So formulation runs on its OWN bounded pool: a hung call degrades only
+# FUTURE formulations, never search/wiki. Sized at 2 — production drives one
+# formulation per dispatch serially (the tick blocks on run_broker's result), so
+# 1 worker meets throughput and the 2nd is slack so a single transient hang does
+# not fail-loud the very next dispatch. A 2nd concurrent hang is a systemic model
+# fault the operator must see, so the pool SATURATES (fail loud) rather than
+# growing. Kept far below the default pool's 8 so it can never contend with it.
+_FORMULATION_MAX_WORKERS = 2
+_formulation_executor = ThreadPoolExecutor(
+    max_workers=_FORMULATION_MAX_WORKERS, thread_name_prefix="broker-formulation"
+)
+# Admission gate: a NON-BLOCKING acquire, released by the worker THREAD's own
+# finally (not the awaiter) so a hung thread keeps holding its slot — the count
+# reflects true pool occupancy even after the await is cancelled by wait_for.
+_formulation_slots = threading.Semaphore(_FORMULATION_MAX_WORKERS)
 
 
 # ── errors ───────────────────────────────────────────────────────────────────
@@ -360,16 +382,33 @@ async def _formulate_queries(
         f"Operator intent: {json.dumps(operator_intent or {}, ensure_ascii=False)}\n\n"
         f"Propose at most {max_queries} search query strings for this topic."
     )
-    # Off-thread: a sync model call must not block the event loop (keeps the
-    # phase budget's wall-clock enforceable during formulation).
-    raw = await asyncio.to_thread(
-        call_model,
-        prompt=prompt,
-        system=_QUERY_SYSTEM,
-        tool=_QUERY_TOOL,
-        max_tokens=QUERY_FORMULATION_MAX_TOKENS,
-        tier=tier,
-    )
+    # Run on formulation's OWN bounded executor (NOT asyncio.to_thread's default
+    # pool that search/wiki share) so a hung model call is contained. Admission is
+    # a non-blocking slot acquire: when the pool is saturated by hung calls, FAIL
+    # LOUD rather than queue silently behind an unkillable thread.
+    if not _formulation_slots.acquire(blocking=False):
+        raise BrokerQueryFormulationError(
+            f"formulation executor saturated — all {_FORMULATION_MAX_WORKERS} "
+            f"workers occupied (likely hung model calls); failing loud rather "
+            f"than queuing behind an unkillable thread"
+        )
+
+    def _call_and_release():
+        # The slot is released by THIS worker thread, so a hung call keeps holding
+        # its slot even after the awaiter below is cancelled by wait_for.
+        try:
+            return call_model(
+                prompt=prompt,
+                system=_QUERY_SYSTEM,
+                tool=_QUERY_TOOL,
+                max_tokens=QUERY_FORMULATION_MAX_TOKENS,
+                tier=tier,
+            )
+        finally:
+            _formulation_slots.release()
+
+    loop = asyncio.get_running_loop()
+    raw = await loop.run_in_executor(_formulation_executor, _call_and_release)
     return _validate_queries(raw, max_queries)
 
 
