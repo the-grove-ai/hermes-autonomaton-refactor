@@ -4048,9 +4048,21 @@ class Dispatcher:
             )
             self._session_row_created = True
         except Exception as exc:
+            # telemetry-ioerr-diagnostic-v1 — INSTRUMENTATION ONLY: surface the
+            # SQLite extended result code (Python 3.11+) alongside the existing
+            # message. The create_session write path propagates the ORIGINAL
+            # sqlite3 exception (the f-string flatten at hermes_state.py is on the
+            # __init__ path only and re-raises the original), so these read real
+            # values here. Guarded via getattr with an EXPLICIT sentinel — a
+            # non-sqlite exc / older Python reports "<no-sqlite-subcode>", never a
+            # silent None that looks like a value. Behaviour is unchanged.
+            _errname = getattr(exc, "sqlite_errorname", "<no-sqlite-subcode>")
+            _errcode = getattr(exc, "sqlite_errorcode", "<no-sqlite-subcode>")
             logger.warning(
                 "Dispatcher.open_turn_row: create_session failed "
-                "(will retry next turn): %s", exc,
+                "(will retry next turn): %s [pid=%s sqlite_errorname=%s "
+                "sqlite_errorcode=%s]",
+                exc, os.getpid(), _errname, _errcode,
             )
 
     def append_messages(

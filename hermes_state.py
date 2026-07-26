@@ -16,6 +16,7 @@ Key design decisions:
 
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -306,6 +307,58 @@ END;
 """
 
 
+def _log_write_ioerr_diagnostic(exc: BaseException, db_path: Path) -> None:
+    """telemetry-ioerr-diagnostic-v1 — INSTRUMENTATION ONLY (no behavior change).
+
+    On the NON-LOCK SQLite write-error path (e.g. ``SQLITE_IOERR``), emit one
+    structured line: the extended result code + the CURRENT process's rlimits +
+    the telemetry.db / -wal / -shm sizes at failure time. Logged from inside the
+    fleet worker, so the rlimits are the worker's OWN (RLIMIT_FSIZE/AS/NOFILE
+    from ``grove/fleet/limits.py:build_preexec``) — the smoking gun beside the
+    subcode.
+
+    EVERY field is read under its OWN guard and, on failure, emits an explicit
+    ``<read-failed: ...>`` sentinel rather than being omitted. A partial line
+    that hid WHICH field failed would reproduce the silent-default defect this
+    instrumentation exists to close — and ``os.stat`` on ``-wal``/``-shm`` is the
+    read most likely to fail on a filesystem already throwing IOERR. A ``-wal``
+    that is present-but-empty reads as ``0`` (distinct from an absent file, which
+    reads as the FileNotFoundError sentinel), so the "-wal still 0 bytes" signal
+    is preserved. Never raises: a diagnostic must not mask the original error."""
+
+    def _guard(reader):
+        try:
+            return reader()
+        except Exception as e:  # noqa: BLE001 — sentinel, never omission or raise
+            return f"<read-failed: {type(e).__name__}: {e}>"
+
+    def _rlimit(name):
+        import resource as _r  # POSIX-only; a missing module trips the sentinel
+        return _r.getrlimit(getattr(_r, name))
+
+    def _size(suffix):
+        return os.stat(str(db_path) + suffix).st_size
+
+    fields = {
+        "pid": _guard(os.getpid),
+        "sqlite_errorname": _guard(lambda: getattr(exc, "sqlite_errorname")),
+        "sqlite_errorcode": _guard(lambda: getattr(exc, "sqlite_errorcode")),
+        "rlimit_fsize": _guard(lambda: _rlimit("RLIMIT_FSIZE")),
+        "rlimit_as": _guard(lambda: _rlimit("RLIMIT_AS")),
+        "rlimit_nofile": _guard(lambda: _rlimit("RLIMIT_NOFILE")),
+        "size_db": _guard(lambda: _size("")),
+        "size_wal": _guard(lambda: _size("-wal")),
+        "size_shm": _guard(lambda: _size("-shm")),
+        "msg": _guard(lambda: str(exc)),
+    }
+    try:
+        logger.warning("[telemetry-ioerr-diagnostic] %s", fields)
+    except Exception:  # noqa: BLE001 — the emit itself must never raise
+        logger.warning(
+            "[telemetry-ioerr-diagnostic] emit degraded (fields unformattable)"
+        )
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -417,6 +470,12 @@ class SessionDB:
                         )
                         time.sleep(jitter)
                         continue
+                else:
+                    # telemetry-ioerr-diagnostic-v1 — INSTRUMENTATION ONLY: the
+                    # non-lock path (e.g. SQLITE_IOERR). Capture the extended
+                    # subcode + this worker's rlimits + db/-wal/-shm sizes before
+                    # propagating the exception UNCHANGED (no retry, no swallow).
+                    _log_write_ioerr_diagnostic(exc, self.db_path)
                 # Non-lock error or retries exhausted — propagate.
                 raise
         # Retries exhausted (shouldn't normally reach here).
