@@ -78,6 +78,7 @@ __all__ = [
     "BrokerBudgetExceeded",
     "BrokerMaterialsCeilingExceeded",
     "BrokerCellarJailError",
+    "BrokerCapabilityUnavailable",
     # bounds (named constants — the sprint's WHERE/HOW-MUCH governance)
     "MAX_QUERIES",
     "MAX_SOURCES",
@@ -197,6 +198,27 @@ class BrokerCellarJailError(BrokerError):
     of swallowing it into a per-source drop."""
 
 
+class BrokerCapabilityUnavailable(Exception):
+    """A capability's TOP-LEVEL call failed this run — e.g. web_search returned
+    ``{"success": false, "error": "No web search provider configured"}``. The
+    capability did not contribute, so the evidence base is PARTIAL.
+
+    Deliberately NOT a ``BrokerError``: it neither hard-halts (a wiki-only brief
+    can be legitimate) nor is silently dropped like a per-source failure.
+    ``_guarded_fetch`` records ``capability`` into the run's
+    ``capabilities_unavailable`` so a downstream consumer KNOWS the brief is
+    partial — a wiki-only brief that does not know it is wiki-only is the thing
+    this prevents. This is the SAME root as the wiki empty-content bug: a
+    top-level ``success: false`` (unconfigured, or a capability-wide failure)
+    was previously swallowed into an empty result. It is distinct from a
+    per-item ``results[i].error``, which remains a per-source drop."""
+
+    def __init__(self, capability: str, detail: str = ""):
+        super().__init__(f"{capability} unavailable: {detail}")
+        self.capability = capability
+        self.detail = detail
+
+
 # ── the adapter contract ──────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class RawSource:
@@ -254,8 +276,17 @@ async def _adapter_web_search(query: str, *, search_fn: Callable[..., str]) -> L
     # snippet is retained on the RawSource for completeness.
     out = await asyncio.to_thread(search_fn, query, MAX_SOURCES)
     data = json.loads(out)
+    if data.get("success") is False:
+        # Top-level failure envelope = the SEARCH CAPABILITY did not run this
+        # turn (unconfigured provider, or a capability-wide error), NOT a
+        # per-result miss. Raise so run_broker DECLARES a partial evidence base
+        # instead of yielding zero candidates that read as "searched, found
+        # nothing." (A per-URL failure stays a silent drop — see web_extract.)
+        raise BrokerCapabilityUnavailable(
+            "web_search", str(data.get("error") or "web_search returned success=false")
+        )
     sources: List[RawSource] = []
-    if data.get("success") and isinstance(data.get("data"), dict):
+    if isinstance(data.get("data"), dict):
         for r in data["data"].get("web", []) or []:
             title = (r.get("title") or "").strip()
             desc = (r.get("description") or "").strip()
@@ -280,6 +311,13 @@ async def _adapter_web_extract(url: str, *, extract_fn: Callable[..., Awaitable[
     # constraint). Never a discovery step: exactly the one URL, one source.
     out = await extract_fn([url], format="markdown", use_llm_processing=False)
     data = json.loads(out)
+    if data.get("success") is False:
+        # Top-level failure envelope = the EXTRACT CAPABILITY is unavailable
+        # (e.g. no extraction backend / crawl provider configured) — declared,
+        # not swallowed. A per-URL failure is the results[i]["error"] path below.
+        raise BrokerCapabilityUnavailable(
+            "web_extract", str(data.get("error") or "web_extract returned success=false")
+        )
     sources: List[RawSource] = []
     for r in data.get("results", []) or []:
         if r.get("error"):
@@ -289,11 +327,34 @@ async def _adapter_web_extract(url: str, *, extract_fn: Callable[..., Awaitable[
                 r.get("error"),
             )
             continue
+        # CO-3b (item 1): content is REQUIRED for a meaningful material — the
+        # same silent-default class as the wiki `body` bug. Never fabricate an
+        # empty material; drop loudly, and distinguish WHY so a reader can tell
+        # an ADAPTER problem from a PAGE problem.
+        if "content" not in r:
+            # A missing KEY would hold for every result → a response-shape drift
+            # in the extract tool, not a property of this page. Loud (ERROR).
+            logger.error(
+                "[fleet.retrieval_broker] web_extract result for %r has NO "
+                "'content' key — possible response-shape drift; dropping source",
+                r.get("url", url),
+            )
+            continue
+        content = r.get("content") or ""
+        if not content.strip():
+            # Key present but empty/whitespace → a page-level reality (paywall,
+            # JS-only render), not our bug. WARNING, per-source.
+            logger.warning(
+                "[fleet.retrieval_broker] web_extract returned no extractable "
+                "content for %r (empty/whitespace); dropping source",
+                r.get("url", url),
+            )
+            continue
         sources.append(
             RawSource(
                 url=r.get("url", url),
                 title=(r.get("title") or "").strip(),
-                raw_content=r.get("content") or "",
+                raw_content=content,
                 http_status=200,
                 content_type="text/markdown",
                 capability="web_extract",
@@ -353,8 +414,14 @@ async def _adapter_wiki(
         # snippet cannot support counter-arguments or an evidence gap. Real
         # shape pinned by test_wiki_result_shape_is_pinned; read path by
         # test_wiki_adapter_reads_full_page_not_missing_body.
+        # Read at most WIKI_RESERVED_SLOTS pages: wiki_taken caps at
+        # WIKI_RESERVED_SLOTS in _run_broker_inner regardless of how many rows
+        # a query returns, so reading all MAX_SOURCES rows (× up to MAX_QUERIES
+        # queries) would read up to 13 pages to use 2. Rows arrive rank-ordered,
+        # so the top WIKI_RESERVED_SLOTS are the ones that can survive. This is
+        # the same cap-before-the-expensive-fetch discipline the web path uses.
         out: List[RawSource] = []
-        for w in rows or []:
+        for w in (rows or [])[:WIKI_RESERVED_SLOTS]:
             source_path = w.source_path
             try:
                 content = read_page(source_path, pages_root)
@@ -566,10 +633,21 @@ def _require_topic(request_body: Any) -> str:
 
 
 # ── the broker ────────────────────────────────────────────────────────────────
-async def _guarded_fetch(adapter: Adapter, term: str, timeout: float) -> List[RawSource]:
+async def _guarded_fetch(
+    adapter: Adapter,
+    term: str,
+    timeout: float,
+    *,
+    unavailable: Optional[set] = None,
+) -> List[RawSource]:
     """One capability fetch under the per-source timeout. A timeout or provider
     error DROPS the source(s) from this fetch and is recorded — it never halts
-    the phase (that is what the phase budget + materials ceiling are for)."""
+    the phase (that is what the phase budget + materials ceiling are for).
+
+    ``unavailable`` (when provided) is the run's capability-unavailable set: an
+    adapter raising :class:`BrokerCapabilityUnavailable` (its whole capability
+    did not run this turn) is recorded there so the result can declare a partial
+    evidence base. That is neither a hard halt nor a silent per-source drop."""
     try:
         return await asyncio.wait_for(adapter(term), timeout=timeout)
     except asyncio.TimeoutError:
@@ -578,6 +656,19 @@ async def _guarded_fetch(adapter: Adapter, term: str, timeout: float) -> List[Ra
             term,
             timeout,
         )
+        return []
+    except BrokerCapabilityUnavailable as e:
+        # Capability absent this run (e.g. no web search provider configured) —
+        # record it so the brief declares partial evidence, then contribute no
+        # sources. NOT swallowed silently, NOT a hard halt.
+        logger.warning(
+            "[fleet.retrieval_broker] capability %r unavailable this run "
+            "(evidence base partial): %s",
+            e.capability,
+            e.detail,
+        )
+        if unavailable is not None:
+            unavailable.add(e.capability)
         return []
     except BrokerError:
         # The broker's OWN hard-halt signals (e.g. a cellar jail breach) are
@@ -637,6 +728,10 @@ async def _run_broker_inner(
     scheme = _url_intent(topic)
 
     stamped: List[RawSource] = []
+    # Capabilities whose top-level call did not run this turn (e.g. no web search
+    # provider configured). Surfaced in the result so a consumer knows the
+    # evidence base is PARTIAL — capability-absent is not source-failed.
+    capabilities_unavailable: set = set()
 
     if scheme is not None:
         # ── URL topic → SINGLE-SOURCE FETCH. No formulation, no discovery, no
@@ -646,7 +741,9 @@ async def _run_broker_inner(
             raise BrokerURLRejected(reason)
         queries_issued: List[str] = []
         check_phase()
-        raws = await _guarded_fetch(web_extract_adapter, topic, per_source_timeout)
+        raws = await _guarded_fetch(
+            web_extract_adapter, topic, per_source_timeout, unavailable=capabilities_unavailable
+        )
         stamped = [replace(r, discovery="operator_url", query=topic) for r in raws]
     else:
         # ── Subject topic → formulate → search-discover → extract; wiki alongside ──
@@ -679,8 +776,14 @@ async def _run_broker_inner(
         # Stage 1 (CONCURRENT): web_search each query (URL discovery) + wiki each.
         n = len(queries_issued)
         stage1 = await asyncio.gather(
-            *[_guarded_fetch(web_search_adapter, q, per_source_timeout) for q in queries_issued],
-            *[_guarded_fetch(wiki_adapter, q, per_source_timeout) for q in queries_issued],
+            *[
+                _guarded_fetch(web_search_adapter, q, per_source_timeout, unavailable=capabilities_unavailable)
+                for q in queries_issued
+            ],
+            *[
+                _guarded_fetch(wiki_adapter, q, per_source_timeout, unavailable=capabilities_unavailable)
+                for q in queries_issued
+            ],
         )
         check_phase()
         search_lists = list(stage1[:n])
@@ -724,7 +827,10 @@ async def _run_broker_inner(
 
         # Stage 2 (CONCURRENT): web_extract each safe candidate for article text.
         extract_lists = await asyncio.gather(
-            *[_guarded_fetch(web_extract_adapter, url, per_source_timeout) for url, _dq in safe]
+            *[
+                _guarded_fetch(web_extract_adapter, url, per_source_timeout, unavailable=capabilities_unavailable)
+                for url, _dq in safe
+            ]
         )
         check_phase()
 
@@ -795,6 +901,9 @@ async def _run_broker_inner(
         "queries_issued": queries_issued,
         "phase_duration_ms": elapsed_ms(),
         "materials": materials,
+        # Capabilities that did not run this turn — an empty list means the full
+        # capability set contributed; a non-empty list means partial evidence.
+        "capabilities_unavailable": sorted(capabilities_unavailable),
     }
 
 
@@ -818,14 +927,20 @@ async def run_broker(
     ``operator_intent`` optional). Both are UNTRUSTED regardless of any
     ``origin`` field. Returns exactly::
 
-        {"queries_issued": [...], "phase_duration_ms": <int>, "materials": [...]}
+        {"queries_issued": [...], "phase_duration_ms": <int>, "materials": [...],
+         "capabilities_unavailable": [...]}
 
     Each material carries ``capability`` (how the content was obtained) and
-    ``discovery`` (how the URL was found) as distinct fields. Every dependency is
-    injectable (defaults wire to the real capabilities); tests inject fakes to
-    run offline. HARD HALTs (budget, materials ceiling, operator-URL rejection,
-    malformed formulation) raise; per-source failures drop the source. See the
-    module docstring for the full contract."""
+    ``discovery`` (how the URL was found) as distinct fields.
+    ``capabilities_unavailable`` lists any capability whose top-level call did
+    not run this turn (e.g. no web search provider configured) — an empty list
+    means the full capability set contributed; a non-empty list means the
+    evidence base is PARTIAL. Every dependency is injectable (defaults wire to
+    the real capabilities); tests inject fakes to run offline. HARD HALTs
+    (budget, materials ceiling, operator-URL rejection, malformed formulation)
+    raise; per-source failures drop the source; a capability being unavailable
+    is neither — it is recorded. See the module docstring for the full
+    contract."""
     monotonic = monotonic or time.monotonic
     now_iso = now_iso or _default_now_iso
     url_is_safe = url_is_safe or _default_url_is_safe

@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import threading
 
 import pytest
@@ -30,6 +31,7 @@ from grove.fleet.retrieval_broker import (
     MAX_TOTAL_MATERIALS_BYTES,
     WIKI_RESERVED_SLOTS,
     BrokerBudgetExceeded,
+    BrokerCapabilityUnavailable,
     BrokerCellarJailError,
     BrokerMaterialsCeilingExceeded,
     BrokerQueryFormulationError,
@@ -170,7 +172,10 @@ def test_subject_shape_includes_discovery_field():
             url_is_safe=lambda u: True,
         )
     )
-    assert set(out.keys()) == {"queries_issued", "phase_duration_ms", "materials"}
+    assert set(out.keys()) == {
+        "queries_issued", "phase_duration_ms", "materials", "capabilities_unavailable",
+    }
+    assert out["capabilities_unavailable"] == []  # full capability set contributed
     assert set(out["materials"][0].keys()) == {
         "source_id", "url", "query", "capability", "discovery", "fetched_at",
         "http_status", "content_type", "bytes_original", "truncated",
@@ -459,6 +464,139 @@ def test_guarded_fetch_reraises_broker_error_but_drops_provider_error():
         _run(_guarded_fetch(jail_breach, "t", 1.0))
 
     assert _run(_guarded_fetch(provider_error, "t", 1.0)) == []  # dropped, not raised
+
+
+# ── CO-3b item 2: wiki reads at most WIKI_RESERVED_SLOTS pages ────────────────
+def test_wiki_adapter_reads_at_most_reserved_slots(tmp_path):
+    # wiki_taken caps at WIKI_RESERVED_SLOTS in _run_broker_inner, so the adapter
+    # must not read every row it is handed — cap BEFORE the read, like the web
+    # candidate cap before extraction.
+    pages = tmp_path / "pages"
+    (pages / "reference").mkdir(parents=True)
+    rows = []
+    for i in range(MAX_SOURCES):  # 5 rows offered
+        (pages / "reference" / f"p{i}.md").write_text(f"page {i}", encoding="utf-8")
+        rows.append(_real_wiki_result(f"reference/p{i}.md"))
+
+    reads = []
+
+    def spy_read(source_path, pages_root):
+        reads.append(source_path)
+        return (pages_root / source_path).read_text(encoding="utf-8")
+
+    srcs = _run(
+        _adapter_wiki(
+            "q",
+            query_fn=_query_fn_returning(*rows),
+            pages_root=pages.resolve(),
+            read_page=spy_read,
+        )
+    )
+    assert len(reads) == WIKI_RESERVED_SLOTS  # the 13-wasted-reads asymmetry is closed
+    assert len(srcs) == WIKI_RESERVED_SLOTS
+
+
+# ── CO-3b item 3: capability-absent is not source-failed ─────────────────────
+def _capability_unavailable_adapter(capability="web_search"):
+    async def _a(term):
+        raise BrokerCapabilityUnavailable(capability, "no provider configured")
+
+    return _a
+
+
+def test_web_extract_unconfigured_envelope_raises_capability_unavailable():
+    async def extract_fn(urls, **kwargs):
+        return json.dumps({"success": False, "error": "web_crawl requires Firecrawl."})
+
+    with pytest.raises(BrokerCapabilityUnavailable) as ei:
+        _run(_adapter_web_extract("https://x/1", extract_fn=extract_fn))
+    assert ei.value.capability == "web_extract"
+
+
+# ── CO-3b item 1 (folded): content is required — drop loudly, never fabricate ─
+# The two branches log at DIFFERENT levels so a reader can tell adapter drift
+# from a page reality.
+def test_web_extract_missing_content_key_drops_as_shape_drift_error(caplog):
+    async def extract_fn(urls, **kwargs):
+        # No error, but the "content" KEY is absent — would hold for every
+        # result → an adapter/response-shape problem, logged at ERROR.
+        return json.dumps({"results": [{"url": urls[0], "title": "T"}]})
+
+    with caplog.at_level(logging.WARNING, logger="grove.fleet.retrieval_broker"):
+        srcs = _run(_adapter_web_extract("https://x/1", extract_fn=extract_fn))
+
+    assert srcs == []  # dropped — no empty material fabricated
+    recs = [r for r in caplog.records if "content' key" in r.getMessage()]
+    assert recs and recs[0].levelno == logging.ERROR  # adapter problem, loud
+
+
+def test_web_extract_empty_content_drops_as_page_reality_warning(caplog):
+    async def extract_fn(urls, **kwargs):
+        # Key present but empty/whitespace — a page reality (paywall, JS-only),
+        # logged at WARNING.
+        return json.dumps({"results": [{"url": urls[0], "title": "T", "content": "   "}]})
+
+    with caplog.at_level(logging.WARNING, logger="grove.fleet.retrieval_broker"):
+        srcs = _run(_adapter_web_extract("https://x/1", extract_fn=extract_fn))
+
+    assert srcs == []  # dropped — no empty material fabricated
+    recs = [r for r in caplog.records if "no extractable content" in r.getMessage()]
+    assert recs and recs[0].levelno == logging.WARNING  # page problem, not our bug
+
+
+def test_web_extract_present_content_still_flows():
+    # Guard the happy path: real content is unaffected by the drop branches.
+    async def extract_fn(urls, **kwargs):
+        return json.dumps({"results": [{"url": urls[0], "title": "T", "content": "real article text"}]})
+
+    srcs = _run(_adapter_web_extract("https://x/1", extract_fn=extract_fn))
+    assert len(srcs) == 1 and srcs[0].raw_content == "real article text"
+
+
+def test_guarded_fetch_records_capability_unavailable_into_set():
+    seen = set()
+
+    async def unavailable(term):
+        raise BrokerCapabilityUnavailable("web_search", "no provider")
+
+    out = _run(_guarded_fetch(unavailable, "t", 1.0, unavailable=seen))
+    assert out == []  # contributes no sources
+    assert seen == {"web_search"}  # but the fact is recorded
+
+
+def test_capability_unavailable_declared_in_result_not_halted():
+    # A wiki-only brief is legitimate — but it must KNOW it is wiki-only.
+    out = _run(
+        run_broker(
+            {"topic": "a subject"},
+            web_search_adapter=_capability_unavailable_adapter("web_search"),
+            web_extract_adapter=_raising_adapter("no extract when search yields nothing"),
+            wiki_adapter=_wiki_returning("cellar body"),
+            call_model=_model_returning(["q1"]),
+            url_is_safe=lambda u: True,
+        )
+    )
+    assert out["capabilities_unavailable"] == ["web_search"]  # partial evidence, declared
+    assert [m["capability"] for m in out["materials"]] == ["wiki"]  # not halted
+
+
+def test_provider_error_drops_source_not_capability_unavailable():
+    # A provider EXCEPTION (transient) is a per-source drop, NOT capability-absent.
+    async def exploding_search(term):
+        raise RuntimeError("provider 500")
+
+    out = _run(
+        run_broker(
+            {"topic": "a subject"},
+            web_search_adapter=exploding_search,
+            web_extract_adapter=_raising_adapter("no candidates"),
+            wiki_adapter=_wiki_returning("cellar body"),
+            call_model=_model_returning(["q1"]),
+            url_is_safe=lambda u: True,
+        )
+    )
+    assert out["capabilities_unavailable"] == []  # dropped, not declared unavailable
+    assert [m["capability"] for m in out["materials"]] == ["wiki"]
 
 
 # ── C2: subject-with-colon is not a URL; url-shape requires scheme + netloc ───
@@ -923,11 +1061,17 @@ def test_web_search_adapter_normalizes():
     assert srcs[0].capability == "web_search" and srcs[0].url == "u1"
 
 
-def test_web_search_adapter_unconfigured_provider_yields_nothing():
+def test_web_search_adapter_unconfigured_provider_raises_not_silent():
+    # REWRITTEN (CO-3b). The prior version asserted the unconfigured provider
+    # "yields nothing" ([]) — the exact silence that let a wiki-only brief not
+    # know it was wiki-only. The adapter now RAISES BrokerCapabilityUnavailable
+    # so run_broker declares a partial evidence base.
     def fake_search(query, limit):
         return json.dumps({"success": False, "error": "No web search provider configured."})
 
-    assert _run(_adapter_web_search("q", search_fn=fake_search)) == []
+    with pytest.raises(BrokerCapabilityUnavailable) as ei:
+        _run(_adapter_web_search("q", search_fn=fake_search))
+    assert ei.value.capability == "web_search"
 
 
 def test_wiki_adapter_normalizes(tmp_path):
