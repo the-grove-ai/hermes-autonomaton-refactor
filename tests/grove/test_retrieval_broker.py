@@ -628,45 +628,39 @@ def test_budget_exceeded_after_fetch_raises_no_partial():
     assert extract.calls == ["https://a"]  # fetch ran; the halt still returned nothing
 
 
-# ── P3a: formulation executor containment ────────────────────────────────────
-def test_formulation_saturation_fails_loud_and_spares_default_pool():
-    # N hung formulations occupy the DEDICATED pool; the (N+1)th must FAIL LOUD
-    # (saturated), never queue and never consume a default-pool slot.
-    seen_threads = []
-    release = threading.Event()
+# ── P3a: formulation executor containment (deterministic, xdist-safe) ────────
+def test_formulation_runs_on_dedicated_pool_not_default():
+    # Formulation executes on the DEDICATED pool (broker-formulation*), never the
+    # loop's default pool that the search/wiki adapters share.
+    seen = []
 
-    def hung_model(**kwargs):
-        seen_threads.append(threading.current_thread().name)
-        release.wait(timeout=5)  # "hung" until released (5s safety net)
+    def model(**kwargs):
+        seen.append(threading.current_thread().name)
         return {"queries": ["q"]}
 
-    async def _body():
-        hung = [
-            asyncio.create_task(
-                _formulate_queries("t", None, call_model=hung_model, tier="T1", max_queries=3)
-            )
-            for _ in range(_FORMULATION_MAX_WORKERS)
-        ]
-        # wait until all N have acquired a slot AND started on the executor
-        for _ in range(200):
-            await asyncio.sleep(0.01)
-            if len(seen_threads) >= _FORMULATION_MAX_WORKERS:
-                break
-        assert len(seen_threads) == _FORMULATION_MAX_WORKERS
+    asyncio.run(_formulate_queries("t", None, call_model=model, tier="T1", max_queries=3))
+    assert seen and all(n.startswith("broker-formulation") for n in seen)
 
-        # (N+1)th: pool saturated → fail loud, no queue.
+
+def test_formulation_saturation_fails_loud_no_default_slot():
+    # Occupy every dedicated slot directly — equivalent to N formulations
+    # in-flight (hung), but deterministic: no threads, no timing. The (N+1)th
+    # fails LOUD at the non-blocking admission gate, BEFORE any executor
+    # submission — so it consumes no slot in ANY pool (default or dedicated).
+    from grove.fleet.retrieval_broker import _formulation_slots
+
+    held = sum(1 for _ in range(_FORMULATION_MAX_WORKERS) if _formulation_slots.acquire(blocking=False))
+    try:
+        assert held == _FORMULATION_MAX_WORKERS
         with pytest.raises(BrokerQueryFormulationError):
-            await _formulate_queries("t", None, call_model=hung_model, tier="T1", max_queries=3)
-
-        # containment: every started formulation ran on the DEDICATED pool...
-        assert all(n.startswith("broker-formulation") for n in seen_threads)
-        # ...and the (N+1)th never started a thread at all (no default-pool slot).
-        assert len(seen_threads) == _FORMULATION_MAX_WORKERS
-
-        release.set()
-        await asyncio.gather(*hung)
-
-    asyncio.run(_body())
+            asyncio.run(
+                _formulate_queries(
+                    "t", None, call_model=lambda **k: {"queries": ["q"]}, tier="T1", max_queries=3
+                )
+            )
+    finally:
+        for _ in range(held):
+            _formulation_slots.release()
 
 
 # ── request validation ────────────────────────────────────────────────────────

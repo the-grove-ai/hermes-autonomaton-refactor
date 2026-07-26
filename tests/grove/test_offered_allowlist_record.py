@@ -72,6 +72,21 @@ def test_empty_declaration_passes_empty_through_not_default():
     assert _resolve_offered_allowlist(cap, "tool") == []
 
 
+# ── P3c ADDENDUM: the researcher's RESOLVED surface is exactly ["skill_view"] ──
+def test_researcher_resolved_offered_surface_is_exactly_skill_view():
+    # The RESOLVED value the resolver returns for the REAL researcher record —
+    # NOT that the YAML contains the key, NOT that the record parses. A misspelled
+    # key (offered_allowlst) is simply absent → silent fallback to the default
+    # WITH read_file, and every other test stays green. This asserts the actual
+    # surface and names read_file so it fails LOUD on a fallback rather than
+    # passing on a subset check.
+    cap = load_capabilities()["skill.fleet.researcher"]
+    transport = (_emit_declaration(cap) or {}).get("transport", "sentinel")
+    resolved = _resolve_offered_allowlist(cap, transport)
+    assert resolved == ["skill_view"]
+    assert "read_file" not in resolved
+
+
 # ── malformed declaration → loud Andon ───────────────────────────────────────
 def test_malformed_declaration_andons():
     cap = SimpleNamespace(id="x", governance={"offered_allowlist": "skill_view"})

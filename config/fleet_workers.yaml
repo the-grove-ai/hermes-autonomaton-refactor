@@ -119,7 +119,11 @@ workers:
     enabled: false
     cadence: "*/30 * * * *"               # request-driven; work-gated by the request dir
     input_state:
-      type: file_source
+      # researcher-retrieval-broker-v1 P3c — retarget to the host-side retrieval
+      # broker resolver (identify → broker → claim-on-success). read_file is
+      # removed from the offered surface in the same commit; the broker inlines
+      # request_content + materials, so the worker needs no read tool.
+      type: researcher_broker
       source_dir: research-requests       # ~/.grove/research-requests/ — request files
       pattern: "*.json"
       slug_regex: '^(.+)\.json$'          # unit_id = request filename stem
