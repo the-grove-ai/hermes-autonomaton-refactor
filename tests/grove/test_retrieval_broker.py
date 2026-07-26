@@ -30,6 +30,7 @@ from grove.fleet.retrieval_broker import (
     MAX_TOTAL_MATERIALS_BYTES,
     WIKI_RESERVED_SLOTS,
     BrokerBudgetExceeded,
+    BrokerCellarJailError,
     BrokerMaterialsCeilingExceeded,
     BrokerQueryFormulationError,
     BrokerRequestError,
@@ -38,6 +39,7 @@ from grove.fleet.retrieval_broker import (
     _adapter_web_extract,
     _adapter_web_search,
     _adapter_wiki,
+    _guarded_fetch,
     run_broker,
 )
 
@@ -321,6 +323,142 @@ def test_wiki_one_hit_reserves_only_one():
     assert len(extract.calls) == MAX_SOURCES - 1  # 4 web slots + 1 wiki
     caps = [m["capability"] for m in out["materials"]]
     assert caps.count("web_extract") == 4 and caps.count("wiki") == 1
+
+
+# ── CO-3a: wiki adapter reads the PAGE, not a missing `body` attribute ────────
+# These call _adapter_wiki DIRECTLY against the REAL WikiResult shape — the gap
+# that let getattr(w, "body", "") ship empty wiki content since P1: every other
+# wiki test injects a pre-baked RawSource via _wiki_returning and never exercises
+# the adapter's attribute mapping at all.
+def _real_wiki_result(source_path, *, title="Cellar Title", snippet="fts snippet"):
+    from grove.wiki.index import WikiResult
+
+    return WikiResult(
+        source_path=source_path,
+        source_type="reference",
+        title=title,
+        snippet=snippet,
+        relevance_score=1.0,
+        confidence=None,
+        dock_goal_refs=[],
+        topics=[],
+    )
+
+
+def _query_fn_returning(*rows):
+    def _qf(text, k, **kwargs):
+        return list(rows)
+
+    return _qf
+
+
+def test_wiki_result_shape_is_pinned():
+    # Pin the ACTUAL attribute set. A field rename/removal fails HERE, loudly,
+    # instead of silently yielding empty content downstream. If this breaks,
+    # _adapter_wiki's direct attribute access must be reconciled to match.
+    from dataclasses import fields
+    from grove.wiki.index import WikiResult
+
+    assert {f.name for f in fields(WikiResult)} == {
+        "source_path",
+        "source_type",
+        "title",
+        "snippet",
+        "relevance_score",
+        "confidence",
+        "dock_goal_refs",
+        "topics",
+    }
+    # The exact bug: there is NO `body`. The adapter must never read one.
+    assert "body" not in {f.name for f in fields(WikiResult)}
+
+
+def test_wiki_adapter_reads_full_page_not_missing_body(tmp_path):
+    pages = tmp_path / "pages"
+    (pages / "reference").mkdir(parents=True)
+    body = "FULL CELLAR PAGE TEXT\nwith counter-arguments and an evidence gap."
+    (pages / "reference" / "z.md").write_text(body, encoding="utf-8")
+    w = _real_wiki_result("reference/z.md", snippet="short fts snippet")
+
+    srcs = _run(
+        _adapter_wiki("q", query_fn=_query_fn_returning(w), pages_root=pages.resolve())
+    )
+
+    assert len(srcs) == 1
+    s = srcs[0]
+    assert s.raw_content == body  # FULL page — NOT empty (the old bug), NOT the snippet
+    assert s.snippet == "short fts snippet"  # snippet retained as relevance context
+    assert s.url == "cellar://reference/z.md"
+    assert s.capability == "wiki" and s.discovery == "wiki"
+    assert s.title == "Cellar Title"
+
+
+def test_wiki_adapter_bounds_apply_to_full_page(tmp_path):
+    # The full page flows through run_broker's existing truncation bounds.
+    pages = tmp_path / "pages"
+    (pages / "reference").mkdir(parents=True)
+    (pages / "reference" / "big.md").write_text("x" * (MAX_CONTENT_BYTES + 500), encoding="utf-8")
+    w = _real_wiki_result("reference/big.md")
+    out = _run(
+        run_broker(
+            {"topic": "a subject"},
+            web_search_adapter=_search_returning([]),
+            web_extract_adapter=_raising_adapter("no web candidates here"),
+            wiki_adapter=lambda q: _adapter_wiki(
+                q, query_fn=_query_fn_returning(w), pages_root=pages.resolve()
+            ),
+            call_model=_model_returning(["q1"]),
+            url_is_safe=lambda u: True,
+        )
+    )
+    m = out["materials"][0]
+    assert m["capability"] == "wiki"
+    assert m["truncated"] is True
+    assert m["bytes_original"] == MAX_CONTENT_BYTES + 500
+    assert len(m["content"].encode("utf-8")) == MAX_CONTENT_BYTES
+
+
+def test_wiki_adapter_jail_breach_hard_halts(tmp_path):
+    # source_path escaping the cellar root is an invariant breach → hard halt,
+    # NOT a silent skip and NOT a per-source drop.
+    pages = tmp_path / "pages"
+    pages.mkdir(parents=True)
+    (tmp_path / "secret.md").write_text("SECRET OUTSIDE THE CELLAR", encoding="utf-8")
+    w = _real_wiki_result("../secret.md")
+
+    with pytest.raises(BrokerCellarJailError):
+        _run(
+            _adapter_wiki("q", query_fn=_query_fn_returning(w), pages_root=pages.resolve())
+        )
+
+
+def test_wiki_adapter_unreadable_page_drops_source_no_empty_material(tmp_path):
+    # A page that cannot be read drops that source (loud) — it does NOT fabricate
+    # an empty material the way getattr(..., "") did.
+    pages = tmp_path / "pages"
+    (pages / "reference").mkdir(parents=True)
+    w = _real_wiki_result("reference/does-not-exist.md")
+
+    srcs = _run(
+        _adapter_wiki("q", query_fn=_query_fn_returning(w), pages_root=pages.resolve())
+    )
+
+    assert srcs == []  # dropped, not an empty-content material
+
+
+def test_guarded_fetch_reraises_broker_error_but_drops_provider_error():
+    # _guarded_fetch swallows provider/timeout failures (per-source drop) but
+    # RE-RAISES the broker's own hard-halt signals (the cellar jail breach).
+    async def jail_breach(term):
+        raise BrokerCellarJailError("breach")
+
+    async def provider_error(term):
+        raise RuntimeError("provider exploded")
+
+    with pytest.raises(BrokerCellarJailError):
+        _run(_guarded_fetch(jail_breach, "t", 1.0))
+
+    assert _run(_guarded_fetch(provider_error, "t", 1.0)) == []  # dropped, not raised
 
 
 # ── C2: subject-with-colon is not a URL; url-shape requires scheme + netloc ───
@@ -792,16 +930,19 @@ def test_web_search_adapter_unconfigured_provider_yields_nothing():
     assert _run(_adapter_web_search("q", search_fn=fake_search)) == []
 
 
-def test_wiki_adapter_normalizes():
-    class _FakeWikiResult:
-        source_path = "notes/x.md"
-        title = "Title"
-        body = "the page body"
+def test_wiki_adapter_normalizes(tmp_path):
+    # REWRITTEN (CO-3a). The prior version faked a WikiResult carrying a `body`
+    # attribute that WikiResult NEVER had, so getattr(w, "body", "") "passed"
+    # here while shipping EMPTY content in production. Now: the real shape and a
+    # real page on disk, so normalization is asserted against reality.
+    pages = tmp_path / "pages"
+    (pages / "notes").mkdir(parents=True)
+    (pages / "notes" / "x.md").write_text("the page body", encoding="utf-8")
+    w = _real_wiki_result("notes/x.md", title="Title")
 
-    def fake_query(text, k):
-        return [_FakeWikiResult()]
-
-    srcs = _run(_adapter_wiki("q", query_fn=fake_query))
+    srcs = _run(
+        _adapter_wiki("q", query_fn=_query_fn_returning(w), pages_root=pages.resolve())
+    )
     assert len(srcs) == 1
     assert srcs[0].capability == "wiki" and srcs[0].discovery == "wiki"
     assert srcs[0].raw_content == "the page body"

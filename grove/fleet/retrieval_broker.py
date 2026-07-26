@@ -62,6 +62,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -76,6 +77,7 @@ __all__ = [
     "BrokerQueryFormulationError",
     "BrokerBudgetExceeded",
     "BrokerMaterialsCeilingExceeded",
+    "BrokerCellarJailError",
     # bounds (named constants — the sprint's WHERE/HOW-MUCH governance)
     "MAX_QUERIES",
     "MAX_SOURCES",
@@ -186,6 +188,15 @@ class BrokerMaterialsCeilingExceeded(BrokerError):
     """Aggregate raw materials exceeded the hard ceiling (attack shape)."""
 
 
+class BrokerCellarJailError(BrokerError):
+    """A wiki row's ``source_path`` resolved OUTSIDE the cellar pages root. The
+    path is host-index-originated, so an escape is an invariant breach, not a
+    routine per-source failure — it HARD-HALTS the phase (a poisoned index is a
+    fact the operator must see) rather than being dropped like an unreadable
+    page. ``_guarded_fetch`` re-raises this (and every ``BrokerError``) instead
+    of swallowing it into a per-source drop."""
+
+
 # ── the adapter contract ──────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class RawSource:
@@ -205,6 +216,12 @@ class RawSource:
     capability: str
     query: str
     discovery: str = ""
+    # FTS relevance snippet — wiki capability only. Kept as relevance context
+    # ALONGSIDE the full page text in ``raw_content`` (a snippet cannot support
+    # counter-arguments or an evidence gap). Empty for web sources. Not emitted
+    # into the material dict — the output schema is pinned by
+    # test_subject_shape_includes_discovery_field.
+    snippet: str = ""
 
 
 # A capability adapter: ``async (term) -> List[RawSource]``. ``term`` is a query
@@ -287,27 +304,86 @@ async def _adapter_web_extract(url: str, *, extract_fn: Callable[..., Awaitable[
     return sources
 
 
-async def _adapter_wiki(query: str, *, query_fn: Optional[Callable[..., Any]] = None) -> List[RawSource]:
+def _cellar_pages_root() -> Path:
+    """Resolved cellar pages root — the jail for every wiki page read."""
+    from hermes_constants import get_wiki_path
+
+    return (get_wiki_path() / "pages").resolve()
+
+
+def _read_cellar_page(source_path: str, pages_root: Path) -> str:
+    """Full UTF-8 text of a cellar page, JAILED to ``pages_root``.
+
+    ``source_path`` is ``WikiResult.source_path`` — host-index-originated and
+    relative to the pages root. An escape (``..`` traversal, absolute path, a
+    symlink pointing out) is an INVARIANT breach: it raises
+    :class:`BrokerCellarJailError` (a hard halt), never a silent skip. An
+    unreadable IN-jail page raises ``OSError`` to the caller, which drops that
+    one source."""
+    resolved = (pages_root / source_path).resolve()
+    if resolved != pages_root and pages_root not in resolved.parents:
+        raise BrokerCellarJailError(
+            f"cellar page source_path {source_path!r} resolved to {resolved} — "
+            f"outside the cellar root {pages_root}"
+        )
+    return resolved.read_text(encoding="utf-8")
+
+
+async def _adapter_wiki(
+    query: str,
+    *,
+    query_fn: Optional[Callable[..., Any]] = None,
+    pages_root: Optional[Path] = None,
+    read_page: Callable[[str, Path], str] = _read_cellar_page,
+) -> List[RawSource]:
     if query_fn is None:
         from grove.wiki.index import WikiIndex
 
         query_fn = WikiIndex().query
+    if pages_root is None:
+        pages_root = _cellar_pages_root()
     rows = await asyncio.to_thread(query_fn, query, MAX_SOURCES)
-    sources: List[RawSource] = []
-    for w in rows or []:
-        sources.append(
-            RawSource(
-                url=f"cellar://{getattr(w, 'source_path', '')}",
-                title=getattr(w, "title", "") or "",
-                raw_content=getattr(w, "body", "") or "",
-                http_status=200,
-                content_type="text/plain",
-                capability="wiki",
-                query=query,
-                discovery="wiki",
+
+    def _build() -> List[RawSource]:
+        # DIRECT attribute access (w.source_path / w.title / w.snippet), NOT
+        # getattr(..., default): a WikiResult field rename now fails LOUD rather
+        # than the getattr(w, "body", "") default that silently shipped EMPTY
+        # wiki content since P1 (WikiResult has snippet + source_path, never a
+        # `body`). ``content`` is the FULL page read from source_path — a
+        # snippet cannot support counter-arguments or an evidence gap. Real
+        # shape pinned by test_wiki_result_shape_is_pinned; read path by
+        # test_wiki_adapter_reads_full_page_not_missing_body.
+        out: List[RawSource] = []
+        for w in rows or []:
+            source_path = w.source_path
+            try:
+                content = read_page(source_path, pages_root)
+            except OSError as e:
+                # Unreadable in-jail page → drop THIS source, loud, no fabricated
+                # empty material. A jail breach is BrokerCellarJailError, NOT an
+                # OSError — it is not caught here and hard-halts the phase.
+                logger.warning(
+                    "[fleet.retrieval_broker] cellar page unreadable, dropping %r: %s",
+                    source_path,
+                    e,
+                )
+                continue
+            out.append(
+                RawSource(
+                    url=f"cellar://{source_path}",
+                    title=w.title or "",
+                    raw_content=content,  # FULL page text; bounds applied by run_broker
+                    http_status=200,
+                    content_type="text/plain",
+                    capability="wiki",
+                    query=query,
+                    discovery="wiki",
+                    snippet=w.snippet or "",
+                )
             )
-        )
-    return sources
+        return out
+
+    return await asyncio.to_thread(_build)
 
 
 async def _default_web_search_adapter(query: str) -> List[RawSource]:
@@ -503,6 +579,11 @@ async def _guarded_fetch(adapter: Adapter, term: str, timeout: float) -> List[Ra
             timeout,
         )
         return []
+    except BrokerError:
+        # The broker's OWN hard-halt signals (e.g. a cellar jail breach) are
+        # invariant failures, not provider/timeout errors — they propagate and
+        # halt the phase rather than being swallowed as a per-source drop.
+        raise
     except Exception as e:  # noqa: BLE001 — one source's failure must not kill the phase
         logger.warning(
             "[fleet.retrieval_broker] source dropped: fetch for %r failed: %r",
