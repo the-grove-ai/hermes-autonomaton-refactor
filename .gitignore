@@ -84,3 +84,14 @@ docs/superpowers/*
 # Phase 6 /context measurement substrate and binding-sprint reference.)
 scripts/com.grove.llama-server.plist
 docs/sprints/
+
+# repo-write-containment-v1 P3 — untracked runtime/build litter kept out of
+# commits and off the (now read-only) repo tree. *.egg-info generalizes the
+# existing hermes_agent.egg-info rule to cover hermes_autonomaton.egg-info too;
+# graphify-out/ is graphify build cache; raw/ and research/ are transient
+# agent/standards staging (the GRV standards live canonically in
+# docs/standards/grv/ and the cellar).
+graphify-out/
+*.egg-info/
+raw/
+research/

@@ -689,6 +689,7 @@ async def handle_red_proposal_confirm(request: web.Request) -> web.Response:
         _artifact_links_html = ""
         try:
             from grove.artifact_identity import emit_approved_artifact_written
+            from grove.api.artifacts import render_artifact_ref
 
             _events = emit_approved_artifact_written(
                 result.get("tool_name"),
@@ -697,11 +698,12 @@ async def handle_red_proposal_confirm(request: web.Request) -> web.Response:
             )
             # Ruling 5 — the approving operator sees where it landed:
             # template-locked line per artifact, hash-route form, values
-            # system-derived only.
+            # system-derived only. repo-write-containment-v1 P1 — the one
+            # presenter: an uncontained id renders inert (id + path + note),
+            # never a dead link.
             _artifact_links_html = "".join(
                 f'<p class="meta">Artifact: '
-                f'<a href="/portal#fragments/artifact/{_e["artifact_id"]}">'
-                f'{_e["artifact_id"]}</a></p>'
+                f'{render_artifact_ref(request.app, _e["artifact_id"])}</p>'
                 for _e in _events
                 if _e.get("artifact_id")
             )
@@ -1070,7 +1072,7 @@ async def handle_attachment_detach(request: web.Request) -> web.Response:
             '<div id="goal-detail"><p class="placeholder">Detached. The '
             "goal is no longer in the Dock.</p></div>"
         )
-    return _html_fragment(render_goal_detail(goal))
+    return _html_fragment(render_goal_detail(request.app, goal))
 
 
 # ---------------------------------------------------------------------------

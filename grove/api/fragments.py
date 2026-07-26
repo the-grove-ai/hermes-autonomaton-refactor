@@ -272,7 +272,7 @@ async def handle_cellar_listing(request: web.Request) -> web.Response:
     return _html_fragment("".join(parts))
 
 
-def _source_artifact_html(meta: dict) -> str:
+def _source_artifact_html(app, meta: dict) -> str:
     """artifact-identity-v1 C2 cross-ref: the page's frontmatter ``source:``
     path rendered as an ``/artifact/<id>`` link. The id derives via the Phase 1
     helper on the source path AS RECORDED (the unresolved-abspath identity
@@ -283,6 +283,7 @@ def _source_artifact_html(meta: dict) -> str:
 
     from grove.artifact_identity import artifact_id as _artifact_id
     from grove.artifact_identity import canonical_artifact_path as _canon
+    from grove.api.artifacts import render_artifact_ref
 
     src = meta.get("source")
     if not isinstance(src, str) or not src:
@@ -293,15 +294,17 @@ def _source_artifact_html(meta: dict) -> str:
     # this matches the ledger's stamped id byte-for-byte (never realpath).
     # artifact-continuation-v1 C1 — hash-form: the link stays in-shell (the
     # generic hash router loads the artifact fragment into #center-panel).
+    # repo-write-containment-v1 P1 — the one presenter, label=src so the link
+    # text stays the source PATH (an uncontained source renders inert).
     aid = _artifact_id(_canon(src))
-    return f'<a href="/portal#fragments/artifact/{_esc(aid)}">{_esc(src)}</a>'
+    return render_artifact_ref(app, aid, label=src)
 
 
-def _frontmatter_dl(meta: dict) -> str:
+def _frontmatter_dl(app, meta: dict) -> str:
     """Render selected frontmatter fields as a <dl> metadata header."""
     rows = [
         ("source_type", _esc(meta.get("source_type"))),
-        ("source", _source_artifact_html(meta)),
+        ("source", _source_artifact_html(app, meta)),
         ("topics", _tags_html(_as_str_list(meta.get("topics")))),
         ("entities", _tags_html(_as_str_list(meta.get("key_entities")))),
         ("confidence", _esc(meta.get("confidence"))),
@@ -372,7 +375,7 @@ async def handle_cellar_detail(request: web.Request) -> web.Response:
     markup = (
         f'<article id="page-detail">'
         f'<h2>{_esc(title)}</h2>'
-        f'{_frontmatter_dl(meta)}'
+        f'{_frontmatter_dl(request.app, meta)}'
         f'<div class="page-body">{rendered}</div>'
         f'</article>'
         f'{oob}'
@@ -565,14 +568,17 @@ async def handle_dock_goals(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
-def _attachment_entry_html(goal_id: str, event: dict) -> str:
+def _attachment_entry_html(app, goal_id: str, event: dict) -> str:
     """One attached artifact on the goal detail: hash-route link into the
     artifact fragment, the adjudication excerpt + rationale (the approval's
     provenance surface), attached-at, and the Detach control — the
     suggest-revision feedback-block idiom (toggled textarea, ``hx-include``
     by id, POST per K1). Read-side tolerant: missing fields render empty,
     never raise."""
-    aid = _esc(str(event.get("artifact_id") or ""))
+    from grove.api.artifacts import render_artifact_ref
+
+    raw_aid = str(event.get("artifact_id") or "")
+    aid = _esc(raw_aid)  # escaped form for element ids (att-/detach- anchors)
     gid = _esc(str(goal_id))
     reason_id = f"detach-reason-{gid}-{aid}"
     excerpt = _esc(str(event.get("excerpt") or ""))
@@ -585,7 +591,7 @@ def _attachment_entry_html(goal_id: str, event: dict) -> str:
     )
     return (
         f'<div class="card attachment-entry" id="att-{gid}-{aid}">'
-        f'<h4><a href="/portal#fragments/artifact/{aid}">artifact {aid}</a> '
+        f'<h4>{render_artifact_ref(app, raw_aid, label=f"artifact {raw_aid}")} '
         f'<span class="meta">attached {_esc(attached_at)}</span></h4>'
         f'<blockquote class="model-content">{excerpt}{truncated}</blockquote>'
         f'<div class="meta">{rationale}</div>'
@@ -611,10 +617,11 @@ def _attachment_entry_html(goal_id: str, event: dict) -> str:
     )
 
 
-def render_goal_detail(goal) -> str:
+def render_goal_detail(app, goal) -> str:
     """The goal detail fragment body. Shared by the GET handler and the
     detach POST's success re-render (the render_goal_card dual-consumer
-    precedent) so the swapped-in fragment is byte-identical."""
+    precedent) so the swapped-in fragment is byte-identical. ``app`` threads
+    through to the artifact-ref presenter (repo-write-containment-v1 P1)."""
     from grove.dock.attachment_store import attachments_for_goal
 
     keywords = "".join(
@@ -640,7 +647,7 @@ def render_goal_detail(goal) -> str:
             "goal-attachment proposals will land here.</p>"
         )
     for event in events:
-        parts.append(_attachment_entry_html(goal.id, event))
+        parts.append(_attachment_entry_html(app, goal.id, event))
     parts.append("</div>")
     return "".join(parts)
 
@@ -673,7 +680,7 @@ async def handle_goal_detail(request: web.Request) -> web.Response:
             "<h3>Not found</h3><p>No such goal.</p></div></div>",
             status=404,
         )
-    return _html_fragment(render_goal_detail(goal))
+    return _html_fragment(render_goal_detail(request.app, goal))
 
 
 def _short_id(proposal_id: str) -> str:

@@ -353,6 +353,44 @@ def _resolve_contained(app: web.Application, artifact_id: str) -> Optional[Path]
     return resolve_recorded_path(recorded, app["artifact_roots"])
 
 
+def render_artifact_ref(
+    app: web.Application, artifact_id: str, *, label: Optional[str] = None
+) -> str:
+    """repo-write-containment-v1 P1 — THE one presenter for an artifact deep
+    link. Collapses the five duplicate ``/portal#fragments/artifact/`` emitters
+    into a single containment-checked renderer, so the hash-route literal lives
+    in exactly one place (enforced by the AST conformance test).
+
+      * contained (``_resolve_contained`` returns a Path) → a clickable anchor,
+        text = *label* if given else the id.
+      * NOT contained (returns ``None`` — escape or vanished) → the id + the
+        recorded path as PLAIN TEXT with the "outside portal-servable roots —
+        not viewable" note. NO anchor, no href, nothing clickable.
+
+    The id is escaped UNCONDITIONALLY (the pre-refactor split — sites 1/5 raw,
+    2-4 escaped — is ended here). The resolve call is NOT wrapped in try/except:
+    ``resolve_recorded_path`` is total (artifacts.py:297-320), so a
+    ``recorded is None`` TypeError is a programming error that must surface
+    loudly, never a swallowed dead link.
+    """
+    esc_id = _html_mod.escape(artifact_id)
+    resolved = _resolve_contained(app, artifact_id)
+    if resolved is not None:
+        text = _html_mod.escape(label) if label is not None else esc_id
+        return f'<a href="/portal#fragments/artifact/{esc_id}">{text}</a>'
+    # Not servable: the exact dead-link case the guard exists for. Show the id
+    # and the recorded path as inert text so the operator can still locate it.
+    recorded = _lookup_artifact_path(app, artifact_id)
+    esc_recorded = _html_mod.escape(recorded) if recorded else "(unrecorded)"
+    note = (
+        f'<span class="meta">artifact {esc_id} &middot; {esc_recorded} '
+        f'&middot; outside portal-servable roots — not viewable</span>'
+    )
+    if label is not None:
+        return f'{_html_mod.escape(label)} {note}'
+    return note
+
+
 async def handle_artifact(request: web.Request) -> web.Response:
     artifact_id = request.match_info["artifact_id"]
     resolved = _resolve_contained(request.app, artifact_id)
@@ -502,14 +540,14 @@ async def handle_artifact_fragment(request: web.Request) -> web.Response:
         # P3 — lineage + verb panel mount OUTSIDE the model-content
         # demarcation: these are SHELL controls and ledger-derived facts,
         # never adjacent to model-prose ambiguity.
-        f'{_lineage_html(artifact_id)}'
+        f'{_lineage_html(request.app, artifact_id)}'
         f'{_verb_panel_html(artifact_id)}'
         f'</article>'
     )
     return _html_fragment(markup)
 
 
-def _lineage_html(artifact_id: str) -> str:
+def _lineage_html(app: web.Application, artifact_id: str) -> str:
     """Ledger-derived lineage section (arc acceptance: visible lineage).
     Read-resilient: no lineage → empty string, never an error."""
     try:
@@ -521,10 +559,11 @@ def _lineage_html(artifact_id: str) -> str:
         return ""
 
     def _links(pairs):
+        # repo-write-containment-v1 P1 — one presenter; lineage links now
+        # containment-check like every other artifact ref (an uncontained
+        # parent/child renders as inert text, not a dead link).
         return ", ".join(
-            f'<a href="/portal#fragments/artifact/{_html_mod.escape(aid)}">'
-            f'{_html_mod.escape(name)}</a>'
-            for aid, name in pairs
+            render_artifact_ref(app, aid, label=name) for aid, name in pairs
         )
 
     rows = ""
@@ -660,9 +699,7 @@ async def _handle_continuation_verb(
     # pending fragment. Values system-derived only.
     text = _html_mod.escape(result.get("response_text") or "(no response)")
     links = "".join(
-        f'<p class="meta">Artifact: '
-        f'<a href="/portal#fragments/artifact/{_html_mod.escape(aid)}">'
-        f'{_html_mod.escape(aid)}</a></p>'
+        f'<p class="meta">Artifact: {render_artifact_ref(request.app, aid)}</p>'
         for aid in result.get("artifact_ids_written") or []
     )
     pending = ""

@@ -17,6 +17,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from grove.api.actions import handle_attachment_detach
+from grove.api.artifacts import register_artifact_routes
 from grove.api.fragments import handle_goal_detail, render_goal_card
 from grove.api.portal import portal_auth_middleware
 from grove.dock.attachment_store import (
@@ -49,10 +50,19 @@ def _dock(*goals):
 
 
 def _seed_artifact_written(*artifact_ids) -> None:
+    # repo-write-containment-v1 P1 — the artifact-ref presenter now
+    # containment-checks the recorded path, so a seeded artifact must land a
+    # REAL file under an artifact root (GROVE_HOME) to render as a live link.
+    from hermes_constants import get_hermes_home
+
+    home = Path(get_hermes_home())
+    home.mkdir(parents=True, exist_ok=True)
     ledger_dir = default_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
     with (ledger_dir / "seed.jsonl").open("a", encoding="utf-8") as fh:
         for aid in artifact_ids:
+            served = home / f"{aid}.md"
+            served.write_text(f"# {aid}\n", encoding="utf-8")
             fh.write(
                 json.dumps(
                     {
@@ -60,7 +70,7 @@ def _seed_artifact_written(*artifact_ids) -> None:
                         "session_id": "seed",
                         "timestamp": "2026-07-18T00:00:00+00:00",
                         "artifact_id": aid,
-                        "path": f"/tmp/{aid}.md",
+                        "path": str(served),
                         "turn_id": "s#1",
                     },
                     sort_keys=True,
@@ -102,6 +112,9 @@ def dock(monkeypatch):
 @pytest.fixture
 async def client(grove_home, dock):
     app = web.Application(middlewares=[portal_auth_middleware])
+    # Mirror the gateway: artifact routes seed app["artifact_roots"] +
+    # app["_artifact_index"], which the artifact-ref presenter now needs.
+    register_artifact_routes(app)
     app.router.add_get(_FRAGMENT_PATH, handle_goal_detail)
     app.router.add_post(_DETACH_PATH, handle_attachment_detach)
     async with TestClient(TestServer(app)) as c:

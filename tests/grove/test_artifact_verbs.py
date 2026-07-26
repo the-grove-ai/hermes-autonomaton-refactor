@@ -132,6 +132,10 @@ async def test_cap_429(client, grove_home, monkeypatch):
 
 async def test_dispatch_wiring_and_result_fragment(client, grove_home, monkeypatch):
     parent = _write_md(grove_home, "parent.md")
+    # repo-write-containment-v1 P1 — the result fragment's artifact link now
+    # containment-checks: the written artifact must be a REAL contained file
+    # (as a real continuation turn would produce) to render a live hash link.
+    written = _write_md(grove_home, "refined.md")
     calls = []
 
     def _fake_dispatch(instruction, parent_ids):
@@ -143,7 +147,7 @@ async def test_dispatch_wiring_and_result_fragment(client, grove_home, monkeypat
             "pending_items": [
                 {"proposal_id": "p1", "tool": "write_file", "zone": "yellow"},
             ],
-            "artifact_ids_written": ["9" * 16],
+            "artifact_ids_written": [written],
         }
 
     monkeypatch.setattr(
@@ -160,7 +164,7 @@ async def test_dispatch_wiring_and_result_fragment(client, grove_home, monkeypat
     assert '<div class="model-content">' in body
     assert "Refined &amp; saved." in body
     # Artifact link, hash-route.
-    assert f'href="/portal#fragments/artifact/{"9" * 16}"' in body
+    assert f'href="/portal#fragments/artifact/{written}"' in body
     # Pending items + link to the pending fragment.
     assert "1 action(s) await your approval" in body
     assert 'href="/portal#fragments/proposals/pending"' in body

@@ -299,20 +299,129 @@ async def test_artifact_page_no_crossref_without_cellar_match(client, grove_home
 def test_cellar_detail_source_links_to_artifact(grove_home):
     from grove.api.fragments import _source_artifact_html
 
-    src = str(grove_home / "sink" / "item-x.json")
-    html = _source_artifact_html({"source": src})
+    # repo-write-containment-v1 P1 — the source link now containment-checks:
+    # the file must EXIST under an artifact root and carry a ledger record.
+    src_path = grove_home / "sink" / "item-x.json"
+    src_path.parent.mkdir(parents=True, exist_ok=True)
+    src_path.write_text("{}", encoding="utf-8")
+    src = str(src_path)
+    _emit(src)  # ledger event so the presenter resolves id -> recorded path
+    app = _make_app(resolve_artifact_roots(config={}))
+    html = _source_artifact_html(app, {"source": src})
     expected = artifact_id(canonical_artifact_path(src))
     # artifact-continuation-v1 C1 — hash-form: the source link stays in-shell.
     assert f'href="/portal#fragments/artifact/{expected}"' in html
     assert src in html
 
 
+def test_cellar_detail_uncontained_source_renders_inert(grove_home):
+    # repo-write-containment-v1 P1 — an absolute source OUTSIDE the servable
+    # roots (or vanished) is the dead-link case: id + path as text, NO anchor.
+    from grove.api.fragments import _source_artifact_html
+
+    src = "/etc/passwd"  # absolute, but never under GROVE_HOME artifact roots
+    app = _make_app(resolve_artifact_roots(config={}))
+    html = _source_artifact_html(app, {"source": src})
+    assert "outside portal-servable roots — not viewable" in html
+    assert "href=" not in html
+    assert "/portal#fragments/artifact/" not in html
+
+
 @pytest.mark.parametrize("src", ["dock.yaml#goal-1", "memory:rec-9", ""])
 def test_cellar_detail_nonpath_source_not_linked(grove_home, src):
     from grove.api.fragments import _source_artifact_html
 
-    html = _source_artifact_html({"source": src})
+    app = _make_app(resolve_artifact_roots(config={}))
+    html = _source_artifact_html(app, {"source": src})
     assert "/artifact/" not in html
+
+
+# ---------------------------------------------------------------------------
+# repo-write-containment-v1 P1 — the one artifact-ref presenter, both branches
+# ---------------------------------------------------------------------------
+
+
+def test_render_artifact_ref_contained_emits_anchor(grove_home):
+    from grove.api.artifacts import render_artifact_ref
+
+    f = grove_home / "served.md"
+    f.write_text("# ok\n", encoding="utf-8")
+    aid = _emit(str(f))
+    app = _make_app(resolve_artifact_roots(config={}))
+    html = render_artifact_ref(app, aid)
+    assert html == f'<a href="/portal#fragments/artifact/{aid}">{aid}</a>'
+
+
+def test_render_artifact_ref_uncontained_no_anchor(grove_home, tmp_path):
+    from grove.api.artifacts import render_artifact_ref
+
+    # File exists but OUTSIDE the artifact roots (sibling of GROVE_HOME) →
+    # containment escape → None → inert text, never a clickable dead link.
+    outside = tmp_path / "outside.md"
+    outside.write_text("# x\n", encoding="utf-8")
+    aid = _emit(str(outside))
+    app = _make_app(resolve_artifact_roots(config={}))
+    html = render_artifact_ref(app, aid)
+    assert "outside portal-servable roots — not viewable" in html
+    assert aid in html  # id shown as plain text
+    assert "<a " not in html
+    assert "href=" not in html
+    assert "/portal#fragments/artifact/" not in html
+
+
+def test_render_artifact_ref_escapes_label(grove_home):
+    from grove.api.artifacts import render_artifact_ref
+
+    f = grove_home / "served2.md"
+    f.write_text("# ok\n", encoding="utf-8")
+    aid = _emit(str(f))
+    app = _make_app(resolve_artifact_roots(config={}))
+    html = render_artifact_ref(app, aid, label="<script>&x")
+    assert "<script>" not in html
+    assert "&lt;script&gt;&amp;x" in html
+
+
+def test_artifact_hash_route_literal_confined_to_one_module():
+    """repo-write-containment-v1 P1 step 4 — the operator-facing hash deep link
+    ``/portal#fragments/artifact/`` is constructed in EXACTLY one module (the
+    presenter's). Any other occurrence is a re-introduced parallel emitter.
+
+    Walks the AST (f-string segments are ``Constant`` children of ``JoinedStr``,
+    so ``ast.walk`` + the ``Constant`` check catches f-strings, .format base
+    strings, %, and module constants alike). Scoped to the HASH form so the
+    receiver routes ``/artifact/{id}`` and ``/portal/fragments/artifact/{id}``
+    (slash, not hash) are NOT caught.
+
+    SCOPE — what this guard does NOT catch (stated honestly, by design; a guard
+    that claims coverage it lacks re-commits the defect it exists to prevent):
+    the check keys on the full substring living inside ONE string constant. That
+    catches accidental copy-paste duplication — the failure that motivated this
+    sprint (five duplicated emitters). It does NOT catch DELIBERATE
+    reconstruction that splits the literal across constants, e.g.::
+
+        "/portal#fragments/" + "artifact/"
+        ROUTE_BASE = "/portal#fragments/"  →  f"{ROUTE_BASE}artifact/{id}"
+
+    Neither fragment contains the full substring, so neither this test nor a
+    grep would flag them. Catching that would need taint/const-folding analysis;
+    honest scope beats more cleverness. The convention is: build the link ONLY
+    via :func:`grove.api.artifacts.render_artifact_ref`."""
+    import ast
+    from pathlib import Path
+
+    HASH = "/portal#fragments/artifact/"
+    grove_root = Path(__file__).resolve().parents[2] / "grove"
+    modules_with: set = set()
+    for py in grove_root.rglob("*.py"):
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and HASH in node.value
+            ):
+                modules_with.add(str(py.relative_to(grove_root.parent)))
+    assert modules_with == {"grove/api/artifacts.py"}, modules_with
 
 
 # ---------------------------------------------------------------------------
