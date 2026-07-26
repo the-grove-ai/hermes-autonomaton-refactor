@@ -813,10 +813,16 @@ def make_researcher_broker_resolver(*, drive=_production_broker_drive):
         }
 
         # Run the broker BEFORE claiming. ON ANY BrokerError: DO NOT claim; log
-        # the TYPED cause (so producer_recurrence and the operator get a legible
-        # reason, not a bare "resolver_failed") and let it raise. The request
-        # stays queued; manager.py:1030-1034 Andons the dispatch. No
-        # dead-letter/restore/retry machinery (Ruling 1).
+        # the typed cause to JOURNALD and let it raise. The request stays queued
+        # (Ruling 1 — no dead-letter/restore/retry machinery).
+        # WHAT ACTUALLY SURFACES: manager.py:1030-1034 catches this and calls
+        # surface_fleet_andon with check="resolver_failed" — so producer_recurrence
+        # keys on "resolver_failed" and DOES fire correctly on repeats, but the
+        # recurrence CARD shows that generic class, NOT the typed broker cause. The
+        # typed cause (BrokerBudgetExceeded / …) reaches journald ONLY, via the
+        # logger.error below. Surfacing it on the card is BANKED DEBT: it needs the
+        # manager's surface_fleet_andon call site to carry a broker-specific check —
+        # a live-path touch, out of this sprint's inert scope.
         from grove.fleet.retrieval_broker import BrokerError
 
         try:

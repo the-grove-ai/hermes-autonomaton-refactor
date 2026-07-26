@@ -15,6 +15,7 @@ scheme rejected, malformed formulation rejected, raw-path/no-aux adapter).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import threading
@@ -661,6 +662,72 @@ def test_formulation_saturation_fails_loud_no_default_slot():
     finally:
         for _ in range(held):
             _formulation_slots.release()
+
+
+def test_hung_formulation_holds_slot_until_worker_finally():
+    # STRONG containment proof (event handshake, deterministic): N GENUINELY hung
+    # formulations occupy N dedicated slots, and each slot is released by the
+    # WORKER THREAD's finally — NOT by the awaiter's cancellation. Occupancy is
+    # DEMONSTRATED with real hung threads, not asserted by construction.
+    from grove.fleet.retrieval_broker import _formulation_slots
+
+    started = threading.Semaphore(0)  # released once per formulation that starts
+    release = threading.Event()       # threads hang here until the test releases
+
+    def hung_model(**kwargs):
+        started.release()             # signal: this formulation reached its thread
+        release.wait()                # no self-timeout — hang until released
+        return {"queries": ["q"]}
+
+    async def _await_n_started(n):
+        for _ in range(n):
+            for _ in range(6000):     # ~30s safety; threads start in ms, so this
+                if started.acquire(blocking=False):  # only trips on a real hang,
+                    break             # NOT on xdist load (15x the old 2s cap)
+                await asyncio.sleep(0.005)
+            else:
+                raise AssertionError("a formulation worker thread never started")
+
+    async def _await_all_slots_freed():
+        got = 0
+        while got < _FORMULATION_MAX_WORKERS:
+            if _formulation_slots.acquire(blocking=False):
+                got += 1
+            else:
+                await asyncio.sleep(0.005)
+        for _ in range(got):
+            _formulation_slots.release()  # restore the module-global semaphore
+
+    async def _body():
+        tasks = [
+            asyncio.create_task(
+                _formulate_queries("t", None, call_model=hung_model, tier="T1", max_queries=3)
+            )
+            for _ in range(_FORMULATION_MAX_WORKERS)
+        ]
+        try:
+            await _await_n_started(_FORMULATION_MAX_WORKERS)
+            # DEMONSTRATED: N genuinely hung threads hold every dedicated slot.
+            assert _formulation_slots.acquire(blocking=False) is False
+
+            # Cancel the AWAITERS (simulate the outer wait_for timeout). The worker
+            # threads keep running (still hung on release.wait), so the slots STAY
+            # held — proving the release lives in the thread's finally, not the
+            # awaiter's cancellation. (Release-on-cancel would free them here.)
+            for t in tasks:
+                t.cancel()
+            for t in tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await t
+            assert _formulation_slots.acquire(blocking=False) is False
+        finally:
+            # Always release the hung threads so their finally frees the slots;
+            # then confirm every slot came back (the finally ran) and restore the
+            # module-global semaphore even if an assertion above failed.
+            release.set()
+            await _await_all_slots_freed()
+
+    asyncio.run(_body())
 
 
 # ── request validation ────────────────────────────────────────────────────────
