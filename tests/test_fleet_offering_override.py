@@ -93,6 +93,20 @@ def test_allowlist_not_subset_andons():
     assert ei.value.check == "fleet_allowlist_unsatisfiable"
 
 
+def test_record_declaring_tool_outside_floor_andons():
+    # researcher-retrieval-broker-v1 P3b(b) — THE compensating control. When the
+    # L1 allowlist becomes record-DECLARED, a record must NOT be able to declare
+    # its way past the L2 floor. The L2 construction surface is config-blind
+    # ({read_file, skill_view, emit_package}, dispatcher.py:1465); an allowlist
+    # naming a tool OUTSIDE it (web_search) hits the subset check
+    # (run_agent.py:3453-3462) and Andons. If this ever passed silently, the
+    # capability-absence guarantee would not be structural — an arc-level Andon.
+    a = _agent(["read_file", "web_search"], tools=["read_file", "skill_view", "emit_package"])
+    with pytest.raises(FleetWorkerAndon) as ei:
+        a._maybe_apply_tool_filter("x")
+    assert ei.value.check == "fleet_allowlist_unsatisfiable"
+
+
 def test_non_fleet_platform_takes_none_branch():
     # A non-fleet platform NEVER enters the override — control flows to the
     # unchanged resolver path. With self.tools empty the normal path early-returns;

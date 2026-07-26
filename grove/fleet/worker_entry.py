@@ -320,6 +320,40 @@ def _emit_declaration(cap) -> Optional[Dict[str, Any]]:
     return emit
 
 
+def _resolve_offered_allowlist(cap, transport: str) -> List[str]:
+    """The L1 fleet offered surface (researcher-retrieval-broker-v1 P3b).
+
+    RECORD-DECLARED via ``governance.offered_allowlist`` when present, else the
+    transport-keyed DEFAULT (the pre-P3b hardcode — byte-identical when absent).
+    NO worker-id special-case: purely record-driven.
+
+    A declared list is NOT floor-checked here. The config-blind L2 floor
+    (dispatcher.py:1465) and the L1 subset check (run_agent.py:3453-3462) remain
+    the sole authority: a declared tool outside the floor Andons
+    (fleet_allowlist_unsatisfiable), and a declared EMPTY list falls through to
+    fleet_allowlist_empty (:3442) — never a silent pass. A present-but-non-list
+    declaration is a malformed record → loud Andon here."""
+    default = (
+        ["read_file", "skill_view", "emit_package"]
+        if transport == "tool"
+        else ["read_file", "skill_view"]
+    )
+    gov = getattr(cap, "governance", None)
+    declared = gov.get("offered_allowlist") if isinstance(gov, dict) else None
+    if declared is None:
+        return default
+    if not isinstance(declared, list):
+        from grove.fleet.errors import FleetWorkerAndon
+
+        raise FleetWorkerAndon(
+            f"capability {getattr(cap, 'id', '<?>')!r}: governance.offered_allowlist "
+            f"must be a list, got {type(declared).__name__}",
+            surface="fleet",
+            check="offered_allowlist_malformed",
+        )
+    return list(declared)
+
+
 def _derive_emit_spec(
     emit_decl: Dict[str, Any],
     *,
@@ -1195,9 +1229,13 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
                 # meta.row_id at emit for a self-authored producer (forge).
                 bound_row_id=None if declarative else _dispatched_unit_id(payload),
             )
-            allowlist = ["read_file", "skill_view", "emit_package"]
-        else:
-            allowlist = ["read_file", "skill_view"]
+
+        # researcher-retrieval-broker-v1 P3b — the L1 offered surface is now
+        # record-DECLARED (governance.offered_allowlist) with FALLBACK to the
+        # transport-keyed default; absent → byte-identical to the pre-P3b
+        # hardcode. Floor enforcement is unchanged: the L1 subset check
+        # (run_agent.py:3453-3462) is the sole authority.
+        allowlist = _resolve_offered_allowlist(cap, transport)
 
         worker_config = {
             **load_config(),
