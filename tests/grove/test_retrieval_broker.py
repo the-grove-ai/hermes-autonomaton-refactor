@@ -376,7 +376,7 @@ def test_formulation_timeout_hard_halts_no_partial():
     import time as _time
 
     def slow_model(**kwargs):
-        _time.sleep(0.5)  # exceeds the injected per_source_timeout below
+        _time.sleep(0.5)  # exceeds the injected formulation_timeout below
         return {"queries": ["q"]}
 
     with pytest.raises(BrokerQueryFormulationError):
@@ -387,7 +387,7 @@ def test_formulation_timeout_hard_halts_no_partial():
                 wiki_adapter=_raising_adapter("no fetch when formulation times out"),
                 web_extract_adapter=_raising_adapter(),
                 call_model=slow_model,
-                per_source_timeout=0.05,
+                formulation_timeout=0.05,  # formulation now has its own timeout (CO-1)
             )
         )
 

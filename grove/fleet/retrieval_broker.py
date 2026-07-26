@@ -1,10 +1,11 @@
-"""Host-side retrieval broker (researcher-retrieval-broker-v1 Phase 1 — PURE MODULE).
+"""Host-side retrieval broker (researcher-retrieval-broker-v1).
 
 The gateway process, at fleet dispatch, retrieves research material OUTSIDE any
 agent turn and hands a provenance-stamped materials block into the worker's
-inbox; the worker synthesizes. This module is that broker. **Nothing calls it
-yet** — Phase 1 ships the module + unit tests only. No resolver registration, no
-record edits, no allowlist changes, no wiring.
+inbox; the worker synthesizes. This module is that broker. It is **WIRED** —
+reached via the ``researcher_broker`` resolver and the ``researcher`` record —
+but **DORMANT**: the worker ships ``enabled: false``, so nothing dispatches to
+it yet. Arming is gated behind fleet-emission-precondition-parity.
 
 v1 capabilities, exactly three (Notion + x_search DEFERRED):
   * web_search  — ``tools.web_tools.web_search_tool``   (sync,  web_tools.py:736)
@@ -80,6 +81,7 @@ __all__ = [
     "MAX_SOURCES",
     "WIKI_RESERVED_SLOTS",
     "PER_SOURCE_FETCH_TIMEOUT_S",
+    "QUERY_FORMULATION_TIMEOUT_S",
     "BROKER_PHASE_TIMEOUT_S",
     "MAX_CONTENT_BYTES",
     "MAX_TOTAL_MATERIALS_BYTES",
@@ -124,6 +126,19 @@ ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 # in config moves this with no code change (call_t1's by-name primitive).
 QUERY_FORMULATION_TIER = "T1"
 QUERY_FORMULATION_MAX_TOKENS = 512
+
+# Formulation gets its OWN timeout (CO-1) — no longer PER_SOURCE_FETCH_TIMEOUT_S
+# reused. Value unchanged at 10s; the DERIVATION is what's new: warm-observed
+# formulation max 2.24s (deepseek-v4-flash, DeepInfra via OpenRouter, 3 samples,
+# 2026-07-26 on hermes-gateway), so 10s is a ~4.5x bound on steady-state latency.
+# Cold-provider spikes are OUT of envelope BY DESIGN: a post-restart formulation
+# that exceeds this fails loud (BrokerQueryFormulationError), takes NO claim,
+# leaves the request queued, and self-heals on the next cadence. Retry-on-timeout
+# was considered and REJECTED — the timed-out worker thread keeps its
+# formulation-executor slot (the release is in the thread's finally, not the
+# awaiter's cancellation), so a retry burns the second of two slots and a cold
+# start would saturate the pool.
+QUERY_FORMULATION_TIMEOUT_S = 10.0
 
 # Formulation containment (P3a, Ruling B). A hung model call orphans a thread we
 # CANNOT kill; if formulation shared the loop's default executor (as
@@ -521,6 +536,7 @@ async def _run_broker_inner(
     monotonic: Callable[[], float],
     now_iso: Callable[[], str],
     per_source_timeout: float,
+    formulation_timeout: float,
     phase_timeout: float,
 ) -> Dict[str, Any]:
     start = monotonic()
@@ -555,10 +571,12 @@ async def _run_broker_inner(
         # ── Subject topic → formulate → search-discover → extract; wiki alongside ──
         # C3: bound the ONE model call. A phase with no queries has nothing to
         # retrieve, so a formulation timeout is a HARD HALT, not a droppable
-        # source. NOTE: wait_for cancels the await but does NOT kill the
-        # underlying to_thread worker — a hung model call still leaks a thread.
-        # That residual is accepted at P1b; it becomes a P2 concern once this
-        # runs on the (single-threaded) ticker.
+        # source. Formulation runs on its OWN bounded pool (_formulation_executor,
+        # P3a) — NOT the loop's default to_thread pool. wait_for cancels the
+        # awaiter, but the worker thread keeps running AND keeps its slot (the
+        # release is in the thread's finally, not the awaiter's cancellation).
+        # A hung call therefore degrades only FUTURE formulations, never the
+        # search/wiki fetches on the default pool.
         try:
             queries_issued = await asyncio.wait_for(
                 _formulate_queries(
@@ -568,11 +586,11 @@ async def _run_broker_inner(
                     tier=QUERY_FORMULATION_TIER,
                     max_queries=MAX_QUERIES,
                 ),
-                timeout=per_source_timeout,
+                timeout=formulation_timeout,
             )
         except asyncio.TimeoutError:
             raise BrokerQueryFormulationError(
-                f"query formulation exceeded {per_source_timeout:.0f}s — halting "
+                f"query formulation exceeded {formulation_timeout:.0f}s — halting "
                 f"(a phase with no queries has nothing to retrieve)"
             )
         check_phase()
@@ -710,6 +728,7 @@ async def run_broker(
     monotonic: Optional[Callable[[], float]] = None,
     now_iso: Optional[Callable[[], str]] = None,
     per_source_timeout: float = PER_SOURCE_FETCH_TIMEOUT_S,
+    formulation_timeout: float = QUERY_FORMULATION_TIMEOUT_S,
     phase_timeout: float = BROKER_PHASE_TIMEOUT_S,
 ) -> Dict[str, Any]:
     """Retrieve provenance-stamped research material for a request body.
@@ -744,6 +763,7 @@ async def run_broker(
         monotonic=monotonic,
         now_iso=now_iso,
         per_source_timeout=per_source_timeout,
+        formulation_timeout=formulation_timeout,
         phase_timeout=phase_timeout,
     )
     try:
