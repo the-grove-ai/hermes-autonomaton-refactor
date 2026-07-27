@@ -57,7 +57,7 @@ from grove.eval.proposal_queue import _type_offers_approve
 from grove.forge import feedback_store
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE
-from grove.router_merge import load_merged_routing_config
+from grove.router_merge import load_operational_routing_config
 from grove.secret_redact import redact_command_string
 from grove.api.red_nonce import nonce_key_from_app, red_nonce
 from grove.wiki.index import MalformedWikiPage, _split_frontmatter
@@ -1979,14 +1979,14 @@ def _live_tier_preferences() -> dict:
     portal renders ``previous_model`` from here — the live router's frozen
     TierConfig does not carry it, so the file is the source of truth for the
     card and for the post-swap re-render."""
-    path = Path(get_hermes_home()) / "routing.config.yaml"
+    path = Path(get_hermes_home()) / "routing.operational.yaml"
     try:
-        data = load_merged_routing_config(
+        data = load_operational_routing_config(
             path, path.parent / "routing.autonomaton.yaml"
         )
     except FileNotFoundError:
         return {}
-    tier_prefs = ((data or {}).get("routing") or {}).get("tier_preferences")
+    tier_prefs = (data or {}).get("tier_preferences")
     return tier_prefs if isinstance(tier_prefs, dict) else {}
 
 

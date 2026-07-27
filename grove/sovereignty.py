@@ -33,7 +33,7 @@ from grove.skills import (
     stamp_promotion_frontmatter,
     strip_promotion_frontmatter,
 )
-from grove.router_merge import load_merged_routing_config
+from grove.router_merge import load_authority_routing_config
 from grove.telemetry import log_sovereignty_decision
 
 logger = logging.getLogger(__name__)
@@ -52,20 +52,20 @@ class SkillPayloadTooLarge(ValueError):
 
 
 def _routing_config() -> dict:
-    """The active routing config as a dict (operator copy wins over the repo
-    default, same first-existing precedence as the pattern_cache / T1-cost
-    readers). Missing/unparseable → ``{}`` (F5 then reads no ceilings → inert)."""
+    """The active AUTHORITY routing config as a dict — ``tier_budgets`` (and the
+    per-tier ``skill_payload_ceiling`` F5 reads) live on the scope-defining
+    authority surface post GRV-001 v2.0. Operator copy wins over the repo
+    default; NO machine overlay (R1 — authority has no machine-writable twin).
+    Missing/unparseable → ``{}`` (F5 then reads no ceilings → inert)."""
     candidates = [
-        Path.home() / ".grove" / "routing.config.yaml",
-        Path(__file__).resolve().parents[1] / "config" / "routing.config.yaml",
+        Path.home() / ".grove" / "routing.authority.yaml",
+        Path(__file__).resolve().parents[1] / "config" / "routing.authority.yaml",
     ]
     for path in candidates:
         if not path.exists():
             continue
         try:
-            data = load_merged_routing_config(
-                path, path.parent / "routing.autonomaton.yaml"
-            )
+            data = load_authority_routing_config(path)
         except (OSError, ValueError, yaml.YAMLError):
             continue
         return data if isinstance(data, dict) else {}

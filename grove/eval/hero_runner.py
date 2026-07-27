@@ -577,30 +577,52 @@ def gate_proposal(
     import tempfile
     import yaml
     from grove.router_merge import (
+        _AUTHORITY_RESERVED_KEYS,
         _deep_merge,
-        load_merged_routing_config,
+        load_authority_routing_config,
+        load_operational_routing_config,
     )
 
     if operator_config_path is None:
         from hermes_constants import get_hermes_home
-        operator_config_path = Path(get_hermes_home()) / "routing.config.yaml"
+        operator_config_path = Path(get_hermes_home()) / "routing.operational.yaml"
     if machine_config_path is None:
         from hermes_constants import get_hermes_home
         machine_config_path = Path(get_hermes_home()) / "routing.autonomaton.yaml"
+    authority_config_path = operator_config_path.with_name("routing.authority.yaml")
 
-    base = load_merged_routing_config(
-        operator_path=operator_config_path,
-        machine_path=machine_config_path if machine_config_path.exists() else None,
+    # GRV-001 v2.0 — the sandbox router needs both flat documents. Operational
+    # takes the machine overlay (R1); authority does not. proposed_state is a
+    # v1-shaped diff ({"routing": {...}}): its operational fields merge onto the
+    # operational base, with any authority-reserved keys held OUT of the
+    # operational doc (they would trip the §V confused-deputy check).
+    op_base = load_operational_routing_config(
+        operator_config_path,
+        machine_config_path if machine_config_path.exists() else None,
     )
-    merged = _deep_merge(base, proposed_state)
+    auth_base = load_authority_routing_config(authority_config_path)
+
+    proposed_op = (
+        proposed_state.get("routing", proposed_state)
+        if isinstance(proposed_state, dict)
+        else {}
+    )
+    proposed_op = {
+        k: v for k, v in proposed_op.items() if k not in _AUTHORITY_RESERVED_KEYS
+    }
+    merged_op = _deep_merge(op_base, proposed_op)
 
     prompts = load_hero_prompts(prompts_path)
     with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_config = Path(tmpdir) / "routing.merged.yaml"
-        tmp_config.write_text(
-            yaml.safe_dump(merged, sort_keys=False), encoding="utf-8",
+        op_tmp = Path(tmpdir) / "routing.operational.yaml"
+        auth_tmp = Path(tmpdir) / "routing.authority.yaml"
+        op_tmp.write_text(
+            yaml.safe_dump(merged_op, sort_keys=False), encoding="utf-8",
         )
-        sandbox_router = CognitiveRouter(tmp_config)
+        auth_tmp.write_text(
+            yaml.safe_dump(auth_base, sort_keys=False), encoding="utf-8",
+        )
+        sandbox_router = CognitiveRouter(op_tmp)
         report = evaluate(prompts, router=sandbox_router)
 
     failed = tuple(r.prompt_id for r in report.results if not r.passed)

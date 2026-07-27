@@ -1,0 +1,128 @@
+schema_version: '2.0'
+surface_class: scope_defining
+writable_on: operator_authenticated
+default_zone: red
+escalation_threshold: 0.6
+tier_budgets:
+
+  T3:                       # Apex Cognition — unbounded window, eager.
+    context: [claude_contract, skills_index, cellar_context, skill_payload]
+    cellar_context_ceiling: 2000
+    skill_payload_ceiling: 3000   # skill-adoption-v1 C2 — primary-skill payload
+
+  T2:                       # Premium Cognition — the prefill-budgeted path.
+    context: [cellar_context, skill_payload]  # claude_contract + skills_index gated OFF
+    cellar_context_ceiling: 1500
+    skill_payload_ceiling: 3000   # skill-adoption-v1 C2 — primary-skill payload
+
+  T1:                       # Cheap Cognition — the floor. Minimal prefill.
+    context: [cellar_context]  # K6 (A-D3): minimal but non-zero cellar grounding
+    cellar_context_ceiling: 1000   # skill_payload NOT admitted at T1 (lean floor)
+
+  Telemetry:                # Classifier tier — a forced-tool classification call
+    context: []             # that composes no agent prefill, so no heavy blocks
+                            # (exact-cover D7: provider-backed tier needs an entry)
+
+  T-QA:                     # Quality-evaluator tier — a forced-tool verdict call
+    context: []             # that composes no agent prefill, so no heavy blocks
+                            # (exact-cover D7: provider-backed tier needs an entry)
+
+  T-GA:                     # Goal-attachment adjudicator — a forced-tool verdict
+    context: []             # call that composes no agent prefill, so no heavy
+                            # blocks (exact-cover D7: provider-backed tier needs
+                            # an entry)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# pattern_cache — T0 Pattern Compiler (Sprint 48)
+# ─────────────────────────────────────────────────────────────────────────
+# T0 is the deterministic Pattern Cache: a query asked enough times, with a
+# stable enough result, retires from inference to a compiled cache entry that
+# returns with NO model call. The compiler scans the Flywheel evidence
+# (~/.grove/intent_records.jsonl), groups by a conservative normalized key,
+# and PROPOSES promotions the operator approves. The system never self-promotes.
+#
+# These thresholds gate candidacy. Precision-first: tight bars, broaden later.
+escalation_policy:
+  enabled: false
+    # Hard cap per turn — second escalate call in the same turn auto-
+    # denies regardless of budget.
+  max_escalations_per_turn: 1
+    # Soft budget across a session. Hits the deny path once exhausted.
+  max_escalations_per_session: 5
+    # Never escalate above this tier — even if the Agent asks for apex.
+  ceiling_tier: T3
+    # Reserved for v0.2 — distinguishes auto-grant tiers from operator-
+    # confirmation-required tiers. v0.1 treats any grant within ceiling
+    # as auto-grant.
+  auto_grant_above_tier: T3
+    # Map the declarative reasoning_depth the Agent emits to a concrete
+    # tier from tier_preferences above. Edit to tune which depth lands
+    # on which tier; the Agent's vocabulary stays declarative.
+  mapping:
+    shallow: T1
+    moderate: T2
+    deep: T3
+    apex: T3
+
+    # ── Pre-route (Sprint 30.1 post-completion patch) ─────────────────
+    # Classifier-driven pre-routing for hard turns. Distinct from
+    # routing_rules.escalation above (Sprint 12 step_up; bumps one
+    # tier on low classifier confidence regardless of complexity).
+    #
+    # pre_route jumps STRAIGHT to mapping[target_depth] when:
+    #   complexity_signal in complexity_triggers AND
+    #   confidence < confidence_threshold
+    #
+    # The two are complementary:
+    #   step_up:   "classifier isn't sure" → one tier bump
+    #   pre_route: "this is genuinely hard" → jump to deep
+    #
+    # When both would trigger on the same turn, pre_route wins (the
+    # router enforces precedence). enabled defaults to the parent
+    # escalation_policy.enabled, so flipping the parent on enables
+    # pre-routing by default. Set pre_route.enabled: false to keep
+    # the Agent-driven escalation path (synthetic tool) without the
+    # classifier-driven pre-route.
+  pre_route:
+    enabled: false
+    complexity_triggers: [complex, novel]
+    confidence_threshold: 0.6
+      # Key into escalation_policy.mapping above.
+    target_depth: deep
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# tier_budgets — the per-tier prefill governor
+# (Sprint 73, declarative-jit-budget-v1)
+# ═════════════════════════════════════════════════════════════════════════
+# THE BUDGET, IN ONE PLACE. For each cognition tier this declares what the
+# autonomaton loads into the prompt BEFORE the model runs: which heavy
+# *context blocks* compose. It is the Cognitive Router applied to the prompt
+# itself — load the minimum a tier needs; keep the apex tier eager.
+#
+# TOOL EXPOSURE IS NOT A BUDGET KEY. The tools.allow_groups dual-gate is retired
+# (web-surface-admission-fix, Option B): per-tier tool exposure is governed
+# SOLELY by each Capability record's tier_rule.eligible (config/capabilities/*),
+# applied by the offered-surface builder and enforced by the execution seam. A
+# tool loads on tier T iff T is in its record's tier_rule.eligible. Re-tiering a
+# tool is a one-line edit to that record's eligible list. (A leftover tools:
+# block in an old/sovereign copy of this file is silently ignored.)
+#
+# context — an allow-list over the GATEABLE heavy blocks only:
+#     claude_contract   the CLAUDE.md contract        (~4.5K)
+#     skills_index      the promoted-skills index      (~2.8K)
+#     cellar_context    the wiki-cellar BM25 retrieval (K6; per-tier ceiling
+#                       via cellar_context_ceiling, default 1500)
+#   (K6 D1 retired goal_record — Dock goals now serve via cellar_context.)
+#   The always-on baseline (identity, environment, platform, register, the
+#   Tier-0 routing manifest) is NEVER listed — it always composes. A block
+#   absent from a tier's list is gated OFF for that tier.
+#
+# cellar_context_ceiling — per-tier token budget the cellar_context block fills
+#   when admitted (K6, A-D3 ruling). Optional scalar; omit ⇒ 1500 default.
+#
+# FAIL LOUD (no silent full-load): every provider-backed tier in
+# tier_preferences above MUST have an entry here, with known block names, or the
+# config raises at load. Non-inference tiers (the T0 pattern cache) take no
+# entry — they have no prefill to govern.

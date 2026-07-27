@@ -29,7 +29,7 @@ REPO = Path(__file__).resolve().parents[2]
 @pytest.fixture(scope="module", autouse=True)
 def _init_router():
     import grove.zones as _zones
-    router.initialize(REPO / "config" / "routing.config.yaml")
+    router.initialize(REPO / "config" / "routing.operational.yaml")
     # The hard-scope (F2) test drives the real _classify_one_intent → the zones
     # singleton must be live (repo config/zones.schema.yaml).
     _zones.initialize()

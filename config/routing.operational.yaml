@@ -1,0 +1,303 @@
+schema_version: '2.0'
+surface_class: in_scope
+writable_on: autonomous_loop
+default_tier: T1
+tier_preferences:
+  T0:
+    handler: pattern_cache
+    description: |
+      Deterministic recall — answers resolved from cached patterns in
+      your cellar (~/.grove/cellar/) with no model call. Instant, and
+      free. As the Autonomaton learns your recurring work, more of it
+      is answered here.
+    max_latency_ms: 50
+
+  T1:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash
+    description: |
+      Cheap, fast cognition — a small model for quick, well-scoped
+      work: classification, triage, short transformations. Also scores
+      incoming requests to decide where they should run.
+      Speed: fastest tier.
+    max_tokens: 4096
+
+  Telemetry:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash
+    description: |
+      Telemetry classifier — scores every incoming request to decide
+      which tier handles it. High-volume, structured output (forced
+      tool call). Bound separately from T1 so the operator can
+      optimize classification and compaction independently.
+      Speed: fastest tier.
+    max_tokens: 4096
+
+  T-QA:
+    provider: openrouter
+    model: z-ai/glm-5.2
+    description: |
+      Quality evaluator — the fleet quality gate's judge
+      (drafter-quality-checks-v1). Scores a staged draft against a
+      capability record's declared rubric via one forced tool call.
+      Bound separately so rebinding T1 (the dispatch floor) never
+      silently changes the judge, and vice versa (the Telemetry-tier
+      precedent). Requires reliable forced tool_choice; the 1M
+      context comfortably holds rubric + draft.
+    max_tokens: 4096
+
+  T-GA:
+    provider: openrouter
+    model: deepseek/deepseek-v4-pro
+    description: |
+      Goal-attachment adjudicator — the goal-spine detector's judge
+      (goal-spine-v1 P1). Rules on whether an artifact ADVANCES a Dock
+      goal (not merely mentions its topic) via one forced tool call.
+      Bound separately from T-QA so rebinding the quality judge never
+      silently changes the attachment judge, and vice versa (the
+      Telemetry-tier precedent). Requires reliable forced tool_choice.
+    max_tokens: 4096
+
+  T2:
+    provider: openrouter
+    model: z-ai/glm-5.2
+    description: |
+      Premium cognition — the default for most of your work: real
+      reasoning, code, analysis, drafting. The balance of capability
+      and cost most interactions should run on.
+      Speed: fast.
+    max_tokens: 8192
+
+    # ----- LOCAL BINDING — run T2 on-device with Ollama -------------------
+    # The T2 block above runs on a cloud model. To make the daily driver
+    # local — most interactions on-device, at zero marginal cost — install
+    # Ollama, pull a model, and replace the T2 block above with this one:
+    #
+    #   T2:
+    #     provider: ollama
+    #     model: gemma4
+    #     description: |
+    #       Daily driver. Most interactions run on-device at zero marginal
+    #       cost. Gemma 4 (Apache 2.0-licensed, large context) handles
+    #       drafting, analysis, code, and conversation. The GPU serves the
+    #       operator; the API bill drops to near-zero for routine work.
+    #     max_tokens: 8192
+    #
+    # The endpoint defaults to http://localhost:11434/v1. For Ollama on a
+    # different host or port, set OLLAMA_BASE_URL in the environment — the
+    # tier block carries no base_url field of its own.
+    #
+    # Telemetry runs on its own dedicated tier (routing.telemetry.tier).
+    # It is independent of T1 — rebinding T1 does not affect classification,
+    # and rebinding Telemetry does not affect compaction or agent dispatch.
+    # Both require reliable forced tool_choice from the bound model.
+    #
+    # Full walkthrough: docs/guides/local-tier-binding.md
+    # ---------------------------------------------------------------------
+
+  T3:
+    provider: openrouter
+    model: google/gemini-3.6-flash
+    description: |
+      Apex cognition — the strongest model, for the hardest problems:
+      multi-step planning, novel synthesis, architecture-level
+      reasoning. Slower and several times costlier than T2, so it is
+      used sparingly, only when the work needs it.
+      Speed: slowest tier.
+    max_tokens: 16384
+      # skill-adoption-v1 P3 — governed downshift (GRV-010 C2d). When T3's model
+      # is unreachable (network / 5xx / 429 / exhausted credentials), the turn
+      # re-routes THROUGH the Cognitive Router at T2 and re-drives, rather than
+      # failing loud. The downshift is surfaced LEGIBLY to the operator (a
+      # conversational note naming T3 -> T2); it is never silent.
+    fallback_tier: T2
+
+model_facts:
+  "deepseek/deepseek-v4-flash":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+    cost_per_mtok_input: 0.09
+    cost_per_mtok_output: 0.18
+  "z-ai/glm-5.2":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # Promotional pricing at extraction (2026-07-23), moves;
+      # binding-capability-sync-v1 keeps it current.
+    cost_per_mtok_input: 0.77
+    cost_per_mtok_output: 2.42
+  "deepseek/deepseek-v4-pro":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+    cost_per_mtok_input: 0.435
+    cost_per_mtok_output: 0.87
+  "google/gemini-3.6-flash":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+    cost_per_mtok_input: 1.5
+    cost_per_mtok_output: 7.5
+
+  # Tier blocks declare NO cost. Cost is a MODEL fact, declared ONCE per slug in
+  # model_facts above — the per-tier copy drifted from its model on the first
+  # swap (bug 3a7780a78eef8110b1d2eea48aa450cf). Tier-cost consumers
+  # (grove/classify.py, grove/t1_call.py, grove/flywheel_cli.py) read the tier
+  # field today and report UNKNOWN loudly when it is absent (a warning + skipped
+  # accumulation; the Flywheel reports savings unavailable, never a silent $0);
+  # binding-capability-sync-v1 rewires them onto model_facts.cost_per_mtok_*.
+routing_rules:
+
+    # Coding — Premium (T2) through complex; Apex (T3) reserved for novel.
+  premium_coding:
+    enabled: true
+    match:
+      complexity: [simple, moderate, complex]
+      intents: [code_generation, debugging]
+    target_tier: T2
+
+  apex_coding:
+    enabled: true
+    match:
+      complexity: [novel]
+      intents: [code_generation, debugging]
+    target_tier: T3
+
+    # Other knowledge work — Premium (T2) at simple/moderate; Apex (T3) at
+    # complex/novel.
+  premium:
+    enabled: true
+    match:
+      complexity: [simple, moderate]
+      intents: [research, analysis, creative_writing, planning, system_admin]
+    target_tier: T2
+
+  apex:
+    enabled: true
+    match:
+      complexity: [complex, novel]
+      intents: [research, analysis, creative_writing, planning, system_admin]
+    target_tier: T3
+
+    # Disabled — the partition above is total over the covered intents, so
+    # there is no uncovered combo to step up. Kept as an explicit
+    # ``enabled: false`` declaration rather than relying on the parser's
+    # synthesized-when-absent backward-compat.
+  escalation:
+    enabled: false
+
+telemetry:
+  tier: Telemetry
+  description: |
+    Which tier scores incoming requests — judging what kind of work
+    each one is, and how confident that judgment is. T1 is the natural
+    home: the scoring is fast, high-volume, well-scoped work, and a
+    cheap model keeps the overhead negligible.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # PROVIDER ROUTING (openrouter-zero-retention-routing-v1)
+  # ────────────────────────────────────────────────────────────────────────
+  # Operator-owned OpenRouter request shaping, passed through VERBATIM to every
+  # OpenRouter call's `provider` field (agent turns, telemetry classifier, wiki
+  # compaction). The code never names a provider — edit this block to change
+  # routing, no code change. (The autonomaton can edit it on request.)
+  #
+  #   order            — preferred providers, in order. NAMES the fast provider
+  #                      (DeepInfra) so we get its latency; without it, `deny`
+  #                      alone routes to any zero-retention provider.
+  #   data_collection  — `deny` = only providers that DON'T retain/train on
+  #                      prompts. The privacy floor, applied to order AND
+  #                      fallbacks. A hard filter: a model with no deny-compliant
+  #                      endpoint 404s (loud) rather than leaking to a retainer.
+  #   allow_fallbacks  — if none of `order` serve a model, use other eligible
+  #                      (deny-compliant) providers instead of failing.
+  #
+  # Any other OpenRouter provider field (only / ignore / sort / quantizations /
+  # future knobs) added here flows through unchanged. Remove the block to disable.
+provider_routing:
+  openrouter:
+    order: [DeepInfra]
+    allow_fallbacks: true
+    data_collection: deny
+
+  # ────────────────────────────────────────────────────────────────────────
+  # ESCALATION POLICY (Sprint 30 — escalation-signal-v1)
+  # ────────────────────────────────────────────────────────────────────────
+  # Distinct from routing_rules.escalation above. That block is the
+  # confidence-driven step-up the classifier triggers when it's
+  # uncertain. THIS block is the Agent-driven escalation: the LLM calls
+  # the synthetic `escalate(reasoning_depth, context_size, blocker)`
+  # tool when it genuinely needs more capacity; the Dispatcher applies
+  # this policy to decide grant vs. deny.
+  #
+  # Default state: enabled=false. Vanilla installs auto-deny every
+  # escalate call (the synthetic tool is still in the LLM's surface,
+  # but nothing escalates without operator opt-in).
+  #
+  # When enabled, the policy is deterministic and silent: no operator
+  # prompt, no Kaizen halt. Auto-grant within budget+ceiling; auto-deny
+  # above. Both paths log to the Kaizen Ledger as escalation_decision
+  # events so the operator can audit grants/denies after the fact.
+  #
+  # Per GRV-005 § III: the Agent declares WHAT it needs (reasoning_depth
+  # mapped to a tier here). The Dispatcher decides HOW. The Agent never
+  # dictates infrastructure.
+pattern_cache:
+  enabled: true
+
+  # Intent classes excluded from T0 candidacy. system_admin is where OAuth
+  # redirect-callback noise lands (it repeats but is not a real query pattern);
+  # unknown is classification failure; conversation is small-talk with no
+  # tool and no stable answer (it phrases differently every turn) — it would
+  # only ever drop, so the compiler stays focused on data and action queries
+  # (Sprint 56 Fix #4).
+  exclude_intents: [unknown, system_admin, conversation]
+
+  promotion:
+    # Same normalized pattern seen at least this many times.
+    min_repetitions: 5
+    # All repetitions clustered within this many days (recency + density).
+    within_days: 14
+    # Maximum correction signals on the pattern. Zero: any correction
+    # disqualifies it (a corrected pattern is not stable).
+    max_rejections: 0
+    # Static patterns only: the captured responses must be identical across
+    # the evidence. Zero variance — if responses differ, the pattern is not
+    # safely static-cacheable and is not promoted.
+    max_response_variance: 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# goal_attachment — goal-spine detector (goal-spine-v1 P1)
+# ─────────────────────────────────────────────────────────────────────────
+# The off-path goal-attachment detector: scans artifact_written ledger
+# events, prefilters against Dock goal projection pages (Stage 1), and asks
+# the adjudicator tier whether each candidate artifact ADVANCES the matched
+# goal (Stage 2). P1 is dry-run only — a manual entry point that prints a
+# report; no proposal, no ledger event. Read by
+# grove.dock.attachment.load_goal_attachment_config (the pattern_cache
+# section-loader precedent; operator copy wins over this repo default).
+goal_attachment:
+  # The adjudicator tier, resolved BY NAME through call_t1(tier=...) — the
+  # T-QA quality-gate pattern. Must name a tier declared in tier_preferences
+  # above (an unknown tier raises KeyError at call time, never a fallback).
+  adjudicator_tier: T-GA
+
+  # Stage 2 promotion cap per run — the maximum number of Stage-1 candidates
+  # sent to the adjudicator in one detector run. Bounds LLM spend.
+  stage2_candidate_cap: 5
+
+  # Stage 1 retrieval depth — top-k dock_goal projection pages consulted per
+  # artifact when scoring goal relevance.
+  prefilter_top_k: 3
+
+  # P2 — character cap on the adjudication excerpt stored in the
+  # artifact_goal_attached ledger event. Provenance must survive approval,
+  # but the ledger must not bloat. Truncation is visible in the stored
+  # event (excerpt_truncated + excerpt_full_chars), never silent.
+  excerpt_cap_chars: 600

@@ -132,22 +132,37 @@ class TestLoadMergedRoutingConfig:
 
 
 # ── apply_diff_to_machine_config ─────────────────────────────────────
+# GRV-001 v2.0 — the machine overlay is FLAT (routing_rules at top level; no
+# 'routing:' wrapper), and the writer's fail-closed guard validates the candidate
+# by loading it against the operational sibling. These tests supply that sibling
+# and flat diffs; the v1-nested rejection is covered by test_machine_sink_guard.
+
+
+def _write_op_sibling(tmp_path: Path) -> None:
+    """A minimal flat v2 operational file — the guard validates the machine
+    overlay by loading operational + candidate through the runtime loader."""
+    (tmp_path / "routing.operational.yaml").write_text(
+        'schema_version: "2.0"\nsurface_class: in_scope\nwritable_on: autonomous_loop\n',
+        encoding="utf-8",
+    )
 
 
 class TestApplyDiffToMachineConfig:
     def test_creates_new_machine_file(self, tmp_path: Path) -> None:
+        _write_op_sibling(tmp_path)
         mach = tmp_path / "routing.autonomaton.yaml"
-        diff = {"routing": {"routing_rules": {"downward": {"match": {"intents": ["creative_writing"]}}}}}
+        diff = {"routing_rules": {"downward": {"match": {"intents": ["creative_writing"]}}}}
         apply_diff_to_machine_config(diff, mach)
         assert mach.exists()
         text = mach.read_text(encoding="utf-8")
         assert "Machine-authored routing additions" in text  # header banner present
         parsed = yaml.safe_load(text)
-        assert parsed["routing"]["routing_rules"]["downward"]["match"]["intents"] == ["creative_writing"]
+        assert parsed["routing_rules"]["downward"]["match"]["intents"] == ["creative_writing"]
 
     def test_idempotent_on_re_application(self, tmp_path: Path) -> None:
+        _write_op_sibling(tmp_path)
         mach = tmp_path / "routing.autonomaton.yaml"
-        diff = {"routing": {"routing_rules": {"downward": {"match": {"intents": ["creative_writing"]}}}}}
+        diff = {"routing_rules": {"downward": {"match": {"intents": ["creative_writing"]}}}}
         apply_diff_to_machine_config(diff, mach)
         text_a = mach.read_text(encoding="utf-8")
         apply_diff_to_machine_config(diff, mach)
@@ -155,11 +170,12 @@ class TestApplyDiffToMachineConfig:
         assert text_a == text_b
 
     def test_subsequent_diff_unions_intents(self, tmp_path: Path) -> None:
+        _write_op_sibling(tmp_path)
         mach = tmp_path / "routing.autonomaton.yaml"
-        diff_a = {"routing": {"routing_rules": {"downward": {"match": {"intents": ["creative_writing"]}}}}}
-        diff_b = {"routing": {"routing_rules": {"downward": {"match": {"intents": ["system_admin"]}}}}}
+        diff_a = {"routing_rules": {"downward": {"match": {"intents": ["creative_writing"]}}}}
+        diff_b = {"routing_rules": {"downward": {"match": {"intents": ["system_admin"]}}}}
         apply_diff_to_machine_config(diff_a, mach)
         apply_diff_to_machine_config(diff_b, mach)
         parsed = yaml.safe_load(mach.read_text(encoding="utf-8"))
-        intents = parsed["routing"]["routing_rules"]["downward"]["match"]["intents"]
+        intents = parsed["routing_rules"]["downward"]["match"]["intents"]
         assert sorted(intents) == ["creative_writing", "system_admin"]

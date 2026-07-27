@@ -35,7 +35,7 @@ def symlinked_grove_home(tmp_path, monkeypatch):
     the live VM arrangement (``~/.grove`` -> ``/mnt/grove-data/.grove``)."""
     real = tmp_path / "mnt" / "grove-data" / ".grove"
     real.mkdir(parents=True)
-    (real / "routing.config.yaml").write_text("routing: {}\n", encoding="utf-8")
+    (real / "routing.operational.yaml").write_text("routing: {}\n", encoding="utf-8")
     (real / "routing.autonomaton.yaml").write_text("routing: {}\n", encoding="utf-8")
 
     home = tmp_path / "home" / "hermes" / ".grove"
@@ -47,18 +47,23 @@ def symlinked_grove_home(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "filename, resolver",
+    "filename, resolver, expect_scope_defining",
     [
-        ("routing.config.yaml", _default_config_path),
-        ("routing.autonomaton.yaml", _default_machine_path),
+        # GRV-001 v2.0 — the operator OPERATIONAL file is surface_class: in_scope
+        # (autonomous_loop-writable; the model-swap writer targets it), so the wall
+        # does NOT classify it as scope-defining. The machine overlay still
+        # redefines routing (R-W1) and remains a scope-defining surface.
+        ("routing.operational.yaml", _default_config_path, False),
+        ("routing.autonomaton.yaml", _default_machine_path, True),
     ],
 )
 def test_writer_resolved_path_matches_scope_wall_resolution(
-    symlinked_grove_home, filename, resolver
+    symlinked_grove_home, filename, resolver, expect_scope_defining
 ):
     """POSITIVE — the writer's resolved target and the scope wall's resolved
-    check path are identical, for both routing.config.yaml and
-    routing.autonomaton.yaml."""
+    check path are identical, for both the operational file and the machine
+    overlay. The wall's scope-defining classification differs per surface_class:
+    the operational file is in_scope, the machine overlay is scope-defining."""
     nominal = symlinked_grove_home / filename
 
     # What routing_writer will os.replace onto (production resolver).
@@ -70,16 +75,18 @@ def test_writer_resolved_path_matches_scope_wall_resolution(
 
     assert writer_path == wall_path
 
-    # And the wall still classifies the canonical surface as scope-defining
-    # (the directory symlink collapses to the real dir; the filename is
-    # preserved, so membership matches).
-    assert is_scope_defining(str(nominal), grove_home=str(symlinked_grove_home)) is True
+    # The directory symlink collapses to the real dir; the filename is preserved,
+    # so membership (or non-membership) matches the surface's declared class.
+    assert (
+        is_scope_defining(str(nominal), grove_home=str(symlinked_grove_home))
+        is expect_scope_defining
+    )
 
 
 @pytest.mark.parametrize(
     "filename, resolver",
     [
-        ("routing.config.yaml", _default_config_path),
+        ("routing.operational.yaml", _default_config_path),
         ("routing.autonomaton.yaml", _default_machine_path),
     ],
 )

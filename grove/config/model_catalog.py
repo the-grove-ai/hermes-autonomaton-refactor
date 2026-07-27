@@ -451,12 +451,14 @@ def collect_catalog_referrers() -> dict[str, list[str]]:
     # (a) routing tier_preferences bindings
     try:
         from grove.router import _resolve_config_path
-        from grove.router_merge import load_merged_routing_config
+        from grove.router_merge import load_operational_routing_config
 
         op = _resolve_config_path(None)
         machine = op.parent / "routing.autonomaton.yaml"
-        merged = load_merged_routing_config(op, machine if machine.exists() else None)
-        prefs = (merged.get("routing", {}) or {}).get("tier_preferences", {}) or {}
+        merged = load_operational_routing_config(
+            op, machine if machine.exists() else None
+        )
+        prefs = merged.get("tier_preferences", {}) or {}
         for tier, entry in prefs.items():
             if isinstance(entry, dict):
                 _add(entry.get("model"), f"tier_preferences.{tier}")

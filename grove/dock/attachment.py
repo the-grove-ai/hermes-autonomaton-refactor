@@ -53,7 +53,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 
-from grove.router_merge import load_merged_routing_config
+from grove.router_merge import load_operational_routing_config
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +101,13 @@ def load_goal_attachment_config() -> Dict[str, Any]:
     """
     cfg = dict(_DEFAULTS)
     candidates = (
-        Path.home() / ".grove" / "routing.config.yaml",
-        Path(__file__).resolve().parents[2] / "config" / "routing.config.yaml",
+        Path.home() / ".grove" / "routing.operational.yaml",
+        Path(__file__).resolve().parents[2] / "config" / "routing.operational.yaml",
     )
     for path in candidates:
         if not path.exists():
             continue
-        data = load_merged_routing_config(
+        data = load_operational_routing_config(
             path, path.parent / "routing.autonomaton.yaml"
         ) or {}
         section = data.get("goal_attachment")

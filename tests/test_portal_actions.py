@@ -459,8 +459,8 @@ async def test_tier_swap_files_proposal_and_writes_nothing(client, grove_home, m
     import grove.config.routing_writer as rw
 
     repo_root = Path(__file__).resolve().parents[1]
-    cfg = grove_home / "routing.config.yaml"
-    shutil.copy(repo_root / "config" / "routing.config.yaml", cfg)
+    cfg = grove_home / "routing.operational.yaml"
+    shutil.copy(repo_root / "config" / "routing.operational.yaml", cfg)
     # rebind the cached writer singleton to THIS test's GROVE_HOME config.
     monkeypatch.setattr(rw, "_writer", None)
 

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from grove.pattern_cache import CompiledPattern, STATUS_SUSPENDED, t0_key
-from grove.router_merge import load_merged_routing_config
+from grove.router_merge import load_operational_routing_config
 
 # Defaults — used when routing.config.yaml carries no pattern_cache section.
 # Mirror the GATE-A decision-4 values.
@@ -65,14 +65,14 @@ def load_pattern_cache_config() -> Dict[str, Any]:
     back to :data:`_DEFAULTS`."""
     cfg = dict(_DEFAULTS)
     candidates = (
-        Path.home() / ".grove" / "routing.config.yaml",
-        Path(__file__).resolve().parents[2] / "config" / "routing.config.yaml",
+        Path.home() / ".grove" / "routing.operational.yaml",
+        Path(__file__).resolve().parents[2] / "config" / "routing.operational.yaml",
     )
     for path in candidates:
         if not path.exists():
             continue
         try:
-            data = load_merged_routing_config(
+            data = load_operational_routing_config(
                 path, path.parent / "routing.autonomaton.yaml"
             ) or {}
         except Exception:

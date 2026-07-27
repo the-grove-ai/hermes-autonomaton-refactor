@@ -42,29 +42,44 @@ _SENTINEL = object()
 
 
 def _write_config(tmp_path, *, tiers=_SENTINEL, budgets=_SENTINEL, routing=_SENTINEL):
-    """Write a routing.config.yaml into tmp_path and return its path.
+    """Write the GRV-001 v2.0 operational + authority split into tmp_path and
+    return the OPERATIONAL path (load_tier_budgets derives the authority sibling).
 
-    Pass ``budgets=None`` to omit the tier_budgets block entirely; pass a dict
-    to substitute one. Pass ``routing=None`` to omit the routing mapping.
+    ``tier_preferences`` is OPERATIONAL; ``tier_budgets`` is AUTHORITY. Pass
+    ``budgets=None`` to omit the tier_budgets block; pass a dict to substitute
+    one. Pass ``routing`` to supply the operational tier-config body (spliced
+    into the v2 envelope), or ``routing=None`` to write an operational file with
+    no tier_preferences at all.
     """
+    op = {
+        "schema_version": "2.0",
+        "surface_class": "in_scope",
+        "writable_on": "autonomous_loop",
+    }
     if routing is _SENTINEL:
-        routing = {
-            "schema_version": 1,
-            "default_tier": "T1",
-            "tier_preferences": copy.deepcopy(
-                BASE_TIERS if tiers is _SENTINEL else tiers
-            ),
-        }
-    doc = {}
-    if routing is not None:
-        doc["routing"] = routing
+        op["default_tier"] = "T1"
+        op["tier_preferences"] = copy.deepcopy(
+            BASE_TIERS if tiers is _SENTINEL else tiers
+        )
+    elif routing is not None:
+        op.update(routing)
+    auth = {
+        "schema_version": "2.0",
+        "surface_class": "scope_defining",
+        "writable_on": "operator_authenticated",
+        "default_zone": "red",
+        "escalation_threshold": 0.6,
+    }
     if budgets is _SENTINEL:
-        doc["tier_budgets"] = copy.deepcopy(VALID_BUDGETS)
+        auth["tier_budgets"] = copy.deepcopy(VALID_BUDGETS)
     elif budgets is not None:
-        doc["tier_budgets"] = budgets
-    path = tmp_path / "routing.config.yaml"
-    path.write_text(yaml.safe_dump(doc), encoding="utf-8")
-    return path
+        auth["tier_budgets"] = budgets
+    op_path = tmp_path / "routing.operational.yaml"
+    op_path.write_text(yaml.safe_dump(op), encoding="utf-8")
+    (tmp_path / "routing.authority.yaml").write_text(
+        yaml.safe_dump(auth), encoding="utf-8"
+    )
+    return op_path
 
 
 def _load(tmp_path, **kw):
@@ -181,19 +196,28 @@ def test_tier_budgets_not_a_mapping_raises(tmp_path):
         _load(tmp_path, budgets=["T1", "T2"])
 
 
-def test_missing_routing_mapping_raises(tmp_path):
-    with pytest.raises(ValueError, match="no 'routing' mapping"):
-        _load(tmp_path, routing=None)
+def test_v1_shaped_operational_rejected(tmp_path):
+    # GRV-001 v2.0 — a v1-shaped operational file (a top-level 'routing:' wrapper)
+    # is rejected by the loader's version gate. Was: test_missing_routing_mapping,
+    # asserting "no 'routing' mapping" against the single-file v1 loader.
+    op_path = tmp_path / "routing.operational.yaml"
+    op_path.write_text("routing:\n  default_tier: T1\n", encoding="utf-8")
+    (tmp_path / "routing.authority.yaml").write_text(
+        yaml.safe_dump({"schema_version": "2.0", "tier_budgets": {}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="v1-shaped"):
+        load_tier_budgets(op_path)
 
 
 def test_empty_tier_preferences_raises(tmp_path):
-    routing = {"schema_version": 1, "default_tier": "T1", "tier_preferences": {}}
+    routing = {"default_tier": "T1", "tier_preferences": {}}
     with pytest.raises(ValueError, match="tier_preferences' is missing or empty"):
         _load(tmp_path, routing=routing)
 
 
 def test_config_not_a_mapping_raises(tmp_path):
-    path = tmp_path / "routing.config.yaml"
+    path = tmp_path / "routing.operational.yaml"
     path.write_text("- just\n- a\n- list\n", encoding="utf-8")
     with pytest.raises(ValueError, match="is not a YAML mapping"):
         load_tier_budgets(path)

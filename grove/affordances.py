@@ -67,7 +67,7 @@ from pathlib import Path
 from typing import Optional
 
 from grove.identity import IdentityError
-from grove.router_merge import load_merged_routing_config
+from grove.router_merge import load_operational_routing_config
 
 logger = logging.getLogger(__name__)
 
@@ -264,10 +264,10 @@ def _enumerate_tiers() -> list[tuple[str, str]]:
     """
     import yaml
 
-    op_path = Path.home() / ".grove" / "routing.config.yaml"
+    op_path = Path.home() / ".grove" / "routing.operational.yaml"
     ref_path = (
         Path(__file__).resolve().parent.parent
-        / "config" / "routing.config.yaml"
+        / "config" / "routing.operational.yaml"
     )
 
     chosen: Optional[Path] = None
@@ -280,7 +280,7 @@ def _enumerate_tiers() -> list[tuple[str, str]]:
         return []
 
     try:
-        data = load_merged_routing_config(
+        data = load_operational_routing_config(
             chosen, chosen.parent / "routing.autonomaton.yaml"
         ) or {}
     except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -289,8 +289,7 @@ def _enumerate_tiers() -> list[tuple[str, str]]:
         )
         return []
 
-    routing = data.get("routing") or {}
-    tiers = routing.get("tier_preferences") or {}
+    tiers = data.get("tier_preferences") or {}
     if not isinstance(tiers, dict):
         return []
 

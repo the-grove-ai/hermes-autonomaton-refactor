@@ -27,6 +27,7 @@ from grove.api.portal import (
     register_portal_routes,
 )
 from grove.capability import Capability, ModelBinding
+from grove.config.routing_migrate import to_v2_split
 
 from tests.grove.test_capability_binding_writer import _mint, _skill_cap
 
@@ -68,7 +69,11 @@ def caps_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     monkeypatch.setenv("GROVE_WIKI_PATH", str(tmp_path / "wiki"))
     (tmp_path / "wiki" / "pages").mkdir(parents=True)
-    (tmp_path / "routing.config.yaml").write_text(_ROUTING_YAML, encoding="utf-8")
+    # GRV-001 v2.0 — write the operational + authority split via the shared
+    # migrator transform (Task 5a); the binding view reads the operational tiers.
+    _op_text, _auth_text = to_v2_split(_ROUTING_YAML)
+    (tmp_path / "routing.operational.yaml").write_text(_op_text, encoding="utf-8")
+    (tmp_path / "routing.authority.yaml").write_text(_auth_text, encoding="utf-8")
     repo_caps = tmp_path / "repo_caps"
     repo_caps.mkdir()
     monkeypatch.setattr(reg, "default_capabilities_dir", lambda: repo_caps)

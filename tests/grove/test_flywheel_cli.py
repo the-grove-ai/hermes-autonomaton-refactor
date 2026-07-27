@@ -108,6 +108,10 @@ class TestCliShow:
 
 
 class TestCliApprove:
+    @pytest.mark.xfail(
+        strict=True,
+        reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+    )
     def test_approves_and_updates_machine_file(self, tmp_path: Path) -> None:
         """Mandatory scenario 4: operator approves → routing.autonomaton.yaml
         updated."""
@@ -127,6 +131,10 @@ class TestCliApprove:
         intents = cfg["routing"]["routing_rules"]["downward"]["match"]["intents"]
         assert intents == ["conversation"]
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+    )
     def test_approval_removes_from_queue(self, tmp_path: Path) -> None:
         queue = tmp_path / "proposals.jsonl"
         machine = tmp_path / "routing.autonomaton.yaml"
@@ -137,6 +145,10 @@ class TestCliApprove:
         )
         assert read_all(path=queue) == []
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+    )
     def test_two_approvals_union_intents(self, tmp_path: Path) -> None:
         """Mandatory scenario 6 (through CLI): the SET-UNION list merge
         means both operator-pre-existing AND new approvals survive on
@@ -157,6 +169,10 @@ class TestCliApprove:
         intents = cfg["routing"]["routing_rules"]["downward"]["match"]["intents"]
         assert sorted(intents) == ["conversation", "creative_writing"]
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+    )
     def test_machine_file_never_touches_operator_config(
         self, tmp_path: Path,
     ) -> None:

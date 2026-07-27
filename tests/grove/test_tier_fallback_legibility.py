@@ -16,13 +16,13 @@ import run_agent
 
 
 REPO_ROUTING = (
-    Path(__file__).resolve().parents[2] / "config" / "routing.config.yaml"
+    Path(__file__).resolve().parents[2] / "config" / "routing.operational.yaml"
 )
 
 
 def test_repo_config_declares_t3_fallback_to_t2():
     raw = yaml.safe_load(REPO_ROUTING.read_text(encoding="utf-8"))
-    t3 = raw["routing"]["tier_preferences"]["T3"]
+    t3 = raw["tier_preferences"]["T3"]
     assert t3.get("fallback_tier") == "T2"
 
 

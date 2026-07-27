@@ -106,7 +106,12 @@ def routing_config(tmp_path, monkeypatch):
     home = tmp_path / "home"
     grove_dir = home / ".grove"
     grove_dir.mkdir(parents=True)
-    (grove_dir / "routing.config.yaml").write_text(VALID_ROUTING_CONFIG)
+    # GRV-001 v2.0 — write the operational + authority split via the shared
+    # migrator transform (Task 5a). VALID_ROUTING_CONFIG stays authored as v1.
+    from grove.config.routing_migrate import to_v2_split
+    _op_text, _auth_text = to_v2_split(VALID_ROUTING_CONFIG)
+    (grove_dir / "routing.operational.yaml").write_text(_op_text)
+    (grove_dir / "routing.authority.yaml").write_text(_auth_text)
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("GROVE_TIER", raising=False)
@@ -114,7 +119,7 @@ def routing_config(tmp_path, monkeypatch):
     grove.router._default_router = None
     grove.providers._last_routed_tier = None
     grove.providers._last_classification = None
-    yield grove_dir / "routing.config.yaml"
+    yield grove_dir / "routing.operational.yaml"
     grove.router._default_router = None
     grove.providers._last_routed_tier = None
     grove.providers._last_classification = None

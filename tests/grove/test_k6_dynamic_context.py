@@ -167,7 +167,7 @@ def test_no_goal_record_injection():
 
     from grove.tier_budget import load_tier_budgets
 
-    budgets = load_tier_budgets(config_path=Path("config/routing.config.yaml"))
+    budgets = load_tier_budgets(config_path=Path("config/routing.operational.yaml"))
     for tier in budgets.values():
         assert "goal_record" not in tier.context
 

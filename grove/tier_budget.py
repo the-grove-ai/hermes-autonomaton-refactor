@@ -38,7 +38,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from grove.router_merge import load_merged_routing_config
+from grove.router_merge import (
+    load_authority_routing_config,
+    load_operational_routing_config,
+)
 
 __all__ = [
     "GATEABLE_CONTEXT_BLOCKS",
@@ -161,44 +164,40 @@ def load_tier_budgets(
             block, or fails to cover (exactly) the configured provider-backed
             tiers. Fail-loud per D7 — no silent full-load.
     """
-    target = (
-        Path(config_path) if config_path is not None else _resolve_routing_config_path()
+    op_target = (
+        Path(config_path)
+        if config_path is not None
+        else _resolve_operational_config_path()
     )
-    raw = load_merged_routing_config(
-        target, target.parent / "routing.autonomaton.yaml"
+    # GRV-001 v2.0 — tier_preferences (which tiers need a budget) is OPERATIONAL;
+    # the tier_budgets block itself is AUTHORITY. Load both flat documents; the
+    # machine overlay merges onto operational only (R1).
+    auth_target = op_target.with_name("routing.authority.yaml")
+    op = load_operational_routing_config(
+        op_target, op_target.parent / "routing.autonomaton.yaml"
     )
+    auth = load_authority_routing_config(auth_target)
 
-    if not isinstance(raw, dict):
-        raise ValueError(
-            f"routing config at {target} is not a mapping (got "
-            f"{type(raw).__name__})"
-        )
+    inference_tiers = _inference_tiers(op, op_target)
 
-    routing = raw.get("routing")
-    if not isinstance(routing, dict):
-        raise ValueError(
-            f"routing config at {target}: no 'routing' mapping — cannot "
-            f"determine the configured tier set to validate budgets against"
-        )
-
-    inference_tiers = _inference_tiers(routing, target)
-
-    budgets_raw = raw.get("tier_budgets")
+    budgets_raw = auth.get("tier_budgets")
     if budgets_raw is None:
         raise ValueError(
-            f"routing config at {target}: no 'tier_budgets' block, but "
-            f"provider-backed tier(s) {sorted(inference_tiers)} require a budget "
-            f"(D7 — no silent full-load). Add a tier_budgets entry per tier."
+            f"authority routing config at {auth_target}: no 'tier_budgets' block, "
+            f"but provider-backed tier(s) {sorted(inference_tiers)} require a "
+            f"budget (D7 — no silent full-load). Add a tier_budgets entry per tier."
         )
     if not isinstance(budgets_raw, dict):
         raise ValueError(
-            f"routing config at {target}: 'tier_budgets' must be a mapping "
-            f"(got {type(budgets_raw).__name__})"
+            f"authority routing config at {auth_target}: 'tier_budgets' must be a "
+            f"mapping (got {type(budgets_raw).__name__})"
         )
 
     budgets: Dict[str, TierBudget] = {}
     for tier_name, spec in budgets_raw.items():
-        budgets[str(tier_name)] = _parse_tier_budget(str(tier_name), spec, target)
+        budgets[str(tier_name)] = _parse_tier_budget(
+            str(tier_name), spec, auth_target
+        )
 
     # Exact cover: every provider-backed tier has a budget; no budget names a
     # non-inference or unknown tier. Both halves are fail-loud (D7).
@@ -206,14 +205,15 @@ def load_tier_budgets(
     missing = inference_tiers - budget_tiers
     if missing:
         raise ValueError(
-            f"routing config at {target}: provider-backed tier(s) "
+            f"authority routing config at {auth_target}: provider-backed tier(s) "
             f"{sorted(missing)} have no tier_budgets entry (D7 — no silent "
             f"full-load). Every inference tier must declare a budget."
         )
     extra = budget_tiers - inference_tiers
     if extra:
         raise ValueError(
-            f"routing config at {target}: tier_budgets declares {sorted(extra)} "
+            f"authority routing config at {auth_target}: tier_budgets declares "
+            f"{sorted(extra)} "
             f"which is not a provider-backed tier in routing.tier_preferences. "
             f"Non-inference tiers (e.g. the T0 pattern cache) have no prefill to "
             f"govern — remove the stray entry or fix the tier name."
@@ -222,20 +222,20 @@ def load_tier_budgets(
     return budgets
 
 
-def _resolve_routing_config_path() -> Path:
-    """Runtime sovereign copy then repo template.
+def _resolve_operational_config_path() -> Path:
+    """Runtime sovereign copy then repo template — the OPERATIONAL file (GRV-001
+    v2.0). The authority sibling is derived from it by ``load_tier_budgets``.
 
-    Mirrors the resolution the Sprint 29 taxonomy loader and the Dock use:
-    operator copy at ``$GROVE_HOME/routing.config.yaml`` first, else the repo
-    template at ``config/routing.config.yaml`` (``grove/`` is one level under
+    Operator copy at ``$GROVE_HOME/routing.operational.yaml`` first, else the repo
+    template at ``config/routing.operational.yaml`` (``grove/`` is one level under
     the repo root).
     """
     from hermes_constants import get_hermes_home
 
-    runtime = Path(get_hermes_home()) / "routing.config.yaml"
+    runtime = Path(get_hermes_home()) / "routing.operational.yaml"
     if runtime.exists():
         return runtime
-    return Path(__file__).resolve().parents[1] / "config" / "routing.config.yaml"
+    return Path(__file__).resolve().parents[1] / "config" / "routing.operational.yaml"
 
 
 def _inference_tiers(routing: Dict[str, Any], target: Path) -> Set[str]:

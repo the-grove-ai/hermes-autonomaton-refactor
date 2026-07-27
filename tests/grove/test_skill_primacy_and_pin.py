@@ -260,10 +260,12 @@ def test_f5_inert_when_no_ceiling_configured(monkeypatch):
     gsov._enforce_payload_size_ceiling("x" * 100_000)  # inert — no raise
 
 
-def test_f5_repo_config_declares_no_ceiling_yet():
-    # Phase 1 invariant: the repo routing.config.yaml carries no ceiling, so the
-    # gate is dormant until Phase 2 lands the key.
-    assert gsov.smallest_skill_payload_ceiling() is None
+def test_f5_repo_config_declares_ceiling_gate_active():
+    # skill-adoption-v1 C2 landed skill_payload_ceiling under tier_budgets in the
+    # repo routing.authority.yaml, so the F5 gate is now ACTIVE — superseding the
+    # Phase-1 "no ceiling yet" dormancy invariant this test formerly pinned.
+    ceiling = gsov.smallest_skill_payload_ceiling()
+    assert ceiling is not None and ceiling > 0
 
 
 def test_f5_rejects_oversize_against_smallest_ceiling(monkeypatch):

@@ -29,7 +29,7 @@ REPO = Path(__file__).resolve().parents[2]
 # reset (conftest autouse precedes test-module autouse) and restores it.
 @pytest.fixture(autouse=True)
 def _init_router():
-    router.initialize(REPO / "config" / "routing.config.yaml")
+    router.initialize(REPO / "config" / "routing.operational.yaml")
 
 
 class MockAgent:

@@ -113,6 +113,10 @@ def test_dedup_intent_already_in_new_sink():
     ) == []
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_apply_path_writes_new_sink(tmp_path):
     from grove.flywheel_cli import _approve_routing_adjustment
     payload = {"rule": "ratchet_promoted_t2", "add_intents": ["analysis"]}

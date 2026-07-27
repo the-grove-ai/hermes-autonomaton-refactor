@@ -60,7 +60,7 @@ from grove.eval.proposal_queue import (
 from grove.router_merge import (
     _MACHINE_HEADER,
     apply_diff_to_machine_config,
-    load_merged_routing_config,
+    load_operational_routing_config,
 )
 
 # proposal-card-legibility-v1 Phase 1 — the render core (registry, composer,
@@ -277,11 +277,11 @@ def _load_current_routing_rules() -> Optional[Dict[str, Any]]:
     intent as a fresh addition. Read-only — never writes routing.config.yaml.
     """
     try:
-        op = Path.home() / ".grove" / "routing.config.yaml"
+        op = Path.home() / ".grove" / "routing.operational.yaml"
         if not op.exists():
             return None
-        merged = load_merged_routing_config(op, _machine_config_path())
-        return (merged.get("routing") or {}).get("routing_rules") or {}
+        merged = load_operational_routing_config(op, _machine_config_path())
+        return merged.get("routing_rules") or {}
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "[flywheel] could not load routing rules for the ratchet scan "
@@ -768,22 +768,19 @@ def _t1_interaction_cost_usd() -> Optional[float]:
     average interaction size. Returns None when the T1 tier declares no
     cost — the caller then reports savings as unavailable rather than $0."""
     candidates = [
-        Path.home() / ".grove" / "routing.config.yaml",
-        Path(__file__).resolve().parents[1] / "config" / "routing.config.yaml",
+        Path.home() / ".grove" / "routing.operational.yaml",
+        Path(__file__).resolve().parents[1] / "config" / "routing.operational.yaml",
     ]
     for path in candidates:
         if not path.exists():
             continue
         try:
-            data = load_merged_routing_config(
+            data = load_operational_routing_config(
                 path, path.parent / "routing.autonomaton.yaml"
             ) or {}
         except (OSError, ValueError, yaml.YAMLError):
             continue
-        t1 = (
-            ((data.get("routing") or {}).get("tier_preferences") or {}).get("T1")
-            or {}
-        )
+        t1 = (data.get("tier_preferences") or {}).get("T1") or {}
         cost_in = t1.get("cost_per_mtok_input")
         cost_out = t1.get("cost_per_mtok_output")
         if cost_in is None or cost_out is None:

@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from grove.classify import ClassificationResult
+from grove.config.routing_migrate import to_v2_split
 from grove.eval import GateResult, evaluate, gate_proposal
 import grove.eval.hero_runner as _hr
 
@@ -47,9 +48,15 @@ def _write_minimal_routing(
     downward_enabled: bool = True,
     upward_enabled: bool = True,
 ) -> None:
-    """Write a minimal routing.config.yaml with three tiers and
-    routing_rules.downward / upward / escalation blocks. Sufficient for
-    a fresh CognitiveRouter to load."""
+    """Write the v2 operational + authority pair for a minimal routing
+    config with three tiers and routing_rules.downward / upward /
+    escalation blocks. Sufficient for a fresh CognitiveRouter to load.
+
+    The cfg below is authored in the v1 shape and run THROUGH the shared
+    migrator transform (to_v2_split); ``zone_overrides`` is dropped by the
+    transform (GRV-001 v2.0 §VII). ``path`` receives the operational doc;
+    its ``routing.authority.yaml`` sibling receives the authority doc (the
+    router/gate derives the sibling by name)."""
     di = list(downward_intents) if downward_intents is not None else ["conversation"]
     ui = list(upward_intents) if upward_intents is not None else ["debugging"]
     cfg = {
@@ -86,7 +93,9 @@ def _write_minimal_routing(
             "escalation": {"threshold": 0.6},
         },
     }
-    path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    op_text, auth_text = to_v2_split(cfg)
+    path.write_text(op_text, encoding="utf-8")
+    path.with_name("routing.authority.yaml").write_text(auth_text, encoding="utf-8")
 
 
 # ── Sandbox isolation (the lift mechanic itself) ─────────────────────

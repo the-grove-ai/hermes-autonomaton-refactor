@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from grove.config.routing_migrate import to_v2_split
 from grove.router import CognitiveRouter, RoutingDecision, TierConfig
 
 VALID_CONFIG = """\
@@ -40,10 +41,16 @@ routing:
 """
 
 
+# GRV-001 v2.0 — CognitiveRouter now loads the split operational + authority
+# pair. The inline configs above stay authored in the v1 shape and are run
+# THROUGH the shared migrator transform (to_v2_split) to produce the two v2
+# files, so no test hand-sorts keys and the split census has a single owner.
 def _write(tmp_path: Path, text: str = VALID_CONFIG) -> Path:
-    cfg = tmp_path / "routing.config.yaml"
-    cfg.write_text(text, encoding="utf-8")
-    return cfg
+    op_text, auth_text = to_v2_split(text)
+    op = tmp_path / "routing.operational.yaml"
+    op.write_text(op_text, encoding="utf-8")
+    (tmp_path / "routing.authority.yaml").write_text(auth_text, encoding="utf-8")
+    return op
 
 
 def test_t1_get_tier_config_returns_sonnet(tmp_path):
@@ -93,10 +100,10 @@ def test_t6_reload_picks_up_valid_change(tmp_path):
     cfg = _write(tmp_path)
     router = CognitiveRouter(cfg)
     assert router.get_default_tier() == "T2"
-    cfg.write_text(
-        VALID_CONFIG.replace("default_tier: T2", "default_tier: T3"),
-        encoding="utf-8",
+    op_text, _ = to_v2_split(
+        VALID_CONFIG.replace("default_tier: T2", "default_tier: T3")
     )
+    cfg.write_text(op_text, encoding="utf-8")
     router.reload()
     assert router.get_default_tier() == "T3"
 
@@ -123,18 +130,13 @@ def test_t9_unknown_tier_raises_keyerror(tmp_path):
         router.get_tier_config("T9")
 
 
-def test_t10_bad_schema_version_raises_valueerror(tmp_path):
-    bad = VALID_CONFIG.replace("schema_version: 1", "schema_version: 2")
-    with pytest.raises(ValueError):
-        CognitiveRouter(_write(tmp_path, bad))
+# test_t10_bad_schema_version_raises_valueerror REMOVED (GRV-001 v2.0): the
+# router no longer carries a schema_version gate — version enforcement moved to
+# the v2 loaders (grove.router_merge._require_v2_shape) and is covered by
+# tests/grove/test_routing_v2_loaders.py::TestVersionGate.
 
 
 # ----- Sprint 11: route() ------------------------------------------------------
-
-ZONE_OVERRIDE_CONFIG = VALID_CONFIG.replace(
-    "  tier_preferences:",
-    "  zone_overrides:\n    red: T3\n  tier_preferences:",
-)
 
 
 def test_route_default_returns_t2(tmp_path):
@@ -190,15 +192,17 @@ def test_route_model_to_tier(tmp_path):
     assert router.model_to_tier("not-a-bound-model") is None
 
 
-def test_route_zone_override(tmp_path):
-    router = CognitiveRouter(_write(tmp_path, ZONE_OVERRIDE_CONFIG))
+def test_route_zone_is_inert_v2_dropped_zone_overrides(tmp_path):
+    """GRV-001 v2.0 §VII drops ``zone_overrides``. The ``route(zone=...)`` kwarg
+    is retained for signature compatibility but no longer selects a tier — a red
+    zone routes exactly like no zone (the degraded default landing), where v1
+    routed red → T3 via a zone_override rule."""
+    router = CognitiveRouter(_write(tmp_path))
     d = router.route(zone="red")
-    assert d.tier == "T3"
-    assert d.reason == "zone_override"
+    assert d.tier == "T2"
+    assert d.reason == "classifier_unavailable"
     d_green = router.route(zone="green")
     assert d_green.tier == "T2"
-    # Zone passes through (no override for green) and lands on default
-    # tier; with no classifier inputs the decision is tagged degraded.
     assert d_green.reason == "classifier_unavailable"
 
 
@@ -429,8 +433,10 @@ def _rules_cfg(rules_yaml: str) -> str:
 
 
 def _router_from(tmp_path: Path, name: str, text: str) -> CognitiveRouter:
+    op_text, auth_text = to_v2_split(text)
     p = tmp_path / name
-    p.write_text(text, encoding="utf-8")
+    p.write_text(op_text, encoding="utf-8")
+    (tmp_path / "routing.authority.yaml").write_text(auth_text, encoding="utf-8")
     return CognitiveRouter(p)
 
 
@@ -695,7 +701,11 @@ def test_eval_order_is_config_key_order(tmp_path):
 
 
 def _repo_router() -> CognitiveRouter:
-    repo_cfg = Path(__file__).resolve().parents[2] / "config" / "routing.config.yaml"
+    # GRV-001 v2.0 — the shipped config is the split pair; the router takes the
+    # operational path and derives the authority sibling.
+    repo_cfg = (
+        Path(__file__).resolve().parents[2] / "config" / "routing.operational.yaml"
+    )
     return CognitiveRouter(repo_cfg)
 
 
@@ -754,19 +764,18 @@ def test_real_repo_config_escalation_disabled_low_conf_coding_holds():
 def test_malformed_rule_reload_keeps_prior_config(tmp_path, caplog):
     """All-or-nothing swap (#14): a malformed rule on reload is rejected and
     the prior loaded config stays intact."""
-    p = tmp_path / "routing.config.yaml"
-    p.write_text(RULES_CONFIG, encoding="utf-8")
+    p = _write(tmp_path, RULES_CONFIG)
     router = CognitiveRouter(p)
     before = router.route(complexity_signal="complex", intent="planning", confidence=0.9)
     assert before.reason == "upward"
     # Inject an unknown match key and reload — must reject, keep last-good.
-    p.write_text(
+    op_text, _ = to_v2_split(
         RULES_CONFIG.replace(
             "        complexity: [complex, novel]",
             "        complexity: [complex, novel]\n        bogus: x",
-        ),
-        encoding="utf-8",
+        )
     )
+    p.write_text(op_text, encoding="utf-8")
     with caplog.at_level(logging.WARNING):
         router.reload()
     after = router.route(complexity_signal="complex", intent="planning", confidence=0.9)

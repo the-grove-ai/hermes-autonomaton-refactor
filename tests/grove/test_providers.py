@@ -7,6 +7,7 @@ import pytest
 import grove.providers
 import grove.router
 from grove.classify import ClassificationResult
+from grove.config.routing_migrate import to_v2_split
 from grove.providers import current_tier, resolve_tier_to_runtime, route_for_agent
 from grove.router import TierConfig
 
@@ -59,8 +60,12 @@ def _reset_router(monkeypatch):
 
 
 def _init_router(tmp_path):
-    cfg = tmp_path / "routing.config.yaml"
-    cfg.write_text(VALID_CONFIG, encoding="utf-8")
+    # GRV-001 v2.0 — VALID_CONFIG is authored v1 and split through the shared
+    # migrator transform into the v2 operational + authority pair the router loads.
+    op_text, auth_text = to_v2_split(VALID_CONFIG)
+    cfg = tmp_path / "routing.operational.yaml"
+    cfg.write_text(op_text, encoding="utf-8")
+    (tmp_path / "routing.authority.yaml").write_text(auth_text, encoding="utf-8")
     grove.router.initialize(cfg)
 
 

@@ -32,7 +32,10 @@ from grove.escalation_policy import (
     load_escalation_policy,
     pre_route_check,
 )
-from grove.router_merge import load_merged_routing_config
+from grove.router_merge import (
+    load_authority_routing_config,
+    load_operational_routing_config,
+)
 from grove.telemetry import log_routing_config_load
 
 logger = logging.getLogger(__name__)
@@ -254,8 +257,11 @@ class CognitiveRouter:
 
             machine_path = _machine_config_path()
         self._machine_path = Path(machine_path)
+        # GRV-001 v2.0 split — the operator surface is two flat files. config_path
+        # is the OPERATIONAL file; the AUTHORITY file is its sibling. The machine
+        # overlay merges onto operational ONLY (R1 — authority has no overlay).
+        self._authority_path = self._config_path.with_name("routing.authority.yaml")
         self._tiers: dict[str, TierConfig] = {}
-        self._zone_overrides: dict[str, str] = {}
         self._routing_rules: list[RoutingRule] = []
         self._default_tier: str = ""
         self._escalation_threshold: float = 0.0
@@ -364,8 +370,7 @@ class CognitiveRouter:
         3. Declarative routing_rules — every rule in config-key
            (insertion) order. The first enabled rule whose match criteria
            all hold against the classification decides the tier.
-        4. zone_overrides — a tier pinned for a classified zone.
-        5. default_tier.
+        4. default_tier.
 
         ``intent``, ``confidence`` and ``complexity_signal`` are the
         telemetry classifier's read of the request; the routing_rules
@@ -468,18 +473,7 @@ class CognitiveRouter:
                 pattern_cache_hit=False,
             )
 
-        # 4. Zone override — a tier pinned for a classified zone.
-        if zone is not None and zone in self._zone_overrides:
-            tier = self._zone_overrides[zone]
-            return RoutingDecision(
-                tier=tier,
-                tier_config=self.get_tier_config(tier),
-                reason="zone_override",
-                confidence=confidence,
-                pattern_cache_hit=False,
-            )
-
-        # 5. Default tier. When no classifier input was available
+        # 4. Default tier. When no classifier input was available
         #    (intent / confidence / complexity_signal all None — the
         #    T-telemetry classifier failed or was suppressed), the
         #    decision is degraded: the pipeline still routes (to the
@@ -502,7 +496,6 @@ class CognitiveRouter:
         """Reload config from disk; on failure, keep last known good and log loudly."""
         snapshot = (
             dict(self._tiers),
-            dict(self._zone_overrides),
             list(self._routing_rules),
             self._default_tier,
             self._escalation_threshold,
@@ -517,7 +510,6 @@ class CognitiveRouter:
             )
             (
                 self._tiers,
-                self._zone_overrides,
                 self._routing_rules,
                 self._default_tier,
                 self._escalation_threshold,
@@ -562,36 +554,25 @@ class CognitiveRouter:
 
     def _load_into_self(self) -> None:
         """Read, parse, validate; mutate self atomically on success."""
-        raw = load_merged_routing_config(self._config_path, self._machine_path)
+        # GRV-001 v2.0 — two flat documents. Operational: operator file + machine
+        # overlay (load_operational_routing_config). Authority: operator file only,
+        # no overlay (load_authority_routing_config — R1). The v2 loaders own
+        # version enforcement, so the router carries no schema_version gate.
+        op = load_operational_routing_config(self._config_path, self._machine_path)
+        auth = load_authority_routing_config(self._authority_path)
 
-        if not isinstance(raw, dict):
-            raise ValueError(
-                f"routing config at {self._config_path} did not parse to a mapping"
-            )
-
-        routing = raw.get("routing")
-        if not isinstance(routing, dict):
-            raise ValueError(
-                f"routing config at {self._config_path} has no 'routing' mapping"
-            )
-
-        version = routing.get("schema_version")
-        if version != 1:
-            raise ValueError(
-                f"unsupported schema_version {version!r} in {self._config_path}"
-                f" (expected 1)"
-            )
-
-        default_tier = routing.get("default_tier")
+        default_tier = op.get("default_tier")
         if not isinstance(default_tier, str) or not default_tier:
             raise ValueError(
-                f"routing config at {self._config_path} missing a string 'default_tier'"
+                f"operational routing config at {self._config_path} missing a "
+                f"string 'default_tier'"
             )
 
-        tier_prefs = routing.get("tier_preferences")
+        tier_prefs = op.get("tier_preferences")
         if not isinstance(tier_prefs, dict) or not tier_prefs:
             raise ValueError(
-                f"routing config at {self._config_path} has no 'tier_preferences'"
+                f"operational routing config at {self._config_path} has no "
+                f"'tier_preferences'"
             )
 
         # binding-opacity-v1 P4a/P4b — slug-keyed operator-declared model physics,
@@ -599,11 +580,11 @@ class CognitiveRouter:
         # reference (tier -> model -> facts). Optional: absent ⇒ empty mapping
         # (every bound model safe-defaults). The router never parses the slug; it
         # is a dict key (R-2).
-        model_facts = routing.get("model_facts") or {}
+        model_facts = op.get("model_facts") or {}
         if not isinstance(model_facts, dict):
             raise ValueError(
-                f"routing config at {self._config_path}: 'model_facts' must be a "
-                f"mapping of slug -> facts (got {type(model_facts).__name__})"
+                f"operational routing config at {self._config_path}: 'model_facts' "
+                f"must be a mapping of slug -> facts (got {type(model_facts).__name__})"
             )
 
         tiers: dict[str, TierConfig] = {}
@@ -645,43 +626,39 @@ class CognitiveRouter:
                 ),
             )
 
-        zone_overrides = routing.get("zone_overrides") or {}
-        if not isinstance(zone_overrides, dict):
-            raise ValueError(
-                f"routing config at {self._config_path} has a non-mapping"
-                f" 'zone_overrides'"
-            )
-
-        escalation = routing.get("escalation") or {}
-        threshold = escalation.get("threshold")
+        # escalation_threshold — a flat scalar in the AUTHORITY document
+        # (v1 nested it as escalation.threshold; v2 flattens it).
+        threshold = auth.get("escalation_threshold")
         if not isinstance(threshold, (int, float)):
             raise ValueError(
-                f"routing config at {self._config_path} missing numeric"
-                f" 'escalation.threshold'"
+                f"authority routing config at {self._authority_path} missing "
+                f"numeric 'escalation_threshold'"
             )
 
-        telemetry = routing.get("telemetry") or {}
+        telemetry = op.get("telemetry") or {}
         telemetry_tier = telemetry.get("tier")
         if not isinstance(telemetry_tier, str) or not telemetry_tier:
             raise ValueError(
-                f"routing config at {self._config_path} missing 'telemetry.tier'"
+                f"operational routing config at {self._config_path} missing "
+                f"'telemetry.tier'"
             )
 
         # openrouter-zero-retention-routing-v1: optional, operator-owned. Absent
         # ⇒ {} (feature off). Present ⇒ must be a mapping; the inner objects
         # (e.g. provider_routing.openrouter) are passed through verbatim, so we
         # validate only the container shape, not provider field names.
-        provider_routing = routing.get("provider_routing") or {}
+        provider_routing = op.get("provider_routing") or {}
         if not isinstance(provider_routing, dict):
             raise ValueError(
-                f"routing config at {self._config_path}: 'provider_routing' must"
-                f" be a mapping (got {type(provider_routing).__name__})"
+                f"operational routing config at {self._config_path}: "
+                f"'provider_routing' must be a mapping "
+                f"(got {type(provider_routing).__name__})"
             )
 
         # Declarative routing rules. Optional: a config predating this
         # section yields downward/upward absent and a synthesized
         # escalation rule carrying the top-level escalation.threshold.
-        routing_rules = _parse_routing_rules(routing, float(threshold))
+        routing_rules = _parse_routing_rules(op, float(threshold))
         for rule in routing_rules:
             if rule.target_tier is not None and rule.target_tier not in tiers:
                 raise ValueError(
@@ -696,11 +673,14 @@ class CognitiveRouter:
         # disabled policy, never an exception. Parent escalation must be
         # enabled for pre_route to fire (load_escalation_policy honors
         # the parent flag when defaulting pre_route.enabled).
-        escalation_policy = load_escalation_policy(raw)
+        # escalation_policy — from the AUTHORITY document. Wrapped under a
+        # 'routing' key so the shared permissive reader (grove.escalation_policy)
+        # finds it exactly as before, WITHOUT a contract change that would ripple
+        # to its other caller (the Dispatcher's app-config path — out of scope).
+        escalation_policy = load_escalation_policy({"routing": auth})
 
         # All-or-nothing swap (mutation only after validation succeeds).
         self._tiers = tiers
-        self._zone_overrides = dict(zone_overrides)
         self._routing_rules = routing_rules
         self._default_tier = default_tier
         self._escalation_threshold = float(threshold)
@@ -986,21 +966,29 @@ def get_provider_routing() -> dict:
 
 
 def _resolve_config_path(explicit: Optional[Path]) -> Path:
+    """Resolve the OPERATIONAL routing file (GRV-001 v2.0 split).
+
+    The AUTHORITY file is the sibling the router derives from this path; both are
+    seeded together on first run so the split pair always travels as a unit.
+    """
     if explicit is not None:
         return Path(explicit)
 
-    operator_copy = Path.home() / ".grove" / "routing.config.yaml"
+    operator_copy = Path.home() / ".grove" / "routing.operational.yaml"
     if operator_copy.exists():
         return operator_copy
 
-    repo_default = (
-        Path(__file__).resolve().parent.parent / "config" / "routing.config.yaml"
-    )
-    if not repo_default.exists():
+    repo_dir = Path(__file__).resolve().parent.parent / "config"
+    repo_op = repo_dir / "routing.operational.yaml"
+    repo_auth = repo_dir / "routing.authority.yaml"
+    if not repo_op.exists():
         raise FileNotFoundError(
-            f"no routing config found at {operator_copy} or {repo_default}"
+            f"no operational routing config found at {operator_copy} or {repo_op}"
         )
 
     operator_copy.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(repo_default, operator_copy)
+    shutil.copy2(repo_op, operator_copy)
+    # Seed the authority sibling alongside — the router loads both documents.
+    if repo_auth.exists():
+        shutil.copy2(repo_auth, operator_copy.parent / "routing.authority.yaml")
     return operator_copy

@@ -24,6 +24,7 @@ from typing import Optional
 import pytest
 
 from grove.classify import ClassificationResult
+from grove.config.routing_migrate import to_v2_split
 from grove.eval import (
     AssertionFailure,
     EvalReport,
@@ -371,9 +372,10 @@ class TestGateProposalContract:
         Detailed sandbox behavior is in test_gate_proposal_lift.py;
         this meta-test just asserts the lift happened."""
         import grove.eval.hero_runner as _hr
-        import yaml
-        op = tmp_path / "routing.config.yaml"
-        op.write_text(yaml.safe_dump({
+        # v1-authored cfg (zone_overrides dropped by the transform) split into
+        # the v2 operational + authority pair via the shared migrator; the gate
+        # derives the routing.authority.yaml sibling from the operational path.
+        cfg = {
             "routing": {
                 "schema_version": 1,
                 "default_tier": "T2",
@@ -391,7 +393,11 @@ class TestGateProposalContract:
                 "telemetry": {"tier": "T1"},
                 "escalation": {"threshold": 0.6},
             },
-        }, sort_keys=False))
+        }
+        op = tmp_path / "routing.config.yaml"
+        op_text, auth_text = to_v2_split(cfg)
+        op.write_text(op_text, encoding="utf-8")
+        op.with_name("routing.authority.yaml").write_text(auth_text, encoding="utf-8")
         monkeypatch.setattr(
             _hr, "_classify",
             lambda msg: _classification(intent_class="planning"),

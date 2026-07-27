@@ -24,20 +24,25 @@ from grove.config.routing_writer import ConfigValidationError, RoutingConfigWrit
 # entry distinct from every default tier binding.
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_TEMPLATE = _REPO_ROOT / "config" / "routing.config.yaml"
+# GRV-001 v2.0 — model swaps mutate tier_preferences, which live in the
+# OPERATIONAL file. The writer's sandbox validation constructs a CognitiveRouter,
+# so the AUTHORITY sibling must be present alongside it.
+_TEMPLATE = _REPO_ROOT / "config" / "routing.operational.yaml"
+_AUTH_TEMPLATE = _REPO_ROOT / "config" / "routing.authority.yaml"
 
 
 def _model(path: Path, tier: str):
     """(model, previous_model) for a tier, read back through ruamel."""
     data = ruamel.yaml.YAML().load(path.read_text(encoding="utf-8"))
-    entry = data["routing"]["tier_preferences"][tier]
+    entry = data["tier_preferences"][tier]
     return entry.get("model"), entry.get("previous_model")
 
 
 @pytest.fixture
 def writer(tmp_path):
-    cfg = tmp_path / "routing.config.yaml"
+    cfg = tmp_path / "routing.operational.yaml"
     shutil.copy(_TEMPLATE, cfg)
+    shutil.copy(_AUTH_TEMPLATE, tmp_path / "routing.authority.yaml")  # sandbox router needs it
     mac = tmp_path / "routing.autonomaton.yaml"  # absent -> operator-only merge
     return RoutingConfigWriter(cfg, machine_path=mac, reload_fn=lambda: None), cfg
 
@@ -67,11 +72,11 @@ async def test_revert_toggles_model_and_previous(writer):
 
 async def test_swap_preserves_comments(writer):
     w, cfg = writer
-    assert "# DEFAULT PROVIDER" in cfg.read_text()
+    assert "LOCAL BINDING" in cfg.read_text()
     await w.swap_tier_model("T2", "deepseek/deepseek-v4-flash")
     after = cfg.read_text()
-    assert "# DEFAULT PROVIDER" in after  # AC-8
-    assert "THE FOUR TIERS" in after
+    assert "LOCAL BINDING" in after  # AC-8 — comment-dense operational block survives
+    assert "PROVIDER ROUTING" in after
 
 
 # ----- writer: concurrency --------------------------------------------------
@@ -85,7 +90,7 @@ async def test_concurrent_swaps_no_corruption(writer):
         w.swap_tier_model("T3", "z-ai/glm-4.6"),
     )
     data = ruamel.yaml.YAML().load(cfg.read_text(encoding="utf-8"))
-    tiers = data["routing"]["tier_preferences"]
+    tiers = data["tier_preferences"]
     assert tiers["T1"]["model"] == "deepseek/deepseek-v4-flash"
     assert tiers["T2"]["model"] == "deepseek/deepseek-v3.2"
     assert tiers["T3"]["model"] == "z-ai/glm-4.6"
@@ -222,8 +227,9 @@ def test_catalog_schema_validation_failures():
 
 async def test_swap_files_routing_config_mutation_event(writer, monkeypatch):
     """The writer audits itself: an apply_mutation files a routing_config_mutation
-    Kaizen event under a cli-<utc> sentinel session with surface_class=scope_defining
-    (mirrors capability_registry._file_binding_mutation_event)."""
+    Kaizen event under a cli-<utc> sentinel session with surface_class=in_scope
+    (GRV-001 v2.0 — model swaps mutate the autonomous_loop-writable operational
+    surface, not the scope-defining authority surface)."""
     w, cfg = writer
     captured = []
     from grove import kaizen_ledger as kl
@@ -238,7 +244,7 @@ async def test_swap_files_routing_config_mutation_event(writer, monkeypatch):
     assert len(events) == 1
     sid, _et, fields = events[0]
     assert sid.startswith("cli-")                       # sentinel session
-    assert fields["surface_class"] == "scope_defining"
+    assert fields["surface_class"] == "in_scope"
     assert "T2" in fields["label"]
     assert fields["config_path"] == str(cfg)
 

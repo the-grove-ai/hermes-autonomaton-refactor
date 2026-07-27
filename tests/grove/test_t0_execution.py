@@ -368,7 +368,11 @@ def test_record_hit_increments(_grove_home):
 # ── stats ───────────────────────────────────────────────────────────────
 
 
-def test_stats_counts_and_savings(_grove_home, capsys):
+def test_stats_counts_and_savings(_grove_home, capsys, monkeypatch):
+    # Point Path.home at a home carrying no ~/.grove routing override so the repo
+    # operational template drives the cost read deterministically (GRV-001 v2.0 —
+    # tier blocks declare no cost, so savings report as unavailable, below).
+    monkeypatch.setattr(Path, "home", lambda: _grove_home)
     from grove import flywheel_cli as fc
     store = PatternCacheStore(_grove_home / "pattern_cache.db")
     _seed(store, "q1", "factual_lookup", hit_count=7)
@@ -383,12 +387,18 @@ def test_stats_counts_and_savings(_grove_home, capsys):
     assert "Active patterns:      2" in out
     assert "Total patterns:       3" in out
     assert "Total hits (active):  10" in out
-    # savings line present and non-zero (repo default T1 cost is declared)
-    assert "Estimated savings:    ~$" in out
+    # GRV-001 v2.0 — the operational tier block declares no cost_per_mtok (cost is
+    # a model_facts fact; the tier-field consumer reports savings unavailable until
+    # binding-capability-sync-v1 rewires it), so the savings line is 'n/a'.
+    assert "Estimated savings:    n/a" in out
 
 
-def test_t1_interaction_cost_reads_config(_grove_home):
+def test_t1_interaction_cost_unavailable_when_tier_declares_no_cost(_grove_home, monkeypatch):
+    # GRV-001 v2.0 — tier blocks carry NO cost_per_mtok (cost moved to
+    # model_facts); the tier-field-reading consumer returns None ("savings
+    # unavailable") until binding-capability-sync-v1 rewires it onto model_facts.
+    # Path.home → a home with no ~/.grove override so the repo operational
+    # template (no T1 tier cost) drives the result deterministically.
+    monkeypatch.setattr(Path, "home", lambda: _grove_home)
     from grove.flywheel_cli import _t1_interaction_cost_usd
-    cost = _t1_interaction_cost_usd()
-    # Repo default routing.config.yaml declares T1 cost → a positive estimate.
-    assert cost is not None and cost > 0
+    assert _t1_interaction_cost_usd() is None

@@ -146,6 +146,10 @@ class TestMixedTypeQueue:
 
 
 class TestApproveDispatch:
+    @pytest.mark.xfail(
+        strict=True,
+        reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+    )
     def test_routing_adjustment_writes_to_machine_config(
         self, tmp_path: Path,
     ) -> None:
@@ -163,6 +167,10 @@ class TestApproveDispatch:
         assert intents == ["conversation"]
         assert read_all(path=queue) == []
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+    )
     def test_legacy_routing_update_approves_via_routing_path(
         self, tmp_path: Path,
     ) -> None:

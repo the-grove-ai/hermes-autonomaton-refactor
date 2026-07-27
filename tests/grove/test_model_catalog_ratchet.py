@@ -74,11 +74,11 @@ def test_no_model_id_literals_in_grove_code():
 
 
 def test_repo_tier_preferences_are_all_cataloged():
-    routing = yaml.safe_load((_REPO / "config" / "routing.config.yaml").read_text("utf-8"))
+    routing = yaml.safe_load((_REPO / "config" / "routing.operational.yaml").read_text("utf-8"))
     catalog = yaml.safe_load((_REPO / "config" / "model-catalog.yaml").read_text("utf-8"))
     cat_slugs = {m["slug"] for m in catalog["models"]}
 
-    prefs = (routing.get("routing", {}) or {}).get("tier_preferences", {}) or {}
+    prefs = routing.get("tier_preferences", {}) or {}
     bound = {
         entry["model"]
         for entry in prefs.values()

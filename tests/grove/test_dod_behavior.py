@@ -16,7 +16,7 @@ from grove.prompt.composer import PromptComposer, SectionResult
 from grove.tier_budget import load_tier_budgets, tier_admits_context_block
 
 _REPO = Path(__file__).resolve().parents[2]
-_CFG = _REPO / "config" / "routing.config.yaml"
+_CFG = _REPO / "config" / "routing.operational.yaml"
 _TAX = _REPO / "config" / "tool_groups.yaml"
 
 # The real committed budgets + taxonomy drive the behavior — not hand-typed copies.

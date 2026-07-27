@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
+from grove.config.routing_migrate import to_v2_split
 from grove.escalation_policy import (
     EscalationPolicy,
     PreRoutePolicy,
@@ -261,7 +262,14 @@ class TestPreRouteCheck:
 
 
 def _write_routing_config(tmp_path: Path, pre_route_enabled: bool) -> Path:
-    """Write a minimal routing.config.yaml with pre_route configured."""
+    """Write the v2 operational + authority pair for a minimal routing
+    config with pre_route configured.
+
+    The cfg is authored v1-shaped and split via the shared migrator
+    transform (to_v2_split); ``escalation_policy`` (with the pre_route
+    sub-block) lands in the AUTHORITY doc, as does ``escalation.threshold``
+    (flattened). Returns the operational path; the CognitiveRouter derives
+    the ``routing.authority.yaml`` sibling by name."""
     cfg = {
         "routing": {
             "schema_version": 1,
@@ -292,7 +300,9 @@ def _write_routing_config(tmp_path: Path, pre_route_enabled: bool) -> Path:
         }
     }
     path = tmp_path / "routing.config.yaml"
-    path.write_text(yaml.safe_dump(cfg))
+    op_text, auth_text = to_v2_split(cfg)
+    path.write_text(op_text, encoding="utf-8")
+    path.with_name("routing.authority.yaml").write_text(auth_text, encoding="utf-8")
     return path
 
 

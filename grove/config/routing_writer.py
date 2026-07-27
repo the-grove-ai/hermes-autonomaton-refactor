@@ -83,7 +83,7 @@ def _default_config_path() -> Path:
     """
     from hermes_constants import get_hermes_home
 
-    return (Path(get_hermes_home()) / "routing.config.yaml").resolve()
+    return (Path(get_hermes_home()) / "routing.operational.yaml").resolve()
 
 
 def _default_machine_path() -> Path:
@@ -141,13 +141,14 @@ def _tier_entry(data: Any, tier: str) -> Any:
     ``model``) with a ``ConfigValidationError`` the portal surfaces inline.
     """
     if not isinstance(data, dict):
-        raise ConfigValidationError("routing.config.yaml did not parse to a mapping")
-    routing = data.get("routing")
-    if not isinstance(routing, dict):
-        raise ConfigValidationError("routing.config.yaml has no 'routing' mapping")
-    tier_prefs = routing.get("tier_preferences")
+        raise ConfigValidationError("operational routing config did not parse to a mapping")
+    # GRV-001 v2.0 — the operational file this writer mutates is FLAT (no
+    # top-level 'routing:' wrapper); tier_preferences is a top-level key. (Phase-2
+    # retargeted _default_config_path to routing.operational.yaml but left this
+    # navigation v1-nested — routing-v2-migration-v1 Phase 2b inline correction.)
+    tier_prefs = data.get("tier_preferences")
     if not isinstance(tier_prefs, dict):
-        raise ConfigValidationError("routing.config.yaml has no 'tier_preferences'")
+        raise ConfigValidationError("operational routing config has no 'tier_preferences'")
     entry = tier_prefs.get(tier)
     if not isinstance(entry, dict):
         raise ConfigValidationError(
@@ -160,8 +161,9 @@ def _file_routing_mutation_event(label: str, config_path: str) -> None:
     """routing-scope-wall-v1 R-W4 — the writer audits itself (mirrors
     grove.capability_registry._file_binding_mutation_event).
 
-    routing.config.yaml is a scope-defining authority surface; the sole
-    sanctioned writer must leave a Kaizen-ledger trail. Component-filer pattern:
+    GRV-001 v2.0 — this writer targets routing.operational.yaml, the IN-SCOPE
+    (autonomous_loop-writable) surface; the authority surface is untouched. The
+    sole sanctioned writer still leaves a Kaizen-ledger trail. Component-filer:
     RoutingConfigWriter has no CLI session of its own, so the event lands under a
     ``cli-<utc-timestamp>`` sentinel session. Error-log floor: this runs AFTER the
     mutation has landed atomically, so a filing failure must not misreport the
@@ -177,7 +179,7 @@ def _file_routing_mutation_event(label: str, config_path: str) -> None:
             "routing_config_mutation",
             label=label,
             config_path=config_path,
-            surface_class="scope_defining",
+            surface_class="in_scope",
         )
     except Exception as file_exc:  # noqa: BLE001 — filing leg, log floor stands
         logger.error(
@@ -375,26 +377,33 @@ class RoutingConfigWriter:
     def _sandbox_validate(self, yaml_rt: YAML, data: Any) -> None:
         """Construct a throwaway ``CognitiveRouter`` from the mutated config.
 
-        Writes the candidate document to a temp file and instantiates a router
-        against it (merged with the machine overlay, as live). If construction
-        raises — bad schema, unparseable tier, missing required field — the change
-        is rejected as a ``ConfigValidationError`` and the live file never moves.
+        GRV-001 v2.0 — the router loads a flat OPERATIONAL file plus its AUTHORITY
+        sibling. This writer mutates the operational file, so the sandbox writes
+        the candidate operational doc as ``routing.operational.yaml`` in a temp
+        directory alongside a copy of the LIVE authority doc, then instantiates a
+        router (merged with the machine overlay, as live). If construction raises —
+        bad schema, unparseable tier, missing required field — the change is
+        rejected as a ``ConfigValidationError`` and the live file never moves.
         """
         from grove.router import CognitiveRouter
 
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".yaml", delete=False, encoding="utf-8"
-        ) as tmp:
-            yaml_rt.dump(data, tmp)
-            sandbox_path = tmp.name
-        try:
-            CognitiveRouter(Path(sandbox_path), machine_path=self._machine_path)
-        except Exception as exc:
-            raise ConfigValidationError(
-                f"proposed routing.config.yaml failed sandbox validation: {exc}"
-            ) from exc
-        finally:
-            os.unlink(sandbox_path)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            op_path = Path(tmpdir) / "routing.operational.yaml"
+            auth_path = Path(tmpdir) / "routing.authority.yaml"
+            with open(op_path, "w", encoding="utf-8") as fh:
+                yaml_rt.dump(data, fh)
+            # Copy the live authority doc so the sandbox router loads the real
+            # pair. The router derives the authority path as op_path's sibling.
+            live_authority = self._config_path.with_name("routing.authority.yaml")
+            if live_authority.exists():
+                auth_path.write_bytes(live_authority.read_bytes())
+            try:
+                CognitiveRouter(op_path, machine_path=self._machine_path)
+            except Exception as exc:
+                raise ConfigValidationError(
+                    f"proposed routing.operational.yaml failed sandbox "
+                    f"validation: {exc}"
+                ) from exc
 
 
 # ----- module-level singleton -------------------------------------------------

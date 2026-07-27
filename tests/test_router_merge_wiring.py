@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 import grove.flywheel_cli
+from grove.config.routing_migrate import to_v2_split
 from grove.router import _MACHINE_ABSENT_SENTINEL, CognitiveRouter
 
 # Operator root: default tier T1 (cheap), with one Ratchet-promotions rule
@@ -77,32 +78,31 @@ routing:
 
 # Machine additions set-union a sink intent into ratchet_promotions.match.
 # target_tier is NOT restated — the operator owns that scalar (operator-wins).
+# GRV-001 v2.0 — machine overlays are FLAT (no 'routing:' wrapper); the loader
+# merges them onto the flat operational document, which must stay v2-shaped.
 MACHINE_ONE_SINK = """\
-routing:
-  routing_rules:
-    ratchet_promotions:
-      match:
-        intents: [ratchet_promoted_t2]
+routing_rules:
+  ratchet_promotions:
+    match:
+      intents: [ratchet_promoted_t2]
 """
 
 MACHINE_TWO_SINKS = """\
-routing:
-  routing_rules:
-    ratchet_promotions:
-      match:
-        intents: [ratchet_promoted_t2, ratchet_promoted_t2_b]
+routing_rules:
+  ratchet_promotions:
+    match:
+      intents: [ratchet_promoted_t2, ratchet_promoted_t2_b]
 """
 
 # A machine-only rule key (no operator collision, so it survives the merge)
 # targeting a tier the operator never declared — trips validation.
 MACHINE_UNDECLARED_TIER = """\
-routing:
-  routing_rules:
-    bogus_machine_rule:
-      enabled: true
-      match:
-        intents: [anything]
-      target_tier: T9
+routing_rules:
+  bogus_machine_rule:
+    enabled: true
+    match:
+      intents: [anything]
+    target_tier: T9
 """
 
 # Confidence above the 0.6 escalation threshold so the synthesized step_up
@@ -116,7 +116,13 @@ def _write(path: Path, text: str) -> Path:
 
 
 def _operator(tmp_path: Path) -> Path:
-    return _write(tmp_path / "routing.config.yaml", OPERATOR_CONFIG)
+    # GRV-001 v2.0 — OPERATOR_CONFIG is authored v1 and split through the shared
+    # migrator transform into the operational + authority pair; the router takes
+    # the operational path and derives the authority sibling. The machine overlay
+    # merges onto operational only (R1).
+    op_text, auth_text = to_v2_split(OPERATOR_CONFIG)
+    _write(tmp_path / "routing.authority.yaml", auth_text)
+    return _write(tmp_path / "routing.operational.yaml", op_text)
 
 
 def _load_events(caplog) -> list[dict]:

@@ -190,9 +190,9 @@ class TestRepoTemplateTierResolution:
     @pytest.fixture
     def repo_tiers(self) -> dict:
         repo_root = Path(__file__).resolve().parents[2]
-        cfg_path = repo_root / "config" / "routing.config.yaml"
+        cfg_path = repo_root / "config" / "routing.operational.yaml"
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-        return cfg["routing"]["tier_preferences"]
+        return cfg["tier_preferences"]
 
     def _assert_tier_chat_completions(self, spec: dict) -> None:
         """Mirror the production resolution path: derive api_mode from the

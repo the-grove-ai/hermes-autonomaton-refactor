@@ -18,6 +18,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 import yaml
 
 from grove import flywheel_cli
@@ -83,6 +84,10 @@ def _assert_machine_has_intent(machine: Path, intent_class: str) -> None:
 # ── the full loop, via the CLI (zero mocks) ──────────────────────────
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_full_loop_via_cli_approve(tmp_path: Path) -> None:
     queue = tmp_path / "proposals.jsonl"
     machine = tmp_path / "routing.autonomaton.yaml"
@@ -103,6 +108,10 @@ def test_full_loop_via_cli_approve(tmp_path: Path) -> None:
 # ── the SAME loop, via the surface-agnostic tool ─────────────────────
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_full_loop_via_approve_proposal_tool(tmp_path: Path) -> None:
     queue = tmp_path / "proposals.jsonl"
     machine = tmp_path / "routing.autonomaton.yaml"

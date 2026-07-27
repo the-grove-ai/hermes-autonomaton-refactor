@@ -37,8 +37,9 @@ import argparse
 import os
 import sys
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
@@ -153,6 +154,30 @@ def _build_split(v1_doc: Any) -> Tuple[CommentedMap, CommentedMap, Dict[str, str
             disposition[key] = "dropped"
 
     return operational, authority, disposition
+
+
+def _dump_to_str(doc: Any, yaml_rt: YAML) -> str:
+    """Serialize a split doc to a YAML string via the same ruamel writer the
+    migrator uses on disk — so fixtures and the CLI emit byte-comparable v2."""
+    buf = StringIO()
+    yaml_rt.dump(doc, buf)
+    return buf.getvalue()
+
+
+def to_v2_split(v1: Union[str, Dict[str, Any]]) -> Tuple[str, str]:
+    """The single reusable v1→v2 split transform (routing-v2-migration-v1, 2b).
+
+    Shared by the migration CLI and by test fixtures so NO caller hand-sorts
+    keys — the census in :func:`_build_split` is the sole source of the split.
+    Accepts a loaded v1 mapping (a top-level ``routing:`` block) or a v1 YAML
+    string, and returns the ``(operational_yaml, authority_yaml)`` text pair,
+    each serialized through the migrator's ruamel writer. Only keys actually
+    present in the input are carried; ``zone_overrides`` is dropped (§VII).
+    """
+    yaml_rt = _ruamel()
+    doc = yaml_rt.load(v1) if isinstance(v1, str) else v1
+    operational, authority, _disposition = _build_split(doc)
+    return _dump_to_str(operational, yaml_rt), _dump_to_str(authority, yaml_rt)
 
 
 def _write_tmp_fsync(doc: Any, out_path: Path, yaml_rt: YAML) -> Path:

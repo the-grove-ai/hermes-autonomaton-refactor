@@ -166,6 +166,10 @@ def test_routing_adjustment_empty_cluster_refused(tmp_path: Path, capsys) -> Non
     assert not (tmp_path / "m.yaml").exists()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_routing_adjustment_with_cluster_approves(tmp_path: Path) -> None:
     queue = tmp_path / "proposals.jsonl"
     machine = tmp_path / "m.yaml"

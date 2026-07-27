@@ -30,6 +30,7 @@ Per GATE-A operator revision (set-union vs. replace):
 from __future__ import annotations
 
 import logging
+import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -199,7 +200,33 @@ def apply_diff_to_machine_config(
 
     merged = _deep_merge(existing, diff)
     rendered = yaml.safe_dump(merged, sort_keys=False, default_flow_style=False)
-    machine_path.write_text(_MACHINE_HEADER + "\n" + rendered, encoding="utf-8")
+
+    # GRV-001 v2.0 fail-closed guard (routing-v2-migration-v1 Phase 2b). Stage the
+    # candidate, then VALIDATE BY LOADING it through the runtime loader — the guard
+    # IS ``load_operational_routing_config`` (no parallel shape-check), so it
+    # catches a v1-nested ``routing:`` wrapper, any other shape violation, AND
+    # §V authority-reserved-key smuggling via the loader's own collision check.
+    # Only on success do we fsync + atomically replace, so a rejected diff leaves
+    # ``machine_path`` byte-unchanged (or absent). The operational path is resolved
+    # as the sibling of the machine file — the exact runtime pairing the router
+    # loads (operational + its machine overlay), not a hardcoded repo path.
+    operational_path = machine_path.with_name("routing.operational.yaml")
+    tmp_path = machine_path.with_name(machine_path.name + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        fh.write(_MACHINE_HEADER + "\n" + rendered)
+        fh.flush()
+        os.fsync(fh.fileno())
+    try:
+        load_operational_routing_config(operational_path, tmp_path)
+    except Exception:
+        # Fail-closed: drop the candidate, leave the live machine file untouched,
+        # and re-raise so the approve surfaces report a failed approval.
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    os.replace(tmp_path, machine_path)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
