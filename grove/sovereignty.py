@@ -33,6 +33,7 @@ from grove.skills import (
     stamp_promotion_frontmatter,
     strip_promotion_frontmatter,
 )
+from grove.router_merge import load_merged_routing_config
 from grove.telemetry import log_sovereignty_decision
 
 logger = logging.getLogger(__name__)
@@ -62,8 +63,10 @@ def _routing_config() -> dict:
         if not path.exists():
             continue
         try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError):
+            data = load_merged_routing_config(
+                path, path.parent / "routing.autonomaton.yaml"
+            )
+        except (OSError, ValueError, yaml.YAMLError):
             continue
         return data if isinstance(data, dict) else {}
     return {}

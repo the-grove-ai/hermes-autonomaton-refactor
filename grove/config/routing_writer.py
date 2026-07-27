@@ -74,10 +74,16 @@ def _default_config_path() -> Path:
 
     Resolved the same way ``flywheel_cli._operator_config_path`` resolves it,
     so this writer mutates exactly the file the live router reads.
+
+    C16 — ``.resolve()`` collapses symlinks so ``apply_mutation``'s
+    ``os.replace`` lands on the real target rather than replacing (and thereby
+    severing) a ``~/.grove/routing.config.yaml`` symlink to a provider variant.
+    This also makes the write target identical to the path
+    ``fs_utils.is_scope_defining`` evaluates (it ``realpath``-resolves too).
     """
     from hermes_constants import get_hermes_home
 
-    return Path(get_hermes_home()) / "routing.config.yaml"
+    return (Path(get_hermes_home()) / "routing.config.yaml").resolve()
 
 
 def _default_machine_path() -> Path:
@@ -85,10 +91,14 @@ def _default_machine_path() -> Path:
 
     Matches ``flywheel_cli._machine_config_path``. Passed to the sandbox router
     so validation merges operator + machine exactly as the live router does.
+
+    C16 (SPEC amendment) — ``.resolve()`` for the same reason as
+    ``_default_config_path``: the overlay is a scope-defining routing surface,
+    so its resolver must agree with ``is_scope_defining``'s ``realpath`` check.
     """
     from hermes_constants import get_hermes_home
 
-    return Path(get_hermes_home()) / "routing.autonomaton.yaml"
+    return (Path(get_hermes_home()) / "routing.autonomaton.yaml").resolve()
 
 
 def _default_reload() -> None:

@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Optional
 
 from grove.identity import IdentityError
+from grove.router_merge import load_merged_routing_config
 
 logger = logging.getLogger(__name__)
 
@@ -279,9 +280,10 @@ def _enumerate_tiers() -> list[tuple[str, str]]:
         return []
 
     try:
-        with open(chosen) as fh:
-            data = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError) as exc:
+        data = load_merged_routing_config(
+            chosen, chosen.parent / "routing.autonomaton.yaml"
+        ) or {}
+    except (OSError, ValueError, yaml.YAMLError) as exc:
         logger.debug(
             "[affordances] could not parse %s: %r", chosen, exc
         )

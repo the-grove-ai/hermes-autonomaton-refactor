@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
-import yaml
+from grove.router_merge import load_merged_routing_config
 
 __all__ = [
     "GATEABLE_CONTEXT_BLOCKS",
@@ -164,8 +164,9 @@ def load_tier_budgets(
     target = (
         Path(config_path) if config_path is not None else _resolve_routing_config_path()
     )
-    with target.open(encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
+    raw = load_merged_routing_config(
+        target, target.parent / "routing.autonomaton.yaml"
+    )
 
     if not isinstance(raw, dict):
         raise ValueError(

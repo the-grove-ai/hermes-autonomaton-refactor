@@ -57,7 +57,11 @@ from grove.eval.proposal_queue import (
     read_all,
     remove,
 )
-from grove.router_merge import _MACHINE_HEADER, apply_diff_to_machine_config
+from grove.router_merge import (
+    _MACHINE_HEADER,
+    apply_diff_to_machine_config,
+    load_merged_routing_config,
+)
 
 # proposal-card-legibility-v1 Phase 1 — the render core (registry, composer,
 # every summary/diff renderer) now lives in grove.kaizen.rendering so the
@@ -273,8 +277,6 @@ def _load_current_routing_rules() -> Optional[Dict[str, Any]]:
     intent as a fresh addition. Read-only — never writes routing.config.yaml.
     """
     try:
-        from grove.router_merge import load_merged_routing_config
-
         op = Path.home() / ".grove" / "routing.config.yaml"
         if not op.exists():
             return None
@@ -773,9 +775,10 @@ def _t1_interaction_cost_usd() -> Optional[float]:
         if not path.exists():
             continue
         try:
-            with open(path, "r", encoding="utf-8") as fh:
-                data = yaml.safe_load(fh) or {}
-        except (OSError, yaml.YAMLError):
+            data = load_merged_routing_config(
+                path, path.parent / "routing.autonomaton.yaml"
+            ) or {}
+        except (OSError, ValueError, yaml.YAMLError):
             continue
         t1 = (
             ((data.get("routing") or {}).get("tier_preferences") or {}).get("T1")

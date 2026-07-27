@@ -53,6 +53,8 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 
+from grove.router_merge import load_merged_routing_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,8 +99,6 @@ def load_goal_attachment_config() -> Dict[str, Any]:
     :data:`_DEFAULTS`; a malformed YAML file raises (fail loud, never a
     silent default over a broken config).
     """
-    import yaml
-
     cfg = dict(_DEFAULTS)
     candidates = (
         Path.home() / ".grove" / "routing.config.yaml",
@@ -107,7 +107,9 @@ def load_goal_attachment_config() -> Dict[str, Any]:
     for path in candidates:
         if not path.exists():
             continue
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = load_merged_routing_config(
+            path, path.parent / "routing.autonomaton.yaml"
+        ) or {}
         section = data.get("goal_attachment")
         if isinstance(section, dict):
             for key in _DEFAULTS:

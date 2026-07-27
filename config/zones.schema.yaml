@@ -591,21 +591,6 @@ zone_model:
   category_keying: forbidden
   enforcement: application_layer   # in-process classification; not os permissions
 
-  scope_defining_surfaces:
-    # Mutating any of these via the shell is RED (non-grantable,
-    # TerminalGovernanceHalt). Paths are relative to ~/.grove (GROVE_HOME).
-    files:
-      - zones.schema.yaml
-      - routing.config.yaml
-      - prompt.config.yaml
-      - .env                # operator secrets — never an autonomous write
-      - dock/dock.yaml
-      - grants.yaml         # GRV-001 Grant Token model — standing grant manifest
-    directories:
-      - skills              # whole live skill tree (authoring goes via .andon)
-      - capabilities        # capability registry (executable-surface authority)
-    enforcement: non_grantable
-
   granted_workspaces:
     rule: complement        # everything under ~/.grove NOT scope-defining
     default_zone: green     # autonomous; write targets only (reads stay yellow)

@@ -57,6 +57,7 @@ from grove.eval.proposal_queue import _type_offers_approve
 from grove.forge import feedback_store
 from grove.eval.proposal_queue import read_all as read_all_proposals
 from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE
+from grove.router_merge import load_merged_routing_config
 from grove.secret_redact import redact_command_string
 from grove.api.red_nonce import nonce_key_from_app, red_nonce
 from grove.wiki.index import MalformedWikiPage, _split_frontmatter
@@ -1980,7 +1981,9 @@ def _live_tier_preferences() -> dict:
     card and for the post-swap re-render."""
     path = Path(get_hermes_home()) / "routing.config.yaml"
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = load_merged_routing_config(
+            path, path.parent / "routing.autonomaton.yaml"
+        )
     except FileNotFoundError:
         return {}
     tier_prefs = ((data or {}).get("routing") or {}).get("tier_preferences")

@@ -195,5 +195,5 @@ def test_empty_tier_preferences_raises(tmp_path):
 def test_config_not_a_mapping_raises(tmp_path):
     path = tmp_path / "routing.config.yaml"
     path.write_text("- just\n- a\n- list\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="is not a mapping"):
+    with pytest.raises(ValueError, match="is not a YAML mapping"):
         load_tier_budgets(path)

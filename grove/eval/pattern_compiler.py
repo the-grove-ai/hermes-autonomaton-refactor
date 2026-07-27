@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from grove.pattern_cache import CompiledPattern, STATUS_SUSPENDED, t0_key
+from grove.router_merge import load_merged_routing_config
 
 # Defaults — used when routing.config.yaml carries no pattern_cache section.
 # Mirror the GATE-A decision-4 values.
@@ -62,8 +63,6 @@ def load_pattern_cache_config() -> Dict[str, Any]:
     Operator copy (``~/.grove/routing.config.yaml``) wins over the repo
     default (``config/routing.config.yaml``). Missing/partial sections fall
     back to :data:`_DEFAULTS`."""
-    import yaml
-
     cfg = dict(_DEFAULTS)
     candidates = (
         Path.home() / ".grove" / "routing.config.yaml",
@@ -73,7 +72,9 @@ def load_pattern_cache_config() -> Dict[str, Any]:
         if not path.exists():
             continue
         try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            data = load_merged_routing_config(
+                path, path.parent / "routing.autonomaton.yaml"
+            ) or {}
         except Exception:
             continue
         pc = data.get("pattern_cache")
