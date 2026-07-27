@@ -200,3 +200,152 @@ def apply_diff_to_machine_config(
     merged = _deep_merge(existing, diff)
     rendered = yaml.safe_dump(merged, sort_keys=False, default_flow_style=False)
     machine_path.write_text(_MACHINE_HEADER + "\n" + rendered, encoding="utf-8")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# GRV-001 v2.0 — split-config loaders (routing-v2-migration-v1, Phase 1)
+# ═════════════════════════════════════════════════════════════════════════════
+# ADDITIVE ONLY. The v1 loaders above (load_merged_routing_config /
+# apply_diff_to_machine_config) and all 12 call sites keep working against the
+# single v1 file untouched. These loaders serve the v2 split form and are not
+# wired into any call site this phase.
+
+
+class ConfigurationError(ValueError):
+    """A v2 routing config (operational or authority) violated the GRV-001 v2.0
+    contract — wrong schema_version, a v1-shaped file, or (operational only) an
+    authority-reserved key bleeding in.
+
+    Deliberately a plain ``ValueError`` subclass with NO grove-internal import:
+    router_merge is grove-import-free by construction (the property that lets all
+    12 call sites import it at module scope without a cycle — routing-loader-
+    unification-v1). Subclassing ``grove.errors.GroveError`` would pull a grove
+    import into this module and forfeit that guarantee.
+    """
+
+
+# GRV-001 v2.0 §V confused-deputy protection. These keys are reserved for
+# routing.authority.yaml and are config-blind by design: their presence in ANY
+# operational payload — including the operator's own file — is fatal, no
+# fallback. The set is exactly the authority-destined keys the migration tool
+# routes out of the operational surface.
+_AUTHORITY_RESERVED_KEYS = frozenset(
+    {"escalation_threshold", "tier_budgets", "escalation_policy"}
+)
+
+_V2_SCHEMA_VERSION = "2.0"
+_MIGRATION_COMMAND = "python -m grove.config.routing_migrate <v1-routing.config.yaml>"
+
+
+def _require_v2_shape(data: Any, path: Path) -> None:
+    """Shared version gate for both v2 loaders.
+
+    Rejects, in order: a non-mapping; a v1-shaped file (a top-level ``routing:``
+    mapping) with an error naming the migration command; a missing
+    schema_version; an integer schema_version (v1 used the int ``1``); and any
+    schema_version other than the string ``"2.0"``.
+    """
+    if not isinstance(data, dict):
+        raise ConfigurationError(f"routing config at {path} is not a YAML mapping")
+    if isinstance(data.get("routing"), dict):
+        raise ConfigurationError(
+            f"routing config at {path} is v1-shaped (a top-level 'routing:' "
+            f"mapping); GRV-001 v2.0 requires the split form. Migrate with: "
+            f"{_MIGRATION_COMMAND}"
+        )
+    version = data.get("schema_version")
+    if version is None:
+        raise ConfigurationError(
+            f"routing config at {path} has no schema_version; GRV-001 v2.0 "
+            f'requires schema_version: "2.0". Migrate with: {_MIGRATION_COMMAND}'
+        )
+    if not isinstance(version, str):
+        raise ConfigurationError(
+            f"routing config at {path} has a non-string schema_version "
+            f"{version!r} (v1 used the integer 1); GRV-001 v2.0 requires the "
+            f'string "2.0". Migrate with: {_MIGRATION_COMMAND}'
+        )
+    if version != _V2_SCHEMA_VERSION:
+        raise ConfigurationError(
+            f"unsupported schema_version {version!r} in {path} "
+            f'(expected "{_V2_SCHEMA_VERSION}")'
+        )
+
+
+def load_operational_routing_config(
+    operational_path: Path,
+    machine_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Load the v2 ``routing.operational`` config, overlay the machine additions,
+    and enforce the GRV-001 v2.0 operational contract.
+
+    The operational file MUST exist; the machine overlay is optional and merges
+    with the same operator-wins / list-set-union semantics as the v1 loader
+    (:func:`load_merged_routing_config`). After the overlay:
+
+    * the v2 version gate applies (:func:`_require_v2_shape`); then
+    * §V confused-deputy: if any :data:`_AUTHORITY_RESERVED_KEYS` member is
+      present post-overlay, raise :class:`ConfigurationError` naming the key, the
+      offending source (operator file vs machine overlay — attributed from the
+      pre-overlay dicts), and ``routing.authority.yaml`` as its home. Fatal.
+    """
+    operational_path = Path(operational_path)
+    if not operational_path.exists():
+        raise FileNotFoundError(
+            f"operational routing config not found at {operational_path}"
+        )
+    operator = yaml.safe_load(operational_path.read_text(encoding="utf-8"))
+    if not isinstance(operator, dict):
+        raise ConfigurationError(
+            f"operational routing config at {operational_path} is not a YAML mapping"
+        )
+
+    machine: Optional[Dict[str, Any]] = None
+    if machine_path is not None and Path(machine_path).exists():
+        loaded = yaml.safe_load(Path(machine_path).read_text(encoding="utf-8"))
+        if loaded is not None and not isinstance(loaded, dict):
+            raise ConfigurationError(
+                f"machine routing overlay at {machine_path} is not a YAML mapping"
+            )
+        machine = loaded if isinstance(loaded, dict) else None
+
+    merged = _deep_merge(operator, machine) if machine is not None else operator
+
+    _require_v2_shape(merged, operational_path)
+
+    # §V confused-deputy — reserved authority keys must not appear post-overlay,
+    # from ANY source. A valid v2 operational file is flat, so a top-level
+    # membership test both matches the shape and closes the bleed.
+    for key in _AUTHORITY_RESERVED_KEYS:
+        if key in merged:
+            if key in operator:
+                source = f"the operator file ({operational_path})"
+            elif machine is not None and key in machine:
+                source = f"the machine overlay ({machine_path})"
+            else:
+                source = "the merged operational payload"
+            raise ConfigurationError(
+                f"authority-reserved key {key!r} is present in the operational "
+                f"payload via {source}; GRV-001 v2.0 §V forbids it — its home is "
+                f"routing.authority.yaml. This surface is config-blind by design: "
+                f"no operational source may carry an authority key."
+            )
+    return merged
+
+
+def load_authority_routing_config(authority_path: Path) -> Dict[str, Any]:
+    """Load the v2 ``routing.authority`` config.
+
+    There is NO overlay parameter — structurally absent, not defaulted-off: R1,
+    no machine-writable file can reach this loader, by construction. The version
+    gate applies; the authority-reserved keys legitimately live here, so no
+    confused-deputy check runs.
+    """
+    authority_path = Path(authority_path)
+    if not authority_path.exists():
+        raise FileNotFoundError(
+            f"authority routing config not found at {authority_path}"
+        )
+    data = yaml.safe_load(authority_path.read_text(encoding="utf-8"))
+    _require_v2_shape(data, authority_path)
+    return data

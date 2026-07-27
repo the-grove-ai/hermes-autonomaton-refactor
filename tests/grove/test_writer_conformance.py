@@ -199,6 +199,10 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         # basename now (the writer-registry resolution + the
         # routing_config_replace adapter over RoutingConfigWriter).
         "grove/red_pending_store.py",
+        # routing-v2-migration-v1 Phase 1 (reviewed amendment): the operator-run
+        # migration tool names + renames the v1 file during the v2 split. It is
+        # NOT a competing content-writer to RoutingConfigWriter.
+        "grove/config/routing_migrate.py",
     }),
     # writer: append_machine_goal (grove/dock/__init__.py:380-384)
     "dock.autonomaton.yaml": frozenset({
