@@ -160,6 +160,9 @@ async def test_dangling_goal_renders_not_found_never_raises(client):
 
 
 async def test_detach_round_trip(client, grove_home):
+    # portal-action-checkpoint-parity — detach FILES a dock_detach proposal; the
+    # portal writes nothing. The pair is removed only when the operator runs
+    # `flywheel approve` (the RED CLI apply → detach_attachment).
     _seed_artifact_written(AID1)
     _mint(AID1)
     assert (AID1, "goal-alpha") in attached_pairs()
@@ -170,20 +173,15 @@ async def test_detach_round_trip(client, grove_home):
     )
     assert resp.status == 200
     body = await resp.text()
-    # Success re-renders the fragment WITHOUT the pair.
-    assert '<div id="goal-detail">' in body
-    assert AID1 not in body
-    assert "Nothing attached yet" in body
-    # The store agrees, and the reason rode the event.
-    assert attached_pairs() == {}
-    detach_events = [
-        json.loads(line)
-        for p in sorted(default_ledger_dir().glob("*.jsonl"))
-        for line in p.read_text(encoding="utf-8").splitlines()
-        if json.loads(line)["event_type"] == "artifact_goal_detached"
-    ]
-    assert len(detach_events) == 1
-    assert detach_events[0]["reason"] == "wrong goal entirely"
+    # Pending card: the proposed detach + the operator apply command.
+    assert "proposed" in body
+    assert "flywheel approve" in body
+    assert AID1 in body
+    # The portal wrote nothing — still attached, no detach event on disk.
+    assert (AID1, "goal-alpha") in attached_pairs()
+    for p in sorted(default_ledger_dir().glob("*.jsonl")):
+        for line in p.read_text(encoding="utf-8").splitlines():
+            assert json.loads(line)["event_type"] != "artifact_goal_detached"
 
 
 async def test_detach_requires_reason_and_refusal_writes_nothing(
@@ -217,6 +215,10 @@ async def test_detach_unattached_pair_is_loud_404(client, grove_home):
 
 
 async def test_n_to_n_detach_independence(client, grove_home):
+    # portal-action-checkpoint-parity — filing a detach for (AID1, goal-alpha)
+    # writes nothing; BOTH attachments survive until the operator approves. The
+    # per-pair independence of the actual detach lives in the attachment_store
+    # tests — the portal no longer performs the write.
     _seed_artifact_written(AID1)
     _mint(AID1, "goal-alpha")
     _mint(AID1, "goal-beta")
@@ -226,20 +228,18 @@ async def test_n_to_n_detach_independence(client, grove_home):
         body = await (await client.get(f"/portal/fragments/goal/{gid}")).text()
         assert f'href="/portal#fragments/artifact/{AID1}"' in body
 
-    # Detach from alpha only.
+    # FILE a detach from alpha only.
     resp = await client.post(
         f"/portal/actions/dock/goals/goal-alpha/attachments/{AID1}/detach",
         data={"reason": "belongs to beta, not alpha"},
     )
     assert resp.status == 200
-
-    alpha = await (await client.get("/portal/fragments/goal/goal-alpha")).text()
-    beta = await (await client.get("/portal/fragments/goal/goal-beta")).text()
-    assert AID1 not in alpha
-    assert f'href="/portal#fragments/artifact/{AID1}"' in beta
-    assert attached_pairs() == {
-        (AID1, "goal-beta"): attached_pairs()[(AID1, "goal-beta")]
-    }
+    body = await resp.text()
+    assert "proposed" in body
+    assert "flywheel approve" in body
+    # Portal wrote nothing — both pairs remain attached until approve.
+    assert (AID1, "goal-alpha") in attached_pairs()
+    assert (AID1, "goal-beta") in attached_pairs()
 
 
 # ── auth ────────────────────────────────────────────────────────────────────

@@ -33,6 +33,8 @@ import yaml
 from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_ADMISSION_FRICTION,
     PROPOSAL_TYPE_CONSOLIDATION,
+    PROPOSAL_TYPE_DOCK_DETACH,
+    PROPOSAL_TYPE_DOCK_GOAL_STATUS,
     PROPOSAL_TYPE_DOCK_MUTATION,
     PROPOSAL_TYPE_EXPLORATION_NUDGE,
     PROPOSAL_TYPE_FAULT_TRIAGE,
@@ -77,6 +79,8 @@ from grove.kaizen.rendering import (  # noqa: F401
     _diff_skill_promotion,
     _diff_skill_synthesis,
     _diff_zone_promotion,
+    _dock_detach_to_diff,
+    _dock_goal_status_to_diff,
     _dock_mutation_to_diff,
     _ensure_memory_renderer,
     _exploration_nudge_to_diff,
@@ -85,6 +89,8 @@ from grove.kaizen.rendering import (  # noqa: F401
     _producer_recurrence_to_diff,
     _routing_adjustment_to_diff,
     _summary_consolidation,
+    _summary_dock_detach,
+    _summary_dock_goal_status,
     _summary_dock_mutation,
     _summary_admission_friction,
     _summary_exploration_nudge,
@@ -1090,6 +1096,88 @@ def _approve_dock_mutation(
         "machine_file": str(target),
     }
     return target, applied
+
+
+def _approve_dock_goal_status(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+) -> Tuple[Any, Dict[str, Any]]:
+    """Apply a dock_goal_status proposal — set an existing goal's status through
+    the EXISTING sanctioned writer (portal-action-checkpoint-parity).
+
+    Delegates to :func:`grove.dock.writer.update_dock_goal_status` (ruamel
+    round-trip, atomic temp+replace). The portal FILES this proposal (never
+    writes); the operator's ``flywheel approve`` runs this apply. ``machine_path``
+    (the routing machine file) is unused — the dock writer resolves its own path.
+    """
+    from grove.dock.writer import update_dock_goal_status
+
+    payload = proposal.payload or {}
+    goal_id = payload.get("goal_id")
+    status = payload.get("status")
+    if not isinstance(goal_id, str) or not goal_id.strip():
+        raise ValueError(
+            f"dock_goal_status proposal {proposal.proposal_id} payload missing a "
+            f"non-empty goal_id"
+        )
+    if not isinstance(status, str) or not status.strip():
+        raise ValueError(
+            f"dock_goal_status proposal {proposal.proposal_id} payload missing a "
+            f"non-empty status"
+        )
+    if not update_dock_goal_status(goal_id, status):
+        raise ValueError(
+            f"dock goal {goal_id!r} not found at apply — nothing to update"
+        )
+    return f"{goal_id}: {status}", {"goal_id": goal_id, "status": status}
+
+
+def _approve_dock_detach(
+    proposal: RoutingProposal,
+    *,
+    machine_path: Optional[Path] = None,
+) -> Tuple[Any, Dict[str, Any]]:
+    """Apply a dock_detach proposal — detach one (artifact, goal) pair through the
+    EXISTING sanctioned writer (portal-action-checkpoint-parity).
+
+    Delegates to :func:`grove.dock.attachment_store.detach_attachment` with the
+    operator's reason. The portal FILES this proposal (never writes); the
+    operator's ``flywheel approve`` runs this apply. A pair that is no longer
+    attached raises so the proposal stays queued (cli_approve pops only on
+    success). ``machine_path`` is unused.
+    """
+    from grove.dock.attachment_store import detach_attachment
+
+    payload = proposal.payload or {}
+    goal_id = payload.get("goal_id")
+    artifact_id = payload.get("artifact_id")
+    reason = payload.get("reason")
+    if not isinstance(goal_id, str) or not goal_id.strip():
+        raise ValueError(
+            f"dock_detach proposal {proposal.proposal_id} payload missing a "
+            f"non-empty goal_id"
+        )
+    if not isinstance(artifact_id, str) or not artifact_id.strip():
+        raise ValueError(
+            f"dock_detach proposal {proposal.proposal_id} payload missing a "
+            f"non-empty artifact_id"
+        )
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError(
+            f"dock_detach proposal {proposal.proposal_id} payload missing a "
+            f"non-empty reason"
+        )
+    event = detach_attachment(artifact_id, goal_id, reason=reason)
+    if event is None:
+        raise ValueError(
+            f"({artifact_id}, {goal_id}) is not attached at apply — nothing to "
+            f"detach"
+        )
+    return (
+        f"{artifact_id} ⊘ {goal_id}",
+        {"goal_id": goal_id, "artifact_id": artifact_id},
+    )
 
 
 def _approve_model_binding(
@@ -2565,6 +2653,21 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         diff_renderer=_dock_mutation_to_diff,
         apply_callback=_approve_dock_mutation,
         apply_label_prefix="Added Dock goal: ",
+    ),
+    # portal-action-checkpoint-parity — operator-initiated Dock mutations the
+    # portal FILES (no writer call); apply is operator-only via flywheel approve.
+    # No requires_source_patterns (cluster-less operator taps must pass B2).
+    PROPOSAL_TYPE_DOCK_GOAL_STATUS: ProposalHandler(
+        summary_renderer=_summary_dock_goal_status,
+        diff_renderer=_dock_goal_status_to_diff,
+        apply_callback=_approve_dock_goal_status,
+        apply_label_prefix="Dock goal status set: ",
+    ),
+    PROPOSAL_TYPE_DOCK_DETACH: ProposalHandler(
+        summary_renderer=_summary_dock_detach,
+        diff_renderer=_dock_detach_to_diff,
+        apply_callback=_approve_dock_detach,
+        apply_label_prefix="Attachment detached: ",
     ),
     PROPOSAL_TYPE_MODEL_BINDING: ProposalHandler(
         summary_renderer=_summary_model_binding,

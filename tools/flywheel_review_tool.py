@@ -34,6 +34,33 @@ from typing import Callable, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+# portal-action-checkpoint-parity — scope-defining proposal types this Yellow
+# agent tool must REFUSE to apply. Each applies a scope-defining write (routing
+# config / capability record / dock.yaml); they apply ONLY via the operator's
+# RED CLI (`autonomaton flywheel approve`). dock_mutation + goal_attachment are
+# included even though no portal route files them this sprint — both write
+# dock/dock.yaml (scope-defining) and are reachable from this tool today, so
+# leaving them out would leave a sibling door open. The RED CLI path is
+# unaffected (the registry still serves it).
+from grove.eval.proposal_queue import (  # noqa: E402
+    PROPOSAL_TYPE_DOCK_DETACH,
+    PROPOSAL_TYPE_DOCK_GOAL_STATUS,
+    PROPOSAL_TYPE_DOCK_MUTATION,
+    PROPOSAL_TYPE_EXPLORATION_NUDGE,
+    PROPOSAL_TYPE_GOAL_ATTACHMENT,
+    PROPOSAL_TYPE_MODEL_BINDING,
+)
+
+_SCOPE_DEFINING_REFUSED_TYPES = frozenset({
+    PROPOSAL_TYPE_EXPLORATION_NUDGE,
+    PROPOSAL_TYPE_MODEL_BINDING,
+    PROPOSAL_TYPE_DOCK_MUTATION,
+    PROPOSAL_TYPE_GOAL_ATTACHMENT,
+    PROPOSAL_TYPE_DOCK_GOAL_STATUS,
+    PROPOSAL_TYPE_DOCK_DETACH,
+})
+
+
 REVIEW_PROPOSALS_SCHEMA = {
     "name": "review_proposals",
     "description": (
@@ -433,7 +460,28 @@ def approve_proposal(
             )
 
     # 1. Routing queue first (existing path, unchanged).
-    if flywheel_cli._resolve_proposal(pid, queue_path=queue_path) is not None:
+    _resolved = flywheel_cli._resolve_proposal(pid, queue_path=queue_path)
+    if _resolved is not None:
+        # portal-action-checkpoint-parity — scope-defining proposal types apply
+        # ONLY via the operator's RED CLI (`autonomaton flywheel approve`). This
+        # agent tool is Yellow; refusing here (in the TOOL, not the registry —
+        # the registry serves the RED CLI path and must keep working) closes the
+        # confused-deputy door the portal-filing routes would otherwise open.
+        if _resolved.type in _SCOPE_DEFINING_REFUSED_TYPES:
+            return json.dumps(
+                {
+                    "success": False,
+                    "proposal_id": pid,
+                    "kind": "routing",
+                    "error": (
+                        f"{_resolved.type} is a scope-defining proposal — it "
+                        f"applies only via the operator command `autonomaton "
+                        f"flywheel approve {pid}` (RED, operator-only). The agent "
+                        f"tool cannot apply it."
+                    ),
+                },
+                ensure_ascii=False,
+            )
         rc, message = _capture(
             lambda: flywheel_cli.cli_approve(
                 pid, queue_path=queue_path, machine_path=machine_path,

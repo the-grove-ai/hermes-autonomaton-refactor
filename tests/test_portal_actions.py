@@ -275,6 +275,8 @@ async def test_proposal_not_found(client, grove_home):
 
 
 async def test_dock_goal_status_update(client, grove_home):
+    # portal-action-checkpoint-parity — the portal FILES a dock_goal_status
+    # proposal (no writer call); the operator applies it via `flywheel approve`.
     _write_dock(grove_home)
 
     r = await client.patch(
@@ -282,15 +284,16 @@ async def test_dock_goal_status_update(client, grove_home):
     )
     assert r.status == 200
     body = await r.text()
-    assert 'id="goal-grove-foundation"' in body
+    # Pending state: the proposed change + the exact operator apply command.
+    assert "proposed" in body
+    assert "flywheel approve" in body
+    assert "grove-foundation" in body
     assert "paused" in body
 
+    # The writer did NOT run on this request — dock.yaml is untouched.
     raw = (grove_home / "dock" / "dock.yaml").read_text(encoding="utf-8")
-    assert "status: paused" in raw
-    # Comment preservation is mandatory — the sovereign file's comments survive.
-    assert "# Operator Dock — sovereign" in raw
-    assert "# The flagship goal" in raw
-    assert "# currently pushing hard" in raw
+    assert "status: accelerating" in raw
+    assert "status: paused" not in raw
 
 
 # ---------------------------------------------------------------------------
@@ -445,10 +448,11 @@ async def test_tier_revert_unknown_tier_loud_but_not_filed(client, grove_home, m
     assert _paf() == []                       # SUPPRESSED
 
 
-async def test_tier_swap_same_model_is_noop_info_not_error(client, grove_home, monkeypatch):
-    # ledger-eventtype-hygiene-v1 Change 3 — swapping a tier to the model it
-    # already holds is a success-class NO-OP: HTTP 200 with an info line (not the
-    # 422 error surface), nothing written, no failure broadcast/queue entry.
+async def test_tier_swap_files_proposal_and_writes_nothing(client, grove_home, monkeypatch):
+    # portal-action-checkpoint-parity — a tier swap FILES an exploration_nudge
+    # proposal; the portal writes NOTHING (the loopback-vuln fix). The no-op
+    # short-circuit moved to apply time (swap_tier_model). HTTP 200 pending card
+    # with the operator apply command; the config file is byte-untouched.
     import shutil
     from pathlib import Path
 
@@ -468,17 +472,17 @@ async def test_tier_swap_same_model_is_noop_info_not_error(client, grove_home, m
         "/portal/actions/routing/swap",
         data={"tier": "T2", "model_slug": "anthropic/claude-sonnet-4.6"},
     )
-    assert r.status == 200                        # success-class, NOT 422
+    assert r.status == 200
     body = await r.text()
-    assert "no change" in body.lower()            # the info copy
-    assert 'class="meta info"' in body            # info styling
+    assert "proposed" in body                     # pending, not applied
+    assert "flywheel approve" in body             # the operator apply command
     assert 'class="meta error"' not in body       # NOT the error surface
-    # PIN: the no-op wrote nothing — bytes + mtime unchanged, no .bak.
+    # PIN: the portal wrote nothing — bytes + mtime unchanged, no .bak.
     assert cfg.read_bytes() == bytes_before
     assert cfg.stat().st_mtime_ns == mtime_before
     assert not cfg.with_suffix(cfg.suffix + ".bak").exists()
     assert sent == []                             # no failure broadcast
-    assert _paf() == []                           # nothing filed
+    assert _paf() == []                           # no failure proposal filed
 
 
 async def test_forge_no_draft_dir(client, grove_home):

@@ -269,22 +269,25 @@ tool_zones:
       # "Always" on the prompt writes a standing grant (grove/grants.py), NOT a
       # blanket zone rule — _apply_zone_promotion is guarded for these verbs.
       # Rules placed first so they fire before any broader pattern below.
-      - match_pattern: hermes\s+andon\s+promote\b.*
+      - match_pattern: (hermes|autonomaton)\s+andon\s+promote\b.*
         zone: red
         reason: "Skill promotion mutates live sovereignty state — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: hermes\s+andon\s+reject\b.*
+      - match_pattern: (hermes|autonomaton)\s+andon\s+reject\b.*
         zone: red
         reason: "Skill rejection permanently deletes from .andon/ — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: hermes\s+andon\s+revoke\b.*
+      - match_pattern: (hermes|autonomaton)\s+andon\s+revoke\b.*
         zone: red
         reason: "Skill revocation returns an active skill to quarantine — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: hermes\s+flywheel\s+approve\b.*
+      - match_pattern: (hermes|autonomaton)\s+flywheel\s+approve\b.*
         zone: red
         reason: "Flywheel approval writes a zone rule to the overlay — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: hermes\s+flywheel\s+reject\b.*
+      - match_pattern: (hermes|autonomaton)\s+flywheel\s+confirm-red\b.*
+        zone: red
+        reason: "RED .env pending-proposal confirm executes a scope-defining governance write — scope-defining write, grant required (GRV-001 Stage 04)."
+      - match_pattern: (hermes|autonomaton)\s+flywheel\s+reject\b.*
         zone: red
         reason: "Flywheel rejection drops a pending proposal — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: hermes\s+flywheel\s+patterns\s+demote\b.*
+      - match_pattern: (hermes|autonomaton)\s+flywheel\s+patterns\s+demote\b.*
         zone: red
         reason: "Pattern demotion degrades a compiled T0 pattern — scope-defining write, grant required (GRV-001 Stage 04)."
       # ── Google Workspace: governed by SUBCOMMAND ──

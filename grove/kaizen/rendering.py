@@ -309,6 +309,43 @@ def _dock_mutation_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     }
 
 
+def _summary_dock_goal_status(proposal: RoutingProposal) -> str:
+    """Operator-initiated Dock goal status change (portal-action-checkpoint-parity)."""
+    p = proposal.payload or {}
+    goal_id = p.get("goal_id", "?")
+    return (
+        f"Set Dock goal '{goal_id}' status: "
+        f"{p.get('previous_status') or '?'} → {p.get('status', '?')}."
+    )
+
+
+def _dock_goal_status_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """The one-field change the operator reviews before approving."""
+    p = proposal.payload or {}
+    return {
+        "goal": p.get("goal_id", "?"),
+        "status": {"old": p.get("previous_status"), "new": p.get("status")},
+    }
+
+
+def _summary_dock_detach(proposal: RoutingProposal) -> str:
+    """Operator-initiated attachment detach (portal-action-checkpoint-parity)."""
+    p = proposal.payload or {}
+    return (
+        f"Detach artifact '{p.get('artifact_id', '?')}' from Dock goal "
+        f"'{p.get('goal_id', '?')}'."
+    )
+
+
+def _dock_detach_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
+    """The one attachment removed, named, with the operator's reason."""
+    p = proposal.payload or {}
+    return {
+        "attachment": f"{p.get('artifact_id', '?')} ⊘ {p.get('goal_id', '?')}",
+        "reason": p.get("reason", ""),
+    }
+
+
 def _binding_phrase(binding: Any) -> str:
     """Human phrase for a model_binding dict (binding-governance-surfaces-v1)."""
     if not isinstance(binding, dict):

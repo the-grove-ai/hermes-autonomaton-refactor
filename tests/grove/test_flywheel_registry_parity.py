@@ -199,9 +199,14 @@ def test_registry_covers_exactly_the_registered_types() -> None:
     # sole operator unpause) and unmapped_failure_class (approve dismisses; the
     # mapping is a YAML edit). Updated inline by the sprint that registers the
     # type — the registry parity contract still holds, the closed set just grew.
+    # portal-action-checkpoint-parity added dock_goal_status + dock_detach (the
+    # operator-initiated Dock mutations the portal now FILES). The closed set
+    # grew by two; the parity contract still holds.
     from grove.eval.proposal_queue import (
         PROPOSAL_TYPE_ADMISSION_FRICTION,
         PROPOSAL_TYPE_CONSOLIDATION,
+        PROPOSAL_TYPE_DOCK_DETACH,
+        PROPOSAL_TYPE_DOCK_GOAL_STATUS,
         PROPOSAL_TYPE_DOCK_MUTATION,
         PROPOSAL_TYPE_EXPLORATION_NUDGE,
         PROPOSAL_TYPE_GOAL_ATTACHMENT,
@@ -215,6 +220,8 @@ def test_registry_covers_exactly_the_registered_types() -> None:
     assert set(flywheel_cli.PROPOSAL_HANDLERS) == {
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
         PROPOSAL_TYPE_CONSOLIDATION,
+        PROPOSAL_TYPE_DOCK_GOAL_STATUS,
+        PROPOSAL_TYPE_DOCK_DETACH,
         PROPOSAL_TYPE_DOCK_MUTATION,
         PROPOSAL_TYPE_EXPLORATION_NUDGE,
         PROPOSAL_TYPE_GOAL_ATTACHMENT,

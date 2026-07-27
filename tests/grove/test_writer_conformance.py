@@ -212,9 +212,12 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
     # dropped OUT (dock-door allowlist retired); red_pending_store carries the
     # basename now (dock_goal_status resolution + adapter over the sole
     # sanctioned dock writer).
+    # portal-action-checkpoint-parity (reviewed amendment): grove/api/actions.py
+    # dropped OUT — the portal dock handlers now FILE dock_goal_status/dock_detach
+    # proposals instead of writing dock.yaml, so actions.py no longer names the
+    # basename. The write happens only on the RED CLI apply path.
     "dock.yaml": frozenset({
         "grove/dock/writer.py",
-        "grove/api/actions.py",
         "grove/api/fragments.py",
         "grove/classify.py",
         "grove/dock/__init__.py",

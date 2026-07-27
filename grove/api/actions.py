@@ -54,10 +54,15 @@ from grove.dock import _VALID_STATUSES, load_dock
 from grove.dock.writer import update_dock_goal_status
 from grove.eval import proposal_queue
 from grove.eval.proposal_queue import (
+    PROPOSAL_TYPE_DOCK_DETACH,
+    PROPOSAL_TYPE_DOCK_GOAL_STATUS,
+    PROPOSAL_TYPE_EXPLORATION_NUDGE,
     PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
     PROPOSAL_TYPE_MEMORY_CONTEXT,
+    PROPOSAL_TYPE_MODEL_BINDING,
     compute_proposal_id,
+    file_agentless,
 )
 from grove.flywheel_cli import (
     _handler_for,
@@ -114,6 +119,24 @@ def _resolved_card(short_id: str, type_label: str, disposition: str, summary: st
         f'<h4><span class="badge">{_esc(type_label)}</span> '
         f'<span class="{badge_cls}">{_esc(disposition)}</span></h4>'
         f'<p>{_esc(summary)}</p>'
+        f'</div>'
+    )
+
+
+def _filed_card(full_id: str, type_label: str, summary: str) -> web.Response:
+    """Pending-state card for a portal action that FILED a proposal instead of
+    writing (portal-action-checkpoint-parity). The portal press proposes; the
+    system writes only when the operator runs the named approve command. Carries
+    the proposal id and the exact command — the operator never hand-edits a
+    file, and no writer ran on this request."""
+    short = _short_id(full_id)
+    return _html_fragment(
+        f'<div class="card card-resolved" id="proposal-{short}">'
+        f'<h4><span class="badge">{_esc(type_label)}</span> '
+        f'<span class="badge badge-yellow">proposed</span></h4>'
+        f'<p>{_esc(summary)}</p>'
+        f'<p class="meta">Proposed — apply with: '
+        f'<code>autonomaton flywheel approve {_esc(short)}</code></p>'
         f'</div>'
     )
 
@@ -904,8 +927,11 @@ async def handle_proposal_reset(request: web.Request) -> web.Response:
 
 
 async def handle_dock_goal_update(request: web.Request) -> web.Response:
-    """PATCH a Dock goal's status. Validates against the loader's closed status
-    set (_VALID_STATUSES) and persists via the comment-preserving dock writer."""
+    """FILE a Dock goal status change as a DOCK_GOAL_STATUS proposal (portal-action-
+    checkpoint-parity). The portal press proposes; the operator's ``flywheel
+    approve`` applies via the comment-preserving dock writer. File-time validation:
+    status ∈ _VALID_STATUSES AND the goal EXISTS now — a status update to a deleted
+    goal is never queued. NO writer is called on this request."""
     goal_id = request.match_info["goal_id"]
 
     if request.content_type == "application/json":
@@ -931,19 +957,10 @@ async def handle_dock_goal_update(request: web.Request) -> web.Response:
             file_kaizen=False,
         )
 
-    try:
-        updated = update_dock_goal_status(goal_id, status)
-    except FileNotFoundError:
-        return await _loud_action_failure(
-            '<div class="card"><p class="error">Dock not installed — no '
-            'dock.yaml to update.</p></div>',
-            failure_class="dock_not_installed",
-            action="dock_update",
-            message="Dock not installed — no dock.yaml to update.",
-            status=404,
-        )
-
-    if not updated:
+    # File-time goal-exists check — a proposal that cannot apply must not queue.
+    dock = load_dock()
+    goal = next((g for g in dock.goals if g.id == goal_id), None) if dock else None
+    if goal is None:
         return await _loud_action_failure(
             f'<div class="card"><p class="error">Goal '
             f'<code>{_esc(goal_id)}</code> not found.</p></div>',
@@ -952,25 +969,25 @@ async def handle_dock_goal_update(request: web.Request) -> web.Response:
             message=f"Dock goal {goal_id!r} not found.",
             status=404,
         )
+    previous_status = getattr(goal, "status", None)
 
-    # Re-load and render the fresh card so the swapped-in markup matches the
-    # listing exactly (and reflects the value the loader actually accepted).
-    dock = load_dock()
-    goal = next((g for g in dock.goals if g.id == goal_id), None) if dock else None
-    if goal is None:
-        # The write succeeded but the goal vanished on reload — fail loud. Status
-        # STAYS 500 (Option A: a real server error keeps its honest code); the
-        # banner lifts on 5xx exactly as on 4xx.
-        return await _loud_action_failure(
-            f'<div class="card"><p class="error">Goal '
-            f'<code>{_esc(goal_id)}</code> updated but could not be reloaded.'
-            f'</p></div>',
-            failure_class="dock_reload_vanished",
-            action="dock_update",
-            message=f"Dock goal {goal_id!r} updated but vanished on reload.",
-            status=500,
-        )
-    return _html_fragment(render_goal_card(goal))
+    pid, _ = file_agentless(
+        type=PROPOSAL_TYPE_DOCK_GOAL_STATUS,
+        payload={
+            "goal_id": goal_id,
+            "status": status,
+            "previous_status": previous_status,
+        },
+        evidence=(goal_id,),
+        proposer="portal_operator",
+    )
+    logger.info(
+        "[portal.actions] dock status FILED %s: %s %s -> %s",
+        pid, goal_id, previous_status, status,
+    )
+    return _filed_card(
+        pid, "dock status", f"{goal_id}: {previous_status} → {status}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1004,17 +1021,12 @@ async def _detach_reason(request: web.Request):
 async def handle_attachment_detach(request: web.Request) -> web.Response:
     """POST /portal/actions/dock/goals/{goal_id}/attachments/{artifact_id}/detach
 
-    Detach one (artifact, goal) pair via the sanctioned writer
-    (attachment_store.detach_attachment) with the operator's reason. On
-    success the goal detail fragment re-renders WITHOUT the pair (the
-    handle_dock_goal_update fresh-render precedent). Failure classes:
-    empty reason → 400 (client-input, file_kaizen=False, the dock
-    invalid-status precedent), writer refusal → 400, pair not attached →
-    404 — each through the loud-disposition path."""
-    from grove.dock.attachment_store import (
-        AttachmentWriteError,
-        detach_attachment,
-    )
+    FILE a detach as a DOCK_DETACH proposal (portal-action-checkpoint-parity). The
+    portal press proposes; the operator's ``flywheel approve`` applies via the
+    sanctioned writer (attachment_store.detach_attachment). File-time validation:
+    a non-empty reason AND the (artifact, goal) pair is attached NOW — a detach of
+    an unattached pair is never queued. NO writer is called on this request."""
+    from grove.dock.attachment_store import attached_pairs
 
     goal_id = request.match_info["goal_id"]
     artifact_id = request.match_info["artifact_id"]
@@ -1031,19 +1043,9 @@ async def handle_attachment_detach(request: web.Request) -> web.Response:
             file_kaizen=False,  # pure client input, no structural fix
         )
 
-    try:
-        event = detach_attachment(artifact_id, goal_id, reason=reason)
-    except AttachmentWriteError as exc:
-        return await _loud_action_failure(
-            f'<div class="card"><p class="error">Detach refused: '
-            f"{_esc(str(exc))}</p></div>",
-            failure_class="detach_refused",
-            action="attachment_detach",
-            message=f"Detach refused: {exc}",
-            status=400,
-        )
-
-    if event is None:
+    # File-time attachment-exists check — a proposal that cannot apply must not
+    # queue. attached_pairs() is keyed by (artifact_id, goal_id).
+    if (artifact_id, goal_id) not in attached_pairs():
         return await _loud_action_failure(
             f'<div class="card"><p class="error">Artifact '
             f"<code>{_esc(artifact_id)}</code> is not attached to "
@@ -1057,22 +1059,16 @@ async def handle_attachment_detach(request: web.Request) -> web.Response:
             status=404,
         )
 
-    # Success — re-render the goal detail so the swapped fragment matches a
-    # fresh GET exactly. A goal that is no longer resolvable (pruned auto-*
-    # staging goal — the detach writer is deliberately Dock-blind) gets an
-    # honest confirmation body, not a 500: the detach SUCCEEDED.
-    dock = load_dock()
-    goal = (
-        next((g for g in dock.goals if g.id == goal_id), None)
-        if dock is not None
-        else None
+    pid, _ = file_agentless(
+        type=PROPOSAL_TYPE_DOCK_DETACH,
+        payload={"goal_id": goal_id, "artifact_id": artifact_id, "reason": reason},
+        evidence=(goal_id, artifact_id),
+        proposer="portal_operator",
     )
-    if goal is None:
-        return _html_fragment(
-            '<div id="goal-detail"><p class="placeholder">Detached. The '
-            "goal is no longer in the Dock.</p></div>"
-        )
-    return _html_fragment(render_goal_detail(request.app, goal))
+    logger.info(
+        "[portal.actions] detach FILED %s: %s from %s", pid, artifact_id, goal_id
+    )
+    return _filed_card(pid, "detach", f"{artifact_id} ⊘ {goal_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -1089,11 +1085,13 @@ def _unknown_tier_card_html(tier: str) -> str:
 
 
 async def handle_tier_model_swap(request: web.Request) -> web.Response:
-    """Swap the model bound to a tier. Form body: ``tier`` (T1/T2/T3, R3) and
-    ``model_slug`` (must be in the catalog). Calls the sole routing writer, then
-    returns the re-rendered tier card reflecting the POST-write state (N2). An
-    off-catalog slug or a ``ConfigValidationError`` re-renders the SAME card with
-    the error inline — the card stays, no 500 (C3)."""
+    """FILE a tier-model swap as an EXPLORATION_NUDGE proposal (portal-action-
+    checkpoint-parity). The portal press proposes; the system writes only when the
+    operator runs ``autonomaton flywheel approve <id>`` (the RED CLI apply path →
+    RoutingConfigWriter.swap_tier_model). Form body: ``tier`` (T1/T2/T3) and
+    ``model_slug``. The read-only validation (tier swappable, catalog membership)
+    runs at FILE time so a proposal that cannot apply is never queued. NO writer
+    is called on this request."""
     data = await request.post()
     tier = str(data.get("tier") or "")
     model_slug = str(data.get("model_slug") or "")
@@ -1124,45 +1122,23 @@ async def handle_tier_model_swap(request: web.Request) -> web.Response:
             status=400,
         )
 
-    try:
-        result = await get_writer().swap_tier_model(tier, model_slug)
-    except ConfigValidationError as exc:
-        return await _loud_action_failure(
-            render_tier_card(
-                tier, _live_tier_preferences().get(tier), catalog, error=str(exc)
-            ),
-            failure_class="tier_config_invalid",
-            action="tier_swap",
-            message=str(exc),
-            status=422,
-        )
-
-    # ledger-eventtype-hygiene-v1 Change 3 — a no-op swap (tier already bound to
-    # this model) wrote nothing and is NOT a failure. Success-class 200 with an
-    # info line on the card, not the _loud_action_failure error surface.
-    if result.status == "noop":
-        logger.info(
-            "[portal.actions] tier %s already bound to %s (no-op)", tier, model_slug
-        )
-        return _html_fragment(
-            render_tier_card(
-                tier, _live_tier_preferences().get(tier), catalog,
-                info=f"Already bound to {model_slug} — no change.",
-            )
-        )
-
-    logger.info("[portal.actions] tier %s swapped to %s", tier, model_slug)
-    # N2 — render the live, post-write state (re-read after the writer committed).
-    return _html_fragment(
-        render_tier_card(tier, _live_tier_preferences().get(tier), catalog)
+    pid, _ = file_agentless(
+        type=PROPOSAL_TYPE_EXPLORATION_NUDGE,
+        payload={"slug": model_slug, "tier": tier},
+        evidence=(),
+        proposer="portal_operator",
     )
+    logger.info("[portal.actions] tier swap FILED %s: %s -> %s", pid, tier, model_slug)
+    return _filed_card(pid, "tier swap", f"{tier} → {model_slug}")
 
 
 async def handle_tier_model_revert(request: web.Request) -> web.Response:
-    """Revert a tier to its ``previous_model`` — one-level undo (AC-6). Form body:
-    ``tier``. Same write path and N2 re-read as swap; a ``ConfigValidationError``
-    (e.g. no previous_model on record) re-renders the card with the error
-    inline."""
+    """FILE a one-level tier revert as an EXPLORATION_NUDGE proposal to the tier's
+    ``previous_model`` (portal-action-checkpoint-parity). The portal press
+    proposes; the operator's ``flywheel approve`` applies via the same writer as a
+    swap. Form body: ``tier``. File-time validation: the tier is swappable, a
+    ``previous_model`` exists on record, and it is still cataloged — a revert that
+    cannot apply is never queued. NO writer is called on this request."""
     data = await request.post()
     tier = str(data.get("tier") or "")
 
@@ -1179,23 +1155,38 @@ async def handle_tier_model_revert(request: web.Request) -> web.Response:
         )
 
     catalog = load_catalog()
-    try:
-        await get_writer().revert_tier_model(tier)
-    except ConfigValidationError as exc:
+    prev = (_live_tier_preferences().get(tier) or {}).get("previous_model")
+    if not prev:
         return await _loud_action_failure(
             render_tier_card(
-                tier, _live_tier_preferences().get(tier), catalog, error=str(exc)
+                tier, _live_tier_preferences().get(tier), catalog,
+                error="No previous model on record to revert to.",
             ),
-            failure_class="tier_config_invalid",
+            failure_class="tier_no_previous_model",
             action="tier_revert",
-            message=str(exc),
+            message=f"Tier {tier!r} has no previous_model to revert to.",
+            status=422,
+        )
+    if prev not in {m["slug"] for m in catalog}:
+        return await _loud_action_failure(
+            render_tier_card(
+                tier, _live_tier_preferences().get(tier), catalog,
+                error=f"Previous model {prev!r} is no longer in the catalog.",
+            ),
+            failure_class="tier_previous_off_catalog",
+            action="tier_revert",
+            message=f"Previous model {prev!r} is not in the catalog.",
             status=422,
         )
 
-    logger.info("[portal.actions] tier %s reverted", tier)
-    return _html_fragment(
-        render_tier_card(tier, _live_tier_preferences().get(tier), catalog)
+    pid, _ = file_agentless(
+        type=PROPOSAL_TYPE_EXPLORATION_NUDGE,
+        payload={"slug": prev, "tier": tier},
+        evidence=(),
+        proposer="portal_operator",
     )
+    logger.info("[portal.actions] tier revert FILED %s: %s -> %s", pid, tier, prev)
+    return _filed_card(pid, "tier revert", f"{tier} → {prev}")
 
 
 def _fresh_binding_row_html(skill: str, catalog, error: str | None = None) -> str:
@@ -1216,13 +1207,13 @@ def _fresh_binding_row_html(skill: str, catalog, error: str | None = None) -> st
 
 async def _binding_action(request: web.Request, *, action: str,
                           binding_for) -> web.Response:
-    """Shared pin/unpin mechanics (the tier-swap template): form parse →
-    catalog membership (pin only) → the ONE sanctioned writer → re-render the
-    row from a fresh read. Failure ladder: client input → 400; writer refusal
-    (BindingWriteError) → 422; anything unexpected → the loud failure path
-    (broadcast + Kaizen filing + banner) at 500."""
-    from grove.capability_registry import BindingWriteError, set_model_binding
-
+    """Shared pin/unpin mechanics — FILE a MODEL_BINDING proposal (portal-action-
+    checkpoint-parity). The portal press proposes; the operator's ``flywheel
+    approve`` applies via the ONE sanctioned writer (set_model_binding). File-time
+    validation: skill present, catalog membership (pin only). ``proposed_binding``
+    is a model dict for pin and ``None`` for unpin — _approve_model_binding
+    requires the key present and treats None as 'clear'. NO writer is called
+    on this request."""
     data = await request.post()
     skill = str(data.get("skill") or "").strip()
     model_slug = str(data.get("model_slug") or "").strip()
@@ -1251,28 +1242,15 @@ async def _binding_action(request: web.Request, *, action: str,
             status=400,
         )
 
-    try:
-        set_model_binding(skill, binding, surface="portal")
-    except BindingWriteError as exc:
-        return await _loud_action_failure(
-            _fresh_binding_row_html(skill, catalog, error=str(exc)),
-            failure_class="binding_write_refused",
-            action=action,
-            message=str(exc),
-            status=422,
-        )
-    except Exception as exc:  # noqa: BLE001 — unexpected → loud, never a 500 blank
-        return await _loud_action_failure(
-            _fresh_binding_row_html(skill, catalog, error=str(exc)),
-            failure_class="binding_unexpected",
-            action=action,
-            message=f"Unexpected failure: {exc}",
-            status=500,
-        )
-
-    logger.info("[portal.actions] binding %s: %s -> %r", action, skill,
-                binding)
-    return _html_fragment(_fresh_binding_row_html(skill, catalog))
+    pid, _ = file_agentless(
+        type=PROPOSAL_TYPE_MODEL_BINDING,
+        payload={"skill": skill, "proposed_binding": binding},
+        evidence=(skill,),
+        proposer="portal_operator",
+    )
+    logger.info("[portal.actions] binding %s FILED %s: %s -> %r", action, pid,
+                skill, binding)
+    return _filed_card(pid, action, f"{skill}: {binding!r}")
 
 
 async def handle_binding_pin(request: web.Request) -> web.Response:

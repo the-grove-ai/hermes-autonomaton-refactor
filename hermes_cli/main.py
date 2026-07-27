@@ -5507,6 +5507,29 @@ def cmd_flywheel(args):
         sys.exit(flywheel_cli.cli_approve(
             args.proposal_id, strict=getattr(args, "strict", False),
         ))
+    elif action == "confirm-red":
+        # portal-action-checkpoint-parity — the operator-only CLI apply for a
+        # pending RED .env governance proposal. Calls the EXISTING claim-then-
+        # execute path (grove.red_pending_store.approve_red_proposal); no new
+        # writer, no new store. This command is RED (zones.schema.yaml) so the
+        # agent cannot reach it through the terminal.
+        from grove.red_pending_store import (
+            approve_red_proposal,
+            get_red_pending_store,
+        )
+
+        _pid = args.proposal_id
+        _bare = _pid.split(":", 1)[1] if ":" in _pid else _pid
+        _result = approve_red_proposal(_bare, get_red_pending_store())
+        if _result.get("success"):
+            print(f"Confirmed: {_result.get('reason', 'written')}")
+            sys.exit(0)
+        print(
+            f"Confirm failed: {_result.get('reason')} — "
+            f"{_result.get('error', '')}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     elif action == "reject":
         sys.exit(flywheel_cli.cli_reject(
             args.proposal_id, reason=getattr(args, "reason", None),
@@ -10542,6 +10565,16 @@ def main():
         help="Strict skill-promotion gating (Sprint 53.2): show the diff, "
              "require a logged successful execution, and confirm before "
              "promoting a quarantined skill.",
+    )
+
+    flywheel_confirm_red_p = flywheel_subparsers.add_parser(
+        "confirm-red",
+        help="Operator-only: apply a pending RED .env governance proposal "
+             "(the portal /confirm CLI equivalent). RED, grant-required.",
+    )
+    flywheel_confirm_red_p.add_argument(
+        "proposal_id",
+        help="Full red_pending:... id, bare hash, or the pending proposal id",
     )
 
     flywheel_reject_p = flywheel_subparsers.add_parser(

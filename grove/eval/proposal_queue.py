@@ -139,6 +139,12 @@ PROPOSAL_TYPE_CONSOLIDATION = "consolidation_proposal"
 #    "goal": {"id", "name", "keywords", "vector", "status", "definition_of_done",
 #             "source_record_ids"}}
 PROPOSAL_TYPE_DOCK_MUTATION = "dock_mutation"
+# portal-action-checkpoint-parity — operator-initiated Dock mutations the portal
+# FILES (never writes) so they apply only via `autonomaton flywheel approve`.
+#   dock_goal_status payload: {"goal_id": str, "status": str, "previous_status": str}
+#   dock_detach      payload: {"goal_id": str, "artifact_id": str, "reason": str}
+PROPOSAL_TYPE_DOCK_GOAL_STATUS = "dock_goal_status"
+PROPOSAL_TYPE_DOCK_DETACH = "dock_detach"
 # binding-governance-surfaces-v1 — a proposed model_binding change on a
 # kind=skill capability record. Flows through THIS RoutingProposal queue and
 # the flywheel CLI approve path; the apply handler is the ONE sanctioned
