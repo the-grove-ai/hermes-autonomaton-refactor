@@ -56,9 +56,11 @@ from grove.eval import proposal_queue
 from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_DOCK_DETACH,
     PROPOSAL_TYPE_DOCK_GOAL_STATUS,
+    PROPOSAL_TYPE_DOCK_MUTATION,
     PROPOSAL_TYPE_EXPLORATION_NUDGE,
     PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING,
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING,
+    PROPOSAL_TYPE_GOAL_ATTACHMENT,
     PROPOSAL_TYPE_MEMORY_CONTEXT,
     PROPOSAL_TYPE_MODEL_BINDING,
     compute_proposal_id,
@@ -79,6 +81,22 @@ from hermes_constants import get_hermes_home
 from tools import mcp_tool
 
 logger = logging.getLogger(__name__)
+
+# portal-approve-route-parity — the six scope-defining proposal types route 7
+# (portal approve) refuses, mirroring tools/flywheel_review_tool.py's
+# _SCOPE_DEFINING_REFUSED_TYPES EXACTLY (same six members). This is an
+# INTENTIONAL DUPLICATE, not an import: tools/ importing into grove/api/ would
+# invert the dependency direction (grove/api is the lower layer). The
+# six-member literal is cheap to keep in sync — if the tool's set changes,
+# change this too. Both doors refuse; the RED CLI still applies.
+_SCOPE_DEFINING_REFUSED_TYPES = frozenset({
+    PROPOSAL_TYPE_EXPLORATION_NUDGE,
+    PROPOSAL_TYPE_MODEL_BINDING,
+    PROPOSAL_TYPE_DOCK_MUTATION,
+    PROPOSAL_TYPE_GOAL_ATTACHMENT,
+    PROPOSAL_TYPE_DOCK_GOAL_STATUS,
+    PROPOSAL_TYPE_DOCK_DETACH,
+})
 
 # forge-jobsearch-v1 — the raw MCP tool name the gateway notion OAuth session
 # advertises for a page-property write (sanitized registry name:
@@ -277,6 +295,34 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
         summary = proposal.to_dict().get("semantic_justification") or ""
 
     if action == "approve":
+        # portal-approve-route-parity — route 7 refuses the SAME six
+        # scope-defining proposal types the agent tool refuses (see
+        # tools/flywheel_review_tool.py), checked BEFORE any handler is
+        # resolved. These apply ONLY via the operator's RED CLI (`autonomaton
+        # flywheel approve`, RED/operator-only). The portal is loopback/mesh-
+        # gated but carries NO operator identity, so filing one inline here
+        # would be a confused-deputy write to a scope-defining file. Same
+        # refused-card shape as the ValueError branch below.
+        if proposal.type in _SCOPE_DEFINING_REFUSED_TYPES:
+            msg = (
+                f"{proposal.type} is a scope-defining proposal — it applies "
+                f"only via the operator command `autonomaton flywheel approve "
+                f"{short_id}` (RED, operator-only). The portal cannot apply it "
+                f"inline."
+            )
+            return await _loud_action_failure(
+                f'<div class="card" id="proposal-{short_id}">'
+                f'<h4><span class="badge">{_esc(type_label)}</span> '
+                f'<span class="badge badge-yellow">refused</span></h4>'
+                f'<p>{_esc(summary)}</p>'
+                f'<div class="meta error">{_esc(msg)}</div>'
+                f'{_proposal_actions_html(full_id, short_id)}'
+                f'</div>',
+                failure_class="proposal_scope_defining_refused",
+                action="proposal_approve",
+                message=msg,
+                status=422,
+            )
         try:
             handler = _handler_for(proposal.type)
         except ValueError:
