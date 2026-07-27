@@ -218,6 +218,7 @@ async def _loud_action_failure(
     status: int,
     detail: str | None = None,
     file_kaizen: bool = True,
+    broadcast: bool = True,
 ) -> web.Response:
     """The shared loud-disposition path for a portal action failure (Option A).
 
@@ -237,15 +238,22 @@ async def _loud_action_failure(
     return. ``broadcast_to_operator`` is P1-internally-safe (never raises);
     ``file_agentless_proposal`` does file I/O and is wrapped here.
 
-    ``file_kaizen`` gates only the Kaizen filing (the broadcast + banner always
-    fire): a pure client-input failure with no conceivable structural fix can set
-    it False so the review queue is not fed noise."""
+    ``file_kaizen`` gates only the Kaizen filing; ``broadcast`` gates only the
+    operator broadcast (the banner always fires). A pure client-input failure with
+    no conceivable structural fix can set ``file_kaizen`` False so the review queue
+    is not fed noise. A DELIBERATE, expected refusal (portal-approve-route-parity:
+    a scope-defining proposal correctly bounced to the RED CLI) is not a fault at
+    all — it sets BOTH False so it neither pages the operator on Telegram nor files
+    a fault, while still returning the loud in-portal 422 card + banner."""
     logger.error(
         "[portal.actions] %s failed (%s): %s", action, failure_class, message
     )
 
-    # Side-effect 1 — reach the operator on every connected surface (P1 fail-safe).
-    await broadcast_to_operator(f"Portal action '{action}' failed: {message}")
+    # Side-effect 1 — reach the operator on every connected surface (P1 fail-safe),
+    # unless this is an expected refusal that should stay quiet on the operator's
+    # channel (the in-portal banner below still fires either way).
+    if broadcast:
+        await broadcast_to_operator(f"Portal action '{action}' failed: {message}")
 
     # Side-effect 2 — file a Kaizen proposal so a RECURRING failure earns a
     # structural fix. Wrapped: a queue write must never block the card + banner.
@@ -322,6 +330,11 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
                 action="proposal_approve",
                 message=msg,
                 status=422,
+                # A correct scope-defining refusal is expected policy, not a fault:
+                # stay quiet on the operator's channel and file no Kaizen fault. The
+                # in-portal 422 refused card + banner still render for whoever clicked.
+                broadcast=False,
+                file_kaizen=False,
             )
         try:
             handler = _handler_for(proposal.type)
