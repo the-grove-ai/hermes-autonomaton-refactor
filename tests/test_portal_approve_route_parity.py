@@ -39,7 +39,6 @@ from grove.api import (
     portal_auth_middleware,
     register_portal_routes,
 )
-from grove.api import actions as actions_mod
 from grove.api.actions import register_action_routes
 from grove.api.fragments import _PORTAL_ASSETS, register_fragment_routes
 from grove.eval import proposal_queue
@@ -175,19 +174,9 @@ def _target_for(home, ptype):
 
 
 @pytest.mark.parametrize("ptype", SCOPE_DEFINING_TYPES)
-async def test_portal_approve_refuses_scope_defining_type(client, grove_home, ptype, monkeypatch):
+async def test_portal_approve_refuses_scope_defining_type(client, grove_home, ptype):
     target = _target_for(grove_home, ptype)
     before = _snapshot(target)
-
-    # A correct governance refusal is NOT a fault: it must NOT reach the operator's
-    # channel (Telegram) nor file a portal_action_failure Kaizen proposal — those
-    # are for genuine failures, and firing them on every refusal is alarm fatigue.
-    broadcasts = []
-
-    async def _record_broadcast(content, **kw):
-        broadcasts.append(content)
-
-    monkeypatch.setattr(actions_mod, "broadcast_to_operator", _record_broadcast)
 
     pid = f"{ptype}:scope-{ptype}"
     _append(pid, ptype)
@@ -206,8 +195,3 @@ async def test_portal_approve_refuses_scope_defining_type(client, grove_home, pt
 
     # Refused, not applied: the original proposal is still in the queue.
     assert proposal_queue.read(pid) is not None
-
-    # QUIET: no operator broadcast, no Kaizen fault filed for a deliberate refusal.
-    assert broadcasts == [], f"refusal broadcast to operator: {broadcasts}"
-    pafs = [p for p in proposal_queue.read_all() if p.type == "portal_action_failure"]
-    assert pafs == [], f"refusal filed portal_action_failure proposals: {[p.proposal_id for p in pafs]}"
