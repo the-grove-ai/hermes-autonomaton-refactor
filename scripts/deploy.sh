@@ -71,13 +71,9 @@ git fetch origin main
 git reset --hard origin/main
 .venv/bin/pip install -e ".[web,mcp,dev]" --quiet
 
-# Sync routing config (gated on two-file split being active — ANDON A3)
-if [ -f "\$HOME/.grove/routing.autonomaton.yaml" ]; then
-  cp config/routing.config.yaml "\$HOME/.grove/routing.config.yaml"
-  echo "Synced routing.config.yaml from repo"
-else
-  echo "ANDON A3: routing.autonomaton.yaml absent — skipping routing sync" >&2
-fi
+# No routing sync: ~/.grove operational/authority are operator-owned
+#  instance state and are NEVER written from the repo (GRV-001 §IV;
+#  SPEC 3ab780a78eef81688e15c4b5f524f5c4 Andon 5).
 
 # capability-mutation-surface-v1 P6 (M7) — post-deploy admission recon:
 # base<->overlay diff per slug + orphan ALERTs, into this transcript.
