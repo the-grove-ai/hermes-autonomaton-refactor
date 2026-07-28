@@ -14,7 +14,7 @@ Two surfaces:
 
 * ``introspect_capabilities()`` — read-only enumeration of live state:
   connected MCP servers (from ``config.yaml``), Cognitive Router tiers
-  (from ``routing.config.yaml``), available slash commands (from
+  (from ``routing.operational.yaml``), available slash commands (from
   ``COMMAND_REGISTRY``), cellar index status. Never invokes MCPs,
   never instantiates the router, never forces a cellar build.
   Defensive — returns "(none)" / "(unavailable)" prose for missing
@@ -48,7 +48,7 @@ Two failure styles in this module, deliberately distinct:
   ``_enumerate_slash_commands``, ``_cellar_status``) are
   **reporting surfaces**. They degrade to ``"(unavailable)"`` /
   ``"(none)"`` prose on read failures rather than breaking
-  composition. The reasoning: a broken ``routing.config.yaml`` should
+  composition. The reasoning: a broken ``routing.operational.yaml`` should
   not prevent the operator from starting a session to fix it.
   Introspection IS reporting, not governance.
 
@@ -189,7 +189,7 @@ def introspect_capabilities() -> str:
         for tier_name, desc in tiers:
             lines.append(f"- **{tier_name}** — {desc}")
     else:
-        lines.append("- (routing.config.yaml unavailable)")
+        lines.append("- (routing.operational.yaml unavailable)")
     lines.append("")
 
     # Slash commands (grouped by category)
@@ -257,7 +257,7 @@ def _enumerate_mcps() -> list[tuple[str, str]]:
 def _enumerate_tiers() -> list[tuple[str, str]]:
     """Enumerate the four Cognitive Router tiers + their model bindings.
 
-    Read-only: parses ``routing.config.yaml`` directly (operator copy
+    Read-only: parses ``routing.operational.yaml`` directly (operator copy
     preferred, falls back to repo template). Never instantiates
     ``CognitiveRouter`` — that would bind the classifier and emit
     telemetry, both unwanted side effects for introspection.

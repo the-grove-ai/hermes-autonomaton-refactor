@@ -6,7 +6,7 @@ register, complexity, confidence — plus a deterministic pattern hash.
 The classification feeds two consumers: route() (confidence drives tier
 escalation) and the telemetry log (the enrichment Kaizen's Ratchet mines).
 
-The classifier runs on whichever tier ``routing.config.yaml`` binds to
+The classifier runs on whichever tier ``routing.operational.yaml`` binds to
 ``telemetry.tier`` — by default T1, but operators may rebind. The
 intent taxonomy is code, not operator-editable config: it is the
 system's own model of what work looks like.
@@ -18,7 +18,7 @@ behaviour — the agent always runs.
 
 Cost telemetry reads ``cost_per_mtok_input`` / ``cost_per_mtok_output``
 off the T-telemetry tier's ``TierConfig`` (loaded from
-``routing.config.yaml``). No model-specific constants live in this
+``routing.operational.yaml``). No model-specific constants live in this
 module — when the operator rebinds the telemetry tier, the spend
 tracker follows the binding automatically.
 """
@@ -838,7 +838,7 @@ def _track_cost(usage, *, tier_config) -> None:
             tier_name = getattr(tier_config, "tier", "?")
             logger.warning(
                 "[classify] T-telemetry tier %r declares no "
-                "cost_per_mtok_input/output in routing.config.yaml; "
+                "cost_per_mtok_input/output in routing.operational.yaml; "
                 "skipping spend accumulation for this process. "
                 "Classification continues. Declare the values under the "
                 "tier's block to restore cost tracking.",

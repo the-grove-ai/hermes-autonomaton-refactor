@@ -8,7 +8,7 @@ The T1 tier is resolved BY NAME through the router's PUBLIC tier API
 (:func:`grove.router.get_tier_config` + :func:`grove.providers.resolve_tier_to_runtime`)
 — deliberately NOT ``grove.classify._telemetry_tier_runtime`` (private, and
 pinned to the *telemetry* tier rather than T1). The model binding therefore
-follows ``routing.config.yaml`` ``tier_preferences.T1`` (Haiku by default);
+follows ``routing.operational.yaml`` ``tier_preferences.T1`` (Haiku by default);
 rebinding the tier moves this primitive with no code change.
 
 The client is built with :func:`agent.anthropic_adapter.build_anthropic_client`,
@@ -47,7 +47,7 @@ from typing import Any, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-# The tier this primitive targets, by name (routing.config.yaml key).
+# The tier this primitive targets, by name (routing.operational.yaml key).
 _T1_TIER = "T1"
 
 
@@ -180,7 +180,7 @@ def call_t1(
     raise RuntimeError(
         f"call_t1: unsupported T1 api_mode {api_mode!r} "
         f"(model={runtime.get('model')!r}); bind T1 to an anthropic_messages "
-        f"or chat_completions provider in routing.config.yaml."
+        f"or chat_completions provider in routing.operational.yaml."
     )
 
 
@@ -366,7 +366,7 @@ def _track_cost(usage, tier_config) -> None:
             _missing_cost_warned = True
             logger.warning(
                 "[t1_call] tier %r declares no cost_per_mtok_input/output in "
-                "routing.config.yaml; skipping spend accumulation for this "
+                "routing.operational.yaml; skipping spend accumulation for this "
                 "process. Calls continue. Declare the values to restore "
                 "cost tracking.",
                 getattr(tier_config, "tier", "?"),

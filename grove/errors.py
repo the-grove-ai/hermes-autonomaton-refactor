@@ -21,7 +21,7 @@ class ProviderDetectionError(GroveError):
     ``provider``, ``api_mode``, and ``base_url`` does not match any
     recognized branch in the detection chain. The message names the
     inputs and instructs the operator to declare ``api_mode``
-    explicitly in ``routing.config.yaml``.
+    explicitly in ``routing.operational.yaml``.
 
     Sprint 47 hotfix: this replaces a silent default to
     ``chat_completions`` that constructed an OpenAI client against
@@ -67,7 +67,7 @@ class TierUnavailableError(GroveError):
     GRV-010 C2d — raised at the network-execution boundary (run_agent's retry
     loop) when the tier's bound model fails with a connection drop, timeout,
     429, or exhausted credential pool AND the tier declares a ``fallback_tier``
-    in ``routing.config.yaml``. It carries the failed tier + provider/model so
+    in ``routing.operational.yaml``. It carries the failed tier + provider/model so
     the Dispatcher (DECIDE HIGH) can apply the governed downshift policy:
     re-route through the Cognitive Router at the declared fallback tier, or —
     when none is declared/valid — fail loud via ``TerminalGovernanceHalt``.

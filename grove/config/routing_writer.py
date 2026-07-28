@@ -1,11 +1,11 @@
-"""The sole sanctioned writer for ``routing.config.yaml`` (portal-model-swap-v1).
+"""The sole sanctioned writer for ``routing.operational.yaml`` (portal-model-swap-v1).
 
 Every mutation of the operator routing config funnels through this module.
 Both the flywheel consolidation approver (``flywheel_cli._approve_consolidation``,
 refactored in Phase 2) and the portal model-swap handler call it, so the
 pipeline — BACKUP → ruamel round-trip LOAD → MUTATE → sandbox-VALIDATE via a
 fresh ``CognitiveRouter`` → atomic REPLACE → HOT-RELOAD — lives in exactly one
-place (C1; GRV-008 § III: one sanctioned writer of ``routing.config.yaml``).
+place (C1; GRV-008 § III: one sanctioned writer of ``routing.operational.yaml``).
 
 Why ruamel and not pyyaml: the operator file is comment-dense (a banner, per-tier
 prose, a commented-out local-binding block, inline notes). The router READ path
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 class ConfigValidationError(Exception):
-    """A proposed ``routing.config.yaml`` mutation was rejected (C3).
+    """A proposed ``routing.operational.yaml`` mutation was rejected (C3).
 
     Raised when the requested change is structurally impossible (unknown tier,
     missing model, no ``previous_model`` to revert to) or when the mutated
@@ -70,14 +70,14 @@ class TierSwapResult:
 
 
 def _default_config_path() -> Path:
-    """The operator routing config — ``$GROVE_HOME/routing.config.yaml``.
+    """The operator routing config — ``$GROVE_HOME/routing.operational.yaml``.
 
     Resolved the same way ``flywheel_cli._operator_config_path`` resolves it,
     so this writer mutates exactly the file the live router reads.
 
     C16 — ``.resolve()`` collapses symlinks so ``apply_mutation``'s
     ``os.replace`` lands on the real target rather than replacing (and thereby
-    severing) a ``~/.grove/routing.config.yaml`` symlink to a provider variant.
+    severing) a ``~/.grove/routing.operational.yaml`` symlink to a provider variant.
     This also makes the write target identical to the path
     ``fs_utils.is_scope_defining`` evaluates (it ``realpath``-resolves too).
     """
@@ -122,7 +122,7 @@ def _default_reload() -> None:
 
 
 def _ruamel() -> YAML:
-    """A ruamel round-trip parser tuned to ``routing.config.yaml``'s layout.
+    """A ruamel round-trip parser tuned to ``routing.operational.yaml``'s layout.
 
     Same settings the prior sanctioned writer (``_approve_consolidation``) used,
     so the comment-dense file round-trips without reflow.
@@ -190,7 +190,7 @@ def _file_routing_mutation_event(label: str, config_path: str) -> None:
 
 
 class RoutingConfigWriter:
-    """Single-writer pipeline for ``routing.config.yaml``.
+    """Single-writer pipeline for ``routing.operational.yaml``.
 
     Construct one per config path. The module-level singleton (:func:`get_writer`)
     is the one the portal and the flywheel CLI share; tests construct their own
@@ -414,7 +414,7 @@ _writer: Optional[RoutingConfigWriter] = None
 def get_writer() -> RoutingConfigWriter:
     """Return the shared ``RoutingConfigWriter`` (lazy-init on first use).
 
-    Bound to ``$GROVE_HOME/routing.config.yaml``. The portal handler and the
+    Bound to ``$GROVE_HOME/routing.operational.yaml``. The portal handler and the
     refactored flywheel approver both go through this one instance, so its
     ``asyncio.Lock`` serializes every config mutation in the process (C2).
     """

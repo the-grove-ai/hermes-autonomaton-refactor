@@ -164,27 +164,44 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "tools/flywheel_review_tool.py",
     }),
     # GRV-001 v2.0 — routing.config.yaml is DELETED (split into operational +
-    # authority). This basename now survives ONLY as: the migration SOURCE
-    # (grove/config/routing_migrate.py — the operator-run tool takes a v1
-    # routing.config.yaml path); the deferred-Andon CODE ref pending
-    # routing-v2-machine-overlay-migration-v1 (grove/flywheel_cli.py
-    # _operator_config_path:1065, still keyed on the v1 name); grove/cellar.py's
-    # config-index tuple; and docstring naming-rot in the Phase-2-migrated modules.
-    # SHRINK DEFERRED (PM ruling, Phase 3): the docstring naming-rot cleanup + pin
-    # shrink to the code survivors {routing_migrate, flywheel_cli, cellar} is filed
-    # as a rider on routing-v2-machine-overlay-migration-v1. Kept scan-matching
-    # here — honest to the tree.
+    # authority). routing-v2-machine-overlay-migration-v1 Phase 3 (naming-rot rider):
+    # the docstring naming-rot in the Phase-2-migrated modules was retargeted to the
+    # v2 filenames, so this basename now survives ONLY as genuine, live v1 references
+    # — both carrying an in-code MIGRATION PIN reason:
+    #   * grove/config/routing_migrate.py — the migration SOURCE tool reads a v1
+    #     routing.config.yaml and splits it (docstring + argparse help literals);
+    #   * grove/router_merge.py — the ``_MIGRATION_COMMAND`` string an operator on a
+    #     v1 tree runs to reach v2 (``<v1-routing.config.yaml>``).
+    # routing_migrate's presence is asserted UNCONDITIONALLY below (a required survivor
+    # while any v1 instance exists), independent of the scan.
     "routing.config.yaml": frozenset({
-        "grove/config/routing_writer.py",
+        "grove/config/routing_migrate.py",
+        "grove/router_merge.py",
+    }),
+    # routing-v2-migration-v1 Phase 3 (reviewed amendment) — the OPERATIONAL
+    # surface (surface_class: in_scope, autonomous_loop-writable; default_tier /
+    # tier_preferences / model_facts / routing_rules / telemetry). Sole sanctioned
+    # CONTENT-WRITER: grove/config/routing_writer.py (RoutingConfigWriter model
+    # swaps). Every other toucher is a reader/loader (router, tier_budget,
+    # hero_runner, pattern_compiler, dock/attachment, affordances, fragments,
+    # flywheel_cli) or the migration source (routing_migrate) / merge seam
+    # (router_merge).
+    # routing-v2-machine-overlay-migration-v1 Phase 3: the naming-rot retarget moved
+    # the operator-facing readers/loaders here (they describe tier_preferences /
+    # routing_rules / model_facts / pattern_cache / goal_attachment / telemetry — the
+    # operational surface). Sole sanctioned CONTENT-WRITER remains routing_writer.
+    "routing.operational.yaml": frozenset({
         "grove/affordances.py",
         "grove/api/fragments.py",
         "grove/cellar.py",
         "grove/classify.py",
         "grove/config/model_catalog.py",
+        "grove/config/routing_migrate.py",
+        "grove/config/routing_writer.py",
         "grove/dispatcher.py",
         "grove/dock/attachment.py",
         "grove/errors.py",
-        "grove/escalation_policy.py",
+        "grove/eval/consolidation_ratchet.py",
         "grove/eval/hero_runner.py",
         "grove/eval/pattern_compiler.py",
         "grove/fleet/worker_entry.py",
@@ -197,40 +214,7 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/router.py",
         "grove/router_merge.py",
         "grove/skill_binding.py",
-        "grove/sovereignty.py",
         "grove/t1_call.py",
-        "grove/tier_budget.py",
-        # capability-mutation-surface-v1 M1 (reviewed amendment): fs_utils
-        # literal moved to config/scope_surfaces.yaml.
-        # routing-v2-migration-v1 Phase 3: grove/red_pending_store.py DROPPED OUT
-        # — the routing_config_replace runtime governance-write door was retired
-        # (authority is operator_authenticated / git+deploy, GRV-001 §IV.IV), so
-        # it no longer names the basename.
-        # routing-v2-migration-v1 Phase 1 (reviewed amendment): the operator-run
-        # migration tool names + renames the v1 file during the v2 split. It is
-        # NOT a competing content-writer to RoutingConfigWriter.
-        "grove/config/routing_migrate.py",
-    }),
-    # routing-v2-migration-v1 Phase 3 (reviewed amendment) — the OPERATIONAL
-    # surface (surface_class: in_scope, autonomous_loop-writable; default_tier /
-    # tier_preferences / model_facts / routing_rules / telemetry). Sole sanctioned
-    # CONTENT-WRITER: grove/config/routing_writer.py (RoutingConfigWriter model
-    # swaps). Every other toucher is a reader/loader (router, tier_budget,
-    # hero_runner, pattern_compiler, dock/attachment, affordances, fragments,
-    # flywheel_cli) or the migration source (routing_migrate) / merge seam
-    # (router_merge).
-    "routing.operational.yaml": frozenset({
-        "grove/affordances.py",
-        "grove/api/fragments.py",
-        "grove/config/routing_migrate.py",
-        "grove/config/routing_writer.py",
-        "grove/dock/attachment.py",
-        "grove/eval/consolidation_ratchet.py",
-        "grove/eval/hero_runner.py",
-        "grove/eval/pattern_compiler.py",
-        "grove/flywheel_cli.py",
-        "grove/router.py",
-        "grove/router_merge.py",
         "grove/tier_budget.py",
     }),
     # routing-v2-migration-v1 Phase 3 (reviewed amendment) — the AUTHORITY surface
@@ -244,8 +228,10 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
     # (routing_migrate), and routing_writer's derivation of the sibling path for
     # its sandbox validation (it reads authority, never writes it).
     "routing.authority.yaml": frozenset({
+        "grove/cellar.py",
         "grove/config/routing_migrate.py",
         "grove/config/routing_writer.py",
+        "grove/escalation_policy.py",
         "grove/eval/hero_runner.py",
         "grove/router.py",
         "grove/router_merge.py",
@@ -517,6 +503,19 @@ def test_basename_toucher_sets_match_pins_exactly():
         "surface-basename population drift (amend _BASENAME_TOUCHER_PINS in "
         "a reviewed diff):\n" + "\n".join(problems)
     )
+
+
+def test_routing_migrate_is_a_required_config_yaml_survivor():
+    # routing-v2-machine-overlay-migration-v1 Phase 3 (3.1): the v1 basename survives
+    # ONLY as genuine migration references. routing_migrate is the migration SOURCE and
+    # MUST stay pinned to routing.config.yaml while any v1 instance can exist —
+    # asserted UNCONDITIONALLY, independent of the AST scan, so a future edit that
+    # accidentally strips its v1 literal fails here loudly rather than silently
+    # shrinking the pin to zero survivors.
+    assert (
+        "grove/config/routing_migrate.py"
+        in _BASENAME_TOUCHER_PINS["routing.config.yaml"]
+    ), "MIGRATION PIN: routing_migrate must remain a routing.config.yaml survivor"
 
 
 def test_kaizen_ledger_dirname_population_is_pinned():

@@ -1,7 +1,7 @@
 """Cognitive Router for the Grove Autonomaton.
 
-Reads ``~/.grove/routing.config.yaml`` (or the repo default at
-``config/routing.config.yaml``) and exposes ``route()`` — tier selection
+Reads ``~/.grove/routing.operational.yaml`` (or the repo default at
+``config/routing.operational.yaml``) and exposes ``route()`` — tier selection
 from config rules, zone classification, and operator overrides — plus a
 read-only view of the four cognitive tiers and their model bindings.
 
@@ -57,7 +57,7 @@ class TierConfig:
 
     ``cost_per_mtok_input`` and ``cost_per_mtok_output`` are USD-per-
     million-tokens list prices the operator declares per tier. Optional
-    so legacy ``routing.config.yaml`` files without the field round-trip
+    so legacy ``routing.operational.yaml`` files without the field round-trip
     cleanly; consumers that compute cost telemetry (the T-telemetry
     classifier's spend tracker) treat None as "operator has not
     declared cost; emit a one-shot warning and skip accumulation"
@@ -244,7 +244,7 @@ class RoutingRule:
 
 
 class CognitiveRouter:
-    """Loads, queries, and routes against a routing.config.yaml file."""
+    """Loads, queries, and routes against a routing.operational.yaml file."""
 
     def __init__(self, config_path: Path, machine_path: Optional[Path] = None):
         self._config_path = Path(config_path)
@@ -336,7 +336,7 @@ class CognitiveRouter:
         logger.warning(
             "[grove.router] routing.model_facts: %s for bound model %r — using "
             "safe defaults (context_window=%d floor). Declare it under "
-            "routing.model_facts in routing.config.yaml to silence this.",
+            "routing.model_facts in routing.operational.yaml to silence this.",
             reason, slug, _CONTEXT_WINDOW_FLOOR,
         )
 
@@ -932,8 +932,8 @@ def initialize(config_path: Optional[Path] = None) -> CognitiveRouter:
 
     Resolution order for ``config_path``:
         1. Explicit argument, if given.
-        2. ``~/.grove/routing.config.yaml`` (operator copy).
-        3. Repo default at ``<grove-package-parent>/config/routing.config.yaml``,
+        2. ``~/.grove/routing.operational.yaml`` (operator copy).
+        3. Repo default at ``<grove-package-parent>/config/routing.operational.yaml``,
            copied to the operator location on first run.
 
     Raises FileNotFoundError if neither the operator copy nor the repo

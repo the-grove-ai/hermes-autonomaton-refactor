@@ -3114,7 +3114,7 @@ class Dispatcher:
         Sprint 29 tool filter and Sprint 28 intent record already
         consume), it does not produce it.
 
-        Vanilla install (no ``routing.config.yaml``) returns silently —
+        Vanilla install (no ``routing.operational.yaml``) returns silently —
         ``route_for_agent`` returns ``None`` and the caller's chosen
         model is used unchanged.
         """
@@ -3814,7 +3814,7 @@ class Dispatcher:
     ) -> str:
         """Apply the governed tier-unavailable policy and return the fallback tier.
 
-        On a valid fallback (declared in routing.config.yaml, not the failed
+        On a valid fallback (declared in routing.operational.yaml, not the failed
         tier, not already attempted this turn, and resolvable by the router):
         log a ``tier_fallback`` ledger event, re-route the agent THROUGH the
         Cognitive Router at the fallback tier, and return its id so the caller
@@ -4574,9 +4574,9 @@ class Dispatcher:
 
         Loaded on the first routed turn (not at construction), so test /
         gateway Dispatchers that never route are unaffected. ``load_tier_budgets``
-        fails loud at load (D7) when the active ``routing.config.yaml`` lacks the
+        fails loud at load (D7) when the active ``routing.operational.yaml`` lacks the
         block or an inference tier's entry — the operator syncs the template
-        block to ``~/.grove/routing.config.yaml`` before live turns.
+        block to ``~/.grove/routing.operational.yaml`` before live turns.
         """
         cached = self._tier_budgets_cache
         if cached is not None:
@@ -4607,7 +4607,7 @@ class Dispatcher:
             raise TierBudgetMissing(
                 f"routed tier {tier!r} has no tier_budgets entry; the prefill "
                 f"budget cannot be resolved. Add a tier_budgets[{tier!r}] block "
-                f"to routing.config.yaml (D7 — no silent full-load)."
+                f"to routing.operational.yaml (D7 — no silent full-load)."
             )
         agent._tier_budget = budget
         agent._tier_context_blocks = frozenset(budget.context)

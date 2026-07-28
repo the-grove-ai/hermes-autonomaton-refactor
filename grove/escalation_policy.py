@@ -7,8 +7,8 @@ within budget/ceiling. Auto-deny above. Both log to the Kaizen
 Ledger; both surface in the intent feed.
 
 Configuration lives under ``routing:escalation:`` in
-``config/routing.config.yaml`` (operator runtime copy at
-``~/.grove/routing.config.yaml``). Missing block → defaults to
+``config/routing.authority.yaml`` (operator runtime copy at
+``~/.grove/routing.authority.yaml``). Missing block → defaults to
 ``enabled: false`` and every request auto-denies. Vanilla installs
 preserve pre-Sprint-30 behavior.
 
@@ -147,7 +147,7 @@ def _tier_index(tier: str) -> int:
 def load_escalation_policy(routing_config: Dict[str, Any]) -> EscalationPolicy:
     """Build an :class:`EscalationPolicy` from a routing config dict.
 
-    Accepts the loaded ``routing.config.yaml`` mapping. Reads
+    Accepts the loaded ``routing.authority.yaml`` mapping. Reads
     ``routing.escalation`` and applies defaults for missing fields.
     Schema validation is intentionally permissive — a missing or
     malformed escalation block produces a disabled policy, NOT an

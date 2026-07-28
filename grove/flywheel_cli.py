@@ -16,7 +16,7 @@ The four operations:
 * :func:`cli_reject` — remove from queue; no config change.
 
 Per GRV-008 § III the machine file is the only path the renderers
-write to. ``routing.config.yaml`` is never opened in write mode.
+write to. ``routing.operational.yaml`` is never opened in write mode.
 """
 
 from __future__ import annotations
@@ -270,11 +270,11 @@ def cli_list(*, queue_path: Optional[Path] = None) -> int:
 def _load_current_routing_rules() -> Optional[Dict[str, Any]]:
     """Best-effort merged ``routing.routing_rules`` for the TierRatchet detector.
 
-    Operator ``routing.config.yaml`` (precedence) deep-merged with the machine
+    Operator ``routing.operational.yaml`` (precedence) deep-merged with the machine
     ``routing.autonomaton.yaml``; returns the ``routing.routing_rules`` block so
     the detector skips intents already listed. None on any failure (a fresh
     install with no operator config) — the detector then treats every relevant
-    intent as a fresh addition. Read-only — never writes routing.config.yaml.
+    intent as a fresh addition. Read-only — never writes routing.operational.yaml.
     """
     try:
         op = Path.home() / ".grove" / "routing.operational.yaml"
@@ -763,7 +763,7 @@ def _t1_interaction_cost_usd() -> Optional[float]:
     """Estimated USD cost of one averted T1 interaction.
 
     Reads ``tier_preferences.T1.cost_per_mtok_input/output`` from
-    routing.config.yaml (operator copy wins over the repo default, same
+    routing.operational.yaml (operator copy wins over the repo default, same
     precedence as the pattern_cache config) and multiplies by the assumed
     average interaction size. Returns None when the T1 tier declares no
     cost — the caller then reports savings as unavailable rather than $0."""
@@ -931,7 +931,7 @@ def cli_patterns_stats(*, store: Optional[Any] = None) -> int:
     if per_interaction is None:
         print(
             "  Estimated savings:    n/a (T1 tier declares no cost_per_mtok "
-            "in routing.config.yaml)"
+            "in routing.operational.yaml)"
         )
     else:
         savings = total_hits * per_interaction
@@ -1048,7 +1048,7 @@ def _approve_routing_adjustment(
 
     Returns the (target_path, applied_diff) pair so the caller can
     print the result. Per GRV-008 § III this NEVER touches
-    ``routing.config.yaml``.
+    ``routing.operational.yaml``.
     """
     diff = _routing_adjustment_to_diff(proposal)
     target = machine_path or _machine_config_path()
@@ -1063,7 +1063,7 @@ def _operator_config_path() -> Path:
     """The hermes_home operator routing.operational.yaml — the graduation target.
 
     routing-v2-machine-overlay-migration-v1 P2.3 (GATE-B D): retargeted from the
-    retired v1 ``routing.config.yaml`` to the live v2 operational surface the router
+    retired v1 routing config to the live v2 operational surface the router
     actually reads (matches ``routing_writer._default_config_path``).
     """
     from hermes_constants import get_hermes_home
@@ -1299,7 +1299,7 @@ def _approve_exploration_nudge(
 ) -> Tuple[str, Dict[str, Any]]:
     """Apply an exploration_nudge — FLIP the interactive tier selection to the
     cataloged-untried slug through the ONE sanctioned writer of
-    ``routing.config.yaml`` (kaizen-exploration-proposals-v1 R-P0-1).
+    ``routing.operational.yaml`` (kaizen-exploration-proposals-v1 R-P0-1).
 
     Delegates to ``grove.config.routing_writer.get_writer().swap_tier_model`` —
     the SAME writer the catalog one-tap dropdown uses (actions.py:998) — never a
@@ -2217,7 +2217,7 @@ def cli_approve(
     new approved-write class is a new row, not a new branch here. ``--strict``
     runs only the row's optional ``strict_gate`` (today: skill_promotion).
 
-    Per GRV-008 § III the routing path NEVER opens ``routing.config.yaml`` for
+    Per GRV-008 § III the routing path NEVER opens ``routing.operational.yaml`` for
     writing — operator-authored configuration is inviolate.
     """
     proposal = _resolve_proposal(partial_id, queue_path=queue_path)

@@ -46,12 +46,12 @@ _MACHINE_HEADER = """\
 # This file is exclusively managed by the Flywheel's approval pipeline. It
 # carries routing additions the operator has explicitly approved (Sprint 47
 # `autonomaton flywheel approve <id>`). At runtime the Dispatcher deep-merges
-# this file with the operator's routing.config.yaml; per GRV-008 § III the
+# this file with the operator's routing.operational.yaml; per GRV-008 § III the
 # operator file's values strictly override on scalar collisions, and list
 # values merge as set-unions with operator entries first.
 #
 # Do NOT edit by hand — operator-authored configuration lives in
-# routing.config.yaml. Hand-edits here may be overwritten by the next
+# routing.operational.yaml. Hand-edits here may be overwritten by the next
 # approval cycle.
 # ============================================================================
 """
@@ -227,7 +227,7 @@ def apply_diff_to_machine_config(
     produces an unchanged file because the set-union absorbs duplicates.
 
     Per GRV-008 § III, this function MUST NOT be passed
-    ``routing.config.yaml`` as ``machine_path``. The caller's discipline
+    ``routing.operational.yaml`` as ``machine_path``. The caller's discipline
     is the gate; the function does not introspect the path to enforce
     that, but the only call site (the approval handler) hardcodes the
     machine path.
@@ -303,6 +303,9 @@ _AUTHORITY_RESERVED_KEYS = frozenset(
 )
 
 _V2_SCHEMA_VERSION = "2.0"
+# MIGRATION PIN — do not remove until v1 instances are gone. This literal names the
+# v1 ``routing.config.yaml`` deliberately: it is the migration SOURCE an operator on a
+# v1 tree runs to reach v2. Not naming-rot — a live v1 reference.
 _MIGRATION_COMMAND = "python -m grove.config.routing_migrate <v1-routing.config.yaml>"
 
 

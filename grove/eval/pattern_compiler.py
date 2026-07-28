@@ -7,7 +7,7 @@ retire to the deterministic T0 cache, and compiles them into cache entries.
 
 T0 is DETERMINISTIC — a T0 hit returns a compiled pattern with no model call.
 Per GATE-A: the system PROPOSES T0 promotion; the operator approves; the
-system never self-promotes. Thresholds live in ``routing.config.yaml`` under
+system never self-promotes. Thresholds live in ``routing.operational.yaml`` under
 ``pattern_cache``.
 """
 
@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from grove.pattern_cache import CompiledPattern, STATUS_SUSPENDED, t0_key
 from grove.router_merge import load_operational_routing_config
 
-# Defaults — used when routing.config.yaml carries no pattern_cache section.
+# Defaults — used when routing.operational.yaml carries no pattern_cache section.
 # Mirror the GATE-A decision-4 values.
 _DEFAULTS: Dict[str, Any] = {
     "enabled": True,
@@ -58,10 +58,10 @@ class Candidate:
 
 
 def load_pattern_cache_config() -> Dict[str, Any]:
-    """Read the ``pattern_cache`` thresholds from routing.config.yaml.
+    """Read the ``pattern_cache`` thresholds from routing.operational.yaml.
 
-    Operator copy (``~/.grove/routing.config.yaml``) wins over the repo
-    default (``config/routing.config.yaml``). Missing/partial sections fall
+    Operator copy (``~/.grove/routing.operational.yaml``) wins over the repo
+    default (``config/routing.operational.yaml``). Missing/partial sections fall
     back to :data:`_DEFAULTS`."""
     cfg = dict(_DEFAULTS)
     candidates = (

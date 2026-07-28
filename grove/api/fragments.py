@@ -1952,7 +1952,7 @@ async def handle_search(request: web.Request) -> web.Response:
 # telemetry-tier-decoupling-v1: the operator manages every model-bound tier from
 # the portal — T1/T2/T3 plus the now-separate Telemetry tier (and any future
 # operator-added tier). The list is read LIVE from tier_preferences rather than
-# hardcoded, so adding a tier in routing.config.yaml surfaces a card with no code
+# hardcoded, so adding a tier in routing.operational.yaml surfaces a card with no code
 # change. Handler-backed tiers (T0 pattern_cache) carry no model and get no card.
 _TIER_SORT_ORDER = {"Telemetry": 0, "T1": 1, "T2": 2, "T3": 3}
 
@@ -1972,7 +1972,7 @@ def _swappable_tiers() -> tuple[str, ...]:
 
 
 def _live_tier_preferences() -> dict:
-    """Re-read tier_preferences from the operator routing.config.yaml (N2).
+    """Re-read tier_preferences from the operator routing.operational.yaml (N2).
 
     Read path, so ``yaml.safe_load`` (comments irrelevant once parsed). Returns
     the tier->entry mapping, or ``{}`` when the file is absent/malformed. The

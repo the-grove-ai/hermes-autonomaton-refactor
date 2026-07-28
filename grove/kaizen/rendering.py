@@ -266,7 +266,7 @@ def _consolidation_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     tier = p.get("target_tier", "?")
     sink = p.get("source_sink", "?")
     return {
-        "routing.config.yaml": {
+        "routing.operational.yaml": {
             "routing_rules": {
                 intent: {
                     "enabled": True,

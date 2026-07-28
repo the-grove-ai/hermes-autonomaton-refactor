@@ -61,7 +61,7 @@ def route_for_agent(
 ) -> Optional[RoutingDecision]:
     """Consult the Cognitive Router for the tier an agent should run on.
 
-    Returns None when there is no ``routing.config.yaml`` to load — a
+    Returns None when there is no ``routing.operational.yaml`` to load — a
     vanilla install — signalling the caller to fall back to the legacy
     model-selection chain unchanged. A routing config that exists but is
     malformed raises loudly; absence is the only fallback trigger.
@@ -142,7 +142,7 @@ def current_tier() -> Optional[str]:
 
 
 def tier_fallback_for(tier: Optional[str]) -> Optional[str]:
-    """The governed downshift target declared for ``tier`` in routing.config.yaml.
+    """The governed downshift target declared for ``tier`` in routing.operational.yaml.
 
     GRV-010 C2d — returns the tier's ``fallback_tier`` string, or None when the
     tier is unknown, declares no fallback, or the router is uninitialized. A
@@ -311,7 +311,7 @@ def _ensure_router() -> Optional[CognitiveRouter]:
     try:
         return _router.initialize()
     except FileNotFoundError:
-        logger.debug("[router] no routing.config.yaml found; legacy model chain in use")
+        logger.debug("[router] no routing.operational.yaml found; legacy model chain in use")
         return None
 
 

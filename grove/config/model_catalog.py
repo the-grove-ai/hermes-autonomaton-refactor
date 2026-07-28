@@ -3,7 +3,7 @@
 The catalog is the menu of models the operator can bind to a tier from the
 portal — display metadata only: slug, human name, provider, and display-only
 cost heuristics. The Cognitive Router never reads it; when the operator picks a
-slug, the routing writer validates it against ``routing.config.yaml``'s own
+slug, the routing writer validates it against ``routing.operational.yaml``'s own
 constraints (a sandbox ``CognitiveRouter`` build), not against this file.
 
 Sovereign merge (AC-9 / M-9): the effective catalog is a PER-SLUG merge of the
@@ -32,9 +32,9 @@ loader fails loud rather than letting the catalog quietly become routing config.
 
 Operator write target (DoD): the sovereign override ``~/.grove/model-catalog.yaml``
 — an add-to-catalog is a supervised write to THAT file, no deploy, no restart
-(live-read). See ``config/routing.config.yaml`` for where a cataloged model is
+(live-read). See ``config/routing.operational.yaml`` for where a cataloged model is
 bound to a tier (``routing.tier_preferences``) — the catalog says what EXISTS,
-routing.config.yaml says what RUNS where.
+routing.operational.yaml says what RUNS where.
 """
 
 from __future__ import annotations

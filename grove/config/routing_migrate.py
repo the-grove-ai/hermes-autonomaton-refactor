@@ -265,6 +265,9 @@ def migrate_v1_to_v2(
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # MIGRATION PIN — do not remove until v1 instances are gone. This tool's whole
+    # purpose is to read a v1 ``routing.config.yaml`` and split it into the v2
+    # operational + authority pair; its literals name the v1 file deliberately.
     p = argparse.ArgumentParser(
         prog="python -m grove.config.routing_migrate",
         description="Migrate a v1 routing.config.yaml to the GRV-001 v2.0 "

@@ -74,7 +74,7 @@ def _routing_config() -> dict:
 
 def smallest_skill_payload_ceiling() -> Optional[int]:
     """The smallest per-tier ``skill_payload`` byte ceiling declared under
-    ``tier_budgets`` in routing.config.yaml, or ``None`` when none is configured.
+    ``tier_budgets`` in routing.authority.yaml, or ``None`` when none is configured.
 
     skill-adoption-v1 C4/F5 — CONFIG-DRIVEN, no constants. The
     ``skill_payload_ceiling`` key (parity with the existing
@@ -109,7 +109,7 @@ def _enforce_payload_size_ceiling(content: str) -> None:
         raise SkillPayloadTooLarge(
             f"SKILL.md payload is {size} bytes, exceeding the smallest configured "
             f"per-tier skill_payload ceiling ({ceiling} bytes). Trim the skill "
-            f"body or raise the ceiling in routing.config.yaml before promoting."
+            f"body or raise the ceiling in routing.authority.yaml before promoting."
         )
 
 

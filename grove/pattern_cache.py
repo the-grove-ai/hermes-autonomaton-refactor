@@ -120,7 +120,7 @@ def default_pattern_cache_path() -> Path:
 
 def pattern_cache_enabled() -> bool:
     """The T0 kill switch (GATE-A D6). True unless ``pattern_cache.enabled``
-    is explicitly false in routing.config.yaml.
+    is explicitly false in routing.operational.yaml.
 
     Reuses the compiler's config loader so the operator copy / repo default
     precedence stays in one place. Lazy-imported to avoid the import cycle

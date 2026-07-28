@@ -54,8 +54,10 @@ def _make_cellar(root):
     (root / "zones.schema.yaml").write_text(
         "zones:\n  green: {}\n", encoding="utf-8"
     )
-    (root / "routing.config.yaml").write_text(
-        "routing:\n  default_tier: T2\n", encoding="utf-8"
+    # routing-v2-machine-overlay-migration-v1 Phase 3: the cellar config-index tracks
+    # the v2 operational file, not the retired v1 routing.config.yaml.
+    (root / "routing.operational.yaml").write_text(
+        'schema_version: "2.0"\ndefault_tier: T2\n', encoding="utf-8"
     )
     (root / "memory.md").write_text(
         "# Memory\nThe operator prefers terse responses.", encoding="utf-8"
@@ -129,7 +131,7 @@ def test_identity_and_config_content_types(tmp_path):
         for r in idx.query("operator soul goals routing zones terse")
     }
     assert by_path.get("goals.md") == "identity"
-    assert by_path.get("routing.config.yaml") == "config"
+    assert by_path.get("routing.operational.yaml") == "config"
     assert by_path.get("memory.md") == "memory"
 
 

@@ -4,7 +4,7 @@ Sprint 46 — pushes a curated set of hero prompts through the
 classification + routing + tool-composition + compose-time preamble
 read path and reports per-prompt pass/fail. No Agent generation loop;
 no tool execution. The only LLM call is the T-telemetry classifier
-(whatever model ``routing.config.yaml`` binds to the telemetry tier).
+(whatever model ``routing.operational.yaml`` binds to the telemetry tier).
 
 GRV-008 § I assertions per prompt:
 
@@ -23,10 +23,10 @@ half-implementation MUST be lifted in Sprint 47.
 Model independence
 ------------------
 The harness does NOT name a model. The classifier reads its model
-binding from ``routing.config.yaml``'s telemetry tier; the harness
+binding from ``routing.operational.yaml``'s telemetry tier; the harness
 calls ``classify_for_routing`` and accepts whatever the binding
 resolves to. All cost reporting in the harness reads from the
-classifier's response usage data + ``routing.config.yaml`` tier
+classifier's response usage data + ``routing.operational.yaml`` tier
 pricing where available; the harness does not hardcode a per-model
 USD-per-token constant.
 """
@@ -544,7 +544,7 @@ def gate_proposal(
     is a routing-config DIFF dict (``{"routing": {"routing_rules":
     {...}}}`` or a partial within that). The gate:
 
-    1. Loads the operator's ``routing.config.yaml`` (read-only) and the
+    1. Loads the operator's ``routing.operational.yaml`` (read-only) and the
        machine's ``routing.autonomaton.yaml`` (read-only).
     2. Deep-merges them per GRV-008 § III with operator-wins precedence.
     3. Deep-merges ``proposed_state`` ON TOP — emulating the post-

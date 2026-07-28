@@ -91,10 +91,10 @@ _VALID_VERDICTS = ("advances", "neutral", "counter")
 
 
 def load_goal_attachment_config() -> Dict[str, Any]:
-    """Read the ``goal_attachment`` section from routing.config.yaml.
+    """Read the ``goal_attachment`` section from routing.operational.yaml.
 
-    Operator copy (``~/.grove/routing.config.yaml``) wins over the repo
-    default (``config/routing.config.yaml``) — the
+    Operator copy (``~/.grove/routing.operational.yaml``) wins over the repo
+    default (``config/routing.operational.yaml``) — the
     ``load_pattern_cache_config`` precedent. A missing section falls back to
     :data:`_DEFAULTS`; a malformed YAML file raises (fail loud, never a
     silent default over a broken config).

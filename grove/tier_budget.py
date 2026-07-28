@@ -1,9 +1,9 @@
 """Grove Tier Budget — Sprint 73 declarative-jit-budget-v1 (Phase 1).
 
 Loader + fail-loud validator for the ``tier_budgets`` block in
-``routing.config.yaml``. The budget is the per-tier prefill governor: for each
+``routing.authority.yaml``. The budget is the per-tier prefill governor: for each
 cognition tier it declares which gateable context blocks compose. Policy lives
-here (D1, in ``routing.config.yaml``).
+here (D1, in ``routing.authority.yaml``).
 
 Per-tier TOOL exposure is no longer a budget concern: the ``allow_groups``
 dual-gate is retired (web-surface-admission-fix, Option B). ``tier_rule.eligible``
@@ -148,12 +148,12 @@ def tier_admits_context_block(
 def load_tier_budgets(
     config_path: Optional[Path] = None,
 ) -> Dict[str, TierBudget]:
-    """Load + validate the ``tier_budgets`` block from ``routing.config.yaml``.
+    """Load + validate the ``tier_budgets`` block from ``routing.authority.yaml``.
 
     Args:
-        config_path: explicit ``routing.config.yaml`` path (tests pass this).
+        config_path: explicit ``routing.authority.yaml`` path (tests pass this).
             When ``None``, resolves the runtime sovereign copy
-            (``$GROVE_HOME/routing.config.yaml``) then the repo template.
+            (``$GROVE_HOME/routing.authority.yaml``) then the repo template.
 
     Returns:
         A mapping of tier name → :class:`TierBudget`, one entry per

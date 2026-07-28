@@ -185,7 +185,7 @@ class CellarIndex:
             p = cellar / name
             if p.is_file():
                 yield p, "identity"
-        for name in ("zones.schema.yaml", "routing.config.yaml"):
+        for name in ("zones.schema.yaml", "routing.operational.yaml", "routing.authority.yaml"):
             p = cellar / name
             if p.is_file():
                 yield p, "config"

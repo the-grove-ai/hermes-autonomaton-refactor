@@ -191,7 +191,7 @@ def _resolve_worker_runtime(cap, worker_id: str):
     routed = route_for_agent(explicit_tier=tier, classify=False)
     if routed is None:
         raise FleetWorkerAndon(
-            "no routing.config.yaml present — a fleet worker cannot resolve a "
+            "no routing.operational.yaml present — a fleet worker cannot resolve a "
             "model/runtime for its tier",
             worker_id=worker_id,
             check="no_routing_config",

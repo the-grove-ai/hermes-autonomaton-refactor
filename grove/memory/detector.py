@@ -4,7 +4,7 @@ Runs on dormant sessions (swept by the Implicit Success Sweep, Phase 3) and
 crystallizes tacit operator knowledge into staged Kaizen proposals. It never
 writes the active memory graph — it stages proposals the operator reviews.
 
-The T1 call reuses the T-telemetry tier binding from ``routing.config.yaml``
+The T1 call reuses the T-telemetry tier binding from ``routing.operational.yaml``
 (``grove.classify._telemetry_tier_runtime``) so the detector rides the same
 cheap-cognition tier as the classifier, and shares its spend tracker.
 

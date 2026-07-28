@@ -371,7 +371,7 @@ def _t3_call_once(
         f"unsupported T3 api_mode {api_mode!r} "
         f"(model={runtime.get('model')!r}); bind T3 to an "
         f"anthropic_messages or chat_completions provider in "
-        f"routing.config.yaml."
+        f"routing.operational.yaml."
     )
 
 

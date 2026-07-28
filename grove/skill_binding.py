@@ -1,6 +1,6 @@
 """R5 (browser-read-surface-v1) — per-skill model-binding tier resolution.
 
-Pure precedence, Design B (stateless): operator routing.config.yaml override >
+Pure precedence, Design B (stateless): operator routing.operational.yaml override >
 skill ``model_binding`` > turn default. Operator config is inviolate at the top.
 The resolver reads only its inputs and returns the tier to bind for THIS skill —
 nothing is persisted, so two skills in one turn resolve independently and skill
