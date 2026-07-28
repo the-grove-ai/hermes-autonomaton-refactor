@@ -105,19 +105,19 @@ def test_populated_message_retrieves_real_page(tmp_path):
 
 def test_empty_message_synthetic_query_from_goal_names(tmp_path):
     # A dock_goal page whose title/body matches the active goal NAME.
-    _write_page(tmp_path, "dock_goal/ha.md", source_type="dock_goal",
-                title="[REDACTED] Grant Submission",
-                body="[REDACTED] grant submission readiness",
-                dock_goal_refs=["[REDACTED]-funding"])
+    _write_page(tmp_path, "dock_goal/eg.md", source_type="dock_goal",
+                title="Example Goal Alpha",
+                body="Example goal alpha readiness",
+                dock_goal_refs=["example-goal-alpha"])
     _write_page(tmp_path, "researcher_brief/noise.md", body="unrelated composting")
     provider = create_cellar_provider(
         wiki_root=tmp_path,
         dock_goals_loader=lambda: _goals(
-            ("[REDACTED]-funding", "[REDACTED] Grant Submission")),
+            ("example-goal-alpha", "Example Goal Alpha")),
     )
     result = provider({"user_message": ""})        # empty → synthetic fallback
     assert result is not None
-    assert "[REDACTED] Grant Submission" in result.text
+    assert "Example Goal Alpha" in result.text
     assert "composting" not in result.text
 
 

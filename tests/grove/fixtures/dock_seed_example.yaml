@@ -1,0 +1,62 @@
+# Synthetic, generic multi-goal Dock used ONLY by test_dock.py.
+#
+# Decoupled from the shipped seed (config/dock/dock.yaml), which is a minimal
+# 1-goal reference template. This fixture exercises multi-goal parsing, vector
+# priority, active-status filtering, unknown-key pass-through, and per-goal
+# context-file budget — with zero operator content by construction.
+version: "1.0"
+goals:
+  - id: example-apex-goal
+    name: "Example Apex Goal"
+    vector: apex_strategic
+    status: accelerating
+    definition_of_done: "Done when the example apex outcome is delivered."
+    context_sources: ["dock_goals/apex.md"]
+    keywords: ["apex-topic", "alpha"]
+    unlocked_skills: []
+    why_this_matters: "Anchors the example goal set; everything feeds this."
+    milestones:
+      - name: "First example milestone"
+        status: pending
+
+  - id: example-strategic-goal
+    name: "Example Strategic Goal"
+    vector: strategic
+    status: accelerating
+    definition_of_done: "Done when the example strategic outcome is delivered."
+    context_sources: ["dock_goals/strategic.md"]
+    keywords: ["strategic-topic", "beta"]
+    unlocked_skills: []
+
+  - id: example-operational-goal
+    name: "Example Operational Goal"
+    vector: operational
+    status: cruising
+    definition_of_done: "Done when the recurring example rhythm is stable."
+    context_sources: []
+    keywords: ["operational-topic", "gamma"]
+    unlocked_skills: []
+
+  - id: example-product-goal
+    name: "Example Product Goal"
+    vector: product
+    status: staging
+    definition_of_done: "Done when the example product ships."
+    context_sources: []
+    keywords: ["product-topic", "delta"]
+    unlocked_skills: []
+
+# Top-level extras — exercised by the unknown-key pass-through test.
+routing_hints:
+  patterns:
+    - match: ["apex-topic"]
+      goals: [example-apex-goal]
+      zone: green
+
+operator_preferences:
+  voice:
+    register: "Neutral, generic."
+
+design_system:
+  background: "#000000"
+  text: "#FFFFFF"

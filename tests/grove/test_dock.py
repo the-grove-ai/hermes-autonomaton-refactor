@@ -29,6 +29,12 @@ from grove.dock import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SEED_MANIFEST = _REPO_ROOT / "config" / "dock" / "dock.yaml"
+# Synthetic multi-goal Dock (generic, zero operator content). The shipped seed
+# is a minimal 1-goal reference template, so multi-goal parsing / vector
+# priority / active filtering / unknown-key pass-through / goal-file budget are
+# exercised against this decoupled fixture instead of the shipped file.
+_EXAMPLE_SEED = Path(__file__).resolve().parent / "fixtures" / "dock_seed_example.yaml"
+_EXAMPLE_GOALS_DIR = Path(__file__).resolve().parent / "fixtures" / "dock_goals"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -71,41 +77,40 @@ def test_no_path_resolves_runtime_and_is_absent_under_hermetic_home():
 
 
 def test_seed_template_parses():
-    """The committed config/dock/dock.yaml seed parses to nine goals.
+    """The example multi-goal fixture parses to four goals across vectors.
 
-    Sprint 69.2 replaced the 3-goal seed with the operator's expanded
-    9-goal Dock (version "1.0", new vectors/statuses, no explicit budget).
+    Exercises multi-goal parsing, vector variety, and active-status filtering
+    against a generic fixture (decoupled from the shipped 1-goal seed).
     """
-    dock = load_dock(_SEED_MANIFEST)
+    dock = load_dock(_EXAMPLE_SEED)
     assert dock is not None
     ids = {g.id for g in dock.goals}
     assert ids == {
-        "[REDACTED]-funding", "hermes-autonomaton", "grove-content-pipeline",
-        "influencer-outreach", "advisory-board", "grove-site", "lambda-watch",
-        "[REDACTED]-renovation", "personal-finance",
+        "example-apex-goal", "example-strategic-goal",
+        "example-operational-goal", "example-product-goal",
     }
-    # No explicit context_char_budget in the seed → the 5000 default.
+    # No explicit context_char_budget in the fixture → the 5000 default.
     assert dock.context_char_budget == 5000
     by_id = {g.id: g for g in dock.goals}
-    assert by_id["[REDACTED]-funding"].vector == "apex_strategic"
-    assert by_id["grove-site"].vector == "operational"
-    assert by_id["lambda-watch"].vector == "product"
-    assert by_id["[REDACTED]-renovation"].vector == "personal"
-    # Only accelerating + cruising are active; lambda-watch (staging) is not.
+    assert by_id["example-apex-goal"].vector == "apex_strategic"
+    assert by_id["example-operational-goal"].vector == "operational"
+    assert by_id["example-product-goal"].vector == "product"
+    assert by_id["example-strategic-goal"].vector == "strategic"
+    # Only accelerating + cruising are active; the product goal (staging) is not.
     active = {g.id for g in active_goals(dock)}
-    assert len(active) == 8
-    assert "lambda-watch" not in active
+    assert len(active) == 3
+    assert "example-product-goal" not in active
 
 
 def test_seed_goal_files_within_budget():
     """Every committed seed goal file fits the 5000-char budget on its own.
 
-    Guards the operator-authored context files against silently blowing the
-    per-turn budget — the leading source of every goal loads in full.
+    Guards goal context files against silently blowing the per-turn budget —
+    the leading source of every goal loads in full. Checked against the
+    generic fixture goal files (the shipped seed carries none).
     """
-    goals_dir = _REPO_ROOT / "config" / "dock" / "goals"
-    files = sorted(goals_dir.glob("*.md"))
-    assert files, "no seed goal files found"
+    files = sorted(_EXAMPLE_GOALS_DIR.glob("*.md"))
+    assert files, "no example goal files found"
     for f in files:
         assert len(f.read_text(encoding="utf-8")) <= 5000, f
 
@@ -119,14 +124,14 @@ def test_seed_version_string_accepted():
 
 def test_seed_passes_unknown_keys_through():
     """Expanded top-level + per-goal keys are reachable, not dropped."""
-    dock = load_dock(_SEED_MANIFEST)
+    dock = load_dock(_EXAMPLE_SEED)
     assert "routing_hints" in dock.raw
     assert "operator_preferences" in dock.raw
     assert "design_system" in dock.raw
     by_id = {g.id: g for g in dock.goals}
     # apex goal carries milestones + why_this_matters in extra
-    assert "milestones" in by_id["[REDACTED]-funding"].extra
-    assert "why_this_matters" in by_id["[REDACTED]-funding"].extra
+    assert "milestones" in by_id["example-apex-goal"].extra
+    assert "why_this_matters" in by_id["example-apex-goal"].extra
 
 
 # ── load_dock: fail-loud validation ─────────────────────────────────────
@@ -330,28 +335,28 @@ def test_load_goal_context_reads_sources(tmp_path):
     dock = _dock_with_context(
         tmp_path,
         [_minimal_goal(id="house", context_sources=["goals/house.md"])],
-        {"goals/house.md": "---\nsummary: x\n---\nIndianapolis, unheated."},
+        {"goals/house.md": "---\nsummary: x\n---\nExample site, unheated."},
     )
     house = dock.goals[0]
     out = load_goal_context(house, dock.context_char_budget)
-    assert "Indianapolis, unheated." in out
+    assert "Example site, unheated." in out
 
 
 def test_build_turn_goal_context_single_match_emits_fenced_block(tmp_path):
     dock = _dock_with_context(
         tmp_path,
-        [_minimal_goal(id="[REDACTED]", name="[REDACTED]",
-                       keywords=["epoxy", "[REDACTED]"],
-                       context_sources=["goals/ch.md"])],
-        {"goals/ch.md": "Unheated structure, freeze-thaw."},
+        [_minimal_goal(id="example-goal", name="Example Goal",
+                       keywords=["epoxy", "example topic"],
+                       context_sources=["goals/ex.md"])],
+        {"goals/ex.md": "Example structure, freeze-thaw."},
     )
     tgc = build_turn_goal_context(dock, message="epoxy flooring options?")
     assert tgc is not None
-    assert tgc.goal_id == "[REDACTED]"
-    assert tgc.block.startswith('<grove-dock goal="[REDACTED]">')
+    assert tgc.goal_id == "example-goal"
+    assert tgc.block.startswith('<grove-dock goal="example-goal">')
     assert tgc.block.endswith("</grove-dock>")
     assert "Do NOT be overbearing" in tgc.block       # Superposition framing
-    assert "Unheated structure, freeze-thaw." in tgc.block  # loaded context
+    assert "Example structure, freeze-thaw." in tgc.block  # loaded context
 
 
 def test_build_turn_goal_context_no_match_returns_none(tmp_path):
@@ -499,15 +504,15 @@ def test_resolve_history_window_is_last_three(tmp_path):
 
 
 def test_apex_beats_strategic_against_seed():
-    """Worked example against the 9-goal seed: a prompt touching the apex
-    goal AND a strategic goal resolves to the apex (vector priority)."""
-    dock = load_dock(_SEED_MANIFEST)
+    """Worked example against the multi-goal fixture: a prompt touching the
+    apex goal AND a strategic goal resolves to the apex (vector priority)."""
+    dock = load_dock(_EXAMPLE_SEED)
     g = resolve_goal(
-        dock, "advance humanity ai funding through the hermes pipeline"
+        dock, "advance the apex-topic through the strategic-topic path"
     )
-    # "funding" → [REDACTED]-funding (apex); "hermes"/"pipeline" →
-    # hermes-autonomaton (strategic). apex_strategic > strategic.
-    assert g.id == "[REDACTED]-funding"
+    # "apex-topic" → example-apex-goal (apex); "strategic-topic" →
+    # example-strategic-goal (strategic). apex_strategic > strategic.
+    assert g.id == "example-apex-goal"
 
 
 # ── Sprint 69.2: expanded-schema permissiveness ──────────────────────────

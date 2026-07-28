@@ -182,9 +182,9 @@ def test_dock_goals_served_via_cellar(tmp_path, monkeypatch):
     monkeypatch.setattr("grove.wiki.pipeline.get_wiki_path", lambda: wiki)
     dock_yaml = tmp_path / "dock.yaml"
     dock_yaml.write_text(yaml.safe_dump({"version": 1, "goals": [{
-        "id": "[REDACTED]-funding", "name": "[REDACTED] Grant Submission",
+        "id": "example-goal-alpha", "name": "Example Goal Alpha",
         "vector": "strategic", "status": "accelerating",
-        "definition_of_done": "submit the photovoltaics grant",
+        "definition_of_done": "deliver the photovoltaics outcome",
         "context_sources": [], "keywords": ["photovoltaics"], "unlocked_skills": [],
     }]}), encoding="utf-8")
     project_dock(wiki_root=wiki, dock_path=dock_yaml)
@@ -192,7 +192,7 @@ def test_dock_goals_served_via_cellar(tmp_path, monkeypatch):
     provider = create_cellar_provider(
         wiki_root=wiki,
         dock_goals_loader=lambda: [{
-            "slug": "[REDACTED]-funding", "name": "[REDACTED] Grant Submission",
+            "slug": "example-goal-alpha", "name": "Example Goal Alpha",
             "status": "accelerating", "vector": "strategic",
         }],
     )

@@ -16,154 +16,24 @@ version: 1
 # on a trigger-matched eligible-tier turn (no manifest index backdoor). A missed
 # match is fixed by broadening a record's trigger (declarative governance), not
 # a hidden index-pull. Goal and contract units remain declarative below.
+#
+# The goal unit below is a generic reference example, consistent with the
+# shipped dock template (config/dock/dock.yaml). The operator's real goals
+# live on instances only ($GROVE_HOME/dock/) and are never committed here.
 units:
-- id: [REDACTED]-funding
+- id: first-fleet-worker
   kind: goal
-  oneline: 'Goal [apex_strategic / accelerating]: [REDACTED] Grant Submission'
-  payload: goal_record:[REDACTED]-funding
+  oneline: 'Goal [apex_strategic / staging]: Ship your first governed fleet worker'
+  payload: goal_record:first-fleet-worker
   tiers:
   - T2
   - T3
   trigger:
     intents: []
     keywords:
-    - humanity ai
-    - funding
-    - grant
-    - application
-    - submission
-    - 501c6
-    - foundation
-    dock_goal: [REDACTED]-funding
-- id: hermes-autonomaton
-  kind: goal
-  oneline: "Goal [strategic / accelerating]: Hermes Autonomaton \u2014 Reference Implementation"
-  payload: goal_record:hermes-autonomaton
-  tiers:
-  - T2
-  - T3
-  trigger:
-    intents: []
-    keywords:
-    - hermes
-    - mylo
-    - autonomaton
-    - grove-autonomaton
-    - dispatcher
-    - pipeline
-    - sovereignty gate
-    - andon
-    dock_goal: hermes-autonomaton
-- id: grove-content-pipeline
-  kind: goal
-  oneline: "Goal [strategic / accelerating]: Content Pipeline \u2014 LinkedIn, Substack, Pattern Document"
-  payload: goal_record:grove-content-pipeline
-  tiers:
-  - T2
-  - T3
-  trigger:
-    intents: []
-    keywords:
-    - linkedin
-    - thinkpiece
-    - substack
-    - pattern document
-    - content
-    - publishing
-    - writing
-    - zone 1
-    dock_goal: grove-content-pipeline
-- id: influencer-outreach
-  kind: goal
-  oneline: 'Goal [strategic / cruising]: Influencer & Institutional Outreach'
-  payload: goal_record:influencer-outreach
-  tiers:
-  - T2
-  - T3
-  trigger:
-    intents: []
-    keywords:
-    - outreach
-    - influencer
-    - media
-    - press
-    - PR
-    - [REDACTED]
-    - narrative
-    - amplification
-    dock_goal: influencer-outreach
-- id: advisory-board
-  kind: goal
-  oneline: "Goal [strategic / cruising]: Advisory Board \u2014 Operational Rollout"
-  payload: goal_record:advisory-board
-  tiers:
-  - T2
-  - T3
-  trigger:
-    intents: []
-    keywords:
-    - advisor
-    - advisory board
-    - clement mok
-    - susan kare
-    - randy wigginton
-    - apple
-    - colophon
-    dock_goal: advisory-board
-- id: grove-site
-  kind: goal
-  oneline: "Goal [operational / cruising]: the-grove.ai \u2014 Site Maintenance & Standards Publication"
-  payload: goal_record:grove-site
-  tiers:
-  - T2
-  - T3
-  trigger:
-    intents: []
-    keywords:
-    - site
-    - the-grove.ai
-    - vercel
-    - deploy
-    - standards
-    - GRV-001
-    - GRV-002
-    - GRV-003
-    dock_goal: grove-site
-- id: [REDACTED]-renovation
-  kind: goal
-  oneline: 'Goal [personal / accelerating]: [REDACTED] Renovation'
-  payload: goal_record:[REDACTED]-renovation
-  tiers:
-  - T2
-  - T3
-  trigger:
-    intents: []
-    keywords:
-    - [REDACTED]
-    - garage
-    - renovation
-    - construction
-    - contractor
-    - permits
-    - workshop
-    - studio
-    dock_goal: [REDACTED]-renovation
-- id: personal-finance
-  kind: goal
-  oneline: 'Goal [personal / cruising]: Expense Tracking & Personal Finance'
-  payload: goal_record:personal-finance
-  tiers:
-  - T2
-  - T3
-  trigger:
-    intents: []
-    keywords:
-    - expense
-    - expenses
-    - budget
-    - money
-    - finance
-    - receipt
-    - tax
-    - foundation expenses
-    dock_goal: personal-finance
+    - fleet
+    - worker
+    - cadence
+    - pending_review
+    - approval
+    dock_goal: first-fleet-worker
