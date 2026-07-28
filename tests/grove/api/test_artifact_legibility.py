@@ -15,6 +15,18 @@ import re
 import time
 
 import pytest
+
+# instance-cold-start-parity-v1 P4 — the operator-private forge worker + record
+# (skill.fleet.forge-jobsearch, which carried the must-be-zero Notion UUID) exited
+# the repo in the privacy/severance sprint. The forge Drive-publish MACHINERY these
+# tests exercise still ships but is now DORMANT (no live producer; dormancy census
+# clean). Per the P4 Andon ruling (Option 1 — DEFER), these orphaned-fixture tests
+# xfail pending the machinery's exit-vs-successor disposition, ruled in the
+# reference-worker-md rider. ONE greppable reason string across every P4 xfail site:
+FORGE_MACHINERY_DISPOSITION_PENDING = (
+    "orphaned fixture: operator-private forge record removed (P4); "
+    "disposition ruled in reference-worker-md rider"
+)
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -287,6 +299,7 @@ async def client(grove_home):
         yield c
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 async def test_presentation_passthrough_is_data_only(client):
     resp = await client.get("/api/substrate/fleet/")
     skills = {s["name"]: s for s in (await resp.json())["data"]["skills"]}
@@ -336,6 +349,7 @@ def _stage_forge_pkg(home, slug="260709-acme", meta=None):
     return d
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 async def test_forge_unit_generic_route_full_render(client, grove_home):
     _stage_forge_pkg(grove_home)
     resp = await client.get("/portal/fragments/fleet/forge-jobsearch/260709-acme/")
@@ -357,6 +371,7 @@ async def test_forge_unit_generic_route_full_render(client, grove_home):
     assert "chip-legacy" in html
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 async def test_forge_unit_pid_visit_omits_publish_has_dock(client, grove_home):
     from grove.eval import proposal_queue
     _stage_forge_pkg(grove_home)
@@ -375,6 +390,7 @@ async def test_forge_unit_pid_visit_omits_publish_has_dock(client, grove_home):
     assert "/promote" in html and "/suggest_revision" in html  # verbs intact
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 async def test_forge_legacy_alias_serves_generic(client, grove_home):
     _stage_forge_pkg(grove_home)
     a = await (await client.get(
@@ -420,6 +436,7 @@ async def test_cultivator_unit_structured_json_unregressed(client, grove_home):
     assert "forge-publish" not in html                  # mv-sink: no publish card
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 async def test_card_preview_leads_with_declared_order(grove_home):
     """Item 3 — a package unit's CARD preview reads package.order[0]
     (resume.md), not first-alphabetical (cover-letter.md)."""

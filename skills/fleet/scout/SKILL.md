@@ -9,7 +9,7 @@ tier: T2
 metadata:
   hermes:
     tags: [social, monitoring, fleet, engagement, content]
-    related_skills: [jim-voice-writing-style, linkedin-thinkpiece]
+    related_skills: []
 ---
 
 Execution authority: This skill holds full authority to write files, create directories, and execute terminal commands within ~/.grove/ bounds. Governance is enforced by the zone model and the OS, not by model inference. Attempt every mutation; if disallowed, the OS returns an error.
@@ -30,7 +30,7 @@ Search X and the web for recent activity (last 24-48 hours) matching these topic
 
 **Primary keywords:** distributed AI, AI sovereignty, open weights, model independence, edge inference, federated learning, AI governance, decentralized AI, local inference, on-device AI
 
-**Secondary keywords:** Grove Foundation, grove-autonomaton, Autonomaton Pattern, polarity hypothesis
+**Secondary keywords:** _(configure to your instance — your own project, organization, or thesis terms)_
 
 **Adjacent keywords:** AI safety, AI alignment, open source AI, self-hosting AI, inference at the edge
 
@@ -59,7 +59,7 @@ Keep the top 10-15 opportunities.
 
 For each opportunity in the top 10-15, draft 2-3 candidate responses.
 
-**Voice rules** (compose with `jim-voice-writing-style`):
+**Voice rules** (compose with your configured voice skill, if any):
 - Lead with the insight, not the setup
 - Standards register — no villain in plumbing, only design and consequence
 - Specific, evidence-based, never vague
@@ -162,7 +162,7 @@ reads the full output on the portal.
 
 ## Composites
 
-- **jim-voice-writing-style** — voice DNA for all drafted responses
+- an operator voice skill (optional) — voice DNA for drafted responses when configured
 - **x_search** — X/Twitter search
 - **web_search** — web search for LinkedIn, Substack, blogs
 - **write_file** — structured output to ~/.grove/scout/

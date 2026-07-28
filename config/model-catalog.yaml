@@ -91,6 +91,12 @@ models:
     input_cost_per_mtok: 2     # USD/Mtok — display-only, verified google/gemini-3.1-pro-preview
     output_cost_per_mtok: 12    # USD/Mtok — display-only
     notes: "Google AI Studio BYOK. Frontier Gemini Pro."
+  - slug: "google/gemini-3.1-pro-preview-customtools"
+    display_name: "Gemini 3.1 Pro Preview (Custom Tools)"
+    provider: openrouter
+    input_cost_per_mtok: 2     # USD/Mtok — display-only (promoted from the operator overlay, P4 fold-in)
+    output_cost_per_mtok: 12    # USD/Mtok — display-only
+    notes: "Gemini 3.1 Pro variant with improved tool selection — prevents bash overuse when better tools exist. Multimodal, 1M context, strong SWE. Good fit for T2/T3 tool-heavy workflows. Google AI Studio BYOK."
   - slug: "deepseek/deepseek-v4-pro"
     display_name: "DeepSeek V4 Pro"
     provider: openrouter
@@ -127,6 +133,12 @@ models:
     input_cost_per_mtok: 0.06     # USD/Mtok — display-only, verified z-ai/glm-4.7-flash
     output_cost_per_mtok: 0.4    # USD/Mtok — display-only
     notes: "Ultra-cheap (Z.ai)."
+  - slug: "moonshotai/kimi-k3"
+    display_name: "Kimi K3"
+    provider: openrouter
+    input_cost_per_mtok: 3     # USD/Mtok — display-only (promoted from the operator overlay, P4 fold-in)
+    output_cost_per_mtok: 15    # USD/Mtok — display-only
+    notes: "Ultra-large-scale open-weight multimodal reasoning model. 1M context. Strong at complex coding, tool use, debugging, and agentic workflows. Released 2026-07-16."
   - slug: "moonshotai/kimi-k2.6"
     display_name: "Kimi K2.6"
     provider: openrouter
@@ -181,3 +193,9 @@ models:
     input_cost_per_mtok: 0.3     # USD/Mtok — display-only, verified minimax/minimax-m3 (live 2026-06-30)
     output_cost_per_mtok: 1.2    # USD/Mtok — display-only
     notes: "1M context. Operator-requested."
+  - slug: "nvidia/nemotron-3-ultra-550b-a55b"
+    display_name: "Nemotron 3 Ultra"
+    provider: openrouter
+    input_cost_per_mtok: 0.42     # USD/Mtok — display-only (promoted from the operator overlay, P4 fold-in)
+    output_cost_per_mtok: 2.61    # USD/Mtok — display-only
+    notes: "550B MoE / 55B active. Strong US open-weight model, 1M context. Free route available on OpenRouter. Built for long-running agents. NVIDIA Open Model License."

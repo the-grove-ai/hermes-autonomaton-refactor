@@ -61,56 +61,13 @@ def _write_brief(grove_home, name: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# VERDICT A — forge (notion, self-authored) byte-identical
+# VERDICT A — forge (notion, self-authored) byte-identical: REMOVED in
+# instance-cold-start-parity-v1 P4. The operator-private `forge` worker (the
+# only self-authored notion producer) exited the repo (privacy/severance), so
+# its byte-identical guards are removed with their subject. The self-authored
+# code path in grove/fleet/worker_entry remains (dormant until a future
+# self-authored worker ships with its own guards).
 # ---------------------------------------------------------------------------
-
-
-def test_forge_prompt_byte_identical_without_content_files():
-    """content_files=None → the self-authored forge prompt, unchanged (still tells the
-    worker to emit meta.json; never the declarative 'do NOT author a meta.json')."""
-    from grove.fleet import worker_entry
-
-    payload = {"rows": [{"id": "r1"}], "unit_id": "r1"}
-    prompt = worker_entry._build_worker_prompt("fleet/forge-jobsearch", payload, "abc12345")
-    assert 'One file MUST be meta.json' in prompt
-    assert "do NOT author a meta.json" not in prompt.lower()
-
-
-def test_forge_event_has_no_unit_id_key():
-    """A notion producer's event omits unit_id entirely (byte-identical event JSON)."""
-    from grove.fleet import worker_entry
-
-    ev = worker_entry._event("forge", "run1", "skill.fleet.forge-jobsearch", "success",
-                             slug="260709-x", row_id="ROW", fit_score=70)
-    assert "unit_id" not in ev
-    ev2 = worker_entry._event("drafter", "run2", "skill.fleet.drafter", "success",
-                              slug="moon-bot", unit_id="moon-bot")
-    assert ev2["unit_id"] == "moon-bot"  # declarative producer DOES carry it
-
-
-def test_forge_emission_payload_byte_identical(monkeypatch):
-    """The forge reap emission is unchanged: type forge_artifact_pending, payload
-    EXACTLY {slug,row_id,skill_id,fit_score}, evidence (row_id,). Adding a unit_id key
-    would fork the content-addressed proposal_id — this guards against it."""
-    from grove.fleet.manager import FleetManager
-    from grove.eval import proposal_queue
-
-    captured = {}
-
-    def _cap(**kw):
-        captured.update(kw)
-        return ("sha256:x", True)
-
-    monkeypatch.setattr(proposal_queue, "file_agentless", _cap)
-    event = {"skill": "skill.fleet.forge-jobsearch", "status": "success",
-             "slug": "260709-legends", "row_id": "ROW123", "fit_score": 70}
-    FleetManager()._emit_artifact_card("forge", "run1", event)
-    assert captured["type"] == proposal_queue.PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING
-    assert captured["payload"] == {
-        "slug": "260709-legends", "row_id": "ROW123",
-        "skill_id": "skill.fleet.forge-jobsearch", "fit_score": 70,
-    }
-    assert captured["evidence"] == ("ROW123",)
 
 
 # ---------------------------------------------------------------------------

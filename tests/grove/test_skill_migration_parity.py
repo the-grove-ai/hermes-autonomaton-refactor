@@ -44,24 +44,17 @@ pytestmark = pytest.mark.guard
 _FIX = Path(__file__).parent / "fixtures"
 _GOLDEN = _FIX / "skill_index_golden.txt"
 
-# The operator-signed green set (GATE-B2 zone-manifest). The canonical repo
-# skills/ (the VM source) carries no jim-voice/linkedin symlink duplicates —
-# those were a local ~/.grove artifact — so the conditional "symlink paths IF
-# the golden emits them" resolves to no. A4 halts on any green skill record off
-# this list. Fleet Phase 1 added scout + researcher as GREEN (drafter +
-# cultivator are YELLOW and so are NOT signed here).
-# test-baseline-hygiene R-T4: scout-jobsearch signed GREEN — born green in
-# scout-jobsearch-v1 (6e6429e0d, "first browser-consuming fleet skill"); its
-# capability record declares zone: green by ruled design. forge-jobsearch stays
-# YELLOW (like drafter/cultivator) and is therefore NOT signed here.
+# The operator-signed green set (GATE-B2 zone-manifest). A4 halts on any green
+# skill record off this list. Fleet Phase 1 signed scout + researcher GREEN
+# (drafter + cultivator are YELLOW and so are NOT signed here).
+# instance-cold-start-parity-v1 P4 — operator-private skills exited the shipped
+# repo (privacy/severance): the two operator voice/content skills and the
+# operator jobsearch scout skill left this set with their records.
 _SIGNED_GREEN = {
-    "skill.content.jim-voice-writing-style",
-    "skill.content.linkedin-thinkpiece",
     "skill.creative.songwriting-and-ai-music",
     "skill.upstream-sync-register.upstream-sync-register",
     "skill.fleet.scout",
     "skill.fleet.researcher",
-    "skill.fleet.scout-jobsearch",
 }
 
 

@@ -90,7 +90,7 @@ docs/sprints/
 # existing hermes_agent.egg-info rule to cover hermes_autonomaton.egg-info too;
 # graphify-out/ is graphify build cache; raw/ and research/ are transient
 # agent/standards staging (the GRV standards live canonically in
-# docs/standards/grv/ and the cellar).
+# docs/design-arcs/grv/ and the cellar).
 graphify-out/
 *.egg-info/
 raw/

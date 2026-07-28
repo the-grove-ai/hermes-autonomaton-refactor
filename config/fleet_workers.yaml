@@ -18,45 +18,17 @@
 #
 # A worker is defined by (a) its operational entry here and (b) its capability
 # record. The runtime never hard-codes a skill — it reads `skill` and loads the
-# record. This file ships with NO seeded worker; the first worker (forge) is
-# added in Phase 4 with enabled: false.
+# record. The shipped registry carries only GENERIC reference workers
+# (drafter / cultivator / researcher); operator-private workers live in the
+# operator's own instance, not here.
 # ─────────────────────────────────────────────────────────────────────────────
 
 workers:
-  # First worker (background-worker-runtime-v1 Phase 4). enabled: false until the
-  # Phase-5 smoke authorizes it; the ticker skips a disabled worker entirely.
-  - id: forge
-    skill: skill.fleet.forge-jobsearch   # capability-record id (read_surfaces: [corpus_file])
-    enabled: true
-    cadence: "*/30 * * * *"               # at most one spawn per 30 min
-    input_state:
-      type: notion_query
-      data_source: 5eb5630d-42ae-4a7f-8eee-8b04f0e96eaa   # Job Opportunities DB
-      filter:
-        Status: "To Apply"
-      # Phase-4 single-unit selection (generic — the resolver reads these keys;
-      # no skill name or per-skill logic in the resolver). skip_already_staged
-      # drops rows whose row_id already has a draft in the worker's staging_dir;
-      # order_by ranks the remainder; select_one yields exactly ONE per dispatch.
-      select_one: true
-      skip_already_staged: true
-      order_by:                            # deterministic ranking + stable tiebreak
-        - field: "Fit Score"
-          direction: desc                  # highest fit first
-        - field: id                        # Notion page id — stable tiebreak
-          direction: asc
-    budget:
-      per_run_tokens: 120000
-      daily_tokens: 600000
-    limits:
-      wall_clock_secs: 900               # REQUIRED — absolute group-kill timeout
-      mem_mb: 1536                        # RLIMIT_AS VA ceiling (headroom over RSS)
-      fsize_mb: 64                        # per-file cap (drafts are small markdown)
-      nofile: 512
-    quiet_hours:
-      start: "22:00"
-      end: "07:00"
-
+  # instance-cold-start-parity-v1 P4 — the operator-private `forge` jobsearch
+  # worker (Notion-backed) and its personal data_source exited the shipped
+  # registry (privacy/severance). It sunsets on deploy (ruled B1); its
+  # capability record is preserved as operator instance state. What remains
+  # below are the generic reference workers.
   # fleet-review-unification-v1 C1b-2 — the file producers become real workers. Each
   # consumes an upstream fleet SINK dir via the file_source resolver; the unit_id is
   # the stable semantic slug from the source filename (timestamps stripped), so an
@@ -148,7 +120,7 @@ workers:
 # workers:
 #   - id: <slug>                     # unique worker id; also the isolation key
 #                                    #   (~/.grove/fleet/<id>/ session db + pid file).
-#     skill: <capability-record-id>  # e.g. skill.fleet.forge-jobsearch — the `id:`
+#     skill: <capability-record-id>  # e.g. skill.fleet.drafter — the `id:`
 #                                    #   of a config/capabilities/*.yaml record. The
 #                                    #   runtime loads THIS record for zone /
 #                                    #   read_surfaces / declared sink. Fail-loud if

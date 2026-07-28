@@ -4,6 +4,12 @@
 **GRV-005 · v1.1 · May 2026 · CC BY 4.0 International**  
 Jim Calhoun · The Grove Foundation
 
+> **Internal design arc — not the canonical standard.** This is the
+> implementation-side design record for the reference fork: the runtime physics
+> the code commits to. The authoritative, published Autonomaton Pattern standard
+> is [GRV-001](https://the-grove.ai/standards/001) by The Grove Foundation. Where
+> this arc and the published standard differ, the standard governs.
+
 > **v1.1 amendment (Sprint 32 — sovereignty-ux-v1):** § VI replaces the v1.0 two-option Skip/Drop disposition surface with a four-choice Kaizen-register prompt. Implementation details (zone names, regex patterns, rule sources, intent indices) MUST move to the Kaizen Ledger; operator-facing text MUST use plain language.
 
 ## **I. Preamble**

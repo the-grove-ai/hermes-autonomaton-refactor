@@ -29,10 +29,10 @@ from grove.config.model_catalog import (
     write_sovereign_catalog,
 )
 
-_ADD_KIMI = (
+_ADD_NEW = (
     "models:\n"
-    '  - slug: "moonshotai/kimi-k3"\n'
-    '    display_name: "Kimi K3"\n'
+    '  - slug: "testvendor/newmodel-x"\n'
+    '    display_name: "NewModel X"\n'
     "    provider: openrouter\n"
     "    input_cost_per_mtok: 1\n"
     "    output_cost_per_mtok: 2\n"
@@ -161,8 +161,8 @@ class TestPerSlugMerge:
         sov = tmp_path / "model-catalog.yaml"
         sov.write_text(
             "models:\n"
-            '  - slug: "moonshotai/kimi-k3"\n'
-            '    display_name: "Kimi K3"\n'
+            '  - slug: "testvendor/newmodel-x"\n'
+            '    display_name: "NewModel X"\n'
             "    provider: openrouter\n"
             "    input_cost_per_mtok: 1\n"
             "    output_cost_per_mtok: 2\n",
@@ -170,7 +170,7 @@ class TestPerSlugMerge:
         )
         monkeypatch.setattr("grove.config.model_catalog._sovereign_catalog_path", lambda: sov)
         slugs = {m["slug"] for m in load_catalog()}
-        assert "moonshotai/kimi-k3" in slugs           # added
+        assert "testvendor/newmodel-x" in slugs           # added
         assert "anthropic/claude-opus-4.6" in slugs    # repo entry survives
 
     def test_in_file_duplicate_slug_rejected(self, tmp_path):
@@ -239,10 +239,10 @@ class TestMergeProvenance:
 
 class TestCatalogWriteCard:
     def test_new_model_renders_merged_view_not_delta(self):
-        desc = describe_catalog_write("/home/hermes/.grove/model-catalog.yaml", _ADD_KIMI)
+        desc = describe_catalog_write("/home/hermes/.grove/model-catalog.yaml", _ADD_NEW)
         assert desc is not None
         assert "resolved merged view" in desc
-        assert "moonshotai/kimi-k3 | Kimi K3 | openrouter | $1/$2 per Mtok [NEW]" in desc
+        assert "testvendor/newmodel-x | NewModel X | openrouter | $1/$2 per Mtok [NEW]" in desc
         # M-9 legibility: unlisted repo entries survive, stated on the card.
         assert "unlisted repo entries survive" in desc
 
@@ -283,7 +283,7 @@ class TestCatalogWriteCard:
 
         desc, opaque = describe_red_action(
             "write_file",
-            {"path": "/home/hermes/.grove/model-catalog.yaml", "content": _ADD_KIMI},
+            {"path": "/home/hermes/.grove/model-catalog.yaml", "content": _ADD_NEW},
         )
         assert opaque is False
         assert "resolved merged view" in desc and "[NEW]" in desc
@@ -306,16 +306,16 @@ class TestMintAndWrite:
         return path
 
     def test_mint_builds_schema_valid_entry(self):
-        e = mint_catalog_entry("moonshotai/kimi-k3", "Kimi K3", 3.0, 15.0, notes="fast")
+        e = mint_catalog_entry("testvendor/newmodel-x", "NewModel X", 3.0, 15.0, notes="fast")
         assert e == {
-            "slug": "moonshotai/kimi-k3", "display_name": "Kimi K3",
+            "slug": "testvendor/newmodel-x", "display_name": "NewModel X",
             "provider": "openrouter", "input_cost_per_mtok": 3.0,
             "output_cost_per_mtok": 15.0, "notes": "fast",
         }
 
     def test_mint_defaults_provider_to_openrouter(self):
-        # The live-run bug: the agent put provider=moonshotai. The mint fixes it.
-        assert mint_catalog_entry("moonshotai/kimi-k3", "K", 1, 2)["provider"] == "openrouter"
+        # The live-run bug: the agent put provider=<the slug vendor prefix>. The mint fixes it.
+        assert mint_catalog_entry("testvendor/newmodel-x", "K", 1, 2)["provider"] == "openrouter"
 
     def test_mint_rejects_bad_cost(self):
         with pytest.raises(ValueError, match="input_cost_per_mtok"):
@@ -329,15 +329,17 @@ class TestMintAndWrite:
                           "input_cost_per_mtok", "output_cost_per_mtok", "notes"}
 
     def test_write_roundtrips_through_load(self, sov):
-        e = mint_catalog_entry("moonshotai/kimi-k3", "Kimi K3", 3.0, 15.0)
+        e = mint_catalog_entry("testvendor/newmodel-x", "NewModel X", 3.0, 15.0)
         write_sovereign_catalog(upsert_sovereign_entry(e))
         cat = load_catalog()
         slugs = {m["slug"] for m in cat}
-        assert "moonshotai/kimi-k3" in slugs            # added
+        assert "testvendor/newmodel-x" in slugs            # added
         assert "anthropic/claude-opus-4.6" in slugs     # repo survives
         # Robust against repo catalog growth (was a stale hardcoded 26 that
         # broke when the seed grew 25→26): merged = every repo slug + the one
-        # new sovereign slug (kimi-k3 is not in the repo seed).
+        # new sovereign slug (testvendor/newmodel-x is not in the repo seed —
+        # a synthetic never-in-repo slug; the former kimi-k3 fixture became a
+        # real repo entry in instance-cold-start-parity-v1 P4's catalog fold-in).
         from grove.config.model_catalog import _load_catalog_file, _repo_catalog_path
         repo_n = len(_load_catalog_file(_repo_catalog_path()))
         assert len(cat) == repo_n + 1
@@ -361,10 +363,10 @@ class TestMintAndWrite:
 
     def test_add_catalog_entry_tool_happy_path(self, sov):
         from tools.catalog_tool import add_catalog_entry
-        msg = add_catalog_entry("moonshotai/kimi-k3", "Kimi K3", 3.0, 15.0, notes="fast")
-        assert "Added moonshotai/kimi-k3" in msg
+        msg = add_catalog_entry("testvendor/newmodel-x", "NewModel X", 3.0, 15.0, notes="fast")
+        assert "Added testvendor/newmodel-x" in msg
         assert sov.exists()
-        assert "moonshotai/kimi-k3" in {m["slug"] for m in load_catalog()}
+        assert "testvendor/newmodel-x" in {m["slug"] for m in load_catalog()}
 
     def test_add_catalog_entry_tool_rejects_bad_input(self, sov):
         from tools.catalog_tool import add_catalog_entry
@@ -376,11 +378,11 @@ class TestMintAndWrite:
         from grove.red_pending_store import describe_red_action
         desc, opaque = describe_red_action(
             "add_catalog_entry",
-            {"slug": "moonshotai/kimi-k3", "display_name": "Kimi K3",
+            {"slug": "testvendor/newmodel-x", "display_name": "NewModel X",
              "input_cost_per_mtok": 3.0, "output_cost_per_mtok": 15.0},
         )
         assert opaque is False
-        assert "[NEW]" in desc and "moonshotai/kimi-k3" in desc and "repo entries survive" in desc
+        assert "[NEW]" in desc and "testvendor/newmodel-x" in desc and "repo entries survive" in desc
 
 
 # ── gap-2: file-write doors refuse raw catalog writes (steer to the tool) ─────
@@ -420,8 +422,8 @@ class TestRawCatalogWriteDoor:
             lambda: tmp_path / "model-catalog.yaml",
         )
         from tools.catalog_tool import add_catalog_entry
-        msg = add_catalog_entry("moonshotai/kimi-k3", "Kimi K3", 3.0, 15.0)
-        assert "Added moonshotai/kimi-k3" in msg
+        msg = add_catalog_entry("testvendor/newmodel-x", "NewModel X", 3.0, 15.0)
+        assert "Added testvendor/newmodel-x" in msg
         assert (tmp_path / "model-catalog.yaml").exists()
 
 

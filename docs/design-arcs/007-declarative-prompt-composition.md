@@ -1,5 +1,11 @@
 # GRV-007 Declarative Prompt Composition
 
+> **Internal design arc — not the canonical standard.** This is the
+> implementation-side design record for the reference fork: the runtime physics
+> the code commits to. The authoritative, published Autonomaton Pattern standard
+> is [GRV-001](https://the-grove.ai/standards/001) by The Grove Foundation. Where
+> this arc and the published standard differ, the standard governs.
+
 **Version:** 1.0
 **Status:** Draft (Sprint 36)
 **Supersedes:** —

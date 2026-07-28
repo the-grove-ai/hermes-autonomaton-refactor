@@ -146,7 +146,7 @@ context:
     \ entry is attempting multiple rejections \u2014 split into\n     separate ledger\
     \ entries.\n\n2. Identify the specific phrasing that feels off.\n\n3. Rewrite\
     \ that phrasing using the templates above.\n\n4. If the rewrite cannot be made\
-    \ to fit, raise Andon \u2014 surface the\n   draft to Jim with a note about which\
+    \ to fit, raise Andon \u2014 surface the\n   draft to the operator with a note about which\
     \ guideline the entry conflicts\n   with.\n\nAndon on register is correct behavior.\
     \ Sloppy register on a public\nartifact is a structural defect, not a stylistic\
     \ one.\n\n## When the guidelines themselves are insufficient\n\nThis skill is\

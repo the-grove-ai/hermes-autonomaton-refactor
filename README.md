@@ -1,7 +1,7 @@
 # The Hermes Autonomaton Refactor
 
 ![Status: Pre-Alpha](https://img.shields.io/badge/status-pre--alpha-critical.svg)
-![Tests: 3,497 passing](https://img.shields.io/badge/grove_suite-3%2C497_passing-brightgreen.svg)
+![Grove suite: passing](https://img.shields.io/badge/grove_suite-passing-brightgreen.svg)
 
 <p align="center">
   <a href="https://the-grove.ai">The Grove Foundation</a> ·
@@ -98,7 +98,7 @@ The industry has started calling the surrounding practice "loop engineering" —
 
 ## Status
 
-This is a working research implementation under active development. The governance surgery is complete, the suite is green, and the self-evolution loop is live in production. Rough edges and breaking changes are guaranteed — see [Limitations](#limitations-honestly).
+This is a working research implementation under active development. The governance surgery is complete, the suite runs green but for a small set of declared, `xfail`-quarantined exceptions, and the self-evolution loop is live in production. Rough edges and breaking changes are guaranteed — see [Limitations](#limitations-honestly).
 
 | Layer | Status | Notes |
 |---|---|---|
@@ -124,7 +124,7 @@ This is a working research implementation under active development. The governan
 | Model independence | ✅ Shipped | Any tier to any OpenAI-compatible provider — frontier APIs, hosted open-weight via OpenRouter, or local via MLX/Ollama. Config swaps, not code changes. |
 | `--strict` mode | 🟡 Partial | Shipping in stages. Strict skill promotion is live and tested — proposals queue instead of applying and require explicit approval. The broader enterprise gate across all proposal classes is a future sprint. |
 
-**Test surface:** 3,497 / 3,497 passing, deterministic — reproduce with `scripts/run_tests.sh tests/grove/`. Zero known governance-behavior regressions, verified by full-suite triage. The inherited upstream suite (~23.9k tests) runs alongside it. Please report anything you find. Contributions welcome.
+**Test surface:** the Grove governance suite runs deterministically — reproduce with `scripts/run_tests.sh tests/grove/` rather than trust a frozen count here. A small set of tests are `xfail`-quarantined with tracked, greppable reasons (declared, never hidden — the disposition rides a named follow-up). The inherited upstream suite (~23.9k tests) runs alongside it. Please report anything you find. Contributions welcome.
 
 ## Self-Authoring Skills
 

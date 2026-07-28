@@ -19,6 +19,18 @@ import json
 
 import pytest
 
+# instance-cold-start-parity-v1 P4 — the operator-private forge worker + record
+# (skill.fleet.forge-jobsearch, which carried the must-be-zero Notion UUID) exited
+# the repo in the privacy/severance sprint. The forge Drive-publish MACHINERY these
+# tests exercise still ships but is now DORMANT (no live producer; dormancy census
+# clean). Per the P4 Andon ruling (Option 1 — DEFER), these orphaned-fixture tests
+# xfail pending the machinery's exit-vs-successor disposition, ruled in the
+# reference-worker-md rider. ONE greppable reason string across every P4 xfail site:
+FORGE_MACHINERY_DISPOSITION_PENDING = (
+    "orphaned fixture: operator-private forge record removed (P4); "
+    "disposition ruled in reference-worker-md rider"
+)
+
 from grove.api import portal
 from grove.eval.proposal_queue import PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING as FT
 
@@ -66,6 +78,7 @@ def _tracker(monkeypatch, published):
 # ── the rule: tracker says published -> promoted (only when not in ledger) ──
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_not_in_ledger_tracker_published_renders_promoted(grove_home, monkeypatch):
     _stage(grove_home, "260629-idc", "ROW-IDC")
     _tracker(monkeypatch, {"ROW-IDC"})   # Status Drafted / Application Package present
@@ -73,6 +86,7 @@ def test_not_in_ledger_tracker_published_renders_promoted(grove_home, monkeypatc
     assert r["governance_state"] == "promoted"
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_not_in_ledger_not_published_falls_through_to_legacy(grove_home, monkeypatch):
     _stage(grove_home, "260705-dataiku", "ROW-DK")
     _tracker(monkeypatch, set())          # To Apply, no Package -> genuinely pending
@@ -80,6 +94,7 @@ def test_not_in_ledger_not_published_falls_through_to_legacy(grove_home, monkeyp
     assert r["governance_state"] == "legacy"   # pending, never promoted
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_lingering_dir_is_not_the_discriminator(grove_home, monkeypatch):
     """Both units carry a lingering staged dir; the tracker signal alone decides."""
     _stage(grove_home, "260629-idc", "ROW-PUB")       # tracker: published
@@ -93,6 +108,7 @@ def test_lingering_dir_is_not_the_discriminator(grove_home, monkeypatch):
 # ── precedence: rule 2 (ledger) wins; the new rule never overrides it ────────
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_in_ledger_rejected_wins_over_tracker_published(grove_home, monkeypatch):
     _stage(grove_home, "260618-sirion", "ROW-SIR")
     _ledger(grove_home, "rejected", "ROW-SIR")
@@ -101,6 +117,7 @@ def test_in_ledger_rejected_wins_over_tracker_published(grove_home, monkeypatch)
     assert r["governance_state"] == "rejected"
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_in_ledger_applied_renders_promoted_via_rule2(grove_home, monkeypatch):
     _stage(grove_home, "260707-x", "ROW-X")
     _ledger(grove_home, "applied", "ROW-X")
@@ -112,6 +129,7 @@ def test_in_ledger_applied_renders_promoted_via_rule2(grove_home, monkeypatch):
 # ── graceful degradation: cold/failed Notion renders exactly as today ───────
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_cold_notion_renders_as_today_no_error(grove_home, monkeypatch):
     _stage(grove_home, "260629-idc", "ROW-IDC")
 
@@ -126,6 +144,7 @@ def test_cold_notion_renders_as_today_no_error(grove_home, monkeypatch):
 # ── the batched read: Status/Package -> published set, and it never raises ──
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_tracker_read_maps_status_and_package(grove_home, monkeypatch):
     from grove.fleet import resolvers
     payload = {"result": json.dumps({"results": [

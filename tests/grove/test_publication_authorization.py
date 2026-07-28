@@ -4,8 +4,8 @@ pin the deny-by-default primitive and its DELIBERATE divergence from the R-B1
 read-resilient STATE merge: a corrupt overlay for the record DENIES, it never
 resilient-falls-back to the definition value.
 
-Hermetic: overlays live in a tmp state dir; the 'field absent' definition is the
-real forge record with its publication block stripped into a tmp defs dir.
+Hermetic: overlays live in a tmp state dir; the 'field absent' definition is a
+real fleet record with its publication block stripped into a tmp defs dir.
 
 AUTHORIZING SET (documented). The overlay is parsed by ``yaml.safe_load``
 (PyYAML 6.0.3, SafeLoader, YAML 1.1). Under YAML 1.1 the bare literals
@@ -28,8 +28,14 @@ from grove.capability_registry import (
     publication_unattended_authorized,
 )
 
-RID = "skill.fleet.forge-jobsearch"
-_FORGE_SRC = default_capabilities_dir() / "skill__fleet__forge_jobsearch.yaml"
+# P4 (instance-cold-start-parity-v1): retargeted off the operator-private forge
+# record (exited the repo) onto a generic fleet reference record. This suite
+# tests publication_unattended_authorized's field-absent / overlay semantics —
+# the base record is a hermetic fixture, not the subject. The drafter definition
+# ships no governance.publication block, so with no overlay the field is absent
+# and the strict read denies — the exact deny-by-default this suite pins.
+RID = "skill.fleet.drafter"
+_DEF_SRC = default_capabilities_dir() / "skill__fleet__drafter.yaml"
 
 
 @pytest.fixture
@@ -48,9 +54,9 @@ def _write_overlay(state_dir: Path, body: str) -> Path:
 
 @pytest.fixture
 def defs_no_publication(tmp_path):
-    """A hermetic definitions dir: the real forge record with governance.
+    """A hermetic definitions dir: a real fleet record with governance.
     publication stripped — the pure 'field absent' definition."""
-    doc = yaml.safe_load(_FORGE_SRC.read_text(encoding="utf-8"))
+    doc = yaml.safe_load(_DEF_SRC.read_text(encoding="utf-8"))
     (doc.get("governance") or {}).pop("publication", None)
     d = tmp_path / "defs"
     d.mkdir()
@@ -93,7 +99,8 @@ def test_corrupt_overlay_returns_false_not_resilient(state_dir):
 
 
 def test_no_overlay_file_returns_false(state_dir):
-    # Empty state dir; the real forge definition ships unattended: false → deny.
+    # Empty state dir; the drafter definition ships no publication block → the
+    # field is absent → deny.
     assert publication_unattended_authorized(RID, state_dir=state_dir) is False
 
 

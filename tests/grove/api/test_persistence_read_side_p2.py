@@ -15,6 +15,19 @@ import json
 
 import pytest
 
+# instance-cold-start-parity-v1 P4 — the operator-private forge worker + record
+# (skill.fleet.forge-jobsearch, which carried the must-be-zero Notion UUID) exited
+# the repo in the privacy/severance sprint. The forge Drive-publish MACHINERY these
+# tests exercise still ships but is now DORMANT (no live producer; dormancy census
+# clean). Per the P4 Andon ruling (Option 1 — DEFER), these orphaned-fixture tests
+# xfail pending the machinery's exit-vs-successor disposition, ruled in the
+# reference-worker-md rider. ONE greppable reason string across every P4 xfail site:
+FORGE_MACHINERY_DISPOSITION_PENDING = (
+    "orphaned fixture: operator-private forge record removed (P4); "
+    "disposition ruled in reference-worker-md rider"
+)
+pytestmark = pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
+
 
 @pytest.fixture()
 def grove_home(tmp_path, monkeypatch):

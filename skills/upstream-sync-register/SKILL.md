@@ -214,8 +214,8 @@ should:
 3. Rewrite that phrasing using the templates above.
 
 4. If the rewrite cannot be made to fit, raise Andon — surface the
-   draft to Jim with a note about which guideline the entry conflicts
-   with.
+   draft to the operator with a note about which guideline the entry
+   conflicts with.
 
 Andon on register is correct behavior. Sloppy register on a public
 artifact is a structural defect, not a stylistic one.

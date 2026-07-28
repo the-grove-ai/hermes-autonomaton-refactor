@@ -19,6 +19,18 @@ from pathlib import Path
 
 import pytest
 
+# instance-cold-start-parity-v1 P4 — the operator-private forge worker + record
+# (skill.fleet.forge-jobsearch, which carried the must-be-zero Notion UUID) exited
+# the repo in the privacy/severance sprint. The forge Drive-publish MACHINERY these
+# tests exercise still ships but is now DORMANT (no live producer; dormancy census
+# clean). Per the P4 Andon ruling (Option 1 — DEFER), these orphaned-fixture tests
+# xfail pending the machinery's exit-vs-successor disposition, ruled in the
+# reference-worker-md rider. ONE greppable reason string across every P4 xfail site:
+FORGE_MACHINERY_DISPOSITION_PENDING = (
+    "orphaned fixture: operator-private forge record removed (P4); "
+    "disposition ruled in reference-worker-md rider"
+)
+
 
 @pytest.fixture()
 def grove_home(tmp_path, monkeypatch):
@@ -149,6 +161,7 @@ def test_grandfathered_staged_no_proposal_is_legacy(grove_home):
     assert r["governance_state"] == "legacy"
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_forge_promoted_via_ledger_not_legacy(grove_home):
     """Sink-authority rule: forge's staged dir LINGERS post-publish (no local
     canonical). With no open proposal, the ledger 'applied' event makes it promoted —
@@ -162,6 +175,7 @@ def test_forge_promoted_via_ledger_not_legacy(grove_home):
     assert r["governance_state"] == "promoted"
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_forge_lingering_staged_no_ledger_is_legacy(grove_home):
     """Contrast: forge staged dir, no proposal, NO ledger terminal → genuinely
     grandfathered/orphan → legacy (the ledger is what distinguishes promoted)."""
@@ -199,6 +213,7 @@ def test_index_aggregates_needs_review(grove_home):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_read_does_not_mutate_open_proposal(grove_home):
     """A read of a needs_review unit (no out-of-band drift) leaves the proposal OPEN —
     the read-side auto-close fires ONLY on genuine topological drift, never on the

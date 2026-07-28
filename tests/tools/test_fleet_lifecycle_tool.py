@@ -97,29 +97,31 @@ def test_purge_flat_unit_end_to_end(grove_home, tmp_path):
 
 def test_purge_package_unit_end_to_end(grove_home, tmp_path):
     """Remote-sink P1 subdir layout: dir source, both files archived, both
-    derived pages tombstoned."""
+    derived pages tombstoned. P4 (instance-cold-start-parity-v1): retargeted off
+    the removed operator-private forge producer onto drafter — the generic
+    governance-bearing fleet record with the same canonical/.archive shape."""
     from grove.forge import feedback_store
 
     slug = "260101-acme-pm"
-    d = grove_home / "forge" / slug
+    d = grove_home / "drafter" / slug
     d.mkdir(parents=True)
     (d / "resume.md").write_text("R")
     (d / "cover-letter.md").write_text("C")
-    p1 = _page(tmp_path, "forge_package", "jim-aaa11111.md",
+    p1 = _page(tmp_path, "drafter_package", "jim-aaa11111.md",
                str(d / "resume.md"), "resume compacted")
-    p2 = _page(tmp_path, "forge_package", "pitch-bbb22222.md",
+    p2 = _page(tmp_path, "drafter_package", "pitch-bbb22222.md",
                str(d / "cover-letter.md"), "cover compacted")
     _ledger(tmp_path, {str(d / "resume.md"): 1.0,
                        str(d / "cover-letter.md"): 1.0})
 
-    fleet_purge("forge-jobsearch", slug, unit_id="row-1")
+    fleet_purge("drafter", slug, unit_id="row-1")
 
-    archived = list((grove_home / "forge" / ".archive").glob(f"{slug}-*"))
+    archived = list((grove_home / "drafter" / ".archive").glob(f"{slug}-*"))
     assert len(archived) == 1
     assert sorted(p.name for p in archived[0].iterdir()) == [
         "cover-letter.md", "purge-manifest.json", "resume.md"]
     assert not p1.exists() and not p2.exists()
-    fb = feedback_store.read("forge", "row-1")  # unit_id key, not slug
+    fb = feedback_store.read("drafter", "row-1")  # unit_id key, not slug
     assert fb and fb["terminal_skip"] is True
 
 

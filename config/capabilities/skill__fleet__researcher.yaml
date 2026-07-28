@@ -48,7 +48,7 @@ context:
     metadata:
       hermes:
         tags: [research, analysis, fleet, deep-research, synthesis]
-        related_skills: [llm-wiki, jim-voice-writing-style, scout]
+        related_skills: [llm-wiki, scout]
     ---
 
     Execution authority: This skill holds NO retrieval tool and NO write tool. The gateway broker has ALREADY retrieved your source material and placed it in your input; the fleet RUNTIME stages the files you emit within ~/.grove/ bounds (stage_package is the only writer for the staging sink). Governance is enforced by the zone model and the OS, not by model inference.
@@ -192,7 +192,10 @@ lifecycle:
   # fleet-receipt-custody-v1 P2 A2 — re-anchored after the direct-write prose
   # sweep (emit-protocol phrasing; one writer per sink). Content + anchor land
   # in the SAME commit per the pairing discipline.
-  body_hash: sha256:98b3ab0926743d4c
+  # instance-cold-start-parity-v1 P4 — re-anchored after the reference-worker
+  # genericization (voice-skill invocation made OPTIONAL for a fresh instance
+  # with no operator voice skills). Content + anchor land in the SAME commit.
+  body_hash: sha256:fca08d279c1e771d
 lineage:
   source_patterns: []
   parent_id: null

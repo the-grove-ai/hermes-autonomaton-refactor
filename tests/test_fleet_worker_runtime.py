@@ -20,8 +20,8 @@ from grove.fleet import config, paths, read_surfaces, staging, worker_entry
 from grove.fleet.errors import FleetWorkerAndon
 
 
-def _forge_record() -> Capability:
-    return load_capabilities()["skill.fleet.forge-jobsearch"]
+def _drafter_record() -> Capability:
+    return load_capabilities()["skill.fleet.drafter"]
 
 
 # ── Condition 2: read_surfaces capability field ──────────────────────────────
@@ -38,7 +38,7 @@ def test_read_surfaces_defaults_empty_and_serializes_byte_identical():
 
 
 def test_read_surfaces_present_key_round_trip():
-    d = _forge_record().to_dict()
+    d = _drafter_record().to_dict()
     d["read_surfaces"] = ["corpus_file"]
     cap = Capability.from_dict(d)
     assert cap.read_surfaces == ["corpus_file"]
@@ -47,14 +47,14 @@ def test_read_surfaces_present_key_round_trip():
 
 
 def test_read_surfaces_unknown_token_fails_loud():
-    d = _forge_record().to_dict()
+    d = _drafter_record().to_dict()
     d["read_surfaces"] = ["not_a_surface"]
     with pytest.raises(ValueError, match="not in the known vocabulary"):
         Capability.from_dict(d)
 
 
 def test_read_surfaces_duplicate_token_fails_loud():
-    d = _forge_record().to_dict()
+    d = _drafter_record().to_dict()
     d["read_surfaces"] = ["cellar", "cellar"]
     with pytest.raises(ValueError, match="must not repeat"):
         Capability.from_dict(d)
@@ -70,19 +70,22 @@ def test_all_existing_records_still_load():
 
 
 def test_shipped_registry_declares_the_review_unified_producer_set():
-    # fleet-review-unification-v1 C1b-2 — the committed registry declares the three
-    # real fleet producers: forge (notion_query) and the file producers drafter /
-    # cultivator (file_source), all enabled. It must load cleanly.
+    # fleet-review-unification-v1 C1b-2 — the committed registry declares the
+    # generic file-producer reference workers drafter / cultivator (file_source),
+    # both enabled. It must load cleanly.
     # researcher-fleet-worker-v1 P2 — researcher joins as a one_shot file_source
     # worker, shipped DISABLED (the operator arms it via the override overlay).
+    # instance-cold-start-parity-v1 P4 — the operator-private notion_query `forge`
+    # worker exited the shipped registry (privacy/severance).
     workers = config.load_fleet_workers(config.default_fleet_workers_path())
-    assert set(workers) == {"forge", "drafter", "cultivator", "researcher"}
+    assert set(workers) == {"drafter", "cultivator", "researcher"}
     assert all(w.enabled for w in workers.values() if w.id != "researcher")
     assert workers["researcher"].enabled is False
-    assert workers["forge"].input_state["type"] == "notion_query"
     assert workers["drafter"].input_state["type"] == "file_source"
     assert workers["cultivator"].input_state["type"] == "file_source"
-    assert workers["researcher"].input_state["type"] == "file_source"
+    # researcher-retrieval-broker-v1 P3c retargeted researcher to the host-side
+    # retrieval broker resolver (was file_source before the broker migration).
+    assert workers["researcher"].input_state["type"] == "researcher_broker"
     assert workers["researcher"].input_state["lifecycle"] == "one_shot"
 
 
@@ -162,28 +165,28 @@ def test_missing_registry_file_fails_loud(tmp_path):
 # ── read_surfaces enforcement (generic, record-driven) ───────────────────────
 
 
-def _forge_with_surfaces(surfaces):
-    d = _forge_record().to_dict()
+def _drafter_with_surfaces(surfaces):
+    d = _drafter_record().to_dict()
     d["read_surfaces"] = surfaces
     return Capability.from_dict(d)
 
 
 def test_corpus_file_surface_passes_enforcement():
-    cap = _forge_with_surfaces(["corpus_file"])
-    assert read_surfaces.enforce_declared_surfaces(cap, "forge") == ["corpus_file"]
+    cap = _drafter_with_surfaces(["corpus_file"])
+    assert read_surfaces.enforce_declared_surfaces(cap, "drafter") == ["corpus_file"]
 
 
 @pytest.mark.parametrize("surface", sorted(read_surfaces.INDEX_SURFACES))
 def test_index_surface_declare_but_unwired_andons(surface):
-    cap = _forge_with_surfaces([surface])
+    cap = _drafter_with_surfaces([surface])
     with pytest.raises(FleetWorkerAndon) as ei:
-        read_surfaces.enforce_declared_surfaces(cap, "forge")
+        read_surfaces.enforce_declared_surfaces(cap, "drafter")
     assert ei.value.check == "index_surface_unwired"
     assert ei.value.surface == surface
 
 
 def test_undeclared_surface_guard_andons():
-    cap = _forge_with_surfaces(["corpus_file"])
+    cap = _drafter_with_surfaces(["corpus_file"])
     with pytest.raises(FleetWorkerAndon) as ei:
         read_surfaces.assert_surface_allowed(cap, "wiki", "forge")
     assert ei.value.check == "undeclared_surface"
@@ -283,8 +286,8 @@ def _routing_stub(monkeypatch, tier_model="tier-org/tier-model", provider="openr
     return seen
 
 
-def _forge_with_binding(binding):
-    d = _forge_record().to_dict()
+def _drafter_with_binding(binding):
+    d = _drafter_record().to_dict()
     if binding is None:
         d.pop("model_binding", None)
     else:
@@ -296,11 +299,11 @@ def test_model_pin_binds_exact_slug_not_tier_model(monkeypatch, caplog):
     # F5 anti-masking pin: the pinned slug DIFFERS from the tier model, and the
     # Agent-bound model must be the pin — a tier-model pass-through would fail here.
     seen = _routing_stub(monkeypatch, tier_model="tier-org/tier-model")
-    cap = _forge_with_binding({"type": "model", "model": "pin-org/pin-model"})
+    cap = _drafter_with_binding({"type": "model", "model": "pin-org/pin-model"})
     import logging
 
     with caplog.at_level(logging.INFO, logger="grove.fleet.worker_entry"):
-        model, max_tokens, runtime = worker_entry._resolve_worker_runtime(cap, "forge")
+        model, max_tokens, runtime = worker_entry._resolve_worker_runtime(cap, "drafter")
     assert model == "pin-org/pin-model"
     assert runtime["model"] == "pin-org/pin-model"
     # Envelope coherence: credential bridge saw the PINNED slug with the tier's
@@ -314,8 +317,8 @@ def test_model_pin_binds_exact_slug_not_tier_model(monkeypatch, caplog):
 
 def test_no_binding_tier_path_unchanged(monkeypatch):
     seen = _routing_stub(monkeypatch, tier_model="tier-org/tier-model")
-    cap = _forge_with_binding(None)
-    model, max_tokens, runtime = worker_entry._resolve_worker_runtime(cap, "forge")
+    cap = _drafter_with_binding(None)
+    model, max_tokens, runtime = worker_entry._resolve_worker_runtime(cap, "drafter")
     assert model == "tier-org/tier-model"
     assert seen["resolved_tier_config"].model == "tier-org/tier-model"
     assert seen["explicit_tier"] == "T2"  # forge tier_rule.preferred == 2
@@ -332,10 +335,10 @@ def test_malformed_pinned_slug_fails_spawn_loud(monkeypatch, bad_slug):
     from grove.capability import ModelBinding
 
     _routing_stub(monkeypatch)
-    cap = _forge_with_binding(None)
+    cap = _drafter_with_binding(None)
     cap.model_binding = ModelBinding(type="model", model=bad_slug)
     with pytest.raises(FleetWorkerAndon) as ei:
-        worker_entry._resolve_worker_runtime(cap, "forge")
+        worker_entry._resolve_worker_runtime(cap, "drafter")
     assert ei.value.check == "model_binding_malformed_slug"
 
 
@@ -346,9 +349,9 @@ def test_tier_override_binding_leaves_fleet_tier_path_unchanged(monkeypatch, cap
     import logging
 
     seen = _routing_stub(monkeypatch, tier_model="tier-org/tier-model")
-    cap = _forge_with_binding({"type": "tier_override", "tier": "T2"})
+    cap = _drafter_with_binding({"type": "tier_override", "tier": "T2"})
     with caplog.at_level(logging.INFO, logger="grove.fleet.worker_entry"):
-        model, _, _ = worker_entry._resolve_worker_runtime(cap, "forge")
+        model, _, _ = worker_entry._resolve_worker_runtime(cap, "drafter")
     assert model == "tier-org/tier-model"
     assert seen["resolved_tier_config"].model == "tier-org/tier-model"
     assert "model_binding: pinned=" not in caplog.text

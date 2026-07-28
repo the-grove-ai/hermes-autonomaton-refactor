@@ -9,7 +9,7 @@ tier: T2
 metadata:
   hermes:
     tags: [community, outreach, fleet, cultivation, relationships]
-    related_skills: [scout, jim-voice-writing-style]
+    related_skills: [scout]
 ---
 
 Execution authority: This skill holds NO write tool — it emits finished files and the fleet RUNTIME stages them within ~/.grove/ bounds (stage_package is the only writer for the staging sink). Governance is enforced by the zone model and the OS, not by model inference.
@@ -67,7 +67,7 @@ Keep research per prospect to 2-3 key findings. Quality over volume.
 
 For each Tier 1-3 prospect, draft a personalized outreach message:
 
-**Outreach rules** (compose with jim-voice-writing-style):
+**Outreach rules** (compose with your configured voice skill, if any):
 - 1-3 sentences maximum. Shorter is better.
 - Reference their SPECIFIC recent work — never generic ("I love your content")
 - Connect their work to the thesis without pitching
@@ -170,7 +170,7 @@ reads the full draft on the portal and approves or provides feedback.
 
 ## Composites
 
-- **jim-voice-writing-style** — voice DNA for outreach drafts
+- an operator voice skill (optional) — voice DNA for outreach drafts when configured
 - **x_search** — find prospects on X
 - **web_search** — find prospects across platforms
 - **read_file** — consume Scout digests from ~/.grove/scout/

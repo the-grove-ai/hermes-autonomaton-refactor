@@ -19,6 +19,18 @@ import re
 
 import pytest
 
+# instance-cold-start-parity-v1 P4 — the operator-private forge worker + record
+# (skill.fleet.forge-jobsearch, which carried the must-be-zero Notion UUID) exited
+# the repo in the privacy/severance sprint. The forge Drive-publish MACHINERY these
+# tests exercise still ships but is now DORMANT (no live producer; dormancy census
+# clean). Per the P4 Andon ruling (Option 1 — DEFER), these orphaned-fixture tests
+# xfail pending the machinery's exit-vs-successor disposition, ruled in the
+# reference-worker-md rider. ONE greppable reason string across every P4 xfail site:
+FORGE_MACHINERY_DISPOSITION_PENDING = (
+    "orphaned fixture: operator-private forge record removed (P4); "
+    "disposition ruled in reference-worker-md rider"
+)
+
 from grove.api import fragments as F
 
 
@@ -175,8 +187,11 @@ async def test_inbox_page_renders_pending_pill_and_cards(grove_home):
     ("skill.fleet.drafter", "drafter",
      {"slug": "moon-bot", "unit_id": "moon-bot", "skill_id": "skill.fleet.drafter",
       "canonical_sink": "drafter"}),
-    ("skill.fleet.forge-jobsearch", "forge",
-     {"slug": "260707-x", "row_id": "ROW-X", "skill_id": "skill.fleet.forge-jobsearch"}),
+    pytest.param(
+        "skill.fleet.forge-jobsearch", "forge",
+        {"slug": "260707-x", "row_id": "ROW-X", "skill_id": "skill.fleet.forge-jobsearch"},
+        marks=pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False),
+    ),
 ])
 async def test_verb_from_surface_stores_feedback(grove_home, monkeypatch, producer, worker, payload):
     """VERDICT D — the suggest_revision URL the surface wires drives the REAL route:

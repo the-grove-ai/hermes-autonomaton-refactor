@@ -15,6 +15,18 @@ import json
 
 import pytest
 
+# instance-cold-start-parity-v1 P4 — the operator-private forge worker + record
+# (skill.fleet.forge-jobsearch, which carried the must-be-zero Notion UUID) exited
+# the repo in the privacy/severance sprint. The forge Drive-publish MACHINERY these
+# tests exercise still ships but is now DORMANT (no live producer; dormancy census
+# clean). Per the P4 Andon ruling (Option 1 — DEFER), these orphaned-fixture tests
+# xfail pending the machinery's exit-vs-successor disposition, ruled in the
+# reference-worker-md rider. ONE greppable reason string across every P4 xfail site:
+FORGE_MACHINERY_DISPOSITION_PENDING = (
+    "orphaned fixture: operator-private forge record removed (P4); "
+    "disposition ruled in reference-worker-md rider"
+)
+
 
 @pytest.fixture()
 def grove_home(tmp_path, monkeypatch):
@@ -55,6 +67,7 @@ def test_purged_file_producer_unit_exits(grove_home):
     assert _units("skill.fleet.drafter") == {}  # EXITED — not rejected
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_purged_remote_sink_unit_exits(grove_home):
     """Andon probe case B pinned: ledger-applied promoted → PURGED → absent
     (was: phantom 'promoted' via rule-2 ledger authority). Suppression
@@ -72,6 +85,7 @@ def test_purged_remote_sink_unit_exits(grove_home):
     assert _units("skill.fleet.forge-jobsearch") == {}  # EXITED — no phantom
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_redraft_after_purge_surfaces_needs_review(grove_home):
     """The ruled caveat: staged + open proposal BEATS suppression — a
     legitimate redraft is reviewable, never hidden by the old purge."""

@@ -36,8 +36,12 @@ _CAPS = _REPO / "config" / "capabilities"
 _PHASE1_CLASSES = ["resume-package@1", "longform-argument@1"]
 
 # Live record file -> the class its rubric_ref must name after P5 migration.
+# instance-cold-start-parity-v1 P4: the operator-private forge record (the sole
+# resume-package@1 producer) exited the repo. Its record-file→rubric_ref pin is
+# dropped here with its subject. The resume-package@1 rubric CLASS itself stays
+# in config/rubrics.yaml (still asserted by _PHASE1_CLASSES) — whether to prune
+# that now-producerless class rides with the forge-machinery scope decision.
 _MIGRATED_RECORDS = [
-    ("skill__fleet__forge_jobsearch.yaml", "resume-package@1"),
     ("skill__fleet__drafter.yaml", "longform-argument@1"),
 ]
 

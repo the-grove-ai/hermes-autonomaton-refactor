@@ -539,9 +539,10 @@ def test_no_prose_instructs_direct_writes_into_fleet_staging_sinks():
     sinks = _fleet_staging_sinks()
     # Vacuity guards — the scan must never silently match zero.
     assert len(sinks) >= 4, f"vacuity: only {len(sinks)} staging sinks discovered"
-    assert "forge/pending_review" in sinks, (
-        "vacuity: the known forge sink was not discovered — did the "
-        "write_zone.staging_dir schema move?"
+    assert "drafter/pending_review" in sinks, (
+        "vacuity: the known drafter sink was not discovered — did the "
+        "write_zone.staging_dir schema move? (was forge/pending_review before "
+        "the operator-private forge worker exited the repo — P4 severance.)"
     )
     docs = _model_facing_prose()
     assert len(docs) >= 20, f"vacuity: only {len(docs)} prose documents scanned"
@@ -577,9 +578,7 @@ def test_no_prose_instructs_direct_writes_into_fleet_staging_sinks():
     # a sanctioned writer or fleet migration first, not a prose deletion.
     allowed = {
         "config/capabilities/skill__fleet__scout.yaml",
-        "config/capabilities/skill__fleet__scout_jobsearch.yaml",
         "skills/fleet/scout/SKILL.md",
-        "skills/fleet/scout-jobsearch/SKILL.md",
     }
     live = [(n, p) for n, p in offenders if n not in allowed]
     assert not live, (

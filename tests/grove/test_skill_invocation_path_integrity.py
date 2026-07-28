@@ -49,21 +49,21 @@ def _green() -> ZoneResult:
 
 
 def test_yellow_record_classifies_yellow_under_green_class_zone():
-    # forge-jobsearch's record declares zone: yellow; the record is
-    # authoritative, so an operator zone rule greening the invoke_skill intent
-    # class does NOT green the record — the yellow record HOLDS
-    # (research-routing-coherence-v1 C1; previously the max() raise).
-    out = Dispatcher._invoke_skill_effective_zone(_green(), "forge-jobsearch")
+    # drafter's record declares zone: yellow; the record is authoritative, so an
+    # operator zone rule greening the invoke_skill intent class does NOT green
+    # the record — the yellow record HOLDS (research-routing-coherence-v1 C1;
+    # previously the max() raise). P4: retargeted off the removed forge record.
+    out = Dispatcher._invoke_skill_effective_zone(_green(), "drafter")
     assert out.zone == "yellow"
     assert out.source == "invoke_skill_record_zone"
-    assert "skill.fleet.forge-jobsearch" in out.matched_rule
+    assert "skill.fleet.drafter" in out.matched_rule
 
 
 # ── (2) slashed name + record-authoritative lowering / hold ───────────────────
 
 
 def test_slashed_yellow_fleet_name_routes_yellow():
-    out = Dispatcher._invoke_skill_effective_zone(_green(), "fleet/forge-jobsearch")
+    out = Dispatcher._invoke_skill_effective_zone(_green(), "fleet/drafter")
     assert out.zone == "yellow"
     assert out.source == "invoke_skill_record_zone"
     # Record-authoritative (research-routing-coherence-v1 C1): a green record
@@ -286,14 +286,15 @@ def test_recordless_invocation_allows_and_annotates(grove_home, monkeypatch):
     d._apply_skill_tier_binding(SimpleNamespace(), batch, exec_results=[_ok_result()])
     assert d._current_turn_recordless_allow is True
 
-    # A record-governed name does NOT set the flag.
+    # A record-governed name does NOT set the flag. (P4: retargeted off the
+    # removed forge record onto drafter — a live record-governed fleet name.)
     d2 = _shell_dispatcher()
     batch2 = [SimpleNamespace(
-        tool_name="invoke_skill", arguments={"name": "forge-jobsearch"}, call_id="c1",
+        tool_name="invoke_skill", arguments={"name": "drafter"}, call_id="c1",
     )]
     d2._capability_for_skill = lambda name: None  # rebind path inert
     d2._apply_skill_tier_binding(
-        SimpleNamespace(), batch2, exec_results=[_ok_result("forge-jobsearch")],
+        SimpleNamespace(), batch2, exec_results=[_ok_result("drafter")],
     )
     assert d2._current_turn_recordless_allow is False
 

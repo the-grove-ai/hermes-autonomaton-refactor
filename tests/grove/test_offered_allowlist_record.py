@@ -27,10 +27,12 @@ def _old_pre_p3b_hardcode(transport):
     return ["read_file", "skill_view"]
 
 
-# ── (a) SET-DIFF: the three live workers are unchanged ───────────────────────
+# ── (a) SET-DIFF: the live workers are unchanged ─────────────────────────────
+# P4 (instance-cold-start-parity-v1): the operator-private forge worker exited
+# the repo; the generic reference workers still resolve byte-identically.
 @pytest.mark.parametrize(
     "cap_id",
-    ["skill.fleet.forge-jobsearch", "skill.fleet.drafter", "skill.fleet.cultivator"],
+    ["skill.fleet.drafter", "skill.fleet.cultivator"],
 )
 def test_live_worker_resolved_allowlist_byte_identical(cap_id):
     cap = load_capabilities()[cap_id]

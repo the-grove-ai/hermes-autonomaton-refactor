@@ -456,18 +456,13 @@ def test_canonicalize_self_rename_is_noop(grove):
 # ── promoted-artifact-persistence-v1 P2 — declaration + write-path pins ───────
 
 
-def test_write_zone_ingest_round_trips_from_dict_to_dict():
-    """P2 S1 pin: the additive write_zone.ingest declaration survives the
-    from_dict/to_dict round trip verbatim (governance threads whole)."""
-    from grove.capability_registry import load_capabilities
-    from grove.capability import Capability
-
-    cap = load_capabilities()["skill.fleet.forge-jobsearch"]
-    declared = cap.governance["write_zone"]["ingest"]
-    assert declared == {"surface": "canonical_subdirs",
-                        "source_type": "forge_package"}
-    rebuilt = Capability.from_dict(cap.to_dict())
-    assert rebuilt.governance["write_zone"]["ingest"] == declared
+# test_write_zone_ingest_round_trips_from_dict_to_dict — REMOVED in
+# instance-cold-start-parity-v1 P4. Its sole subject was the operator-private
+# `forge` record's write_zone.ingest declaration ({canonical_subdirs,
+# forge_package}); no shipped record carries that self-authored-ingest shape
+# once forge exits. The generic property it guarded — governance threads whole
+# through from_dict/to_dict — is still proven on every governance-bearing fleet
+# record by test_write_zone_retention_round_trips_and_is_uniform below.
 
 
 def test_canonical_write_path_is_rename_only():
@@ -534,7 +529,10 @@ def test_write_zone_retention_round_trips_and_is_uniform():
         assert wz.get("retention") == expected, cid
         rebuilt = Capability.from_dict(cap.to_dict())
         assert rebuilt.governance["write_zone"]["retention"] == expected, cid
-    assert seen >= 6  # all six fleet records declare it
+    # P4 (instance-cold-start-parity-v1): the operator-private forge +
+    # scout_jobsearch records exited the repo; the four generic fleet reference
+    # records (drafter, cultivator, researcher, scout) still declare retention.
+    assert seen >= 4
 
 
 # ── promoted-artifact-persistence-v1 P5 S3 — purge core ──────────────────────

@@ -364,7 +364,7 @@ def _check_assertions(
     # everything" fallback, so an unknown intent yields the always:true core (never
     # None). The former ``expected_maximal`` branch asserted a phantom rule
     # ("§ I.c: unknown-intent must trip maximal fallback" — no such canon in
-    # docs/standards/008) and is removed at source; unknown-intent prompts now
+    # docs/design-arcs/008) and is removed at source; unknown-intent prompts now
     # assert the deterministic core via must-include / must-not-include like any
     # other prompt. ``tools`` is always a set here (_check_assertions runs only
     # when tool resolution succeeded), so the old ``tools is None`` branch is gone.

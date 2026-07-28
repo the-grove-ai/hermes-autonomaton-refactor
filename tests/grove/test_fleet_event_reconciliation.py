@@ -30,6 +30,18 @@ from pathlib import Path
 
 import pytest
 
+# instance-cold-start-parity-v1 P4 — the operator-private forge worker + record
+# (skill.fleet.forge-jobsearch, which carried the must-be-zero Notion UUID) exited
+# the repo in the privacy/severance sprint. The forge Drive-publish MACHINERY these
+# tests exercise still ships but is now DORMANT (no live producer; dormancy census
+# clean). Per the P4 Andon ruling (Option 1 — DEFER), these orphaned-fixture tests
+# xfail pending the machinery's exit-vs-successor disposition, ruled in the
+# reference-worker-md rider. ONE greppable reason string across every P4 xfail site:
+FORGE_MACHINERY_DISPOSITION_PENDING = (
+    "orphaned fixture: operator-private forge record removed (P4); "
+    "disposition ruled in reference-worker-md rider"
+)
+
 from grove.eval import proposal_queue as pq
 from grove.fleet import manager as manager_mod
 from grove.fleet import paths as fleet_paths
@@ -91,6 +103,7 @@ def _mgr():
 # ── reap-across-restart: the incident shape ─────────────────────────────────
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_orphaned_success_event_reaches_the_operator_via_the_scan(captured):
     # fleet-receipt-custody-v1 P4b-1 — the reconciler no longer cards; it MARKS the
     # orphaned event classified. The per-tick STATE SCAN is the single card
@@ -110,6 +123,7 @@ def test_orphaned_success_event_reaches_the_operator_via_the_scan(captured):
     assert andons == []
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_gated_success_with_redraft_reaches_the_operator_via_the_scan(captured):
     # E4 hole: a redraft_count=1 event (the cf577af0 shape) still reaches the
     # operator — via the P4b-1 scan; the event's riders never block the card.
@@ -156,6 +170,7 @@ def test_ts_field_authoritative_over_mtime():
     )
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_meta_defect_event_andons_and_cards_at_the_scan(captured):
     # P4b-1 — the meta_defect Andon lives with the CARD (it marks the card), so it
     # fires at the state scan, not the reconciler. The draft is still surfaced
@@ -186,6 +201,7 @@ def test_failed_event_reconciled_andons(captured):
     assert _classified_marker_path(p).exists()
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_scan_dedups_across_reconcile_and_ticks():
     # The correctness wall, P4b-1 home: reconcile MARKS (never cards); the scan is
     # the single card authority. NO file_agentless monkeypatch, real queue — the
@@ -246,6 +262,7 @@ def test_torn_event_marked_and_skipped(captured, caplog):
     assert "unreadable orphan event" in caplog.text
 
 
+@pytest.mark.xfail(reason=FORGE_MACHINERY_DISPOSITION_PENDING, strict=False)
 def test_live_reap_writes_marker_and_the_scan_cards(captured, monkeypatch):
     # Gate ruling (a): both paths converge on one legibility story (the marker).
     # P4b-1 — the live reap MARKS classified and never cards; the state scan is the

@@ -9,7 +9,7 @@ tier: T2
 metadata:
   hermes:
     tags: [research, analysis, fleet, deep-research, socratic]
-    related_skills: [llm-wiki, jim-voice-writing-style, scout]
+    related_skills: [llm-wiki, scout]
 ---
 
 Execution authority: This skill holds NO write tool — it emits finished files and the fleet RUNTIME stages them within ~/.grove/ bounds (stage_package is the only writer for the staging sink). Governance is enforced by the zone model and the OS, not by model inference.
