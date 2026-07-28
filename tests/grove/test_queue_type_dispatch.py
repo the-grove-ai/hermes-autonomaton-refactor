@@ -146,10 +146,19 @@ class TestMixedTypeQueue:
 
 
 class TestApproveDispatch:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-    )
+    @pytest.fixture(autouse=True)
+    def _seed_operational_sibling(self, tmp_path: Path) -> None:
+        # routing-v2-machine-overlay-migration-v1 (ANDON 3 — approval-is-activation):
+        # seed the operational sibling the guard validates against. Standing sinks are
+        # BINDING-ONLY (target_tier, disabled); the approved diff activates them.
+        (tmp_path / "routing.operational.yaml").write_text(
+            'schema_version: "2.0"\n'
+            "routing_rules:\n"
+            "  downward: {target_tier: T1}\n"
+            "  upward: {target_tier: T3}\n",
+            encoding="utf-8",
+        )
+
     def test_routing_adjustment_writes_to_machine_config(
         self, tmp_path: Path,
     ) -> None:
@@ -163,14 +172,11 @@ class TestApproveDispatch:
         assert rc == 0
         assert machine.exists()
         cfg = yaml.safe_load(machine.read_text(encoding="utf-8"))
-        intents = cfg["routing"]["routing_rules"]["downward"]["match"]["intents"]
+        intents = cfg["routing_rules"]["downward"]["match"]["intents"]
         assert intents == ["conversation"]
+        assert cfg["routing_rules"]["downward"]["enabled"] is True
         assert read_all(path=queue) == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-    )
     def test_legacy_routing_update_approves_via_routing_path(
         self, tmp_path: Path,
     ) -> None:

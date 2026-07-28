@@ -75,17 +75,19 @@ def _routing_adjustment_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
         raise ValueError(
             f"malformed routing_adjustment payload: {proposal.payload!r}"
         )
-    return {
-        "routing": {
-            "routing_rules": {
-                rule: {
-                    "match": {
-                        "intents": add_intents,
-                    },
-                },
-            },
-        },
-    }
+    # routing-v2-machine-overlay-migration-v1 (SPEC 3ab780a78eef81688e15c4b5f524f5c4,
+    # ANDON 3 — approval-is-activation): flat v2 shape (no "routing:" wrapper). The
+    # diff carries enabled:true, so an approved routing_adjustment ACTIVATES the sink
+    # (config declares standing sinks binding-only/disabled; the diff turns them on
+    # and supplies intents). target_tier is included only when the payload carries it
+    # (promoted-novel sinks); standing sinks inherit target_tier from operator config.
+    # The guard-parse + match-all guarded class in apply_diff_to_machine_config are
+    # the authority on a bad combination (missing tier, or enabled + empty intents).
+    rule_body: Dict[str, Any] = {"match": {"intents": add_intents}, "enabled": True}
+    tier = proposal.payload.get("target_tier")
+    if tier:
+        rule_body["target_tier"] = tier
+    return {"routing_rules": {rule: rule_body}}
 
 
 def _diff_pattern_demotion(proposal: RoutingProposal) -> Dict[str, Any]:

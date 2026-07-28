@@ -184,6 +184,13 @@ routing_rules:
       intents: [research, analysis, creative_writing, planning, system_admin]
     target_tier: T3
 
+    # Standing flywheel sinks — binding only. Disabled until an approved diff
+    # activates them with intents. SPEC 3ab780a78eef81688e15c4b5f524f5c4.
+  ratchet_promoted_t1:
+    target_tier: T1
+  ratchet_promoted_t3:
+    target_tier: T3
+
     # Disabled — the partition above is total over the covered intents, so
     # there is no uncovered combo to step up. Kept as an explicit
     # ``enabled: false`` declaration rather than relying on the parser's

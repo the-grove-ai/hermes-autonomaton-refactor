@@ -113,13 +113,18 @@ def test_dedup_intent_already_in_new_sink():
     ) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_apply_path_writes_new_sink(tmp_path):
+    import yaml
+
     from grove.flywheel_cli import _approve_routing_adjustment
-    payload = {"rule": "ratchet_promoted_t2", "add_intents": ["analysis"]}
+    # routing-v2-machine-overlay-migration-v1 (CASE B — novel sink name): the sink is
+    # NOT pre-declared in the operator base, so the payload must carry target_tier for
+    # the merged rule to be runtime-constructible; the flat diff emits it.
+    payload = {
+        "rule": "ratchet_promoted_t2",
+        "add_intents": ["analysis"],
+        "target_tier": "T2",
+    }
     proposal = RoutingProposal(
         proposal_id=compute_proposal_id(
             type="routing_adjustment", payload=payload, evidence=("t1",)),
@@ -128,10 +133,17 @@ def test_apply_path_writes_new_sink(tmp_path):
         source_patterns=("c1",),
     )
     machine = tmp_path / "routing.autonomaton.yaml"
+    # Minimal v2 operational sibling for the machine-sink guard to validate against.
+    (tmp_path / "routing.operational.yaml").write_text(
+        'schema_version: "2.0"\n', encoding="utf-8",
+    )
     _approve_routing_adjustment(proposal, machine_path=machine)
-    text = machine.read_text()
-    assert "ratchet_promoted_t2" in text
-    assert "analysis" in text
+    cfg = yaml.safe_load(machine.read_text(encoding="utf-8"))
+    rule = cfg["routing_rules"]["ratchet_promoted_t2"]
+    assert rule["match"]["intents"] == ["analysis"]
+    assert rule["target_tier"] == "T2"
+    # approval-is-activation: the diff activates the promoted-novel sink.
+    assert rule["enabled"] is True
 
 
 # ── Part B: memory-enriched justification ─────────────────────────────────

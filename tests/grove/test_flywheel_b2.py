@@ -166,13 +166,18 @@ def test_routing_adjustment_empty_cluster_refused(tmp_path: Path, capsys) -> Non
     assert not (tmp_path / "m.yaml").exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_routing_adjustment_with_cluster_approves(tmp_path: Path) -> None:
     queue = tmp_path / "proposals.jsonl"
     machine = tmp_path / "m.yaml"
+    # routing-v2-machine-overlay-migration-v1 (ANDON 3): the guard validates against
+    # the operational sibling (resolved as machine.with_name). CASE A — the standing
+    # 'upward' sink is declared BINDING-ONLY; the approved diff activates it.
+    (tmp_path / "routing.operational.yaml").write_text(
+        'schema_version: "2.0"\n'
+        "routing_rules:\n"
+        "  upward: {target_tier: T3}\n",
+        encoding="utf-8",
+    )
     p = _routing_proposal(source_patterns=("cluster:sha256:x",))
     append(p, path=queue)
     rc = flywheel_cli.cli_approve(

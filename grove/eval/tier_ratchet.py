@@ -84,6 +84,11 @@ MIN_CORRECTION_RATE_UPWARD = 0.30
 # current two directions do not target T2.)
 SINK_DOWNWARD = "ratchet_promoted_t1"   # was "downward"
 SINK_UPWARD = "ratchet_promoted_t3"     # was "upward"
+# routing-v2-machine-overlay-migration-v1 (SPEC 3ab780a78eef81688e15c4b5f524f5c4,
+# ANDON 3 — config over code): the standing sinks' target_tier is OPERATOR-OWNED
+# config (declared binding-only in routing.operational.yaml). The ratchet emits only
+# the intents to add; the approved diff activates the sink (enabled + intents). No
+# tier constant lives here.
 
 
 def _build_justification(

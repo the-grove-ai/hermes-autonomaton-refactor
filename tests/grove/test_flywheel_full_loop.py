@@ -77,17 +77,29 @@ def _detect_one(store, queue):
 
 def _assert_machine_has_intent(machine: Path, intent_class: str) -> None:
     cfg = yaml.safe_load(machine.read_text(encoding="utf-8"))
-    intents = cfg["routing"]["routing_rules"]["ratchet_promoted_t3"]["match"]["intents"]
-    assert intent_class in intents
+    rule = cfg["routing_rules"]["ratchet_promoted_t3"]
+    assert intent_class in rule["match"]["intents"]
+    # approval-is-activation: the diff activated the standing sink.
+    assert rule["enabled"] is True
+
+
+@pytest.fixture(autouse=True)
+def _seed_operational_sibling(tmp_path: Path) -> None:
+    # routing-v2-machine-overlay-migration-v1 (ANDON 3 — config over code): the guard
+    # validates the merged candidate against its operational sibling. ratchet_promoted_t3
+    # is a STANDING sink whose tier is operator-owned config (CASE A), so the sibling
+    # declares it binding-only; the approved diff supplies enabled + intents.
+    (tmp_path / "routing.operational.yaml").write_text(
+        'schema_version: "2.0"\n'
+        "routing_rules:\n"
+        "  ratchet_promoted_t3: {target_tier: T3}\n",
+        encoding="utf-8",
+    )
 
 
 # ── the full loop, via the CLI (zero mocks) ──────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_full_loop_via_cli_approve(tmp_path: Path) -> None:
     queue = tmp_path / "proposals.jsonl"
     machine = tmp_path / "routing.autonomaton.yaml"
@@ -108,10 +120,6 @@ def test_full_loop_via_cli_approve(tmp_path: Path) -> None:
 # ── the SAME loop, via the surface-agnostic tool ─────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_full_loop_via_approve_proposal_tool(tmp_path: Path) -> None:
     queue = tmp_path / "proposals.jsonl"
     machine = tmp_path / "routing.autonomaton.yaml"

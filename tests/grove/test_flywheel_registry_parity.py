@@ -89,10 +89,11 @@ _PAT_DEMO = _proposal(
 
 _EXPECTED_DIFF = {
     _ROUTING.proposal_id: {
-        "routing": {
-            "routing_rules": {
-                "downward": {"match": {"intents": ["conversation"]}},
-            },
+        # routing-v2-machine-overlay-migration-v1 (ANDON 3): flat v2 shape; the diff
+        # carries enabled:true (approval-is-activation). No target_tier — a standing
+        # sink inherits it from operator config.
+        "routing_rules": {
+            "downward": {"match": {"intents": ["conversation"]}, "enabled": True},
         },
     },
     _ZONE.proposal_id: {
@@ -171,7 +172,7 @@ def test_routing_update_alias_renders_as_routing_adjustment() -> None:
     """The legacy spelling must keep rendering through the routing path."""
     legacy = _proposal("routing_update", {"rule": "upward", "add_intents": ["x"]})
     assert flywheel_cli._proposal_to_diff(legacy) == {
-        "routing": {"routing_rules": {"upward": {"match": {"intents": ["x"]}}}},
+        "routing_rules": {"upward": {"match": {"intents": ["x"]}, "enabled": True}},
     }
     assert "add x to routing.upward" in flywheel_cli._format_summary(legacy)
 

@@ -141,6 +141,23 @@ def apply_diff_to_machine_config(
     that, but the only call site (the approval handler) hardcodes the
     machine path.
     """
+    # routing-v2-machine-overlay-migration-v1 R-A3 (SPEC 3ab780a78eef81688e15c4b5f524f5c4):
+    # the machine overlay diff may carry ONLY routing_rules. Reject anything else
+    # BEFORE any merge or tmp write. No per-rule key validation here — rule shape is
+    # validated by _parse_routing_rules in the validate step below; the runtime parser
+    # is the schema. SPEC 3ab780a78eef81688e15c4b5f524f5c4.
+    extra_keys = set(diff) - {"routing_rules"}
+    if extra_keys:
+        hint = (
+            " (v1-shaped 'routing:' wrapper — GRV-001 v2.0 machine overlays are flat)"
+            if "routing" in extra_keys
+            else ""
+        )
+        raise ConfigurationError(
+            f"machine routing diff may carry only 'routing_rules'; disallowed "
+            f"keys: {sorted(extra_keys)}{hint}"
+        )
+
     machine_path = Path(machine_path)
     if machine_path.exists():
         existing = yaml.safe_load(machine_path.read_text(encoding="utf-8"))
@@ -174,7 +191,49 @@ def apply_diff_to_machine_config(
         fh.flush()
         os.fsync(fh.fileno())
     try:
-        load_operational_routing_config(operational_path, tmp_path)
+        loaded = load_operational_routing_config(operational_path, tmp_path)
+        # routing-v2-machine-overlay-migration-v1 R-A2c (SPEC 3ab780a78eef81688e15c4b5f524f5c4):
+        # the shape loader accepts any v2-flat mapping, but the RUNTIME router
+        # additionally PARSES routing_rules (router.py:661) and rejects a rule it
+        # cannot construct — e.g. a set-tier rule with no target_tier. Run that same
+        # parser over the merged candidate so such a rule is refused HERE, at
+        # approval, with zero bytes — not deferred to a router-init crash on the next
+        # reload. Local import: router_merge is grove-import-free at module scope to
+        # avoid the router<->router_merge cycle (router.py imports load_operational_*
+        # from us); by the time this runs grove.router is already resolved, so the
+        # import does not re-trigger module load. If a true cycle ever bites, that is
+        # an Andon, not something to paper over.
+        from grove.router import _parse_routing_rules
+
+        # default_threshold only feeds a synthesized escalation rule's max_confidence
+        # when no escalation rule is present; it is immaterial to the set-tier-rule
+        # shape check this guard performs, so a neutral default suffices without
+        # coupling the machine-sink guard to the authority document.
+        _parse_routing_rules(loaded, 0.5)
+
+        # routing-v2-machine-overlay-migration-v1 ANDON 3 (SPEC 3ab780a78eef81688e15c4b5f524f5c4):
+        # match-all guarded class. _rule_matches (router.py:737) SKIPS an empty intents
+        # filter, so an ENABLED rule with no match criteria matches EVERY request.
+        # Refuse a diff that would activate such a rule in the MERGED form — zero bytes.
+        # Scoped to the rules the diff touches; the operator base is not re-litigated.
+        merged_rules = loaded.get("routing_rules") or {}
+        for rule_key in (diff.get("routing_rules") or {}):
+            merged_rule = merged_rules.get(rule_key) or {}
+            if not merged_rule.get("enabled"):
+                continue
+            match = merged_rule.get("match") or {}
+            matches_everything = (
+                not match.get("intents")
+                and not match.get("complexity")
+                and match.get("min_confidence") is None
+                and match.get("max_confidence") is None
+            )
+            if matches_everything:
+                raise ConfigurationError(
+                    f"machine diff would activate rule {rule_key!r} with no match "
+                    f"criteria (enabled + empty intents matches every request); "
+                    f"refusing — ANDON 3."
+                )
     except Exception:
         # Fail-closed: drop the candidate, leave the live machine file untouched,
         # and re-raise so the approve surfaces report a failed approval.
