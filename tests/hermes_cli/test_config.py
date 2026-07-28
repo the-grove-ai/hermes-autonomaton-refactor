@@ -103,8 +103,8 @@ class TestLoadConfigParseFailure:
 
     instance-cold-start-parity-v1 P2 (F4): config.yaml is a GRADUATED file — a
     present-but-malformed config now RAISES a governed InstanceFileError (naming
-    the file + `hermes repair-instance`) instead of the old warn-then-fall-back-
-    to-DEFAULT_CONFIG. The dedup/re-warn machinery is retired with the warning.
+    the file + `autonomaton repair-instance`) instead of the old warn-then-fall-
+    back-to-DEFAULT_CONFIG. The dedup/re-warn machinery is retired with the warning.
     """
 
     def test_raises_governed_error_on_parse_failure(self, tmp_path):

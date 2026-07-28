@@ -108,6 +108,42 @@ def test_seeded_files_0600(tmp_path):
     assert stat.S_IMODE(os.stat(home / "soul.md").st_mode) == 0o600
 
 
+# ── D3 OOBE banner — fresh birth only ────────────────────────────────────────
+
+
+def test_oobe_prints_on_fresh_birth(tmp_path, capsys):
+    home = tmp_path / "inst"
+    materialize_instance(home, bypass_cache=True)  # fresh
+    err = capsys.readouterr().err
+    assert "You're running an Autonomaton." in err  # Moment 1
+    assert "the cellar" in err and "the dock" in err  # both moments, in order
+    assert err.index("cellar") < err.index("dock")
+    assert err.rstrip().endswith("autonomaton chat")  # live invocation, last line
+
+
+def test_oobe_silent_on_idempotent_boot(tmp_path, capsys):
+    home = tmp_path / "inst"
+    materialize_instance(home, bypass_cache=True)  # fresh → banner
+    capsys.readouterr()  # discard
+    materialize_instance(home, bypass_cache=True)  # marked → no banner
+    assert capsys.readouterr().err == ""
+
+
+def test_oobe_adoption_prints_one_liner_not_banner(tmp_path, capsys):
+    # Adoption is recognition, not birth: a one-line notice, NOT the empty-cellar
+    # banner (which would be false on a lived-in instance).
+    home = tmp_path / "inst"
+    home.mkdir()
+    (home / "sessions").mkdir()  # grove-shaped, unmarked → adoption (marker written)
+    report = materialize_instance(home, bypass_cache=True)
+    assert report.state == "adopt" and report.marker_written is True
+    err = capsys.readouterr().err
+    assert "Existing instance adopted at" in err
+    assert str(home) in err
+    assert "You're running an Autonomaton." not in err  # NOT the full banner
+    assert "the cellar" not in err
+
+
 # ── idempotency ──────────────────────────────────────────────────────────────
 
 

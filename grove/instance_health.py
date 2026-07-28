@@ -41,7 +41,10 @@ logger = logging.getLogger(__name__)
 
 # The F2 repair entry point — a boot-independent CLI subcommand. Named in every
 # governed error so the operator always knows the recovery invocation.
-REPAIR_INVOCATION = "hermes repair-instance"
+# instance-cold-start-parity-v1 P3 — the printed hero command is the
+# adopter-facing binary name. The `hermes` alias still resolves to the same
+# entry point until severance; this is the form shown in every governed error.
+REPAIR_INVOCATION = "autonomaton repair-instance"
 
 # Top-level shape name → the Python type the live reader requires.
 _SHAPE_TYPES = {"mapping": dict, "sequence": list}

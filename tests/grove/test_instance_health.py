@@ -105,6 +105,15 @@ def test_unreadable_distinct_from_malformed(tmp_path):
     assert FileHealth.UNREADABLE != FileHealth.MALFORMED
 
 
+def test_repair_invocation_is_autonomaton_form(tmp_path):
+    # D2 P3: the printed hero command is the adopter-facing binary name.
+    assert ih.REPAIR_INVOCATION == "autonomaton repair-instance"
+    p = tmp_path / "config.yaml"
+    p.write_text("- not a mapping\n", encoding="utf-8")
+    with pytest.raises(InstanceFileError, match="autonomaton repair-instance"):
+        ih.classify_or_raise_present(p, "mapping", name="config.yaml")
+
+
 # ── reader graduation (D2) — present-but-malformed raises; absent unchanged ──
 
 

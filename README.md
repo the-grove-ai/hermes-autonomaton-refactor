@@ -12,6 +12,8 @@
   <a href="https://the-grove.ai/autonomaton">Run the Pattern ↗</a>
 </p>
 
+> **Official reference implementation of the Autonomaton Pattern (GRV-001) · Published by The Grove Foundation.**
+
 What started as an internal summer challenge — take [NousResearch's Hermes Agent](https://github.com/NousResearch/hermes-agent), remove the god-object at its center, and replace it with an autonomatonic spine — took on a life of its own. A hundred sprints later, the fork represents a reference implementation of the [Autonomaton Pattern (GRV-001)](https://the-grove.ai/standards/001): a governed agent architecture where the model reasons but never owns the run. Much of what was learned here has been folded back into the standard — clarity improvements, ambiguity removals — in the Q2 update now live on the site.
 
 ## The Idea
@@ -193,16 +195,20 @@ Compliance posture is runway, not relief: an architecture that produces these pr
 
 ### Quick start (local)
 
+Install from git — a published wheel comes with the rename, so for now `pipx` (or `pip`) installs directly from the repository:
+
 ```bash
-git clone https://github.com/the-grove-ai/hermes-autonomaton-refactor
-cd hermes-autonomaton-refactor
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[web,mcp,dev]"
-cp .env.example .env   # add at least one provider key
-hermes chat            # `autonomaton chat` works too
+pipx install "git+https://github.com/the-grove-ai/hermes-autonomaton-refactor"
+#  or, into your own venv:  pip install "git+https://github.com/the-grove-ai/hermes-autonomaton-refactor"
+
+export OPENROUTER_API_KEY="sk-or-..."   # the one thing the first boot needs
+
+autonomaton chat                        # `hermes chat` is a retained alias
 ```
 
-First run seeds `~/.grove/` with your routing config. Zone rules ship with the repo; your overrides live in `~/.grove/zones.autonomaton.yaml` and are never touched by upgrades. Routing changes made through the portal or CLI hot-reload — the next turn uses them; hand-edits take effect on restart.
+**First run, exactly what happens.** There is no setup wizard. On the first command, the system materializes your instance under `~/.grove/` — seeding routing config, zone policy, identity, and one example dock goal (legible YAML and Markdown, all yours). If `OPENROUTER_API_KEY` is unset it prints a plain, actionable line naming the variable — not a provider error. Then it prints a two-moment orientation banner (the cellar, the dock) and hands you the prompt. That banner prints once, on first birth only; subsequent boots are silent.
+
+Everything the materializer writes is seed-on-absence and never overwritten by an upgrade: your overrides in `~/.grove/` (zone rules in `zones.autonomaton.yaml`, routing, grants, goals) are yours. If a governed file is ever corrupted, `autonomaton repair-instance` quarantines and reseeds it. Routing changes made through the portal or CLI hot-reload — the next turn uses them; hand-edits take effect on restart.
 
 ### Production (GCP)
 
@@ -227,7 +233,11 @@ If you're evaluating this repo, the right frame is: **the pattern is the product
 
 ## Credit, Standard, License
 
-This work stands on [NousResearch's Hermes Agent](https://github.com/NousResearch/hermes-agent) — the transport, gateway, and session machinery that made the governance surgery possible are theirs, and the respect is genuine. The Autonomaton Pattern is published as [GRV-001](https://the-grove.ai/standards/001) by [The Grove Foundation](https://the-grove.ai). Licensed under the terms in [LICENSE](./LICENSE). Contributions welcome — the dormant surfaces and the naming migration are honest places to start; open an issue before a large PR so the sprint discipline can meet you halfway.
+This work stands on [NousResearch's Hermes Agent](https://github.com/NousResearch/hermes-agent) — the transport, gateway, and session machinery that made the governance surgery possible are theirs, and the respect is genuine. The Autonomaton Pattern is published as [GRV-001](https://the-grove.ai/standards/001) by [The Grove Foundation](https://the-grove.ai).
+
+**License, split plainly.** The *code* is MIT — the [LICENSE](./LICENSE) file, carrying the Nous Research lineage plus The Grove Foundation's modifications. The *standard* (GRV-001, the Autonomaton Pattern itself) is published separately under [CC BY 4.0](https://the-grove.ai/standards/001). You may build on the code under MIT and implement the pattern under CC BY 4.0; they are different works with different terms.
+
+Contributions welcome — the dormant surfaces and the naming migration are honest places to start; open an issue before a large PR so the sprint discipline can meet you halfway.
 
 ---
 

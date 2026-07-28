@@ -26,11 +26,18 @@ def test_release_date_is_the_v0_1_0_date():
 
 
 def test_pyproject_version_matches_package_version():
-    """pyproject.toml and the importable package version agree on 0.1.0."""
+    """pyproject.toml and the importable package version AGREE.
+
+    Pinned dynamically (instance-cold-start-parity-v1 P3): asserts the two
+    sources are equal rather than to a hardcoded literal, so a future bump only
+    touches the two synced sources, never this test. The pyproject version was
+    synced to the canonical hermes_cli.__version__ (0.1.0, the release per
+    __release_date__); __version__ is severance-scoped and was not touched.
+    """
     import hermes_cli
 
     repo_root = Path(hermes_cli.__file__).resolve().parent.parent
     pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     parsed = tomllib.loads(pyproject_text)
 
-    assert parsed["project"]["version"] == hermes_cli.__version__ == "0.1.0"
+    assert parsed["project"]["version"] == hermes_cli.__version__

@@ -341,6 +341,61 @@ def _is_managed() -> bool:
         return False
 
 
+# ── OOBE (out-of-box experience) — two-moment orientation banner ─────────────
+#
+# instance-cold-start-parity-v1 P3 (D3). Printed as materializer completion
+# output on FRESH BIRTH ONLY (marker newly written = a fresh dir or an adoption
+# — report.marker_written), never on an idempotent / already-marked boot. Copy
+# is verbatim per the sprint contract; the closing line is a live command
+# (``autonomaton chat`` → hermes_cli.main cmd_chat).
+
+_OOBE_BANNER = """\
+You're running an Autonomaton.
+Your instance lives at ~/.grove/. Everything in it is yours —
+legible YAML and Markdown you can open, read, and own. Two surfaces
+are worth knowing about now.
+The first is the cellar: a full-text knowledge substrate, retrieved
+at the start of every turn. It's empty right now, on purpose. Every
+turn you take feeds it — what the system observed, what it
+compacted, what you place there yourself. Most agents reset to zero
+every session. This one is designed to get denser, and the work you
+did last week is designed to be standing behind the work you do
+today.
+Telemetry here is not logging. It's the raw material the ratchet
+turns on: work proven at the expensive tiers is designed to migrate
+down the cognitive router — T3 to T2 to T1 to T0 — toward cheaper,
+faster, and finally deterministic execution. The system sips
+inference. You own the patterns it earns.
+
+The second surface is the dock — your goals, as a living file, not a
+snapshot. A goals.md is a wish written once. The dock is fed by the
+same telemetry as the cellar: when your accumulated context clusters
+around something no goal tracks, the system is designed to propose
+one. You approve, edit, or reject — the same loop that governs
+skills and grants. One example goal is seeded so you can see the
+shape; replace it with a real one.
+When the system needs your authority, it halts and asks. That's the
+zone model working, not a bug.
+That's the orientation. Start:
+autonomaton chat
+"""
+
+
+def _print_oobe() -> None:
+    """Emit the OOBE banner to stderr (a side-channel greeting — the operator's
+    first command keeps its stdout clean)."""
+    import sys
+
+    print(_OOBE_BANNER, file=sys.stderr)
+
+
+def _print_adoption_notice(home: Path) -> None:
+    """Adoption is recognition, not birth: one line, not the empty-cellar banner."""
+    import sys
+
+    print(f"Existing instance adopted at {home} (marker written).", file=sys.stderr)
+
+
 # ── public entrypoint ────────────────────────────────────────────────────────
 
 
@@ -400,6 +455,18 @@ def materialize_instance(
     finally:
         if managed and old_umask is not None:
             os.umask(old_umask)
+
+    # D3 OOBE (P3 adjudication) — fresh vs adopt vs idempotent:
+    #   * "fresh"  — an empty/absent dir materialized: FULL two-moment banner
+    #     (the empty-cellar sentence is true — this is a birth).
+    #   * "adopt"  — an existing grove-shaped dir, marker newly written: a
+    #     ONE-LINE recognition (the banner's empty-cellar copy is false on a
+    #     lived-in instance; adoption is recognition, not birth).
+    #   * "marked" / idempotent no-op: SILENT (marker_written is False).
+    if report.state == "fresh":
+        _print_oobe()
+    elif report.state == "adopt":
+        _print_adoption_notice(home_path)
 
     _MATERIALIZED[key] = report
     return report
