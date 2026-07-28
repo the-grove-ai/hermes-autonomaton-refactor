@@ -26,7 +26,9 @@ from grove.eval.proposal_queue import (
 )
 from grove.intent_store import IntentRecord, IntentStore
 
-_REPO_CONFIG = Path(__file__).resolve().parents[2] / "config" / "routing.config.yaml"
+_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+_REPO_OPERATIONAL = _CONFIG_DIR / "routing.operational.yaml"
+_REPO_AUTHORITY = _CONFIG_DIR / "routing.authority.yaml"
 _PATTERN = "f" * 64
 
 
@@ -34,7 +36,7 @@ _PATTERN = "f" * 64
 
 
 def _write_machine(path: Path, sink_intents: dict) -> None:
-    """sink_intents: {sink_rule_name: [intent_class, ...]}."""
+    """sink_intents: {sink_rule_name: [intent_class, ...]}. Flat v2 (no 'routing:')."""
     rules = {
         name: {
             "enabled": True,
@@ -45,7 +47,7 @@ def _write_machine(path: Path, sink_intents: dict) -> None:
         }
         for name, ints in sink_intents.items()
     }
-    path.write_text(yaml.safe_dump({"routing": {"routing_rules": rules}}))
+    path.write_text(yaml.safe_dump({"routing_rules": rules}))
 
 
 def _feed(path: Path, specs) -> None:
@@ -139,17 +141,18 @@ def test_detect_intent_not_in_sink_no_proposal(tmp_path):
 
 
 def _operator_and_machine(tmp_path):
-    op = tmp_path / "routing.config.yaml"
-    shutil.copy(_REPO_CONFIG, op)
+    # routing-v2-machine-overlay-migration-v1 P2.4 — v2 pair: the operator file is the
+    # flat operational surface (graduation target + the guard's merge base), and its
+    # authority sibling is seeded so RoutingConfigWriter's sandbox CognitiveRouter can
+    # load the real operational+authority pair.
+    op = tmp_path / "routing.operational.yaml"
+    shutil.copy(_REPO_OPERATIONAL, op)
+    shutil.copy(_REPO_AUTHORITY, tmp_path / "routing.authority.yaml")
     mac = tmp_path / "routing.autonomaton.yaml"
     _write_machine(mac, {"ratchet_promoted_t2": ["code_generation", "analysis"]})
     return op, mac
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_apply_writes_rule_to_operator_config(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)
@@ -158,15 +161,11 @@ def test_apply_writes_rule_to_operator_config(tmp_path):
                            reload_fn=lambda: None)
 
     data = yaml.safe_load(op.read_text())
-    rule = data["routing"]["routing_rules"]["code_generation"]
+    rule = data["routing_rules"]["code_generation"]
     assert rule == {"enabled": True, "match": {"intents": ["code_generation"]},
                     "target_tier": "T2"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_apply_removes_intent_from_machine_sink(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)
@@ -174,50 +173,42 @@ def test_apply_removes_intent_from_machine_sink(tmp_path):
     _approve_consolidation(_proposal(), machine_path=mac, operator_path=op,
                            reload_fn=lambda: None)
 
-    sink = yaml.safe_load(mac.read_text())["routing"]["routing_rules"]
+    sink = yaml.safe_load(mac.read_text())["routing_rules"]
     # 'analysis' remains; 'code_generation' graduated out (sink not emptied).
     assert sink["ratchet_promoted_t2"]["match"]["intents"] == ["analysis"]
+    assert sink["ratchet_promoted_t2"]["enabled"] is True  # sink stays active
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_apply_removes_empty_sink_rule(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
-    op = tmp_path / "routing.config.yaml"
-    shutil.copy(_REPO_CONFIG, op)
+    op = tmp_path / "routing.operational.yaml"
+    shutil.copy(_REPO_OPERATIONAL, op)
+    shutil.copy(_REPO_AUTHORITY, tmp_path / "routing.authority.yaml")
     mac = tmp_path / "routing.autonomaton.yaml"
     _write_machine(mac, {"ratchet_promoted_t2": ["code_generation"]})  # sole intent
 
     _approve_consolidation(_proposal(), machine_path=mac, operator_path=op,
                            reload_fn=lambda: None)
 
-    rules = yaml.safe_load(mac.read_text())["routing"]["routing_rules"]
+    rules = yaml.safe_load(mac.read_text())["routing_rules"]
     assert "ratchet_promoted_t2" not in rules  # emptied sink pruned (A6)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_apply_preserves_operator_comments(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)
-    assert "# OWNERSHIP" in op.read_text()  # precondition
+    # Distinctive comments present in config/routing.operational.yaml.
+    assert "Standing flywheel sinks" in op.read_text()  # precondition
+    assert "goal_attachment" in op.read_text()
 
     _approve_consolidation(_proposal(), machine_path=mac, operator_path=op,
                            reload_fn=lambda: None)
 
     after = op.read_text()
-    assert "# OWNERSHIP" in after  # ruamel round-trip kept the comments
-    assert "THE FOUR TIERS" in after
+    assert "Standing flywheel sinks" in after  # ruamel round-trip kept the comments
+    assert "goal_attachment" in after
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_apply_restores_both_files_on_failure(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)
@@ -233,15 +224,10 @@ def test_apply_restores_both_files_on_failure(tmp_path):
     # Both files rolled back; the new rule did NOT survive.
     assert op.read_text() == op_before
     assert mac.read_text() == mac_before
-    assert "code_generation" not in yaml.safe_load(op.read_text())["routing"][
-        "routing_rules"]
+    assert "code_generation" not in yaml.safe_load(op.read_text())["routing_rules"]
     assert op.with_suffix(".yaml.bak").exists()  # backup left for forensics
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
-)
 def test_apply_calls_hot_reload(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)
@@ -250,6 +236,34 @@ def test_apply_calls_hot_reload(tmp_path):
     _approve_consolidation(_proposal(), machine_path=mac, operator_path=op,
                            reload_fn=lambda: called.append(True))
     assert called == [True]
+
+
+# ── ANDON-3 guarded class on the REMOVE path ─────────────────────────────
+
+
+def test_remove_path_prunes_drained_rule_never_enabled_empty(tmp_path):
+    # routing-v2-machine-overlay-migration-v1 P2.4 — draining a sink's LAST intent must
+    # PRUNE the whole rule, never leave it enabled with empty intents (which matches
+    # every request). The rule shape is written through the locked+validated writer,
+    # which would REJECT an enabled-empty rule outright — so prune-first is what keeps
+    # the remove path writable. Directly exercises _remove_intent_from_machine_sink.
+    from grove.flywheel_cli import _remove_intent_from_machine_sink
+    op = tmp_path / "routing.operational.yaml"
+    shutil.copy(_REPO_OPERATIONAL, op)  # operational sibling the writer validates against
+    mac = tmp_path / "routing.autonomaton.yaml"
+    _write_machine(mac, {"ratchet_promoted_t2": ["code_generation"]})  # sole intent
+
+    _remove_intent_from_machine_sink(mac, "ratchet_promoted_t2", "code_generation")
+
+    rules = yaml.safe_load(mac.read_text())["routing_rules"]
+    assert "ratchet_promoted_t2" not in rules  # pruned, not left enabled+empty
+
+
+# Lock-contention smoke: NOT added. fcntl.flock contention is not deterministically
+# testable in-process — the same process acquiring the lock twice (different FDs) risks
+# a self-deadlock, and a thread/subprocess race is inherently flaky. The lock's mutual
+# exclusion is a property of fcntl itself; the write-path correctness (validate + atomic
+# replace + zero-bytes-on-failure) is covered by the machine-sink guard tests.
 
 
 # ── M2 rendering + registration ──────────────────────────────────────────

@@ -7,7 +7,7 @@ rule (``ratchet_promoted_t1/t2/t3``) in ``routing.autonomaton.yaml``.
 Stage 2 (this module) reads those machine sink entries and cross-references the
 intent feed for LONG-term stability — a much higher bar (n≥20, ≥90% success,
 ZERO governance Andons). A qualifying intent is proposed for graduation: its
-routing becomes permanent operator policy in ``routing.config.yaml``. The
+routing becomes permanent operator policy in ``routing.operational.yaml``. The
 approval handler performs the two-file atomic write (see
 ``grove.flywheel_cli._approve_consolidation``).
 
@@ -163,7 +163,8 @@ class ConsolidationRatchet:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return {}
-        rules = ((raw.get("routing") or {}).get("routing_rules")) or {}
+        # routing-v2-machine-overlay-migration-v1 P2.3 — FLAT v2 (no 'routing:' wrapper).
+        rules = raw.get("routing_rules") or {}
         out: Dict[str, str] = {}
         for sink_name in SINK_TIER:
             rule = rules.get(sink_name)

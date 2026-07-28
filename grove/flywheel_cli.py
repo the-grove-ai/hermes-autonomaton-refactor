@@ -58,7 +58,7 @@ from grove.eval.proposal_queue import (
     remove,
 )
 from grove.router_merge import (
-    _MACHINE_HEADER,
+    _write_machine_doc,
     apply_diff_to_machine_config,
     load_operational_routing_config,
 )
@@ -1060,9 +1060,14 @@ def _approve_routing_adjustment(
 
 
 def _operator_config_path() -> Path:
-    """The hermes_home operator routing.config.yaml — the graduation target."""
+    """The hermes_home operator routing.operational.yaml — the graduation target.
+
+    routing-v2-machine-overlay-migration-v1 P2.3 (GATE-B D): retargeted from the
+    retired v1 ``routing.config.yaml`` to the live v2 operational surface the router
+    actually reads (matches ``routing_writer._default_config_path``).
+    """
     from hermes_constants import get_hermes_home
-    return Path(get_hermes_home()) / "routing.config.yaml"
+    return Path(get_hermes_home()) / "routing.operational.yaml"
 
 
 def _approve_dock_mutation(
@@ -1583,7 +1588,9 @@ def _remove_intent_from_machine_sink(
         raise ValueError(
             f"machine routing config at {machine_path} is not a YAML mapping"
         )
-    rules = ((existing.get("routing") or {}).get("routing_rules")) or {}
+    # routing-v2-machine-overlay-migration-v1 P2.2 — FLAT v2 navigation (no 'routing:'
+    # wrapper post-migration).
+    rules = existing.get("routing_rules") or {}
     rule = rules.get(sink_name)
     if not isinstance(rule, dict):
         return
@@ -1595,9 +1602,14 @@ def _remove_intent_from_machine_sink(
     if remaining:
         match["intents"] = remaining
     else:
+        # ANDON-3 safety invariant: a drained rule left ENABLED is match-all
+        # (_rule_matches skips an empty intents filter). PRUNE the WHOLE rule, never
+        # leave an enabled empty-intents rule behind — the guard would reject it anyway.
         rules.pop(sink_name, None)
-    rendered = yaml.safe_dump(existing, sort_keys=False, default_flow_style=False)
-    machine_path.write_text(_MACHINE_HEADER + "\n" + rendered, encoding="utf-8")
+    # Write through the single sanctioned locked+validated writer (same guard as the
+    # apply path), not a bare write — so a drained-but-somehow-enabled rule can never
+    # reach disk.
+    _write_machine_doc(machine_path, existing)
 
 
 def _approve_consolidation(
@@ -1609,17 +1621,18 @@ def _approve_consolidation(
 ) -> Tuple[Path, Dict[str, Any]]:
     """Graduate a sink intent to permanent operator policy — two-file atomic.
 
-    The operator-file write — BACKUP → ruamel round-trip → sandbox-VALIDATE →
-    atomic REPLACE → HOT-RELOAD — is delegated to the one sanctioned writer of
-    ``routing.config.yaml`` (``grove.config.routing_writer``; C1 / GRV-008 § III).
-    This function owns only the SECOND file: it cleans the graduated intent out
-    of the machine sink, with its own backup/restore (R2). The machine sink is
-    cleaned FIRST so the writer's sandbox validation and hot-reload observe the
-    final merged state (operator gains the rule, machine drops the sink) and so
-    the reload — the last step, inside the writer — never runs ahead of the
-    machine edit. Any failure restores BOTH files and re-raises (fail loud, no
-    partial state): the writer restores the operator file on its own failure;
-    this function restores the machine sink it touched.
+    routing-v2-machine-overlay-migration-v1 P2.3 transaction order (SPEC
+    3ab780a78eef81688e15c4b5f524f5c4): (1) write the operator file — the flat v2
+    ``routing.operational.yaml`` — through the one sanctioned writer
+    (``grove.config.routing_writer``; C1 / GRV-008 § III), with its internal reload
+    suppressed; (2) remove the graduated intent from the machine sink via the locked+
+    validated ``_write_machine_doc``; (3) one explicit hot-reload observing the final
+    merged state. A GATE-B E semantic round-trip assertion after (1) confirms the rule
+    persisted with exactly the intended value. Any failure after (1) restores the sink
+    FIRST, then undoes the operator graduation — and even an imperfect rollback is safe:
+    duplication is benign and self-healing (identical content merges to itself; the next
+    cycle re-observes the sink and re-proposes — Andon-2 R-A4). A step-(1) failure is
+    handled entirely by the writer (it restores the operator file; the sink is untouched).
     """
     from grove.config.routing_writer import RoutingConfigWriter
 
@@ -1637,41 +1650,65 @@ def _approve_consolidation(
         )
 
     def _graduate(data: Any) -> None:
-        """Add the graduated intent's rule to the operator routing_rules."""
-        if not isinstance(data, dict) or "routing" not in data:
-            raise ValueError(f"{op_path} has no 'routing' mapping to graduate into")
-        routing_rules = data["routing"].setdefault("routing_rules", {})
+        """Add the graduated intent's rule to the operator routing_rules (flat v2).
+
+        Andon-3 coherence: the graduated rule is COMPLETE and ACTIVE — enabled, its
+        target_tier from the sink's binding (payload), the intent in match.intents.
+        """
+        if not isinstance(data, dict):
+            raise ValueError(f"{op_path} did not parse to a mapping")
+        routing_rules = data.setdefault("routing_rules", {})
         routing_rules[intent_class] = {
             "enabled": True,
             "match": {"intents": [intent_class]},
             "target_tier": target_tier,
         }
 
-    # R2 — this function owns the machine-sink file's backup/restore; the
-    # operator file's backup/restore lives inside the writer.
+    # routing-v2-machine-overlay-migration-v1 P2.3 — this function owns the machine
+    # sink's backup/restore; the operator file's backup/restore lives inside the writer.
+    op_backup = op_path.read_bytes()
     mac_backup = mac_path.read_bytes() if mac_path.exists() else None
-    writer = RoutingConfigWriter(
-        op_path,
-        machine_path=mac_path,
-        reload_fn=reload_fn or _reload_default_router,
-    )
+    # The writer's OWN internal hot-reload is SUPPRESSED (reload_fn=lambda: None): the
+    # final reload is an explicit step (3) AFTER the sink is cleaned, so it observes the
+    # final merged state, not the transient (operator-gains-rule / sink-still-has-intent).
+    writer = RoutingConfigWriter(op_path, machine_path=mac_path, reload_fn=lambda: None)
+
+    # Step 1 — operator write (graduate) through the sole sanctioned writer:
+    # BACKUP → ruamel mutate → sandbox-VALIDATE → atomic REPLACE. The writer restores
+    # the operator file on its OWN failure, so a step-1 failure leaves BOTH files
+    # untouched (the sink has not been touched yet) — nothing to roll back here.
+    writer.apply_mutation(_graduate, label=f"graduate {intent_class} -> {target_tier}")
 
     try:
-        # Step 1 — CLEANUP the machine sink first (the intent now lives in
-        # operator policy), so the writer validates and reloads the final state.
+        # GATE-B E — semantic round-trip assertion: reload the operator file through the
+        # RUNTIME loader and assert the graduated rule persisted with EXACTLY the
+        # intended value (not merely that the write returned).
+        reloaded = load_operational_routing_config(op_path)
+        graduated = (reloaded.get("routing_rules") or {}).get(intent_class)
+        intended = {
+            "enabled": True,
+            "match": {"intents": [intent_class]},
+            "target_tier": target_tier,
+        }
+        if graduated != intended:
+            raise ValueError(
+                f"graduated rule round-trip mismatch for {intent_class!r}: "
+                f"{graduated!r} != {intended!r}"
+            )
+        # Step 2 — clean the graduated intent out of the machine sink (locked+validated
+        # writer; a drained rule is pruned, never left enabled-empty).
         _remove_intent_from_machine_sink(mac_path, source_sink, intent_class)
-        # Step 2 — operator-file write through the sole sanctioned writer:
-        # BACKUP → ruamel mutate → sandbox-VALIDATE → atomic REPLACE → HOT-RELOAD.
-        writer.apply_mutation(
-            _graduate, label=f"graduate {intent_class} -> {target_tier}"
-        )
+        # Step 3 — one explicit hot-reload, observing the final merged state.
+        (reload_fn or _reload_default_router)()
     except Exception:
-        # The writer restored the operator file on its own failure; restore the
-        # machine sink this function touched, then fail loud (no partial state).
+        # duplication is benign and self-healing — identical content merges to itself;
+        # the next consolidation cycle re-observes the sink and re-proposes (Andon-2
+        # R-A4). Restore the sink FIRST, then undo the operator graduation.
         if mac_backup is not None:
             mac_path.write_bytes(mac_backup)
         elif mac_path.exists():
             mac_path.unlink()
+        op_path.write_bytes(op_backup)
         raise
 
     applied = {

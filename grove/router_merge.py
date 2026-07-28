@@ -121,6 +121,97 @@ def _hashable_key(item: Any) -> Any:
     return json.dumps(item, sort_keys=True, default=str)
 
 
+def _validate_machine_candidate(
+    operational_path: Path,
+    candidate_path: Path,
+    touched_rule_keys: "set",
+) -> None:
+    """Validate a staged machine-overlay candidate against its operational sibling.
+
+    The guard IS the runtime path: load operational + candidate through
+    :func:`load_operational_routing_config` (shape + §V), then run the runtime
+    :func:`grove.router._parse_routing_rules` over the merged doc (a rule the runtime
+    cannot construct — e.g. a set-tier rule with no target_tier — is rejected HERE,
+    not deferred to a router-init crash), then the ANDON-3 match-all guarded class on
+    the WRITE-TOUCHED rules only (an ENABLED rule with no match criteria matches EVERY
+    request — _rule_matches router.py:737). Raises on any violation; writes nothing.
+
+    Local import of _parse_routing_rules: router_merge is grove-import-free at module
+    scope to avoid the router<->router_merge cycle (router imports load_operational_*
+    from us); grove.router is already resolved by the time this runs.
+    """
+    loaded = load_operational_routing_config(operational_path, candidate_path)
+    from grove.router import _parse_routing_rules
+
+    # default_threshold only feeds a synthesized escalation rule when none is present;
+    # immaterial to the set-tier-rule shape check, so a neutral default avoids coupling
+    # the machine-sink guard to the authority document.
+    _parse_routing_rules(loaded, 0.5)
+
+    merged_rules = loaded.get("routing_rules") or {}
+    for rule_key in touched_rule_keys:
+        merged_rule = merged_rules.get(rule_key) or {}
+        if not merged_rule.get("enabled"):
+            continue
+        match = merged_rule.get("match") or {}
+        matches_everything = (
+            not match.get("intents")
+            and not match.get("complexity")
+            and match.get("min_confidence") is None
+            and match.get("max_confidence") is None
+        )
+        if matches_everything:
+            raise ConfigurationError(
+                f"machine rule {rule_key!r} would be enabled with no match criteria "
+                f"(enabled + empty intents matches every request); refusing — ANDON 3."
+            )
+
+
+def _write_machine_doc(machine_path: Path, doc: Dict[str, Any]) -> None:
+    """Atomically write a FULL machine-overlay doc, validated, under a sibling lock.
+
+    routing-v2-machine-overlay-migration-v1 P2.1 (SPEC 3ab780a78eef81688e15c4b5f524f5c4):
+    the single sanctioned writer of ``routing.autonomaton.yaml``. Holds an exclusive
+    ``fcntl.flock`` on a sibling ``.lock`` for the FULL render→tmp→validate→replace
+    window so concurrent approvals (CLI + portal) serialize instead of racing the file.
+    Validation is :func:`_validate_machine_candidate` scoped to the doc's own rule keys
+    (the whole doc is machine-authored — every rule it carries is write-touched).
+    Absent-file birth is identical to the merge path (the tmp candidate IS the first
+    file). On any validation failure: unlink tmp, raise, zero bytes — the live file is
+    left untouched (or absent).
+
+    ``fcntl`` is imported lazily so importing router_merge stays portable (the write
+    path only runs on the Unix host/CI).
+    """
+    import fcntl
+
+    machine_path = Path(machine_path)
+    machine_path.parent.mkdir(parents=True, exist_ok=True)
+    operational_path = machine_path.with_name("routing.operational.yaml")
+    lock_path = machine_path.with_name(machine_path.name + ".lock")
+    tmp_path = machine_path.with_name(machine_path.name + ".tmp")
+    touched = set((doc.get("routing_rules") or {}).keys())
+
+    rendered = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
+    with open(lock_path, "w", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            fh.write(_MACHINE_HEADER + "\n" + rendered)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            _validate_machine_candidate(operational_path, tmp_path, touched)
+        except Exception:
+            # Fail-closed: drop the candidate, leave the live machine file untouched.
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        os.replace(tmp_path, machine_path)
+        # flock released on lock_fh close (context-manager exit).
+
+
 def apply_diff_to_machine_config(
     diff: Dict[str, Any],
     machine_path: Path,
@@ -170,79 +261,13 @@ def apply_diff_to_machine_config(
             )
     else:
         existing = {}
-        machine_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Merge the diff onto the existing machine doc, then hand the FULL doc to the
+    # single sanctioned writer: it holds the sibling lock and runs the fail-closed
+    # validate (shape loader + runtime parse + ANDON-3 match-all guarded class) before
+    # any atomic replace, so a rejected diff leaves the live file untouched (or absent).
     merged = _deep_merge(existing, diff)
-    rendered = yaml.safe_dump(merged, sort_keys=False, default_flow_style=False)
-
-    # GRV-001 v2.0 fail-closed guard (routing-v2-migration-v1 Phase 2b). Stage the
-    # candidate, then VALIDATE BY LOADING it through the runtime loader — the guard
-    # IS ``load_operational_routing_config`` (no parallel shape-check), so it
-    # catches a v1-nested ``routing:`` wrapper, any other shape violation, AND
-    # §V authority-reserved-key smuggling via the loader's own collision check.
-    # Only on success do we fsync + atomically replace, so a rejected diff leaves
-    # ``machine_path`` byte-unchanged (or absent). The operational path is resolved
-    # as the sibling of the machine file — the exact runtime pairing the router
-    # loads (operational + its machine overlay), not a hardcoded repo path.
-    operational_path = machine_path.with_name("routing.operational.yaml")
-    tmp_path = machine_path.with_name(machine_path.name + ".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        fh.write(_MACHINE_HEADER + "\n" + rendered)
-        fh.flush()
-        os.fsync(fh.fileno())
-    try:
-        loaded = load_operational_routing_config(operational_path, tmp_path)
-        # routing-v2-machine-overlay-migration-v1 R-A2c (SPEC 3ab780a78eef81688e15c4b5f524f5c4):
-        # the shape loader accepts any v2-flat mapping, but the RUNTIME router
-        # additionally PARSES routing_rules (router.py:661) and rejects a rule it
-        # cannot construct — e.g. a set-tier rule with no target_tier. Run that same
-        # parser over the merged candidate so such a rule is refused HERE, at
-        # approval, with zero bytes — not deferred to a router-init crash on the next
-        # reload. Local import: router_merge is grove-import-free at module scope to
-        # avoid the router<->router_merge cycle (router.py imports load_operational_*
-        # from us); by the time this runs grove.router is already resolved, so the
-        # import does not re-trigger module load. If a true cycle ever bites, that is
-        # an Andon, not something to paper over.
-        from grove.router import _parse_routing_rules
-
-        # default_threshold only feeds a synthesized escalation rule's max_confidence
-        # when no escalation rule is present; it is immaterial to the set-tier-rule
-        # shape check this guard performs, so a neutral default suffices without
-        # coupling the machine-sink guard to the authority document.
-        _parse_routing_rules(loaded, 0.5)
-
-        # routing-v2-machine-overlay-migration-v1 ANDON 3 (SPEC 3ab780a78eef81688e15c4b5f524f5c4):
-        # match-all guarded class. _rule_matches (router.py:737) SKIPS an empty intents
-        # filter, so an ENABLED rule with no match criteria matches EVERY request.
-        # Refuse a diff that would activate such a rule in the MERGED form — zero bytes.
-        # Scoped to the rules the diff touches; the operator base is not re-litigated.
-        merged_rules = loaded.get("routing_rules") or {}
-        for rule_key in (diff.get("routing_rules") or {}):
-            merged_rule = merged_rules.get(rule_key) or {}
-            if not merged_rule.get("enabled"):
-                continue
-            match = merged_rule.get("match") or {}
-            matches_everything = (
-                not match.get("intents")
-                and not match.get("complexity")
-                and match.get("min_confidence") is None
-                and match.get("max_confidence") is None
-            )
-            if matches_everything:
-                raise ConfigurationError(
-                    f"machine diff would activate rule {rule_key!r} with no match "
-                    f"criteria (enabled + empty intents matches every request); "
-                    f"refusing — ANDON 3."
-                )
-    except Exception:
-        # Fail-closed: drop the candidate, leave the live machine file untouched,
-        # and re-raise so the approve surfaces report a failed approval.
-        try:
-            tmp_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-    os.replace(tmp_path, machine_path)
+    _write_machine_doc(machine_path, merged)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
