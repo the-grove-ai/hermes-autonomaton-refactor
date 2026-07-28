@@ -1,0 +1,83 @@
+# ══════════════════════════════════════════════════════════════════════
+# THE DOCK — reference template
+# ══════════════════════════════════════════════════════════════════════
+#
+# This file is a GENERIC SEED shipped with the repo. It is NOT loaded at
+# runtime: the live Dock is the operator's sovereign copy at
+# $GROVE_HOME/dock/dock.yaml (grove/dock/__init__.py::_resolve_dock_path,
+# "No template fallback"), which code upgrades never touch. Edit your own
+# instance copy, not this one — replace the example goal below with your
+# real goals and keep the schema.
+#
+# Purpose: the Dock holds the operator's strategic goals so each
+# conversation turn can identify the relevant vector, load the right
+# context, unlock the right skills, and surface opportunities to
+# compound progress toward what matters.
+# ══════════════════════════════════════════════════════════════════════
+
+version: "1.0"
+
+# Per-turn goal-context character budget. Optional; the loader defaults to
+# 5000 when this key is absent.
+context_char_budget: 5000
+
+# ──────────────────────────────────────────────────────────────────────
+# GOAL SCHEMA (enforced by grove/dock/__init__.py::_parse_goal)
+#
+#   Required keys per goal:
+#     id, name, vector, status, definition_of_done,
+#     context_sources, keywords, unlocked_skills
+#
+#   vector ∈ {apex_strategic, strategic, operational, product, personal}
+#   status ∈ {accelerating, cruising, staging, blocked, parked,
+#             paused, complete}
+#            (only accelerating and cruising surface as "active" goals)
+#
+#   Any other keys (why_this_matters, milestones, deadline, ...) pass
+#   through untouched — accessible to tools, not consumed by the loader.
+#
+# The example below is a single, product-neutral apex goal. Delete it and
+# declare your own; add as many goals as you need.
+# ──────────────────────────────────────────────────────────────────────
+
+goals:
+
+  - id: first-fleet-worker
+    name: "Ship your first governed fleet worker"
+    vector: apex_strategic
+    status: staging
+    definition_of_done: >
+      A background fleet worker runs the loop end to end: it is defined by
+      a capability record plus an entry in config/fleet_workers.yaml, the
+      in-gateway ticker spawns it on a cadence, it drafts its output into
+      its Yellow pending_review sink, and the operator publishes that
+      output through the approval tap — with no manual step beyond approval.
+    why_this_matters: >
+      The fleet worker is the smallest complete demonstration of the
+      pattern: a declarative definition, governed execution inside the
+      zones, and an operator approval gate. Ship one and the shape of the
+      rest of the system follows from it.
+    context_sources: []
+    keywords:
+      - fleet
+      - worker
+      - cadence
+      - pending_review
+      - approval
+    milestones:
+      - name: "Capability record authored"
+        status: pending
+      - name: "fleet_workers.yaml entry added (enabled: false)"
+        status: pending
+      - name: "First dispatch drafts into the pending_review sink"
+        status: pending
+      - name: "Operator publishes the first output"
+        status: pending
+    unlocked_skills: []
+
+# ──────────────────────────────────────────────────────────────────────
+# NOTION SOURCES — key databases and pages, populated per operator.
+# Empty in the template; add your own on your instance's sovereign copy.
+# ──────────────────────────────────────────────────────────────────────
+
+notion_sources: {}
