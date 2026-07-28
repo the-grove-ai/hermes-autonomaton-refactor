@@ -22,8 +22,12 @@ version: 1
 grove_home:
   files:
     # Zone schema + routing/prompt config: the authority definitions.
+    # GRV-001 v2.0 — routing authority is the AUTHORITY half of the split; the
+    # operational half (routing.operational.yaml) is surface_class: in_scope
+    # (autonomous_loop-writable) and is deliberately NOT listed — its write door
+    # is the governed RoutingConfigWriter, not the scope wall.
     - zones.schema.yaml
-    - routing.config.yaml
+    - routing.authority.yaml
     - prompt.config.yaml
     # Operator secrets: never an autonomous (GREEN) workspace write.
     - .env
@@ -37,9 +41,12 @@ grove_home:
     - write_workspaces.yaml
     # GRV-001 Grant Token model — standing grants are operator-only.
     - grants.yaml
-    # routing-scope-wall-v1 R-W1 — machine-authored overlays that redefine
-    # authority alongside their operator twins.
-    - routing.autonomaton.yaml
+    # GRV-001 v2.0 R1 — the machine routing overlay (routing.autonomaton.yaml)
+    # is no longer scope-defining and is intentionally removed here: no overlay
+    # path reaches the authority surface by construction (the sink cannot define
+    # scope), and its write door is the machine-sink fail-closed guard
+    # (router_merge.apply_diff_to_machine_config), not the scope wall. (Was
+    # routing-scope-wall-v1 R-W1.)
     # The runtime zone overlay literally grants GREEN zones to patterns.
     # (dock.autonomaton.yaml is deliberately OUT: it is the machine's GREEN
     # goal-workspace half of the Dock.)
@@ -61,7 +68,9 @@ grove_home:
 repo_config:
   files:
     - zones.schema.yaml
-    - routing.config.yaml
+    # GRV-001 v2.0 — the scope-defining repo twin is the authority half; the
+    # operational half is in_scope and is not walled (governed writer, above).
+    - routing.authority.yaml
     # Canonical nested form — the repo twin of dock/dock.yaml.
     - dock/dock.yaml
     - write_workspaces.yaml

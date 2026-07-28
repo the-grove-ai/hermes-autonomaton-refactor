@@ -1,30 +1,29 @@
-"""GRV-008 § III source-of-truth hierarchy — the routing config merger.
+"""GRV-008 § III source-of-truth hierarchy — the routing config merge + loaders.
 
-Sprint 47. Defines two operations:
+Sprint 47 origin; GRV-001 v2.0 (routing-v2-migration-v1). Defines:
 
-* :func:`load_merged_routing_config` — deep-merge the operator's
-  ``routing.config.yaml`` (precedence) with the machine's
-  ``routing.autonomaton.yaml``. Operator wins on every scalar key
-  collision; lists merge as set-unions with operator entries first.
+* :func:`apply_diff_to_machine_config` — write a proposal's diff to the
+  machine-authored ``routing.autonomaton.yaml`` ONLY. Never touches the operator
+  file. Idempotent on re-application (set-union absorbs duplicates), and
+  FAIL-CLOSED: the merged candidate is validated by loading it through
+  :func:`load_operational_routing_config` before any atomic replace.
 
-* :func:`apply_diff_to_machine_config` — write a proposal's diff to
-  the machine-authored ``routing.autonomaton.yaml`` ONLY. Never
-  touches the operator file. Idempotent on re-application of the
-  same diff (set-union absorbs duplicates).
+* :func:`load_operational_routing_config` / :func:`load_authority_routing_config`
+  — the GRV-001 v2.0 split loaders (flat operational + authority files; the v2
+  version gate + §V authority-reserved-key collision check).
 
-Per GRV-008 § III the machine MUST NOT mutate operator-authored
-configuration. This module is the single seam through which machine-
-authored routing changes enter the system, and it physically refuses
-to write to ``routing.config.yaml`` — the operator-path parameter is
-never used as a write target.
+Per GRV-008 § III the machine MUST NOT mutate operator-authored configuration.
+This module is the single seam through which machine-authored routing changes
+enter the system.
 
-Per GATE-A operator revision (set-union vs. replace):
+Merge semantics (GATE-A operator revision, set-union vs. replace): for list
+values (intents lists in routing rules), the merge performs SET-UNION — the
+operator's baseline intents survive; the machine's approved additions are
+appended. Neither side overwrites the other; the machine can only ADD to lists.
 
-  For list values (intents lists in routing rules), the merge MUST
-  perform SET-UNION. The operator's baseline intents survive; the
-  machine's approved additions are appended. Neither side overwrites
-  the other. For v1, the machine can only ADD to lists, not REMOVE
-  from them.
+The v1 single-file loader ``load_merged_routing_config`` is RETIRED
+(routing-v2-migration-v1 Phase 3). ``_deep_merge`` is retained as the shared
+merge helper for the v2 operational loader and the machine-sink guard.
 """
 
 from __future__ import annotations
@@ -122,48 +121,6 @@ def _hashable_key(item: Any) -> Any:
     return json.dumps(item, sort_keys=True, default=str)
 
 
-def load_merged_routing_config(
-    operator_path: Path,
-    machine_path: Optional[Path] = None,
-) -> Dict[str, Any]:
-    """Deep-merge operator + machine routing configs.
-
-    The operator file MUST exist; the machine file is optional (a fresh
-    install has no machine additions yet). Operator wins on every
-    scalar collision; list values set-union with operator order first.
-
-    Returns the merged top-level mapping ready for ``CognitiveRouter``
-    consumption (the Sprint 47 gate-proposal sandbox writes this dict
-    to a tmp file and points a fresh CognitiveRouter at it).
-    """
-    operator_path = Path(operator_path)
-    if not operator_path.exists():
-        raise FileNotFoundError(
-            f"operator routing config not found at {operator_path}; "
-            f"GRV-008 § III requires the operator root"
-        )
-    operator = yaml.safe_load(operator_path.read_text(encoding="utf-8"))
-    if not isinstance(operator, dict):
-        raise ValueError(
-            f"operator routing config at {operator_path} is not a YAML "
-            f"mapping"
-        )
-
-    if machine_path is None or not Path(machine_path).exists():
-        return operator
-
-    machine = yaml.safe_load(Path(machine_path).read_text(encoding="utf-8"))
-    if machine is None:
-        return operator
-    if not isinstance(machine, dict):
-        raise ValueError(
-            f"machine routing config at {machine_path} is not a YAML "
-            f"mapping"
-        )
-
-    return _deep_merge(operator, machine)
-
-
 def apply_diff_to_machine_config(
     diff: Dict[str, Any],
     machine_path: Path,
@@ -171,8 +128,8 @@ def apply_diff_to_machine_config(
     """Merge ``diff`` into the machine routing file at ``machine_path``.
 
     Creates the file with the standard machine header banner on first
-    write. The merge uses the same operator-wins / list-set-union
-    semantics as :func:`load_merged_routing_config`, with the existing
+    write. The merge uses the operator-wins / list-set-union semantics of
+    :func:`_deep_merge`, with the existing
     machine file taking the "operator" position in the recursion (its
     historical additions survive; the new diff is applied on top). This
     is idempotent on re-application: applying the same diff twice
@@ -230,12 +187,13 @@ def apply_diff_to_machine_config(
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# GRV-001 v2.0 — split-config loaders (routing-v2-migration-v1, Phase 1)
+# GRV-001 v2.0 — split-config loaders (routing-v2-migration-v1)
 # ═════════════════════════════════════════════════════════════════════════════
-# ADDITIVE ONLY. The v1 loaders above (load_merged_routing_config /
-# apply_diff_to_machine_config) and all 12 call sites keep working against the
-# single v1 file untouched. These loaders serve the v2 split form and are not
-# wired into any call site this phase.
+# These loaders serve the v2 split form (flat operational + authority files) and
+# are the live routing loaders. The v1 single-file ``load_merged_routing_config``
+# was retired in Phase 3; ``apply_diff_to_machine_config`` (the machine-overlay
+# writer, above) shares ``_deep_merge`` and validates through the operational
+# loader (the machine-sink fail-closed guard).
 
 
 class ConfigurationError(ValueError):
@@ -307,8 +265,8 @@ def load_operational_routing_config(
     and enforce the GRV-001 v2.0 operational contract.
 
     The operational file MUST exist; the machine overlay is optional and merges
-    with the same operator-wins / list-set-union semantics as the v1 loader
-    (:func:`load_merged_routing_config`). After the overlay:
+    with the operator-wins / list-set-union semantics of :func:`_deep_merge`.
+    After the overlay:
 
     * the v2 version gate applies (:func:`_require_v2_shape`); then
     * §V confused-deputy: if any :data:`_AUTHORITY_RESERVED_KEYS` member is

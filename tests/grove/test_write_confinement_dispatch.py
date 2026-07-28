@@ -198,10 +198,11 @@ def _classify(tool_name, args):
 
 
 def test_write_file_to_scope_defining_is_red(tmp_path, monkeypatch):
+    # GRV-001 v2.0 — the scope-defining routing surface is the authority half.
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
     (tmp_path / "grove").mkdir()
     zr = _classify("write_file", {
-        "path": str(tmp_path / "grove" / "routing.config.yaml"), "content": "x",
+        "path": str(tmp_path / "grove" / "routing.authority.yaml"), "content": "x",
     })
     assert zr.zone == "red"
     assert "scope_defining" in (zr.matched_rule or "")
@@ -216,14 +217,20 @@ def test_patch_to_scope_defining_is_red(tmp_path, monkeypatch):
     assert zr.zone == "red"
 
 
-def test_write_file_autonomaton_overlay_is_red(tmp_path, monkeypatch):
-    # the new R-W2 authority surfaces are RED via the generic write tools too.
+def test_write_file_autonomaton_overlay_not_scope_red_yellow_default(
+    tmp_path, monkeypatch, hermetic_grove_home
+):
+    # GRV-001 v2.0 R1 — the machine routing overlay is no longer scope-defining
+    # (its sanctioned write door is the machine-sink fail-closed guard, not the
+    # scope wall). A raw bare-tool write to it therefore falls through to the
+    # zones classifier and defaults YELLOW (like every non-scope-defining
+    # ~/.grove target), not RED. (Was routing-scope-wall-v1 R-W2.)
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
     (tmp_path / "grove").mkdir()
     zr = _classify("write_file", {
         "path": str(tmp_path / "grove" / "routing.autonomaton.yaml"), "content": "x",
     })
-    assert zr.zone == "red"
+    assert zr.zone == "yellow"
 
 
 def test_write_file_nonscope_grove_target_stays_yellow(tmp_path, monkeypatch, hermetic_grove_home):
@@ -241,7 +248,8 @@ def test_propose_governance_change_scope_defining_is_red(tmp_path, monkeypatch):
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / "grove"))
     (tmp_path / "grove").mkdir()
     zr = _classify("propose_governance_change", {
-        "target_file": str(tmp_path / "grove" / "routing.config.yaml"), "content": "x",
+        # GRV-001 v2.0 — the scope-defining routing surface is the authority half.
+        "target_file": str(tmp_path / "grove" / "routing.authority.yaml"), "content": "x",
     })
     assert zr.zone == "red"
 

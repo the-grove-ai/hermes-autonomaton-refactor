@@ -131,15 +131,20 @@ class TestGovernanceTargetResolution:
         )
         assert sealed["writer_name"] == "env_write"
 
-    def test_routing_config_seals_to_routing_writer(self, grove_home):
-        # D3 unification — the governance door's raw routing write is dead;
-        # the claim seals against RoutingConfigWriter.apply_mutation.
-        from grove.red_pending_store import seal_red_claim
-        sealed = seal_red_claim(
+    def test_routing_authority_dead_door_is_registry_miss(self, grove_home):
+        # GRV-001 v2.0 Phase 3 — the routing runtime governance-write door is
+        # RETIRED. routing.authority.yaml is scope-defining but
+        # operator_authenticated (git+deploy, GRV-001 §IV.IV; the future authority
+        # write path is the Confirmation Gate grant-token architecture, not a
+        # runtime writer). Nothing registers a writer for it — a dead door at the
+        # seam, exactly like zones.schema.yaml below.
+        from grove.red_pending_store import is_viable_red_target
+        viable, reason = is_viable_red_target(
             "propose_governance_change",
-            self._propose_args(grove_home / "routing.config.yaml", "tiers: {}\n"),
+            self._propose_args(grove_home / "routing.authority.yaml", "tier_budgets: {}\n"),
         )
-        assert sealed["writer_name"] == "routing_config_replace"
+        assert viable is False
+        assert "no registered writer" in reason
 
     def test_zones_schema_dead_door_is_registry_miss(self, grove_home):
         # ~/.grove/zones.schema.yaml is unread by the runtime; nothing

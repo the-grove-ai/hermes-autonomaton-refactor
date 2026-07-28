@@ -15,7 +15,6 @@ import yaml
 from grove.router_merge import (
     _deep_merge,
     apply_diff_to_machine_config,
-    load_merged_routing_config,
 )
 
 
@@ -92,43 +91,6 @@ class TestDeepMergeListsSetUnion:
         machine = {"intents": ["a", "b"]}
         merged = _deep_merge(operator, machine)
         assert merged == {"intents": ["a", "b"]}
-
-
-# ── load_merged_routing_config ───────────────────────────────────────
-
-
-class TestLoadMergedRoutingConfig:
-    def test_missing_operator_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            load_merged_routing_config(tmp_path / "nonexistent.yaml")
-
-    def test_machine_absent_returns_operator(self, tmp_path: Path) -> None:
-        op = tmp_path / "routing.config.yaml"
-        op.write_text("routing:\n  default_tier: T2\n")
-        merged = load_merged_routing_config(op, None)
-        assert merged == {"routing": {"default_tier": "T2"}}
-
-    def test_both_present_operator_wins(self, tmp_path: Path) -> None:
-        op = tmp_path / "routing.config.yaml"
-        mach = tmp_path / "routing.autonomaton.yaml"
-        op.write_text("routing:\n  default_tier: T2\n")
-        mach.write_text("routing:\n  default_tier: T3\n")
-        merged = load_merged_routing_config(op, mach)
-        assert merged["routing"]["default_tier"] == "T2"
-
-    def test_machine_only_keys_survive_through_load(self, tmp_path: Path) -> None:
-        op = tmp_path / "routing.config.yaml"
-        mach = tmp_path / "routing.autonomaton.yaml"
-        op.write_text(
-            "routing:\n  default_tier: T2\n"
-            "  routing_rules:\n    downward:\n      match:\n        intents: [creative_writing]\n"
-        )
-        mach.write_text(
-            "routing:\n  routing_rules:\n    downward:\n      match:\n        intents: [system_admin]\n"
-        )
-        merged = load_merged_routing_config(op, mach)
-        intents = merged["routing"]["routing_rules"]["downward"]["match"]["intents"]
-        assert sorted(intents) == ["creative_writing", "system_admin"]
 
 
 # ── apply_diff_to_machine_config ─────────────────────────────────────

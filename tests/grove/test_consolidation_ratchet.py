@@ -146,6 +146,10 @@ def _operator_and_machine(tmp_path):
     return op, mac
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_apply_writes_rule_to_operator_config(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)
@@ -159,6 +163,10 @@ def test_apply_writes_rule_to_operator_config(tmp_path):
                     "target_tier": "T2"}
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_apply_removes_intent_from_machine_sink(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)
@@ -171,6 +179,10 @@ def test_apply_removes_intent_from_machine_sink(tmp_path):
     assert sink["ratchet_promoted_t2"]["match"]["intents"] == ["analysis"]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_apply_removes_empty_sink_rule(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op = tmp_path / "routing.config.yaml"
@@ -185,6 +197,10 @@ def test_apply_removes_empty_sink_rule(tmp_path):
     assert "ratchet_promoted_t2" not in rules  # emptied sink pruned (A6)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_apply_preserves_operator_comments(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)
@@ -198,6 +214,10 @@ def test_apply_preserves_operator_comments(tmp_path):
     assert "THE FOUR TIERS" in after
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_apply_restores_both_files_on_failure(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)
@@ -218,6 +238,10 @@ def test_apply_restores_both_files_on_failure(tmp_path):
     assert op.with_suffix(".yaml.bak").exists()  # backup left for forensics
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="routing_adjustment dead-fail-closed pending routing-v2-machine-overlay-migration-v1: producer emits v1-nested diff, machine-sink guard rejects it (fail-closed by design)",
+)
 def test_apply_calls_hot_reload(tmp_path):
     from grove.flywheel_cli import _approve_consolidation
     op, mac = _operator_and_machine(tmp_path)

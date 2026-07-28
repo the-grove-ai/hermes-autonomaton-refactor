@@ -808,14 +808,17 @@ def _resolve_governed_writer(resolved_target: str, body):
             return None, None, ".env write carries no content body"
         return "env_write", {"target_file": str(p), "content": body}, ""
 
-    if p == gh / "routing.config.yaml":
-        if not isinstance(body, str):
-            return None, None, "routing config write carries no content body"
-        # D3 unification — sealed against RoutingConfigWriter.apply_mutation
-        # (backup → sandbox-validate → atomic replace → hot-reload); the
-        # governance door's raw write path is dead. deploy.sh's cp remains
-        # the deliberate out-of-band writer.
-        return "routing_config_replace", {"content": body}, ""
+    # GRV-001 v2.0 — the routing runtime governance-write door is RETIRED
+    # (routing-v2-migration-v1 Phase 3). routing.config.yaml is deleted (split
+    # into operational + authority). The AUTHORITY surface is
+    # ``writable_on: operator_authenticated``: per GRV-001 §IV.IV, where no
+    # operator channel can be made unforgeable the system authorizes NO inline
+    # scope change and falls back to operator-performed writes — git+deploy is
+    # that write (the zones.schema.yaml precedent: scope-defining, no runtime
+    # writer). The future authority write path is the Confirmation Gate
+    # grant-token architecture, not a runtime writer. The OPERATIONAL surface has
+    # its own autonomous writer (RoutingConfigWriter model swaps), which is not a
+    # RED governance change. So routing is a registry MISS here by design.
 
     if p == gh / "dock" / "dock.yaml":
         if not isinstance(body, str):
@@ -1077,51 +1080,10 @@ def _dispatch_env_write(entry: "PendingRedProposal", approval_id: str) -> str:
     })
 
 
-def _dispatch_routing_config_replace(
-    entry: "PendingRedProposal", approval_id: str
-) -> str:
-    """Sealed routing-config replacement through the ONE sanctioned routing
-    writer (D3 unification): RoutingConfigWriter.apply_mutation — backup →
-    sandbox-validate → atomic replace → hot-reload. A body the sandbox router
-    rejects raises ConfigValidationError → the claim survives for retry."""
-    from hermes_constants import get_hermes_home
-    from grove.config.routing_writer import (
-        ConfigValidationError,
-        RoutingConfigWriter,
-        _ruamel,
-    )
-
-    payload = entry.writer_payload or {}
-    body = payload.get("content")
-    if not isinstance(body, str):
-        return json.dumps(
-            {"success": False, "error": "sealed routing payload malformed"}
-        )
-    cfg_path = Path(get_hermes_home()) / "routing.config.yaml"
-    writer = RoutingConfigWriter(cfg_path)
-
-    def _mutate(data):
-        new = _ruamel().load(body)
-        if not isinstance(new, dict):
-            raise ConfigValidationError(
-                "proposed routing config body must be a mapping"
-            )
-        data.clear()
-        for k, v in new.items():
-            data[k] = v
-
-    prior = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else None
-    writer.apply_mutation(_mutate, label=f"governance approve {approval_id}")
-    _emit_governed_write_ledger(
-        target_file=str(cfg_path),
-        rationale=f"approved:{approval_id}",
-        content=body, prior=prior,
-        disposition="written", approval_id=approval_id,
-    )
-    return json.dumps({
-        "success": True, "target_file": str(cfg_path),
-        "message": "Routing config replaced through RoutingConfigWriter.",
-    })
+# _dispatch_routing_config_replace REMOVED (routing-v2-migration-v1 Phase 3):
+# the routing runtime governance-write door is retired — routing.config.yaml is
+# deleted and the authority surface is operator_authenticated (git+deploy, per
+# GRV-001 §IV.IV; see the registry-resolution site above). No runtime writer.
 
 
 def _dispatch_dock_goal_status(
@@ -1199,7 +1161,8 @@ def _dispatch_admission_write(entry: "PendingRedProposal", approval_id: str) -> 
 # machine-flywheel surfaces, likewise unregistered through this door.)
 _GOVERNED_WRITERS = {
     "env_write": _dispatch_env_write,
-    "routing_config_replace": _dispatch_routing_config_replace,
+    # routing_config_replace RETIRED (routing-v2-migration-v1 Phase 3) — the
+    # authority surface is operator_authenticated (git+deploy); no runtime writer.
     "dock_goal_status": _dispatch_dock_goal_status,
     "write_admission_state": _dispatch_admission_write,
 }

@@ -51,10 +51,12 @@ def symlinked_grove_home(tmp_path, monkeypatch):
     [
         # GRV-001 v2.0 — the operator OPERATIONAL file is surface_class: in_scope
         # (autonomous_loop-writable; the model-swap writer targets it), so the wall
-        # does NOT classify it as scope-defining. The machine overlay still
-        # redefines routing (R-W1) and remains a scope-defining surface.
+        # does NOT classify it as scope-defining. R1 — the machine overlay is
+        # likewise NOT scope-defining: its write door is the machine-sink fail-closed
+        # guard, not the scope wall. Both writers' resolved targets must still equal
+        # the wall's resolution (the symlink-parity invariant this test pins).
         ("routing.operational.yaml", _default_config_path, False),
-        ("routing.autonomaton.yaml", _default_machine_path, True),
+        ("routing.autonomaton.yaml", _default_machine_path, False),
     ],
 )
 def test_writer_resolved_path_matches_scope_wall_resolution(

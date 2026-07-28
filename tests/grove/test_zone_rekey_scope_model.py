@@ -59,9 +59,18 @@ class TestIsScopeDefining:
         from grove.utils.fs_utils import is_scope_defining
         assert is_scope_defining(grove_home / "zones.schema.yaml") is True
 
-    def test_2_routing_config(self, grove_home):
+    def test_2_routing_authority(self, grove_home):
+        # GRV-001 v2.0 — routing.config.yaml split; the AUTHORITY half is the
+        # scope-defining routing surface (operator-authenticated).
         from grove.utils.fs_utils import is_scope_defining
-        assert is_scope_defining(grove_home / "routing.config.yaml") is True
+        assert is_scope_defining(grove_home / "routing.authority.yaml") is True
+
+    def test_2b_routing_operational_not_scope_defining(self, grove_home):
+        # GRV-001 v2.0 — the operational half is surface_class: in_scope
+        # (autonomous_loop-writable); its write door is the governed writer, so it
+        # is NOT scope-defining.
+        from grove.utils.fs_utils import is_scope_defining
+        assert is_scope_defining(grove_home / "routing.operational.yaml") is False
 
     def test_3_prompt_config(self, grove_home):
         from grove.utils.fs_utils import is_scope_defining
@@ -132,10 +141,13 @@ class TestIsScopeDefining:
 
 
 class TestScopeWallAdditions:
-    def test_routing_autonomaton_yaml(self, grove_home):
-        # the machine routing overlay — sibling of routing.config.yaml, authority.
+    def test_routing_autonomaton_yaml_not_scope_defining(self, grove_home):
+        # GRV-001 v2.0 R1 — the machine routing overlay is NO LONGER scope-defining:
+        # no overlay path reaches the authority surface by construction, and its
+        # write door is the machine-sink fail-closed guard, not the scope wall.
+        # (Was routing-scope-wall-v1 R-W1, which walled it.)
         from grove.utils.fs_utils import is_scope_defining
-        assert is_scope_defining(grove_home / "routing.autonomaton.yaml") is True
+        assert is_scope_defining(grove_home / "routing.autonomaton.yaml") is False
 
     def test_zones_autonomaton_yaml(self, grove_home):
         # runtime zone overlay — grants GREEN zones, so it is authority.

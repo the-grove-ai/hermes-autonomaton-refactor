@@ -33,7 +33,7 @@ def grove_home(tmp_path, monkeypatch):
 def test_scope_defining_write_file_without_approval_halts(grove_home):
     from tools.file_tools import write_file_tool
     from grove.governance_halt import TerminalGovernanceHalt
-    target = str(grove_home / "routing.config.yaml")
+    target = str(grove_home / "routing.authority.yaml")
     with pytest.raises(TerminalGovernanceHalt):
         write_file_tool(target, "evil: true")
     assert not Path(target).exists()  # the write did not execute
@@ -53,7 +53,7 @@ def test_scope_defining_write_with_matching_approval_proceeds(grove_home):
     from tools.file_tools import write_file_tool
     from grove.red_execution_context import consumed_signature_var
     from grove.effect_signature import canonical_effect_signature
-    target = str(grove_home / "routing.config.yaml")
+    target = str(grove_home / "routing.authority.yaml")
     content = "schema_version: 1\n"
     sig = canonical_effect_signature("write_file", {"path": target, "content": content})
     tok = consumed_signature_var.set(sig)
@@ -76,7 +76,7 @@ def test_mismatched_approval_still_halts(grove_home):
     from tools.file_tools import write_file_tool
     from grove.red_execution_context import consumed_signature_var
     from grove.governance_halt import TerminalGovernanceHalt
-    target = str(grove_home / "routing.config.yaml")
+    target = str(grove_home / "routing.authority.yaml")
     tok = consumed_signature_var.set("some-other-effect-signature")
     try:
         with pytest.raises(TerminalGovernanceHalt):
@@ -88,16 +88,16 @@ def test_mismatched_approval_still_halts(grove_home):
 
 def test_symlink_swap_signature_mismatch_halts(grove_home, tmp_path):
     # The realpath-canonical signature is the detector: an approval minted while
-    # the path resolved to routing.config.yaml does NOT authorize a write after
+    # the path resolved to routing.authority.yaml does NOT authorize a write after
     # the path is swapped to a DIFFERENT scope-defining target (zones.schema.yaml).
     from tools.file_tools import write_file_tool
     from grove.red_execution_context import consumed_signature_var
     from grove.effect_signature import canonical_effect_signature
     from grove.governance_halt import TerminalGovernanceHalt
-    (grove_home / "routing.config.yaml").write_text("a")
+    (grove_home / "routing.authority.yaml").write_text("a")
     (grove_home / "zones.schema.yaml").write_text("b")
     link = tmp_path / "cfg-link"  # outside grove; realpath decides scope membership
-    link.symlink_to(grove_home / "routing.config.yaml")
+    link.symlink_to(grove_home / "routing.authority.yaml")
     sig = canonical_effect_signature("write_file", {"path": str(link), "content": "x"})
     link.unlink()
     link.symlink_to(grove_home / "zones.schema.yaml")  # late swap after approval

@@ -163,8 +163,17 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/memory/graduation.py",
         "tools/flywheel_review_tool.py",
     }),
-    # writer: RoutingConfigWriter (grove/config/routing_writer.py:1 —
-    # self-declared sole sanctioned writer)
+    # GRV-001 v2.0 — routing.config.yaml is DELETED (split into operational +
+    # authority). This basename now survives ONLY as: the migration SOURCE
+    # (grove/config/routing_migrate.py — the operator-run tool takes a v1
+    # routing.config.yaml path); the deferred-Andon CODE ref pending
+    # routing-v2-machine-overlay-migration-v1 (grove/flywheel_cli.py
+    # _operator_config_path:1065, still keyed on the v1 name); grove/cellar.py's
+    # config-index tuple; and docstring naming-rot in the Phase-2-migrated modules.
+    # SHRINK DEFERRED (PM ruling, Phase 3): the docstring naming-rot cleanup + pin
+    # shrink to the code survivors {routing_migrate, flywheel_cli, cellar} is filed
+    # as a rider on routing-v2-machine-overlay-migration-v1. Kept scan-matching
+    # here — honest to the tree.
     "routing.config.yaml": frozenset({
         "grove/config/routing_writer.py",
         "grove/affordances.py",
@@ -194,15 +203,54 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/tier_budget.py",
         # capability-mutation-surface-v1 M1 (reviewed amendment): fs_utils
         # literal moved to config/scope_surfaces.yaml.
-        # P5 (reviewed amendment): governance_tool dropped OUT (Pipeline-A's
-        # allowlist + raw write retired); red_pending_store carries the
-        # basename now (the writer-registry resolution + the
-        # routing_config_replace adapter over RoutingConfigWriter).
-        "grove/red_pending_store.py",
+        # routing-v2-migration-v1 Phase 3: grove/red_pending_store.py DROPPED OUT
+        # — the routing_config_replace runtime governance-write door was retired
+        # (authority is operator_authenticated / git+deploy, GRV-001 §IV.IV), so
+        # it no longer names the basename.
         # routing-v2-migration-v1 Phase 1 (reviewed amendment): the operator-run
         # migration tool names + renames the v1 file during the v2 split. It is
         # NOT a competing content-writer to RoutingConfigWriter.
         "grove/config/routing_migrate.py",
+    }),
+    # routing-v2-migration-v1 Phase 3 (reviewed amendment) — the OPERATIONAL
+    # surface (surface_class: in_scope, autonomous_loop-writable; default_tier /
+    # tier_preferences / model_facts / routing_rules / telemetry). Sole sanctioned
+    # CONTENT-WRITER: grove/config/routing_writer.py (RoutingConfigWriter model
+    # swaps). Every other toucher is a reader/loader (router, tier_budget,
+    # hero_runner, pattern_compiler, dock/attachment, affordances, fragments,
+    # flywheel_cli) or the migration source (routing_migrate) / merge seam
+    # (router_merge).
+    "routing.operational.yaml": frozenset({
+        "grove/affordances.py",
+        "grove/api/fragments.py",
+        "grove/config/routing_migrate.py",
+        "grove/config/routing_writer.py",
+        "grove/dock/attachment.py",
+        "grove/eval/hero_runner.py",
+        "grove/eval/pattern_compiler.py",
+        "grove/flywheel_cli.py",
+        "grove/router.py",
+        "grove/router_merge.py",
+        "grove/tier_budget.py",
+    }),
+    # routing-v2-migration-v1 Phase 3 (reviewed amendment) — the AUTHORITY surface
+    # (surface_class: scope_defining, operator_authenticated; escalation_threshold
+    # / tier_budgets / escalation_policy). Its SOLE SANCTIONED CONTENT-WRITER IS
+    # NONE ON THE AUTONOMOUS LOOP — it is an operator-authenticated surface,
+    # changed by operator-authenticated governance / git+deploy, never a machine
+    # write (R1: no overlay path reaches it by construction). The population here
+    # is exclusively readers/loaders (router, tier_budget, sovereignty,
+    # hero_runner), the merge seam (router_merge), the migration source
+    # (routing_migrate), and routing_writer's derivation of the sibling path for
+    # its sandbox validation (it reads authority, never writes it).
+    "routing.authority.yaml": frozenset({
+        "grove/config/routing_migrate.py",
+        "grove/config/routing_writer.py",
+        "grove/eval/hero_runner.py",
+        "grove/router.py",
+        "grove/router_merge.py",
+        "grove/sovereignty.py",
+        "grove/tier_budget.py",
     }),
     # writer: append_machine_goal (grove/dock/__init__.py:380-384)
     "dock.autonomaton.yaml": frozenset({

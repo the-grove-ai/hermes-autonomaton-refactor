@@ -1,10 +1,12 @@
 """router-merge-wiring-v1 — the live router loads the *merged* operator +
 machine routing config.
 
-GATE-A confirmed the merge helper (``load_merged_routing_config``), the
-single-path loader it replaces, the snapshot/restore ``reload()`` contract,
-and the ``_machine_config_path`` resolver. These tests cover the four DoD
-items for wiring that helper into ``CognitiveRouter``:
+GRV-001 v2.0 — the router now loads the split operational + authority pair via
+``load_operational_routing_config`` (which shares ``_deep_merge`` for the machine
+overlay), plus the snapshot/restore ``reload()`` contract and the
+``_machine_config_path`` resolver. (The v1 single-file ``load_merged_routing_config``
+these tests originally exercised was retired in Phase 3.) These tests cover the
+four DoD items for the router's merged load:
 
 1. merged-load wiring — a machine file merges on top of the operator root;
    absent, the operator routes alone; the default machine path resolves via

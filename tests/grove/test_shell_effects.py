@@ -281,7 +281,9 @@ class TestGovernedPathEffects:
         assert C(f"cp /tmp/x {grove_home}/skills/foo/run.py").zone == "red"
 
     def test_rm_governed_is_red(self, grove_home):
-        assert C(f"rm {grove_home}/routing.config.yaml").zone == "red"
+        # GRV-001 v2.0 — the scope-defining routing surface is the authority half
+        # (routing.config.yaml no longer exists; operational is in_scope).
+        assert C(f"rm {grove_home}/routing.authority.yaml").zone == "red"
 
     def test_write_outside_governed_is_yellow(self, grove_home, tmp_path):
         assert C(f"echo x > {tmp_path.parent}/scratch.txt").zone == "yellow"

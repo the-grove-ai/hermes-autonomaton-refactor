@@ -45,7 +45,9 @@ REPO_SURFACES = [
     CONFIG / "routing-profiles" / "conservative.yaml",
     CONFIG / "dock" / "dock.yaml",
     CONFIG / "zones.schema.yaml",
-    CONFIG / "routing.config.yaml",
+    # GRV-001 v2.0 — the scope-defining routing twin is the authority half
+    # (routing.operational.yaml is in_scope; routing.config.yaml no longer exists).
+    CONFIG / "routing.authority.yaml",
     CONFIG / "write_workspaces.yaml",
 ]
 _ids = [str(p.relative_to(CONFIG)) for p in REPO_SURFACES]
@@ -106,7 +108,7 @@ GROVE_TWINS = [
     "routing-profiles/conservative.yaml",
     "dock/dock.yaml",
     "zones.schema.yaml",
-    "routing.config.yaml",
+    "routing.authority.yaml",  # GRV-001 v2.0 — authority is the scope-defining twin
     "write_workspaces.yaml",
     # skills/ has NO config/ twin but stays RED under GROVE_HOME (unchanged).
     "skills/my_skill/SKILL.md",

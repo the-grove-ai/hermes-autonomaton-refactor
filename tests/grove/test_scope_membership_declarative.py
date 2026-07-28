@@ -28,21 +28,27 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # ── The golden: P2-era literals, verbatim ──
 _GOLDEN_GROVE_HOME_FILES = frozenset({
     "zones.schema.yaml",
-    "routing.config.yaml",
+    # GRV-001 v2.0 — routing.config.yaml split: the AUTHORITY half is scope-
+    # defining; the operational half is surface_class: in_scope and is NOT walled.
+    "routing.authority.yaml",
     "prompt.config.yaml",
     ".env",
     os.path.join("dock", "dock.yaml"),
     "workspaces.yaml",
     "write_workspaces.yaml",
     "grants.yaml",
-    "routing.autonomaton.yaml",
+    # GRV-001 v2.0 R1 — routing.autonomaton.yaml removed: the machine overlay is
+    # no longer scope-defining (its write door is the machine-sink fail-closed
+    # guard, not the scope wall).
     "zones.autonomaton.yaml",
     "fleet_workers.override.yaml",
 })
 _GOLDEN_GROVE_HOME_PREFIXES = ("skills", "capabilities", "routing-profiles")
 _GOLDEN_REPO_FILES = frozenset({
     "zones.schema.yaml",
-    "routing.config.yaml",
+    # GRV-001 v2.0 — the scope-defining repo twin is the authority half (the
+    # operational half is in_scope; routing.config.yaml no longer exists).
+    "routing.authority.yaml",
     os.path.join("dock", "dock.yaml"),
     "write_workspaces.yaml",
     # artifact-review-v1 — the quality-gate rubric registry, a scope-defining
@@ -108,6 +114,12 @@ def _probe_targets(grove_home: Path):
     # Negative controls.
     pairs.append((str(grove_home / "research" / "notes.md"), False))
     pairs.append((str(grove_home / "dock.autonomaton.yaml"), False))
+    # GRV-001 v2.0 — the operational half is in_scope (governed writer, not the
+    # wall); the machine overlay is guard-walled, not scope-walled (R1). Both are
+    # NOT scope-defining. The authority half's True is asserted via the golden
+    # loop above.
+    pairs.append((str(grove_home / "routing.operational.yaml"), False))
+    pairs.append((str(grove_home / "routing.autonomaton.yaml"), False))
     # Repo-config twins.
     cfg = Path(fu._MODULE_CONFIG_ROOT)
     for f in sorted(_GOLDEN_REPO_FILES):
@@ -119,6 +131,8 @@ def _probe_targets(grove_home: Path):
     # basename collision outside both anchors.
     pairs.append((str(cfg.parent / "README.md"), False))
     pairs.append(("/tmp/elsewhere/capabilities/anything.yaml", False))
+    # GRV-001 v2.0 — the operational twin is not scope-defining at the repo anchor.
+    pairs.append((str(cfg / "routing.operational.yaml"), False))
     return pairs
 
 
