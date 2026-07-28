@@ -5477,6 +5477,37 @@ def cmd_logout(args):
     logout_command(args)
 
 
+def cmd_repair(args):
+    """instance-cold-start-parity-v1 P2 (F2) — repair malformed cold-start files.
+
+    Boot-independent: it classifies (contained parse) and never load_config's a
+    file, so it runs even when every instance file is corrupt. Detects →
+    proposes quarantine+reseed → acts only on explicit confirmation. Decline →
+    zero writes.
+    """
+    import sys
+
+    from grove.instance_health import run_repair
+
+    assume_yes = bool(getattr(args, "yes", False))
+
+    def _confirm(_plan) -> bool:
+        if assume_yes:
+            return True
+        try:
+            answer = input("\nQuarantine and reseed the file(s) above? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        return answer in ("y", "yes")
+
+    summary = run_repair(confirm=_confirm)
+    # Exit non-zero when faults remain unrepaired (declined, or reseed failed) so
+    # scripts and boot wrappers can detect an unresolved instance.
+    if summary.get("faults") and not summary.get("clean_after"):
+        sys.exit(1)
+
+
 def cmd_auth(args):
     """Manage pooled credentials."""
     from hermes_cli.auth_commands import auth_command
@@ -9770,7 +9801,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "index", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy", "sessions", "setup",
+        "model", "pairing", "plugins", "postinstall", "profile", "proxy",
+        "repair-instance", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -10339,6 +10371,26 @@ def main():
         help="Provider to log out from (default: active provider)",
     )
     logout_parser.set_defaults(func=cmd_logout)
+
+    # instance-cold-start-parity-v1 P2 (F2) — boot-independent repair entry point
+    # for MALFORMED/UNREADABLE graduated instance files. Detects WITHOUT relying
+    # on a successful parse of any instance file, proposes quarantine+reseed, and
+    # acts only on explicit confirmation. NOT the Sprint-B doctor (no drift scan,
+    # no Kaizen cards) — malformed-detect + one proposal flow.
+    repair_parser = subparsers.add_parser(
+        "repair-instance",
+        help="Detect and repair malformed cold-start instance files",
+        description=(
+            "Classify the graduated instance files (config.yaml, grants.yaml, "
+            "write_workspaces.yaml); for any that are malformed or unreadable, "
+            "propose quarantine + reseed and act only on your confirmation."
+        ),
+    )
+    repair_parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip the confirmation prompt (apply the proposed quarantine+reseed)",
+    )
+    repair_parser.set_defaults(func=cmd_repair)
 
     auth_parser = subparsers.add_parser(
         "auth",

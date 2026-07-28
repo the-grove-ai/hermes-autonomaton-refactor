@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
 import yaml
 
 from hermes_cli.config import (
@@ -98,78 +99,59 @@ class TestLoadConfigDefaults:
 
 
 class TestLoadConfigParseFailure:
-    """A YAML parse failure must NOT silently fall back to defaults.
+    """A malformed config.yaml must NOT silently fall back to defaults.
 
-    Before issue #23570 this was a single ``print(...)`` that scrolled past
-    on the first invocation — users saw aux-fallback misbehavior with no clue
-    their config.yaml was being ignored. The helper must:
-      * log at WARNING (so ``hermes logs`` surfaces it)
-      * also write to stderr (so it's visible at startup even before
-        ``setup_logging()`` has wired up file handlers)
-      * dedup on (path, mtime_ns, size) so concurrent loads don't spam
-      * re-warn after the user edits the file (different mtime)
+    instance-cold-start-parity-v1 P2 (F4): config.yaml is a GRADUATED file — a
+    present-but-malformed config now RAISES a governed InstanceFileError (naming
+    the file + `hermes repair-instance`) instead of the old warn-then-fall-back-
+    to-DEFAULT_CONFIG. The dedup/re-warn machinery is retired with the warning.
     """
 
-    def test_logs_and_warns_on_parse_failure(self, tmp_path, caplog, capsys):
-        # Reset the dedup cache so this test isn't affected by other tests
-        # that may have warned about a different broken config.
-        from hermes_cli import config as cfg_mod
-        cfg_mod._CONFIG_PARSE_WARNED.clear()
+    def test_raises_governed_error_on_parse_failure(self, tmp_path):
+        from grove.instance_health import InstanceFileError
+        from hermes_cli.config import _LOAD_CONFIG_CACHE
 
         with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):
+            (tmp_path / ".grove_instance").write_text("cold_start_version: 1\n")
             (tmp_path / "config.yaml").write_text("\tbroken tab indent:\n")
+            _LOAD_CONFIG_CACHE.clear()
+            with pytest.raises(InstanceFileError) as exc:
+                load_config()
+            # names the file and the repair invocation
+            assert "config.yaml" in str(exc.value)
+            assert "repair-instance" in str(exc.value)
 
-            import logging
-            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
-                config = load_config()
-
-            # Falls back to defaults — confirms the silent-fallback we're warning about
-            assert config["model"] == DEFAULT_CONFIG["model"]
-
-            # WARNING-level log was emitted with file path + reason
-            assert any(
-                str(tmp_path / "config.yaml") in rec.message
-                and "Falling back to default config" in rec.message
-                for rec in caplog.records
-            ), f"expected WARNING log, got: {[r.message for r in caplog.records]}"
-
-            # stderr also got a user-visible message (with the ⚠️ marker so it
-            # stands out at hermes startup before logging is configured)
-            captured = capsys.readouterr()
-            assert "hermes config:" in captured.err
-            assert str(tmp_path / "config.yaml") in captured.err
-
-    def test_dedup_on_repeated_load_same_file(self, tmp_path, capsys):
-        from hermes_cli import config as cfg_mod
-        cfg_mod._CONFIG_PARSE_WARNED.clear()
+    def test_raises_every_load_no_silent_fallback(self, tmp_path):
+        # No dedup/silent-proceed: a malformed config keeps raising loudly.
+        from grove.instance_health import InstanceFileError
+        from hermes_cli.config import _LOAD_CONFIG_CACHE
 
         with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):
+            (tmp_path / ".grove_instance").write_text("cold_start_version: 1\n")
             (tmp_path / "config.yaml").write_text("\tbroken:\n")
+            _LOAD_CONFIG_CACHE.clear()
+            with pytest.raises(InstanceFileError):
+                load_config()
+            _LOAD_CONFIG_CACHE.clear()
+            with pytest.raises(InstanceFileError):
+                load_config()
 
-            load_config()
-            first = capsys.readouterr().err
-            assert "hermes config:" in first
-
-            load_config()
-            second = capsys.readouterr().err
-            assert second == "", "second load should NOT re-warn (same file, same mtime)"
-
-    def test_rewarns_after_file_edit(self, tmp_path, capsys):
+    def test_raises_after_edit_still_malformed(self, tmp_path):
         import time
-        from hermes_cli import config as cfg_mod
-        cfg_mod._CONFIG_PARSE_WARNED.clear()
+        from grove.instance_health import InstanceFileError
+        from hermes_cli.config import _LOAD_CONFIG_CACHE
 
         with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):
+            (tmp_path / ".grove_instance").write_text("cold_start_version: 1\n")
             (tmp_path / "config.yaml").write_text("\tbroken:\n")
-            load_config()
-            capsys.readouterr()  # discard first warning
-
-            # Edit the file (still broken, but different content) — mtime changes
+            _LOAD_CONFIG_CACHE.clear()
+            with pytest.raises(InstanceFileError):
+                load_config()
             time.sleep(0.05)
             (tmp_path / "config.yaml").write_text("\tstill broken differently:\n")
-            load_config()
-            after_edit = capsys.readouterr().err
-            assert "hermes config:" in after_edit, "edited file should re-warn"
+            _LOAD_CONFIG_CACHE.clear()
+            with pytest.raises(InstanceFileError):
+                load_config()
 
 
 class TestSaveAndLoadRoundtrip:

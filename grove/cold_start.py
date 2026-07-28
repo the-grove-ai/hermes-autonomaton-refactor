@@ -47,11 +47,14 @@ _VALID_ABSENCE_CLASSES = frozenset(
 )
 _VALID_KINDS = frozenset({"dir", "file"})
 _VALID_OWNERS = frozenset({"definition-seeded", "operator-state"})
+# P2 F4 — top-level shapes a graduated file's live reader may require.
+_VALID_SHAPES = frozenset({"mapping", "sequence"})
 
 # Process-level guard: the materializer is invoked from load_config, which runs
 # on effectively every CLI/gateway operation. The first call per home does the
 # work; subsequent calls for the same home return the cached report with zero
-# filesystem touches. Tests bypass with force=True (or _reset_cache()).
+# filesystem touches. Re-run with bypass_cache=True, or drop an entry via
+# invalidate_cache()/_reset_cache().
 _MATERIALIZED: Dict[str, "MaterializeReport"] = {}
 
 
@@ -69,7 +72,6 @@ class MaterializeReport:
     seeded_files: List[str] = field(default_factory=list)
     skipped_present: List[str] = field(default_factory=list)
     marker_written: bool = False
-    key_signal: Optional[str] = None
 
     @property
     def wrote_anything(self) -> bool:
@@ -135,6 +137,19 @@ def _load_contract(contract_path: Optional[Path]) -> Dict[str, Any]:
                 raise ColdStartError(
                     f"{where}: seed_source {src!r} does not exist in the repo "
                     f"({src_abs}) — the contract references a missing template"
+                )
+        # P2 F4 — optional graduation fields. A graduated file needs an
+        # expected_shape the classifier can enforce; only files graduate.
+        if "graduated" in e and not isinstance(e["graduated"], bool):
+            raise ColdStartError(f"{where} graduated must be a bool, got {e['graduated']!r}")
+        if e.get("graduated"):
+            if e["kind"] != "file":
+                raise ColdStartError(f"{where} graduated is file-only (kind={e['kind']!r})")
+            shape = e.get("expected_shape")
+            if shape not in _VALID_SHAPES:
+                raise ColdStartError(
+                    f"{where} graduated entry needs expected_shape in "
+                    f"{sorted(_VALID_SHAPES)}, got {shape!r}"
                 )
     return data
 
@@ -292,7 +307,7 @@ def _write_marker(
 # ── OpenRouter key signal (F5c) ──────────────────────────────────────────────
 
 
-def _check_openrouter_key() -> Optional[str]:
+def check_openrouter_key() -> Optional[str]:
     """Return a governed, actionable signal if no usable key is configured in the
     environment, else None. Names the env var; never surfaces a provider 401."""
     try:
@@ -329,16 +344,29 @@ def _is_managed() -> bool:
 # ── public entrypoint ────────────────────────────────────────────────────────
 
 
+def invalidate_cache(home: Optional[os.PathLike] = None) -> None:
+    """Drop the memoized materialization for *home* (or all homes if None).
+
+    The per-home cache assumes the instance filesystem is unchanged since the
+    last run. A caller that mutates the instance out-of-band (e.g. the repair
+    flow quarantines a file) must invalidate so the next plain
+    ``materialize_instance`` re-runs and re-seeds via the ordinary
+    seed-on-absence path — no write-forcing parameter required."""
+    if home is None:
+        _MATERIALIZED.clear()
+    else:
+        _MATERIALIZED.pop(str(Path(home)), None)
+
+
 def materialize_instance(
     home: Optional[os.PathLike] = None,
     *,
-    force: bool = False,
-    require_api_key: bool = False,
+    bypass_cache: bool = False,
     contract_path: Optional[os.PathLike] = None,
 ) -> MaterializeReport:
     """Materialize the minimal-viable instance under *home* (default:
     ``get_hermes_home()``, honoring ``GROVE_HOME``). Returns a
-    :class:`MaterializeReport`. Cheap and cached per-home unless ``force``.
+    :class:`MaterializeReport`. Cheap and memoized per-home.
 
     F1 four-case guard (UNCONDITIONAL on every path, CLI shim included): a
     non-empty, unmarked, non-Grove-shaped home is a GROVE_HOME misconfiguration
@@ -346,15 +374,16 @@ def materialize_instance(
     There is no lenient bypass; the loud refuse is the governed halt P0.2
     demands (warn-then-proceed is not a governed halt).
 
-    ``require_api_key`` (default False) — NOT a refuse guard. It gates ONLY the
-    F5c OpenRouter-key check: gateway init passes True (a missing/placeholder
-    key becomes a governed actionable signal); generic CLI leaves it False (no
-    signal — the operator may run non-model commands). Named so no future caller
-    reads it as a way to skip case 4.
+    ``bypass_cache`` (default False) skips ONLY the per-home process
+    memoization (below), so ``_run`` executes again — it is a cache control,
+    NOT a write control. It cannot override never-overwrite: the seed/dir/marker
+    writers each check ``exists()`` unconditionally, independent of this flag.
+    Used by tests that re-run against the same home; production repair uses
+    :func:`invalidate_cache` + the plain path instead.
     """
     home_path = Path(home) if home is not None else get_hermes_home()
     key = str(home_path)
-    if not force and key in _MATERIALIZED:
+    if not bypass_cache and key in _MATERIALIZED:
         return _MATERIALIZED[key]
 
     cpath = Path(contract_path) if contract_path is not None else None
@@ -367,7 +396,7 @@ def materialize_instance(
         )
     old_umask = os.umask(0o007) if managed else None
     try:
-        report = _run(home_path, cpath, managed, require_api_key)
+        report = _run(home_path, cpath, managed)
     finally:
         if managed and old_umask is not None:
             os.umask(old_umask)
@@ -376,9 +405,7 @@ def materialize_instance(
     return report
 
 
-def _run(
-    home: Path, contract_path: Optional[Path], managed: bool, require_api_key: bool
-) -> MaterializeReport:
+def _run(home: Path, contract_path: Optional[Path], managed: bool) -> MaterializeReport:
     contract = _load_contract(contract_path)
     signature = list(contract["grove_shape_signature"])
     marker = home / _MARKER_NAME
@@ -412,12 +439,9 @@ def _run(
     if state in ("fresh", "adopt"):
         _write_marker(marker, contract, contract_path, report, managed)
 
-    # F5c — gateway init requires a usable OpenRouter key; generic CLI does not.
-    if require_api_key:
-        report.key_signal = _check_openrouter_key()
-        if report.key_signal:
-            logger.warning(report.key_signal)
-
+    # F5c key check is NOT done here — it is a separate gateway-boot step
+    # (check_openrouter_key, called from run_gateway per the D3 sequence:
+    # materialize -> preflight -> key check). Materialization stays key-agnostic.
     return report
 
 

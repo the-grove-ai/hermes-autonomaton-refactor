@@ -3134,14 +3134,26 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
-    # instance-cold-start-parity-v1 D2 — gateway init is a deliberate cold-start
-    # moment. The F1 case-4 refuse is unconditional on every path (CLI shim
-    # included); what is specific to the gateway is the F5c key requirement:
-    # require_api_key=True turns a missing/placeholder OPENROUTER_API_KEY into a
-    # governed actionable signal at boot (generic CLI does not require it).
-    from grove.cold_start import materialize_instance
+    # instance-cold-start-parity-v1 — gateway init is a deliberate cold-start
+    # moment. P2 D3 sequence: materialize -> preflight -> key check.
+    #   1. materialize the minimal-viable instance (F1 case-4 refuse is
+    #      unconditional; seeds on absence).
+    #   2. preflight the GRADUATED set (F4): a MALFORMED/UNREADABLE graduated file
+    #      is a loud governed boot Andon naming the file + repair invocation — not
+    #      a warning that scrolls past. Generic CLI does NOT run this (the
+    #      `hermes repair-instance` command must stay reachable).
+    #   3. F5c key check: a missing/placeholder OPENROUTER_API_KEY becomes a
+    #      governed actionable signal at boot (gateway-only).
+    import logging as _logging
 
-    materialize_instance(require_api_key=True)
+    from grove.cold_start import check_openrouter_key, materialize_instance
+    from grove.instance_health import preflight_graduated_files
+
+    materialize_instance()
+    preflight_graduated_files()
+    _key_signal = check_openrouter_key()
+    if _key_signal:
+        _logging.getLogger("hermes_cli.gateway").warning(_key_signal)
 
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still

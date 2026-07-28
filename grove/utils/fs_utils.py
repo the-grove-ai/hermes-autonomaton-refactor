@@ -633,39 +633,39 @@ def _load_write_workspaces(grove: str) -> frozenset:
     """Return the declared absolute write-workspace roots (realpath-resolved),
     cached by manifest mtime.
 
-    FAIL-LOUD: a missing or unparseable manifest logs a WARNING and yields the
-    empty set — declared workspaces become unavailable, never silently allow-all
-    and never silently deny-all-without-notice."""
+    FAIL-LOUD: a MISSING manifest logs a WARNING and yields the empty set —
+    declared workspaces become unavailable, never silently allow-all and never
+    silently deny-all-without-notice.
+
+    instance-cold-start-parity-v1 P2 (F4): write_workspaces.yaml is a GRADUATED
+    file. ABSENT stays the loud-empty warning below (unchanged). But a
+    PRESENT-but-malformed/unreadable manifest now raises a governed
+    ``InstanceFileError`` (naming the file + ``hermes repair-instance``) instead
+    of degrading to the same warn+empty — a corrupt scope-defining manifest is a
+    fault, not an empty allowlist."""
     ws_path = os.path.join(grove, _WRITE_WORKSPACES_MANIFEST)
     try:
         mtime = os.stat(ws_path).st_mtime_ns
     except OSError:
         logger.warning(
-            "write_workspaces.yaml not found or unparseable — declared "
+            "write_workspaces.yaml not found — declared "
             "workspaces unavailable (%s)",
             ws_path,
         )
-        return frozenset()
+        return frozenset()  # ABSENT — loud-empty, unchanged
     cached = _write_workspaces_cache.get(grove)
     if cached is not None and cached[0] == mtime:
         return cached[1]
-    try:
-        import yaml
 
-        with open(ws_path, encoding="utf-8") as fh:
-            data = yaml.safe_load(fh) or {}
-        roots = frozenset(
-            os.path.realpath(os.path.expanduser(p))
-            for w in data.get("write_workspaces", [])
-            if isinstance(w, dict) and (p := str(w.get("path", "")).strip())
-        )
-    except Exception:
-        logger.warning(
-            "write_workspaces.yaml not found or unparseable — declared "
-            "workspaces unavailable (%s)",
-            ws_path,
-        )
-        return frozenset()
+    from grove.instance_health import classify_or_raise_present
+
+    _c = classify_or_raise_present(ws_path, "mapping", name="write_workspaces.yaml")
+    data = _c.data or {}
+    roots = frozenset(
+        os.path.realpath(os.path.expanduser(p))
+        for w in data.get("write_workspaces", [])
+        if isinstance(w, dict) and (p := str(w.get("path", "")).strip())
+    )
     _write_workspaces_cache[grove] = (mtime, roots)
     return roots
 

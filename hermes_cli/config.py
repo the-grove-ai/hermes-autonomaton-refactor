@@ -28,47 +28,11 @@ from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Track which (config_path, mtime_ns, size) tuples we've already warned about
-# so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
-# every time. Cleared automatically when the file changes (different mtime).
-_CONFIG_PARSE_WARNED: set = set()
-
-
-def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
-    """Surface a config.yaml parse failure to user, log, and stderr.
-
-    A YAML parse error in ``~/.grove/config.yaml`` causes ``load_config()``
-    to silently fall back to ``DEFAULT_CONFIG``, which means every user
-    override (auxiliary providers, fallback chain, model overrides, etc.)
-    is dropped. Before this helper that was a one-line ``print(...)`` that
-    scrolled off-screen on the first invocation and was never seen again.
-
-    Now: warn once per (path, mtime_ns, size) on stderr **and** in
-    ``agent.log`` / ``errors.log`` at WARNING level so ``hermes logs``
-    surfaces it. Re-warns automatically if the file changes (different
-    mtime/size), so users editing the config see the next failure.
-    """
-    try:
-        st = config_path.stat()
-        key = (str(config_path), st.st_mtime_ns, st.st_size)
-    except OSError:
-        key = (str(config_path), 0, 0)
-    if key in _CONFIG_PARSE_WARNED:
-        return
-    _CONFIG_PARSE_WARNED.add(key)
-
-    msg = (
-        f"Failed to parse {config_path}: {exc}. "
-        f"Falling back to default config — every user override "
-        f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
-        f"Fix the YAML and restart."
-    )
-    logger.warning(msg)
-    try:
-        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
-        sys.stderr.flush()
-    except Exception:
-        pass
+# instance-cold-start-parity-v1 P2 — the warn-then-fall-back-to-DEFAULT_CONFIG
+# helper (_warn_config_parse_failure) and its dedup set (_CONFIG_PARSE_WARNED)
+# were DELETED here: config.yaml is a graduated file, so both its readers
+# (load_config, read_raw_config) now RAISE a governed InstanceFileError on
+# malformed/unreadable instead of warning and degrading. See grove/instance_health.
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -427,8 +391,8 @@ def ensure_hermes_home():
 
     # F1 case 4 refuses unconditionally here too (a misconfigured GROVE_HOME
     # must halt loudly, per adjudication — warn-then-proceed is not a governed
-    # halt). require_api_key stays False: the F5c key check belongs to gateway
-    # init, not every config read.
+    # halt). The F5c key check is a separate gateway-boot step, not part of
+    # materialization, so nothing key-related happens on this hot path.
     materialize_instance()
 
 
@@ -4212,22 +4176,22 @@ def read_raw_config() -> Dict[str, Any]:
             st = config_path.stat()
             cache_key = (st.st_mtime_ns, st.st_size)
         except (FileNotFoundError, OSError):
-            return {}
+            return {}  # ABSENT — {}, unchanged
 
         path_key = str(config_path)
         cached = _RAW_CONFIG_CACHE.get(path_key)
         if cached is not None and cached[:2] == cache_key:
             return copy.deepcopy(cached[2])
 
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-        except Exception as e:
-            _warn_config_parse_failure(config_path, e)
-            return {}
+        # instance-cold-start-parity-v1 P2 (F4) — config.yaml is a GRADUATED
+        # file; this is its SECOND reader. A present-but-malformed/unreadable
+        # config raises the same governed InstanceFileError as load_config,
+        # instead of the old warn-then-{} (which silently hid a corrupt file and
+        # coerced a wrong top-level shape to {}).
+        from grove.instance_health import classify_or_raise_present
 
-        if not isinstance(data, dict):
-            data = {}
+        _c = classify_or_raise_present(config_path, "mapping", name="config.yaml")
+        data = _c.data or {}
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
         return data
 
@@ -4261,20 +4225,24 @@ def load_config() -> Dict[str, Any]:
         user_config: Dict[str, Any] = {}
 
         if cache_key is not None:
-            try:
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+            # instance-cold-start-parity-v1 P2 (F4) — config.yaml is a GRADUATED
+            # file: a present-but-malformed/unreadable config now raises a
+            # governed InstanceFileError (naming the file + `hermes repair-instance`)
+            # instead of the old warn-then-silently-fall-back-to-DEFAULT_CONFIG.
+            # ABSENT (cache_key is None) still yields DEFAULT_CONFIG, unchanged.
+            from grove.instance_health import classify_or_raise_present
 
-                if isinstance(user_config, dict) and "max_turns" in user_config:
-                    agent_user_config = dict(user_config.get("agent") or {})
-                    if agent_user_config.get("max_turns") is None:
-                        agent_user_config["max_turns"] = user_config["max_turns"]
-                    user_config["agent"] = agent_user_config
-                    user_config.pop("max_turns", None)
+            _c = classify_or_raise_present(config_path, "mapping", name="config.yaml")
+            user_config = _c.data or {}
 
-                config = _deep_merge(config, user_config)
-            except Exception as e:
-                _warn_config_parse_failure(config_path, e)
+            if isinstance(user_config, dict) and "max_turns" in user_config:
+                agent_user_config = dict(user_config.get("agent") or {})
+                if agent_user_config.get("max_turns") is None:
+                    agent_user_config["max_turns"] = user_config["max_turns"]
+                user_config["agent"] = agent_user_config
+                user_config.pop("max_turns", None)
+
+            config = _deep_merge(config, user_config)
 
         # Sprint 69 secrets-hygiene Andon. Runs on the operator's parsed file
         # (pre-expansion, so ${VAR} references are still visible) and OUTSIDE

@@ -47,18 +47,26 @@ class GrantStore:
     # ── read ──────────────────────────────────────────────────────────────────
 
     def load(self) -> list[GrantToken]:
-        """Load grants from disk using mtime cache. Fail-closed."""
+        """Load grants from disk using mtime cache. Fail-closed on ABSENCE.
+
+        instance-cold-start-parity-v1 P2 (F4): grants.yaml is a GRADUATED file.
+        ABSENT stays a silent ``[]`` (below, via os.stat OSError) — unchanged.
+        But a PRESENT-but-malformed/unreadable grants.yaml now raises a governed
+        ``InstanceFileError`` (naming the file + ``hermes repair-instance``)
+        instead of the old no-log silent ``[]`` that hid a corrupt grants store.
+        """
         try:
             mtime = os.stat(self._path).st_mtime_ns
         except OSError:
-            return []
+            return []  # ABSENT — silent [], unchanged
         if mtime == self._mtime_ns:
             return self._grants
-        try:
-            import yaml
 
-            with open(self._path, encoding="utf-8") as fh:
-                data = yaml.safe_load(fh) or {}
+        from grove.instance_health import classify_or_raise_present
+
+        _c = classify_or_raise_present(self._path, "mapping", name="grants.yaml")
+        try:
+            data = _c.data or {}
             grants: list[GrantToken] = []
             for entry in data.get("grants", []):
                 if not isinstance(entry, dict):

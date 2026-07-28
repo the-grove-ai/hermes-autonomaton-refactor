@@ -59,7 +59,7 @@ def test_contract_rejects_unknown_absence_class(tmp_path):
 
 def test_fresh_home_full_materialization(tmp_path):
     home = tmp_path / "inst"
-    report = materialize_instance(home, force=True)
+    report = materialize_instance(home, bypass_cache=True)
 
     assert report.state == "fresh"
     assert report.marker_written is True
@@ -96,7 +96,7 @@ def test_fresh_home_full_materialization(tmp_path):
 
 def test_fresh_home_secures_dirs_0700(tmp_path):
     home = tmp_path / "inst"
-    materialize_instance(home, force=True)
+    materialize_instance(home, bypass_cache=True)
     assert stat.S_IMODE(os.stat(home).st_mode) == 0o700
     assert stat.S_IMODE(os.stat(home / "sessions").st_mode) == 0o700
     assert stat.S_IMODE(os.stat(home / "capabilities" / "state").st_mode) == 0o700
@@ -104,7 +104,7 @@ def test_fresh_home_secures_dirs_0700(tmp_path):
 
 def test_seeded_files_0600(tmp_path):
     home = tmp_path / "inst"
-    materialize_instance(home, force=True)
+    materialize_instance(home, bypass_cache=True)
     assert stat.S_IMODE(os.stat(home / "soul.md").st_mode) == 0o600
 
 
@@ -113,13 +113,29 @@ def test_seeded_files_0600(tmp_path):
 
 def test_idempotent_second_run_writes_nothing(tmp_path):
     home = tmp_path / "inst"
-    materialize_instance(home, force=True)
-    report2 = materialize_instance(home, force=True)  # force → bypass process cache
+    materialize_instance(home, bypass_cache=True)
+    report2 = materialize_instance(home, bypass_cache=True)  # bypass the memo cache
     assert report2.state == "marked"
     assert report2.created_dirs == []
     assert report2.seeded_files == []
     assert report2.marker_written is False
     assert report2.wrote_anything is False
+
+
+def test_bypass_cache_never_overwrites(tmp_path):
+    # bypass_cache is a CACHE control, NOT a write control: re-running _run with
+    # it set must still refuse to overwrite an existing (operator-edited) seeded
+    # file. Pins the never-overwrite guarantee against the renamed flag.
+    home = tmp_path / "inst"
+    materialize_instance(home, bypass_cache=True)          # fresh: seeds config.yaml, soul.md, ...
+    edited_soul = "OPERATOR EDIT — must survive\n"
+    (home / "soul.md").write_text(edited_soul, encoding="utf-8")
+    edited_cfg = "OPENROUTER_API_KEY: sk-operator\n"
+    (home / "config.yaml").write_text(edited_cfg, encoding="utf-8")
+    report = materialize_instance(home, bypass_cache=True)  # re-run _run under bypass
+    assert (home / "soul.md").read_text(encoding="utf-8") == edited_soul
+    assert (home / "config.yaml").read_text(encoding="utf-8") == edited_cfg
+    assert report.seeded_files == []  # nothing re-written
 
 
 # ── four-case adoption ───────────────────────────────────────────────────────
@@ -128,20 +144,20 @@ def test_idempotent_second_run_writes_nothing(tmp_path):
 def test_case_fresh_empty_dir(tmp_path):
     home = tmp_path / "inst"
     home.mkdir()  # exists but empty
-    assert materialize_instance(home, force=True).state == "fresh"
+    assert materialize_instance(home, bypass_cache=True).state == "fresh"
 
 
 def test_case_marked(tmp_path):
     home = tmp_path / "inst"
-    materialize_instance(home, force=True)
-    assert materialize_instance(home, force=True).state == "marked"
+    materialize_instance(home, bypass_cache=True)
+    assert materialize_instance(home, bypass_cache=True).state == "marked"
 
 
 def test_case_adopt_grove_shaped_unmarked(tmp_path):
     home = tmp_path / "inst"
     home.mkdir()
     (home / "sessions").mkdir()  # grove-shape signature present, no marker
-    report = materialize_instance(home, force=True)
+    report = materialize_instance(home, bypass_cache=True)
     assert report.state == "adopt"
     assert report.marker_written is True
     assert (home / ".grove_instance").exists()
@@ -154,7 +170,7 @@ def test_case_refuse_non_grove_unmarked(tmp_path):
     home.mkdir()
     (home / "some-unrelated-file.txt").write_text("not grove", encoding="utf-8")
     with pytest.raises(ColdStartError, match="misconfiguration|not Grove-shaped"):
-        materialize_instance(home, force=True)
+        materialize_instance(home, bypass_cache=True)
 
 
 # ── pinned filesystem semantics (F1) ─────────────────────────────────────────
@@ -166,7 +182,7 @@ def test_never_overwrites_operator_file(tmp_path):
     (home / "sessions").mkdir()  # grove-shaped → adopt (so materialize proceeds)
     sentinel = "OPERATOR OWNED — DO NOT TOUCH\n"
     (home / "soul.md").write_text(sentinel, encoding="utf-8")
-    report = materialize_instance(home, force=True)
+    report = materialize_instance(home, bypass_cache=True)
     assert (home / "soul.md").read_text(encoding="utf-8") == sentinel
     assert str(home / "soul.md") in report.skipped_present
 
@@ -203,7 +219,7 @@ def test_o_excl_collision_refusal(tmp_path):
 def test_grove_home_redirect_materializes_under_redirect(tmp_path, monkeypatch):
     home = tmp_path / "redirected"
     monkeypatch.setenv("GROVE_HOME", str(home))
-    report = materialize_instance(force=True)  # home=None → get_hermes_home()
+    report = materialize_instance(bypass_cache=True)  # home=None → get_hermes_home()
     assert report.home == str(home)
     assert (home / "soul.md").exists()
     assert (home / "sessions").is_dir()
@@ -233,31 +249,31 @@ def test_zones_overlay_honors_grove_home(tmp_path, monkeypatch):
     assert _resolve_overlay_path() == home / "zones.autonomaton.yaml"
 
 
-# ── F5c OpenRouter key signal (gated on require_api_key) ─────────────────────
+# ── F5c OpenRouter key check (check_openrouter_key; a gateway-boot step) ─────
+# Materialization is key-agnostic (no require_api_key param, no key_signal on
+# the report). The check is a standalone function the gateway calls after
+# preflight; generic CLI never calls it.
 
 
-def test_key_signal_when_absent_and_required(tmp_path, monkeypatch):
+def test_key_signal_when_absent(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    report = materialize_instance(tmp_path / "inst", force=True, require_api_key=True)
-    assert report.key_signal is not None
-    assert "OPENROUTER_API_KEY" in report.key_signal
+    from grove.cold_start import check_openrouter_key
+    sig = check_openrouter_key()
+    assert sig is not None
+    assert "OPENROUTER_API_KEY" in sig
 
 
-def test_no_key_signal_when_present(tmp_path, monkeypatch):
+def test_no_key_signal_when_present(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-abcdefghijklmnop")
-    report = materialize_instance(tmp_path / "inst", force=True, require_api_key=True)
-    assert report.key_signal is None
+    from grove.cold_start import check_openrouter_key
+    assert check_openrouter_key() is None
 
 
-def test_key_check_skipped_when_not_required(tmp_path, monkeypatch):
-    # The rename makes intent explicit: generic CLI (require_api_key=False, the
-    # default) never runs the F5c check, even with no key present. Only gateway
-    # init opts in. require_api_key is NOT a refuse bypass.
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    report = materialize_instance(tmp_path / "inst", force=True)  # default False
-    assert report.key_signal is None
+def test_materialize_report_has_no_key_concern(tmp_path):
+    # Materialization no longer carries any key state — the field is gone.
+    report = materialize_instance(tmp_path / "inst", bypass_cache=True)
+    assert not hasattr(report, "key_signal")
 
 
 # ── F1 case 4 refuses UNCONDITIONALLY — including the CLI/load_config path ────
@@ -288,7 +304,7 @@ def test_cli_path_load_config_refuses_case4(tmp_path, monkeypatch):
 
 def test_dock_and_config_seeded_from_repo(tmp_path):
     home = tmp_path / "inst"
-    materialize_instance(home, force=True)
+    materialize_instance(home, bypass_cache=True)
     assert (home / "dock" / "dock.yaml").exists()
     assert (home / "config.yaml").exists()
     # dock came from the repo template byte-for-byte
@@ -306,7 +322,7 @@ def test_dock_and_config_never_overwritten(tmp_path):
     cfg_sentinel = "OPENROUTER_API_KEY: sk-operator-owned\n"
     (home / "dock" / "dock.yaml").write_text(dock_sentinel, encoding="utf-8")
     (home / "config.yaml").write_text(cfg_sentinel, encoding="utf-8")
-    materialize_instance(home, force=True)
+    materialize_instance(home, bypass_cache=True)
     assert (home / "dock" / "dock.yaml").read_text(encoding="utf-8") == dock_sentinel
     assert (home / "config.yaml").read_text(encoding="utf-8") == cfg_sentinel
 
@@ -330,7 +346,7 @@ def test_seed_decision_keys_on_seed_source_not_absence_class(tmp_path):
     # and manifest.yaml (seed_source set, absence_class fail_loud) prove both
     # axes are independent.
     home = tmp_path / "inst"
-    materialize_instance(home, force=True)
+    materialize_instance(home, bypass_cache=True)
     assert (home / "manifest.yaml").exists()       # seed_source set → seeded
     assert not (home / "grants.yaml").exists()      # seed_source none → not seeded
 
@@ -340,7 +356,7 @@ def test_seed_decision_keys_on_seed_source_not_absence_class(tmp_path):
 
 def test_fresh_seed_produces_generic_soul(tmp_path):
     home = tmp_path / "inst"
-    materialize_instance(home, force=True)
+    materialize_instance(home, bypass_cache=True)
     soul = (home / "soul.md").read_text(encoding="utf-8")
     assert "Mylo" not in soul
     assert "Name your Autonomaton" in soul

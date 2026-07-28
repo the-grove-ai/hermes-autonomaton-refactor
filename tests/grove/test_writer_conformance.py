@@ -139,9 +139,13 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
     # capability-mutation-surface-v1 M1 (reviewed amendment): fs_utils no
     # longer carries this basename — scope-defining membership literals moved
     # to config/scope_surfaces.yaml (declarative membership).
+    # instance-cold-start-parity-v1 P2 (reviewed amendment): grants.yaml is a
+    # GRADUATED file; grove/instance_health.py names it in the classifier /
+    # graduated-set docstring as a READER-side health surface (F4), not a writer.
     "grants.yaml": frozenset({
         "grove/grants.py",
         "grove/fleet/paths.py",
+        "grove/instance_health.py",
     }),
     # writer: proposal_queue append/_write_records (grove/eval/proposal_queue.py)
     "proposals.jsonl": frozenset({

@@ -79,6 +79,13 @@ entries:
     owner: operator-state
     consumer: "capability overlay state — grove/capability_registry.py:130 (get_hermes_home()/capabilities/state); RED pending store writes — grove/red_pending_store.py:835; grove-shape signature dir"
 
+  - path: quarantine/
+    kind: dir
+    seed_source: none
+    absence_class: seed_on_absence
+    owner: operator-state
+    consumer: "P2 F2 repair destination — a malformed graduated file is moved to ~/.grove/quarantine/<name>.<utc-ts> before reseed (grove/instance_health.py). Declared here so quarantine residue is sanctioned by declaration, never future drift archaeology."
+
   # ── routing pair (P0 pin b: router.py self-seeds the pair on absence) ───────
   - path: routing.operational.yaml
     kind: file
@@ -115,6 +122,8 @@ entries:
     seed_source: config/write_workspaces.yaml
     absence_class: loud_empty
     owner: definition-seeded
+    graduated: true            # P2 F4 — malformed/unreadable → loud, not warn-empty
+    expected_shape: mapping    # fs_utils.py:659 data.get("write_workspaces")
     consumer: "grove/utils/fs_utils.py:632 _load_write_workspaces — WARNING + frozenset() on absence; seeding retires the warn-per-call (write-confinement-v1 open item)"
 
   - path: workspaces.yaml
@@ -175,13 +184,17 @@ entries:
     seed_source: config/config.yaml
     absence_class: silent_empty
     owner: definition-seeded
-    consumer: "SPEC P1 seed list — a comment-only minimal file (a commented OPENROUTER_API_KEY line, nothing else) so a fresh operator sees where the key goes. All-comments → yaml.safe_load()→None→{}: seeding it does NOT change DEFAULT_CONFIG semantics. Runtime ABSENCE stays silent_empty → deepcopy(DEFAULT_CONFIG) at hermes_cli/config.py:4307."
+    graduated: true            # P2 F4 — malformed/unreadable → loud, not warn-then-DEFAULT_CONFIG
+    expected_shape: mapping    # load_config isinstance(user_config, dict)
+    consumer: "SPEC P1 seed list — a minimal file (explicit empty mapping {} + a commented OPENROUTER_API_KEY line) so a fresh operator sees where the key goes. Parses to {} (dict, NOT None — F4 malformed class): zero DEFAULT_CONFIG semantic change. Runtime ABSENCE stays silent_empty → deepcopy(DEFAULT_CONFIG) at hermes_cli/config.py."
 
   - path: grants.yaml
     kind: file
     seed_source: none
     absence_class: silent_empty
     owner: operator-state
+    graduated: true            # P2 F4 — PRESENT-but-malformed → loud (absent stays silent [])
+    expected_shape: mapping    # grants.py:60 data.get("grants")
     consumer: "grove/grants.py:54 GrantStore.load — returns [] on absence, fail-closed silent; grants accrue at runtime (config/grants.yaml is a template, not auto-synced)"
 
   - path: zones.autonomaton.yaml
