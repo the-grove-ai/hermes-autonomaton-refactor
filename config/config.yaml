@@ -1,0 +1,34 @@
+# ============================================================================
+# config.yaml — operator runtime config seed (instance-cold-start-parity-v1)
+# ============================================================================
+#
+# Seeded to $GROVE_HOME/config.yaml on first run by the cold-start materializer
+# (config/cold_start.yaml → grove/cold_start.py), seed-on-absence only — your
+# edits are never overwritten.
+#
+# This seed is INTENTIONALLY empty: an explicit empty mapping ({} on the last
+# line) plus guidance comments. It parses to {} (a dict, NOT None), so it changes
+# NOTHING — every setting resolves from DEFAULT_CONFIG in code
+# (hermes_cli/config.py). The explicit {} matters: a comments-only file parses to
+# None, which GATE-B F4 classifies as MALFORMED for config.yaml (the class P2
+# graduates to a loud halt) — a fresh install would trip its own detector.
+# Uncomment and set only what you want to override.
+#
+# ── API key ─────────────────────────────────────────────────────────────────
+# The Autonomaton routes every model call via OpenRouter. Provide the key in the
+# environment (preferred) or here. If neither is set, the gateway emits a
+# governed actionable signal at boot naming this variable (never a raw 401).
+#
+#   Environment (preferred):  export OPENROUTER_API_KEY="sk-or-..."
+#
+# Or uncomment the line below (keep this file readable only by you — the
+# materializer sets it 0600):
+#
+# OPENROUTER_API_KEY: "sk-or-..."
+#
+# ── everything else ─────────────────────────────────────────────────────────
+# Model routing lives in routing.operational.yaml (per-tier bindings), not here.
+# See `hermes config --help` for the full override surface. Leave the empty
+# mapping below until you have a specific override to make.
+# ============================================================================
+{}

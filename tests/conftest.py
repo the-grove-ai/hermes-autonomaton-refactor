@@ -409,6 +409,46 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _cold_start_auto_mark(request, monkeypatch):
+    """instance-cold-start-parity-v1: the cold-start materializer refuses F1
+    case 4 (a non-empty, unmarked, non-Grove-shaped GROVE_HOME) UNCONDITIONALLY.
+    The suite has ~15 per-file ``isolated_home`` fixtures that point GROVE_HOME at
+    a bare ``tmp_path/.grove`` and write config into it — a case-4 dir. Rather than
+    edit every fixture (or pre-create dirs, which collides with their non-exist_ok
+    ``mkdir()``), declare each per-test GROVE_HOME an instance at the fixture level:
+    wrap ``materialize_instance`` so it stamps ``.grove_instance`` into the resolved
+    home before running. No test then depends on provisioning into an unmarked
+    non-grove dir.
+
+    The cold-start test module is EXEMPT — it exercises the real four-case
+    behavior (fresh / adopt / marked / refuse, including the CLI-path refuse) and
+    must see the materializer unwrapped.
+    """
+    if "test_cold_start" in request.node.nodeid:
+        return
+    import grove.cold_start as _cs
+
+    _real = _cs.materialize_instance
+
+    def _wrapped(home=None, **kw):
+        from hermes_constants import get_hermes_home
+
+        h = Path(home) if home is not None else get_hermes_home()
+        try:
+            marker = h / ".grove_instance"
+            if h.is_dir() and not marker.is_symlink() and not marker.exists():
+                marker.write_text("# test auto-mark\ncold_start_version: 1\n", encoding="utf-8")
+        except OSError:
+            pass
+        return _real(home, **kw)
+
+    # The ensure_hermes_home shim and gateway init both lazily
+    # ``from grove.cold_start import materialize_instance`` per call, so patching
+    # the module attribute is picked up everywhere.
+    monkeypatch.setattr(_cs, "materialize_instance", _wrapped)
+
+
 # Backward-compat alias — old tests reference this fixture name. Keep it
 # as a no-op wrapper so imports don't break.
 @pytest.fixture(autouse=True)

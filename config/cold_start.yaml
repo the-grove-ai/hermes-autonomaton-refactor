@@ -1,0 +1,206 @@
+# ============================================================================
+# cold_start.yaml — the minimal-viable ~/.grove instance contract
+# ============================================================================
+#
+# instance-cold-start-parity-v1 (P1). The declarative manifest the boot-time
+# materializer (grove/cold_start.py) reads to bring a fresh $GROVE_HOME to a
+# minimal-viable state. NO dir/file literals live in the materializer — every
+# path it touches is an entry here (Pattern v1.3 §IV.I: declarative governance).
+#
+# This file is DEFINITION (ships with the repo). It is never written to
+# $GROVE_HOME. The materializer resolves the instance root via
+# get_hermes_home() (honors GROVE_HOME) and seeds ON ABSENCE ONLY — it never
+# overwrites an operator's file.
+#
+# Durability (F1): seeds are atomic via tmp + os.rename, NOT fsync'd. A crash
+# mid-seed can therefore leave a 0-byte/torn residue at the target. That residue
+# is a benign, self-correcting failure in the RIGHT direction: a malformed seed
+# surfaces LOUD via P2's malformed-config path (fail-fast), never a silent
+# half-written instance. (This is why config.yaml is seeded as an explicit empty
+# mapping, not comments-only — see config/config.yaml.)
+#
+# ── entry fields ────────────────────────────────────────────────────────────
+#   path          instance-relative path under $GROVE_HOME (trailing / = dir)
+#   kind          dir | file
+#   seed_source   repo path to copy from  |  none (nothing is written)
+#   absence_class the CONSUMER's behavior when the file is genuinely absent,
+#                 as adjudicated in P0 §P0.2. Orthogonal to seed_source: a
+#                 seeded file is present at consume time, so its absence_class
+#                 only fires if the repo seed is ALSO gone.
+#                   silent_empty   → consumer returns empty, no log
+#                   loud_empty     → consumer returns empty + WARNING
+#                   graceful_none  → consumer returns None / skips, benign
+#                   fail_loud      → consumer raises; the Autonomaton halts
+#                   seed_on_absence→ consumer (or materializer) copies the seed
+#   owner         definition-seeded (canonical content is the repo seed) |
+#                 operator-state    (runtime/operator content; never seeded)
+#   consumer      the P0 pin / call site that requires this path (justification)
+# ============================================================================
+
+version: 1
+
+# The grove-shape signature: presence of ANY of these under $GROVE_HOME marks a
+# non-empty unmarked directory as an existing Grove instance to ADOPT rather
+# than refuse. Consumed by the materializer's 4-case adoption logic (GATE-B F1).
+grove_shape_signature:
+  - routing.operational.yaml
+  - sessions
+  - capabilities
+
+entries:
+
+  # ── required directories (derived from P0 consumer pins, NOT the retired
+  #    hermes 10-dir list; each justified by the consumer that needs it) ──────
+  - path: sessions/
+    kind: dir
+    seed_source: none
+    absence_class: seed_on_absence
+    owner: operator-state
+    consumer: "session store — hermes_cli/status.py:497, hermes_cli/main.py:12122 (get_hermes_home()/sessions/sessions.json); grove-shape signature dir"
+
+  - path: logs/
+    kind: dir
+    seed_source: none
+    absence_class: seed_on_absence
+    owner: operator-state
+    consumer: "agent/gateway logging — hermes_cli/gateway.py:2771 (logs/gateway.log); config.py:47 (agent.log/errors.log parse-failure warnings)"
+
+  - path: logs/curator/
+    kind: dir
+    seed_source: none
+    absence_class: seed_on_absence
+    owner: operator-state
+    consumer: "curator reports dir — config.py:477 mkdir; agent/curator.py:556 expects it pre-created on every launch"
+
+  - path: capabilities/state/
+    kind: dir
+    seed_source: none
+    absence_class: seed_on_absence
+    owner: operator-state
+    consumer: "capability overlay state — grove/capability_registry.py:130 (get_hermes_home()/capabilities/state); RED pending store writes — grove/red_pending_store.py:835; grove-shape signature dir"
+
+  # ── routing pair (P0 pin b: router.py self-seeds the pair on absence) ───────
+  - path: routing.operational.yaml
+    kind: file
+    seed_source: config/routing.operational.yaml
+    absence_class: seed_on_absence
+    owner: definition-seeded
+    consumer: "grove/router.py:977-990 _resolve_config_path — seeds operational copy on absence, FileNotFoundError if repo seed also gone"
+
+  - path: routing.authority.yaml
+    kind: file
+    seed_source: config/routing.authority.yaml
+    absence_class: seed_on_absence
+    owner: definition-seeded
+    consumer: "grove/router.py:992-993 — authority sibling seeded alongside operational; the split pair travels as a unit"
+
+  - path: routing.autonomaton.yaml
+    kind: file
+    seed_source: none
+    absence_class: graceful_none
+    owner: operator-state
+    consumer: "optional machine overlay merged over routing.operational.yaml by grove/router_merge.load_operational_routing_config; NEVER seed — born organically via the approve path (standing watch)."
+
+  # ── manifest (P0 pin f: instance-first, repo-fallback) ──────────────────────
+  - path: manifest.yaml
+    kind: file
+    seed_source: config/manifest.yaml
+    absence_class: fail_loud
+    owner: definition-seeded
+    consumer: "grove/manifest.py:201-204 _resolve_manifest_path (instance-first, repo-fallback); load_manifest raises FileNotFoundError if neither exists"
+
+  # ── workspaces pair (P0 pin d: loud-empty on absence; scope-defining) ───────
+  - path: write_workspaces.yaml
+    kind: file
+    seed_source: config/write_workspaces.yaml
+    absence_class: loud_empty
+    owner: definition-seeded
+    consumer: "grove/utils/fs_utils.py:632 _load_write_workspaces — WARNING + frozenset() on absence; seeding retires the warn-per-call (write-confinement-v1 open item)"
+
+  - path: workspaces.yaml
+    kind: file
+    seed_source: config/workspaces.yaml
+    absence_class: loud_empty
+    owner: definition-seeded
+    consumer: "grove/utils/fs_utils.py:418-430 _WORKSPACES_MANIFEST read-workspace allowlist — fail-closed; scope-defining meta-wall"
+
+  # ── identity set (P0 pin g / §P0.3). jidoka tiers hard-fail if truly absent;
+  #    materializer seeds from the repo so a fresh instance always has them ────
+  - path: constitution.md
+    kind: file
+    seed_source: config/identity/constitution.md
+    absence_class: fail_loud
+    owner: definition-seeded
+    consumer: "grove/identity.py:531-538 jidoka tier — IdentityError (Autonomaton will not start) if no instance copy and no repo template"
+
+  - path: soul.md
+    kind: file
+    seed_source: config/identity/soul.md
+    absence_class: fail_loud
+    owner: definition-seeded
+    consumer: "grove/identity.py:88-89 _IDENTITY_FILES jidoka tier — IdentityError if absent+unseedable (legacy fallback SOUL.md)"
+
+  - path: affordances.md
+    kind: file
+    seed_source: config/identity/affordances.md
+    absence_class: graceful_none
+    owner: definition-seeded
+    consumer: "grove/identity.py graceful tier — composes without it, warns (capability landscape)"
+
+  - path: operator-core.md
+    kind: file
+    seed_source: config/identity/operator-core.md
+    absence_class: graceful_none
+    owner: definition-seeded
+    consumer: "grove/identity.py:151-182 _resolve_operator_core — falls back to the working-style default template when absent/empty/over-cap"
+
+  - path: operator-extended.md
+    kind: file
+    seed_source: config/identity/operator-extended.md
+    absence_class: graceful_none
+    owner: definition-seeded
+    consumer: "grove/identity.py — T2/T3 operator bio/context; graceful when absent"
+
+  - path: agents.md
+    kind: file
+    seed_source: none
+    absence_class: graceful_none
+    owner: operator-state
+    consumer: "grove/identity.py:90 _IDENTITY_FILES silent tier — returns None with no log; no repo template (template=None), never seeded"
+
+  # ── documented, NOT materialized: absence is legitimate. Listed so the
+  #    contract is the single truth for what a minimal instance may lack ───────
+  - path: config.yaml
+    kind: file
+    seed_source: config/config.yaml
+    absence_class: silent_empty
+    owner: definition-seeded
+    consumer: "SPEC P1 seed list — a comment-only minimal file (a commented OPENROUTER_API_KEY line, nothing else) so a fresh operator sees where the key goes. All-comments → yaml.safe_load()→None→{}: seeding it does NOT change DEFAULT_CONFIG semantics. Runtime ABSENCE stays silent_empty → deepcopy(DEFAULT_CONFIG) at hermes_cli/config.py:4307."
+
+  - path: grants.yaml
+    kind: file
+    seed_source: none
+    absence_class: silent_empty
+    owner: operator-state
+    consumer: "grove/grants.py:54 GrantStore.load — returns [] on absence, fail-closed silent; grants accrue at runtime (config/grants.yaml is a template, not auto-synced)"
+
+  - path: zones.autonomaton.yaml
+    kind: file
+    seed_source: none
+    absence_class: graceful_none
+    owner: operator-state
+    consumer: "grove/zones.py:624-629 _resolve_overlay_path — None on absence, repo config/zones.schema.yaml policy stands alone (overlay is optional)"
+
+  - path: model-catalog.yaml
+    kind: file
+    seed_source: none
+    absence_class: graceful_none
+    owner: operator-state
+    consumer: "grove/config/model_catalog.py:194-216 load_catalog — merge falls back to repo config/model-catalog.yaml alone when sovereign absent"
+
+  - path: dock/dock.yaml
+    kind: file
+    seed_source: config/dock/dock.yaml
+    absence_class: graceful_none
+    owner: definition-seeded
+    consumer: "SPEC P1 seed list + Hotfix-1 ('materializer must seed the dock template'); OOBE Moment 2 depends on the seeded example goal. Seed-on-absence, never-overwrite (operator Dock edits survive). Runtime ABSENCE stays graceful_none: grove/dock/__init__.py:199-201 load_dock returns None ('Dock not installed'). The config/dock/ template is a SEED source, never a live fallback (dock/__init__.py:18-25)."

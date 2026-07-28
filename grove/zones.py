@@ -623,7 +623,11 @@ def _resolve_schema_path(explicit: Optional[Path]) -> Path:
 
 def _resolve_overlay_path() -> Optional[Path]:
     """Return the operator overlay path if it exists, else None."""
-    overlay = Path.home() / ".grove" / "zones.autonomaton.yaml"
+    # instance-cold-start-parity-v1 D3 — resolve via get_hermes_home() so the
+    # overlay honors GROVE_HOME (was a hardcoded Path.home()/".grove").
+    from hermes_constants import get_hermes_home
+
+    overlay = Path(get_hermes_home()) / "zones.autonomaton.yaml"
     if overlay.exists():
         return overlay
     return None

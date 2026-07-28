@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import yaml
 from pathlib import Path
 from unittest.mock import patch, call
 
@@ -55,7 +56,10 @@ class TestExplicitAllowlist:
         env_content = _read_env(_isolated_hermes_home)
         assert f"{key}=test-value-123" in env_content
         # Must NOT appear in config.yaml
-        assert key not in _read_config(_isolated_hermes_home)
+        # Not STORED as a config value (parse, not raw text: the cold-start
+        # config.yaml seed carries a commented OPENROUTER_API_KEY example line,
+        # which is not storage — instance-cold-start-parity-v1 correction 6).
+        assert key not in (yaml.safe_load(_read_config(_isolated_hermes_home)) or {})
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +80,10 @@ class TestCatchAllPatterns:
         set_config_value(key, "secret-456")
         env_content = _read_env(_isolated_hermes_home)
         assert f"{key}=secret-456" in env_content
-        assert key not in _read_config(_isolated_hermes_home)
+        # Not STORED as a config value (parse, not raw text: the cold-start
+        # config.yaml seed carries a commented OPENROUTER_API_KEY example line,
+        # which is not storage — instance-cold-start-parity-v1 correction 6).
+        assert key not in (yaml.safe_load(_read_config(_isolated_hermes_home)) or {})
 
     def test_case_insensitive(self, _isolated_hermes_home):
         """Keys should be uppercased regardless of input casing."""

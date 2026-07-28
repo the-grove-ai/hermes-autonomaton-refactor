@@ -38,20 +38,35 @@ class TestGetHermesHome:
 
 class TestEnsureHermesHome:
     def test_creates_subdirs(self, tmp_path):
+        # instance-cold-start-parity-v1 D4: ensure_hermes_home now delegates to
+        # the cold-start materializer, whose dir set is derived from
+        # config/cold_start.yaml (the retired hardcoded 10-dir list — cron,
+        # memories, pairing, hooks, … — is gone; only P0-consumer-justified dirs
+        # are created).
+        from grove.cold_start import _reset_cache
+        _reset_cache()
         with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):
             ensure_hermes_home()
-            assert (tmp_path / "cron").is_dir()
             assert (tmp_path / "sessions").is_dir()
             assert (tmp_path / "logs").is_dir()
-            assert (tmp_path / "memories").is_dir()
+            assert (tmp_path / "logs" / "curator").is_dir()
+            assert (tmp_path / "capabilities" / "state").is_dir()
+            # Retired dirs are no longer pre-created.
+            assert not (tmp_path / "cron").exists()
+            assert not (tmp_path / "memories").exists()
 
-    def test_skips_legacy_soul_md_when_grove_template_present(self, tmp_path):
-        """ensure_hermes_home() skips legacy SOUL.md seeding when the Grove
-        identity template exists — load_identity() seeds soul.md from the
-        Atlas-pattern template instead (persona-soul-retrofit-v1)."""
+    def test_seeds_canonical_soul_from_grove_template(self, tmp_path):
+        """instance-cold-start-parity-v1 D4/D5: the materializer seeds the
+        canonical lowercase soul.md from the generic Grove identity template —
+        never the legacy DEFAULT_SOUL_MD. (Asserted on content rather than an
+        uppercase-SOUL.md absence, which is a case-insensitive-FS artifact.)"""
+        from grove.cold_start import _reset_cache
+        _reset_cache()
         with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):
             ensure_hermes_home()
-            assert not (tmp_path / "SOUL.md").exists()
+            soul = (tmp_path / "soul.md").read_text(encoding="utf-8")
+            assert "Name your Autonomaton" in soul  # generic stub marker
+            assert "Mylo" not in soul
 
     def test_does_not_overwrite_existing_soul_md(self, tmp_path):
         with patch.dict(os.environ, {"GROVE_HOME": str(tmp_path)}):

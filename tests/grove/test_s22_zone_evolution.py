@@ -347,6 +347,10 @@ class TestSaveZoneRule:
         # Set up a temp HOME so the test doesn't touch the operator's real schema.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
+        # instance-cold-start-parity-v1 D3: zones + zone_rules resolve GROVE_HOME
+        # via get_hermes_home() now (no Path.home()/".grove" hardcode), so drive
+        # the home through GROVE_HOME to keep this test hermetic.
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
         target = tmp_path / ".grove" / "zones.schema.yaml"
         # Inline a minimal bare-string schema rather than copying the
         # repo template. The template's ``terminal`` entry is now
@@ -400,6 +404,10 @@ class TestSaveZoneRule:
         its humanity — comments in the overlay file survive a save cycle."""
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
+        # instance-cold-start-parity-v1 D3: zones + zone_rules resolve GROVE_HOME
+        # via get_hermes_home() now (no Path.home()/".grove" hardcode), so drive
+        # the home through GROVE_HOME to keep this test hermetic.
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
         target = tmp_path / ".grove" / "zones.schema.yaml"
         shutil.copy(
             Path(__file__).resolve().parent.parent.parent
@@ -440,6 +448,10 @@ class TestSaveZoneRule:
         a process restart."""
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
+        # instance-cold-start-parity-v1 D3: zones + zone_rules resolve GROVE_HOME
+        # via get_hermes_home() now (no Path.home()/".grove" hardcode), so drive
+        # the home through GROVE_HOME to keep this test hermetic.
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
         # Use initialize() with no explicit path so the classifier loads
         # the repo default schema (which is the canonical policy path and
         # the only path for which overlay loading is enabled).
@@ -471,6 +483,10 @@ class TestSaveZoneRule:
         of appending a semantically inert rule."""
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
+        # instance-cold-start-parity-v1 D3: zones + zone_rules resolve GROVE_HOME
+        # via get_hermes_home() now (no Path.home()/".grove" hardcode), so drive
+        # the home through GROVE_HOME to keep this test hermetic.
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
         overlay = tmp_path / ".grove" / "zones.autonomaton.yaml"
 
         # Seed overlay with a bare-string entry and an inert rule (simulating
@@ -515,6 +531,10 @@ class TestSaveZoneRule:
         (match_pattern != tool_id) are preserved."""
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
+        # instance-cold-start-parity-v1 D3: zones + zone_rules resolve GROVE_HOME
+        # via get_hermes_home() now (no Path.home()/".grove" hardcode), so drive
+        # the home through GROVE_HOME to keep this test hermetic.
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
         overlay = tmp_path / ".grove" / "zones.autonomaton.yaml"
 
         import yaml as _yaml
@@ -552,6 +572,10 @@ class TestSaveZoneRule:
     def test_save_refuses_redos_pattern(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         (tmp_path / ".grove").mkdir()
+        # instance-cold-start-parity-v1 D3: zones + zone_rules resolve GROVE_HOME
+        # via get_hermes_home() now (no Path.home()/".grove" hardcode), so drive
+        # the home through GROVE_HOME to keep this test hermetic.
+        monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
         target = tmp_path / ".grove" / "zones.schema.yaml"
         shutil.copy(
             Path(__file__).resolve().parent.parent.parent

@@ -406,77 +406,30 @@ def _secure_file(path):
         pass
 
 
-def _ensure_default_soul_md(home: Path) -> None:
-    """Seed a default soul.md into GROVE_HOME if the user doesn't have one yet.
-
-    The canonical Grove identity file is lowercase ``soul.md`` (the Atlas
-    pattern — what ``grove.identity.load_identity()`` reads and seeds). Honor an
-    existing file of either case so a case-sensitive filesystem (Linux) never
-    double-seeds or shadows, and write the canonical lowercase name when seeding.
-    """
-    for name in ("soul.md", "SOUL.md"):
-        if (home / name).exists():
-            return
-    # Skip legacy seeding when the Grove identity template exists — load_identity()
-    # seeds the canonical lowercase soul.md from it, and a file written here would
-    # only race or shadow that.
-    grove_soul_template = (
-        Path(__file__).resolve().parent.parent / "config" / "identity" / "soul.md"
-    )
-    if grove_soul_template.exists():
-        return
-    soul_path = home / "soul.md"
-    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
-    _secure_file(soul_path)
-
-
 def ensure_hermes_home():
-    """Ensure ~/.grove directory structure exists with secure permissions.
+    """Backward-compatible seam → the cold-start materializer.
 
-    In managed mode (NixOS), dirs are created by the activation script with
-    setgid + group-writable (2770). We skip mkdir and set umask(0o007) so
-    any files created (e.g. SOUL.md) are group-writable (0660).
+    instance-cold-start-parity-v1 D4: the inherited 10-dir literal list, the
+    per-dir ``_secure_dir`` loop, the managed-mode variant, and the legacy
+    SOUL.md seed are retired. Instance provisioning is now driven by the
+    declarative contract ``config/cold_start.yaml`` through
+    ``grove.cold_start.materialize_instance`` — which honors ``GROVE_HOME``,
+    derives its dir set from the contract (not a hardcoded list), seeds on
+    absence only, secures dirs to 0700 (0660 files under managed), refuses a
+    misconfigured GROVE_HOME loudly, and is idempotent.
+
+    The name survives as a thin seam so existing callers and test patch-targets
+    keep working; the body delegates entirely to the materializer. Imported
+    lazily to avoid an import cycle (grove.cold_start's managed-mode probe reads
+    is_managed from this module).
     """
-    home = get_hermes_home()
-    if is_managed():
-        old_umask = os.umask(0o007)
-        try:
-            _ensure_hermes_home_managed(home)
-        finally:
-            os.umask(old_umask)
-    else:
-        home.mkdir(parents=True, exist_ok=True)
-        _secure_dir(home)
-        for subdir in (
-            "cron", "sessions", "logs", "logs/curator", "memories",
-            "pairing", "hooks", "image_cache", "audio_cache", "skills",
-        ):
-            d = home / subdir
-            d.mkdir(parents=True, exist_ok=True)
-            _secure_dir(d)
-        _ensure_default_soul_md(home)
+    from grove.cold_start import materialize_instance
 
-
-def _ensure_hermes_home_managed(home: Path):
-    """Managed-mode variant: verify dirs exist (activation creates them), seed SOUL.md."""
-    if not home.is_dir():
-        raise RuntimeError(
-            f"GROVE_HOME {home} does not exist. "
-            "Run 'sudo nixos-rebuild switch' first."
-        )
-    for subdir in ("cron", "sessions", "logs", "memories"):
-        d = home / subdir
-        if not d.is_dir():
-            raise RuntimeError(
-                f"{d} does not exist. "
-                "Run 'sudo nixos-rebuild switch' first."
-            )
-    # Curator reports dir is a sub-path of logs/; create it if missing.
-    # In managed mode the activation script may not know about this subdir,
-    # so we mkdir it ourselves (it's inside an already-secured logs/ dir).
-    (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
-    # Inside umask(0o007) scope — SOUL.md will be created as 0660
-    _ensure_default_soul_md(home)
+    # F1 case 4 refuses unconditionally here too (a misconfigured GROVE_HOME
+    # must halt loudly, per adjudication — warn-then-proceed is not a governed
+    # halt). require_api_key stays False: the F5c key check belongs to gateway
+    # init, not every config read.
+    materialize_instance()
 
 
 # =============================================================================

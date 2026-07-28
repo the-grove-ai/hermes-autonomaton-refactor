@@ -410,8 +410,12 @@ def test_save_zone_rule_dedup_guard(tmp_path, monkeypatch):
 # ----- reload picks up overlay changes ----------------------------------------
 
 def test_reload_picks_up_overlay(tmp_path, monkeypatch):
+    # instance-cold-start-parity-v1 D3: zones resolves the overlay via
+    # get_hermes_home() (honors GROVE_HOME), no longer a hardcoded
+    # Path.home()/".grove". Drive the home through GROVE_HOME accordingly.
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     (tmp_path / ".grove").mkdir()
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
     import grove.zones as _zones
     import importlib
     importlib.reload(_zones)

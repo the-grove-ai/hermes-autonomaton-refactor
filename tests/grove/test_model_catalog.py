@@ -335,7 +335,12 @@ class TestMintAndWrite:
         slugs = {m["slug"] for m in cat}
         assert "moonshotai/kimi-k3" in slugs            # added
         assert "anthropic/claude-opus-4.6" in slugs     # repo survives
-        assert len(cat) == 26
+        # Robust against repo catalog growth (was a stale hardcoded 26 that
+        # broke when the seed grew 25→26): merged = every repo slug + the one
+        # new sovereign slug (kimi-k3 is not in the repo seed).
+        from grove.config.model_catalog import _load_catalog_file, _repo_catalog_path
+        repo_n = len(_load_catalog_file(_repo_catalog_path()))
+        assert len(cat) == repo_n + 1
 
     def test_written_file_is_schema_shaped(self, sov):
         # Regression pin for the live-run defect: the writer emits a `models:` LIST

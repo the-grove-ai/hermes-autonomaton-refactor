@@ -106,15 +106,22 @@ class TestConfigFilePermissions(unittest.TestCase):
             self.assertEqual(file_mode, 0o600)
 
     def test_ensure_hermes_home_sets_0700(self):
+        # instance-cold-start-parity-v1 D4: ensure_hermes_home delegates to the
+        # cold-start materializer. Control the home via GROVE_HOME (both
+        # config and grove.cold_start bind hermes_constants.get_hermes_home,
+        # which reads the env each call) rather than patching one module's
+        # binding. Dir set is the contract-derived one; 0700 securing preserved.
         home = Path(self.tmpdir) / ".grove"
-        with patch("hermes_cli.config.get_hermes_home", return_value=home):
+        from grove.cold_start import _reset_cache
+        _reset_cache()
+        with patch.dict(os.environ, {"GROVE_HOME": str(home)}):
             from hermes_cli.config import ensure_hermes_home
             ensure_hermes_home()
 
             home_mode = stat.S_IMODE(os.stat(home).st_mode)
             self.assertEqual(home_mode, 0o700)
 
-            for subdir in ("cron", "sessions", "logs", "memories"):
+            for subdir in ("sessions", "logs", "logs/curator", "capabilities/state"):
                 subdir_mode = stat.S_IMODE(os.stat(home / subdir).st_mode)
                 self.assertEqual(subdir_mode, 0o700, f"{subdir} should be 0700")
 

@@ -974,7 +974,12 @@ def _resolve_config_path(explicit: Optional[Path]) -> Path:
     if explicit is not None:
         return Path(explicit)
 
-    operator_copy = Path.home() / ".grove" / "routing.operational.yaml"
+    # instance-cold-start-parity-v1 D3 — resolve via get_hermes_home() so the
+    # seed pair honors GROVE_HOME (was a hardcoded Path.home()/".grove", which
+    # ignored the env var and seeded to the wrong instance under a redirect).
+    from hermes_constants import get_hermes_home
+
+    operator_copy = Path(get_hermes_home()) / "routing.operational.yaml"
     if operator_copy.exists():
         return operator_copy
 

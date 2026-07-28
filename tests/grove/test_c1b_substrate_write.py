@@ -487,8 +487,11 @@ class TestDockOfferNotTheater:
         d = Dispatcher(sovereign_prompt_handler=lambda halt: "deny")
         with pytest.raises(AndonResolutionHalt):
             d._classify_intents_batch_and_halt_or_raise([intent])
-        # The synchronous halt fired during classification — no write occurred.
-        assert not target.exists()
+        # The synchronous halt fired during classification — the PROPOSAL's write
+        # did not occur. (instance-cold-start-parity-v1 seeds config/dock/dock.yaml
+        # into a fresh instance, so dock/dock.yaml may exist as the operator-owned
+        # seed; assert the proposal's content did not land, not absolute absence.)
+        assert not target.exists() or target.read_text(encoding="utf-8") != "version: '1.0'\n"
 
 
 # ── Phase 4 — invoke_skill EXECUTABLE_STATES guard ───────────────────────────

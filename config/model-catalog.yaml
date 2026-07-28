@@ -3,8 +3,12 @@
 # ============================================================================
 #
 # Repo-shipped SEED catalog. A sovereign ~/.grove/model-catalog.yaml, if present,
-# is loaded INSTEAD (operator wins). The Cognitive Router never reads this file —
-# it is the model menu for the portal swap UI only.
+# is merged PER SLUG over this seed (operator wins per slug): a sovereign entry
+# masks the repo entry of the same slug, a new sovereign slug is appended, and
+# repo entries the override does not name SURVIVE. It is NOT a whole-file replace.
+# (See grove/config/model_catalog.py::merge_catalogs / _SOVEREIGN_HEADER.) The
+# Cognitive Router never reads this file — it is the model menu for the portal
+# swap UI only.
 #
 # EVERY slug here was verified against the live OpenRouter model list
 # (GET https://openrouter.ai/api/v1/models) at authoring time, and the costs

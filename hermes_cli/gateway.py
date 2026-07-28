@@ -3134,6 +3134,15 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
+    # instance-cold-start-parity-v1 D2 — gateway init is a deliberate cold-start
+    # moment. The F1 case-4 refuse is unconditional on every path (CLI shim
+    # included); what is specific to the gateway is the F5c key requirement:
+    # require_api_key=True turns a missing/placeholder OPENROUTER_API_KEY into a
+    # governed actionable signal at boot (generic CLI does not require it).
+    from grove.cold_start import materialize_instance
+
+    materialize_instance(require_api_key=True)
+
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still
     # needs to obey the banner's "Press Ctrl+C to stop" contract.
