@@ -41,8 +41,48 @@ APPROVE_DISPOSITION = "approve"
 ALLOWED_DISPOSITIONS = frozenset({APPROVE_DISPOSITION})
 
 # Required claim set — strict, no defaults. The verifier enforces presence; the
-# signer emits exactly these.
-REQUIRED_CLAIMS = ("proposal_id", "disposition", "jti", "iat", "exp")
+# signer emits exactly these. P4 dual-claim model: proposal_id is a LOCATOR,
+# content_digest is the COMMITMENT (what the operator actually approved).
+REQUIRED_CLAIMS = ("proposal_id", "disposition", "jti", "iat", "exp", "content_digest")
+
+# The EXACT field set the content commitment covers — one authoritative
+# definition (no duplicate literal elsewhere). Deliberately the hashed-content
+# fields only; annotation fields (semantic_justification, proposer, detail,
+# source_patterns, lease) are NOT part of the commitment and never signed.
+DIGEST_FIELDS = ("type", "payload", "evidence")
+
+# Domain separation for the content digest (GATE-B G3): the hash input is
+# prefixed so a content_digest can never collide with, or be replayed as, any
+# other SHA-256 the system computes (a proposal_id, an effect signature, …).
+_DIGEST_DOMAIN = b"grove-gate-v1:content_digest:"
+
+
+def canonical_digest(record) -> str:
+    """SHA-256 hex over the domain-separated canonical JSON of exactly
+    :data:`DIGEST_FIELDS` ({type, payload, evidence}) drawn from *record* (any
+    mapping-like object exposing those keys).
+
+    Canonical = ``sort_keys=True``, compact separators, ``ensure_ascii=True`` —
+    so the device (pre-wire, from the in-memory proposal) and the server
+    (post-JSON-wire, from the reloaded record) compute the IDENTICAL digest
+    regardless of dict key ordering, whitespace, or non-ASCII transport. Evidence
+    is normalized to a list (JSON round-trips tuples to lists), so a tuple on the
+    server and a list on the client hash the same.
+
+    This is the COMMITMENT the operator signs — independent of how any producer
+    minted the locator proposal_id (identity-subset vs full-content), which is
+    the id-semantics divergence P3's Andon exposed."""
+    import json
+
+    fields = {
+        "type": record.get("type"),
+        "payload": record.get("payload"),
+        "evidence": list(record.get("evidence") or ()),
+    }
+    canonical = json.dumps(
+        fields, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    return hashlib.sha256(_DIGEST_DOMAIN + canonical.encode("utf-8")).hexdigest()
 
 
 def spki_fingerprint(public_key) -> str:

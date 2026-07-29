@@ -5586,13 +5586,14 @@ def _gate_approve(args):
         return 2
     try:
         record = client.fetch_raw_record(base_url, args.proposal_id)
-        # Recompute + verify BEFORE any prompt — a mismatch is a loud refuse
-        # naming both ids, with no prompt shown and nothing signed.
-        client.recompute_and_verify_id(record, args.proposal_id)
     except client.GateClientError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
+    # P4 dual-claim — the commitment the operator signs is the content_digest
+    # over the SIGNING SURFACE below (type/payload/evidence only). proposal_id is
+    # a locator; the server re-derives and compares the digest.
+    digest = client.content_digest(record)
     print(client.render_for_approval(record))
     print()
     if not _gate_confirm("Sign and submit an approval grant for THIS proposal?"):
@@ -5604,7 +5605,7 @@ def _gate_approve(args):
             getattr(args, "kid", None)
         )
         token = client.build_token(
-            args.proposal_id, private_key, kid, operator_identity
+            args.proposal_id, digest, private_key, kid, operator_identity
         )
     except keyfile.GateKeyError as exc:
         print(str(exc), file=sys.stderr)

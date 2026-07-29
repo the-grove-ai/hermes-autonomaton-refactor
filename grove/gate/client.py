@@ -21,83 +21,53 @@ from grove.gate import constants
 
 # Fields NOT covered by compute_proposal_id (P1a pin 5). They may only appear
 # under the UNVERIFIED banner, never in the authoritative surface.
-_UNHASHED_FIELDS = (
-    "semantic_justification",
-    "proposer",
-    "detail",
-    "source_patterns",
-    "lease",
-)
-
-_UNVERIFIED_BANNER = (
-    "--- UNVERIFIED ANNOTATION — not covered by the hash you are approving ---"
-)
-
-
 class GateClientError(RuntimeError):
-    """Device-side approval failed — content-id mismatch, fetch/transport error,
-    or a server refusal. Governed loud fault."""
+    """Device-side approval failed — fetch/transport error or a server refusal.
+    Governed loud fault."""
 
 
-def recompute_and_verify_id(record: dict, claimed_id: str) -> str:
-    """Recompute the content id from the HASHED fields via the IMPORTED
-    :func:`grove.eval.proposal_queue.compute_proposal_id` (never reimplemented)
-    and compare the FULL string incl. the ``sha256:`` prefix (P1a pin 5).
+# NOTE — the P2 universal id-recompute hard gate is RETIRED (P4 / GATE-B Andon
+# adjudication). proposal_id is now a LOCATOR, not a content hash: producers mint
+# it from a per-type identity subset (dock_mutation/goal_attachment) or the full
+# content (exploration_nudge/model_binding), so a blanket
+# compute_proposal_id(stored fields) can never match every type. The COMMITMENT
+# the operator signs is content_digest over DIGEST_FIELDS (constants.canonical_
+# digest); the server re-derives it from the reloaded record and compares.
 
-    Returns the recomputed id; raises :class:`GateClientError` naming BOTH ids on
-    mismatch — the caller must not prompt or sign after a raise."""
-    from grove.eval.proposal_queue import compute_proposal_id
 
-    recomputed = compute_proposal_id(
-        type=record["type"],
-        payload=record["payload"],
-        evidence=tuple(record.get("evidence") or ()),
-    )
-    if recomputed != claimed_id:
-        raise GateClientError(
-            "REFUSE — content-id mismatch. The fetched record does not hash to "
-            "the id you are approving; the stored record was altered or the id "
-            "is wrong. Nothing signed, no prompt shown.\n"
-            f"  claimed:    {claimed_id}\n"
-            f"  recomputed: {recomputed}"
-        )
-    return recomputed
+def content_digest(record: dict) -> str:
+    """The commitment digest over the fetched record's DIGEST_FIELDS — the SAME
+    :func:`grove.gate.constants.canonical_digest` the server re-derives, so a
+    JSON round-trip on the wire cannot change the value."""
+    return constants.canonical_digest(record)
 
 
 def render_for_approval(record: dict) -> str:
-    """Render the AUTHORITATIVE surface: hashed fields ONLY (type, payload,
-    evidence) — payload as raw JSON, no summarization. Unhashed annotations, if
-    any, appear ONLY below, under the loud UNVERIFIED banner — never above or
-    interleaved with the hashed surface (F4)."""
-    lines = [
-        "=== AUTHORITATIVE — this is exactly what the hash covers ===",
+    """Render the SIGNING SURFACE — the digested fields ONLY: type, payload
+    (raw JSON, no summarization), evidence. Annotation fields
+    (semantic_justification, proposer, detail, source_patterns, lease) are
+    OMITTED entirely — not shown, no banner (G1 strengthened): the operator sees
+    exactly, and only, what the content_digest commits to."""
+    return "\n".join([
+        "=== SIGNING SURFACE — exactly what your content_digest commits to ===",
         f"proposal type: {record['type']}",
         "payload:",
         json.dumps(record["payload"], indent=2, sort_keys=True),
         f"evidence: {json.dumps(list(record.get('evidence') or ()))}",
-    ]
-    unhashed = {
-        k: record[k]
-        for k in _UNHASHED_FIELDS
-        if k in record and record[k] not in (None, "", [], {})
-    }
-    if unhashed:
-        lines.append("")
-        lines.append(_UNVERIFIED_BANNER)
-        for k, v in unhashed.items():
-            lines.append(f"{k}: {json.dumps(v)}")
-    return "\n".join(lines)
+    ])
 
 
 def build_token(
     proposal_id: str,
+    content_digest_value: str,
     private_key,
     kid: str,
     operator_identity: str,
     *,
     now: Optional[int] = None,
 ) -> str:
-    """Mint the ES256 grant token. EVERY value binds to
+    """Mint the dual-claim ES256 grant token: ``proposal_id`` (locator) +
+    ``content_digest`` (commitment). EVERY value binds to
     :mod:`grove.gate.constants` (the single source the verifier reads); ``exp =
     iat + MAX_WINDOW_SECONDS``, ``jti`` fresh per call."""
     import jwt
@@ -105,6 +75,7 @@ def build_token(
     iat = int(time.time()) if now is None else int(now)
     claims = {
         "proposal_id": proposal_id,
+        "content_digest": content_digest_value,
         "disposition": constants.APPROVE_DISPOSITION,
         "jti": uuid4().hex,
         "iat": iat,

@@ -130,6 +130,7 @@ def _mint(
     jti=None,
     sign_key=None,
     claims_override=None,
+    content_digest="0" * 64,
 ):
     now = int(time.time())
     iat = now if iat is None else iat
@@ -138,6 +139,7 @@ def _mint(
         "aud": aud,
         "iss": iss,
         "proposal_id": proposal_id,
+        "content_digest": content_digest,
         "disposition": disposition,
         "jti": jti or uuid.uuid4().hex,
         "iat": iat,
@@ -301,11 +303,12 @@ def test_missing_required_claim_refused():
     priv, pub = _keypair()
     reg = {"k1": _authorized_key("k1", pub)}
     now = int(time.time())
-    # No jti claim.
+    # No jti claim (every other required claim present, incl. content_digest).
     claims = {
         "aud": _AUDIENCE,
         "iss": _OPERATOR,
         "proposal_id": "sha256:p",
+        "content_digest": "0" * 64,
         "disposition": "approve",
         "iat": now,
         "exp": now + 30,
@@ -565,12 +568,28 @@ async def client(grove_home):
         yield c
 
 
+_DOCK_PAYLOAD = {"goal": {"id": "g-gate", "name": "Gate Test", "status": "staging"}}
+_DOCK_EVIDENCE = ("turn_1",)
+
+
+def _dock_digest():
+    """The content_digest the server will re-derive for the _append_dock_mutation
+    record — computed via the SAME shared canonical_digest (P4 dual-claim)."""
+    from grove.gate.constants import canonical_digest
+
+    return canonical_digest({
+        "type": PROPOSAL_TYPE_DOCK_MUTATION,
+        "payload": _DOCK_PAYLOAD,
+        "evidence": _DOCK_EVIDENCE,
+    })
+
+
 def _append_dock_mutation(pid):
     proposal_queue.append(proposal_queue.RoutingProposal(
         proposal_id=pid,
         type=PROPOSAL_TYPE_DOCK_MUTATION,
-        payload={"goal": {"id": "g-gate", "name": "Gate Test", "status": "staging"}},
-        evidence=("turn_1",),
+        payload=dict(_DOCK_PAYLOAD),
+        evidence=_DOCK_EVIDENCE,
         eval_hash="hash1",
         created_at="2026-06-26T00:00:00Z",
     ))
@@ -595,7 +614,7 @@ async def test_wire_valid_token_applies_and_stamps(
     priv, pub = provisioned_registry
     pid = f"{PROPOSAL_TYPE_DOCK_MUTATION}:applied"
     _append_dock_mutation(pid)
-    token = _mint(priv, proposal_id=pid)
+    token = _mint(priv, proposal_id=pid, content_digest=_dock_digest())
 
     captured = {}
     real = actions._record_kaizen_disposition
@@ -638,7 +657,8 @@ async def test_wire_replay_refused_durable(
     priv, _ = provisioned_registry
     pid = f"{PROPOSAL_TYPE_DOCK_MUTATION}:replay"
     _append_dock_mutation(pid)
-    token = _mint(priv, proposal_id=pid, jti="fixed-replay-jti")
+    token = _mint(priv, proposal_id=pid, jti="fixed-replay-jti",
+                  content_digest=_dock_digest())
 
     r1 = await client.post(
         f"/portal/actions/proposals/{pid}/approve", data={"token": token}
@@ -675,6 +695,132 @@ async def test_wire_wrong_binding_refused(
     body = await r.text()
     assert "rejected" in body
     assert proposal_queue.read(pid_b) is not None
+
+
+async def test_wire_content_mismatch_refused_no_consume(
+    client, grove_home, provisioned_registry
+):
+    """P4 commitment check: a token whose content_digest does NOT match the
+    stored record is refused (409), BEFORE jti consumption, zero writes — even
+    though proposal_id (locator) matches and the signature is valid."""
+    priv, _ = provisioned_registry
+    pid = f"{PROPOSAL_TYPE_DOCK_MUTATION}:mismatch"
+    _append_dock_mutation(pid)
+    token = _mint(priv, proposal_id=pid, jti="mismatch-jti",
+                  content_digest="f" * 64)  # wrong commitment
+
+    r = await client.post(
+        f"/portal/actions/proposals/{pid}/approve", data={"token": token}
+    )
+    assert r.status == 409
+    assert "content mismatch" in (await r.text())
+    assert proposal_queue.read(pid) is not None  # not applied
+    # jti NOT consumed — a corrected re-submit with the RIGHT digest still works.
+    store = rp.get_red_pending_store()
+    assert store.consume_jti("mismatch-jti", pid, "k1") is True  # fresh → not burned
+
+
+async def test_wire_g4_single_read_and_raw_rewrite_ineffective(
+    client, grove_home, provisioned_registry, monkeypatch
+):
+    """G4 (cause AND consequence). Cause: the proposal is read EXACTLY ONCE per
+    approve. Consequence: a RAW rewrite of the stored proposals.jsonl row (direct
+    file write, altered payload, SAME id — NOT via the queue API) injected
+    between the digest-check and apply is provably INEFFECTIVE — the applied
+    content is the digested (in-memory) content, regardless of any accessor the
+    apply path might ever grow."""
+    priv, _ = provisioned_registry
+    pid = f"{PROPOSAL_TYPE_DOCK_MUTATION}:g4"
+    _append_dock_mutation(pid)
+    token = _mint(priv, proposal_id=pid, content_digest=_dock_digest())
+
+    reads = []
+    real_read = proposal_queue.read
+    monkeypatch.setattr(
+        proposal_queue, "read",
+        lambda p: (reads.append(p), real_read(p))[1],
+    )
+
+    captured = {}
+    real_disp = actions._record_kaizen_disposition
+    monkeypatch.setattr(
+        actions, "_record_kaizen_disposition",
+        lambda p, **kw: (captured.update(kw), real_disp(p, **kw))[1],
+    )
+
+    def _raw_rewrite_row():
+        qpath = grove_home / "proposals.jsonl"
+        out = []
+        for line in qpath.read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("proposal_id") == pid:
+                row["payload"] = {"goal": {"id": "RAW-EVIL", "name": "Gate Test",
+                                           "status": "staging"}}
+            out.append(json.dumps(row))
+        qpath.write_text("\n".join(out) + "\n")
+
+    # Fire the raw rewrite AT consume time — strictly between the digest-check
+    # (already passed) and apply_callback (still ahead).
+    store = rp.get_red_pending_store()
+    real_consume = store.consume_jti
+    monkeypatch.setattr(
+        store, "consume_jti",
+        lambda jti, p, kid: (_raw_rewrite_row(), real_consume(jti, p, kid))[1],
+    )
+
+    r = await client.post(
+        f"/portal/actions/proposals/{pid}/approve", data={"token": token}
+    )
+    assert r.status == 200
+    # consequence: applied content is the DIGESTED in-memory goal, NOT the raw
+    # mutation that hit the file between check and apply.
+    assert captured["applied_result"]["goal_id"] == "g-gate"
+    # cause: single read — nothing re-read the mutated row.
+    assert reads.count(pid) == 1
+
+
+async def test_wire_identity_subset_id_applies_via_digest(
+    client, grove_home, provisioned_registry
+):
+    """THE lesson (P3 Andon): a proposal minted exactly like detector.py —
+    proposal_id from a STABLE IDENTITY subset {action, goal_id}, richer stored
+    payload + evidence — is approvable end-to-end via the dual-claim DIGEST, even
+    though its id is NOT the content hash. This is the case the retired P2
+    id-recompute gate could never approve."""
+    from grove.eval.proposal_queue import compute_proposal_id
+    from grove.gate.constants import canonical_digest
+
+    goal = {"id": "auto-x", "name": "Auto X", "status": "staging",
+            "definition_of_done": "", "source_record_ids": ["m1", "m2", "m3"]}
+    payload = {"action": "create_goal", "goal": goal}
+    evidence = tuple(goal["source_record_ids"])
+    # id from the STABLE IDENTITY subset (detector.py:148-154), NOT the content:
+    identity = {"action": "create_goal", "goal_id": goal["id"]}
+    pid = compute_proposal_id(
+        type=PROPOSAL_TYPE_DOCK_MUTATION, payload=identity, evidence=()
+    )
+    # The divergence P3 exposed: id != full-content hash.
+    assert pid != compute_proposal_id(
+        type=PROPOSAL_TYPE_DOCK_MUTATION, payload=payload, evidence=evidence
+    )
+    proposal_queue.append(proposal_queue.RoutingProposal(
+        proposal_id=pid, type=PROPOSAL_TYPE_DOCK_MUTATION,
+        payload=payload, evidence=evidence, eval_hash="",
+        created_at="2026-06-26T00:00:00Z", proposer="dock_detector",
+    ))
+    # commitment is over the STORED content:
+    digest = canonical_digest(
+        {"type": PROPOSAL_TYPE_DOCK_MUTATION, "payload": payload, "evidence": evidence}
+    )
+    priv, _ = provisioned_registry
+    token = _mint(priv, proposal_id=pid, content_digest=digest)
+    r = await client.post(
+        f"/portal/actions/proposals/{pid}/approve", data={"token": token}
+    )
+    assert r.status == 200
+    assert proposal_queue.read(pid) is None  # applied via dual-claim
 
 
 async def test_wire_non_scope_type_unaffected_by_token_gate(

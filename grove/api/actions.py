@@ -367,6 +367,29 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
                     "grant_token_rejected",
                     403,
                 )
+            # P4 dual-claim — COMMITMENT check. Re-derive the content_digest from
+            # THIS in-memory `proposal` (loaded once at _dispatch_proposal_action;
+            # never re-read between here and apply_callback — G4) and require it to
+            # equal the token's commitment. A mismatch means the record changed
+            # after the operator signed (or the token targets other content):
+            # refuse loud naming both digests, BEFORE jti consumption, zero writes.
+            from grove.gate.constants import canonical_digest
+
+            server_digest = canonical_digest({
+                "type": proposal.type,
+                "payload": proposal.payload,
+                "evidence": proposal.evidence,
+            })
+            if server_digest != grant.content_digest:
+                return await _scope_refusal(
+                    "Grant token content mismatch — the stored record does not "
+                    "match what you approved (it changed after you signed, or the "
+                    "token commits to other content). Nothing consumed, nothing "
+                    f"written.  signed: {grant.content_digest[:16]}…  "
+                    f"stored: {server_digest[:16]}…",
+                    "grant_token_content_mismatch",
+                    409,
+                )
             # F2 ordering — CONSUME the jti BEFORE the apply. A replay (jti
             # already burned) is refused here; a crash after consume leaves the
             # token burned and the proposal unapplied (fail-closed by design).

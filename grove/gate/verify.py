@@ -55,6 +55,7 @@ class VerifiedGrant:
     exp: int
     operator_identity: str
     operator_key_fingerprint: str  # sha256 of the registered public_key_pem
+    content_digest: str  # the COMMITMENT — server re-derives + compares (P4)
 
 
 def _key_fingerprint(public_key) -> str:
@@ -202,4 +203,5 @@ def verify_grant_token(
         exp=exp,
         operator_identity=key.operator_identity,
         operator_key_fingerprint=_key_fingerprint(public_key),
+        content_digest=str(claims["content_digest"]),
     )

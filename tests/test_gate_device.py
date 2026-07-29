@@ -7,6 +7,7 @@ PEM, tmp+rename), and the raw read route.
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,91 +34,68 @@ def _pub_pem(curve=ec.SECP256R1()):
     ).decode()
 
 
-# ═════════════════════════════ rendering fidelity (F4) ═══════════════════════
+# ═══════════════════ signing-surface render (G1 strengthened) ═══════════════
 
 
-def test_render_authoritative_surface_over_annotation():
-    """A proposal whose semantic_justification says 'benign logging tweak' but
-    whose payload rebinds a model: the authoritative surface shows the PAYLOAD,
-    and the sj appears only BELOW, under the UNVERIFIED banner."""
+def test_render_shows_only_digested_fields_omits_annotations():
+    """P4/G1: the signing surface shows ONLY type/payload/evidence. Annotation
+    fields (semantic_justification, proposer, detail, source_patterns, lease) are
+    OMITTED ENTIRELY — no banner, not present at all."""
     record = {
         "type": "model_binding",
         "payload": {"skill": "wiki", "new_binding": {"model": "attacker/evil"}},
         "evidence": ["t1"],
         "semantic_justification": "benign logging tweak",
         "proposer": "fleet-worker",
-    }
-    out = client.render_for_approval(record)
-
-    auth_i = out.index("AUTHORITATIVE")
-    payload_i = out.index('"model": "attacker/evil"')
-    banner_i = out.index("UNVERIFIED ANNOTATION")
-    sj_i = out.index("benign logging tweak")
-
-    # payload is in the authoritative surface; the sj sits strictly BELOW the
-    # banner, never above or interleaved with the hashed surface.
-    assert auth_i < payload_i < banner_i < sj_i
-    assert "proposer" in out and out.index("proposer") > banner_i
-
-
-def test_render_omits_or_banners_all_unhashed_fields():
-    record = {
-        "type": "dock_mutation",
-        "payload": {"goal": {"id": "g1"}},
-        "evidence": ["t1"],
         "detail": {"x": 1},
         "source_patterns": ["c1"],
         "lease": {"holder": "op"},
     }
     out = client.render_for_approval(record)
-    banner_i = out.index("UNVERIFIED ANNOTATION")
-    for field in ("detail", "source_patterns", "lease"):
-        assert out.index(field) > banner_i
+    # digested content present:
+    assert '"model": "attacker/evil"' in out
+    assert "model_binding" in out
+    # every annotation absent — and no banner survives:
+    for annotation in ("benign logging tweak", "fleet-worker", "source_patterns",
+                       "lease", "UNVERIFIED", "banner"):
+        assert annotation not in out
 
 
-# ═════════════════════════════ full-id comparison ═══════════════════════════
+# ═════════════════════════ content-digest commitment ════════════════════════
 
 
-def _dock_record():
-    return {
-        "type": "dock_mutation",
-        "payload": {"goal": {"id": "g"}},
-        "evidence": ["t1"],
-    }
+def test_content_digest_is_domain_separated_and_stable():
+    from grove.gate.constants import _DIGEST_DOMAIN
+
+    assert _DIGEST_DOMAIN == b"grove-gate-v1:content_digest:"  # pinned literal
+    rec = {"type": "dock_mutation", "payload": {"goal": {"id": "g"}},
+           "evidence": ["t1"]}
+    assert client.content_digest(rec) == client.content_digest(dict(rec))
 
 
-def test_matching_id_passes():
-    rec = _dock_record()
-    rid = compute_proposal_id(type=rec["type"], payload=rec["payload"],
-                              evidence=("t1",))
-    assert client.recompute_and_verify_id(rec, rid) == rid
+@pytest.mark.parametrize("payload", [
+    {"n": 5},                       # int
+    {"n": 5.0},                     # float (distinct from int)
+    {"s": "café ☕ 日本語"},          # unicode
+    {"nested": {"b": [1, {"c": 2}], "a": True, "z": None}},  # nested + types
+])
+def test_canonicalization_survives_json_wire(payload):
+    """device digest (pre-wire, in-memory) == server digest (post-JSON-wire)."""
+    from grove.gate.constants import canonical_digest
+
+    record = {"type": "dock_mutation", "payload": payload, "evidence": ["a", "b"]}
+    device = client.content_digest(record)
+    # simulate the raw-route JSON wire round-trip the server reloads through:
+    server = canonical_digest(json.loads(json.dumps(record)))
+    assert device == server
 
 
-def test_truncated_id_refused():
-    rec = _dock_record()
-    rid = compute_proposal_id(type=rec["type"], payload=rec["payload"],
-                              evidence=("t1",))
-    with pytest.raises(client.GateClientError, match="mismatch"):
-        client.recompute_and_verify_id(rec, rid[:24])
+def test_int_and_float_digests_differ():
+    from grove.gate.constants import canonical_digest
 
-
-def test_prefix_stripped_id_refused():
-    rec = _dock_record()
-    rid = compute_proposal_id(type=rec["type"], payload=rec["payload"],
-                              evidence=("t1",))
-    stripped = rid.split("sha256:", 1)[1]
-    with pytest.raises(client.GateClientError, match="mismatch"):
-        client.recompute_and_verify_id(rec, stripped)
-
-
-def test_tampered_record_refused_before_prompt():
-    """The raw record altered vs the claimed id → refuse (no prompt)."""
-    rec = _dock_record()
-    rid = compute_proposal_id(type=rec["type"], payload=rec["payload"],
-                              evidence=("t1",))
-    tampered = {**rec, "payload": {"goal": {"id": "EVIL"}}}
-    with pytest.raises(client.GateClientError, match="mismatch"):
-        client.recompute_and_verify_id(tampered, rid)
+    a = canonical_digest({"type": "t", "payload": {"n": 5}, "evidence": []})
+    b = canonical_digest({"type": "t", "payload": {"n": 5.0}, "evidence": []})
+    assert a != b
 
 
 # ═════════════════════════════ key hygiene ═══════════════════════════════════
@@ -167,7 +145,10 @@ def test_client_token_verifies_under_p1_verifier(tmp_path):
     out = keyfile.mint("operator@grove", directory=tmp_path)
     priv, kid, operator = keyfile.load_signing_key(directory=tmp_path)
     pid = "sha256:roundtrip"
-    token = client.build_token(pid, priv, kid, operator)
+    digest = client.content_digest(
+        {"type": "dock_mutation", "payload": {"goal": {"id": "g"}}, "evidence": ["t1"]}
+    )
+    token = client.build_token(pid, digest, priv, kid, operator)
 
     reg = {
         kid: AuthorizedKey(
@@ -181,6 +162,7 @@ def test_client_token_verifies_under_p1_verifier(tmp_path):
     grant = verify_grant_token(token, expected_proposal_id=pid, registry=reg)
     assert grant.kid == kid
     assert grant.proposal_id == pid
+    assert grant.content_digest == digest  # commitment carried through
     assert grant.operator_identity == operator
     # Fingerprint agreement (A3 SPKI) across signer key and verifier stamp.
     pub = serialization.load_pem_public_key(out["public_key_pem"].encode())
