@@ -139,9 +139,13 @@ def test_purge_nothing_to_purge_fails_loud(grove_home):
 
 
 def test_fleet_purge_zone_is_red():
-    schema = yaml.safe_load(
-        Path("config/zones.schema.yaml").read_text(encoding="utf-8"))
-    assert schema["tool_zones"]["fleet_purge"] == "red"
+    # zones-v2-scope-keying: fleet_purge declares effect class `governance`
+    # (semantic revocation of a prior operator approval), which DERIVES red.
+    from grove.zones import ZoneClassifier, _resolve_schema_path
+
+    clf = ZoneClassifier(_resolve_schema_path(None))
+    assert clf._tool_effects["fleet_purge"] == "governance"
+    assert clf.classify("fleet_purge").zone == "red"
 
 
 def test_operator_purge_verb_mints_implicit_grant():

@@ -250,6 +250,13 @@ class ZoneClassifier:
         self._sovereign: list[str] = []
         self._proposes: list[str] = []
         self._auto_approve: list[str] = []
+        # v2 (zones-v2-scope-keying): the declared effect-class → zone derivation
+        # and the tool → class map. Empty under v1. `_default_unmatched` is the
+        # DECLARED posture returned for an unmatched action (yellow under v1 and
+        # by default; a v2 schema may declare it, and the loader enforces it).
+        self._effect_derivations: dict[str, str] = {}
+        self._tool_effects: dict[str, str] = {}
+        self._default_unmatched: str = "yellow"
         self._load_into_self()
 
     # ----- public query API ---------------------------------------------------
@@ -270,7 +277,11 @@ class ZoneClassifier:
         for pattern in self._auto_approve:
             if self._pattern_matches(pattern, action):
                 return ZoneResult(zone="green", matched_rule=pattern, source="auto_approve")
-        return ZoneResult(zone="yellow", matched_rule="default", source="default")
+        # Unmatched → the DECLARED default posture (v2 `default_unmatched`; yellow
+        # under v1 and by default). source="default" preserved for telemetry parity.
+        return ZoneResult(
+            zone=self._default_unmatched, matched_rule="default", source="default",
+        )
 
     def classify_command_string(
         self,
@@ -388,7 +399,7 @@ class ZoneClassifier:
         tests or a custom deployment) load only that file — the overlay
         extends the repo policy, not an arbitrary schema.
         """
-        with open(self._schema_path) as fh:
+        with open(self._schema_path, encoding="utf-8") as fh:
             repo_data = yaml.safe_load(fh)
         if not isinstance(repo_data, dict):
             raise ValueError(
@@ -403,21 +414,7 @@ class ZoneClassifier:
         if self._schema_path.resolve() == repo_default.resolve():
             overlay_path = _resolve_overlay_path()
             if overlay_path is not None:
-                try:
-                    with open(overlay_path) as fh:
-                        overlay_data = yaml.safe_load(fh)
-                except yaml.YAMLError as exc:
-                    logger.warning(
-                        "[zones] overlay at %s is not valid YAML (%s); ignoring.",
-                        overlay_path, exc,
-                    )
-                    overlay_data = None
-                if overlay_data is not None and not isinstance(overlay_data, dict):
-                    logger.warning(
-                        "[zones] overlay at %s did not parse to a mapping; ignoring.",
-                        overlay_path,
-                    )
-                    overlay_data = None
+                overlay_data = _load_and_validate_overlay(overlay_path)
 
         merged = merge_zone_schemas(repo_data, overlay_data)
         self._load_from_dict(merged)
@@ -426,14 +423,129 @@ class ZoneClassifier:
         self._load_merged()
 
     def _load_from_dict(self, raw: dict) -> None:
-        """Validate and atomically apply a merged schema dict to self."""
+        """Validate and atomically apply a merged schema dict to self.
+
+        Accepts schema_version 1 (legacy category-keyed) and 2 (scope-keyed
+        effect classes, zones-v2-scope-keying). Any other value is a hard
+        reject — the prior sprint's single-version guard, widened via reviewed
+        diff (GATE-B G3), not silently loosened.
+        """
         version = raw.get("schema_version")
-        if version != 1:
+        if version == 1:
+            self._load_v1(raw)
+        elif version == 2:
+            self._load_v2(raw)
+        else:
             raise ValueError(
                 f"unsupported schema_version {version!r} in {self._schema_path}"
-                f" (expected 1)"
+                f" (expected 1 or 2)"
             )
 
+    # ── v2 (zones-v2-scope-keying): scope-keyed effect-class model ────────────
+    _EFFECT_CLASSES: frozenset = frozenset({
+        "read_only", "contained_write", "workspace_write",
+        "external_effect", "governance", "operator_only",
+    })
+
+    def _load_v2(self, raw: dict) -> None:
+        """Parse the v2 schema: effect classes + derivation rules + tool_effects.
+
+        The zone is DERIVED at load from each tool's declared class. classify()
+        is unchanged — it reads the derived ``_tool_zones`` map, so the runtime
+        ZoneResult is byte-identical to v1 for every tool whose derived zone
+        equals its prior baseline (the P1b parity guarantee). The action-type
+        pattern lists and the hierarchical/terminal.rules maps are EMPTY under
+        v2 (retired).
+        """
+        # 1) Derivation rules — the SIX closed classes, each with a `derives`.
+        effect_classes_raw = raw.get("effect_classes") or {}
+        if not isinstance(effect_classes_raw, dict):
+            raise ValueError(
+                f"v2 schema at {self._schema_path}: `effect_classes` must be a "
+                f"mapping; got {type(effect_classes_raw).__name__}"
+            )
+        derivations: dict[str, str] = {}
+        for cls, spec in effect_classes_raw.items():
+            derives = (spec or {}).get("derives") if isinstance(spec, dict) else None
+            if derives not in ("green", "yellow", "red"):
+                raise ValueError(
+                    f"v2 schema: effect_classes[{cls!r}].derives must be one of "
+                    f"green/yellow/red; got {derives!r}"
+                )
+            derivations[cls] = derives
+        declared = set(derivations)
+        if declared != self._EFFECT_CLASSES:
+            missing = self._EFFECT_CLASSES - declared
+            extra = declared - self._EFFECT_CLASSES
+            raise ValueError(
+                f"v2 schema: effect_classes must declare EXACTLY the six closed "
+                f"classes {sorted(self._EFFECT_CLASSES)}. "
+                f"missing={sorted(missing)} unexpected={sorted(extra)}"
+            )
+
+        # 2) Declared default posture for an unmatched action (enforced).
+        default_unmatched = raw.get("default_unmatched", "yellow")
+        if default_unmatched not in ("green", "yellow", "red"):
+            raise ValueError(
+                f"v2 schema: default_unmatched must be green/yellow/red; got "
+                f"{default_unmatched!r}"
+            )
+
+        # 3) tool_effects → derive each tool's zone. A contained_write entry
+        #    MUST cite a containment primitive (A1: no citation, no class).
+        tool_effects_raw = raw.get("tool_effects") or {}
+        if not isinstance(tool_effects_raw, dict):
+            raise ValueError(
+                f"v2 schema: `tool_effects` must be a mapping; got "
+                f"{type(tool_effects_raw).__name__}"
+            )
+        tool_zones: dict[str, str] = {}
+        tool_effects: dict[str, str] = {}
+        for tool_id, decl in tool_effects_raw.items():
+            containment = None
+            if isinstance(decl, str):
+                cls = decl
+            elif isinstance(decl, dict):
+                cls = decl.get("class")
+                containment = decl.get("containment")
+            else:
+                raise ValueError(
+                    f"v2 schema: tool_effects[{tool_id!r}] must be a class string "
+                    f"or a mapping with class(+containment); got "
+                    f"{type(decl).__name__}"
+                )
+            if cls not in derivations:
+                raise ValueError(
+                    f"v2 schema: tool_effects[{tool_id!r}] declares effect class "
+                    f"{cls!r} which is not one of the six declared classes "
+                    f"{sorted(self._EFFECT_CLASSES)}"
+                )
+            if cls == "contained_write" and not (
+                isinstance(containment, str) and containment.strip()
+            ):
+                raise ValueError(
+                    f"v2 schema: tool_effects[{tool_id!r}] is contained_write but "
+                    f"cites no `containment` primitive — REFUSING (A1: a jailed "
+                    f"write derives GREEN only with a cited containment path)."
+                )
+            tool_zones[tool_id] = derivations[cls]
+            tool_effects[tool_id] = cls
+
+        # All-or-nothing swap (mutation only after validation succeeds).
+        self._tool_zones = tool_zones
+        self._tool_zones_rich = {}
+        self._sovereign = []
+        self._proposes = []
+        self._auto_approve = []
+        self._effect_derivations = derivations
+        self._tool_effects = tool_effects
+        self._default_unmatched = default_unmatched
+
+    def _load_v1(self, raw: dict) -> None:
+        """Parse the legacy v1 (category-keyed) schema. Unchanged behavior."""
+        self._effect_derivations = {}
+        self._tool_effects = {}
+        self._default_unmatched = "yellow"
         zones = raw.get("zones", {}) or {}
         tool_zones_raw = raw.get("tool_zones", {}) or {}
 
@@ -633,6 +745,77 @@ def _resolve_overlay_path() -> Optional[Path]:
     return None
 
 
+# ── v2 overlay contract (zones-v2-scope-keying A2/A3) ─────────────────────────
+# A v2 operator overlay may carry ONLY the deny-list structure red_policy.py
+# parses (``red_denied_by_policy`` — grove/red_policy.py:38,64) plus the
+# loader-required ``schema_version``. Every other key is a retired category-keyed
+# door and is REFUSED LOUD at load — never silently dropped (a silently-dropped
+# key is the hollow-artifact class the merge contract must not admit; GATE-B G7a).
+_OVERLAY_VALID_KEYS: frozenset = frozenset({"schema_version", "red_denied_by_policy"})
+_OVERLAY_RETIRED_KEYS: dict = {
+    # tool_zones carried bare tool-name zone assignments, per-tool default_zone
+    # overrides, AND terminal.rules. All three are retired: tool zones are now
+    # DERIVED from repo effect classes, and terminal.rules' sole reader
+    # (classify_command_string) has zero live callers (dispatch.py:143-153).
+    "tool_zones": (
+        "bare tool-name zone assignments, default_zone overrides, and "
+        "terminal.rules — all retired (tool zones derive from repo effect "
+        "classes; terminal.rules' reader classify_command_string has no live "
+        "caller). P2 migration prunes it."
+    ),
+    # The action-type pattern blocks (auto_approve/proposes/sovereign).
+    "zones": (
+        "action-type category patterns (auto_approve/proposes/sovereign) — "
+        "retired; the enforced model is scope-keyed effect classes."
+    ),
+}
+
+
+def _load_and_validate_overlay(overlay_path: Path) -> Optional[dict]:
+    """Load the operator overlay, enforcing the v2 contract. FAIL LOUD.
+
+    A2 — malformed overlay (unparseable YAML or non-mapping) RAISES, names the
+    file and the repair path, and performs zero fallback (malformed ≠ absent;
+    an absent overlay loads repo-policy-only, unchanged). An empty file parses
+    to ``None`` and is treated as absent.
+
+    A3 — the overlay's valid key surface is :data:`_OVERLAY_VALID_KEYS`. Any
+    retired/unrecognized key RAISES and is NAMED in the refusal.
+    """
+    try:
+        with open(overlay_path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        raise ValueError(
+            f"[zones] operator overlay at {overlay_path} is not valid YAML "
+            f"({exc}) — REFUSING to load (A2: malformed ≠ absent; zero "
+            f"fallback). Repair the YAML, or remove the file to fall back to "
+            f"repo policy."
+        ) from exc
+    if data is None:
+        return None  # empty file == absent → repo-policy-only
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"[zones] operator overlay at {overlay_path} did not parse to a "
+            f"mapping — REFUSING to load (A2). Repair the file, or remove it to "
+            f"fall back to repo policy."
+        )
+    for key in data:
+        if key in _OVERLAY_RETIRED_KEYS:
+            raise ValueError(
+                f"[zones] operator overlay at {overlay_path} carries RETIRED key "
+                f"{key!r}: {_OVERLAY_RETIRED_KEYS[key]} REFUSING to load (A3; a "
+                f"retired key is never silently dropped). Remove it."
+            )
+        if key not in _OVERLAY_VALID_KEYS:
+            raise ValueError(
+                f"[zones] operator overlay at {overlay_path} carries "
+                f"unrecognized key {key!r}. A v2 overlay may carry only "
+                f"{sorted(_OVERLAY_VALID_KEYS)} — REFUSING to load (A3)."
+            )
+    return data
+
+
 def merge_zone_schemas(
     repo_data: dict,
     overlay_data: Optional[dict],
@@ -697,9 +880,19 @@ def merge_zone_schemas(
 
         existing = merged_tool_zones.get(tool_id)
         if existing is None:
-            # Tool only in overlay — add it.
+            # Tool only in overlay — add it. R-4 fail-loud (zones-v2 A3): a new
+            # overlay tool entry with no resolvable default_zone is refused, NOT
+            # silently defaulted to yellow — a masked-missing-default is the
+            # silent-fallback class. (The prior ``overlay_default or "yellow"``
+            # idiom is replaced here.)
+            if not overlay_default:
+                raise ValueError(
+                    f"[zones] merge: overlay introduces tool {tool_id!r} with no "
+                    f"resolvable default_zone — REFUSING to silently default to "
+                    f"yellow (R-4 fail-loud). Declare an explicit default_zone."
+                )
             merged_tool_zones[tool_id] = {
-                "default_zone": overlay_default or "yellow",
+                "default_zone": overlay_default,
                 "rules": safe_overlay_rules,
             }
         elif isinstance(existing, str):

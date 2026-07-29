@@ -410,24 +410,32 @@ def test_save_zone_rule_dedup_guard(tmp_path, monkeypatch):
 # ----- reload picks up overlay changes ----------------------------------------
 
 def test_reload_picks_up_overlay(tmp_path, monkeypatch):
+    # zones-v2-scope-keying: the overlay valid-key surface is now
+    # {schema_version, red_denied_by_policy} (A3). A change to the valid deny-list
+    # is picked up on reload; a retired-key overlay (tool_zones — the door
+    # category keying walked back through) is REFUSED LOUD at load, never merged.
+    #
     # instance-cold-start-parity-v1 D3: zones resolves the overlay via
-    # get_hermes_home() (honors GROVE_HOME), no longer a hardcoded
-    # Path.home()/".grove". Drive the home through GROVE_HOME accordingly.
+    # get_hermes_home() (honors GROVE_HOME); red_policy reads the same overlay
+    # via Path.home()/".grove". Drive both accordingly.
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     (tmp_path / ".grove").mkdir()
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
     import grove.zones as _zones
     import importlib
     importlib.reload(_zones)
-    classifier = _zones.initialize()
-    # Before overlay exists, test_reload_tool should be yellow (default)
-    result_before = classifier.classify("test_reload_tool")
-    assert result_before.zone == "yellow"
-    # Write an overlay with test_reload_tool → green
+    classifier = _zones.initialize()  # no overlay yet — clean repo policy
     overlay = tmp_path / ".grove" / "zones.autonomaton.yaml"
-    overlay.write_text(
-        "schema_version: 1\ntool_zones:\n  test_reload_tool: green\n"
-    )
-    classifier.reload()
-    result_after = classifier.classify("test_reload_tool")
-    assert result_after.zone == "green"
+
+    # (a) A valid overlay carrying only the deny-list key reloads cleanly and is
+    #     picked up (red_policy reads the deny-list from the same overlay file).
+    overlay.write_text('schema_version: 1\nred_denied_by_policy: ["priv:"]\n')
+    classifier.reload()  # no raise — valid key surface
+    from grove import red_policy
+    assert "priv:" in red_policy.denied_patterns()
+
+    # (b) A retired-key overlay (tool_zones) is refused loud at load — a fresh
+    #     init raises A3 rather than silently merging category keying back in.
+    overlay.write_text("schema_version: 1\ntool_zones:\n  x: green\n")
+    with pytest.raises(ValueError, match="RETIRED key 'tool_zones'"):
+        _zones.ZoneClassifier(_zones._resolve_schema_path(None))

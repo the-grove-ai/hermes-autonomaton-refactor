@@ -325,29 +325,22 @@ def _zone_lookup_key(server_name: str, tool_name: str) -> str:
 
 
 def _load_zone_map_from_schema(schema_path: Optional[Path] = None) -> dict:
-    """Flatten ``zones.schema.yaml``'s ``tool_zones`` to ``{key: zone_string}``.
+    """Flatten the engine zone schema to ``{tool_key: zone_string}`` — the
+    granted-zone authority for the composition view (I3).
 
+    zones-v2-scope-keying: reads the DERIVED tool→zone map from the zone loader
+    (``grove.zones.ZoneClassifier``) rather than parsing the raw schema, so it is
+    schema-version-agnostic — v1 bare ``tool_zones`` and v2 effect-class
+    derivations flatten to the same shape. (A live consumer of the retired raw
+    ``tool_zones`` structure the GATE-A Section-2 census missed; migrated here.)
     Standalone/test default for ``get_composition_status``; the portal handler
-    supplies its own mtime-cached map (C3). Bare-string entries map directly;
-    hierarchical (dict) entries contribute their ``default_zone``. Fail loud:
-    a missing or unparseable schema raises — this map is load-bearing for I3.
+    supplies its own mtime-cached map (C3). Fail loud: a missing or unparseable
+    schema raises via the loader — this map is load-bearing for I3.
     """
-    import yaml
+    from grove.zones import ZoneClassifier, _resolve_schema_path
 
-    if schema_path is None:
-        schema_path = (
-            Path(__file__).resolve().parents[2] / "config" / "zones.schema.yaml"
-        )
-    with open(schema_path) as fh:
-        raw = yaml.safe_load(fh)
-    tool_zones = (raw or {}).get("tool_zones") or {}
-    zone_map: dict = {}
-    for key, value in tool_zones.items():
-        if isinstance(value, str):
-            zone_map[key] = value
-        elif isinstance(value, dict) and value.get("default_zone"):
-            zone_map[key] = value["default_zone"]
-    return zone_map
+    resolved = schema_path if schema_path is not None else _resolve_schema_path(None)
+    return dict(ZoneClassifier(resolved)._tool_zones)
 
 
 def get_composition_status(

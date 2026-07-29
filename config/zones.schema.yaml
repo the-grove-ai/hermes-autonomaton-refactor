@@ -1,599 +1,311 @@
 # ============================================================================
-# Grove Autonomaton — Sovereignty Guardrails Schema
+# Grove Autonomaton — Sovereignty Guardrails Schema (v2 · scope-keyed)
 # ============================================================================
 #
-# Location:     ~/.grove/zones.schema.yaml (operator copy)
-#               config/zones.schema.yaml   (repo default template)
+# Location:     config/zones.schema.yaml   (repo default — the runtime loads
+#                                            THIS file from the repo path)
+#               ~/.grove/zones.autonomaton.yaml (operator overlay — v2 valid-key
+#                                            surface is red_denied_by_policy +
+#                                            schema_version ONLY; see loader)
 #
 # Purpose:      Declarative zone boundaries for the Autonomaton pipeline.
 #               The Sovereignty Gate reads this file to classify every
 #               action as Green (autonomous), Yellow (supervised), or
 #               Red (sovereign — operator holds directly).
 #
-#               This is how a non-technical domain expert alters the
-#               system's behavior by editing a config file, without a
-#               deploy. The schema shapes the butler's posture, not a
-#               permission system.
+# Canonical ref: GRV-001 v2.0 §III — "zone boundaries key on operator SCOPE,
+#               not action CATEGORY." Category keying is FORBIDDEN.
 #
-# Canonical ref: GRV-001 §III Commitment 2, Draft 1.3 Part IV Stage 04
+# ── What changed in v2 (zones-v2-scope-keying) ─────────────────────────────
+# The published standard forbids category keying: a write's zone derives from
+# WHAT IT TOUCHES (operator scope), not what KIND of action it is. v1 carried
+# 164 category-keyed entries (137 bare tool-name→zone assignments, 13 dead
+# terminal.rules shell patterns, action-type pattern blocks). v2 makes the
+# ENFORCED schema scope-keyed and self-describing:
 #
-# Schema version
-# --------------
-# Integer. The loader rejects files with unrecognized versions.
-# Bump only when the schema structure changes (new keys, removed keys,
-# changed semantics). Adding entries to existing lists is NOT a version
-# bump — it's normal operator configuration.
+#   * Tools declare an EFFECT CLASS (six, closed). The zone is DERIVED at load
+#     from the declared derivation rules below — the schema says what the code
+#     enforces, in load-bearing content, not loader-ignored commentary.
+#   * Scope membership is BY REFERENCE to config/scope_surfaces.yaml (the single
+#     membership source is_scope_defining already consumes) — NEVER duplicated.
+#   * The action-type pattern blocks (zones.green/yellow/red) and the dead
+#     terminal.rules are RETIRED. Shell/execute_code commands are classified by
+#     EFFECT via the bashlex-AST classifier (grove/shell_effects.py); this file
+#     no longer carries shell regex.
 #
-# Hot-reload
-# ----------
-# Send SIGHUP to the running Autonomaton process. The loader re-reads
-# this file and rebuilds the in-memory zone map without restart.
-# On Windows v0.1: restart required after edit. File-watch is v0.2.
-#
-# Action pattern syntax
-# ---------------------
-# Pure dot-notation, glob-style:
-#   calendar.read       — exact match
-#   calendar.read.*     — matches calendar.read and all descendants
-#   calendar.*          — matches calendar.<anything> and descendants
-#   command.execute.*   — matches all command executions
-#
-# Only trailing ``.*`` is supported. Mid-pattern wildcards raise
-# ValueError at load time (fail loud). No regex.
-#
-# Action identifiers are opaque dot-notation strings. The tool
-# dispatch layer (Sprint 06a wires this) maps filesystem paths,
-# command lines, and other tool inputs into pure-dot-notation
-# action identifiers before calling classify(). The classifier
-# itself never inspects paths or commands — only dot-segmented
-# strings. This keeps the matcher simple, the schema editable
-# by non-technical operators, and the policy surface auditable.
-#
-# Precedence
-# ----------
-# 1. tool_zones exact match (highest)
-# 2. Zone rules: sovereign > proposes > auto_approve
-# 3. Red > Yellow > Green (most restrictive wins on conflict)
-# 4. Unmatched actions default to Yellow (supervised)
-#
-# How the zones feel to the operator
-# ----------------------------------
-# Green:  invisible. The system acts. The operator asked, it happened.
-#         This trust was earned — prior Andon approvals promoted these
-#         categories here. The system gets faster with use.
-#
-# Yellow: a conversation. Jidoka detects the action; Andon surfaces it
-#         as the assistant, not as a system interrupt. "I can set this
-#         up. Here's what it does. Want me to save it for your review?"
-#         The four-choice prompt (once / session / always / deny) IS
-#         the promotion mechanism — "always" moves the category to
-#         Green. Pattern-Based Approval: approve categories, not
-#         instances. Kaizen watches these approvals; after repeated
-#         confirmations, it proposes promoting the whole category.
-#
-# Red:    sovereign. Andon halts execution at the boundary; Kaizen
-#         then steps in as the butler with three go-forward options:
-#         Cancel, Operator handles, or Try de-scoped alternative
-#         (re-classified through the normal flow — may land yellow).
-#         The system never executes the red action — the code path
-#         to execute it through tool dispatch does not exist by design.
-#         Read access is always green; the surface fields below name
-#         what to read, where to edit, and how to reload. The register
-#         is: "That's in your direct control — here's how." Never
-#         "access denied." Never "forbidden."
-#         GROVE_ZONE_STRICT=1 and gateway sessions without an interactive
-#         operator skip Kaizen's prompt and return the surface message
-#         directly (hard block).
-#         Per GRV-003 §4: Andon's "cannot" holds. Kaizen's "here's how"
-#         carries the conversation forward.
-#
-# Kaizen and the zone boundaries
-# ------------------------------
-# Kaizen watches every boundary interaction.
-# - Yellow→Green promotion: after N approvals of the same category,
-#   Kaizen proposes: "You've approved every calendar write. Promote
-#   to Green?" The operator confirms; the schema updates.
-# - Red boundary friction: if the operator keeps asking about a
-#   red-zone resource, Kaizen proposes a green-zone READ skill that
-#   surfaces the information more fluently. The architecture holds;
-#   the experience improves. Kaizen never proposes weakening a red
-#   boundary — it proposes better information delivery around it.
-#
-# Backward-compatibility
-# ----------------------
-# Skills without a zone field in SKILL.md frontmatter default to
-# Yellow. Conservative: unclassified actions require approval.
-# Promote to Green via auto_approve entries or SKILL.md frontmatter.
-# Schema override takes precedence over frontmatter.
-#
+# Hot-reload: SIGHUP re-reads this file (see grove/zones.py reload()).
 # ============================================================================
 
-schema_version: 1
+schema_version: 2
 
-# red-action-store-pending-v1 Phase B — DENIED_BY_POLICY deny-list (read by
-# grove/red_policy.py, NOT by the zones loader). A RED action whose AST-derived
-# pattern_key matches an entry here is NEVER store-pending and NEVER executed, on
-# any surface. The catastrophic-rm effect ("rm:catastrophic") is a HARDCODED floor
-# and is denied even if this key is absent/empty. Add entries to deny more effects;
-# an entry ending in ":" (e.g. "priv:") denies the whole family. Editing this file
-# is itself a RED governed change (propose_governance_change). "Never forbidden":
-# the operator holds this list.
+# ── DENIED_BY_POLICY deny-list (read by grove/red_policy.py, NOT the zones
+# loader). A RED action whose AST-derived pattern_key matches an entry here is
+# NEVER store-pending and NEVER executed. The catastrophic-rm effect
+# ("rm:catastrophic") is a HARDCODED floor, denied even if this key is empty.
+# This is one of the two keys a v2 operator OVERLAY may carry (the other is
+# schema_version). Editing it is a RED governed change (propose_governance_change).
 red_denied_by_policy: []
 
-zones:
-  green:
+# ============================================================================
+# Effect classes — the SIX closed classes and their derivation rules.
+# ----------------------------------------------------------------------------
+# ENFORCED content: the loader (grove/zones.py::_load_v2) reads `derives` here
+# and computes each tool's zone from its declared class. Changing a `derives`
+# value re-derives every tool in that class — the derivation is live, not a
+# baked lookup table. The enum is CLOSED: the loader rejects a schema that adds,
+# removes, or renames a class, and rejects a tool declaring a class not listed.
+# ============================================================================
+effect_classes:
+  read_only:
+    derives: green
     description: |
-      Autonomous. The operator earned this — prior Pattern-Based
-      Approvals promoted these categories here. The system acts
-      without prompting. Approve categories, not instances.
-    auto_approve:
-      - calendar.read.*
-      - file.read.*
-      - skill.invoke.*
-
-  yellow:
+      No operator-scope write effect. Autonomous. Reads are gated by the
+      secrets wall ONLY (see read_authority below) — scope-defining surfaces
+      remain READABLE (their WRITES are RED; their reads are permitted).
+  contained_write:
+    derives: green
     description: |
-      Supervised. Jidoka detects; Andon surfaces as a conversation,
-      not an interrupt. The four-choice prompt (once / session /
-      always / deny) is the promotion mechanism — "always" moves
-      the category to Green. Kaizen watches approval patterns and
-      proposes category-level promotions after repeated confirms.
-    proposes:
-      - skill.create.*
-      - skill.edit.*
-      - skill.promote.*
-      - file.write.andon_quarantine.*
-      - command.dangerous.*
-    review_required: synchronous
-
-  red:
+      A write confined to a jailed system-internal sink with no operator-scope
+      surface — autonomous. REQUIRES a containment citation from source at each
+      entry (see tool_effects); a class assignment without a cited containment
+      primitive is REFUSED at load (no citation, no class).
+  workspace_write:
+    derives: yellow
     description: |
-      Sovereign. The operator holds this directly. The system cannot
-      act here — not will not, cannot. But it does not withhold: it
-      surfaces full read access to the protected resource, names the
-      exact file and line to edit, and confirms the change took
-      effect after a manual edit + SIGHUP.
-    sovereign:
-      - file.write.zones_schema
-      - file.write.routing_config
-      - skill.self_promote.*
-      - command.execute.sudo
-      - command.execute.su
-      - command.execute.doas
-    enforcement: os_permission_level
-    surface:
-      - read access to the protected resource (always green)
-      - exact file path and line to edit
-      - SIGHUP or restart instruction after manual edit
-    register: |
-      That's in your direct control — here's how.
+      A filesystem write. The zone is decided by WHAT THE TARGET TOUCHES: the
+      scope wall (grove/utils/fs_utils.py::is_scope_defining, consuming
+      config/scope_surfaces.yaml) routes a scope-defining target RED and a
+      granted-workspace target GREEN at the dispatcher write door (Seam-β) and
+      the shell AST. At the bare tool-name gate (no extractable target) the
+      class derives YELLOW — fail-toward-operator (the R-4 posture).
+  external_effect:
+    derives: yellow
+    description: |
+      An effect outside the local filesystem (a message, an API mutation, a
+      service call) or a governance-APPLICATION tool whose act is the operator's
+      mechanical tap. Supervised — the Sovereign Prompt governs it. YELLOW.
+  governance:
+    derives: red
+    description: |
+      Mutates the agent's OWN authority / sovereignty state (skill promotion,
+      grant/zone-rule writes, semantic revocation of a prior approval). RED.
+      Red + valid Grant Token = execute; Red + agent-synthesized = sovereignty
+      prompt. governance is for AUTHORITY mutation ONLY.
+  operator_only:
+    derives: red
+    description: |
+      A sovereign-held security/system surface the autonomaton cannot operate
+      (OS keystroke injection, shared-service role administration). RED — the
+      code path to execute it through tool dispatch does not exist by design.
 
-# Tool-zone mapping
-# -----------------
-# Maps tool identifiers to zone classifications. Tool identifiers are
-# the string names tools register with in the tool registry. This map
-# is the operator's primary configuration surface for zone control.
-#
-# A tool not listed here inherits its zone from the action pattern
-# matching above, or defaults to Yellow if unmatched.
-#
-# Kaizen observes tool-zone friction. If a tool consistently triggers
-# Andon prompts that the operator always approves, Kaizen proposes
-# promoting that tool's zone from yellow to green.
-#
-# Two forms (Sprint 22)
-# ---------------------
-# Each tool's entry may be EITHER a bare zone string (the original
-# Sprint 04 form) OR a mapping with `default_zone` plus an ordered list
-# of argument-level rules. Both forms coexist; bare-string entries
-# behave identically to pre-Sprint-22.
-#
-#   1. Bare string (legacy):
-#        terminal: yellow
-#
-#      Every command flowing through this tool is classified
-#      `yellow`. The classifier never inspects the command's
-#      arguments.
-#
-#   2. Hierarchical (Sprint 22):
-#        terminal:
-#          default_zone: yellow
-#          rules:
-#            - match_pattern: "^rm\\s+(-[fir]+\\s+)?/tmp/.*"
-#              zone: green
-#              reason: "Temporary directory cleanup is inherently safe."
-#            - match_pattern: "^rm\\s+-rf\\s+/$"
-#              zone: red
-#              reason: "Catastrophic system destruction."
-#
-#      The classifier evaluates `rules` top-to-bottom against the
-#      full command string with `re.fullmatch`. First match wins.
-#      A command that matches no rule falls through to
-#      `default_zone`. Write your most specific patterns FIRST.
-#
-# Pattern syntax (hierarchical rules only)
-# ----------------------------------------
-# Standard Python regex via `re.fullmatch`. Anchored implicitly —
-# you do NOT need `^` and `$`. Examples:
-#
-#   ^sudo\s+.*                       # any sudo invocation
-#   ^rm\s+(-[fir]+\s+)?/tmp/.*       # rm of anything under /tmp
-#   ^chmod\s+\d+\s+/home/user/.*     # chmod within /home/user
-#   ^pip\s+install\s+requests$       # exact: only this command
-#
-# Safety guardrails (Sprint 22)
-# -----------------------------
-# The loader rejects per-rule, with a loud log, if a pattern:
-#   - exceeds 200 characters
-#   - matches everything (`.*`, `^.*`, `.*/.*`, `.+`)
-#   - contains nested quantifiers (`(a+)+`, `(.*)*`) — classic
-#     ReDoS shape
-#   - has more than 10 alternation branches in a single group
-#   - is not a syntactically valid Python regex
-#
-# The rest of the schema continues to load with the bad rule dropped.
-# Synthesised patterns (from "Approve Always" in any of the 13 paths)
-# are produced conservatively — directory-scoped, anchored, no
-# nested quantifiers — and pass the same check.
+# ── Default posture for an unmatched action (DECLARED enforced semantics).
+# grove/zones.py::classify returns this zone with source="default" for any
+# action carrying no tool_effects entry. Conservative fail-toward-operator
+# (GRV-001 v2.0; R-4 ruling — a designed posture, not a silent fallback).
+default_unmatched: yellow
 
-tool_zones:
-  # Notion MCP read / write / delete zones are defined in the
-  # consolidated "Notion MCP bridge" section further below. (A second,
-  # duplicate copy of the read entries that lived here triggered a
-  # ruamel DuplicateKeyError on reload — removed; the section below is
-  # the single source of truth.)
-  # GRV-010 C1a (conformance-shell-containment-v1) — terminal / execute_code
-  # commands are classified by the bashlex-AST EFFECT classifier
-  # (grove/shell_effects.py), invoked via grove.dispatch.classify_command at
-  # the Dispatcher admission site. The former regex rule list was REMOVED:
-  # substring matching over a shell string is unsound — a comment suffix (B1)
-  # or a leading .* (B2) smuggled arbitrary commands to GREEN, and command
-  # chaining slipped past. The AST sees real command nodes; opacity
-  # (sh -c / eval / $(...) / pipe-into-shell), privilege, catastrophic rm,
-  # writes into ~/.grove (is_governed_path), and external-agent spawn all
-  # classify RED; promoted-skill execution stays GREEN by effect. The bare
-  # entry below is only the fallback for a bare classify("terminal") action.
-  # Phase 1.5 inline correction (runtime-config-sync): Sprint 53/53.2/69/BLOCKER
-  # policy rules were written directly to the runtime file during their sprints.
-  # Restored here as repo policy. Cohort 1 RED rules dropped — AST classifier
-  # (grove/shell_effects.py) owns privilege escalation per GRV-010.
-  terminal:
-    default_zone: yellow
-    rules:
-      # ── Governance-mutation CLI verbs (GRV-001 Stage 04 / Grant Token model) ─
-      # These verbs mutate sovereignty state (skill promotion/rejection,
-      # flywheel approval, pattern demotion). They are RED (scope-defining) and
-      # GRANTABLE under the Grant Token model:
-      #   Red + valid grant (T0 implicit or standing) = execute immediately
-      #   Red + no grant (agent-synthesized) = sovereignty prompt, all four choices
-      # "Always" on the prompt writes a standing grant (grove/grants.py), NOT a
-      # blanket zone rule — _apply_zone_promotion is guarded for these verbs.
-      # Rules placed first so they fire before any broader pattern below.
-      - match_pattern: (hermes|autonomaton)\s+andon\s+promote\b.*
-        zone: red
-        reason: "Skill promotion mutates live sovereignty state — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: (hermes|autonomaton)\s+andon\s+reject\b.*
-        zone: red
-        reason: "Skill rejection permanently deletes from .andon/ — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: (hermes|autonomaton)\s+andon\s+revoke\b.*
-        zone: red
-        reason: "Skill revocation returns an active skill to quarantine — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: (hermes|autonomaton)\s+flywheel\s+approve\b.*
-        zone: red
-        reason: "Flywheel approval writes a zone rule to the overlay — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: (hermes|autonomaton)\s+flywheel\s+confirm-red\b.*
-        zone: red
-        reason: "RED .env pending-proposal confirm executes a scope-defining governance write — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: (hermes|autonomaton)\s+flywheel\s+reject\b.*
-        zone: red
-        reason: "Flywheel rejection drops a pending proposal — scope-defining write, grant required (GRV-001 Stage 04)."
-      - match_pattern: (hermes|autonomaton)\s+flywheel\s+patterns\s+demote\b.*
-        zone: red
-        reason: "Pattern demotion degrades a compiled T0 pattern — scope-defining write, grant required (GRV-001 Stage 04)."
-      # ── Google Workspace: governed by SUBCOMMAND ──
-      - match_pattern: '.*\bgoogle_api\.py\s+(gmail\s+(search|get|labels)|calendar\s+list|drive\s+(search|get|download)|contacts\s+list|sheets\s+get|docs\s+get)\b.*'
-        zone: green
-        reason: "Google Workspace read operations."
-      - match_pattern: '.*\b(google_api\.py|gws)\b.*'
-        zone: yellow
-        reason: "Google Workspace mutations require approval."
-      # ── Quarantined skills: halt BEFORE promoted-skills green rule ──
-      - match_pattern: '.*\.grove/skills/\.andon/.*'
-        zone: yellow
-        reason: "Quarantine gate: .andon skills require approval."
-      # ── Notion fallback skill ──
-      - match_pattern: '.*\bnotion\.py\s+(create-page|update-page)\b.*'
-        zone: yellow
-        reason: "Notion CLI fallback writes require approval."
-      - match_pattern: '.*\bnotion\.py\s+(search|get|query)\b.*'
-        zone: green
-        reason: "Notion CLI fallback reads."
-      # ── Promoted skills: operator-approved quarantine graduates ──
-      - match_pattern: '.*\.grove/skills/.*'
-        zone: green
-        reason: "Promoted skills execute without approval."
-  skill_manage.create:       yellow
-  skill_manage.promote:      red
-  file_operations.write:     yellow
-  honcho.dialectic.read:     green
-  cron.create:               yellow
-  cron.delete:               yellow
+# ── Read authority (the secrets wall) — DECLARED, not enforced here.
+# read_only derives GREEN, but generic file-tool READS are independently gated
+# by grove/utils/fs_utils.py::is_secret_path (secrets + system paths), the SOLE
+# read wall post secrets-only-wall-v1. Scope-defining surfaces stay readable
+# (writes RED, reads permitted). This block names that authority for a schema
+# reader; it does not re-implement it.
+read_authority:
+  read_wall: grove/utils/fs_utils.py::is_secret_path
+  note: |
+    Reads are gated by the secrets wall only. Scope-defining surfaces remain
+    readable — their writes are RED, their reads are permitted. Current
+    behavior, preserved and now declared.
 
-  # ── Daily-driver tool surface (hotfix: read-green, write-yellow) ──
-  # Operator trust model: GREEN = reads/context-gathering execute
-  # silently; YELLOW = external writes go through Sovereign Prompt;
-  # RED = destructive or security-sensitive actions cannot execute.
-  # Tool-name lookups are exact-match against the bare name yielded
-  # in ToolIntent.tool_name (see grove/dispatcher._classify_one_intent).
-  #
-  # ── Native tools: READ / context-gathering → GREEN ──
-  browser_back:                              green
-  browser_console:                           green
-  browser_get_images:                        green
-  browser_navigate:                          green
-  browser_scroll:                            green
-  browser_snapshot:                          green
-  browser_vision:                            green
-  clarify:                                   green
-  feishu_doc_read:                           green
-  feishu_drive_list_comment_replies:         green
-  feishu_drive_list_comments:                green
-  ha_get_state:                              green
-  ha_list_entities:                          green
-  ha_list_services:                          green
-  kanban_list:                               green
-  kanban_show:                               green
-  cellar_search:                             green
-  # emit_package (wiki-writer-structured-output-v1 P1.1): the fleet worker's
-  # terminal-emission tool. Writes ONLY through the jailed stage_package
-  # primitive into the capability record's declared pending_review sink —
-  # parity with the sentinel path, whose runtime-side staging was never
-  # gated. Promotion disposition remains the operator approval gate. Without
-  # this declaration the default-yellow classification makes the grant-less
-  # worker's deny handler refuse execution (live bake p1bake20260710aaaaaaaa).
-  emit_package:                              green
-  memory:                                    green
-  # retrieval-ambient-class-v1 P3 — effective-state read (shared composed path).
-  read_capability_state:                     green
-  read_file:                                 green
-  search_files:                              green
-  session_search:                            green
-  skill_view:                                green
-  skills_list:                               green
-  todo:                                      green
-  video_analyze:                             green
-  vision_analyze:                            green
-  web_extract:                               green
-  web_search:                                green
-  x_search:                                  green
-  yb_query_group_info:                       green
-  yb_query_group_members:                    green
-  yb_search_sticker:                         green
-
-  # ── Native tools: WRITE / external modification → YELLOW ──
-  browser_cdp:                               yellow
-  browser_click:                             yellow
-  browser_dialog:                            yellow
-  browser_press:                             yellow
-  browser_type:                              yellow
-  cronjob:                                   yellow
-  delegate_task:                             yellow
-  discord:                                   yellow
-  execute_code:                              yellow
-  feishu_drive_add_comment:                  yellow
-  feishu_drive_reply_comment:                yellow
-  ha_call_service:                           yellow
-  image_generate:                            yellow
-  kanban_block:                              yellow
-  kanban_comment:                            yellow
-  kanban_complete:                           yellow
-  kanban_create:                             yellow
-  kanban_heartbeat:                          yellow
-  kanban_link:                               yellow
-  kanban_unblock:                            yellow
-  mixture_of_agents:                         yellow
-  patch:                                     yellow
-  process:                                   yellow
-  send_message:                              yellow
-  skill_manage:                              yellow
-  text_to_speech:                            yellow
-  video_generate:                            yellow
-  write_file:                                yellow
-  yb_send_dm:                                yellow
-  yb_send_sticker:                           yellow
-
-  # ── GRV-009 E5 C-VERBS — make the default-source tools EXPLICIT ──
-  # These 8 tools previously resolved to yellow only via the classifier's
-  # default (no tool_zones entry). Their governing verb records (skills/spotify)
-  # carry zone: yellow; declarative-over-implicit, parity-preserving. Their
-  # current effective zone is yellow — any rezoning is a later deliberate act.
-  invoke_skill:                              yellow
-  spotify_albums:                            yellow
-  spotify_devices:                           yellow
-  spotify_library:                           yellow
-  spotify_playback:                          yellow
-  spotify_playlists:                         yellow
-  spotify_queue:                             yellow
-  spotify_search:                            yellow
-
-  # ── GRV-009 B3 — Flywheel review/approve loop (flywheel_review_tool) ──
-  # The surface-agnostic operator review/approve tools. review_proposals is
-  # read-only → green. approve_proposal / reject_proposal apply (or dismiss)
-  # operator-approved self-modification → yellow, so the Sovereign Prompt
-  # governs the act: the agent cannot self-approve a proposal without the
-  # operator's mechanical tap (declarative-over-implicit; yellow is also the
-  # classifier default, but stated explicitly here per the E5 convention).
-  review_proposals:                          green
-  approve_proposal:                          yellow
-  reject_proposal:                           yellow
-  # crystallization-cadence-v1 — soft dismiss of a crystallization proposal.
-  # Yellow like reject (it mutates proposal state); yellow is also the
-  # classifier default, stated explicitly per the E5 convention.
-  dismiss_proposal:                          yellow
-
-  # ── GRV-001 Grant Token model — standing grant management (grants_tool) ──
-  # review_grants is read-only → green (the agent can surface grants on request).
-  # revoke_grant is a governance mutation → yellow so the Sovereign Prompt
-  # governs the act: the agent cannot revoke a grant without the operator's
-  # mechanical confirmation (the operator is retracting earned authority).
-  review_grants:                             green
-  revoke_grant:                              yellow
-
-  # ── write-routing-coherence-v1 fix-part-3 — publication-autonomy grant ─────
-  # set_publication_state grants/revokes governance.publication.unattended into
-  # the deploy-immune ~/.grove/capabilities/state overlay (never the repo
-  # definition). Governance mutation → yellow so the Sovereign Prompt governs the
-  # arm/disarm; the operator's approval of that prompt IS the grant.
-  set_publication_state:                     yellow
-
-  # ── GRV-001 Stage 04 — andon skill governance tools (andon_tool) ──────────
-  # andon_list is read-only → green. promote/reject/revoke mutate sovereignty
-  # state → red (scope-defining writes). Red + valid Grant Token = execute;
-  # Red + no grant (agent-synthesized) = sovereignty prompt (4 choices).
-  # The Grant Token model recognises operator natural language ("promote X")
-  # as an implicit grant so no prompt fires on operator-initiated turns.
-  andon_list:                                green
-  andon_promote:                             red
-  andon_reject:                              red
-  andon_revoke:                              red
-
-  # ── promoted-artifact-persistence-v1 P5 — fleet lifecycle (fleet_lifecycle_tool) ──
-  # fleet_purge is SEMANTIC REVOCATION of a prior operator approval — RED
-  # (GATE-B Q1: revocation outranks mechanical reversibility; the move is
-  # archive-first and the bytes survive, but the approval is retracted).
-  # Red + valid Grant Token (implicit operator verb, or the standing pair
-  # (fleet_purge, fleet_purge)) = execute; Red + agent-synthesized =
-  # sovereignty ceremony (prompt / durable pending-store portal confirm).
-  fleet_purge:                               red
-
-  # ── Native tools: SECURITY / SYSTEM → RED ──
-  # OS-level UI automation; keystroke-injection territory.
-  computer_use:                              red
-  # Role/permission management on a shared service.
-  discord_admin:                             red
-
-  # ── Hosted Notion MCP: READ → GREEN (Sprint 69) ──
-  # Names follow `mcp_<server>_<operation>` per tools/mcp_tool.py. The
-  # server key is `notion` and the hosted tools are named `notion-*`, so
-  # the registered names carry a (cosmetic) doubled `notion`. These are
-  # the hosted surface at mcp.notion.com; verify exact registered names
-  # against the live registry after the OAuth bootstrap and adjust if the
-  # sanitizer differs. The retired local @notionhq server used different
-  # (`mcp_notion_API_*`) names — removed in Sprint 69.
-  mcp_notion_notion_search:              green
-  mcp_notion_notion_fetch:               green
-  mcp_notion_notion_get_comments:        green
-  mcp_notion_notion_get_users:           green
-  mcp_notion_notion_get_teams:           green
-  mcp_notion_notion_query_database_view: green
-  mcp_notion_notion_query_meeting_notes: green
-
-  # ── Hosted Notion MCP: WRITE → YELLOW (Sprint 69) ──
-  mcp_notion_notion_create_pages:        yellow
-  mcp_notion_notion_create_database:     yellow
-  mcp_notion_notion_update_page:         yellow
-  mcp_notion_notion_move_pages:          yellow
-  mcp_notion_notion_duplicate_page:      yellow
-  mcp_notion_notion_create_comment:      yellow
-  mcp_notion_notion_update_data_source:  yellow
-  mcp_notion_notion_create_view:         yellow
-  mcp_notion_notion_update_view:         yellow
-
-  # grove-browser node tools — engine authority over node-proposed Green
-  # Authority inversion (GRV-004): the node proposes Green in its served
-  # declaration; the engine's zone entry here is the authority. Absent
-  # these entries, the tool defaults Yellow (zones.py:266). The read
-  # surface is five Green read-only tools (browser-read-surface-v1): no
-  # write capability exists on this node.
-  mcp_grove_browser_browser_search: green
-  mcp_grove_browser_browser_read_page: green
-  mcp_grove_browser_browser_extract: green
-  mcp_grove_browser_browser_screenshot: green
-  mcp_grove_browser_browser_session: green
-
-  # ── Google Workspace native verbs: READ → GREEN (workspace-first-class-capability-v1) ──
-  # First-class native tools wrapping google_api.py. Classified by the bare
-  # tool_name at the Dispatcher intent gate — the in-process call bypasses the
-  # terminal-command classifier, so THESE entries are the enforcement. An
-  # omitted verb defaults to Yellow in the classifier (fail-safe).
-  gmail_search:        green
-  gmail_get:           green
-  gmail_labels:        green
-  calendar_list:       green
-  drive_search:        green
-  drive_get:           green
-  drive_download:      green
-  contacts_list:       green
-  sheets_get:          green
-  docs_get:            green
-
-  # ── Google Workspace native verbs: MUTATION → YELLOW ──
-  gmail_send:          yellow
-  gmail_reply:         yellow
-  gmail_modify:        yellow
-  calendar_create:     yellow
-  calendar_delete:     yellow
-  drive_upload:        yellow
-  drive_create_folder: yellow
-  drive_share:         yellow
-  drive_delete:        yellow
-  sheets_update:       yellow
-  sheets_append:       yellow
-  sheets_create:       yellow
-  docs_create:         yellow
-  docs_append:         yellow
-
-  # ── Hierarchical example (commented out — zero behavior change) ──
-  # Uncomment + edit to opt your terminal tool into argument-level
-  # rules. The example below replaces the bare `terminal: yellow`
-  # above (delete the bare line if you uncomment this block).
-  #
-  # terminal:
-  #   default_zone: yellow
-  #   rules:
-  #     # Sovereign: privilege escalation always goes through Kaizen.
-  #     - match_pattern: '^sudo\s+.*'
-  #       zone: red
-  #       reason: "Privilege escalation requires sovereign approval."
-  #
-  #     # Catastrophic: hard-no, no operator dialog.
-  #     - match_pattern: '^rm\s+-rf\s+/$'
-  #       zone: red
-  #       reason: "Catastrophic root-filesystem deletion."
-  #
-  #     # Green: cleanup within /tmp is safe.
-  #     - match_pattern: '^rm\s+(-[fir]+\s+)?/tmp/.*'
-  #       zone: green
-  #       reason: "Temporary directory cleanup is inherently safe."
-  #
-  #     # Anything else flowing through terminal → yellow (default_zone).
+# ── Scope membership — BY REFERENCE. is_scope_defining consumes
+# config/scope_surfaces.yaml (the single membership source). This schema
+# declares the MODEL and references that file BY NAME; it NEVER duplicates the
+# member list. (declared-surfaces-v1 later evolves scope_surfaces.yaml; this
+# sprint does not fork it.)
+scope_membership:
+  source: config/scope_surfaces.yaml
+  consumer: grove/utils/fs_utils.py::is_scope_defining
+  note: |
+    A workspace_write target is classified by is_scope_defining against the
+    members declared in scope_surfaces.yaml (dual anchor: GROVE_HOME tree +
+    the running tree's <module_root>/config/). No membership is duplicated here.
 
 # ============================================================================
-# GRV-001 v2.0 — scope-keyed zone model (shell governance path)
+# Tool → effect class.  classify(<tool_name>) derives the tool's zone from its
+# class via the rules above. Tool identifiers are the bare names yielded in
+# ToolIntent.tool_name (grove/dispatcher._classify_one_intent). A tool with no
+# entry here derives `default_unmatched` (yellow).
+#
+# Behavior parity (zones-v2-scope-keying P1b): every derived zone equals the
+# v1 baseline zone. See the sprint's parity map. (The v1 `memory: green` entry
+# is RETIRED — the legacy builtin memory tool is forbidden by the registry
+# invariant tools/registry.py:120-133, so no ToolIntent carries tool_name
+# "memory"; the entry was residue and is deleted, not a zone divergence.)
 # ============================================================================
-#
-# Declarative record of the scope-keyed model the shell-effect classifier
-# (grove/shell_effects.py via grove/utils/fs_utils.is_scope_defining) enforces.
-# Category keying ("a filesystem write is RED because it is a write") is
-# FORBIDDEN under v2.0 — a write's zone is computed from WHAT it changes:
-#   * a SCOPE-DEFINING surface (would expand the agent's own authority) -> RED
-#   * a GRANTED workspace under ~/.grove (everything else) -> GREEN (autonomous)
-#   * a path OUTSIDE ~/.grove -> YELLOW (four-choice operator grant)
-#
-# NOTE on schema_version: this block is DECLARATIVE. The loader
-# (grove/zones.py) hard-requires `schema_version: 1` and rejects any other
-# value, so the integer above is intentionally left at 1; the scope-keyed
-# model carries its own version marker below. The loader reads only
-# `schema_version`, `zones`, and `tool_zones` — it ignores the keys here.
-zone_model:
-  version: "2.0"
-  keying: operator-scope
-  category_keying: forbidden
-  enforcement: application_layer   # in-process classification; not os permissions
+tool_effects:
 
-  granted_workspaces:
-    rule: complement        # everything under ~/.grove NOT scope-defining
-    default_zone: green     # autonomous; write targets only (reads stay yellow)
+  # ── read_only → GREEN (reads / context-gathering; no operator-scope write) ──
+  andon_list:                            read_only
+  browser_back:                          read_only
+  browser_console:                       read_only
+  browser_get_images:                    read_only
+  browser_navigate:                      read_only
+  browser_scroll:                        read_only
+  browser_snapshot:                      read_only
+  browser_vision:                        read_only
+  calendar_list:                         read_only
+  cellar_search:                         read_only
+  clarify:                               read_only
+  contacts_list:                         read_only
+  docs_get:                              read_only
+  drive_download:                        read_only
+  drive_get:                             read_only
+  drive_search:                          read_only
+  feishu_doc_read:                       read_only
+  feishu_drive_list_comment_replies:     read_only
+  feishu_drive_list_comments:            read_only
+  gmail_get:                             read_only
+  gmail_labels:                          read_only
+  gmail_search:                          read_only
+  ha_get_state:                          read_only
+  ha_list_entities:                      read_only
+  ha_list_services:                      read_only
+  honcho.dialectic.read:                 read_only
+  kanban_list:                           read_only
+  kanban_show:                           read_only
+  mcp_grove_browser_browser_extract:     read_only
+  mcp_grove_browser_browser_read_page:   read_only
+  mcp_grove_browser_browser_screenshot:  read_only
+  mcp_grove_browser_browser_search:      read_only
+  mcp_grove_browser_browser_session:     read_only
+  mcp_notion_notion_fetch:               read_only
+  mcp_notion_notion_get_comments:        read_only
+  mcp_notion_notion_get_teams:           read_only
+  mcp_notion_notion_get_users:           read_only
+  mcp_notion_notion_query_database_view: read_only
+  mcp_notion_notion_query_meeting_notes: read_only
+  mcp_notion_notion_search:              read_only
+  read_capability_state:                 read_only
+  read_file:                             read_only
+  review_grants:                         read_only
+  review_proposals:                      read_only
+  search_files:                          read_only
+  session_search:                        read_only
+  sheets_get:                            read_only
+  skill_view:                            read_only
+  skills_list:                           read_only
+  # todo mutates an ephemeral local task list — no operator-scope effect; GREEN
+  # by baseline. Classified read_only in the operator-scope sense.
+  todo:                                  read_only
+  video_analyze:                         read_only
+  vision_analyze:                        read_only
+  web_extract:                           read_only
+  web_search:                            read_only
+  x_search:                              read_only
+  yb_query_group_info:                   read_only
+  yb_query_group_members:                read_only
+  yb_search_sticker:                     read_only
 
-  unknown_paths:
-    default_zone: yellow    # outside ~/.grove — four-choice operator grant
+  # ── contained_write → GREEN (jailed sink; containment cited from source) ──
+  emit_package:
+    class: contained_write
+    # Fleet worker's terminal-emission tool (tools/fleet_emit_tool.py:69,314;
+    # handler _handle_emit_package:178). Writes ONLY through the jailed
+    # stage_package primitive: write-side is_relative_to(sink) jail at
+    # grove/fleet/staging.py:82 and :116-117 (FleetWorkerAndon on escape),
+    # basename jail at grove/fleet/worker_entry.py:505-515. No free write
+    # surface — the write cannot reach an operator-scope target.
+    containment: "grove/fleet/staging.py:82,116-117 (stage_package is_relative_to(sink) write-jail); grove/fleet/worker_entry.py:505-515 (basename jail)"
+
+  # ── workspace_write → YELLOW at the bare gate; scope wall decides on target ──
+  execute_code:                          workspace_write
+  file_operations.write:                 workspace_write
+  patch:                                 workspace_write
+  process:                               workspace_write
+  write_file:                            workspace_write
+  # terminal: the shell-runner tool. A command WITH arguments is classified by
+  # the bashlex-AST EFFECT classifier (grove/shell_effects.py) at the Dispatcher
+  # admission site, NOT here — the former regex terminal.rules are retired
+  # (dead: classify_command delegates unconditionally to the AST classifier).
+  # The bare classify("terminal") gate derives YELLOW (parity with the prior
+  # rich default_zone: yellow).
+  terminal:                              workspace_write
+
+  # ── external_effect → YELLOW (effect outside the FS; or governance-APPLICATION
+  #    tools whose act is the operator's mechanical tap — C14-conformant YELLOW) ──
+  approve_proposal:                      external_effect
+  browser_cdp:                           external_effect
+  browser_click:                         external_effect
+  browser_dialog:                        external_effect
+  browser_press:                         external_effect
+  browser_type:                          external_effect
+  calendar_create:                       external_effect
+  calendar_delete:                       external_effect
+  cron.create:                           external_effect
+  cron.delete:                           external_effect
+  cronjob:                               external_effect
+  delegate_task:                         external_effect
+  discord:                               external_effect
+  dismiss_proposal:                      external_effect
+  docs_append:                           external_effect
+  docs_create:                           external_effect
+  drive_create_folder:                   external_effect
+  drive_delete:                          external_effect
+  drive_share:                           external_effect
+  drive_upload:                          external_effect
+  feishu_drive_add_comment:              external_effect
+  feishu_drive_reply_comment:            external_effect
+  gmail_modify:                          external_effect
+  gmail_reply:                           external_effect
+  gmail_send:                            external_effect
+  ha_call_service:                       external_effect
+  image_generate:                        external_effect
+  invoke_skill:                          external_effect
+  kanban_block:                          external_effect
+  kanban_comment:                        external_effect
+  kanban_complete:                       external_effect
+  kanban_create:                         external_effect
+  kanban_heartbeat:                      external_effect
+  kanban_link:                           external_effect
+  kanban_unblock:                        external_effect
+  mcp_notion_notion_create_comment:      external_effect
+  mcp_notion_notion_create_database:     external_effect
+  mcp_notion_notion_create_pages:        external_effect
+  mcp_notion_notion_create_view:         external_effect
+  mcp_notion_notion_duplicate_page:      external_effect
+  mcp_notion_notion_move_pages:          external_effect
+  mcp_notion_notion_update_data_source:  external_effect
+  mcp_notion_notion_update_page:         external_effect
+  mcp_notion_notion_update_view:         external_effect
+  mixture_of_agents:                     external_effect
+  reject_proposal:                       external_effect
+  revoke_grant:                          external_effect
+  send_message:                          external_effect
+  set_publication_state:                 external_effect
+  sheets_append:                         external_effect
+  sheets_create:                         external_effect
+  sheets_update:                         external_effect
+  skill_manage:                          external_effect
+  skill_manage.create:                   external_effect
+  spotify_albums:                        external_effect
+  spotify_devices:                       external_effect
+  spotify_library:                       external_effect
+  spotify_playback:                      external_effect
+  spotify_playlists:                     external_effect
+  spotify_queue:                         external_effect
+  spotify_search:                        external_effect
+  text_to_speech:                        external_effect
+  video_generate:                        external_effect
+  yb_send_dm:                            external_effect
+  yb_send_sticker:                       external_effect
+
+  # ── governance → RED (mutates the agent's OWN authority / sovereignty state) ──
+  andon_promote:                         governance
+  andon_reject:                          governance
+  andon_revoke:                          governance
+  fleet_purge:                           governance
+  skill_manage.promote:                  governance
+
+  # ── operator_only → RED (sovereign-held security/system surface) ──
+  computer_use:                          operator_only
+  discord_admin:                         operator_only

@@ -209,10 +209,14 @@ def test_skill_relocated_not_deleted_and_scripts_intact():
 
 
 def test_workspace_zone_parity_unchanged():
-    schema = yaml.safe_load((REPO / "config" / "zones.schema.yaml").read_text(encoding="utf-8"))
-    tz = schema["tool_zones"]
-    # Reads still green, mutations still yellow — the records mirror this; the
-    # hook does not re-enforce zones, so yellow still routes through approval.
-    assert tz["gmail_search"] == "green"
-    assert tz["gmail_send"] == "yellow"
-    assert tz["drive_delete"] == "yellow"
+    # zones-v2-scope-keying: classification derives from effect classes, not a raw
+    # tool_zones map. Assert against the DERIVED zone (the loader's authority),
+    # version-agnostic. Reads still green, mutations still yellow — parity held
+    # (read_only→green, external_effect→yellow); the hook does not re-enforce
+    # zones, so yellow still routes through approval.
+    from grove.zones import ZoneClassifier, _resolve_schema_path
+
+    clf = ZoneClassifier(_resolve_schema_path(None))
+    assert clf.classify("gmail_search").zone == "green"
+    assert clf.classify("gmail_send").zone == "yellow"
+    assert clf.classify("drive_delete").zone == "yellow"

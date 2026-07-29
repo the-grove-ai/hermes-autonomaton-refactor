@@ -443,6 +443,11 @@ class TestSaveZoneRule:
             f"ruamel.yaml should preserve all overlay commentary."
         )
 
+    @pytest.mark.xfail(
+        reason="P2 retirement target: save_zone_rule output now refused at load "
+        "(A3); deleted with zone_rules.py",
+        strict=False,
+    )
     def test_save_then_reload_makes_rule_effective(self, tmp_path: Path, monkeypatch):
         """The new rule takes effect on the next classify call without
         a process restart."""
@@ -478,6 +483,11 @@ class TestSaveZoneRule:
             f"Rule did not take effect after save+reload; got {r_after.zone}."
         )
 
+    @pytest.mark.xfail(
+        reason="P2 retirement target: save_zone_rule output now refused at load "
+        "(A3); deleted with zone_rules.py",
+        strict=False,
+    )
     def test_save_tool_id_as_pattern_promotes_default_zone(self, tmp_path: Path, monkeypatch):
         """When pattern == tool_id, save_zone_rule promotes default_zone instead
         of appending a semantically inert rule."""
@@ -526,6 +536,11 @@ class TestSaveZoneRule:
         entry2 = data2["tool_zones"]["execute_code"]
         assert entry2 == entry  # unchanged
 
+    @pytest.mark.xfail(
+        reason="P2 retirement target: save_zone_rule output now refused at load "
+        "(A3); deleted with zone_rules.py",
+        strict=False,
+    )
     def test_save_tool_id_as_pattern_keeps_real_rules(self, tmp_path: Path, monkeypatch):
         """When promoting via tool-id-as-pattern, real command-string rules
         (match_pattern != tool_id) are preserved."""
