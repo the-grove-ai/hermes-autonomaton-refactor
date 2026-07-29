@@ -66,7 +66,7 @@ The Autonomaton Pattern is not rocket science. It's a synthesis of established i
 
 The compounding isn't a metaphor. It's a pipeline with a direction.
 
-Every turn through the system leaves a complete structured intent record — what was asked, how it was classified, which tier handled it, what tools fired, and what the operator did with the result. This is the **feed-first** design: telemetry isn't logging bolted onto an agent, it's the spine the agent hangs off of. The dispatcher owns the turn, so for every **governed** turn — the `dispatch_turn` path — the record is complete by construction. (The lightweight one-shot `-z` pipe is a known exception: real inference, no intent record — tracked as a Feed-First conformance gap.)
+Every turn through the system leaves a complete structured intent record — what was asked, how it was classified, which tier handled it, what tools fired, and what the operator did with the result. This is the **feed-first** design: telemetry isn't logging bolted onto an agent, it's the spine the agent hangs off of. The dispatcher owns the turn, so for every operator-initiated turn the record is complete by construction — no operator turn escapes the feed. (Unattended fleet-worker runs deliberately sit off the operator-intent feed; each leaves a terminal-state event on its own fleet feed instead.)
 
 That record stream drives three mechanisms, each shipped and operating:
 

@@ -431,7 +431,20 @@ def _run_agent(
     from grove.cellar import retrieve_cellar_context
     _cellar_context = retrieve_cellar_context(prompt)
 
-    agent = Dispatcher(session_db=session_db, agent_kwargs=dict(
+    # instance-cold-start-parity-v1 F1 (oneshot-feed-receipt) — wire the intent
+    # store so a oneshot (-z) turn leaves a feed-first receipt like every governed
+    # turn. Precedent-copy: the AIAgent.run_conversation lazy build
+    # (run_agent.py:18507) and the gateway both inject
+    # ``intent_store=grove.intent_store.get_store()``; oneshot constructs the
+    # Dispatcher eagerly, so it must pass the same kwarg here — otherwise this
+    # Dispatcher becomes the agent's ``_dispatcher_singleton`` with no store and
+    # the lazy build never runs. Same store, same schema, receipt only.
+    from grove.intent_store import get_store as _get_intent_store
+
+    agent = Dispatcher(
+        session_db=session_db,
+        intent_store=_get_intent_store(),
+        agent_kwargs=dict(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
