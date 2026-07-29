@@ -11,7 +11,6 @@ nothing from ``tools/`` or ``grove/api``.
 """
 from __future__ import annotations
 
-import hashlib
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,35 +20,21 @@ import jwt
 
 from grove.gate.registry import AuthorizedKey, RegistryError, load_registry
 
-# ── Gate-fixed token contract (all literals — not config) ────────────────────
-# Explicit audience so a token minted for any OTHER Grove surface (or a GCP OIDC
-# token, aud=<client-id>) fails structurally, never by accident of reuse.
-_AUDIENCE = "grove-confirmation-gate"
-# Custom media type in the JWT ``typ`` header — a GCP OIDC token (typ="JWT")
-# fails this structural check before any signature math.
-_TYP = "grove-grant+jwt"
-# The ONLY accepted algorithm, a hardcoded literal (F3): the alg-confusion
-# defense is the allow-list itself — an HS256 token forged with the PEM public
-# key as the HMAC secret, or an alg=none token, is rejected here, not verified.
-_ALGORITHMS = ["ES256"]
-# Clock-skew grace for exp/iat (seconds). Small: mint-after-decision means the
-# operator's clock and the gateway's are both live and NTP-disciplined; 10s
-# absorbs ordinary drift without widening the replay window meaningfully.
-_LEEWAY = 10
-# SERVER-ENFORCED maximum token lifetime (seconds). This is a SERVER control,
-# not a client promise: a token is a transport wrapper around a decision the
-# operator JUST made, so it needs only enough life to cross the wire and be
-# consumed. exp - iat > 60 is refused even if the signature is valid — a
-# long-lived token is a standing bearer credential, which this Gate must not
-# accept.
-_MAX_WINDOW_SECONDS = 60
-# The closed disposition vocabulary. P1 gates the APPROVE verb only (reject /
-# dismiss for the six types are unchanged this sprint), so "approve" is the sole
-# authorized disposition; any other value is an unknown-disposition refuse.
-_ALLOWED_DISPOSITIONS = frozenset({"approve"})
-# The required claim set — strict, no defaults. PyJWT ``require`` enforces
-# presence; a missing claim is a refuse, never a defaulted value.
-_REQUIRED_CLAIMS = ["proposal_id", "disposition", "jti", "iat", "exp"]
+# ── Gate-fixed token contract — bound to the SHARED constants module ─────────
+# grove.gate.constants is the single source both signer and verifier import;
+# these module-local names are thin aliases (kept for call-site brevity and the
+# P1 test surface). The rationale/sizing basis for each value lives in
+# grove.gate.constants. Divergence signer<->verifier is impossible: both read
+# the SAME definitions below.
+from grove.gate import constants as _c
+
+_AUDIENCE = _c.AUDIENCE
+_TYP = _c.TOKEN_TYP
+_ALGORITHMS = [_c.ALGORITHM]
+_LEEWAY = _c.LEEWAY_SECONDS
+_MAX_WINDOW_SECONDS = _c.MAX_WINDOW_SECONDS
+_ALLOWED_DISPOSITIONS = _c.ALLOWED_DISPOSITIONS
+_REQUIRED_CLAIMS = list(_c.REQUIRED_CLAIMS)
 
 
 class GrantVerificationError(RuntimeError):
@@ -73,17 +58,10 @@ class VerifiedGrant:
 
 
 def _key_fingerprint(public_key) -> str:
-    """SHA-256 over the DER-encoded SubjectPublicKeyInfo of the registered key —
-    the canonical SPKI fingerprint (A3). Keying on the SPKI, not the PEM text,
-    makes the fingerprint invariant to PEM whitespace/line-wrap/encoding
-    differences: the same key always stamps the same provenance id (R-6)."""
-    from cryptography.hazmat.primitives.serialization import (
-        Encoding,
-        PublicFormat,
-    )
-
-    der = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
-    return hashlib.sha256(der).hexdigest()
+    """Canonical SPKI fingerprint (A3) — delegates to the shared
+    :func:`grove.gate.constants.spki_fingerprint` so the signer's kid derivation
+    and this stamp compute the identical value from the identical function."""
+    return _c.spki_fingerprint(public_key)
 
 
 def _parse_not_after(key: AuthorizedKey) -> datetime:

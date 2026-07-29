@@ -1547,6 +1547,27 @@ def _read_fleet_artifact(cap: Any, filename: str) -> Optional[tuple]:
 # across staging + canonical itself).
 
 
+async def handle_proposal_raw(request: web.Request) -> web.Response:
+    """``GET /api/substrate/proposals/{proposal_id}/raw`` — the proposal's RAW
+    stored record by FULL id (``sha256:``-prefixed), verbatim from the queue: no
+    re-rendering, no field filtering. This is the authoritative surface the
+    operator device tool (``autonomaton gate approve``) recomputes the content
+    id against, so it MUST be the unmodified stored record. 404 on unknown id.
+    Mesh-gated by ``portal_auth_middleware`` like every ``/api/substrate/`` route
+    (confirmation-gate-grant-token-v1 P2)."""
+    from grove.eval import proposal_queue
+
+    proposal_id = request.match_info["proposal_id"]
+    record = proposal_queue.read(proposal_id)
+    if record is None:
+        return web.json_response(
+            {"error": "not_found",
+             "detail": f"no proposal with id {proposal_id}"},
+            status=404,
+        )
+    return web.json_response(record.to_dict())
+
+
 # ---------------------------------------------------------------------------
 # Route registration
 # ---------------------------------------------------------------------------
@@ -1568,6 +1589,11 @@ def register_portal_routes(app: web.Application) -> None:
     app.router.add_get("/api/substrate/memory/records", handle_memory_records)
     app.router.add_get("/api/substrate/dock/goals", handle_dock_goals)
     app.router.add_get("/api/substrate/proposals/pending", handle_proposals_pending)
+    # confirmation-gate-grant-token-v1 P2 — raw stored record by full id, the
+    # surface the operator device tool recomputes the content id against.
+    app.router.add_get(
+        "/api/substrate/proposals/{proposal_id}/raw", handle_proposal_raw
+    )
     app.router.add_get("/api/substrate/skills/", handle_skills)
     # Phase 4 — search
     app.router.add_get("/api/substrate/search", handle_search)

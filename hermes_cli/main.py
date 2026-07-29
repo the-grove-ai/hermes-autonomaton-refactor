@@ -5515,6 +5515,192 @@ def cmd_auth(args):
     auth_command(args)
 
 
+# ---------------------------------------------------------------------------
+# Confirmation Gate — operator device tool + key lifecycle (P2)
+# ---------------------------------------------------------------------------
+
+
+def _gate_base_url(args):
+    """Gateway base URL: ``--gateway-url`` wins, else config
+    ``sections.portal_links.base_url`` (composer.py:1088 precedent — no new
+    config key)."""
+    explicit = getattr(args, "gateway_url", None)
+    if explicit:
+        return explicit
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        section = (cfg.get("sections") or {}).get("portal_links") or {}
+        return section.get("base_url") or None
+    except Exception:
+        return None
+
+
+def _gate_confirm(prompt):
+    """Confirmation prompt — default No."""
+    try:
+        answer = input(f"{prompt} [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return answer in ("y", "yes")
+
+
+def _gate_print_outcome(status, body, proposal_id, token, private_key):
+    """Print the approve outcome. On success echo the R-6 stamp VALUES the server
+    recorded (derived from the grant we signed — the approve route returns an
+    HTML card, not JSON, so these are echoed from the submitted grant, identical
+    to what is stamped). On refusal print the server's distinct message verbatim."""
+    import re
+
+    if status == 200:
+        import jwt as _jwt
+
+        from grove.gate import constants
+
+        claims = _jwt.decode(token, options={"verify_signature": False})
+        fp = constants.spki_fingerprint(private_key.public_key())
+        print(f"✅ Applied — proposal {proposal_id} approved.")
+        print("   R-6 stamp (server-recorded, echoed from the submitted grant):")
+        print(f"     operator_key_fingerprint: {fp}")
+        print(f"     token_jti:  {claims['jti']}")
+        print(f"     token_iat:  {claims['iat']}")
+        print(f"     token_exp:  {claims['exp']}")
+        print("     verification_method: es256-jwt-v1")
+        return
+    match = re.search(r'meta error">([^<]*)</div>', body)
+    message = match.group(1) if match else body.strip()
+    print(f"❌ Refused ({status}): {message}", file=sys.stderr)
+
+
+def _gate_approve(args):
+    from grove.gate import client, keyfile
+
+    base_url = _gate_base_url(args)
+    if not base_url:
+        print(
+            "No gateway URL — pass --gateway-url or set "
+            "sections.portal_links.base_url in your config.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        record = client.fetch_raw_record(base_url, args.proposal_id)
+        # Recompute + verify BEFORE any prompt — a mismatch is a loud refuse
+        # naming both ids, with no prompt shown and nothing signed.
+        client.recompute_and_verify_id(record, args.proposal_id)
+    except client.GateClientError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(client.render_for_approval(record))
+    print()
+    if not _gate_confirm("Sign and submit an approval grant for THIS proposal?"):
+        print("Aborted — nothing signed.")
+        return 1
+
+    try:
+        private_key, kid, operator_identity = keyfile.load_signing_key(
+            getattr(args, "kid", None)
+        )
+        token = client.build_token(
+            args.proposal_id, private_key, kid, operator_identity
+        )
+    except keyfile.GateKeyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    try:
+        status, body = client.submit_approval(base_url, args.proposal_id, token)
+    except client.GateClientError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _gate_print_outcome(status, body, args.proposal_id, token, private_key)
+    return 0 if status == 200 else 1
+
+
+def _gate_keys_mint(args):
+    import base64
+    import shlex
+
+    from grove.gate import keyfile
+
+    try:
+        out = keyfile.mint(args.operator)
+    except keyfile.GateKeyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    b64 = base64.b64encode(out["public_key_pem"].encode("utf-8")).decode("ascii")
+    print("Minted device key (private material stored 0600, never printed):")
+    print(f"  kid:      {out['kid']}")
+    print(f"  operator: {out['operator_identity']}")
+    print(f"  stored:   {out['path']}")
+    print()
+    print("Public key (PEM):")
+    print(out["public_key_pem"].rstrip())
+    print()
+    print("Register it on the VM in your operator IAM shell (as root):")
+    print(
+        f"  sudo autonomaton gate keys add --kid {out['kid']} "
+        f"--operator {shlex.quote(out['operator_identity'])} "
+        f"--public-key-b64 {b64}"
+    )
+    return 0
+
+
+def _gate_keys_add(args):
+    import base64
+
+    from grove.gate import admin
+
+    try:
+        pem = base64.b64decode(args.public_key_b64).decode("utf-8")
+    except Exception as exc:  # noqa: BLE001 — surface a clean decode error
+        print(f"--public-key-b64 is not valid base64 PEM: {exc}", file=sys.stderr)
+        return 1
+    try:
+        entry = admin.add_key(args.kid, pem, args.operator)
+    except admin.GateAdminError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(
+        f"Registered kid {entry['kid']} (operator {entry['operator_identity']}); "
+        f"not_after {entry['not_after']}."
+    )
+    return 0
+
+
+def _gate_keys_revoke(args):
+    from grove.gate import admin
+
+    try:
+        removed = admin.revoke_key(args.kid)
+    except admin.GateAdminError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"Revoked kid {args.kid} ({removed} entry removed).")
+    return 0
+
+
+def cmd_gate(args):
+    """Confirmation Gate — operator device approval + key lifecycle (P2)."""
+    action = getattr(args, "gate_action", None)
+    if action == "approve":
+        return _gate_approve(args)
+    if action == "keys":
+        keys_action = getattr(args, "gate_keys_action", None)
+        if keys_action == "mint":
+            return _gate_keys_mint(args)
+        if keys_action == "add":
+            return _gate_keys_add(args)
+        if keys_action == "revoke":
+            return _gate_keys_revoke(args)
+        print("usage: autonomaton gate keys {mint|add|revoke}", file=sys.stderr)
+        return 2
+    print("usage: autonomaton gate {approve|keys}", file=sys.stderr)
+    return 2
+
+
 def cmd_flywheel(args):
     """Operator review surface for Flywheel routing proposals (Sprint 47).
 
@@ -9799,7 +9985,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "index", "insights",
+        "dump", "fallback", "gate", "gateway", "hooks", "import", "index", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
         "repair-instance", "sessions", "setup",
@@ -10568,6 +10754,68 @@ def main():
     # =========================================================================
     # flywheel command (Sprint 47 — GRV-008 § IV operator review surface)
     # =========================================================================
+    # Confirmation Gate (confirmation-gate-grant-token-v1 P2) — operator device
+    # approval + key lifecycle. Group mirrors the flywheel/gateway pattern.
+    gate_parser = subparsers.add_parser(
+        "gate",
+        help="Confirmation Gate — sign an operator approval grant + manage keys",
+        description=(
+            "Operator-side Confirmation Gate. `approve` fetches a scope-defining "
+            "proposal's RAW record over the mesh, verifies its content hash, "
+            "renders the authoritative surface, and signs an ES256 grant token "
+            "with your device key. `keys mint/add/revoke` manage the device key "
+            "and the VM registry (add/revoke run in your operator IAM shell)."
+        ),
+    )
+    gate_sub = gate_parser.add_subparsers(dest="gate_action")
+
+    gate_approve_p = gate_sub.add_parser(
+        "approve",
+        help="Sign + submit an ES256 approval grant for a scope-defining proposal",
+    )
+    gate_approve_p.add_argument(
+        "proposal_id", help="Full sha256:... proposal id (the id the hash covers)"
+    )
+    gate_approve_p.add_argument(
+        "--kid", default=None,
+        help="Device key id to sign with (default: the sole minted key)",
+    )
+    gate_approve_p.add_argument(
+        "--gateway-url", default=None,
+        help="Gateway base URL (default: config sections.portal_links.base_url)",
+    )
+
+    gate_keys_p = gate_sub.add_parser(
+        "keys", help="Device key + VM registry lifecycle"
+    )
+    gate_keys_sub = gate_keys_p.add_subparsers(dest="gate_keys_action")
+
+    gate_keys_mint_p = gate_keys_sub.add_parser(
+        "mint", help="Generate a P-256 device key on THIS machine (0600, O_EXCL)"
+    )
+    gate_keys_mint_p.add_argument(
+        "--operator", required=True,
+        help="Operator identity string (token iss + registry operator_identity)",
+    )
+
+    gate_keys_add_p = gate_keys_sub.add_parser(
+        "add",
+        help="VM operator shell: register a public key in /etc/grove/gate",
+    )
+    gate_keys_add_p.add_argument("--kid", required=True)
+    gate_keys_add_p.add_argument("--operator", required=True)
+    gate_keys_add_p.add_argument(
+        "--public-key-b64", required=True,
+        help="base64 of the public key PEM (printed by `gate keys mint`)",
+    )
+
+    gate_keys_revoke_p = gate_keys_sub.add_parser(
+        "revoke", help="VM operator shell: remove a registered kid"
+    )
+    gate_keys_revoke_p.add_argument("kid", help="The kid to revoke")
+
+    gate_parser.set_defaults(func=cmd_gate)
+
     flywheel_parser = subparsers.add_parser(
         "flywheel",
         help="Review and approve TierRatchet routing proposals",
