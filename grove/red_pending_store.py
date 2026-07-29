@@ -379,6 +379,23 @@ class RedPendingStore:
                     con.execute(
                         f"ALTER TABLE red_pending ADD COLUMN {col} TEXT"
                     )
+            # confirmation-gate-grant-token-v1 P1 (F2) — the consumed-token
+            # ledger. A verified grant token's ``jti`` is INSERTed here BEFORE
+            # the apply; the PRIMARY KEY makes a second submit a unique-
+            # constraint violation (replay refused). Rows are retained forever
+            # (audit; no pruning) — the table only grows with real approvals.
+            # Same DB as red_pending (owner-only 0600) so a jti record is never
+            # agent-readable and shares the store's durability across restarts.
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS consumed_jtis (
+                    jti         TEXT PRIMARY KEY,
+                    consumed_at TEXT NOT NULL,
+                    proposal_id TEXT NOT NULL,
+                    kid         TEXT NOT NULL
+                )
+                """
+            )
 
     def _harden_perms(self) -> None:
         """Force owner-only (0600) on the DB and its WAL/SHM sidecars. The sidecars
@@ -673,6 +690,33 @@ class RedPendingStore:
         with self._connect() as con:
             row = con.execute("SELECT COUNT(*) AS n FROM red_pending").fetchone()
         return int(row["n"])
+
+    # ── confirmation-gate-grant-token-v1 P1 (F2) — jti consumption ──────────
+    def consume_jti(self, jti: str, proposal_id: str, kid: str) -> bool:
+        """Atomically consume a grant token's ``jti`` — return True on a FRESH
+        consume, False if it was already consumed (replay).
+
+        Consumption is an ``INSERT`` whose success/failure IS the check: the
+        PRIMARY KEY on ``jti`` means a duplicate raises ``IntegrityError``,
+        which we catch and report as replay. There is NO read-then-write (no
+        SELECT-then-INSERT race) — SQLite serializes the INSERT, so exactly one
+        caller can ever win a given jti across threads and processes. Called
+        AFTER signature/claim verification and BEFORE the apply (F2 ordering):
+        a crash after this INSERT burns the token with the proposal unapplied —
+        fail-closed by design."""
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            with self._connect() as con:
+                con.execute(
+                    "INSERT INTO consumed_jtis (jti, consumed_at, proposal_id, kid) "
+                    "VALUES (?, ?, ?, ?)",
+                    (jti, now, proposal_id, kid),
+                )
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
 
 # ── Process-level singleton (durable-red-store-v1 Move A; thin handle) ─────────

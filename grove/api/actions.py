@@ -26,7 +26,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from aiohttp import web
 
@@ -273,12 +273,33 @@ async def _loud_action_failure(
 # ---------------------------------------------------------------------------
 
 
+def _grant_provenance_stamp(grant) -> Dict[str, Any]:
+    """confirmation-gate-grant-token-v1 P1 (R-6) — the operator-identity stamp for
+    a token-verified inline apply. Written onto BOTH the ``kaizen_disposition``
+    event (via ``extra``) AND the ``applied_result``, so the audit trail names
+    WHICH operator key authorized the scope-defining write, WHEN, and under what
+    single-use token. RED CLI applies carry no token and no stamp (unchanged)."""
+    return {
+        "operator_key_fingerprint": grant.operator_key_fingerprint,
+        "token_jti": grant.jti,
+        "token_iat": grant.iat,
+        "token_exp": grant.exp,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+        "proposal_id": grant.proposal_id,
+        "verification_method": "es256-jwt-v1",
+    }
+
+
 async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
-                         reason, mount: str = ""):
+                         reason, mount: str = "", token=None):
     """Apply a routing proposal action. Mirrors grove.flywheel_cli.cli_approve /
     cli_reject: approve runs the registry apply_callback + remove + disposition;
     reject/dismiss remove + record (routing has no soft-dismiss — dismiss is a
-    rejection disposition, SPEC 1c)."""
+    rejection disposition, SPEC 1c).
+
+    confirmation-gate-grant-token-v1 P1 — a scope-defining approve bearing a
+    valid operator grant *token* verifies + consumes + falls through to the
+    same apply sequence; tokenless/invalid keeps the RED-CLI-only refusal."""
     type_label = proposal.type
     # proposal-card-legibility-v1 Phase 3 — refused/result cards speak the SAME
     # registry summary line as the pending card (one render path); the verbatim
@@ -295,34 +316,69 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
         summary = proposal.to_dict().get("semantic_justification") or ""
 
     if action == "approve":
-        # portal-approve-route-parity — route 7 refuses the SAME six
-        # scope-defining proposal types the agent tool refuses (see
-        # tools/flywheel_review_tool.py), checked BEFORE any handler is
-        # resolved. These apply ONLY via the operator's RED CLI (`autonomaton
-        # flywheel approve`, RED/operator-only). The portal is loopback/mesh-
-        # gated but carries NO operator identity, so filing one inline here
-        # would be a confused-deputy write to a scope-defining file. Same
-        # refused-card shape as the ValueError branch below.
+        # confirmation-gate-grant-token-v1 P1 (R-3/R-4) — the six scope-defining
+        # types (portal-approve-route-parity) are no longer a dead refusal. A
+        # request bearing a valid operator GRANT TOKEN (ES256, signed by a key in
+        # the root-owned trust anchor, bound to THIS proposal, single-use)
+        # verifies + consumes its jti + falls through to the EXISTING handler /
+        # writer / disposition sequence below — no new writer, no red_pending
+        # two-step for this class. A tokenless or invalid request keeps the prior
+        # guarantee verbatim: refused, RED-CLI-only. The portal still carries no
+        # AMBIENT operator identity (mesh/loopback only); the TOKEN carries it,
+        # unforgeably. reject/dismiss for these types are UNCHANGED this sprint
+        # (they write no scope-defining file — approve is the gated verb).
+        grant = None
         if proposal.type in _SCOPE_DEFINING_REFUSED_TYPES:
-            msg = (
-                f"{proposal.type} is a scope-defining proposal — it applies "
-                f"only via the operator command `autonomaton flywheel approve "
-                f"{short_id}` (RED, operator-only). The portal cannot apply it "
-                f"inline."
-            )
-            return await _loud_action_failure(
-                f'<div class="card" id="proposal-{short_id}">'
-                f'<h4><span class="badge">{_esc(type_label)}</span> '
-                f'<span class="badge badge-yellow">refused</span></h4>'
-                f'<p>{_esc(summary)}</p>'
-                f'<div class="meta error">{_esc(msg)}</div>'
-                f'{_proposal_actions_html(full_id, short_id)}'
-                f'</div>',
-                failure_class="proposal_scope_defining_refused",
-                action="proposal_approve",
-                message=msg,
-                status=422,
-            )
+            from grove.gate import GrantVerificationError, verify_grant_token
+            from grove.red_pending_store import get_red_pending_store
+
+            def _scope_refusal(msg, failure_class, status):
+                return _loud_action_failure(
+                    f'<div class="card" id="proposal-{short_id}">'
+                    f'<h4><span class="badge">{_esc(type_label)}</span> '
+                    f'<span class="badge badge-yellow">refused</span></h4>'
+                    f'<p>{_esc(summary)}</p>'
+                    f'<div class="meta error">{_esc(msg)}</div>'
+                    f'{_proposal_actions_html(full_id, short_id)}'
+                    f'</div>',
+                    failure_class=failure_class,
+                    action="proposal_approve",
+                    message=msg,
+                    status=status,
+                )
+
+            if not token:
+                return await _scope_refusal(
+                    f"{proposal.type} is a scope-defining proposal — apply it "
+                    f"inline with a signed operator grant token (Confirmation "
+                    f"Gate), or via the operator command `autonomaton flywheel "
+                    f"approve {short_id}` (RED, operator-only). The portal will "
+                    f"not apply it without a token.",
+                    "proposal_scope_defining_refused",
+                    422,
+                )
+            try:
+                grant = verify_grant_token(
+                    token, expected_proposal_id=proposal.proposal_id
+                )
+            except GrantVerificationError as exc:
+                return await _scope_refusal(
+                    f"Grant token rejected: {exc}",
+                    "grant_token_rejected",
+                    403,
+                )
+            # F2 ordering — CONSUME the jti BEFORE the apply. A replay (jti
+            # already burned) is refused here; a crash after consume leaves the
+            # token burned and the proposal unapplied (fail-closed by design).
+            if not get_red_pending_store().consume_jti(
+                grant.jti, proposal.proposal_id, grant.kid
+            ):
+                return await _scope_refusal(
+                    "Grant token already used — this approval was already "
+                    "applied (replay refused). Nothing was written.",
+                    "grant_token_replay",
+                    409,
+                )
         try:
             handler = _handler_for(proposal.type)
         except ValueError:
@@ -360,13 +416,21 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
         target, applied = handler.apply_callback(
             proposal, machine_path=_machine_config_path()
         )
+        # R-6 — a token-verified apply stamps operator-key provenance onto BOTH
+        # the applied_result and the kaizen_disposition event. Tokenless applies
+        # (non-scope-defining types) and the RED CLI path carry no stamp.
+        stamp = _grant_provenance_stamp(grant) if grant is not None else None
+        if stamp is not None:
+            applied = {**(applied or {}), **stamp}
         proposal_queue.remove(proposal.proposal_id)
         _record_kaizen_disposition(
-            proposal, disposition="applied", applied_result=applied
+            proposal, disposition="applied", applied_result=applied,
+            extra=stamp,
         )
         logger.info(
-            "[portal.actions] routing proposal %s applied (%s%s)",
+            "[portal.actions] routing proposal %s applied (%s%s)%s",
             proposal.proposal_id, handler.apply_label_prefix, target,
+            f" [gate:{grant.kid}]" if grant is not None else "",
         )
         return _resolved_card(short_id, type_label, "approved", summary)
 
@@ -559,6 +623,20 @@ async def _action_reason(request: web.Request):
     return None
 
 
+async def _action_token(request: web.Request):
+    """Optional Confirmation-Gate grant token — query param ``token`` wins, else
+    form body (mirrors :func:`_action_reason`; aiohttp caches ``request.post()``
+    so the double read is free). Present only on a scope-defining approve that
+    an operator signed; every other action ignores it."""
+    if request.query.get("token"):
+        return request.query["token"]
+    if request.content_type == "application/x-www-form-urlencoded":
+        data = await request.post()
+        if data.get("token"):
+            return str(data["token"])
+    return None
+
+
 async def _dispatch_proposal_action(request: web.Request, action: str) -> web.Response:
     proposal_id = request.match_info["proposal_id"]
     short_id = _short_id(proposal_id)
@@ -569,6 +647,7 @@ async def _dispatch_proposal_action(request: web.Request, action: str) -> web.Re
             request, action, proposal_id, short_id
         )
     reason = await _action_reason(request)
+    token = await _action_token(request)
 
     # Routing proposals first — the content-addressable id is unique across both
     # backing files, so a routing hit is unambiguous.
@@ -577,6 +656,7 @@ async def _dispatch_proposal_action(request: web.Request, action: str) -> web.Re
         return await _apply_routing(
             routing, action, proposal_id, short_id, reason,
             mount=request.query.get("mount") or "",
+            token=token,
         )
 
     # Then memory crystallizations.

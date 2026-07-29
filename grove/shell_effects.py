@@ -542,6 +542,24 @@ def _classify_write_zone(target_path: str, confine: bool = True) -> str:
     )
     from hermes_constants import get_hermes_home
 
+    # confirmation-gate-grant-token-v1 F7c — the Gate trust-anchor registry
+    # (/etc/grove/gate/**) is RED on the shell surface. DEFENSE-IN-DEPTH ONLY:
+    # the real control is the filesystem (root-owned /etc, StrictModes at load
+    # in grove.gate.registry); this classifier route is a redundant belt, NOT
+    # the anchor's guarantee. Named explicitly (rather than leaning on the /etc
+    # sensitive-root wall) so the intent survives even if the path ever moved.
+    from grove.gate.registry import _REGISTRY_PATH as _GATE_REGISTRY_PATH
+
+    try:
+        _rp = os.path.realpath(os.path.expanduser(target_path))
+        _anchor_dir = os.path.dirname(
+            os.path.realpath(os.path.expanduser(str(_GATE_REGISTRY_PATH)))
+        )
+        if _rp == _anchor_dir or _rp.startswith(_anchor_dir + os.sep):
+            return _RED
+    except (OSError, ValueError):
+        return _RED  # unresolvable near the trust anchor → fail closed
+
     if is_scope_defining(target_path):
         return _RED
     if is_granted_workspace(target_path):
