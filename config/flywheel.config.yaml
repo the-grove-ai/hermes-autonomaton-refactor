@@ -3,33 +3,15 @@
 # this file is the documented template. A non-technical operator changes
 # promotion behavior by editing the values below — no code change.
 #
-# learning-loop-bridge-v1 (Strike 2) — the YELLOW promotion detector reads
-# the andon_disposition ledger and proposes a system-initiated
-# zone_promotion when the operator has repeatedly approved the same governed
-# (tool, rule) at the Sovereign Prompt. Repeated approvals are the signal;
-# the proposal lets the system STOP re-asking.
+# Fail-loud contract (applies to every detector block below): an ABSENT file
+# or block uses the documented defaults (nothing has failed — this is the
+# specified default). A PRESENT value that is malformed or out of range raises
+# LOUD at scan time naming the key and the constraint. There is no silent
+# per-key fill of a present-but-broken block.
 #
-# Fail-loud contract: an ABSENT file or block uses the documented defaults
-# below (nothing has failed — this is the specified default). A PRESENT
-# value that is malformed or out of range raises LOUD at scan time naming
-# the key and the constraint, so the operator can fix it. There is no
-# silent per-key fill of a present-but-broken block.
-
-disposition_promotion:
-  # Minimum number of approval dispositions (session / always) for the same
-  # (triggering_tool, matched_rule) before a promotion is proposed.
-  # Must be an integer >= 1. "once" grants and "deny" vetoes do not count
-  # as approvals; a single "deny" in the window vetoes the proposal.
-  threshold_count: 3
-
-  # Minimum number of DISTINCT sessions those approvals must span. Guards
-  # against one frustrated batch in a single session reading as a pattern.
-  # Must be an integer >= 1 and <= threshold_count.
-  threshold_sessions: 2
-
-  # Rolling window, in days, over which approvals and vetoes are counted.
-  # Dispositions older than this are ignored. Must be an integer >= 1.
-  window_days: 30
+# zones-v2-scope-keying P2.1 — the disposition_promotion (YELLOW zone-promotion)
+# detector block is REMOVED: the zone_promotion proposal type is retired and its
+# detector (grove/eval/disposition_promotion.py) is deleted; no reader remains.
 
 # kaizen-fault-triage-v1 — the recurring-fault detector reads andon_halt +
 # red_resolution ledger events, groups them by schema-aware fault class
@@ -91,7 +73,7 @@ ledger_retention:
   # Window-bounded telemetry (tool_selection, final_response, andon_halt,
   # red_resolution, andon_disposition, ...) older than this many days is
   # pruned to the archive. Must be an integer >= 1 and at least as large as
-  # the widest detector window (disposition_promotion.window_days, 30).
+  # the widest detector window (30 days).
   retention_days: 30
 
   # Extra stillness required beyond retention_days before a FILE is
@@ -141,7 +123,7 @@ admission_friction:
 # GRV-001 § VI reading: the ratchet reverses only on an explicit operator
 # reset (the reset verb, P3), never on a clock.
 #
-# Fail-loud contract (matching disposition_promotion above): an ABSENT file,
+# Fail-loud contract (matching the detector blocks above): an ABSENT file,
 # block, or per-action key uses "permanent" — a missing config NEVER silently
 # disables suppression. A PRESENT value must be "permanent" or an int >= 1;
 # anything else raises LOUD at read time naming the action.

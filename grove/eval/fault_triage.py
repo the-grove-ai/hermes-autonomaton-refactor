@@ -9,8 +9,7 @@ operator is asked for DIRECTION, never handed raw telemetry. No apply path at
 T1 (render-only posture, the ``portal_action_failure`` precedent); remediation
 is a future sprint behind its own GATE-B.
 
-Shape copied from :class:`grove.eval.disposition_promotion.
-DispositionPromotionDetector` (the shipped cross-session ledger-scan producer):
+Follows the established cross-session ledger-scan producer shape:
 injectable ``ledger_dir`` / ``thresholds`` / ``now``, declarative thresholds
 from ``flywheel.config.yaml``, stable-identity proposals via
 ``proposal_queue.append``, ridden by ``flywheel scan --propose``.
@@ -146,7 +145,7 @@ def load_fault_triage_thresholds(
 ) -> FaultTriageThresholds:
     """Load thresholds from the operator's ``flywheel.config.yaml``.
 
-    Mirrors :func:`grove.eval.disposition_promotion.load_promotion_thresholds`:
+    Follows the fail-loud threshold-load contract:
     absent file / absent ``fault_triage`` block → documented defaults; a
     present block is validated key-by-key and any malformed value raises
     LOUD. Malformed YAML propagates from the parser.
@@ -354,8 +353,8 @@ class FaultTriageDetector:
     """Reads the Kaizen ledger and stages recurring-fault proposals.
 
     Cross-session by construction: globs every ``*.jsonl`` under
-    ``ledger_dir`` (the established pattern from
-    ``DispositionPromotionDetector``). Reads ``andon_halt`` +
+    ``ledger_dir`` (the established cross-session ledger-scan pattern).
+    Reads ``andon_halt`` +
     ``red_resolution`` for fault classes and ``kaizen_disposition`` for the
     acknowledge/dismiss suppression signal — one store, read twice, no new
     state file.

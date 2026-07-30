@@ -9,7 +9,7 @@ tool intents; it cannot carry a system-proposed queued item without a large
 cross-surface refactor against its operator-initiated-only design).
 
 General over proposal types: these tools operate on the proposal QUEUE
-abstraction via :mod:`grove.flywheel_cli` — routing_adjustment, zone_promotion,
+abstraction via :mod:`grove.flywheel_cli` — routing_adjustment,
 skill_promotion, pattern_promotion/demotion, skill_synthesis — never a
 Flywheel-only path. The forthcoming kaizen-offerings sprint layers voice and
 proactive surfacing ON this loop; it does not rebuild it.

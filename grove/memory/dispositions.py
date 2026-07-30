@@ -57,7 +57,7 @@ def resolve_suppression_policy(
 ) -> Policy:
     """Suppression policy for ``action`` from ``flywheel.config.yaml``.
 
-    Resolution mirrors ``disposition_promotion`` (fail-loud): an absent file,
+    Resolution follows the fail-loud contract: an absent file,
     absent ``disposition_gate`` block, or absent per-action key → ``PERMANENT``
     (a missing config never disables suppression). A present value must be
     the literal ``"permanent"`` or an int ``>= 1`` (days); anything else

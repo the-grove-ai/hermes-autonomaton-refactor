@@ -6363,9 +6363,9 @@ class Dispatcher:
         """Write a standing grant when the operator taps 'Always' on a governance verb.
 
         Called only from the drive loop for governance-mutation Red halts —
-        replaces _apply_zone_promotion so 'Always' writes a scoped standing
-        grant instead of a blanket zone rule. Handles both terminal commands
-        and native andon tool calls.
+        'Always' writes a scoped standing grant (the non-governance zone-rule
+        promotion path is retired, zones-v2-scope-keying P2). Handles both
+        terminal commands and native andon tool calls.
 
         H2 (grant-mint-unification-v1): the target comes from
         resolve_always_store — the same declaration-driven resolver that
