@@ -57,6 +57,12 @@ def _make_adapter(extra=None):
     adapter = TelegramAdapter(config)
     adapter._bot = AsyncMock()
     adapter._app = MagicMock()
+    # standing-grants-v1 (SPEC constraint 5) — consent callbacks now fail closed
+    # without a runner delegate. A live gateway always carries one; install an
+    # authorized default so button-resolution tests exercise the resolve path
+    # (the env-only fail-open they used to ride is retired). Reject-path tests
+    # override this with an authorized=False runner.
+    adapter._message_handler = _AuthRunner(authorized=True)._handle_message
     return adapter
 
 
@@ -441,8 +447,12 @@ class TestTelegramApprovalCallback:
 
     @pytest.mark.asyncio
     async def test_update_prompt_callback_rejects_unauthorized_user(self, tmp_path):
-        """Update prompt buttons should honor TELEGRAM_ALLOWED_USERS."""
+        """Update prompt buttons reject a non-operator: the runner delegate denies."""
         adapter = _make_adapter()
+        # standing-grants-v1 (SPEC constraint 5) — reject path: an authorized=False
+        # delegate models the runner denying a non-operator. (The env-only reject
+        # this used to ride via the delegate-absent fallback is retired.)
+        adapter._message_handler = _AuthRunner(authorized=False)._handle_message
 
         query = AsyncMock()
         query.data = "update_prompt:y"

@@ -61,6 +61,12 @@ grove_home:
     - skills
     - capabilities
     - routing-profiles
+    # standing-grants-v1 (SPEC constraint 9) — consent infrastructure. The
+    # pairing-approved membership (platforms/pairing/*-approved.json)
+    # authenticates Telegram operators; a write under platforms/ mints
+    # operators, so the whole subtree is scope-defining (never an autonomous
+    # write). Consent the agent could forge is no consent at all.
+    - platforms
 
 # Members relative to the running tree's <module_root>/config/ — the
 # version-controlled DEFINITION twins the deployed clone loads

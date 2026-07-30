@@ -518,6 +518,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
+        if not callable(auth_fn):
+            # standing-grants-v1 (SPEC constraint 5) — a consent-authenticating
+            # callback with no runner delegate FAILS CLOSED: an absent/uncallable
+            # delegate never authorizes, regardless of TELEGRAM_ALLOWED_USERS
+            # state. (Was: fell through to the env allowlist below, which returned
+            # True on an empty allowlist — a fail-open the standing-grant mint
+            # cannot ride. The relaxation is only ever as strong as the
+            # authentication of consent.)
+            return False
         if callable(auth_fn):
             try:
                 from gateway.session import SessionSource

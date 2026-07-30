@@ -286,7 +286,6 @@ tool_effects:
   mcp_notion_notion_update_view:         external_effect
   mixture_of_agents:                     external_effect
   reject_proposal:                       external_effect
-  revoke_grant:                          external_effect
   send_message:                          external_effect
   set_publication_state:                 external_effect
   sheets_append:                         external_effect
@@ -311,6 +310,10 @@ tool_effects:
   andon_reject:                          governance
   andon_revoke:                          governance
   fleet_purge:                           governance
+  # standing-grants-v1 (SPEC constraint 3) — revoking a standing grant mutates
+  # the agent's OWN authority ledger (grants.yaml). It is a governance verb, not
+  # an ordinary external effect: reclassified external_effect → governance (RED).
+  revoke_grant:                          governance
   skill_manage.promote:                  governance
 
   # ── operator_only → RED (sovereign-held security/system surface) ──

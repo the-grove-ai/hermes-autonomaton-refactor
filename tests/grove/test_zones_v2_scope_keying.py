@@ -249,7 +249,7 @@ _BASELINE_YELLOW = frozenset({
     "mcp_notion_notion_create_view", "mcp_notion_notion_duplicate_page",
     "mcp_notion_notion_move_pages", "mcp_notion_notion_update_data_source",
     "mcp_notion_notion_update_page", "mcp_notion_notion_update_view",
-    "mixture_of_agents", "patch", "process", "reject_proposal", "revoke_grant",
+    "mixture_of_agents", "patch", "process", "reject_proposal",
     "send_message", "set_publication_state", "sheets_append", "sheets_create",
     "sheets_update", "skill_manage", "skill_manage.create", "spotify_albums",
     "spotify_devices", "spotify_library", "spotify_playback", "spotify_playlists",
@@ -258,7 +258,9 @@ _BASELINE_YELLOW = frozenset({
 })
 _BASELINE_RED = frozenset({
     "andon_promote", "andon_reject", "andon_revoke", "computer_use",
-    "discord_admin", "fleet_purge", "skill_manage.promote",
+    # standing-grants-v1 (SPEC constraint 3) — revoke_grant reclassified
+    # external_effect(YELLOW) → governance(RED). Pin moved, not added-alongside.
+    "discord_admin", "fleet_purge", "revoke_grant", "skill_manage.promote",
 })
 
 
@@ -269,9 +271,11 @@ def _repo_v2_classifier() -> ZoneClassifier:
 
 
 def test_baseline_counts_preserved() -> None:
+    # standing-grants-v1 (SPEC constraint 3) — revoke_grant reclassified
+    # external_effect(YELLOW) → governance(RED): YELLOW 70→69, RED 7→8.
     assert len(_BASELINE_GREEN) == 59
-    assert len(_BASELINE_YELLOW) == 70
-    assert len(_BASELINE_RED) == 7
+    assert len(_BASELINE_YELLOW) == 69
+    assert len(_BASELINE_RED) == 8
 
 
 def test_repo_v2_set_diff_byte_identical() -> None:

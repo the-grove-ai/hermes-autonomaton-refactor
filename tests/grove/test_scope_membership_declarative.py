@@ -43,7 +43,12 @@ _GOLDEN_GROVE_HOME_FILES = frozenset({
     "zones.autonomaton.yaml",
     "fleet_workers.override.yaml",
 })
-_GOLDEN_GROVE_HOME_PREFIXES = ("skills", "capabilities", "routing-profiles")
+# standing-grants-v1 (SPEC constraint 9) — `platforms` joins the golden as
+# consent infrastructure: the pairing-approved membership authenticates Telegram
+# operators, and a write there mints operators. Extended, not forked.
+_GOLDEN_GROVE_HOME_PREFIXES = (
+    "skills", "capabilities", "routing-profiles", "platforms",
+)
 _GOLDEN_REPO_FILES = frozenset({
     "zones.schema.yaml",
     # GRV-001 v2.0 — the scope-defining repo twin is the authority half (the
@@ -156,6 +161,19 @@ def test_mandated_addition_membership_file_is_walled():
     target = str(Path(fu._MODULE_CONFIG_ROOT) / _MANDATED_ADDITION)
     assert fu.is_scope_defining(target), (
         "config/scope_surfaces.yaml must be inside the wall it defines"
+    )
+
+
+def test_pairing_approved_membership_is_walled(tmp_path):
+    """standing-grants-v1 (SPEC constraint 9) — the pairing-approved store, the
+    surface that authenticates Telegram operators, classifies scope-defining
+    under the `platforms` prefix. A write there mints operators, so it can never
+    be an autonomous (GREEN) write."""
+    grove_home = tmp_path / ".grove"
+    grove_home.mkdir()
+    target = str(grove_home / "platforms" / "pairing" / "telegram-approved.json")
+    assert fu.is_scope_defining(target, grove_home), (
+        "$GROVE_HOME/platforms/pairing/telegram-approved.json must be walled"
     )
 
 

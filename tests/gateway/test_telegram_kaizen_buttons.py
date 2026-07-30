@@ -62,11 +62,27 @@ class _FakeMarkup:
         self.inline_keyboard = rows
 
 
+class _AllowRunner:
+    """standing-grants-v1 (SPEC constraint 5) — authorized runner delegate.
+
+    Consent callbacks fail closed without a runner delegate; a live gateway
+    always carries one. Button-resolution tests install this so they exercise
+    the resolve path rather than the retired env-only fail-open.
+    """
+
+    async def _handle_message(self, event):  # pragma: no cover - shim
+        return None
+
+    def _is_user_authorized(self, source):
+        return True
+
+
 def _make_adapter(extra=None):
     config = PlatformConfig(enabled=True, token="test-token", extra=extra or {})
     adapter = TelegramAdapter(config)
     adapter._bot = AsyncMock()
     adapter._app = MagicMock()
+    adapter._message_handler = _AllowRunner()._handle_message
     return adapter
 
 

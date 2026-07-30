@@ -1,9 +1,11 @@
 # grants_write.yaml — Standing grant revocation (governed) verb record.
 # Added by fix(tool-admission): grants_tool.py registered revoke_grant under
 # toolset="governance" but no capability record existed, so get_admitted_tools()
-# filtered it out. Yellow zone: revocation is a governance mutation governed
-# by the Sovereign Prompt.
-# family=grants  zone=yellow  tiers=[1,2,3]  disclosure=proactive  trigger=always
+# filtered it out. Governance zone (RED): revocation mutates the agent's own
+# authority ledger (grants.yaml) — governance, not an ordinary external effect.
+# standing-grants-v1 CHANGE 2 reclassified it external_effect → governance;
+# governed by the Sovereign Prompt / standing grant.
+# family=grants  zone=red  tiers=[1,2,3]  disclosure=proactive  trigger=always
 id: grants_write
 kind: verb
 trigger:
@@ -28,7 +30,7 @@ tier_rule:
     strategy: shadow_compare
     confidence_threshold: 0.95
     shadow_window: 20
-zone: yellow
+zone: red
 telemetry:
   feed: intent_feed
   track:
@@ -40,7 +42,7 @@ telemetry:
   - human_feedback
 context:
   disclosure: eager
-  payload: 'Standing grant revocation (governed, zone yellow). Tools: revoke_grant.
+  payload: 'Standing grant revocation (governed, zone red). Tools: revoke_grant.
 
     '
   dock_composition: none
