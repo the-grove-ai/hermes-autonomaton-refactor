@@ -367,6 +367,69 @@ class TestFix3PendingRedCard:
         assert "credentials" in store.card_reason(cred_pid).lower()
 
 
+class TestRedConfirmHonesty:
+    """red-confirm-honesty — the approve/reject DISPATCH mirrors the initial
+    card's is_credential_write branch (fragments.py:772), so a shell/command RED
+    never renders the masked-.env template nor claims a .env write."""
+
+    @staticmethod
+    def _dispatch(store, action, pid, form=None):
+        import asyncio
+        from grove.api.actions import _dispatch_red_proposal_action
+        from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE
+
+        class _Req:
+            def __init__(self):
+                self.app = {"red_pending_store": store}  # no adapter → empty nonce key
+
+            async def post(self):
+                return form or {}
+
+        full_pid = f"{RED_PENDING_PROPOSAL_TYPE}:{pid}"
+        resp = asyncio.run(
+            _dispatch_red_proposal_action(_Req(), action, full_pid, pid[:8])
+        )
+        return resp.text if isinstance(resp.text, str) else resp.body.decode()
+
+    @staticmethod
+    def _approve_form(pid):
+        from grove.api.red_nonce import red_nonce
+        from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE
+        full_pid = f"{RED_PENDING_PROPOSAL_TYPE}:{pid}"
+        return {"nonce": red_nonce(full_pid, "approve", b"")}
+
+    def test_credential_approve_renders_env_masked_template(self):
+        from grove.red_pending_store import get_red_pending_store
+        store = get_red_pending_store()
+        pid = _put_red(store, "propose_governance_change",
+                       {"target_file": "~/.grove/.env",
+                        "content": "HF_TOKEN=SECRETVALUE99\n", "rationale": "r"})
+        html = self._dispatch(store, "approve", pid, self._approve_form(pid))
+        assert "This writes to .env" in html          # credential template verbatim
+        assert "The value stays masked" in html
+        assert "SECRETVALUE99" not in html
+
+    def test_shell_approve_renders_command_not_env(self):
+        from grove.red_pending_store import get_red_pending_store
+        store = get_red_pending_store()
+        pid = _put_red(store, "terminal", {"command": "date '+%I:%M:%S %p %Z'"},
+                       pattern_key="UNRESOLVED_WRITER:date:abc")
+        html = self._dispatch(store, "approve", pid, self._approve_form(pid))
+        assert "date" in html                          # the command itself
+        assert "Run this command now?" in html
+        assert ".env" not in html                      # no .env claim
+        assert "masked" not in html                    # no masking language
+
+    def test_shell_reject_says_nothing_executed(self):
+        from grove.red_pending_store import get_red_pending_store
+        store = get_red_pending_store()
+        pid = _put_red(store, "terminal", {"command": "git status"},
+                       pattern_key="UNRESOLVED_WRITER:git:abc")
+        html = self._dispatch(store, "reject", pid)
+        assert "nothing was executed" in html
+        assert ".env" not in html
+
+
 # ── e2e: store → approve → re-dispatch → EXECUTE, with workdir in the args ────
 
 class TestE2EStoreApproveExecute:

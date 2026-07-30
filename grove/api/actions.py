@@ -76,6 +76,7 @@ from grove.memory.digest import MemoryProposalHandler
 from grove.memory.dispositions import DISPOSED_AT_FIELD
 from grove.notify import broadcast_to_operator
 from grove.red_pending_store import RED_PENDING_PROPOSAL_TYPE, approve_red_proposal
+from grove.secret_redact import redact_command_string
 from grove.api.red_nonce import nonce_key_from_app, red_nonce, verify_red_nonce
 from hermes_constants import get_hermes_home
 from tools import mcp_tool
@@ -740,6 +741,36 @@ def _red_confirm_card_html(
     )
 
 
+def _red_confirm_shell_card_html(
+    full_pid: str, short_id: str, command: str, confirm_nonce: str
+) -> str:
+    """The SECOND-step Confirm-RED card for a NON-credential (shell/command) RED
+    action — red-confirm-honesty. The honest sibling of _red_confirm_card_html:
+    it shows the COMMAND itself and speaks of EXECUTION, never .env and never
+    "masked" (nothing is masked here). Same two-step nonce discipline as the
+    credential card — NO execution until /confirm. ``command`` arrives already
+    secret-redacted by the caller."""
+    pid = _esc(full_pid)
+    return (
+        f'<div class="card card-red-confirm" id="proposal-{short_id}">'
+        f'<h4><span class="badge badge-red">RED — confirm action</span></h4>'
+        f'<p><code>{_esc(command)}</code></p>'
+        f'<div class="meta">Run this command now? Confirm to execute, or Cancel.</div>'
+        f'<div class="proposal-actions">'
+        f'<button class="btn btn-approve" '
+        f'hx-post="/portal/actions/proposals/{pid}/confirm" '
+        f'hx-vals=\'{{"nonce": "{_esc(confirm_nonce)}"}}\' '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
+        f'hx-confirm="Final confirm: run this command now?">'
+        f'Confirm RED run</button>'
+        f'<button class="btn btn-reject" '
+        f'hx-post="/portal/actions/proposals/{pid}/reject" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">Cancel</button>'
+        f'</div>'
+        f'</div>'
+    )
+
+
 async def _dispatch_red_proposal_action(
     request: web.Request, action: str, full_pid: str, short_id: str
 ) -> web.Response:
@@ -752,18 +783,25 @@ async def _dispatch_red_proposal_action(
     key = nonce_key_from_app(request.app)
     bare = full_pid.split(":", 1)[1] if ":" in full_pid else full_pid
     store = request.app.get("red_pending_store")
+    # red-confirm-honesty — mirror the initial card's type branch
+    # (fragments.py:772 is_credential_write) through the approve / confirm /
+    # reject dispatch, so a non-credential (shell/command) RED never renders the
+    # masked-.env template or claims a .env write that isn't happening.
+    is_cred = store.is_credential_write(bare) if store is not None else False
+    type_label = "governance write" if is_cred else "RED action"
 
     if action in ("reject", "dismiss"):
         if store is not None:
-            store.pop(bare)  # drop the secret payload — nothing is written
+            store.pop(bare)  # drop the payload — nothing is written/executed
         try:
             proposal_queue.remove(full_pid)
         except Exception:  # noqa: BLE001 — best-effort queue cleanup
             pass
-        return _resolved_card(
-            short_id, "governance write", "rejected",
-            "Rejected — nothing was written to .env.",
+        reject_text = (
+            "Rejected — nothing was written to .env." if is_cred
+            else "Rejected — nothing was executed."
         )
+        return _resolved_card(short_id, type_label, "rejected", reject_text)
 
     if action == "approve":
         form = await request.post()
@@ -784,13 +822,17 @@ async def _dispatch_red_proposal_action(
             except Exception:  # noqa: BLE001
                 pass
             return _resolved_card(
-                short_id, "governance write", "expired",
+                short_id, type_label, "expired",
                 "Expired — the pending change is no longer available. Re-propose.",
             )
         confirm_nonce = red_nonce(full_pid, "confirm", key)
-        return _html_fragment(
-            _red_confirm_card_html(full_pid, short_id, masked, confirm_nonce)
-        )
+        if is_cred:
+            card = _red_confirm_card_html(full_pid, short_id, masked, confirm_nonce)
+        else:
+            card = _red_confirm_shell_card_html(
+                full_pid, short_id, redact_command_string(masked), confirm_nonce,
+            )
+        return _html_fragment(card)
 
     return await _loud_action_failure(
         _red_inline_fail_card(short_id, f"Unsupported action {action!r}."),
