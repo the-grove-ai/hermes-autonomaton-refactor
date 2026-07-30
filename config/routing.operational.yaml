@@ -14,7 +14,9 @@ tier_preferences:
 
   T1:
     provider: openrouter
-    model: deepseek/deepseek-v4-flash
+    # Classifier tier — needs reliable forced tool_choice; the deepseek-v4 family intermittently returns no tool_calls on OpenRouter.
+    model: google/gemini-2.5-flash
+    previous_model: deepseek/deepseek-v4-flash
     description: |
       Cheap, fast cognition — a small model for quick, well-scoped
       work: classification, triage, short transformations. Also scores
@@ -24,7 +26,9 @@ tier_preferences:
 
   Telemetry:
     provider: openrouter
-    model: deepseek/deepseek-v4-flash
+    # Classifier tier — needs reliable forced tool_choice; the deepseek-v4 family intermittently returns no tool_calls on OpenRouter.
+    model: google/gemini-2.5-flash
+    previous_model: deepseek/deepseek-v4-flash
     description: |
       Telemetry classifier — scores every incoming request to decide
       which tier handles it. High-volume, structured output (forced
@@ -48,7 +52,9 @@ tier_preferences:
 
   T-GA:
     provider: openrouter
-    model: deepseek/deepseek-v4-pro
+    # Forced-tool-choice tier — needs reliable forced tool_choice; the deepseek-v4 family intermittently returns no tool_calls on OpenRouter.
+    model: google/gemini-2.5-flash
+    previous_model: deepseek/deepseek-v4-pro
     description: |
       Goal-attachment adjudicator — the goal-spine detector's judge
       (goal-spine-v1 P1). Rules on whether an artifact ADVANCES a Dock

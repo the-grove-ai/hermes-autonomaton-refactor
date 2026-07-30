@@ -6666,7 +6666,9 @@ class Dispatcher:
                 stamps = [getattr(g, "issued_at", "") for g in gs if getattr(g, "issued_at", "")]
                 return max(stamps) if stamps else "—"
 
-            logger.info(
+            # WARNING (not INFO): production gateways run at WARNING level, so an
+            # INFO boot advisory is invisible — a placebo control. One line/boot.
+            logger.warning(
                 "[grove.dispatcher] standing grants active: %d governance "
                 "(newest %s), %d capability (newest %s).",
                 len(gov), _newest(gov), len(cap), _newest(cap),
