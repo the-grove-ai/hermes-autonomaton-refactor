@@ -58,6 +58,14 @@ class ZoneResult:
         is_promotable: whether an operator "Always" may promote this
             classification to a standing store. The shell classifier sets it
             False for a bucket-3 UNRESOLVED_WRITER (and any RED chain).
+        effect_class: the declared six-class effect name (read_only /
+            contained_write / workspace_write / external_effect / governance /
+            operator_only) for a tool-effect classification, else None.
+            standing-grants-v1 Phase 2 (D-D): the capability mint stamps this
+            as the grant's write_class — "the halt's effect class". Populated
+            by ``classify`` on the tool_zones path; hand-built ZoneResults
+            (scope-wall RED, skill-record raises) leave it None, and those are
+            non-promotable / RED so the capability mint never reads them.
     """
 
     zone: str
@@ -66,6 +74,7 @@ class ZoneResult:
     reason: Optional[str] = None
     pattern_key: Optional[str] = None
     is_promotable: bool = True
+    effect_class: Optional[str] = None
 
 
 class ZoneClassifier:
@@ -97,6 +106,9 @@ class ZoneClassifier:
                 zone=self._tool_zones[action],
                 matched_rule=action,
                 source="tool_zones",
+                # standing-grants-v1 Phase 2 (D-D): carry the declared effect
+                # class so the capability mint can stamp it as write_class.
+                effect_class=self._tool_effects.get(action),
             )
         # Unmatched → the DECLARED default posture. source="default" for telemetry.
         return ZoneResult(

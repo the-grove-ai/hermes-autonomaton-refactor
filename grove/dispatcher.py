@@ -54,6 +54,10 @@ from grove.secret_redact import redact_governance_args
 
 logger = logging.getLogger(__name__)
 
+# standing-grants-v1 Phase 2 — the boot grant-inventory advisory logs ONCE per
+# process (many Dispatchers may be constructed; boot is a single event).
+_GRANT_INVENTORY_LOGGED = False
+
 T = TypeVar("T")
 
 # Sprint 73 Phase 4a — sentinel for the "no tier gating applied yet" state, so
@@ -672,6 +676,18 @@ class Dispatcher:
         self._sovereign_prompt_handler: Callable[["AndonHalt"], str] = (
             sovereign_prompt_handler or _default_sovereign_prompt
         )
+        # standing-grants-v1 Phase 2 (D-B) — the consent-auth basis under which a
+        # capability grant may be minted. No handler passed = the tty/CLI default
+        # handler, whose authority is local shell presence. A handler passed by
+        # the gateway/fleet/tests declares its own basis at bind time (gateway:
+        # "membership"/"admit_all"); until it does, the basis is absent (None) and
+        # the capability mint fails closed. "The relaxation is only ever as strong
+        # as the authentication of consent."
+        self._sovereign_auth_basis: Optional[str] = (
+            "local_presence" if sovereign_prompt_handler is None else None
+        )
+        # standing-grants-v1 Phase 2 — boot advisory (once per process).
+        self._log_grant_inventory()
         # GRV-001 Grant Token model — per-turn implicit grant, set by the gateway
         # at each handler rebinding alongside _sovereign_prompt_handler.  None for
         # CLI/TTY sessions (no T0 intercept); set to a GrantToken when the
@@ -2114,9 +2130,15 @@ class Dispatcher:
 
                         # Permission path: grantable Red or Yellow.
                         # Check for an implicit or standing grant covering this halt.
+                        # standing-grants-v1 Phase 2 (consult) — governance halts
+                        # consult the governance grant path; non-governance YELLOW
+                        # halts consult the scope-keyed CAPABILITY grant path. A
+                        # found grant bypasses the prompt (D-D: consult is NOT
+                        # auth-gated — the grant was minted under a verified basis;
+                        # the ledger is the authority).
                         _grant_bypass = (
                             self._resolve_governance_grant(halt)
-                            if _gov_mutation else None
+                            if _gov_mutation else self._resolve_capability_grant(halt)
                         )
                         if _grant_bypass is not None and not _grant_bypass.revoked:
                             # Grant covers this halt — bypass sovereignty prompt.
@@ -2131,9 +2153,12 @@ class Dispatcher:
                             # (once / session / always / deny) or v1.0
                             # legacy values (skip / drop / shadow_approve).
                             disposition = self._handle_andon_halt(agent, halt, ledger=ledger)
-                            # Governance verb + "always" → standing grant, NOT zone
-                            # rule. _apply_zone_promotion creates a blanket green
-                            # entry; standing grants are exactly scoped.
+                            # Governance verb + "always" → standing grant (exactly
+                            # scoped). The CAPABILITY "always" mint (non-governance
+                            # YELLOW) happens INSIDE _handle_andon_halt, before the
+                            # session-allow cache mutates, so a D-C floor refusal
+                            # fails closed to deny without leaving a stale allow
+                            # (Phase 2 placement, D-B/D-C).
                             if disposition == "always" and _gov_mutation:
                                 self._add_standing_grant_from_halt(halt)
                         # Strict zone-disposition coupling (fail-loud): a YELLOW
@@ -6180,12 +6205,14 @@ class Dispatcher:
         marker_path = self._write_pending_andon(agent, halt)
         try:
             disposition = self._sovereign_prompt_handler(halt)
-            # zones-v2-scope-keying P2 (D1) — "always" renders ONLY when a standing
-            # store applies (governance standing_grant; resolve_always_store gates
-            # the affordance). A submitted "always" on a halt that offers no store —
-            # a stale client or direct API call the render never presented — is
-            # INVALID INPUT (the non-governance zone_rule writer it once fed is
-            # retired). Refuse it explicitly and re-prompt once; a resubmission
+            # zones-v2-scope-keying P2 (D1) + standing-grants-v1 Phase 2 — "always"
+            # renders ONLY when a standing store applies. resolve_always_store now
+            # resolves BOTH a governance standing_grant AND a promotable
+            # non-governance YELLOW capability store, so capability halts pass this
+            # guard and mint downstream. A submitted "always" on a halt that
+            # resolves NO store — a stale client or direct API call the render
+            # never presented (non-promotable, RED, or unparseable governance) — is
+            # INVALID INPUT. Refuse it explicitly and re-prompt once; a resubmission
             # (non-interactive) denies cleanly. Never a silent no-op, never a crash.
             if disposition == "always":
                 from grove.grant_recognition import resolve_always_store
@@ -6207,6 +6234,21 @@ class Dispatcher:
         finally:
             self._clear_pending_andon(agent, marker_path)
 
+        # standing-grants-v1 Phase 2 — CAPABILITY mint decision, taken BEFORE the
+        # cache mutates so a D-C floor refusal fails closed cleanly (no stale
+        # session-allow left behind). An "always" on a promotable non-governance
+        # YELLOW halt whose store resolves to a capability mints here; ANY D-C
+        # floor refusal (RED/scope-defining, grant-ledger identity, grantless
+        # store, admit_all/absent auth basis) returns False and the disposition
+        # fails closed to "deny" — rendered as a deny with a logged reason, never
+        # a crash (D-B). Governance "always" mints in the drive loop (unchanged).
+        if disposition == "always":
+            from grove.grant_recognition import resolve_always_store
+            _cap_store = resolve_always_store(halt)
+            if _cap_store is not None and _cap_store[0] == "standing_capability":
+                if not self._add_capability_grant_from_halt(halt):
+                    disposition = "deny"
+
         # Cache mutation by disposition.
         if disposition == "deny":
             self._session_deny_cache.add(cache_key)
@@ -6214,11 +6256,11 @@ class Dispatcher:
             self._session_allow_cache.add(cache_key)
         # "once" — no cache mutation.
 
-        # GRV-001 standing-grant path: an "always" that survives the D1 refusal
-        # above is a governance-mutation halt (resolve_always_store returned a
-        # standing_grant store). The grant is written by the drive loop after this
-        # method returns — there is no zone-rule apply here (the non-governance
-        # zone_rule promotion machinery is retired in zones-v2-scope-keying P2).
+        # GRV-001 standing-grant path: a governance "always" that survives the
+        # D1 refusal above is minted by the drive loop after this method returns
+        # (resolve_always_store returned a standing_grant store). A capability
+        # "always" was already minted just above, pre-cache. There is no zone-rule
+        # apply here (the non-governance zone_rule machinery is retired, zones-v2).
 
         # Sprint 53.2 — if an "allow once" disposition just let a
         # quarantined (.andon) skill run, flag it so the post-execution
@@ -6326,6 +6368,9 @@ class Dispatcher:
             return "flywheel_grant"
         if src in ("standing", "standing_lookup"):
             return "standing_grant"
+        if src == "standing_capability":
+            # standing-grants-v1 Phase 2 (D-D) — the scope-keyed capability grant.
+            return "standing_capability"
         if src == "sovereignty_prompt":
             disp = getattr(grant, "disposition", "once")
             return f"prompt_{disp}"
@@ -6416,6 +6461,218 @@ class Dispatcher:
                 "[grove.dispatcher] add_standing_grant_from_halt failed (non-fatal): %r",
                 exc,
             )
+
+    # ── standing-grants-v1 Phase 2 — capability grant consult + mint ─────────
+
+    def _resolve_capability_grant(self, halt: Any) -> "Optional[Any]":
+        """Return an active CAPABILITY grant covering this non-governance YELLOW
+        halt, or None.
+
+        Reuses ``resolve_always_store`` to derive the exact (scope, write_class)
+        the mint would have written, then looks it up in the GrantStore. The
+        two-tier scope key is recomputed from the LIVE halt — a pattern_key
+        mismatch is a non-match (no fallback to bare tool_name, D-A). D-D:
+        consult is NOT auth-gated — the grant was minted under a verified basis;
+        the ledger is the authority.
+        """
+        try:
+            from grove.grant_recognition import resolve_always_store
+            store = resolve_always_store(halt)
+            if store is None or store[0] != "standing_capability":
+                return None
+            _, scope, write_class = store
+            from grove.grants import get_grant_store
+            standing = get_grant_store().get_grant(scope, write_class)
+            if standing is not None and not standing.revoked:
+                return standing
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _is_grantless_store(store_obj: Any) -> bool:
+        """True if the active GrantStore points at a fleet worker's grantless
+        path (D-C floor 3).
+
+        String-match on the RESOLVED store path via the fleet paths helper —
+        never a boolean attribute someone could forget to set. Fail closed: an
+        unresolvable path is treated as grantless (refuse the mint).
+        """
+        try:
+            from grove.fleet import paths
+            store_path = os.path.realpath(str(getattr(store_obj, "_path", "")))
+            fleet_root = os.path.realpath(str(paths.fleet_root()))
+            return store_path == fleet_root or store_path.startswith(fleet_root + os.sep)
+        except Exception:
+            return True  # unresolvable → fail closed (treat as grantless)
+
+    def _add_capability_grant_from_halt(self, halt: Any) -> bool:
+        """Mint a standing CAPABILITY grant on an operator 'Always' over a
+        promotable non-governance YELLOW halt. Returns True if minted, False if a
+        D-C floor refused.
+
+        Fail-closed contract (D-B/D-C): a floor refusal returns False — the
+        caller denies the turn — and is logged loudly; it is NEVER a crash. The
+        scope wall stays supreme: floor 1 re-derives RED / scope-defining from
+        the halt's own ZoneResult + write targets (never trusts a flag), so a
+        capability grant can only ever relax YELLOW and can never green a
+        scope-defining write or its own controls.
+        """
+        from grove.grant_recognition import (
+            _GRANT_LEDGER_IDENTITY_TOOLS,
+            GrantToken,
+            resolve_always_store,
+        )
+
+        # D-C floor 1a — RED / non-promotable, re-derived from the ZoneResult.
+        try:
+            _zr = halt.zone_results[halt.triggering_index]
+        except (AttributeError, IndexError, TypeError):
+            logger.warning(
+                "[grove.dispatcher] capability mint REFUSED: halt carries no "
+                "classifiable ZoneResult (fail closed)."
+            )
+            return False
+        if getattr(_zr, "zone", None) == "red" or getattr(_zr, "is_promotable", False) is not True:
+            logger.warning(
+                "[grove.dispatcher] capability mint REFUSED: halt is RED or "
+                "non-promotable (zone=%r is_promotable=%r) — the scope wall is "
+                "supreme; a grant relaxes YELLOW, never RED.",
+                getattr(_zr, "zone", None), getattr(_zr, "is_promotable", None),
+            )
+            return False
+        # Phase 2 FIX 2 (Andon-1 rider) — a null effect_class would mint a grant
+        # with a null write_class: a hollow artifact. Fail closed, deny.
+        if not getattr(_zr, "effect_class", None):
+            logger.warning(
+                "[grove.dispatcher] capability mint REFUSED: null effect_class — "
+                "a grant with a null write_class is a hollow artifact (fail closed)."
+            )
+            return False
+
+        triggering = halt.intents[halt.triggering_index]
+        tool_name = getattr(triggering, "tool_name", "") or ""
+        args = getattr(triggering, "arguments", None) or {}
+        if not isinstance(args, dict):
+            args = {}
+
+        # D-C floor 1b — any triggering write target that is scope-defining →
+        # refuse (a capability grant can never green its own controls / authority
+        # surfaces). Re-derived here, surface-coherent with Seam-β.
+        try:
+            from tools.file_tools import extract_write_targets as _ewt
+            from grove.utils.fs_utils import (
+                is_scope_defining as _isd,
+                is_andon_quarantine as _iaq,
+            )
+            for _wt in _ewt(tool_name, args):
+                if _isd(_wt) and not _iaq(_wt):
+                    logger.warning(
+                        "[grove.dispatcher] capability mint REFUSED: scope-defining "
+                        "write target %r — a grant cannot green a scope-defining "
+                        "write.", _wt,
+                    )
+                    return False
+        except Exception as exc:
+            logger.warning(
+                "[grove.dispatcher] capability mint REFUSED: write-target "
+                "re-derivation failed (%r) — fail closed.", exc,
+            )
+            return False
+
+        # D-C floor 2 — the grant-ledger identity set can never be capability-
+        # granted (the door cannot green its own controls).
+        if tool_name in _GRANT_LEDGER_IDENTITY_TOOLS:
+            logger.warning(
+                "[grove.dispatcher] capability mint REFUSED: %r is a grant-ledger "
+                "identity tool — a grant cannot green its own control surface.",
+                tool_name,
+            )
+            return False
+
+        # D-C floor 3 — a grantless (fleet-worker) principal never mints.
+        from grove.grants import get_grant_store
+        store_obj = get_grant_store()
+        if self._is_grantless_store(store_obj):
+            logger.warning(
+                "[grove.dispatcher] capability mint REFUSED: active store is a "
+                "grantless fleet path (%s).", getattr(store_obj, "_path", "?"),
+            )
+            return False
+
+        # D-C floor 4 / D-B — consent-auth basis. admit_all or absent → refuse;
+        # the relaxation is only ever as strong as the authentication of consent.
+        basis = getattr(self, "_sovereign_auth_basis", None)
+        if basis in (None, "admit_all"):
+            logger.warning(
+                "[grove.dispatcher] capability mint REFUSED: auth_basis=%r — "
+                "consent is not authenticated to a specific operator (fail "
+                "closed, D-B).", basis,
+            )
+            return False
+
+        # Resolve the exact store target (scope + effect-class write_class).
+        cap_store = resolve_always_store(halt)
+        if cap_store is None or cap_store[0] != "standing_capability":
+            logger.warning(
+                "[grove.dispatcher] capability mint REFUSED: store did not "
+                "resolve to a capability (resolved=%r).", cap_store,
+            )
+            return False
+        _, scope, write_class = cap_store
+
+        try:
+            from datetime import datetime, timezone
+            standing = GrantToken(
+                source="standing_capability",
+                scope=scope,
+                write_class=write_class,
+                disposition="always",
+                issued_at=datetime.now(timezone.utc).isoformat(),
+                authorized_by="sovereignty_prompt",
+                revoked=False,
+            )
+            store_obj.add_standing_grant(standing)
+            logger.info(
+                "[grove.dispatcher] capability grant minted: scope=%r "
+                "write_class=%r basis=%r", scope, write_class, basis,
+            )
+            return True
+        except Exception as exc:
+            # Store-write I/O failure is observability, not authority — the turn
+            # already got its relief; keep the disposition (parity with the
+            # governance mint's warn-and-continue). This is NOT a floor refusal.
+            logger.warning(
+                "[grove.dispatcher] capability grant persist failed (non-fatal, "
+                "action still executes this turn): %r", exc,
+            )
+            return True
+
+    def _log_grant_inventory(self) -> None:
+        """One-line boot advisory: active standing-grant inventory, source-split
+        (governance vs capability) with each split's newest issued_at. Logs once
+        per process (boot is a single event; many Dispatchers may construct)."""
+        global _GRANT_INVENTORY_LOGGED
+        if _GRANT_INVENTORY_LOGGED:
+            return
+        _GRANT_INVENTORY_LOGGED = True
+        try:
+            from grove.grants import get_grant_store
+            grants = get_grant_store().list_grants()
+            cap = [g for g in grants if getattr(g, "source", "") == "standing_capability"]
+            gov = [g for g in grants if getattr(g, "source", "") != "standing_capability"]
+
+            def _newest(gs: list) -> str:
+                stamps = [getattr(g, "issued_at", "") for g in gs if getattr(g, "issued_at", "")]
+                return max(stamps) if stamps else "—"
+
+            logger.info(
+                "[grove.dispatcher] standing grants active: %d governance "
+                "(newest %s), %d capability (newest %s).",
+                len(gov), _newest(gov), len(cap), _newest(cap),
+            )
+        except Exception as exc:
+            logger.debug("[grove.dispatcher] grant inventory advisory skipped: %r", exc)
 
     # B1 — the synthesized-skill acceptance materialization that used to live
     # here (``_maybe_materialize_synthesized_skills``) was retired. A

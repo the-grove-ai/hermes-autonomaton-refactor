@@ -5704,6 +5704,41 @@ class GatewayRunner:
             return YuanbaoAdapter(config)
 
         return None
+    def _sovereign_auth_basis_for(self, source: SessionSource) -> str:
+        """standing-grants-v1 Phase 2 (D-B) — the consent-auth basis for a
+        gateway session.
+
+        Returns ``"admit_all"`` when this platform authorizes ANY sender — a
+        per-platform ``*_ALLOW_ALL_USERS`` flag, the global
+        ``GATEWAY_ALLOW_ALL_USERS``, or a ``"*"`` wildcard in the platform
+        allowlist — else ``"membership"`` (a specific pairing-approved /
+        allowlisted operator). The capability mint refuses ``"admit_all"``:
+        consent minted under admit-all is not authenticated to a specific
+        operator. An unmapped platform fails closed to ``"admit_all"`` (mint
+        refused) rather than silently minting under an unverified basis.
+        """
+        # Global open flag → admit-all regardless of platform.
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return "admit_all"
+        _env_stem = {
+            Platform.TELEGRAM: "TELEGRAM", Platform.DISCORD: "DISCORD",
+            Platform.WHATSAPP: "WHATSAPP", Platform.SLACK: "SLACK",
+            Platform.SIGNAL: "SIGNAL", Platform.EMAIL: "EMAIL",
+            Platform.SMS: "SMS", Platform.MATTERMOST: "MATTERMOST",
+            Platform.MATRIX: "MATRIX", Platform.DINGTALK: "DINGTALK",
+            Platform.FEISHU: "FEISHU", Platform.WECOM: "WECOM",
+            Platform.WEIXIN: "WEIXIN", Platform.BLUEBUBBLES: "BLUEBUBBLES",
+            Platform.QQBOT: "QQ", Platform.YUANBAO: "YUANBAO",
+        }.get(getattr(source, "platform", None))
+        if _env_stem is None:
+            return "admit_all"  # unmapped platform → fail closed
+        if os.getenv(f"{_env_stem}_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return "admit_all"
+        allowlist = os.getenv(f"{_env_stem}_ALLOWED_USERS", "")
+        if "*" in {u.strip() for u in allowlist.split(",") if u.strip()}:
+            return "admit_all"
+        return "membership"
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -15634,12 +15669,23 @@ class GatewayRunner:
                         metadata=_status_thread_metadata,
                         session_key=session_key or "",
                     )
+                    # standing-grants-v1 Phase 2 (D-B) — declare the consent-auth
+                    # basis for this interactive session so the capability mint
+                    # floor can fail closed on admit-all. "membership" = a specific
+                    # pairing-approved / allowlisted operator; "admit_all" = the
+                    # platform authorizes any sender (ALLOW_ALL flag / "*" wildcard
+                    # / GATEWAY_ALLOW_ALL_USERS), which the mint refuses.
+                    _disp_singleton._sovereign_auth_basis = self._sovereign_auth_basis_for(source)
                 else:
                     # C0 — no inline keyboards on this adapter → no interactive
                     # Stage-04 channel. Fail closed: Yellow/Red deny (WARNING +
                     # ledger), never silent auto-once.
                     _disp_singleton._sovereign_prompt_handler = non_interactive_deny_handler
                     _disp_singleton._post_execution_prompt_handler = None
+                    # No interactive consent channel → no authenticated basis; the
+                    # capability mint never applies (deny handler never returns
+                    # "always"), but declare absence explicitly (fail closed).
+                    _disp_singleton._sovereign_auth_basis = None
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

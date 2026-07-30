@@ -123,7 +123,12 @@ class GrantStore:
             return
         if not grant.issued_at:
             grant.issued_at = datetime.now(timezone.utc).isoformat()
-        if grant.source != "standing":
+        # standing-grants-v1 Phase 2 (D-D): "standing_capability" is a canonical
+        # persisted source and is preserved (source-split provenance / boot log
+        # depend on it). Only transient sources (sovereignty_prompt, etc.) are
+        # normalized to the governance "standing" label — a capability grant is
+        # NOT relabeled to look governance.
+        if grant.source not in ("standing", "standing_capability"):
             grant = GrantToken(
                 id=grant.id,
                 source="standing",
@@ -139,7 +144,14 @@ class GrantStore:
         self._rewrite(current + [grant])
 
     def revoke_grant(self, grant_id: str) -> bool:
-        """Mark a grant revoked by ID and rewrite the file. Returns True if found."""
+        """Mark a grant revoked by ID and rewrite the file. Returns True if found.
+
+        Source-agnostic: matches on ``grant_id`` alone and preserves ``g.source``,
+        so a ``standing_capability`` grant revokes exactly like a governance
+        ``standing`` one (standing-grants-v1 Phase 2). The ``_rewrite`` on a found
+        revocation SYNCHRONOUSLY invalidates the mtime cache (``_mtime_ns=None``,
+        ``_grants=[]``) before this returns, so a same-process ``get_grant`` /
+        ``list_grants`` immediately reflects the revocation (item 5 advisory)."""
         grants = self.load()
         found = False
         updated: list[GrantToken] = []
@@ -210,19 +222,27 @@ def get_grant_store(grants_path: Optional[Path] = None) -> GrantStore:
 # ── CLI surfaces ──────────────────────────────────────────────────────────────
 
 def cli_list() -> int:
-    """Print active standing grants. Returns exit code."""
+    """Print active standing grants (review_grants). Returns exit code.
+
+    standing-grants-v1 Phase 2 FIX 3 — a capability grant renders its exact
+    scope string VERBATIM plus its breadth in operator terms (the same breadth
+    the "Always" line stated at mint), so revocation is an informed choice."""
+    from grove.grant_recognition import capability_grant_breadth
+
     store = get_grant_store()
     grants = store.list_grants()
     if not grants:
         print("No active standing grants.")
         return 0
-    print(f"{'ID':<20} {'SCOPE':<25} {'WRITE_CLASS':<20} {'ISSUED_AT':<32} AUTH")
-    print("-" * 110)
+    print(f"{'ID':<18} {'SOURCE':<22} {'WRITE_CLASS':<18} ISSUED_AT")
+    print("-" * 100)
     for g in grants:
-        print(
-            f"{g.id:<20} {g.scope:<25} {g.write_class:<20} "
-            f"{g.issued_at:<32} {g.authorized_by}"
-        )
+        print(f"{g.id:<18} {g.source:<22} {g.write_class:<18} {g.issued_at}")
+        print(f"    scope:  {g.scope}")
+        if g.source == "standing_capability":
+            tool = g.scope.split("::", 1)[0]
+            print(f"    grants: {capability_grant_breadth(tool, g.scope)}")
+        print(f"    auth:   {g.authorized_by}")
     return 0
 
 

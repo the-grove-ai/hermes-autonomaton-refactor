@@ -18,6 +18,7 @@ silently lacked one verb) is the class this declaration kills.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from time import time
@@ -105,6 +106,130 @@ NATIVE_TOOL_WRITE_CLASS: dict[str, str] = {
 
 # The Dispatcher's ceremony set (_NATIVE_GOVERNANCE_TOOLS) — routing-filtered.
 NATIVE_GOVERNANCE_TOOLS: frozenset = frozenset(NATIVE_TOOL_WRITE_CLASS)
+
+
+# ── standing-grants-v1 Phase 2 — capability-grant scope + mint-floor sets ─────
+#
+# STRUCTURAL FLOOR (code-level, never config): grant breadth is a security
+# boundary. If config could reach these sets, a config write would silently
+# widen every future capability grant — and a write is how an operator is
+# minted. They live in code so the scope wall (which walls config/) also walls
+# their definition; the door cannot green its own controls.
+#
+# Arg-bearing tools carry a per-FAMILY scope discriminator (Phase 2 FIX,
+# GATE-B delta) — the "pattern_key else None" fallback is retired. Each family
+# keys on what its OWN arguments carry; a pure-effect tool grants at bare tool
+# granularity (D-A two-tier). A missing/unparseable discriminator for an
+# arg-bearing tool is a REFUSAL, never a bare-tool fallback.
+_ARG_BEARING_TOOLS: frozenset = frozenset({
+    "write_file", "patch", "execute_code", "process",
+    "mcp_notion_notion_create_comment", "mcp_notion_notion_create_database",
+    "mcp_notion_notion_create_pages", "mcp_notion_notion_create_view",
+    "mcp_notion_notion_duplicate_page", "mcp_notion_notion_move_pages",
+    "mcp_notion_notion_update_data_source", "mcp_notion_notion_update_page",
+    "mcp_notion_notion_update_view",
+})
+
+# Notion write verbs split by which id in ARGUMENTS identifies the grant
+# target: creates key on the PARENT id, updates key on the object/PAGE id. Key
+# on what the args carry — NO network lookups, NO derived ancestry.
+_NOTION_CREATE_VERBS: frozenset = frozenset({
+    "mcp_notion_notion_create_comment", "mcp_notion_notion_create_database",
+    "mcp_notion_notion_create_pages", "mcp_notion_notion_create_view",
+    "mcp_notion_notion_duplicate_page", "mcp_notion_notion_move_pages",
+})
+_NOTION_UPDATE_VERBS: frozenset = frozenset({
+    "mcp_notion_notion_update_data_source", "mcp_notion_notion_update_page",
+    "mcp_notion_notion_update_view",
+})
+
+# The grant-ledger identity set: a capability grant for one of these would let
+# the agent stand-grant its own control surface (green its own revoke/review) —
+# forbidden (D-C floor 2). Same code-level structural floor as above.
+_GRANT_LEDGER_IDENTITY_TOOLS: frozenset = frozenset({
+    "revoke_grant", "review_grants",
+})
+
+
+def _notion_target_id(tool_name: str, args: dict) -> "Optional[str]":
+    """The id (parent for creates, object for updates) that a Notion write's
+    ARGUMENTS carry, or None. No network, no derived ancestry — args only."""
+    if tool_name in _NOTION_CREATE_VERBS:
+        parent = args.get("parent")
+        if isinstance(parent, str) and parent.strip():
+            return parent.strip()
+        if isinstance(parent, dict):
+            for k in ("data_source_id", "database_id", "page_id", "id"):
+                v = parent.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        for k in ("parent_id", "data_source_id", "database_id", "page_id"):
+            v = args.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return None
+    # update verbs — the object/page id
+    for k in ("page_id", "data_source_id", "view_id", "id"):
+        v = args.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+def capability_grant_scope(
+    tool_name: str, args: dict, pattern_key: object,
+) -> "Optional[str]":
+    """The exact-match scope string for a capability grant (D-A two-tier,
+    Phase 2 FIX per-family discriminator). Returns None when an arg-bearing
+    tool's discriminator is absent/unparseable/empty — the mint REFUSES (deny
+    with reason); there is NO bare-tool fallback for an arg-bearing tool.
+
+    Mint and consult call this on the live halt and MUST produce the identical
+    key; a mismatch or None is a non-match.
+
+      * execute_code / process → ``f"{tool}::{pattern_key}"`` (the command
+        effect signature); absent pattern_key → None.
+      * write_file / patch → ``f"{tool}::{realpath(dirname(args['path']))}"``
+        — normalized, absolute (relative and realpath spellings collapse to
+        one key); absent/empty path → None.
+      * Notion writes → ``f"{tool}::{parent-or-object-id}"`` from the args;
+        absent id → None.
+      * pure-effect (calendar_create, …) → bare ``tool_name``.
+    """
+    if tool_name in ("execute_code", "process"):
+        if not pattern_key:
+            return None
+        return f"{tool_name}::{pattern_key}"
+    if tool_name in ("write_file", "patch"):
+        path = args.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return None
+        parent = os.path.realpath(os.path.dirname(os.path.expanduser(path.strip())))
+        return f"{tool_name}::{parent}"
+    if tool_name in _ARG_BEARING_TOOLS:  # remaining arg-bearing == Notion writes
+        tid = _notion_target_id(tool_name, args)
+        if not tid:
+            return None
+        return f"{tool_name}::{tid}"
+    return tool_name  # pure-effect → bare tool granularity
+
+
+def capability_grant_breadth(tool_name: str, scope: str) -> str:
+    """The grant's breadth in OPERATOR terms (Phase 2 FIX 3) — shown on the
+    "Always" line at mint AND by review_grants, verbatim from the same scope."""
+    disc = scope.split("::", 1)[1] if "::" in scope else ""
+    if tool_name in ("write_file", "patch"):
+        return f"all future {tool_name} in {disc}"
+    if tool_name in ("execute_code", "process"):
+        return f"this {tool_name} command signature"
+    if tool_name in _NOTION_CREATE_VERBS:
+        verb = tool_name.replace("mcp_notion_notion_", "notion ")
+        return f"all future {verb} in {disc}"
+    if tool_name in _NOTION_UPDATE_VERBS:
+        verb = tool_name.replace("mcp_notion_notion_", "notion ")
+        return f"all future {verb} on {disc}"
+    return f"all future {tool_name}"
+
 
 GOVERNANCE_PATTERN = re.compile(
     r"^/?(?:hermes\s+(?:andon|flywheel)\s+(?:patterns\s+)?)?"
@@ -247,9 +372,9 @@ def resolve_always_store(halt: object) -> "Optional[tuple]":
     Returns:
       ``("standing_grant", scope, write_class)`` — governance-mutation halt
         (native declared verb, or a parseable terminal governance command).
-      ``("zone_rule", pattern)`` — yellow generic; ``pattern`` is
-        informational (the command string, or the tool name alone when
-        arguments are empty/absent).
+      ``("standing_capability", scope, write_class)`` — promotable
+        non-governance YELLOW halt (standing-grants-v1 Phase 2, D-A/D-D). scope
+        is the two-tier capability key; write_class is the halt's effect class.
       ``None`` — no store applies. The Always affordance must not render,
         and the Dispatcher's mint floor raises if "always" arrives anyway.
 
@@ -293,28 +418,60 @@ def resolve_always_store(halt: object) -> "Optional[tuple]":
             return None
         return ("standing_grant", parsed.scope, parsed.write_class)
 
-    # zones-v2-scope-keying P2 (D1): the zone_rule store is RETIRED. A
-    # non-governance ("yellow generic") halt no longer offers an "Always"
-    # affordance — the terminal.rules writer it fed (save_zone_rule) is deleted,
-    # so a rendered "always" would be wired to nothing. Returning None drops the
-    # Always choice from every render site that consults this resolver (the
-    # prompt becomes once/session/deny). The legitimate persistent-grant need is
-    # filed as the future scope-keyed grant design (R-3c). Governance halts keep
-    # their standing_grant store above — untouched.
-    return None
+    # standing-grants-v1 Phase 2 (D-A): a PROMOTABLE non-governance YELLOW halt
+    # resolves a scope-keyed CAPABILITY store — the conformant successor to the
+    # retired zone_rule Always (R-3c). The scope is the two-tier key; the
+    # write_class is the halt's effect class (D-D). This re-derives zone +
+    # promotability from the ZoneResult and refuses anything that is not a
+    # promotable YELLOW carrying an effect class — the mint floor is never
+    # trusted to a single site (the Dispatcher's _add_capability_grant_from_halt
+    # re-derives the RED / scope-defining floors independently, D-C).
+    try:
+        _cap_zr = halt.zone_results[halt.triggering_index]  # type: ignore[attr-defined]
+    except (AttributeError, IndexError, TypeError):
+        return None
+    if getattr(_cap_zr, "zone", None) != "yellow":
+        return None
+    if getattr(_cap_zr, "is_promotable", False) is not True:
+        return None
+    effect_class = getattr(_cap_zr, "effect_class", None)
+    if not effect_class:
+        return None
+    pattern_key = getattr(_cap_zr, "pattern_key", None)
+    scope = capability_grant_scope(tool_name, args, pattern_key)
+    if scope is None:
+        # Arg-bearing tool with an absent/unparseable discriminator — REFUSE
+        # (no bare-tool fallback for an arg-bearing tool, Phase 2 FIX).
+        return None
+    return ("standing_capability", scope, effect_class)
 
 
 # Operator-facing store names for the Always affordance. The affordance MUST
 # name the store it writes; a None resolution renders no Always option.
 ALWAYS_STORE_LABELS: dict[str, str] = {
     "standing_grant": "standing grant",
+    "standing_capability": "standing capability",
     "zone_rule": "zone rule",
 }
 
 
 def always_store_label(halt: object) -> "Optional[str]":
-    """The store name the Always affordance shows, or None (no affordance)."""
+    """The text the Always affordance shows, or None (no affordance).
+
+    Governance halts name the store ("standing grant"); a capability halt shows
+    its exact BREADTH in operator terms (Phase 2 FIX 3) — "all future write_file
+    in /path", "all future page creation in <id>", "this command signature" —
+    so the operator sees what a persistent grant would cover before tapping
+    Always. review_grants renders the same breadth from the same scope string.
+    """
     store = resolve_always_store(halt)
     if store is None:
         return None
+    if store[0] == "standing_capability":
+        try:
+            triggering = halt.intents[halt.triggering_index]  # type: ignore[attr-defined]
+            tool_name = getattr(triggering, "tool_name", "") or ""
+        except Exception:
+            tool_name = ""
+        return capability_grant_breadth(tool_name, store[1])
     return ALWAYS_STORE_LABELS[store[0]]

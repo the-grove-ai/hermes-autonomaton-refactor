@@ -12,6 +12,7 @@ worker config (producer names in tests are fixtures, not lifecycle code).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -159,6 +160,19 @@ def test_operator_purge_verb_mints_implicit_grant():
 def _halt_for(tool_name, args):
     intent = SimpleNamespace(tool_name=tool_name, arguments=args)
     return SimpleNamespace(intents=[intent], triggering_index=0)
+
+
+def _cap_halt(tool_name, args=None, *, effect_class="external_effect",
+              pattern_key=None, zone="yellow", is_promotable=True):
+    """standing-grants-v1 Phase 2 — a promotable non-governance YELLOW halt
+    carrying a ZoneResult (effect_class + pattern_key + is_promotable): the shape
+    the capability mint and consult read from the live halt."""
+    zr = SimpleNamespace(
+        zone=zone, is_promotable=is_promotable,
+        effect_class=effect_class, pattern_key=pattern_key,
+    )
+    intent = SimpleNamespace(tool_name=tool_name, arguments=args or {})
+    return SimpleNamespace(intents=[intent], zone_results=[zr], triggering_index=0)
 
 
 def test_standing_grant_exact_pair_covers_fleet_purge():
@@ -367,20 +381,26 @@ def test_always_with_no_resolvable_store_fails_loud():
         Dispatcher._add_standing_grant_from_halt(_dispatcher_stub(), halt)
 
 
-def test_resolver_governance_only():
-    """zones-v2-scope-keying P2 (D1): the zone_rule store is RETIRED — a
-    non-governance ("yellow generic") halt now resolves to None (no "always"
-    affordance). Every declared native GOVERNANCE verb with a derivable scope
-    still resolves standing_grant."""
+def test_resolver_governance_and_capability():
+    """standing-grants-v1 Phase 2 (D1 refusal → mint): the retired zone_rule
+    store's None is now a scope-keyed CAPABILITY store for a PROMOTABLE
+    non-governance YELLOW halt. Governance verbs still resolve standing_grant;
+    a bare/non-promotable/RED halt still resolves None."""
     from grove.grant_recognition import (
         WRITE_CLASS_DECLARATION,
         resolve_always_store,
     )
 
-    # Non-governance halts: no store (zone_rule retired).
+    # Promotable non-governance YELLOW halt → capability store (was None).
+    got = resolve_always_store(_cap_halt("calendar_create", {}))
+    assert got == ("standing_capability", "calendar_create", "external_effect")
+    # Bare halt (no ZoneResult), non-promotable, and RED all stay None.
     assert resolve_always_store(_halt_for("browser_read", {})) is None
     assert resolve_always_store(
-        _halt_for("terminal", {"command": "ls -la /tmp"})
+        _cap_halt("write_file", {}, is_promotable=False)
+    ) is None
+    assert resolve_always_store(
+        _cap_halt("write_file", {}, zone="red")
     ) is None
     # Native governance verbs still resolve a standing grant.
     for tool, entry in WRITE_CLASS_DECLARATION.items():
@@ -409,6 +429,15 @@ def test_always_affordance_names_store_or_does_not_render():
     grant_halt = _halt_for("fleet_purge", {"skill": "drafter", "unit": "u1"})
     assert always_store_label(grant_halt) == "standing grant"
 
+    # standing-grants-v1 Phase 2 FIX 3 — a promotable non-governance YELLOW halt
+    # states its exact BREADTH in operator terms on the Always line.
+    assert always_store_label(_cap_halt("calendar_create", {})) == "all future calendar_create"
+    _wf_dir = os.path.realpath("/tmp/proj/notes")
+    assert always_store_label(
+        _cap_halt("write_file", {"path": "/tmp/proj/notes/x.md"},
+                  effect_class="workspace_write")
+    ) == f"all future write_file in {_wf_dir}"
+
     # No store → no option 3, and choosing it re-prompts instead of minting.
     orphan = _halt_for("terminal", {"command": "promote"})
     assert always_store_label(orphan) is None
@@ -432,11 +461,15 @@ def test_always_affordance_names_store_or_does_not_render():
     assert "Always is unavailable" in text
 
 
-def _dispatcher_stub(implicit_grant=None):
+def _dispatcher_stub(implicit_grant=None, auth_basis="local_presence"):
     from grove.dispatcher import Dispatcher
 
     d = object.__new__(Dispatcher)  # no __init__ — only grant-path attrs
     d._implicit_grant = implicit_grant
+    # standing-grants-v1 Phase 2 — the capability mint reads the consent-auth
+    # basis; "local_presence" (tty default) permits the mint. Governance tests
+    # ignore it.
+    d._sovereign_auth_basis = auth_basis
     return d
 
 
@@ -590,3 +623,270 @@ def test_retap_of_completed_purge_finishes_post_steps(grove_home, tmp_path):
     # still exactly ONE archive dir + one manifest (idempotent, no duplicates)
     dirs = list((grove_home / "drafter" / ".archive").glob("2026-01-01-moon-*"))
     assert len(dirs) == 1
+
+
+# ── standing-grants-v1 Phase 2 — capability grant mint / consult / floors ─────
+
+
+def test_capability_mint_consult_revoke_cycle(tmp_path, monkeypatch):
+    """The conformant Always end-to-end: a promotable non-governance YELLOW
+    'always' mints a capability grant (D-D record shape), the next identical
+    halt consults it (bypass), and a same-process revoke kills it."""
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore
+
+    store = GrantStore(tmp_path / "grants.yaml")
+    monkeypatch.setattr(grants_mod, "_store", store)
+    d = _dispatcher_stub()
+
+    assert d._add_capability_grant_from_halt(
+        _cap_halt("calendar_create", {}, effect_class="external_effect")
+    ) is True
+    recs = store.list_grants()
+    assert len(recs) == 1
+    g = recs[0]
+    assert g.source == "standing_capability"
+    assert g.scope == "calendar_create"
+    assert g.write_class == "external_effect"
+    assert g.disposition == "always"
+    assert g.authorized_by == "sovereignty_prompt"
+    assert not g.revoked
+
+    # consult finds it on the next identical halt
+    assert d._resolve_capability_grant(_cap_halt("calendar_create", {})) is not None
+    # revoke → consult None, same process (synchronous cache invalidation)
+    assert store.revoke_grant(g.id) is True
+    assert d._resolve_capability_grant(_cap_halt("calendar_create", {})) is None
+
+
+def test_capability_two_tier_scope_key(tmp_path, monkeypatch):
+    """D-A two-tier: arg-bearing tools key on pattern_key (a mismatch is a
+    non-match, no fallback); pure-effect tools key on bare tool_name."""
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore
+
+    monkeypatch.setattr(grants_mod, "_store", GrantStore(tmp_path / "grants.yaml"))
+    d = _dispatcher_stub()
+
+    # Arg-bearing: minted at pattern_key "sig1".
+    assert d._add_capability_grant_from_halt(
+        _cap_halt("execute_code", {"command": "x"},
+                  effect_class="workspace_write", pattern_key="sig1")
+    ) is True
+    assert d._resolve_capability_grant(
+        _cap_halt("execute_code", {"command": "x"},
+                  effect_class="workspace_write", pattern_key="sig1")
+    ) is not None
+    # Different pattern_key → NON-MATCH (no fallback to bare tool_name).
+    assert d._resolve_capability_grant(
+        _cap_halt("execute_code", {"command": "x"},
+                  effect_class="workspace_write", pattern_key="sig2")
+    ) is None
+
+    # Pure-effect: bare tool granularity — pattern_key is irrelevant.
+    assert d._add_capability_grant_from_halt(
+        _cap_halt("calendar_create", {}, effect_class="external_effect",
+                  pattern_key=None)
+    ) is True
+    assert d._resolve_capability_grant(
+        _cap_halt("calendar_create", {}, effect_class="external_effect",
+                  pattern_key="anything")
+    ) is not None
+
+
+def test_capability_consult_leaves_zone_yellow(tmp_path, monkeypatch):
+    """The consult relaxes the PROMPT, not the classification — the halt's zone
+    stays YELLOW (a grant relaxes YELLOW, never greens it at classify time)."""
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore
+
+    monkeypatch.setattr(grants_mod, "_store", GrantStore(tmp_path / "grants.yaml"))
+    d = _dispatcher_stub()
+    d._add_capability_grant_from_halt(_cap_halt("calendar_create", {}))
+
+    h2 = _cap_halt("calendar_create", {})
+    assert d._resolve_capability_grant(h2) is not None
+    assert h2.zone_results[0].zone == "yellow"  # untouched by the consult
+
+
+def test_capability_mint_floors_refuse(tmp_path, monkeypatch):
+    """The D-C mint floors each REFUSE (fail closed, no crash, no record):
+    floor 1a RED/non-promotable, floor 1b scope-defining target, floor 2
+    grant-ledger identity, floor 4 admit_all + absent auth basis."""
+    from pathlib import Path
+
+    import grove.grants as grants_mod
+    import grove.utils.fs_utils as fu
+    from grove.grants import GrantStore, get_grant_store
+
+    monkeypatch.setattr(grants_mod, "_store", GrantStore(tmp_path / "grants.yaml"))
+    d = _dispatcher_stub()
+
+    # floor 1a — RED / non-promotable (the scope wall is supreme).
+    assert d._add_capability_grant_from_halt(
+        _cap_halt("write_file", {}, zone="red", is_promotable=False)
+    ) is False
+    # floor 1b — a scope-defining write target (repo config twin, always walled).
+    sd = str(Path(fu._MODULE_CONFIG_ROOT) / "zones.schema.yaml")
+    assert d._add_capability_grant_from_halt(
+        _cap_halt("write_file", {"path": sd}, effect_class="workspace_write")
+    ) is False
+    # floor 2 — a grant-ledger identity tool cannot green its own control.
+    assert d._add_capability_grant_from_halt(_cap_halt("revoke_grant", {})) is False
+    # floor 4 — admit_all and absent auth basis both fail closed.
+    assert _dispatcher_stub(auth_basis="admit_all")._add_capability_grant_from_halt(
+        _cap_halt("calendar_create", {})
+    ) is False
+    assert _dispatcher_stub(auth_basis=None)._add_capability_grant_from_halt(
+        _cap_halt("calendar_create", {})
+    ) is False
+
+    # Not one floor-refused halt minted anything.
+    assert get_grant_store().list_grants() == []
+
+
+def test_capability_mint_floor_grantless_store(tmp_path, monkeypatch):
+    """D-C floor 3 (SPEC constraint 4) — a fleet worker's grantless principal
+    never mints. The store path is matched via the fleet paths helper, and the
+    worker rebinds the process-global store to it BEFORE the Dispatcher is
+    constructed, so any consult/mint resolves the grantless store and refuses."""
+    import os
+
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore, get_grant_store
+    from grove.dispatcher import Dispatcher
+    from grove.fleet import paths
+
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    monkeypatch.setattr(grants_mod, "_store", None)  # fresh process
+    grantless = paths.grantless_grants_path("worker-x")
+    os.makedirs(grantless.parent, exist_ok=True)
+
+    # Worker step: rebind the singleton to the grantless path (before construct).
+    get_grant_store(grants_path=grantless)
+    # A later no-arg call (the consult path) returns the SAME grantless store.
+    assert get_grant_store()._path == grantless
+    assert Dispatcher._is_grantless_store(get_grant_store()) is True
+
+    d = _dispatcher_stub()
+    assert d._add_capability_grant_from_halt(_cap_halt("calendar_create", {})) is False
+    assert get_grant_store().list_grants() == []
+
+
+# ── standing-grants-v1 Phase 2 FIX — per-family discriminator + legibility ────
+
+
+def test_capability_scope_extractor_per_family(tmp_path, monkeypatch):
+    """One case per extractor family: the mint writes a family-correct key and
+    the consult RECOMPUTES the identical key from an equivalent live halt."""
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore
+
+    monkeypatch.setattr(grants_mod, "_store", GrantStore(tmp_path / "grants.yaml"))
+    d = _dispatcher_stub()
+
+    fpath = str(tmp_path / "notes" / "todo.md")
+    fdir = os.path.realpath(str(tmp_path / "notes"))
+    cases = [
+        # (tool, args, effect_class, pattern_key, expected_scope)
+        ("execute_code", {"command": "ls"}, "workspace_write", "sigA",
+         "execute_code::sigA"),
+        ("write_file", {"path": fpath}, "workspace_write", None,
+         f"write_file::{fdir}"),
+        ("mcp_notion_notion_create_pages", {"parent": {"database_id": "db1"}},
+         "external_effect", None, "mcp_notion_notion_create_pages::db1"),
+        ("mcp_notion_notion_update_page", {"page_id": "pg1"},
+         "external_effect", None, "mcp_notion_notion_update_page::pg1"),
+        ("calendar_create", {"summary": "x"}, "external_effect", None,
+         "calendar_create"),
+    ]
+    from grove.grant_recognition import resolve_always_store
+    for tool, args, eff, pk, expected in cases:
+        h = _cap_halt(tool, args, effect_class=eff, pattern_key=pk)
+        assert resolve_always_store(h)[1] == expected, tool
+        assert d._add_capability_grant_from_halt(h) is True, tool
+        # consult RECOMPUTES the identical key from an equivalent halt.
+        assert d._resolve_capability_grant(
+            _cap_halt(tool, dict(args), effect_class=eff, pattern_key=pk)
+        ) is not None, tool
+
+
+def test_capability_extraction_failure_refuses(tmp_path, monkeypatch):
+    """An arg-bearing tool whose discriminator is absent → resolve None → mint
+    REFUSED (deny). No bare-tool fallback for an arg-bearing tool."""
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore, get_grant_store
+    from grove.grant_recognition import resolve_always_store
+
+    monkeypatch.setattr(grants_mod, "_store", GrantStore(tmp_path / "grants.yaml"))
+    d = _dispatcher_stub()
+
+    for tool, args in [
+        ("write_file", {}),                                  # no path
+        ("execute_code", {"command": "x"}),                  # no pattern_key (None)
+        ("mcp_notion_notion_create_pages", {"pages": []}),   # no parent id
+        ("mcp_notion_notion_update_page", {}),               # no page id
+    ]:
+        h = _cap_halt(tool, args, effect_class="workspace_write", pattern_key=None)
+        assert resolve_always_store(h) is None, tool
+        assert d._add_capability_grant_from_halt(h) is False, tool
+    assert get_grant_store().list_grants() == []
+
+
+def test_capability_effect_class_none_refuses(tmp_path, monkeypatch):
+    """FIX 2 (Andon-1 rider) — a null effect_class would mint a null write_class;
+    fail closed at BOTH the resolver and the mint floor."""
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore, get_grant_store
+    from grove.grant_recognition import resolve_always_store
+
+    monkeypatch.setattr(grants_mod, "_store", GrantStore(tmp_path / "grants.yaml"))
+    d = _dispatcher_stub()
+    h = _cap_halt("calendar_create", {}, effect_class=None)
+    assert resolve_always_store(h) is None
+    assert d._add_capability_grant_from_halt(h) is False
+    assert get_grant_store().list_grants() == []
+
+
+def test_capability_path_normalization_one_key(tmp_path, monkeypatch):
+    """write_file/patch key on realpath(dirname): relative/.. spellings that
+    resolve to the same directory produce ONE key (mint then consult across
+    spellings matches)."""
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore
+
+    monkeypatch.setattr(grants_mod, "_store", GrantStore(tmp_path / "grants.yaml"))
+    d = _dispatcher_stub()
+
+    p_direct = str(tmp_path / "proj" / "a.md")
+    p_dotted = str(tmp_path / "proj" / "sub" / ".." / "b.md")  # same dir realpath
+    assert d._add_capability_grant_from_halt(
+        _cap_halt("write_file", {"path": p_direct}, effect_class="workspace_write")
+    ) is True
+    # consult with the OTHER spelling of the same directory → match.
+    assert d._resolve_capability_grant(
+        _cap_halt("write_file", {"path": p_dotted}, effect_class="workspace_write")
+    ) is not None
+    # exactly one grant (the second spelling did not mint a second).
+    from grove.grants import get_grant_store
+    assert len(get_grant_store().list_grants()) == 1
+
+
+def test_capability_grant_round_trip_reload(tmp_path, monkeypatch):
+    """Andon-2 ratification — a capability mint PERSISTS with
+    source=='standing_capability' and a FRESH GrantStore reload preserves it
+    (not relabeled to the governance 'standing')."""
+    import grove.grants as grants_mod
+    from grove.grants import GrantStore
+
+    path = tmp_path / "grants.yaml"
+    monkeypatch.setattr(grants_mod, "_store", GrantStore(path))
+    d = _dispatcher_stub()
+    assert d._add_capability_grant_from_halt(_cap_halt("calendar_create", {})) is True
+
+    # Fresh store, cold read from disk.
+    reloaded = GrantStore(path).list_grants()
+    assert len(reloaded) == 1
+    assert reloaded[0].source == "standing_capability"
+    assert reloaded[0].scope == "calendar_create"
+    assert reloaded[0].write_class == "external_effect"
