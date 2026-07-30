@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 import grove.flywheel_cli
-from grove.config.routing_migrate import to_v2_split
+from tests.grove.routing_fixtures import to_v2_split
 from grove.router import _MACHINE_ABSENT_SENTINEL, CognitiveRouter
 
 # Operator root: default tier T1 (cheap), with one Ratchet-promotions rule

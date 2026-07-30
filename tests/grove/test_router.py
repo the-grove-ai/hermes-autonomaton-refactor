@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from grove.config.routing_migrate import to_v2_split
+from tests.grove.routing_fixtures import to_v2_split
 from grove.router import CognitiveRouter, RoutingDecision, TierConfig
 
 VALID_CONFIG = """\

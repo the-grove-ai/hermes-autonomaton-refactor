@@ -169,11 +169,9 @@ class TestArceeURLMapping:
         assert "arcee-ai" in _PROVIDER_PREFIXES
         assert "arceeai" in _PROVIDER_PREFIXES
 
-    def test_trajectory_compressor_detects_arcee(self):
-        import trajectory_compressor as tc
-        comp = tc.TrajectoryCompressor.__new__(tc.TrajectoryCompressor)
-        comp.config = types.SimpleNamespace(base_url="https://api.arcee.ai/api/v1")
-        assert comp._detect_provider() == "arcee"
+    # hermes-severance-v1: test_trajectory_compressor_detects_arcee removed —
+    # trajectory_compressor.py was deleted at severance. The arcee prefix /
+    # providers-module tests in this file are unaffected.
 
 
 # =============================================================================

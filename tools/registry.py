@@ -11,7 +11,7 @@ Import chain (circular-import safe):
            ^
     model_tools.py  (imports tools.registry + all tool modules)
            ^
-    run_agent.py, cli.py, batch_runner.py, etc.
+    run_agent.py, cli.py, etc.
 """
 
 import ast

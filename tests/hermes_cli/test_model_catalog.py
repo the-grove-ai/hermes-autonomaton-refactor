@@ -341,45 +341,7 @@ class TestIntegrationWithModelsModule:
 # the Portal was serving qwen/qwen3.6-plus as free. CI must catch this.
 # -----------------------------------------------------------------------------
 
-
-class TestManifestMatchesInRepoLists:
-    """Fail if the on-disk manifest is out of date relative to in-repo lists."""
-
-    @staticmethod
-    def _strip_volatile(catalog: dict) -> dict:
-        """Drop fields that always change (timestamps) for diff comparison."""
-        out = dict(catalog)
-        out.pop("updated_at", None)
-        return out
-
-    def test_in_repo_lists_match_manifest(self):
-        """``scripts/build_model_catalog.py`` output must match the committed file.
-
-        If this fails, run ``python scripts/build_model_catalog.py`` and
-        commit the regenerated ``website/static/api/model-catalog.json``.
-        """
-        # Resolve the repo root from this test file's location.
-        repo_root = Path(__file__).resolve().parents[2]
-        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
-
-        if not manifest_path.exists():
-            pytest.skip(f"manifest missing at {manifest_path}")
-
-        # Build expected catalog using the same script CI would.
-        import importlib.util
-        script_path = repo_root / "scripts" / "build_model_catalog.py"
-        spec = importlib.util.spec_from_file_location("_build_model_catalog", script_path)
-        mod = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(mod)
-        expected = mod.build_catalog()
-
-        with open(manifest_path, encoding="utf-8") as fh:
-            actual = json.load(fh)
-
-        assert self._strip_volatile(actual) == self._strip_volatile(expected), (
-            "website/static/api/model-catalog.json is out of sync with "
-            "_PROVIDER_MODELS['nous'] / OPENROUTER_MODELS. "
-            "Run: python scripts/build_model_catalog.py && "
-            "git add website/static/api/model-catalog.json"
-        )
+# hermes-severance-v1: TestManifestMatchesInRepoLists removed — its subject
+# scripts/build_model_catalog.py (website/static/api/model-catalog.json
+# generator) was deleted with the website CI territory. The runtime
+# model_catalog validation/accessor tests above are unaffected.

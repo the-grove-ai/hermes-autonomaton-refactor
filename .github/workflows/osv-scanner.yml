@@ -29,8 +29,6 @@ on:
       - 'package-lock.json'
       - 'ui-tui/package.json'
       - 'ui-tui/package-lock.json'
-      - 'website/package.json'
-      - 'website/package-lock.json'
       - '.github/workflows/osv-scanner.yml'
   push:
     branches: [main]
@@ -40,7 +38,6 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'ui-tui/package-lock.json'
-      - 'website/package-lock.json'
   schedule:
     # Weekly scan against main — catches CVEs published after merge for
     # deps that haven't changed since.
@@ -63,5 +60,4 @@ jobs:
       scan-args: |-
         --lockfile=uv.lock
         --lockfile=ui-tui/package-lock.json
-        --lockfile=website/package-lock.json
       fail-on-vuln: false

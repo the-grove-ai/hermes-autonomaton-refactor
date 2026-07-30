@@ -24,7 +24,7 @@ from typing import Optional
 import pytest
 
 from grove.classify import ClassificationResult
-from grove.config.routing_migrate import to_v2_split
+from tests.grove.routing_fixtures import to_v2_split
 from grove.eval import (
     AssertionFailure,
     EvalReport,

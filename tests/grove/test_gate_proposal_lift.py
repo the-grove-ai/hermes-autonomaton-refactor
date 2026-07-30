@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from grove.classify import ClassificationResult
-from grove.config.routing_migrate import to_v2_split
+from tests.grove.routing_fixtures import to_v2_split
 from grove.eval import GateResult, evaluate, gate_proposal
 import grove.eval.hero_runner as _hr
 

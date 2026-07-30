@@ -169,28 +169,23 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "tools/flywheel_review_tool.py",
     }),
     # GRV-001 v2.0 — routing.config.yaml is DELETED (split into operational +
-    # authority). routing-v2-machine-overlay-migration-v1 Phase 3 (naming-rot rider):
-    # the docstring naming-rot in the Phase-2-migrated modules was retargeted to the
-    # v2 filenames, so this basename now survives ONLY as genuine, live v1 references
-    # — both carrying an in-code MIGRATION PIN reason:
-    #   * grove/config/routing_migrate.py — the migration SOURCE tool reads a v1
-    #     routing.config.yaml and splits it (docstring + argparse help literals);
-    #   * grove/router_merge.py — the ``_MIGRATION_COMMAND`` string an operator on a
-    #     v1 tree runs to reach v2 (``<v1-routing.config.yaml>``).
-    # routing_migrate's presence is asserted UNCONDITIONALLY below (a required survivor
-    # while any v1 instance exists), independent of the scan.
-    "routing.config.yaml": frozenset({
-        "grove/config/routing_migrate.py",
-        "grove/router_merge.py",
-    }),
+    # authority). hermes-severance-v1: the v1 migration tool
+    # (grove/config/routing_migrate.py) and router_merge's _MIGRATION_COMMAND
+    # literal were both removed — no in-tree module references the v1 basename
+    # anymore. The pin is retained EMPTY (not deleted) so the guard still fires:
+    # the basename stays tracked while it is a key here (_TRACKED_BASENAMES), and
+    # any future toucher yields `found - pinned` → a NEW-toucher failure in
+    # test_basename_toucher_sets_match_pins_exactly. v1 filename retired at
+    # severance; any toucher is a defect.
+    "routing.config.yaml": frozenset(),
     # routing-v2-migration-v1 Phase 3 (reviewed amendment) — the OPERATIONAL
     # surface (surface_class: in_scope, autonomous_loop-writable; default_tier /
     # tier_preferences / model_facts / routing_rules / telemetry). Sole sanctioned
     # CONTENT-WRITER: grove/config/routing_writer.py (RoutingConfigWriter model
     # swaps). Every other toucher is a reader/loader (router, tier_budget,
     # hero_runner, pattern_compiler, dock/attachment, affordances, fragments,
-    # flywheel_cli) or the migration source (routing_migrate) / merge seam
-    # (router_merge).
+    # flywheel_cli) or the merge seam (router_merge). (hermes-severance-v1: the
+    # migration source routing_migrate.py was deleted and dropped from this pin.)
     # routing-v2-machine-overlay-migration-v1 Phase 3: the naming-rot retarget moved
     # the operator-facing readers/loaders here (they describe tier_preferences /
     # routing_rules / model_facts / pattern_cache / goal_attachment / telemetry — the
@@ -201,7 +196,6 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/cellar.py",
         "grove/classify.py",
         "grove/config/model_catalog.py",
-        "grove/config/routing_migrate.py",
         "grove/config/routing_writer.py",
         "grove/dispatcher.py",
         "grove/dock/attachment.py",
@@ -229,12 +223,12 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
     # changed by operator-authenticated governance / git+deploy, never a machine
     # write (R1: no overlay path reaches it by construction). The population here
     # is exclusively readers/loaders (router, tier_budget, sovereignty,
-    # hero_runner), the merge seam (router_merge), the migration source
-    # (routing_migrate), and routing_writer's derivation of the sibling path for
-    # its sandbox validation (it reads authority, never writes it).
+    # hero_runner), the merge seam (router_merge), and routing_writer's
+    # derivation of the sibling path for its sandbox validation (it reads
+    # authority, never writes it). (hermes-severance-v1: the migration source
+    # routing_migrate.py was deleted and dropped from this pin.)
     "routing.authority.yaml": frozenset({
         "grove/cellar.py",
-        "grove/config/routing_migrate.py",
         "grove/config/routing_writer.py",
         "grove/escalation_policy.py",
         "grove/eval/hero_runner.py",
@@ -276,12 +270,11 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
     # capability-mutation-surface-v1 M1 (reviewed amendment): fs_utils
     # literal moved to config/scope_surfaces.yaml.
     # zones-v2-scope-keying P2 (D1): grove/zone_rules.py DELETED (the
-    # save_zone_rule overlay writer is retired) — dropped from the pin. The
-    # v1→v2 overlay migration tool grove/config/zones_overlay_migrate.py now
-    # names the basename (migration source that reads/rewrites the operator
-    # overlay), so it is added.
+    # save_zone_rule overlay writer is retired) — dropped from the pin.
+    # hermes-severance-v1: the v1→v2 overlay migration tool
+    # grove/config/zones_overlay_migrate.py was deleted (no v1 overlay state
+    # exists anywhere), so it is dropped from this pin too.
     "zones.autonomaton.yaml": frozenset({
-        "grove/config/zones_overlay_migrate.py",
         "grove/red_policy.py",
         "grove/zones.py",
     }),
@@ -511,19 +504,6 @@ def test_basename_toucher_sets_match_pins_exactly():
         "surface-basename population drift (amend _BASENAME_TOUCHER_PINS in "
         "a reviewed diff):\n" + "\n".join(problems)
     )
-
-
-def test_routing_migrate_is_a_required_config_yaml_survivor():
-    # routing-v2-machine-overlay-migration-v1 Phase 3 (3.1): the v1 basename survives
-    # ONLY as genuine migration references. routing_migrate is the migration SOURCE and
-    # MUST stay pinned to routing.config.yaml while any v1 instance can exist —
-    # asserted UNCONDITIONALLY, independent of the AST scan, so a future edit that
-    # accidentally strips its v1 literal fails here loudly rather than silently
-    # shrinking the pin to zero survivors.
-    assert (
-        "grove/config/routing_migrate.py"
-        in _BASENAME_TOUCHER_PINS["routing.config.yaml"]
-    ), "MIGRATION PIN: routing_migrate must remain a routing.config.yaml survivor"
 
 
 def test_kaizen_ledger_dirname_population_is_pinned():

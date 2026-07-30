@@ -18481,7 +18481,7 @@ class AIAgent:
         Dispatcher as a singleton so per-session state survives across
         turns.
 
-        Existing callers (cli.py, oneshot.py, gateway, batch_runner)
+        Existing callers (cli.py, oneshot.py, gateway)
         continue to invoke this method unchanged; the public signature
         and return-shape are preserved. New callers may invoke
         ``Dispatcher.dispatch_turn`` directly to make the GRV-005
@@ -18888,7 +18888,7 @@ def main(
         sample_id = str(uuid.uuid4())[:8]
         sample_filename = f"sample_{sample_id}.json"
         
-        # Convert messages to trajectory format (same as batch_runner)
+        # Convert messages to trajectory format
         trajectory = agent._convert_to_trajectory_format(
             result['messages'], 
             user_query, 

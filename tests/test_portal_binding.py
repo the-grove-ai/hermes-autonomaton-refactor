@@ -27,7 +27,7 @@ from grove.api.portal import (
     register_portal_routes,
 )
 from grove.capability import Capability, ModelBinding
-from grove.config.routing_migrate import to_v2_split
+from tests.grove.routing_fixtures import to_v2_split
 
 from tests.grove.test_capability_binding_writer import _mint, _skill_cap
 

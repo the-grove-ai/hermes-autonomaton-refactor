@@ -138,7 +138,7 @@ def routing_config(tmp_path, monkeypatch):
     grove_dir.mkdir(parents=True)
     # GRV-001 v2.0 — write the operational + authority split via the shared
     # migrator transform (Task 5a). VALID_ROUTING_CONFIG stays authored as v1.
-    from grove.config.routing_migrate import to_v2_split
+    from tests.grove.routing_fixtures import to_v2_split
     _op_text, _auth_text = to_v2_split(VALID_ROUTING_CONFIG)
     (grove_dir / "routing.operational.yaml").write_text(_op_text)
     (grove_dir / "routing.authority.yaml").write_text(_auth_text)

@@ -303,39 +303,38 @@ _AUTHORITY_RESERVED_KEYS = frozenset(
 )
 
 _V2_SCHEMA_VERSION = "2.0"
-# MIGRATION PIN — do not remove until v1 instances are gone. This literal names the
-# v1 ``routing.config.yaml`` deliberately: it is the migration SOURCE an operator on a
-# v1 tree runs to reach v2. Not naming-rot — a live v1 reference.
-_MIGRATION_COMMAND = "python -m grove.config.routing_migrate <v1-routing.config.yaml>"
 
 
 def _require_v2_shape(data: Any, path: Path) -> None:
     """Shared version gate for both v2 loaders.
 
     Rejects, in order: a non-mapping; a v1-shaped file (a top-level ``routing:``
-    mapping) with an error naming the migration command; a missing
-    schema_version; an integer schema_version (v1 used the int ``1``); and any
-    schema_version other than the string ``"2.0"``.
+    mapping) with an error stating v1 is unsupported; a missing schema_version;
+    an integer schema_version (v1 used the int ``1``); and any schema_version
+    other than the string ``"2.0"``.
     """
     if not isinstance(data, dict):
         raise ConfigurationError(f"routing config at {path} is not a YAML mapping")
     if isinstance(data.get("routing"), dict):
         raise ConfigurationError(
             f"routing config at {path} is v1-shaped (a top-level 'routing:' "
-            f"mapping); GRV-001 v2.0 requires the split form. Migrate with: "
-            f"{_MIGRATION_COMMAND}"
+            f"mapping); GRV-001 v2.0 requires the split form. The v1 schema is "
+            f"unsupported at severance — materialize a fresh v2 instance via "
+            f"cold-start."
         )
     version = data.get("schema_version")
     if version is None:
         raise ConfigurationError(
             f"routing config at {path} has no schema_version; GRV-001 v2.0 "
-            f'requires schema_version: "2.0". Migrate with: {_MIGRATION_COMMAND}'
+            f'requires schema_version: "2.0". The v1 schema is unsupported — '
+            f"materialize a fresh v2 instance via cold-start."
         )
     if not isinstance(version, str):
         raise ConfigurationError(
             f"routing config at {path} has a non-string schema_version "
             f"{version!r} (v1 used the integer 1); GRV-001 v2.0 requires the "
-            f'string "2.0". Migrate with: {_MIGRATION_COMMAND}'
+            f'string "2.0". The v1 schema is unsupported — materialize a fresh '
+            f"v2 instance via cold-start."
         )
     if version != _V2_SCHEMA_VERSION:
         raise ConfigurationError(

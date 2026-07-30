@@ -1,4 +1,4 @@
-"""zones-v2-scope-keying P2 — retirement + migration + deny-all coverage.
+"""zones-v2-scope-keying P2 — retirement + deny-all coverage.
 
 Covers the P2b test additions:
   * D1 — a non-governance halt offers no "always" store (resolve_always_store →
@@ -8,8 +8,9 @@ Covers the P2b test additions:
     "always" affordance survives there, unchanged).
   * D5(b′) — a malformed deny-config denies ALL RED at halt-time and does NOT
     raise (fail-closed).
-  * Migration — prune tool_zones + stamp v2 + .bak; malformed refusal (zero
-    writes); idempotency (byte-identical, nothing-to-do); prune-report content.
+
+hermes-severance-v1: the overlay-migration coverage (prune / refusal /
+idempotency / report) was removed with grove/config/zones_overlay_migrate.py.
 """
 from __future__ import annotations
 
@@ -19,7 +20,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from grove.config import zones_overlay_migrate as migrate
 from grove.grant_recognition import resolve_always_store
 
 
@@ -119,79 +119,3 @@ def test_valid_empty_deny_config_denies_only_the_floor(tmp_path, monkeypatch):
     assert rp.is_denied_by_policy("rm:catastrophic") is True  # hardcoded floor
 
 
-# ── Migration: prune / refusal / idempotency / report ────────────────────────
-
-_LEGACY_OVERLAY = """schema_version: 1
-tool_zones:
-  write_file:
-    default_zone: green
-  review_proposals:
-    default_zone: green
-  terminal:
-    default_zone: yellow
-    rules:
-      - match_pattern: ^date$
-        zone: green
-        reason: op-approved
-      - match_pattern: ^ls$
-        zone: green
-        reason: op-approved
-"""
-
-
-def _overlay(tmp_path: Path, body: str = _LEGACY_OVERLAY) -> Path:
-    p = tmp_path / "zones.autonomaton.yaml"
-    p.write_text(body)
-    return p
-
-
-def test_migration_prunes_tool_zones_stamps_v2_and_backs_up(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-    ov = _overlay(tmp_path)
-    report = migrate.migrate_overlay(ov, queue_path=tmp_path / "q.jsonl")
-    assert report.status == "migrated"
-    # tool_zones gone; schema_version stamped to 2.
-    import yaml
-    data = yaml.safe_load(ov.read_text())
-    assert data == {"schema_version": 2}
-    # .bak preserved (recovery anchor).
-    assert report.backup_path and Path(report.backup_path).exists()
-    assert "tool_zones" in Path(report.backup_path).read_text()
-
-
-def test_migration_report_enumerates_prune_set(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-    report = migrate.migrate_overlay(_overlay(tmp_path), queue_path=tmp_path / "q.jsonl")
-    # 2 default_zone promotions + 2 terminal.rules enumerated with v2-derived zones.
-    assert len(report.pruned_default_zone_promotions) == 2
-    assert len(report.pruned_terminal_rules) == 2
-    tools = {p["tool"]: p for p in report.pruned_default_zone_promotions}
-    assert tools["write_file"]["overlay_zone"] == "green"
-    assert tools["write_file"]["v2_derived_zone"] == "yellow"      # workspace_write
-    assert tools["review_proposals"]["v2_derived_zone"] == "green"  # read_only
-
-
-def test_migration_idempotent_second_run_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-    ov = _overlay(tmp_path)
-    migrate.migrate_overlay(ov, queue_path=tmp_path / "q.jsonl")
-    after_first = ov.read_bytes()
-    report2 = migrate.migrate_overlay(ov, queue_path=tmp_path / "q.jsonl")
-    assert report2.status == "nothing-to-do"
-    assert ov.read_bytes() == after_first  # byte-identical
-
-
-def test_migration_refuses_malformed_overlay_zero_writes(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-    ov = _overlay(tmp_path, "tool_zones: [unclosed\n:::not yaml")
-    before = ov.read_bytes()
-    with pytest.raises(migrate.OverlayMigrationError, match="not valid YAML"):
-        migrate.migrate_overlay(ov, queue_path=tmp_path / "q.jsonl")
-    assert ov.read_bytes() == before  # zero writes
-    assert not list(tmp_path.glob("*.bak_*"))  # no backup written
-
-
-def test_migration_absent_overlay_is_nothing_to_do(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-    report = migrate.migrate_overlay(tmp_path / "nope.yaml")
-    assert report.status == "absent"

@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from grove.config.routing_migrate import to_v2_split
+from tests.grove.routing_fixtures import to_v2_split
 from grove.escalation_policy import (
     EscalationPolicy,
     PreRoutePolicy,

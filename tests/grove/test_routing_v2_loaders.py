@@ -81,7 +81,7 @@ class TestVersionGate:
         p = _write(tmp_path / "v1.yaml", "routing:\n  schema_version: 1\n  default_tier: T1\n")
         with pytest.raises(ConfigurationError, match="v1-shaped") as exc:
             load_operational_routing_config(p)
-        assert "routing_migrate" in str(exc.value)
+        assert "cold-start" in str(exc.value)
 
     def test_wrong_version_string_rejected(self, tmp_path):
         p = _write(tmp_path / "op.yaml", 'schema_version: "3.0"\ndefault_tier: T1\n')

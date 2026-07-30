@@ -7,7 +7,7 @@ import pytest
 import grove.providers
 import grove.router
 from grove.classify import ClassificationResult
-from grove.config.routing_migrate import to_v2_split
+from tests.grove.routing_fixtures import to_v2_split
 from grove.providers import current_tier, resolve_tier_to_runtime, route_for_agent
 from grove.router import TierConfig
 
