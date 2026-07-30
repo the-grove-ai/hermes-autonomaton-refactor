@@ -86,7 +86,9 @@ _READ_ONLY_TOOLS = frozenset({
     "wc", "stat", "file", "diff", "cmp", "jq", "yq", "md5sum", "sha1sum",
     "sha256sum", "cksum", "od", "xxd", "hexdump", "strings", "nl", "column",
     "sort", "uniq", "cut", "comm", "readlink", "realpath", "basename", "dirname",
-    "du", "tree",
+    # shell-allowlist-delta — filesystem inspectors: `which` (PATH resolver,
+    # sits with readlink/realpath), `df` (disk stat, sits with du).
+    "which", "du", "df", "tree",
 })
 # read-only-compound-green-relief-v1 Phase 2 — pathless read-only stdin-readers
 # eligible for BOUNDED GREEN inheritance in a pipeline. Each reads its pipe input
@@ -124,7 +126,12 @@ _UNRESOLVED_WRITER_REASON = (
 # bucket-3 fail-closed default. NOT green (no green-set expansion this sprint).
 _BENIGN_NONWRITERS = frozenset({
     "echo", "printf", "true", "false", ":", "test", "[",
-    "seq", "sleep", "tty", "id", "uname", "hostname", "pwd",
+    "seq", "sleep", "tty", "id", "uname", "pwd",
+    # shell-allowlist-delta — status / no-FS printers (bare-form only; any
+    # redirect / substitution is classified by its effect node first).
+    "whoami", "groups", "who", "w", "uptime", "locale", "cal",
+    # hostname evicted pending flag-guard; bare-verb match cannot exclude the
+    # NAME-setting positional (`hostname NAME` silently sets identity).
 })
 _ZONE_RANK = {_GREEN: 0, _YELLOW: 1, _RED: 2}
 

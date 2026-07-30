@@ -194,7 +194,9 @@ class TestBucket3FailClosed:
 
     @pytest.mark.parametrize("cmd", [
         "echo ok", "printf x", "true", "false", ":", "test -f x", "[ -f x ]",
-        "seq 1 3", "sleep 1", "tty", "id", "uname -a", "hostname", "pwd",
+        # shell-allowlist-delta — `hostname` evicted (see TestShellAllowlistDelta):
+        # the bare-verb match cannot exclude the NAME-setting positional.
+        "seq 1 3", "sleep 1", "tty", "id", "uname -a", "pwd",
     ])
     def test_benign_nonwriter_is_yellow(self, cmd, grove_home):
         # CLOSED, LITERAL set — bare verb only, never args-conditional.
@@ -262,6 +264,39 @@ class TestBucket3FailClosed:
         # RED by a pre-existing rule, so use /tmp and /var here.)
         assert C("cat /tmp/notes.txt").zone == "yellow"
         assert C("grep needle /tmp/app.log").zone == "yellow"
+
+
+class TestShellAllowlistDelta:
+    """shell-allowlist-delta — nine read-only / status verbs admitted to the
+    safe-set (was bucket-3 fail-closed RED, now YELLOW), plus the `hostname`
+    eviction. `df` admitted iff the foreground shell path is timeout-bounded
+    (terminal_tool effective_timeout, confirmed). `which`/`df` join
+    _READ_ONLY_TOOLS (filesystem inspectors); the rest join _BENIGN_NONWRITERS
+    (status / no-FS printers)."""
+
+    @pytest.mark.parametrize("cmd", [
+        # _READ_ONLY_TOOLS additions (known-reader YELLOW).
+        "which git", "df",
+        # _BENIGN_NONWRITERS additions (status / no-FS printers, bare-form).
+        "whoami", "groups", "who", "w", "uptime", "locale", "cal",
+    ])
+    def test_admitted_verb_is_yellow_not_red(self, cmd, grove_home):
+        # Verdict: each admitted verb bare-form classifies YELLOW (was
+        # bucket-3 UNRESOLVED_WRITER RED before the delta).
+        zr = C(cmd)
+        assert zr.zone == "yellow", cmd
+        assert "UNRESOLVED_WRITER" not in (zr.matched_rule or ""), cmd
+
+    @pytest.mark.parametrize("cmd", ["hostname", "hostname grove-vm"])
+    def test_hostname_does_not_silently_pass(self, cmd, grove_home):
+        # Eviction: bare-verb membership admitted `hostname NAME`, a silent
+        # grantable identity change. Post-eviction NEITHER bare `hostname` nor
+        # `hostname NAME` is GREEN/benign — both fall to bucket-3 fail-closed
+        # RED, non-promotable. Re-admission waits on a flag-guard.
+        zr = C(cmd)
+        assert zr.zone == "red", cmd
+        assert zr.is_promotable is False, cmd
+        assert "UNRESOLVED_WRITER" in (zr.matched_rule or ""), cmd
 
 
 class TestPrivilegeAndCatastrophic:
